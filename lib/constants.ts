@@ -32,3 +32,29 @@ export const BNF_MCP_RETRY_BASE_MS = 500
 
 /** Maximum retry delay cap in ms (before jitter). */
 export const BNF_MCP_RETRY_CAP_MS = 8_000
+
+// ---------------------------------------------------------------------------
+// Agent runtime
+// ---------------------------------------------------------------------------
+
+/** Claude model id used for both the corpus and research agent loops.
+ * Must be a Sonnet-class model per the design spec (design/docs/08-prompting). */
+export const AGENT_MODEL = "claude-sonnet-4-6"
+
+/** Hard cap on tool-loop iterations per turn.  Matches the chat-sdk default
+ * (maxToolTurns = 12) but declared here so it can be tuned without touching
+ * the runner. */
+export const AGENT_MAX_ITERATIONS = 12
+
+// ---------------------------------------------------------------------------
+// Reaper tuning
+// ---------------------------------------------------------------------------
+
+/** Maximum age (ms) of a running turn before the reaper aborts it.
+ * 30 minutes: generous enough for a large corpus ingestion MCP call but
+ * short enough to catch runaway turns before they exhaust memory. */
+export const TURN_REAP_TTL_MS = 30 * 60 * 1_000
+
+/** How often the reaper runs its cycle (ms).
+ * 5 minutes: frequent enough to catch orphaned DB rows promptly. */
+export const REAPER_INTERVAL_MS = 5 * 60 * 1_000
