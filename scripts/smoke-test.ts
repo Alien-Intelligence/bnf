@@ -35,6 +35,8 @@ import { ProjectService } from "@/models/projects/service"
 import { DocumentService } from "@/models/documents/service"
 import { CorpusService } from "@/models/corpus/service"
 import type { User } from "@/models/users/schema"
+import { parseBnfDate, normalizeDocument, normalizeMany } from "@/lib/mcp/normalize"
+import { mapCatalogueDocType, sourceFromArk } from "@/lib/mcp/vocab"
 
 // ---------------------------------------------------------------------------
 // Stable smoke-owner email — same across runs so the user survives re-runs.
@@ -361,6 +363,166 @@ async function testBetterAuthRoundTrip(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Test 4: parseBnfDate fixtures (pure, no DB)
+// ---------------------------------------------------------------------------
+function testParseBnfDateFixtures(): void {
+  console.log("\nTest 4: parseBnfDate fixtures")
+
+  // null / undefined / empty → { year: null, label: null }
+  assert.deepEqual(parseBnfDate(null), { year: null, label: null }, "null input")
+  assert.deepEqual(parseBnfDate(undefined), { year: null, label: null }, "undefined input")
+  assert.deepEqual(parseBnfDate(""), { year: null, label: null }, "empty string")
+  assert.deepEqual(parseBnfDate("  "), { year: null, label: null }, "whitespace-only string")
+
+  // Exact 4-digit year → { year: N, label: null }
+  assert.deepEqual(parseBnfDate("1862"), { year: 1862, label: null }, "exact year 1862")
+
+  // Approximate year variants (case-insensitive)
+  assert.deepEqual(parseBnfDate("vers 1890"), { year: 1890, label: "vers 1890" }, "vers 1890")
+  assert.deepEqual(parseBnfDate("circa 1890"), { year: 1890, label: "vers 1890" }, "circa 1890")
+  assert.deepEqual(parseBnfDate("ca 1890"), { year: 1890, label: "vers 1890" }, "ca 1890")
+  assert.deepEqual(parseBnfDate("ca. 1890"), { year: 1890, label: "vers 1890" }, "ca. 1890")
+  assert.deepEqual(parseBnfDate("VERS 1890"), { year: 1890, label: "vers 1890" }, "VERS 1890 (case-insensitive)")
+
+  // Year ranges with various separators → first year, en-dash label
+  assert.deepEqual(parseBnfDate("1850-1860"), { year: 1850, label: "1850–1860" }, "range hyphen")
+  assert.deepEqual(parseBnfDate("1850–1860"), { year: 1850, label: "1850–1860" }, "range en-dash")
+  assert.deepEqual(parseBnfDate("1850/1860"), { year: 1850, label: "1850–1860" }, "range slash")
+
+  // Century strings → { year: null, label: "XIXe siècle" }
+  assert.deepEqual(parseBnfDate("XIXe siècle"), { year: null, label: "XIXe siècle" }, "XIXe siècle")
+  assert.deepEqual(parseBnfDate("XIXème siècle"), { year: null, label: "XIXe siècle" }, "XIXème siècle")
+  assert.deepEqual(parseBnfDate("XIX siècle"), { year: null, label: "XIXe siècle" }, "XIX siècle (no suffix)")
+
+  // Unhandled free-text → { year: null, label: raw preserved }
+  assert.deepEqual(parseBnfDate("environ 1900"), { year: null, label: "environ 1900" }, "environ 1900 (unhandled → raw preserved)")
+
+  console.log("  ✓ parseBnfDate fixtures")
+}
+
+// ---------------------------------------------------------------------------
+// Test 5: mapCatalogueDocType + normalizeDocument mapping fixtures (pure, no DB)
+// ---------------------------------------------------------------------------
+function testDocTypeMappingFixtures(): void {
+  console.log("\nTest 5: mapCatalogueDocType + normalizeDocument mapping fixtures")
+
+  // mapCatalogueDocType
+  assert.equal(mapCatalogueDocType("Périodique"), "press", "Périodique → press")
+  assert.equal(mapCatalogueDocType("presse quotidienne"), "press", "presse quotidienne → press")
+  assert.equal(mapCatalogueDocType("Texte imprimé"), "book", "Texte imprimé → book")
+  assert.equal(mapCatalogueDocType("Livre numérique"), "book", "Livre numérique → book")
+  assert.equal(mapCatalogueDocType("Carte plan"), "map", "Carte plan → map")
+  assert.equal(mapCatalogueDocType("Manuscrit"), "manuscript", "Manuscrit → manuscript")
+  assert.equal(mapCatalogueDocType("Estampe"), "image", "Estampe → image")
+  assert.equal(mapCatalogueDocType("foobar"), null, "foobar → null (unmatched)")
+
+  // normalizeDocument — Gallica fascicule (full ARK, known Gallica prefix)
+  const gallicaPayload = {
+    ark: "ark:/12148/bpt6k5738219s",
+    title: "T",
+    doc_type: "fascicule",
+    language: "fre",
+    date: "1889",
+  }
+  const gallicaDoc = normalizeDocument(gallicaPayload)
+  assert.ok(gallicaDoc !== null, "gallicaDoc must not be null")
+  assert.equal(gallicaDoc.docType, "press", "fascicule → press")
+  assert.equal(gallicaDoc.lang, "fr", "fre → fr")
+  assert.equal(gallicaDoc.year, 1889, "date 1889 → year 1889")
+  assert.equal(gallicaDoc.source, "gallica", "bpt6k prefix → gallica")
+  assert.ok(
+    typeof gallicaDoc.iiifManifestUrl === "string" && gallicaDoc.iiifManifestUrl.length > 0,
+    "iiifManifestUrl must be non-null for gallica source",
+  )
+
+  // normalizeDocument — Catalogue short-form ARK (cb prefix, no ark:/12148/ prefix)
+  const cataloguePayload = {
+    ark: "cb314727618",
+    title: "T",
+    doc_type: "Périodique",
+    language: "fre",
+    date: "circa 1890",
+  }
+  const catalogueDoc = normalizeDocument(cataloguePayload)
+  assert.ok(catalogueDoc !== null, "catalogueDoc must not be null")
+  assert.equal(catalogueDoc.ark, "ark:/12148/cb314727618", "short-form ark gets ark:/12148/ prefix")
+  assert.equal(catalogueDoc.docType, "press", "Périodique → press")
+  assert.equal(catalogueDoc.year, 1890, "circa 1890 → year 1890")
+  assert.equal(catalogueDoc.dateLabel, "vers 1890", "circa 1890 → dateLabel 'vers 1890'")
+  assert.equal(catalogueDoc.source, "catalogue", "cb prefix → catalogue")
+  assert.equal(catalogueDoc.iiifManifestUrl, null, "iiifManifestUrl must be null for catalogue")
+
+  console.log("  ✓ mapCatalogueDocType + normalizeDocument mapping fixtures")
+}
+
+// ---------------------------------------------------------------------------
+// Test 6: sourceFromArk fixtures (pure, no DB)
+// ---------------------------------------------------------------------------
+function testSourceFromArkFixtures(): void {
+  console.log("\nTest 6: sourceFromArk fixtures")
+
+  // Gallica prefixes (full ARK form)
+  assert.equal(sourceFromArk("ark:/12148/bpt6k5738219s"), "gallica", "bpt6k → gallica")
+  assert.equal(sourceFromArk("ark:/12148/btv1b10500001g"), "gallica", "btv1b → gallica")
+  assert.equal(sourceFromArk("ark:/12148/bd6t5738219s"), "gallica", "bd6t → gallica")
+
+  // Catalogue prefix — short form and full ARK form
+  assert.equal(sourceFromArk("cb314727618"), "catalogue", "cb short form → catalogue")
+  assert.equal(sourceFromArk("ark:/12148/cb314727618"), "catalogue", "cb full ARK → catalogue")
+
+  // databnf (semantic-tools temporary URI)
+  assert.equal(sourceFromArk("temp-work/abcdef/"), "databnf", "temp-work/ → databnf")
+
+  console.log("  ✓ sourceFromArk fixtures")
+}
+
+// ---------------------------------------------------------------------------
+// Test 7: normalizeMany rejection (drops temp-work + title-less) (pure, no DB)
+// ---------------------------------------------------------------------------
+function testNormalizeManyRejection(): void {
+  console.log("\nTest 7: normalizeMany rejection")
+
+  const validDoc = {
+    ark: "ark:/12148/bpt6k5738219s",
+    title: "Le Figaro",
+    doc_type: "fascicule",
+    language: "fre",
+    date: "1889",
+  }
+  // Missing both title and creator — must be dropped
+  const titlelessDoc = {
+    ark: "ark:/12148/bpt6k0000001z",
+    // no title, no creator
+    doc_type: "fascicule",
+    language: "fre",
+    date: "1900",
+  }
+  // temp-work/ URI — source resolves to "databnf" and must be dropped
+  const tempWorkDoc = {
+    ark: "temp-work/abcdef/",
+    title: "Some temp record",
+    doc_type: "monographie",
+    language: "fre",
+    date: "2020",
+  }
+
+  const results = normalizeMany([validDoc, titlelessDoc, tempWorkDoc])
+
+  assert.equal(
+    results.length,
+    1,
+    `normalizeMany must drop the titleless and temp-work records; expected 1, got ${results.length}`,
+  )
+  assert.equal(
+    results[0]?.ark,
+    "ark:/12148/bpt6k5738219s",
+    "The surviving record must be the valid Gallica doc",
+  )
+
+  console.log("  ✓ normalizeMany rejection")
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 async function main(): Promise<void> {
@@ -372,6 +534,10 @@ async function main(): Promise<void> {
     advisoryLock: false,
     noOpDelta: false,
     betterAuth: false,
+    parseBnfDate: false,
+    docTypeMapping: false,
+    sourceFromArk: false,
+    normalizeManyRejection: false,
   }
 
   // --- Setup: one real owner user for Tests 1 + 2 --------------------------
@@ -405,6 +571,35 @@ async function main(): Promise<void> {
     console.error("FAIL Test 3 (better-auth):", err)
   }
 
+  // --- Pure normalize-layer tests (no network, no Prisma) ------------------
+  try {
+    testParseBnfDateFixtures()
+    results.parseBnfDate = true
+  } catch (err: unknown) {
+    console.error("FAIL Test 4 (parseBnfDate fixtures):", err)
+  }
+
+  try {
+    testDocTypeMappingFixtures()
+    results.docTypeMapping = true
+  } catch (err: unknown) {
+    console.error("FAIL Test 5 (docType mapping fixtures):", err)
+  }
+
+  try {
+    testSourceFromArkFixtures()
+    results.sourceFromArk = true
+  } catch (err: unknown) {
+    console.error("FAIL Test 6 (sourceFromArk fixtures):", err)
+  }
+
+  try {
+    testNormalizeManyRejection()
+    results.normalizeManyRejection = true
+  } catch (err: unknown) {
+    console.error("FAIL Test 7 (normalizeMany rejection):", err)
+  }
+
   // --- Cleanup (always) ----------------------------------------------------
   console.log("\nCleaning up …")
   try {
@@ -422,6 +617,10 @@ async function main(): Promise<void> {
   console.log(`  ${tick(results.advisoryLock)} advisory lock + monotonic seq`)
   console.log(`  ${tick(results.noOpDelta)} no-op delta short-circuit`)
   console.log(`  ${tick(results.betterAuth)} better-auth round-trip`)
+  console.log(`  ${tick(results.parseBnfDate)} parseBnfDate fixtures`)
+  console.log(`  ${tick(results.docTypeMapping)} mapCatalogueDocType + normalizeDocument mapping fixtures`)
+  console.log(`  ${tick(results.sourceFromArk)} sourceFromArk fixtures`)
+  console.log(`  ${tick(results.normalizeManyRejection)} normalizeMany rejection`)
   console.log("═══════════════════════════════════════════════")
 
   process.exit(Object.values(results).every(Boolean) ? 0 : 1)
