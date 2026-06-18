@@ -40,6 +40,7 @@ import { mapCatalogueDocType, sourceFromArk } from "@/lib/mcp/vocab"
 import { runReaperCycle } from "@/lib/agent/runtime/reaper"
 import { IngestService } from "@/models/ingest/service"
 import { INGEST_STATUS } from "@/models/ingest/schema"
+import { NoteService } from "@/models/notes/service"
 
 // ---------------------------------------------------------------------------
 // Stable smoke-owner email — same across runs so the user survives re-runs.
@@ -681,6 +682,81 @@ async function testIngestNoOpShortCircuit(owner: User): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Test 10: Note citations parsed + persisted
+//
+// Calls NoteService.create with a body containing 2 [[ark|label|folio]]
+// citations. Asserts:
+//   - note.citationCount === 2
+//   - exactly 2 Citation rows exist for the note
+//   - each Citation has the correct ark + folio
+// Cleans up after itself.
+// ---------------------------------------------------------------------------
+async function testNoteCitationsParsedAndPersisted(owner: User): Promise<void> {
+  console.log("\nTest 10: note citations parsed + persisted")
+
+  // Create an isolated project for this test.
+  const project = await ProjectService.create({
+    name: `Smoke Note Citations ${randomUUID()}`,
+    ownerId: owner.id,
+  })
+
+  const ark1 = "ark:/12148/bpt6k5738219s"
+  const ark2 = "ark:/12148/btv1b10500001g"
+
+  const bodyMd = [
+    "Le Figaro évoque l'inauguration [[ark:/12148/bpt6k5738219s|Le Figaro, 7 mai 1889|42]].",
+    "La Gazette de France en rend compte également [[ark:/12148/btv1b10500001g|Gazette de France|17]].",
+  ].join("\n")
+
+  const note = await NoteService.create({
+    projectId: project.id,
+    title: "Test note — citations smoke",
+    bodyMd,
+  })
+
+  assert.equal(
+    note.citationCount,
+    2,
+    `note.citationCount must be 2, got ${note.citationCount}`,
+  )
+
+  const citations = await prisma.citation.findMany({
+    where: { noteId: note.id },
+    orderBy: { folio: "asc" },
+  })
+
+  assert.equal(
+    citations.length,
+    2,
+    `Expected 2 Citation rows for noteId=${note.id}, got ${citations.length}`,
+  )
+
+  const [citeA, citeB] = citations as [typeof citations[0], typeof citations[0]]
+
+  assert.equal(citeA.ark, ark2, `First citation (folio 17) must have ark=${ark2}`)
+  assert.equal(citeA.folio, 17, `First citation must have folio=17, got ${citeA.folio}`)
+
+  assert.equal(citeB.ark, ark1, `Second citation (folio 42) must have ark=${ark1}`)
+  assert.equal(citeB.folio, 42, `Second citation must have folio=42, got ${citeB.folio}`)
+
+  // Cleanup: Citations + NoteVersions cascade when Note is deleted via Prisma
+  // but there are no cascade rules in the schema — delete explicitly.
+  await prisma.citation.deleteMany({ where: { noteId: note.id } })
+  await prisma.noteVersion.deleteMany({ where: { noteId: note.id } })
+  await prisma.note.delete({ where: { id: note.id } })
+
+  // Delete the project scaffolding.
+  await prisma.corpusVersion.deleteMany({ where: { projectId: project.id } })
+  await prisma.project.update({
+    where: { id: project.id },
+    data: { headVersionId: null, ingestedVersionId: null },
+  })
+  await prisma.project.delete({ where: { id: project.id } })
+
+  console.log("  ✓ note citations parsed + persisted")
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 async function main(): Promise<void> {
@@ -698,6 +774,7 @@ async function main(): Promise<void> {
     normalizeManyRejection: false,
     reaperOrphanRecovery: false,
     ingestNoOpShortCircuit: false,
+    noteCitationsPersisted: false,
   }
 
   // --- Setup: one real owner user for Tests 1 + 2 --------------------------
@@ -774,6 +851,13 @@ async function main(): Promise<void> {
     console.error("FAIL Test 9 (ingest no-op short-circuit):", err)
   }
 
+  try {
+    await testNoteCitationsParsedAndPersisted(smokeUser)
+    results.noteCitationsPersisted = true
+  } catch (err: unknown) {
+    console.error("FAIL Test 10 (note citations parsed + persisted):", err)
+  }
+
   // --- Cleanup (always) ----------------------------------------------------
   console.log("\nCleaning up …")
   try {
@@ -797,6 +881,7 @@ async function main(): Promise<void> {
   console.log(`  ${tick(results.normalizeManyRejection)} normalizeMany rejection`)
   console.log(`  ${tick(results.reaperOrphanRecovery)} reaper orphan recovery`)
   console.log(`  ${tick(results.ingestNoOpShortCircuit)} ingest no-op short-circuit`)
+  console.log(`  ${tick(results.noteCitationsPersisted)} note citations parsed + persisted`)
   console.log("═══════════════════════════════════════════════")
 
   process.exit(Object.values(results).every(Boolean) ? 0 : 1)
