@@ -1,0 +1,2131 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="_ds/alien-intelligence-design-system-5b834766-f439-49c5-a0e7-fae0cdd1da64/tokens/fonts.css">
+<link rel="stylesheet" href="_ds/alien-intelligence-design-system-5b834766-f439-49c5-a0e7-fae0cdd1da64/tokens/colors.css">
+<link rel="stylesheet" href="_ds/alien-intelligence-design-system-5b834766-f439-49c5-a0e7-fae0cdd1da64/tokens/typography.css">
+<link rel="stylesheet" href="_ds/alien-intelligence-design-system-5b834766-f439-49c5-a0e7-fae0cdd1da64/tokens/spacing.css">
+<link rel="stylesheet" href="_ds/alien-intelligence-design-system-5b834766-f439-49c5-a0e7-fae0cdd1da64/tokens/base.css">
+<link rel="stylesheet" href="_ds/alien-intelligence-design-system-5b834766-f439-49c5-a0e7-fae0cdd1da64/components/components.css">
+<link rel="stylesheet" href="_ds/alien-intelligence-design-system-5b834766-f439-49c5-a0e7-fae0cdd1da64/styles.css">
+<script src="_ds/alien-intelligence-design-system-5b834766-f439-49c5-a0e7-fae0cdd1da64/_ds_bundle.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  ::-webkit-scrollbar { width: 9px; height: 9px; }
+  ::-webkit-scrollbar-thumb { background: hsl(0 0% 24%); border-radius: 6px; border: 2px solid var(--background); }
+  ::-webkit-scrollbar-track { background: transparent; }
+  @keyframes bnf-blink { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
+  @keyframes bnf-spin { to { transform: rotate(360deg); } }
+  @keyframes bnf-up { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+</style>
+</helmet>
+
+<div style="display:flex;flex-direction:column;height:100vh;background:var(--background);color:var(--foreground);font-family:var(--font-sans);overflow:hidden">
+
+  <!-- ============ TOP BAR ============ -->
+  <header style="height:56px;flex-shrink:0;display:flex;align-items:center;justify-content:space-between;gap:16px;padding:0 18px;border-bottom:var(--border-width) solid var(--border);background:color-mix(in srgb, var(--background) 86%, transparent);backdrop-filter:blur(8px);z-index:20;position:relative">
+    <div style="display:flex;align-items:center;gap:12px;min-width:0">
+
+      <!-- Alien Intelligence full wordmark -->
+      <img src="assets/logo-w.svg" alt="Alien Intelligence" style="height:18px;width:auto;display:block;opacity:.92">
+
+      <div style="width:1px;height:26px;background:var(--border)"></div>
+
+      <!-- BnF logo -->
+      <img src="assets/bnf-logo-w.png" alt="BnF — Bibliothèque nationale de France" title="Bibliothèque nationale de France" style="height:20px;width:auto;display:block;opacity:.92">
+
+      <div style="width:1px;height:26px;background:var(--border)"></div>
+
+      <!-- Project picker -->
+      <div data-proj-picker="1" style="position:relative">
+        <button onClick="{{ onToggleProjPicker }}" style="display:flex;align-items:center;gap:8px;padding:5px 10px 5px 8px;border-radius:var(--radius-md);border:1px solid {{ projPickerBorder }};background:{{ projPickerBg }};cursor:pointer;transition:border-color .15s" style-hover="border-color:color-mix(in srgb,var(--brand-teal) 45%,var(--border))">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--muted-foreground)" stroke-width="1.8"><rect x="2" y="3" width="20" height="4" rx="1"/><rect x="2" y="10" width="20" height="4" rx="1"/><rect x="2" y="17" width="20" height="4" rx="1"/></svg>
+          <div style="display:flex;flex-direction:column;align-items:flex-start;line-height:1.2">
+            <span style="font-size:12.5px;font-weight:600;color:var(--foreground);white-space:nowrap">{{ projectName }}</span>
+            <span style="font-size:10px;color:var(--muted-foreground)">{{ activeProjectSub }}</span>
+          </div>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--muted-foreground)" stroke-width="2" style="margin-left:2px"><path d="{{ projChevron }}"/></svg>
+        </button>
+
+        <!-- dropdown -->
+        <sc-if value="{{ projPickerOpen }}" hint-placeholder-val="{{ false }}">
+          <div style="position:absolute;top:calc(100% + 8px);left:0;min-width:290px;background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);box-shadow:0 8px 32px -8px rgba(0,0,0,.55);z-index:50;overflow:hidden;animation:bnf-up .15s ease">
+            <div style="padding:9px 12px 7px;font-family:var(--font-mono);font-size:9.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--neutral-600)">Espace de travail BnF</div>
+            <div style="height:1px;background:var(--border);margin:0 12px"></div>
+            <div style="padding:5px 6px">
+              <sc-for list="{{ projects }}" as="proj" hint-placeholder-count="2">
+                <button onClick="{{ proj.onClick }}" style="{{ proj.rowStyle }}">
+                  <span style="{{ proj.iconStyle }}">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="2" y="3" width="20" height="4" rx="1"/><rect x="2" y="10" width="20" height="4" rx="1"/><rect x="2" y="17" width="20" height="4" rx="1"/></svg>
+                  </span>
+                  <span style="flex:1;min-width:0;text-align:left">
+                    <span style="display:block;font-size:13px;font-weight:600;color:var(--foreground);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ proj.name }}</span>
+                    <span style="display:block;font-size:10.5px;color:var(--muted-foreground);font-family:var(--font-mono)">{{ proj.meta }}</span>
+                  </span>
+                  <sc-if value="{{ proj.active }}" hint-placeholder-val="{{ false }}">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--brand-teal)" stroke-width="2.5"><path d="M20 6 9 17l-5-5"/></svg>
+                  </sc-if>
+                </button>
+              </sc-for>
+            </div>
+            <div style="height:1px;background:var(--border);margin:0 12px"></div>
+            <div style="padding:5px 6px 7px">
+              <button onClick="{{ onNewProject }}" style="display:flex;align-items:center;gap:10px;width:100%;padding:8px 10px;border-radius:var(--radius-md);border:none;background:transparent;cursor:pointer;color:var(--brand-teal)" style-hover="background:color-mix(in srgb,var(--brand-teal) 8%,transparent)">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+                <span style="font-size:13px;font-weight:600">Nouveau projet</span>
+              </button>
+            </div>
+          </div>
+        </sc-if>
+      </div>
+    </div>
+
+    <nav style="display:flex;align-items:center;gap:4px">
+      <sc-for list="{{ steps }}" as="st" hint-placeholder-count="3">
+        <sc-if value="{{ st.showLine }}" hint-placeholder-val="{{ true }}">
+          <div style="width:26px;height:1px;background:var(--border);margin:0 2px"></div>
+        </sc-if>
+        <button onClick="{{ st.onClick }}" style="{{ st.btnStyle }}">
+          <span style="{{ st.dotStyle }}">
+            <sc-if value="{{ st.done }}" hint-placeholder-val="{{ true }}">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6 9 17l-5-5"/></svg>
+            </sc-if>
+            <sc-if value="{{ st.showNum }}" hint-placeholder-val="{{ true }}">{{ st.n }}</sc-if>
+          </span>
+          <span style="{{ st.labelStyle }}">{{ st.label }}</span>
+        </button>
+      </sc-for>
+    </nav>
+
+    <div style="display:flex;align-items:center;gap:10px">
+      <span style="display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--muted-foreground);font-family:var(--font-mono)">
+        <span style="width:7px;height:7px;border-radius:50%;background:var(--info);box-shadow:0 0 8px var(--info)"></span>MCP
+      </span>
+      <button onClick="{{ onProfileClick }}" style="width:28px;height:28px;border-radius:50%;background:var(--secondary);color:var(--foreground);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;border:none;cursor:pointer" title="Marie Laforêt" style-hover="background:var(--accent)">ML</button>
+    </div>
+  </header>
+
+  <div style="flex:1;display:flex;min-height:0">
+
+    <!-- ============ SESSIONS / PICKER RAIL ============ -->
+    <sc-if value="{{ showRail }}" hint-placeholder-val="{{ true }}">
+      <aside style="width:262px;flex-shrink:0;display:flex;flex-direction:column;border-right:var(--border-width) solid var(--border);background:var(--sidebar);min-height:0">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 14px 8px;flex-shrink:0">
+          <span style="font-family:var(--font-mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted-foreground)">{{ railLabel }}</span>
+          <button onClick="{{ onNewSession }}" title="Nouvelle session" style="width:24px;height:24px;display:flex;align-items:center;justify-content:center;border-radius:6px;border:1px solid var(--border);background:var(--card);color:var(--neutral-300);cursor:pointer">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+          </button>
+        </div>
+        <div style="{{ sessWrapStyle }}">
+          <sc-for list="{{ sessions }}" as="s" hint-placeholder-count="3">
+            <button onClick="{{ s.onClick }}" style="{{ s.rowStyle }}">
+              <div style="display:flex;align-items:center;gap:8px">
+                <span style="{{ s.dotStyle }}"></span>
+                <span style="font-size:12.5px;font-weight:600;color:var(--foreground);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1">{{ s.title }}</span>
+              </div>
+              <div style="display:flex;align-items:center;justify-content:space-between;padding-left:16px">
+                <span style="font-size:11px;color:var(--muted-foreground)">{{ s.meta }}</span>
+                <span style="font-size:10.5px;color:var(--neutral-600);font-family:var(--font-mono)">{{ s.time }}</span>
+              </div>
+            </button>
+          </sc-for>
+        </div>
+
+        <!-- research artifacts (research only) -->
+        <sc-if value="{{ showPicker }}" hint-placeholder-val="{{ false }}">
+          <div style="flex:1;display:flex;flex-direction:column;min-height:148px;border-top:var(--border-width) solid var(--border)">
+            <div style="padding:12px 14px 8px;flex-shrink:0">
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+                <span style="font-family:var(--font-mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted-foreground)">Artefacts de recherche</span>
+                <button onClick="{{ onNewArtifact }}" title="Nouvelle note" style="width:22px;height:22px;display:flex;align-items:center;justify-content:center;border-radius:6px;border:1px solid var(--border);background:var(--card);color:var(--neutral-300);cursor:pointer"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg></button>
+              </div>
+              <div style="display:flex;align-items:center;gap:7px;height:30px;padding:0 9px;border:1px solid var(--input);border-radius:var(--radius-md);background:color-mix(in srgb,var(--input) 28%,transparent)">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--muted-foreground)" stroke-width="2"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></svg>
+                <input value="{{ pickerQuery }}" onChange="{{ onPickerQuery }}" placeholder="Rechercher une note…" style="border:none;background:transparent;outline:none;color:var(--foreground);font-size:11.5px;width:100%;font-family:var(--font-sans)">
+              </div>
+            </div>
+            <div style="flex:1;overflow-y:auto;padding:2px 8px 10px;display:flex;flex-direction:column;gap:3px">
+              <sc-for list="{{ artifactList }}" as="p" hint-placeholder-count="4">
+                <button onClick="{{ p.onClick }}" style="{{ p.rowStyle }}">
+                  <span style="{{ p.iconWrap }}"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M16 13H8M16 17H8M10 9H8"/></svg></span>
+                  <span style="flex:1;min-width:0;text-align:left">
+                    <span style="display:block;font-size:11.5px;font-weight:600;color:var(--neutral-100);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ p.title }}</span>
+                    <span style="display:block;font-family:var(--font-mono);font-size:9.5px;color:var(--neutral-600);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ p.meta }}</span>
+                  </span>
+                </button>
+              </sc-for>
+            </div>
+            <div style="padding:6px 14px 8px;flex-shrink:0;font-size:10px;font-family:var(--font-mono);color:var(--neutral-600);border-top:var(--border-width) solid var(--border)">{{ pickerCount }}</div>
+          </div>
+        </sc-if>
+
+        <!-- project memory — compact info box, opens full memory dialog -->
+        <sc-if value="{{ showMemoryCard }}" hint-placeholder-val="{{ true }}">
+          <button onClick="{{ onOpenMemory }}" style="margin:10px;padding:11px 12px;border-radius:var(--radius-lg);border:1px solid color-mix(in srgb,var(--brand-teal) 22%,var(--border));background:color-mix(in srgb,var(--brand-teal) 6%,var(--card));flex-shrink:0;cursor:pointer;text-align:left;display:flex;flex-direction:column;gap:7px" style-hover="border-color:color-mix(in srgb,var(--brand-teal) 45%,var(--border));background:color-mix(in srgb,var(--brand-teal) 10%,var(--card))">
+            <div style="display:flex;align-items:center;justify-content:space-between">
+              <span style="display:inline-flex;align-items:center;gap:7px">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--brand-teal)" stroke-width="1.8"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/></svg>
+                <span style="font-size:11px;font-weight:600;color:var(--brand-teal);font-family:var(--font-mono);letter-spacing:.04em;text-transform:uppercase">{{ memoryTitle }}</span>
+              </span>
+              <span style="display:inline-flex;align-items:center;gap:4px;font-size:9px;font-family:var(--font-mono);letter-spacing:.03em;text-transform:uppercase;color:var(--brand-teal);border:1px solid color-mix(in srgb,var(--brand-teal) 30%,transparent);border-radius:var(--radius-full);padding:1px 7px">
+                <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>persistante
+              </span>
+            </div>
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+              <span style="font-size:11px;color:var(--neutral-400);line-height:1.4;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ memoryCountLabel }} · {{ memPreview }}</span>
+              <span style="display:inline-flex;align-items:center;gap:4px;flex-shrink:0;font-size:10.5px;font-weight:600;color:var(--brand-teal)">Ouvrir<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg></span>
+            </div>
+          </button>
+        </sc-if>
+      </aside>
+    </sc-if>
+
+    <!-- ============ MAIN ============ -->
+    <main style="flex:1;display:flex;min-width:0;min-height:0">
+
+      <!-- ====== STEP 1 — CORPUS ====== -->
+      <sc-if value="{{ isCorpus }}" hint-placeholder-val="{{ true }}">
+        <div style="display:flex;flex:1;min-width:0;position:relative">
+
+          <!-- chat column -->
+          <section style="flex:0 0 40%;min-width:360px;max-width:560px;display:flex;flex-direction:column;border-right:var(--border-width) solid var(--border);min-height:0">
+            <div style="padding:14px 18px;border-bottom:var(--border-width) solid var(--border);display:flex;align-items:center;justify-content:space-between">
+              <div>
+                <div style="font-size:13.5px;font-weight:600">Agent de constitution</div>
+                <div style="font-size:11px;color:var(--muted-foreground);margin-top:1px">Claude · BnF MCP</div>
+              </div>
+              <span style="display:inline-flex;align-items:center;gap:6px;font-size:10.5px;font-family:var(--font-mono);color:var(--info);border:1px solid color-mix(in srgb,var(--info) 30%,transparent);background:color-mix(in srgb,var(--info) 10%,transparent);padding:3px 8px;border-radius:var(--radius-full)">
+                <span style="width:6px;height:6px;border-radius:50%;background:var(--info)"></span>connecté
+              </span>
+            </div>
+
+            <div style="flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:13px">
+              <sc-for list="{{ messages }}" as="m" hint-placeholder-count="3">
+                <sc-if value="{{ m.isUser }}" hint-placeholder-val="{{ true }}">
+                  <div style="align-self:flex-end;max-width:88%;background:var(--secondary);color:var(--foreground);padding:9px 13px;border-radius:14px 14px 4px 14px;font-size:13px;line-height:1.5;animation:bnf-up .25s ease">{{ m.text }}</div>
+                </sc-if>
+                <sc-if value="{{ m.isAgent }}" hint-placeholder-val="{{ true }}">
+                  <div style="display:flex;gap:10px;animation:bnf-up .25s ease">
+                    <span style="width:26px;height:26px;flex-shrink:0;border-radius:50%;background:color-mix(in srgb,var(--primary) 22%,var(--card));border:1px solid color-mix(in srgb,var(--brand-teal) 30%,transparent);display:flex;align-items:center;justify-content:center"><img src="assets/glyph-w.svg" style="height:12px;opacity:.92"></span>
+                    <div style="font-size:13px;line-height:1.55;color:var(--neutral-100);padding-top:3px">{{ m.text }}</div>
+                  </div>
+                </sc-if>
+                <sc-if value="{{ m.isTool }}" hint-placeholder-val="{{ true }}">
+                  <div style="margin-left:36px;border:1px solid var(--border);background:var(--card);border-radius:var(--radius-md);padding:9px 11px;font-family:var(--font-mono);font-size:11.5px;animation:bnf-up .25s ease">
+                    <div style="display:flex;align-items:center;gap:7px;color:var(--brand-teal)">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></svg>
+                      <span style="font-weight:600">{{ m.tool }}</span>
+                      <span style="color:var(--muted-foreground)">via MCP</span>
+                    </div>
+                    <div style="color:var(--neutral-300);margin-top:5px">« {{ m.query }} »</div>
+                    <div style="color:var(--muted-foreground);margin-top:4px">{{ m.found }} notices au catalogue · ARK résolus</div>
+                  </div>
+                </sc-if>
+                <sc-if value="{{ m.isEvent }}" hint-placeholder-val="{{ true }}">
+                  <div style="{{ m.eventStyle }}">
+                    <span dangerouslySetInnerHTML="{{ m.eventIconHtml }}" style="display:inline-flex;align-items:center"></span>
+                    <span>{{ m.eventText }}</span>
+                  </div>
+                </sc-if>
+              </sc-for>
+              <sc-if value="{{ busy }}" hint-placeholder-val="{{ false }}">
+                <div style="display:flex;gap:10px;align-items:center;margin-left:36px">
+                  <span style="display:inline-flex;gap:4px">
+                    <span style="width:6px;height:6px;border-radius:50%;background:var(--brand-teal);animation:bnf-blink 1.2s infinite"></span>
+                    <span style="width:6px;height:6px;border-radius:50%;background:var(--brand-teal);animation:bnf-blink 1.2s infinite .2s"></span>
+                    <span style="width:6px;height:6px;border-radius:50%;background:var(--brand-teal);animation:bnf-blink 1.2s infinite .4s"></span>
+                  </span>
+                  <span style="font-size:11.5px;color:var(--muted-foreground);font-family:var(--font-mono)">{{ busyLabel }}</span>
+                </div>
+              </sc-if>
+            </div>
+
+            <div style="padding:12px 14px 14px;border-top:var(--border-width) solid var(--border)">
+              <sc-if value="{{ hasSuggestions }}" hint-placeholder-val="{{ true }}">
+                <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px">
+                  <sc-for list="{{ suggestions }}" as="sg" hint-placeholder-count="2">
+                    <button onClick="{{ sg.onClick }}" style="text-align:left;border:1px solid var(--border);background:transparent;color:var(--neutral-200);font-size:12px;line-height:1.4;padding:8px 11px;border-radius:var(--radius-md);cursor:pointer;font-family:var(--font-sans)" style-hover="border-color:color-mix(in srgb,var(--brand-teal) 50%,var(--border));background:color-mix(in srgb,var(--brand-teal) 7%,transparent)">
+                      <span style="color:var(--brand-teal);font-family:var(--font-mono);font-size:10px;margin-right:6px">↳</span>{{ sg.text }}
+                    </button>
+                  </sc-for>
+                </div>
+              </sc-if>
+              <div style="display:flex;align-items:flex-end;gap:8px;border:1px solid var(--input);border-radius:var(--radius-lg);background:var(--card);padding:7px 7px 7px 12px">
+                <input value="{{ input }}" onChange="{{ onInput }}" onKeyDown="{{ onKey }}" placeholder="Affiner le corpus…" style="flex:1;border:none;background:transparent;outline:none;color:var(--foreground);font-family:var(--font-sans);font-size:13px;padding:5px 0">
+                <button onClick="{{ onSend }}" style="{{ sendStyle }}">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m5 12 7-7 7 7M12 5v14"/></svg>
+                </button>
+              </div>
+            </div>
+          </section>
+
+          <!-- corpus comprehension panel -->
+          <section style="flex:1;min-width:0;display:flex;flex-direction:column;min-height:0">
+            <div style="padding:18px 24px 0;flex-shrink:0">
+              <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:16px">
+                <div>
+                  <div style="font-family:var(--font-mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted-foreground)">Corpus en cours</div>
+                  <div style="display:flex;align-items:center;gap:9px;margin-top:5px">
+                    <h1 style="font-size:21px;font-weight:600;letter-spacing:var(--tracking-tight);margin:0">{{ projectName }}</h1>
+                    <button onClick="{{ onOpenHelpCorpus }}" title="Comment ça marche ?" style="width:22px;height:22px;flex-shrink:0;display:flex;align-items:center;justify-content:center;border-radius:50%;border:1px solid var(--border);background:var(--card);color:var(--muted-foreground);cursor:pointer" style-hover="border-color:color-mix(in srgb,var(--brand-teal) 45%,var(--border));color:var(--brand-teal)">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg>
+                    </button>
+                  </div>
+                </div>
+                <button onClick="{{ onGoIngest }}" style="{{ ingestBtnStyle }}">
+                  {{ ingestBtnLabel }}
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+                </button>
+              </div>
+
+              <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:18px">
+                <sc-for list="{{ summary }}" as="t" hint-placeholder-count="4">
+                  <div style="border:1px solid var(--border);background:var(--card);border-radius:var(--radius-lg);padding:13px 15px">
+                    <div style="font-size:11px;color:var(--muted-foreground)">{{ t.label }}</div>
+                    <div style="font-size:22px;font-weight:600;font-family:var(--font-mono);margin-top:3px">{{ t.value }}</div>
+                    <div style="font-size:10.5px;color:var(--neutral-600);margin-top:2px">{{ t.sub }}</div>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+
+            <div style="flex:1;overflow-y:auto;padding:18px 24px 28px;min-height:0">
+              <!-- filters & stats drawer -->
+              <div style="border:1px solid var(--border);background:var(--card);border-radius:var(--radius-lg);margin-bottom:16px;overflow:hidden">
+                <button onClick="{{ onToggleStats }}" style="display:flex;align-items:center;justify-content:space-between;width:100%;padding:13px 16px;background:transparent;border:none;cursor:pointer;font-family:var(--font-sans)">
+                  <span style="display:inline-flex;align-items:center;gap:9px">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--brand-teal)" stroke-width="1.9"><path d="M3 4h18M7 12h10M11 20h2"/></svg>
+                    <span style="font-size:13px;font-weight:600;color:var(--foreground)">Filtres et statistiques</span>
+                    <span style="font-size:11px;color:var(--muted-foreground)">— cliquez une catégorie ou une période pour filtrer</span>
+                    <sc-if value="{{ hasActiveFilters }}" hint-placeholder-val="{{ false }}">
+                      <span style="font-family:var(--font-mono);font-size:10px;color:var(--brand-teal);background:color-mix(in srgb,var(--brand-teal) 12%,transparent);border:1px solid color-mix(in srgb,var(--brand-teal) 30%,transparent);border-radius:var(--radius-full);padding:1px 8px">{{ activeFilterCount }} actif</span>
+                    </sc-if>
+                  </span>
+                  <span style="display:inline-flex;align-items:center;gap:8px">
+                    <span style="font-size:11px;font-family:var(--font-mono);color:var(--muted-foreground)">{{ statsHint }}</span>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--muted-foreground)" stroke-width="2" style="{{ statsChevronStyle }}"><path d="m6 9 6 6 6-6"/></svg>
+                  </span>
+                </button>
+                <div style="{{ statsDrawerStyle }}">
+                  <div style="padding:2px 16px 16px">
+                    <!-- facet cards -->
+                    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:14px">
+                      <sc-for list="{{ facetCards }}" as="fc" hint-placeholder-count="3">
+                        <div style="border:1px solid var(--border);background:var(--background);border-radius:var(--radius-md);padding:14px 16px">
+                          <div style="font-size:12px;font-weight:600;margin-bottom:12px">{{ fc.title }}</div>
+                          <div style="display:flex;flex-direction:column;gap:10px">
+                            <sc-for list="{{ fc.rows }}" as="f" hint-placeholder-count="3">
+                              <button onClick="{{ f.onClick }}" style="{{ f.rowStyle }}">
+                                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:5px">
+                                  <span style="display:inline-flex;align-items:center;gap:7px;font-size:11.5px;color:var(--neutral-100)">
+                                    <span style="{{ f.swatch }}"></span>{{ f.label }}
+                                  </span>
+                                  <span style="font-family:var(--font-mono);font-size:11px;color:var(--muted-foreground)">{{ f.count }}</span>
+                                </div>
+                                <div style="height:5px;border-radius:3px;background:var(--secondary);overflow:hidden"><div style="{{ f.barStyle }}"></div></div>
+                              </button>
+                            </sc-for>
+                          </div>
+                        </div>
+                      </sc-for>
+                    </div>
+                    <!-- year histogram (clickable) -->
+                    <div style="border:1px solid var(--border);background:var(--background);border-radius:var(--radius-md);padding:14px 18px 12px;margin-bottom:14px">
+                      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+                        <span style="font-size:12px;font-weight:600">Répartition chronologique</span>
+                        <span style="font-size:10.5px;font-family:var(--font-mono);color:var(--neutral-600)">cliquer pour filtrer par période</span>
+                      </div>
+                      <div style="display:flex;align-items:flex-end;gap:10px;height:104px">
+                        <sc-for list="{{ yearBins }}" as="y" hint-placeholder-count="5">
+                          <button onClick="{{ y.onClick }}" style="flex:1;display:flex;flex-direction:column;align-items:center;gap:6px;height:100%;justify-content:flex-end;background:transparent;border:none;cursor:pointer;padding:0">
+                            <span style="font-family:var(--font-mono);font-size:10px;color:var(--muted-foreground)">{{ y.count }}</span>
+                            <div style="{{ y.barStyle }}"></div>
+                            <span style="{{ y.labelStyle }}">{{ y.year }}</span>
+                          </button>
+                        </sc-for>
+                      </div>
+                    </div>
+
+                    <!-- numérisation & océrisation -->
+                    <div style="border:1px solid var(--border);background:var(--background);border-radius:var(--radius-md);padding:14px 18px 16px">
+                      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+                        <span style="font-size:12px;font-weight:600">Numérisation &amp; océrisation</span>
+                        <span style="font-size:10.5px;font-family:var(--font-mono);color:var(--neutral-600)">éligibilité à l'ingestion</span>
+                      </div>
+                      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
+                        <div style="border:1px solid var(--border);border-radius:var(--radius-md);padding:9px 12px">
+                          <div style="font-size:10.5px;color:var(--muted-foreground)">Numérisés</div>
+                          <div style="font-size:17px;font-weight:600;font-family:var(--font-mono);margin-top:2px">{{ numerNumerise }} <span style="font-size:11px;color:var(--neutral-600)">/ {{ numerTotal }}</span></div>
+                        </div>
+                        <div style="border:1px solid color-mix(in srgb,var(--brand-teal) 28%,var(--border));border-radius:var(--radius-md);padding:9px 12px;background:color-mix(in srgb,var(--brand-teal) 6%,transparent)">
+                          <div style="font-size:10.5px;color:var(--brand-teal)">Ingérables</div>
+                          <div style="font-size:17px;font-weight:600;font-family:var(--font-mono);margin-top:2px;color:var(--brand-teal)">{{ numerIngestible }}</div>
+                        </div>
+                      </div>
+                      <div style="display:flex;flex-direction:column;gap:11px">
+                        <sc-for list="{{ numerRows }}" as="r" hint-placeholder-count="4">
+                          <button onClick="{{ r.onClick }}" style="{{ r.rowStyle }}">
+                            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:5px">
+                              <span style="display:inline-flex;align-items:center;gap:7px;font-size:11.5px;color:var(--neutral-100)">
+                                <span style="{{ r.swatch }}"></span>{{ r.label }}
+                                <span style="font-size:10px;color:var(--neutral-600)">· {{ r.sub }}</span>
+                              </span>
+                              <span style="font-family:var(--font-mono);font-size:11px;color:var(--muted-foreground)">{{ r.count }}</span>
+                            </div>
+                            <div style="height:5px;border-radius:3px;background:var(--secondary);overflow:hidden"><div style="{{ r.barStyle }}"></div></div>
+                          </button>
+                        </sc-for>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- document list -->
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;flex-wrap:wrap">
+                <div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap">
+                  <span style="font-size:13px;font-weight:600">Documents</span>
+                  <sc-for list="{{ activeFilters }}" as="af" hint-placeholder-count="0">
+                    <button onClick="{{ af.onClear }}" style="display:inline-flex;align-items:center;gap:5px;font-size:11px;font-family:var(--font-mono);color:var(--brand-teal);background:color-mix(in srgb,var(--brand-teal) 10%,transparent);border:1px solid color-mix(in srgb,var(--brand-teal) 30%,transparent);border-radius:var(--radius-full);padding:2px 8px 2px 9px;cursor:pointer">
+                      {{ af.label }} <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M18 6 6 18M6 6l12 12"/></svg>
+                    </button>
+                  </sc-for>
+                  <span style="font-size:11.5px;color:var(--muted-foreground);font-family:var(--font-mono)">{{ shownCount }}</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:8px;height:32px;padding:0 10px;border:1px solid var(--input);border-radius:var(--radius-md);background:color-mix(in srgb,var(--input) 28%,transparent)">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--muted-foreground)" stroke-width="2"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></svg>
+                  <input value="{{ query }}" onChange="{{ onQuery }}" placeholder="Filtrer par titre, auteur, ARK…" style="border:none;background:transparent;outline:none;color:var(--foreground);font-size:12px;width:210px;font-family:var(--font-sans)">
+                </div>
+              </div>
+
+              <div style="display:flex;flex-direction:column;gap:8px">
+                <sc-for list="{{ docs }}" as="d" hint-placeholder-count="6">
+                  <button onClick="{{ d.onClick }}" style="{{ d.rowStyle }}">
+                    <div style="{{ d.thumbStyle }}"></div>
+                    <div style="flex:1;min-width:0;text-align:left">
+                      <div style="font-size:13px;font-weight:600;color:var(--foreground);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ d.title }}</div>
+                      <div style="font-size:11.5px;color:var(--muted-foreground);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ d.author }} · {{ d.dateLabel }} · {{ d.source }}</div>
+                      <div style="font-family:var(--font-mono);font-size:10.5px;color:var(--neutral-600);margin-top:3px">{{ d.ark }}</div>
+                    </div>
+                    <span style="{{ d.langStyle }}">{{ d.langLabel }}</span>
+                    <span style="{{ d.chipStyle }}">{{ d.typeLabel }}</span>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--neutral-600)" stroke-width="1.8" style="flex-shrink:0"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+                  </button>
+                </sc-for>
+                <sc-if value="{{ noDocs }}" hint-placeholder-val="{{ false }}">
+                  <div style="border:1px dashed var(--border);border-radius:var(--radius-lg);padding:36px;text-align:center;color:var(--muted-foreground);font-size:13px">Aucun document de l'aperçu ne correspond à ce filtre.</div>
+                </sc-if>
+              </div>
+            </div>
+          </section>
+
+          <!-- corpus doc detail panel -->
+          <sc-if value="{{ corpusDocOpen }}" hint-placeholder-val="{{ false }}">
+            <div style="position:absolute;top:0;right:0;bottom:0;width:380px;background:var(--card);border-left:var(--border-width) solid var(--border);box-shadow:-12px 0 32px -12px rgba(0,0,0,.5);display:flex;flex-direction:column;min-height:0;z-index:6;animation:bnf-up .2s ease">
+              <div style="display:flex;align-items:center;justify-content:space-between;padding:13px 16px;border-bottom:var(--border-width) solid var(--border);flex-shrink:0">
+                <span style="display:inline-flex;align-items:center;gap:7px;font-family:var(--font-mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted-foreground)">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 22h14a2 2 0 0 0 2-2V7l-5-5H6a2 2 0 0 0-2 2z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg>
+                  Notice · BnF
+                </span>
+                <button onClick="{{ onCorpusDocClose }}" style="width:24px;height:24px;display:flex;align-items:center;justify-content:center;border:none;background:transparent;color:var(--muted-foreground);cursor:pointer;border-radius:6px" style-hover="background:var(--secondary)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+              </div>
+              <div style="flex:1;overflow-y:auto;padding:18px 16px 24px">
+                <div style="display:flex;gap:14px;align-items:flex-start">
+                  <div style="{{ cdThumb }}"></div>
+                  <div style="flex:1;min-width:0">
+                    <span style="{{ cdChipStyle }}">{{ cdType }}</span>
+                    <h2 style="font-size:15px;font-weight:600;line-height:1.35;margin:8px 0 4px;letter-spacing:var(--tracking-tight)">{{ cdTitle }}</h2>
+                    <div style="font-size:11.5px;color:var(--muted-foreground)">{{ cdAuthor }}</div>
+                  </div>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:13px 12px;margin-top:18px">
+                  <sc-for list="{{ cdFields }}" as="fd" hint-placeholder-count="4">
+                    <div>
+                      <div style="font-size:9px;font-family:var(--font-mono);letter-spacing:.05em;text-transform:uppercase;color:var(--neutral-600)">{{ fd.k }}</div>
+                      <div style="font-size:12.5px;color:var(--neutral-100);margin-top:3px">{{ fd.v }}</div>
+                    </div>
+                  </sc-for>
+                </div>
+                <sc-if value="{{ cdHasExcerpt }}" hint-placeholder-val="{{ false }}">
+                  <div style="margin-top:18px">
+                    <div style="font-size:9px;font-family:var(--font-mono);letter-spacing:.05em;text-transform:uppercase;color:var(--neutral-600);margin-bottom:8px">Extrait océrisé</div>
+                    <div style="font-size:13px;line-height:1.7;color:var(--neutral-200);white-space:pre-line;border-left:2px solid var(--border);padding-left:14px">{{ cdExcerpt }}</div>
+                  </div>
+                </sc-if>
+                <div style="margin-top:18px;padding:11px 13px;border:1px solid var(--border);border-radius:var(--radius-md);background:color-mix(in srgb,var(--input) 22%,transparent)">
+                  <div style="font-size:9px;font-family:var(--font-mono);letter-spacing:.05em;text-transform:uppercase;color:var(--neutral-600);margin-bottom:4px">Identifiant ARK</div>
+                  <div style="font-family:var(--font-mono);font-size:11.5px;color:var(--brand-teal);word-break:break-all">{{ cdArk }}</div>
+                </div>
+                <div style="margin-top:16px;font-size:9px;font-family:var(--font-mono);letter-spacing:.05em;text-transform:uppercase;color:var(--neutral-600);margin-bottom:9px">Consulter sur la BnF</div>
+                <div style="display:flex;flex-direction:column;gap:8px">
+                  <a href="{{ cdIiifUrl }}" target="_blank" rel="noopener" style="display:flex;align-items:center;gap:11px;padding:11px 13px;border-radius:var(--radius-md);border:1px solid color-mix(in srgb,var(--brand-teal) 35%,var(--border));background:color-mix(in srgb,var(--brand-teal) 9%,transparent);text-decoration:none" style-hover="background:color-mix(in srgb,var(--brand-teal) 15%,transparent)">
+                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="var(--brand-teal)" stroke-width="1.8" style="flex-shrink:0"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+                    <span style="flex:1"><span style="display:block;font-size:12.5px;font-weight:600;color:var(--foreground)">Visionneuse IIIF</span><span style="display:block;font-size:10.5px;color:var(--muted-foreground)">Ouvrir dans le viewer BnF</span></span>
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--muted-foreground)" stroke-width="2" style="flex-shrink:0"><path d="M7 7h10v10M7 17 17 7"/></svg>
+                  </a>
+                  <a href="{{ cdGallicaUrl }}" target="_blank" rel="noopener" style="display:flex;align-items:center;gap:11px;padding:10px 13px;border-radius:var(--radius-md);border:1px solid var(--border);background:transparent;text-decoration:none" style-hover="border-color:var(--neutral-600)">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--neutral-300)" stroke-width="1.8" style="flex-shrink:0"><path d="M4 22h14a2 2 0 0 0 2-2V7l-5-5H6a2 2 0 0 0-2 2z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg>
+                    <span style="flex:1"><span style="display:block;font-size:12.5px;font-weight:600;color:var(--foreground)">Notice Gallica</span><span style="display:block;font-size:10.5px;color:var(--muted-foreground)">Fiche document et fac-similé</span></span>
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--muted-foreground)" stroke-width="2" style="flex-shrink:0"><path d="M7 7h10v10M7 17 17 7"/></svg>
+                  </a>
+                  <a href="{{ cdManifestUrl }}" target="_blank" rel="noopener" style="display:flex;align-items:center;gap:11px;padding:10px 13px;border-radius:var(--radius-md);border:1px solid var(--border);background:transparent;text-decoration:none" style-hover="border-color:var(--neutral-600)">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--neutral-300)" stroke-width="1.8" style="flex-shrink:0"><path d="M16 18 22 12 16 6M8 6 2 12 8 18"/></svg>
+                    <span style="flex:1"><span style="display:block;font-size:12.5px;font-weight:600;color:var(--foreground)">Manifeste IIIF</span><span style="display:block;font-size:10.5px;font-family:var(--font-mono);color:var(--muted-foreground)">manifest.json</span></span>
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--muted-foreground)" stroke-width="2" style="flex-shrink:0"><path d="M7 7h10v10M7 17 17 7"/></svg>
+                  </a>
+                </div>
+              </div>
+            </div>
+          </sc-if>
+        </div>
+      </sc-if>
+
+      <!-- ====== STEP 2 — INGEST ====== -->
+      <sc-if value="{{ isIngest }}" hint-placeholder-val="{{ false }}">
+        <div style="flex:1;overflow-y:auto;display:flex;justify-content:center;padding:40px 24px">
+          <div style="width:100%;max-width:680px">
+            <div style="font-family:var(--font-mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted-foreground)">Étape 2 · Ingestion</div>
+            <h1 style="font-size:26px;font-weight:600;letter-spacing:var(--tracking-tight);margin:6px 0 0">{{ ingestTitle }}</h1>
+            <p style="font-size:14px;color:var(--muted-foreground);line-height:1.6;margin:10px 0 0;max-width:54ch">{{ ingestIntro }}</p>
+
+            <div style="border:1px solid var(--border);background:var(--card);border-radius:var(--radius-lg);padding:8px 20px;margin-top:24px">
+              <sc-for list="{{ stages }}" as="g" hint-placeholder-count="4">
+                <div style="display:flex;gap:14px;padding:16px 0;border-bottom:1px solid var(--border)">
+                  <span style="{{ g.iconWrap }}">
+                    <sc-if value="{{ g.isDone }}" hint-placeholder-val="{{ false }}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6 9 17l-5-5"/></svg></sc-if>
+                    <sc-if value="{{ g.isActive }}" hint-placeholder-val="{{ false }}"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" style="animation:bnf-spin 1s linear infinite"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg></sc-if>
+                    <sc-if value="{{ g.isPending }}" hint-placeholder-val="{{ true }}"><span style="font-family:var(--font-mono);font-size:11px">{{ g.n }}</span></sc-if>
+                  </span>
+                  <div style="flex:1">
+                    <div style="display:flex;align-items:center;justify-content:space-between">
+                      <span style="font-size:13.5px;font-weight:600;color:var(--foreground)">{{ g.label }}</span>
+                      <span style="font-family:var(--font-mono);font-size:11px;color:var(--muted-foreground)">{{ g.status }}</span>
+                    </div>
+                    <div style="font-size:12px;color:var(--muted-foreground);margin-top:2px">{{ g.desc }}</div>
+                    <div style="height:5px;border-radius:3px;background:var(--secondary);overflow:hidden;margin-top:9px"><div style="{{ g.barStyle }}"></div></div>
+                  </div>
+                </div>
+              </sc-for>
+              <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 0 14px">
+                <span style="font-size:12px;color:var(--muted-foreground)">Cible : <span style="font-family:var(--font-mono);color:var(--neutral-200)">cluster-bnf-rag-01</span></span>
+                <span style="font-family:var(--font-mono);font-size:13px;font-weight:600;color:var(--brand-teal)">{{ overallPct }}%</span>
+              </div>
+            </div>
+
+            <sc-if value="{{ ingestIdle }}" hint-placeholder-val="{{ true }}">
+              <!-- eligibility explainer -->
+              <div style="margin-top:20px;border:1px solid var(--border);background:var(--card);border-radius:var(--radius-lg);padding:14px 16px">
+                <div style="font-size:12.5px;font-weight:600;margin-bottom:10px">Ce qui sera ingéré</div>
+                <div style="display:flex;flex-direction:column;gap:9px">
+                  <div style="display:flex;gap:10px;align-items:flex-start">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--info)" stroke-width="1.9" style="flex-shrink:0;margin-top:1px"><path d="M20 6 9 17l-5-5"/></svg>
+                    <span style="font-size:12.5px;color:var(--neutral-200);line-height:1.5"><b style="font-family:var(--font-mono);color:var(--foreground)">{{ ingestOcr }}</b> documents avec couche OCR — ingérés via leur texte.</span>
+                  </div>
+                  <div style="display:flex;gap:10px;align-items:flex-start">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--dataset-1)" stroke-width="1.9" style="flex-shrink:0;margin-top:1px"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+                    <span style="font-size:12.5px;color:var(--neutral-200);line-height:1.5"><b style="font-family:var(--font-mono);color:var(--foreground)">{{ ingestVision }}</b> images sans OCR (affiches, photographies…) — décrites par un modèle de vision (<span style="font-family:var(--font-mono)">Gemma</span>) puis ingérées.</span>
+                  </div>
+                  <sc-if value="{{ ingestHasExcluded }}" hint-placeholder-val="{{ false }}">
+                    <div style="display:flex;gap:10px;align-items:flex-start;padding-top:9px;border-top:1px solid var(--border)">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--warning)" stroke-width="1.9" style="flex-shrink:0;margin-top:1px"><path d="M12 9v4M12 17h.01"/><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/></svg>
+                      <span style="font-size:12.5px;color:var(--neutral-200);line-height:1.5"><b style="font-family:var(--font-mono);color:var(--foreground)">{{ ingestExcluded }}</b> documents ne seront pas ingérés : <b style="font-family:var(--font-mono);color:var(--foreground)">{{ ingestSansTexte }}</b> documents textuels sans OCR (les livres et manuscrits non océrisés ne sont pas océrisés par ce pipeline) et <b style="font-family:var(--font-mono);color:var(--foreground)">{{ ingestNonNumerise }}</b> non numérisés.</span>
+                    </div>
+                  </sc-if>
+                </div>
+              </div>
+              <div style="display:flex;align-items:center;gap:14px;margin-top:18px">
+                <button onClick="{{ onStartIngest }}" style="display:inline-flex;align-items:center;gap:9px;height:42px;padding:0 20px;border-radius:var(--radius-md);border:none;background:var(--primary);color:var(--primary-foreground);font-size:14px;font-weight:600;cursor:pointer;font-family:var(--font-sans)">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 3 14 9-14 9V3z"/></svg>
+                  Lancer l'ingestion
+                </button>
+                <span style="font-size:12.5px;color:var(--muted-foreground)">{{ ingestStats }}</span>
+              </div>
+            </sc-if>
+            <sc-if value="{{ ingesting }}" hint-placeholder-val="{{ false }}">
+              <div style="display:flex;align-items:center;gap:11px;margin-top:22px;padding:13px 16px;border-radius:var(--radius-md);border:1px solid color-mix(in srgb,var(--warning) 28%,var(--border));background:color-mix(in srgb,var(--warning) 8%,transparent)">
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="var(--warning)" stroke-width="1.8" style="flex-shrink:0"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+                <span style="font-size:12.5px;color:var(--neutral-200);line-height:1.5">Le traitement se poursuit côté serveur — vous pouvez fermer cette fenêtre et revenir plus tard. <span style="color:var(--muted-foreground)">Durée estimée ≈ 3 h 20.</span></span>
+              </div>
+            </sc-if>
+            <sc-if value="{{ ingestDone }}" hint-placeholder-val="{{ false }}">
+              <div style="margin-top:22px;padding:18px 20px;border-radius:var(--radius-lg);border:1px solid color-mix(in srgb,var(--info) 35%,var(--border));background:color-mix(in srgb,var(--info) 8%,transparent)">
+                <div style="display:flex;align-items:center;gap:10px">
+                  <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="var(--info)" stroke-width="2"><path d="M21.801 10A10 10 0 1 1 17 3.335"/><path d="m9 11 3 3L22 4"/></svg>
+                  <span style="font-size:15px;font-weight:600">Corpus ingéré et indexé</span>
+                </div>
+                <p style="font-size:13px;color:var(--muted-foreground);line-height:1.6;margin:9px 0 16px">{{ doneStats }}</p>
+                <button onClick="{{ onGoResearch }}" style="display:inline-flex;align-items:center;gap:9px;height:40px;padding:0 18px;border-radius:var(--radius-md);border:none;background:var(--primary);color:var(--primary-foreground);font-size:13px;font-weight:600;cursor:pointer;font-family:var(--font-sans)">
+                  Ouvrir l'espace de recherche
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+                </button>
+              </div>
+            </sc-if>
+          </div>
+        </div>
+      </sc-if>
+
+      <!-- ====== STEP 3 — RESEARCH ====== -->
+      <sc-if value="{{ isResearch }}" hint-placeholder-val="{{ false }}">
+        <div style="flex:1;display:flex;flex-direction:column;min-width:0;min-height:0">
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 20px;border-bottom:var(--border-width) solid var(--border);flex-shrink:0">
+            <div style="display:flex;align-items:center;gap:10px">
+              <span style="font-size:13.5px;font-weight:600">Espace de recherche</span>
+              <button onClick="{{ onOpenHelpResearch }}" title="Comment ça marche ?" style="width:22px;height:22px;flex-shrink:0;display:flex;align-items:center;justify-content:center;border-radius:50%;border:1px solid var(--border);background:var(--card);color:var(--muted-foreground);cursor:pointer" style-hover="border-color:color-mix(in srgb,var(--brand-teal) 45%,var(--border));color:var(--brand-teal)">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg>
+              </button>
+              <span style="font-size:11px;font-family:var(--font-mono);color:var(--muted-foreground)">{{ ragLabel }}</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="font-size:10.5px;font-family:var(--font-mono);letter-spacing:.06em;color:var(--muted-foreground);text-transform:uppercase">Disposition</span>
+              <div style="display:flex;border:1px solid var(--border);border-radius:var(--radius-md);overflow:hidden">
+                <button onClick="{{ onArtifactLayout }}" style="{{ artBtnStyle }}">Atelier</button>
+                <button onClick="{{ onNotebookLayout }}" style="{{ noteBtnStyle }}">Carnet</button>
+              </div>
+            </div>
+          </div>
+
+          <div style="flex:1;display:flex;min-height:0;position:relative">
+
+            <!-- reader -->
+            <section style="{{ readerStyle }}">
+              <!-- ATELIER: tab bar -->
+              <sc-if value="{{ showTabs }}" hint-placeholder-val="{{ true }}">
+                <div style="border-bottom:var(--border-width) solid var(--border);padding:0 8px 0 14px;display:flex;align-items:center;gap:2px;overflow-x:auto;flex-shrink:0;height:42px">
+                  <sc-for list="{{ tabs }}" as="tb" hint-placeholder-count="2">
+                    <span style="{{ tb.wrapStyle }}">
+                      <button onClick="{{ tb.onClick }}" style="{{ tb.style }}">
+                        <span dangerouslySetInnerHTML="{{ tb.iconHtml }}" style="display:inline-flex;align-items:center;flex-shrink:0"></span>
+                        {{ tb.title }}
+                      </button>
+                      <button onClick="{{ tb.onClose }}" title="Fermer" style="width:17px;height:17px;display:flex;align-items:center;justify-content:center;border:none;background:transparent;color:var(--muted-foreground);cursor:pointer;border-radius:4px;flex-shrink:0"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+                    </span>
+                  </sc-for>
+                </div>
+              </sc-if>
+
+              <!-- CARNET: compiled-journal header -->
+              <sc-if value="{{ isNotebook }}" hint-placeholder-val="{{ false }}">
+                <div style="border-bottom:var(--border-width) solid var(--border);padding:0 22px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;height:42px">
+                  <span style="display:inline-flex;align-items:center;gap:8px;font-family:var(--font-mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted-foreground)">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+                    Carnet de recherche · {{ journalCount }}
+                  </span>
+                  <button onClick="{{ onExportJournal }}" style="display:inline-flex;align-items:center;gap:7px;height:28px;padding:0 11px;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--card);color:var(--neutral-200);font-size:11.5px;font-weight:500;cursor:pointer;font-family:var(--font-sans)" style-hover="border-color:color-mix(in srgb,var(--brand-teal) 45%,var(--border))">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>
+                    Exporter en Markdown
+                  </button>
+                </div>
+              </sc-if>
+
+              <div style="flex:1;overflow-y:auto;min-height:0">
+                <!-- ATELIER: single active note -->
+                <sc-if value="{{ activeIsNote }}" hint-placeholder-val="{{ true }}">
+                  <div style="padding:30px 40px 60px">
+                    <div style="max-width:680px;margin:0 auto">
+                      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+                        <div style="font-family:var(--font-mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--brand-teal);display:flex;align-items:center;gap:7px">
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+                          Artefact de recherche · rédigé par l'agent
+                        </div>
+                        <span style="font-size:10.5px;font-family:var(--font-mono);color:var(--neutral-600)">{{ activeNoteCites }}</span>
+                      </div>
+                      <h1 style="font-size:25px;font-weight:600;letter-spacing:var(--tracking-tight);margin:10px 0 4px">{{ activeNoteTitle }}</h1>
+                      <div style="font-size:11.5px;color:var(--muted-foreground);font-family:var(--font-mono);margin-bottom:22px">{{ activeNoteMeta }}</div>
+                      <div onClick="{{ onReaderClick }}" dangerouslySetInnerHTML="{{ activeNoteHtml }}"></div>
+                    </div>
+                  </div>
+                </sc-if>
+
+                <!-- CARNET: all notes stitched into one document -->
+                <sc-if value="{{ isNotebook }}" hint-placeholder-val="{{ false }}">
+                  <div onClick="{{ onReaderClick }}" style="padding:34px 40px 80px">
+                    <div style="max-width:680px;margin:0 auto">
+                      <div style="margin-bottom:30px;padding-bottom:24px;border-bottom:1px solid var(--border)">
+                        <div style="font-family:var(--font-mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--brand-teal)">Projet de recherche</div>
+                        <h1 style="font-size:27px;font-weight:600;letter-spacing:var(--tracking-tight);margin:9px 0 14px">{{ projectName }}</h1>
+                        <div style="display:flex;flex-direction:column;gap:5px">
+                          <sc-for list="{{ journalToc }}" as="t" hint-placeholder-count="3">
+                            <div style="display:flex;align-items:baseline;gap:10px;font-size:13px;color:var(--neutral-300)">
+                              <span style="font-family:var(--font-mono);font-size:11px;color:var(--neutral-600);flex-shrink:0;width:22px">{{ t.num }}</span>
+                              <span style="flex:1;min-width:0">{{ t.title }}</span>
+                              <span style="flex-shrink:0;font-family:var(--font-mono);font-size:10px;color:var(--neutral-600)">{{ t.cites }}</span>
+                            </div>
+                          </sc-for>
+                        </div>
+                      </div>
+                      <sc-for list="{{ journalNotes }}" as="n" hint-placeholder-count="3">
+                        <div style="{{ n.wrapStyle }}">
+                          <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:4px">
+                            <span style="font-family:var(--font-mono);font-size:12px;color:var(--neutral-600)">{{ n.num }}</span>
+                            <span style="font-size:11px;font-family:var(--font-mono);color:var(--muted-foreground)">{{ n.meta }}</span>
+                          </div>
+                          <div dangerouslySetInnerHTML="{{ n.html }}"></div>
+                        </div>
+                      </sc-for>
+                    </div>
+                  </div>
+                </sc-if>
+
+                <sc-if value="{{ noActiveTab }}" hint-placeholder-val="{{ false }}">
+                  <div style="height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:40px;text-align:center;color:var(--muted-foreground);font-size:13px;gap:6px">
+                    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="var(--neutral-600)" stroke-width="1.6"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+                    Ouvrez un artefact depuis la liste, ou posez une question pour en générer un.
+                  </div>
+                </sc-if>
+              </div>
+            </section>
+
+            <!-- research chat -->
+            <sc-if value="{{ showRChat }}" hint-placeholder-val="{{ true }}">
+            <section style="{{ rChatStyle }}">
+              <div style="padding:13px 16px;border-bottom:var(--border-width) solid var(--border);flex-shrink:0">
+                <div style="font-size:13px;font-weight:600">Assistant de recherche</div>
+                <div style="font-size:11px;color:var(--muted-foreground);margin-top:1px">Interroge le corpus · cite ses sources</div>
+              </div>
+              <div style="flex:1;overflow-y:auto;padding:15px;display:flex;flex-direction:column;gap:12px;min-height:0">
+                <sc-for list="{{ rMessages }}" as="m" hint-placeholder-count="2">
+                  <sc-if value="{{ m.isUser }}" hint-placeholder-val="{{ true }}">
+                    <div style="align-self:flex-end;max-width:90%;background:var(--secondary);padding:9px 13px;border-radius:14px 14px 4px 14px;font-size:12.5px;line-height:1.5;animation:bnf-up .25s ease">{{ m.text }}</div>
+                  </sc-if>
+                  <sc-if value="{{ m.isTool }}" hint-placeholder-val="{{ false }}">
+                    <div style="border:1px solid var(--border);background:var(--card);border-radius:var(--radius-md);padding:8px 11px;font-family:var(--font-mono);font-size:11px;animation:bnf-up .25s ease">
+                      <div style="display:flex;align-items:center;gap:6px;color:var(--brand-teal)"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></svg><span style="font-weight:600">rag.query</span></div>
+                      <div style="color:var(--neutral-300);margin-top:4px">« {{ m.query }} »</div>
+                      <div style="color:var(--muted-foreground);margin-top:3px">{{ m.found }} passages pertinents</div>
+                    </div>
+                  </sc-if>
+                  <sc-if value="{{ m.isAgent }}" hint-placeholder-val="{{ true }}">
+                    <div style="display:flex;gap:9px;animation:bnf-up .25s ease">
+                      <span style="width:24px;height:24px;flex-shrink:0;border-radius:50%;background:color-mix(in srgb,var(--primary) 22%,var(--card));border:1px solid color-mix(in srgb,var(--brand-teal) 30%,transparent);display:flex;align-items:center;justify-content:center"><img src="assets/glyph-w.svg" style="height:11px"></span>
+                      <div style="flex:1">
+                        <div style="font-size:12.5px;line-height:1.55;color:var(--neutral-100)">{{ m.text }}</div>
+                        <sc-if value="{{ m.hasCites }}" hint-placeholder-val="{{ false }}">
+                          <div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:8px">
+                            <sc-for list="{{ m.cites }}" as="c" hint-placeholder-count="2">
+                              <button onClick="{{ c.onClick }}" style="display:inline-flex;align-items:center;gap:5px;font-size:10.5px;border:1px solid var(--border);background:var(--card);border-radius:var(--radius-full);padding:2px 8px;color:var(--neutral-300);cursor:pointer" style-hover="border-color:color-mix(in srgb,var(--brand-teal) 45%,var(--border))"><span style="width:5px;height:5px;border-radius:50%;background:var(--brand-teal)"></span>{{ c.label }}</button>
+                            </sc-for>
+                          </div>
+                        </sc-if>
+                      </div>
+                    </div>
+                  </sc-if>
+                  <sc-if value="{{ m.isEvent }}" hint-placeholder-val="{{ false }}">
+                    <button onClick="{{ m.onClick }}" style="display:inline-flex;align-self:flex-start;align-items:center;gap:7px;font-size:11.5px;font-family:var(--font-mono);color:var(--brand-teal);border:1px solid color-mix(in srgb,var(--brand-teal) 30%,transparent);background:color-mix(in srgb,var(--brand-teal) 9%,transparent);border-radius:var(--radius-md);padding:6px 10px;cursor:pointer">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>{{ m.eventText }}
+                    </button>
+                  </sc-if>
+                </sc-for>
+                <sc-if value="{{ rBusy }}" hint-placeholder-val="{{ false }}">
+                  <div style="display:flex;gap:8px;align-items:center;margin-left:33px">
+                    <span style="display:inline-flex;gap:4px">
+                      <span style="width:5px;height:5px;border-radius:50%;background:var(--brand-teal);animation:bnf-blink 1.2s infinite"></span>
+                      <span style="width:5px;height:5px;border-radius:50%;background:var(--brand-teal);animation:bnf-blink 1.2s infinite .2s"></span>
+                      <span style="width:5px;height:5px;border-radius:50%;background:var(--brand-teal);animation:bnf-blink 1.2s infinite .4s"></span>
+                    </span>
+                    <span style="font-size:11px;color:var(--muted-foreground);font-family:var(--font-mono)">{{ rBusyLabel }}</span>
+                  </div>
+                </sc-if>
+              </div>
+              <div style="padding:11px 13px 13px;border-top:var(--border-width) solid var(--border);flex-shrink:0">
+                <sc-if value="{{ rHasSuggestions }}" hint-placeholder-val="{{ true }}">
+                  <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:9px">
+                    <sc-for list="{{ rSuggestions }}" as="sg" hint-placeholder-count="1">
+                      <button onClick="{{ sg.onClick }}" style="text-align:left;border:1px solid var(--border);background:transparent;color:var(--neutral-200);font-size:11.5px;line-height:1.4;padding:7px 10px;border-radius:var(--radius-md);cursor:pointer;font-family:var(--font-sans)" style-hover="border-color:color-mix(in srgb,var(--brand-teal) 50%,var(--border));background:color-mix(in srgb,var(--brand-teal) 7%,transparent)"><span style="color:var(--brand-teal);font-family:var(--font-mono);font-size:10px;margin-right:5px">↳</span>{{ sg.text }}</button>
+                    </sc-for>
+                  </div>
+                </sc-if>
+                <div style="display:flex;align-items:center;gap:8px;border:1px solid var(--input);border-radius:var(--radius-lg);background:var(--card);padding:6px 6px 6px 12px">
+                  <input value="{{ rInput }}" onChange="{{ onRInput }}" onKeyDown="{{ onRKey }}" placeholder="Poser une question au corpus…" style="flex:1;border:none;background:transparent;outline:none;color:var(--foreground);font-size:12.5px;padding:4px 0;font-family:var(--font-sans)">
+                  <button onClick="{{ onRSend }}" style="{{ rSendStyle }}"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m5 12 7-7 7 7M12 5v14"/></svg></button>
+                </div>
+              </div>
+            </section>
+            </sc-if>
+
+            <!-- citation side panel (ARK reference → BnF / IIIF) -->
+            <sc-if value="{{ citeOpen }}" hint-placeholder-val="{{ false }}">
+              <div style="position:absolute;top:0;right:0;bottom:0;width:368px;background:var(--card);border-left:var(--border-width) solid var(--border);box-shadow:-12px 0 32px -12px rgba(0,0,0,.5);display:flex;flex-direction:column;min-height:0;z-index:6;animation:bnf-up .2s ease">
+                <div style="display:flex;align-items:center;justify-content:space-between;padding:13px 16px;border-bottom:var(--border-width) solid var(--border);flex-shrink:0">
+                  <span style="display:inline-flex;align-items:center;gap:7px;font-family:var(--font-mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--brand-teal)">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+                    Référence · source citée
+                  </span>
+                  <button onClick="{{ onCiteClose }}" title="Fermer" style="width:24px;height:24px;display:flex;align-items:center;justify-content:center;border:none;background:transparent;color:var(--muted-foreground);cursor:pointer;border-radius:6px" style-hover="background:var(--secondary)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+                </div>
+
+                <div style="flex:1;overflow-y:auto;padding:18px 16px 22px">
+                  <div style="display:flex;gap:14px;align-items:flex-start">
+                    <div style="{{ citeThumb }}"></div>
+                    <div style="flex:1;min-width:0">
+                      <span style="{{ citeChipStyle }}">{{ citeType }}</span>
+                      <h2 style="font-size:16px;font-weight:600;line-height:1.3;margin:8px 0 4px;letter-spacing:var(--tracking-tight)">{{ citeTitle }}</h2>
+                      <div style="font-size:11.5px;color:var(--muted-foreground)">{{ citeAuthor }}</div>
+                    </div>
+                  </div>
+
+                  <div style="display:grid;grid-template-columns:1fr 1fr;gap:13px 12px;margin-top:18px">
+                    <sc-for list="{{ citeFields }}" as="fd" hint-placeholder-count="4">
+                      <div>
+                        <div style="font-size:9px;font-family:var(--font-mono);letter-spacing:.05em;text-transform:uppercase;color:var(--neutral-600)">{{ fd.k }}</div>
+                        <div style="font-size:12.5px;color:var(--neutral-100);margin-top:3px">{{ fd.v }}</div>
+                      </div>
+                    </sc-for>
+                  </div>
+
+                  <div style="margin-top:18px;padding:11px 13px;border:1px solid var(--border);border-radius:var(--radius-md);background:color-mix(in srgb,var(--input) 22%,transparent)">
+                    <div style="font-size:9px;font-family:var(--font-mono);letter-spacing:.05em;text-transform:uppercase;color:var(--neutral-600);margin-bottom:4px">Identifiant ARK</div>
+                    <div style="font-family:var(--font-mono);font-size:11.5px;color:var(--brand-teal);word-break:break-all">{{ citeArk }}</div>
+                  </div>
+
+                  <div style="margin-top:16px;font-size:9px;font-family:var(--font-mono);letter-spacing:.05em;text-transform:uppercase;color:var(--neutral-600);margin-bottom:9px">Consulter sur la BnF</div>
+                  <div style="display:flex;flex-direction:column;gap:8px">
+                    <a href="{{ citeIiifUrl }}" target="_blank" rel="noopener" style="display:flex;align-items:center;gap:11px;padding:11px 13px;border-radius:var(--radius-md);border:1px solid color-mix(in srgb,var(--brand-teal) 35%,var(--border));background:color-mix(in srgb,var(--brand-teal) 9%,transparent);text-decoration:none" style-hover="background:color-mix(in srgb,var(--brand-teal) 15%,transparent)">
+                      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="var(--brand-teal)" stroke-width="1.8" style="flex-shrink:0"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+                      <span style="flex:1">
+                        <span style="display:block;font-size:12.5px;font-weight:600;color:var(--foreground)">Visionneuse IIIF — vue {{ citeVue }}</span>
+                        <span style="display:block;font-size:10.5px;color:var(--muted-foreground)">Ouvrir la page exacte dans le viewer</span>
+                      </span>
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--muted-foreground)" stroke-width="2" style="flex-shrink:0"><path d="M7 7h10v10M7 17 17 7"/></svg>
+                    </a>
+                    <a href="{{ citeGallicaUrl }}" target="_blank" rel="noopener" style="display:flex;align-items:center;gap:11px;padding:10px 13px;border-radius:var(--radius-md);border:1px solid var(--border);background:transparent;text-decoration:none" style-hover="border-color:var(--neutral-600)">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--neutral-300)" stroke-width="1.8" style="flex-shrink:0"><path d="M4 22h14a2 2 0 0 0 2-2V7l-5-5H6a2 2 0 0 0-2 2z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg>
+                      <span style="flex:1">
+                        <span style="display:block;font-size:12.5px;font-weight:600;color:var(--foreground)">Notice Gallica</span>
+                        <span style="display:block;font-size:10.5px;color:var(--muted-foreground)">Fiche document et fac-similé</span>
+                      </span>
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--muted-foreground)" stroke-width="2" style="flex-shrink:0"><path d="M7 7h10v10M7 17 17 7"/></svg>
+                    </a>
+                    <a href="{{ citeManifestUrl }}" target="_blank" rel="noopener" style="display:flex;align-items:center;gap:11px;padding:10px 13px;border-radius:var(--radius-md);border:1px solid var(--border);background:transparent;text-decoration:none" style-hover="border-color:var(--neutral-600)">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--neutral-300)" stroke-width="1.8" style="flex-shrink:0"><path d="M16 18 22 12 16 6M8 6 2 12 8 18"/></svg>
+                      <span style="flex:1">
+                        <span style="display:block;font-size:12.5px;font-weight:600;color:var(--foreground)">Manifeste IIIF</span>
+                        <span style="display:block;font-size:10.5px;font-family:var(--font-mono);color:var(--muted-foreground)">manifest.json</span>
+                      </span>
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--muted-foreground)" stroke-width="2" style="flex-shrink:0"><path d="M7 7h10v10M7 17 17 7"/></svg>
+                    </a>
+                  </div>
+                </div>
+              </div>
+            </sc-if>
+          </div>
+        </div>
+      </sc-if>
+
+    </main>
+  </div>
+
+  <!-- ============ ONBOARDING INTRO ============ -->
+  <sc-if value="{{ introOpen }}" hint-placeholder-val="{{ false }}">
+    <div onClick="{{ onCloseIntro }}" style="position:fixed;inset:0;z-index:50;background:rgba(8,10,12,.66);backdrop-filter:blur(3px);display:flex;align-items:center;justify-content:center;padding:32px;animation:bnf-up .18s ease">
+      <div onClick="{{ stop }}" style="width:100%;max-width:540px;background:var(--card);border:var(--border-width) solid var(--border);border-radius:var(--radius-xl);box-shadow:0 24px 64px -16px rgba(0,0,0,.6);overflow:hidden">
+        <div style="padding:22px 24px 18px;border-bottom:var(--border-width) solid var(--border);background:linear-gradient(180deg,color-mix(in srgb,var(--brand-teal) 9%,var(--card)),var(--card))">
+          <div style="display:flex;align-items:center;gap:9px;margin-bottom:9px">
+            <span style="display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:8px;background:color-mix(in srgb,var(--primary) 22%,var(--card));border:1px solid color-mix(in srgb,var(--brand-teal) 35%,transparent)"><img src="assets/glyph-w.svg" style="height:14px"></span>
+            <span style="font-family:var(--font-mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--brand-teal)">{{ intro.tag }}</span>
+          </div>
+          <h2 style="font-size:21px;font-weight:600;letter-spacing:var(--tracking-tight);margin:0">{{ intro.title }}</h2>
+          <p style="font-size:13.5px;color:var(--muted-foreground);line-height:1.55;margin:7px 0 0">{{ intro.lead }}</p>
+        </div>
+        <div style="padding:18px 24px 8px;display:flex;flex-direction:column;gap:16px">
+          <sc-for list="{{ intro.points }}" as="p" hint-placeholder-count="3">
+            <div style="display:flex;gap:14px;align-items:flex-start">
+              <span dangerouslySetInnerHTML="{{ p.iconHtml }}" style="flex-shrink:0;width:34px;height:34px;border-radius:9px;display:flex;align-items:center;justify-content:center;background:color-mix(in srgb,var(--brand-teal) 11%,transparent);border:1px solid color-mix(in srgb,var(--brand-teal) 26%,var(--border));color:var(--brand-teal)"></span>
+              <div style="flex:1;min-width:0;padding-top:1px">
+                <div style="font-size:13.5px;font-weight:600;color:var(--foreground)">{{ p.title }}</div>
+                <div style="font-size:12.5px;color:var(--muted-foreground);line-height:1.5;margin-top:2px">{{ p.text }}</div>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+        <div style="display:flex;align-items:center;justify-content:flex-end;gap:12px;padding:16px 24px 20px">
+          <button onClick="{{ onCloseIntro }}" style="display:inline-flex;align-items:center;gap:8px;height:40px;padding:0 20px;border-radius:var(--radius-md);border:none;background:var(--primary);color:var(--primary-foreground);font-size:13.5px;font-weight:600;cursor:pointer;font-family:var(--font-sans)">
+            J'ai compris
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M20 6 9 17l-5-5"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  <!-- ============ TOAST ============ -->
+  <sc-if value="{{ toastMsg }}" hint-placeholder-val="{{ false }}">
+    <div style="position:fixed;bottom:28px;left:50%;transform:translateX(-50%);z-index:60;background:var(--foreground);color:var(--background);font-size:12.5px;font-weight:500;padding:10px 18px;border-radius:var(--radius-full);box-shadow:0 4px 24px rgba(0,0,0,.35);white-space:nowrap;animation:bnf-up .2s ease;pointer-events:none">{{ toastMsg }}</div>
+  </sc-if>
+
+  <!-- ============ MEMORY DIALOG (Claude-Code-style memory file) ============ -->
+  <sc-if value="{{ memOpen }}" hint-placeholder-val="{{ false }}">
+    <div onClick="{{ onCloseMemory }}" style="position:fixed;inset:0;z-index:40;background:rgba(8,10,12,.62);backdrop-filter:blur(3px);display:flex;align-items:center;justify-content:center;padding:32px;animation:bnf-up .18s ease">
+      <div onClick="{{ stop }}" style="width:100%;max-width:660px;max-height:86vh;display:flex;flex-direction:column;background:var(--card);border:var(--border-width) solid var(--border);border-radius:var(--radius-xl);box-shadow:0 24px 64px -16px rgba(0,0,0,.6);overflow:hidden">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:18px 20px 16px;border-bottom:var(--border-width) solid var(--border)">
+          <div style="min-width:0">
+            <div style="display:flex;align-items:center;gap:9px">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="var(--brand-teal)" stroke-width="1.8"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/></svg>
+              <span style="font-size:16px;font-weight:600;letter-spacing:var(--tracking-tight)">{{ memoryTitle }}</span>
+              <span style="display:inline-flex;align-items:center;gap:4px;font-size:9px;font-family:var(--font-mono);letter-spacing:.03em;text-transform:uppercase;color:var(--brand-teal);border:1px solid color-mix(in srgb,var(--brand-teal) 30%,transparent);border-radius:var(--radius-full);padding:1px 7px">
+                <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>persistante
+              </span>
+            </div>
+            <div style="font-size:12px;color:var(--muted-foreground);line-height:1.5;margin-top:7px;max-width:62ch">Ce que l'agent retient de ce projet, conservé d'une session à l'autre et relu au début de chaque conversation. {{ memoryCountLabel }}.</div>
+          </div>
+          <button onClick="{{ onCloseMemory }}" title="Fermer" style="width:30px;height:30px;flex-shrink:0;display:flex;align-items:center;justify-content:center;border:1px solid var(--border);background:var(--background);color:var(--muted-foreground);cursor:pointer;border-radius:var(--radius-md)" style-hover="color:var(--foreground);border-color:var(--neutral-600)"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+        </div>
+
+        <div style="flex:1;overflow-y:auto;padding:6px 20px 18px;min-height:0">
+          <sc-for list="{{ memSections }}" as="sec" hint-placeholder-count="4">
+            <div style="margin-top:18px">
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:9px">
+                <span style="font-family:var(--font-mono);font-size:11px;color:var(--brand-teal)">##</span>
+                <span style="font-size:12px;font-weight:600;font-family:var(--font-mono);letter-spacing:.03em;color:var(--neutral-100)">{{ sec.title }}</span>
+                <span style="flex:1;height:1px;background:var(--border)"></span>
+              </div>
+              <div style="display:flex;flex-direction:column;gap:3px">
+                <sc-for list="{{ sec.items }}" as="it" hint-placeholder-count="3">
+                  <div style="display:flex;align-items:flex-start;gap:10px;padding:7px 8px;border-radius:var(--radius-md);border:1px solid transparent" style-hover="background:color-mix(in srgb,var(--brand-teal) 6%,transparent);border-color:color-mix(in srgb,var(--brand-teal) 16%,var(--border))">
+                    <span style="color:var(--brand-teal);flex-shrink:0;font-family:var(--font-mono);font-size:13px;line-height:1.5">–</span>
+                    <span style="flex:1;min-width:0;font-size:13px;line-height:1.5;color:var(--neutral-200)">{{ it.text }}</span>
+                    <span style="flex-shrink:0;font-size:9.5px;font-family:var(--font-mono);letter-spacing:.02em;text-transform:uppercase;color:var(--neutral-600);border:1px solid var(--border);border-radius:var(--radius-full);padding:1px 8px;margin-top:1px">{{ it.origin }}</span>
+                    <button onClick="{{ it.onRemove }}" title="Oublier ce fait" style="width:20px;height:20px;flex-shrink:0;display:flex;align-items:center;justify-content:center;border:none;background:transparent;color:var(--neutral-600);cursor:pointer;border-radius:5px" style-hover="color:var(--warning);background:color-mix(in srgb,var(--warning) 10%,transparent)"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 20px;border-top:var(--border-width) solid var(--border);background:color-mix(in srgb,var(--input) 18%,transparent)">
+          <span style="display:inline-flex;align-items:center;gap:7px;font-size:11px;color:var(--muted-foreground)">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--brand-teal)" stroke-width="1.8"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2M20 14h2M15 13v2M9 13v2"/></svg>
+            Mise à jour automatique par l'agent · format mémoire persistante
+          </span>
+          <button onClick="{{ onCloseMemory }}" style="height:34px;padding:0 16px;border-radius:var(--radius-md);border:none;background:var(--primary);color:var(--primary-foreground);font-size:12.5px;font-weight:600;cursor:pointer;font-family:var(--font-sans)">Fermer</button>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:&quot;100%&quot;,&quot;height&quot;:&quot;100%&quot;},&quot;projectName&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;Exposition Universelle 1889&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;showMemory&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;}}">
+class Component extends DCLogic {
+  TYPES = {
+    press:      { label: 'Presse',         color: 'var(--dataset-3)' },
+    image:      { label: 'Images',         color: 'var(--dataset-1)' },
+    estampe:    { label: 'Estampes',       color: 'var(--dataset-6)' },
+    book:       { label: 'Monographies',   color: 'var(--dataset-2)' },
+    map:        { label: 'Cartes & plans', color: 'var(--dataset-4)' },
+    manuscript: { label: 'Manuscrits',     color: 'var(--dataset-7)' },
+    enlum:      { label: 'Enluminures',    color: 'var(--dataset-1)' },
+    charte:     { label: 'Chartes',        color: 'var(--dataset-4)' },
+  };
+  SOURCES = { gallica: 'Gallica', retronews: 'RetroNews', databnf: 'Data BnF', arsenal: 'BnF Arsenal', archives37: 'Arch. dép. 37' };
+
+  // Ingestion eligibility model:
+  // - text types with an OCR layer  → ingested via OCR text
+  // - image-like types (single images: poster, photo, map, illumination) without OCR
+  //     → sent to a vision model (Gemma) for description, then ingested
+  // - text types WITHOUT OCR (books, manuscripts…) → NOT ingested (no OCR pass in this pipeline)
+  // - non-digitized (non numérisé) → NOT ingested (no scan at all)
+  IMAGE_TYPES = ['image', 'estampe', 'map', 'enlum'];
+  OCR_RATIO = { press: 0.92, book: 0.84, charte: 0.05, manuscript: 0.04, image: 0, estampe: 0, map: 0, enlum: 0 };
+  isImageType(t) { return this.IMAGE_TYPES.indexOf(t) !== -1; }
+
+  // deterministic per-sample-doc flags (so the detail panel / filters are truthful
+  // without hand-authoring flags on every record)
+  docFlags(d) {
+    const h = Array.prototype.reduce.call(d.ark, (a, c) => a + c.charCodeAt(0), 0);
+    const digitized = (h % 15) !== 0;            // ~7% not digitized
+    let ocr = false;
+    if (digitized && !this.isImageType(d.type)) {
+      ocr = (h % 100) < Math.round((this.OCR_RATIO[d.type] || 0) * 100);
+    }
+    return { digitized, ocr };
+  }
+  // classify a doc for the numérisation facet + ingestion
+  docStatus(d) {
+    const f = this.docFlags(d);
+    if (!f.digitized) return 'non_numerise';
+    if (f.ocr) return 'ocr';
+    if (this.isImageType(d.type)) return 'vision';
+    return 'sans_texte';
+  }
+  // project-level breakdown from the (faked-to-thousands) type distribution
+  numerisation() {
+    const dist = this.state.dist;
+    const meta = this.PROJECTS_META[this.state.activeProject] || this.PROJECTS_META.p1;
+    const digiRatio = meta.digiRatio != null ? meta.digiRatio : 0.93;
+    let numerise = 0, ocr = 0, vision = 0, sansTexte = 0;
+    Object.keys(dist).forEach((k) => {
+      const c = dist[k] || 0; if (!c) return;
+      const dgi = Math.round(c * digiRatio);
+      numerise += dgi;
+      const o = Math.round(dgi * (this.OCR_RATIO[k] || 0));
+      ocr += o;
+      const rest = dgi - o;
+      if (this.isImageType(k)) vision += rest; else sansTexte += rest;
+    });
+    const total = this.total();
+    const nonNumerise = total - numerise;
+    return { total, numerise, nonNumerise, ocr, vision, sansTexte,
+             ingestible: ocr + vision, excluded: sansTexte + nonNumerise };
+  }
+
+  PROJECTS_META = {
+    p1: {
+      name: 'Exposition Universelle 1889', sub: 'Corpus · presse 1889',
+      periodLabel: '1887–91', periodSub: 'pic en 1889',
+      digiRatio: 0.94,
+      useHasEnglish: true,
+      langs: [{ k: 'fr', label: 'Français', ratio: 0.955 }, { k: 'en', label: 'Anglais', ratio: 0.045 }],
+      srcRatio: { gallica: 0.82, retronews: 0.13, databnf: 0.05 },
+      histBins: [
+        { label: '1887', lo: 1887, hi: 1887, ratio: 0.05 },
+        { label: '1888', lo: 1888, hi: 1888, ratio: 0.11 },
+        { label: '1889', lo: 1889, hi: 1889, ratio: 0.66 },
+        { label: '1890', lo: 1890, hi: 1890, ratio: 0.12 },
+        { label: '1891', lo: 1891, hi: 1891, ratio: 0.06 },
+      ],
+    },
+    p2: {
+      name: 'Manuscrits médiévaux — Loire', sub: 'Corpus · manuscrits VIIIe–XIIIe',
+      periodLabel: 'IXe–XIIIe', periodSub: 'apogée carolingien',
+      digiRatio: 0.9,
+      useHasEnglish: false,
+      langs: [{ k: 'la', label: 'Latin', ratio: 0.88 }, { k: 'fr', label: 'Ancien français', ratio: 0.12 }],
+      srcRatio: { gallica: 0.64, arsenal: 0.22, archives37: 0.14 },
+      histBins: [
+        { label: 'IXe', lo: 800, hi: 899, ratio: 0.34 },
+        { label: 'Xe', lo: 900, hi: 999, ratio: 0.21 },
+        { label: 'XIe', lo: 1000, hi: 1099, ratio: 0.23 },
+        { label: 'XIIe', lo: 1100, hi: 1199, ratio: 0.16 },
+        { label: 'XIIIe', lo: 1200, hi: 1299, ratio: 0.06 },
+      ],
+    },
+  };
+
+  // representative preview documents (the live catalog holds thousands)
+  SEED = [
+    { ark: 'ark:/12148/bpt6k2839841', title: 'Le Figaro — 6 mai 1889', author: 'Le Figaro', year: 1889, type: 'press', lang: 'fr', source: 'gallica', pages: 6,
+      excerpt: "PARIS, 6 MAI. — L'Exposition est ouverte. Dès l'aube, une foule considérable se pressait aux abords du Champ de Mars, et la cérémonie d'inauguration, présidée par M. le Président de la République, a revêtu un éclat sans précédent.\n\nC'est la fête du travail et de la paix que la France offre aujourd'hui au monde entier…" },
+    { ark: 'ark:/12148/bpt6k227349z', title: 'Le Temps — 5 mai 1889', author: 'Le Temps', year: 1889, type: 'press', lang: 'fr', source: 'gallica', pages: 4,
+      excerpt: "L'inauguration de l'Exposition universelle aura lieu demain. On remarquera l'absence des souverains étrangers : la célébration du centenaire de 1789 a tenu à l'écart les cours monarchiques de l'Europe. L'enjeu, pour la jeune République, est tout entier diplomatique…" },
+    { ark: 'ark:/12148/bpt6k6151234', title: 'Le Petit Journal — 7 mai 1889', author: 'Le Petit Journal', year: 1889, type: 'press', lang: 'fr', source: 'gallica', pages: 4,
+      excerpt: "C'est aujourd'hui que l'Exposition s'ouvre enfin au peuple. La Tour Eiffel domine le panorama de ses trois cents mètres d'acier. Le public afflue en masse depuis les faubourgs. On dit qu'il y aura cent mille visiteurs dès ce premier dimanche ouvert…" },
+    { ark: 'ark:/12148/bpt6k527891p', title: 'Le Gaulois — 15 mai 1889', author: 'Le Gaulois', year: 1889, type: 'press', lang: 'fr', source: 'gallica', pages: 4 },
+    { ark: 'ark:/12148/bpt6k459102t', title: 'Journal des débats — 6 mai 1889', author: 'Journal des débats', year: 1889, type: 'press', lang: 'fr', source: 'gallica', pages: 4 },
+    { ark: 'ark:/12148/bpt6k3841029', title: 'Le Siècle — 6 mai 1889', author: 'Le Siècle', year: 1889, type: 'press', lang: 'fr', source: 'retronews', pages: 4 },
+    { ark: 'ark:/12148/bpt6k5512089', title: 'La République française — 7 mai 1889', author: 'La République française', year: 1889, type: 'press', lang: 'fr', source: 'retronews', pages: 4 },
+    { ark: 'ark:/12148/bpt6k2910347', title: 'Le Matin — 7 mai 1889', author: 'Le Matin', year: 1889, type: 'press', lang: 'fr', source: 'retronews', pages: 4,
+      excerpt: "Les foules du monde entier convergent vers la capitale. Depuis la gare du Nord, les omnibus font la navette sans relâche jusqu'au Champ-de-Mars. La tour de M. Eiffel apparaît à chaque carrefour, étrange silhouette métallique qui étonne encore…" },
+    { ark: 'ark:/12148/bpt6k6901234', title: "L'Écho de Paris — 15 mai 1889", author: "L'Écho de Paris", year: 1889, type: 'press', lang: 'fr', source: 'gallica', pages: 4 },
+    { ark: 'ark:/12148/bpt6k7109832', title: 'Le Voltaire — 8 mai 1889', author: 'Le Voltaire', year: 1889, type: 'press', lang: 'fr', source: 'retronews', pages: 2 },
+    { ark: 'ark:/12148/bpt6k6293847', title: 'Le Monde illustré — 11 mai 1889', author: 'Le Monde illustré', year: 1889, type: 'press', lang: 'fr', source: 'gallica', pages: 16 },
+    { ark: 'ark:/12148/bpt6k104789x', title: "L'Illustration — n°2412, 11 mai 1889", author: "L'Illustration", year: 1889, type: 'press', lang: 'fr', source: 'gallica', pages: 20 },
+    { ark: 'ark:/12148/bpt6k4781230', title: 'La Presse — 6 mai 1889', author: 'La Presse', year: 1889, type: 'press', lang: 'fr', source: 'retronews', pages: 4 },
+    { ark: 'ark:/12148/bpt6k7529018', title: 'Gil Blas — 6 mai 1889', author: 'Gil Blas', year: 1889, type: 'press', lang: 'fr', source: 'retronews', pages: 4 },
+    { ark: 'ark:/12148/bpt6k1238740', title: 'Le Temps — 14 février 1887', author: 'Le Temps', year: 1887, type: 'press', lang: 'fr', source: 'gallica', pages: 4,
+      excerpt: "Nous, écrivains, sculpteurs, architectes, amateurs passionnés de la beauté jusqu'ici intacte de Paris, protestons de toutes nos forces, au nom du goût français méconnu, contre l'érection en plein cœur de notre capitale de l'inutile et monstrueuse Tour Eiffel…" },
+    { ark: 'ark:/12148/bpt6k4892011', title: 'Le Charivari — caricatures de l\'Expo', author: 'Le Charivari', year: 1889, type: 'press', lang: 'fr', source: 'gallica', pages: 8 },
+    { ark: 'ark:/12148/bpt6k9102983', title: 'Le Monde illustré — rétrospective 1890', author: 'Le Monde illustré', year: 1890, type: 'press', lang: 'fr', source: 'gallica', pages: 14 },
+    { ark: 'ark:/12148/btv1b531284c', title: 'Tour Eiffel en construction — 1888', author: 'Photographie, P. Petit', year: 1888, type: 'image', lang: 'fr', source: 'gallica', pages: 1 },
+    { ark: 'ark:/12148/btv1b8492011', title: 'Galerie des machines, vue intérieure', author: 'Photographie', year: 1889, type: 'image', lang: 'fr', source: 'gallica', pages: 1 },
+    { ark: 'ark:/12148/btv1b8451123', title: 'Vue panoramique depuis le Trocadéro', author: 'Photographie', year: 1889, type: 'image', lang: 'fr', source: 'gallica', pages: 1,
+      excerpt: "Vue prise depuis la hauteur du Trocadéro. On distingue au premier plan le pont d'Iéna et les pavillons étrangers ; la Tour Eiffel occupe le centre de la composition. Tirage albuminé." },
+    { ark: 'ark:/12148/btv1b5308811', title: "Portrait de G. Eiffel au sommet", author: 'Photographie', year: 1889, type: 'image', lang: 'fr', source: 'gallica', pages: 1 },
+    { ark: 'ark:/12148/btv1b6209034', title: 'Fontaines lumineuses de nuit', author: 'Photographie', year: 1889, type: 'image', lang: 'fr', source: 'gallica', pages: 1 },
+    { ark: 'ark:/12148/btv1b9006722', title: "Affiche officielle — Exposition Universelle", author: 'Estampe, impr. Champenois', year: 1889, type: 'estampe', lang: 'fr', source: 'gallica', pages: 1 },
+    { ark: 'ark:/12148/btv1b8456720', title: "Gravure — Inauguration de la Tour Eiffel", author: 'Estampe, Le Monde illustré', year: 1889, type: 'estampe', lang: 'fr', source: 'gallica', pages: 1 },
+    { ark: 'ark:/12148/btv1b8901234', title: "Caricature — « Le Citoyen Eiffel »", author: 'Estampe, Le Charivari', year: 1889, type: 'estampe', lang: 'fr', source: 'gallica', pages: 1,
+      excerpt: "Caricature publiée dans Le Charivari, représentant Gustave Eiffel en géant d'acier enjambant Paris. Légende : « Tremble, monsieur de la Critique ! »" },
+    { ark: 'ark:/12148/bpt6k9612345', title: "Catalogue général officiel de l'Exposition", author: 'Ministère du Commerce', year: 1889, type: 'book', lang: 'fr', source: 'gallica', pages: 642,
+      excerpt: "Le présent catalogue recense l'ensemble des exposants admis par la Commission impériale. Les nations représentées sont au nombre de trente-cinq. La section française occupe à elle seule la moitié du palais des Beaux-Arts…" },
+    { ark: 'ark:/12148/bpt6k5384021', title: 'Rapport général — A. Picard', author: 'Alfred Picard', year: 1891, type: 'book', lang: 'fr', source: 'gallica', pages: 510 },
+    { ark: 'ark:/12148/bpt6k6529871', title: "Guide bleu de l'Exposition de 1889", author: 'Hachette', year: 1889, type: 'book', lang: 'fr', source: 'gallica', pages: 288 },
+    { ark: 'ark:/12148/bpt6k7219034', title: 'Les Merveilles de l\'Exposition — Sciences', author: 'Librairie illustrée', year: 1889, type: 'book', lang: 'fr', source: 'gallica', pages: 198 },
+    { ark: 'ark:/12148/btv1b8492756', title: "Plan général de l'Exposition, Champ de Mars", author: 'Carte, échelle 1:2 000', year: 1889, type: 'map', lang: 'fr', source: 'gallica', pages: 1 },
+    { ark: 'ark:/12148/btv1b8100923', title: 'Plan du Trocadéro et environs', author: 'Carte, échelle 1:5 000', year: 1889, type: 'map', lang: 'fr', source: 'gallica', pages: 1 },
+    { ark: 'ark:/12148/bpt6k81120w7', title: 'The Graphic — The Paris Exhibition', author: 'The Graphic (London)', year: 1889, type: 'press', lang: 'en', source: 'gallica', pages: 8 },
+    { ark: 'ark:/12148/bpt6k81244q3', title: 'The Illustrated London News — Paris', author: 'Illustrated London News', year: 1889, type: 'press', lang: 'en', source: 'retronews', pages: 10 },
+  ];
+
+  DIST0 = { press: 1180, image: 392, estampe: 88, book: 54, map: 16 };
+
+  BUILD_SCRIPT = [
+    { user: "Ajoute la presse illustrée et les hebdomadaires couvrant l'inauguration.",
+      busy: 'Interrogation du catalogue BnF…', tool: 'bnf.search', query: 'presse illustrée hebdomadaire Exposition 1889', found: '1 240',
+      addDist: { press: 412 }, found2: 412,
+      sampleAdds: [
+        { ark: 'ark:/12148/bpt6k6622109', title: "L'Exposition de Paris — hebdomadaire", author: 'Librairie illustrée', year: 1889, type: 'press', lang: 'fr', source: 'gallica', pages: 12 },
+        { ark: 'ark:/12148/bpt6k7548921', title: 'Le Rappel — 4 mai 1889', author: 'Le Rappel', year: 1889, type: 'press', lang: 'fr', source: 'retronews', pages: 2 },
+      ],
+      reasoning: "412 titres ajoutés après dédoublonnage des éditions. La presse illustrée (Le Monde illustré, L'Illustration) est désormais bien représentée. Deux titres anglophones repérés — je vous les signalerai." },
+    { user: 'Inclus les photographies et estampes de la Galerie des machines et de la Tour Eiffel.',
+      busy: 'Recherche iconographique via MCP…', tool: 'bnf.search', query: 'photographies estampes Galerie des machines Tour Eiffel 1889', found: '2 870',
+      addDist: { image: 388, estampe: 96 }, found2: 484,
+      sampleAdds: [
+        { ark: 'ark:/12148/btv1b8451123', title: 'Vue panoramique depuis le Trocadéro', author: 'Photographie', year: 1889, type: 'image', lang: 'fr', source: 'gallica', pages: 1 },
+        { ark: 'ark:/12148/btv1b8456720', title: "Gravure — Inauguration de la Tour Eiffel", author: 'Estampe', year: 1889, type: 'estampe', lang: 'fr', source: 'gallica', pages: 1 },
+      ],
+      reasoning: "484 pièces iconographiques ajoutées (388 photographies, 96 estampes). Elles documentent l'architecture métallique et l'inauguration." },
+    { user: "Ajoute les rapports officiels, catalogues et plans de l'Exposition.",
+      busy: 'Recherche dans les monographies…', tool: 'bnf.search', query: 'rapport officiel catalogue plan Exposition Universelle 1889', found: '318',
+      addDist: { book: 44, map: 18 }, found2: 62,
+      sampleAdds: [
+        { ark: 'ark:/12148/bpt6k9612345', title: "Catalogue général officiel de l'Exposition", author: 'Ministère du Commerce', year: 1889, type: 'book', lang: 'fr', source: 'gallica', pages: 642 },
+        { ark: 'ark:/12148/bpt6k5384021', title: 'Rapport général — A. Picard', author: 'Alfred Picard', year: 1891, type: 'book', lang: 'fr', source: 'gallica', pages: 510 },
+        { ark: 'ark:/12148/btv1b8492756', title: "Plan général de l'Exposition", author: 'Carte, 1:2000', year: 1889, type: 'map', lang: 'fr', source: 'gallica', pages: 1 },
+      ],
+      reasoning: "62 sources officielles ajoutées : catalogues, le rapport Picard (1891, référence administrative) et les plans généraux." },
+    { user: 'Retire les titres en anglais — je veux uniquement la presse francophone.',
+      busy: 'Application du filtre de langue…', tool: 'bnf.filter', query: 'lang ≠ fr', found: '206',
+      removeDist: { press: 206 }, removeCount: 206, removeArks: ['ark:/12148/bpt6k81120w7', 'ark:/12148/bpt6k81244q3'], dropEnglish: true,
+      reasoning: "206 notices anglophones retirées. Le corpus est désormais entièrement francophone." },
+  ];
+
+  SESSIONS_CORPUS = [
+    { id: 's1', title: 'Recherche initiale — presse', meta: '+1 180 documents · 6 mai', time: '2 j', dotOn: false },
+    { id: 's2', title: 'Presse illustrée 1889', meta: 'session active', time: "à l'instant", dotOn: true },
+    { id: 's3', title: 'Iconographie & estampes', meta: 'brouillon · non lancé', time: '1 j', dotOn: false },
+  ];
+  SESSIONS_RESEARCH = [
+    { id: 'r1', title: 'Réception dans la presse', meta: '4 notes · session active', time: "à l'instant", dotOn: true },
+    { id: 'r2', title: 'Esthétique & polémiques', meta: '2 notes · reprise', time: '1 j', dotOn: false },
+  ];
+
+  // per-session snapshots — loaded when user switches session
+  CORPUS_SNAPS = {
+    's1': {
+      dist: { press: 1180, image: 0, estampe: 0, book: 0, map: 0 },
+      hasEnglish: true, bIdx: 0,
+      samples: ['ark:/12148/bpt6k2839841','ark:/12148/bpt6k227349z','ark:/12148/bpt6k6151234','ark:/12148/bpt6k527891p','ark:/12148/bpt6k459102t','ark:/12148/bpt6k3841029'],
+      messages: [
+        { role: 'event', kind: 'resume', text: 'Session reprise · « Recherche initiale — presse »' },
+        { role: 'agent', text: "Bon retour. J'ai constitué un premier ensemble de 1 180 notices de presse quotidienne autour de la couverture du 6 mai 1889. Sur quoi souhaitez-vous poursuivre ?" },
+      ],
+    },
+    's3': {
+      dist: { press: 1592, image: 780, estampe: 184, book: 98, map: 34 },
+      hasEnglish: false, bIdx: 4,
+      samples: null, // uses full SEED
+      messages: [
+        { role: 'event', kind: 'resume', text: 'Session reprise · « Iconographie & estampes »' },
+        { role: 'agent', text: "Cette session est en brouillon — le corpus iconographique est constitué mais aucune requête n'a encore été lancée depuis cette session. Voulez-vous affiner les pavillons nationaux ou les estampes satiriques ?" },
+      ],
+    },
+  };
+
+  R_NOTES_R2 = [
+    { id: 'p0', title: 'Repères critiques 1887–89', updated: 'épinglée',
+      content: "## Chronologie de la controverse\n\n- **14 février 1887** — Publication de la Protestation des artistes dans *Le Temps*. [[ark:/12148/bpt6k1238740|Le Temps, 14 fév. 1887|1]]\n- **1887–1888** — Campagne de presse hostile, notamment dans *Le Figaro* et *Le Matin*.\n- **31 mars 1889** — Inauguration de la Tour. Retournement progressif de l'opinion.\n- **6 mai 1889** — Ouverture de l'Exposition : la tour est le « clou » unanimement reconnu.\n\n> Étudier le glissement sémantique entre ces deux pôles." },
+    { id: 'p1', title: 'Vocabulaire de la critique', updated: 'rédigée par l\'agent',
+      content: "## Lexique de l'hostilité (1887–1888)\n\n### Métaphores industrielles\n- « *cheminée d'usine* » — revient dans plusieurs titres bourgeois\n- « *lampadaire de métal* » — Le Temps, 1887 [[ark:/12148/bpt6k1238740|Le Temps, 14 fév. 1887|1]]\n- « *squelette de clocher* » — chronique de *Le Figaro* non datée\n\n### Métaphores du monstre\n- « *monstrueuse tour* » — formule de la Protestation\n- « *Babel de fer* » — *Gil Blas*, mars 1889 [[ark:/12148/bpt6k7529018|Gil Blas|1]]\n\n### Retournement de 1889\nEn mai 1889, les mêmes journaux adoptent un vocabulaire de la prouesse : « *génie*, *chef-d'œuvre de l'industrie*, *clou de l'Exposition* ».\n\n> Piste : quantifier la fréquence de ces termes par mois dans le cluster RAG." },
+  ];
+
+  RESEARCH_SNAPS = {
+    'r2': {
+      notes: null, // set from R_NOTES_R2
+      openTabs: [{ kind: 'note', id: 'p0' }, { kind: 'note', id: 'p1' }],
+      activeTab: 'note:p0',
+      rIdx: 0,
+      rMessages: [
+        { role: 'event', text: 'Session reprise · « Esthétique & polémiques »' },
+        { role: 'agent', text: "Je reprends cette session. Deux notes ont été constituées : une chronologie de la controverse et un relevé lexical. Quelle piste souhaitez-vous approfondir — la comparaison des titres, ou l'analyse quantitative du vocabulaire ?" },
+      ],
+    },
+  };
+
+  MEMORY_CORPUS = {
+    title: 'Mémoire du projet',
+    sections: [
+      { title: 'Périmètre du corpus', items: [
+        { id: 'c1', text: "Sujet : presse & Exposition Universelle de 1889", origin: 'session 1' },
+        { id: 'c2', text: 'Période retenue : mai – novembre 1889', origin: 'consigne' },
+        { id: 'c3', text: 'Couverture : presse quotidienne, illustrée, iconographie, sources officielles', origin: 'déduit' },
+      ] },
+      { title: 'Contraintes & filtres', items: [
+        { id: 'c4', text: 'Langue : français uniquement', origin: 'consigne · session 2' },
+        { id: 'c5', text: "Écarter les doublons d'édition", origin: 'consigne' },
+        { id: 'c6', text: 'Ne pas inclure les rééditions postérieures à 1891', origin: 'déduit' },
+      ] },
+      { title: 'Sources & priorités', items: [
+        { id: 'c7', text: 'Dépôts préférés : Gallica, RetroNews', origin: 'consigne' },
+        { id: 'c8', text: 'Privilégier les fac-similés océrisés disponibles', origin: 'déduit' },
+      ] },
+      { title: 'Décisions de session', items: [
+        { id: 'c9', text: '206 titres anglophones retirés', origin: 'action · session 2' },
+        { id: 'c10', text: '≈ 1 600 notices validées et dédoublonnées', origin: 'état' },
+      ] },
+    ],
+  };
+  MEMORY_RESEARCH = {
+    title: 'Mémoire du projet',
+    sections: [
+      { title: 'Question de recherche', items: [
+        { id: 'r1', text: "Réception de l'Exposition de 1889 dans la presse française", origin: 'objectif' },
+        { id: 'r2', text: "Cadrage : de l'inauguration (6 mai) à la clôture", origin: 'cadrage' },
+      ] },
+      { title: 'Méthode', items: [
+        { id: 'r3', text: 'Citer systématiquement les ARK et la vue', origin: 'consigne' },
+        { id: 'r4', text: 'Consigner chaque réponse dans une note de recherche', origin: 'consigne' },
+        { id: 'r5', text: 'Comparer les lignes éditoriales par lectorat', origin: 'approche' },
+      ] },
+      { title: 'Sources clés', items: [
+        { id: 'r6', text: 'Récurrentes : Le Figaro, Le Temps, Le Petit Journal', origin: 'observé' },
+        { id: 'r7', text: "Pont visuel : Le Monde illustré, L'Illustration", origin: 'observé' },
+      ] },
+      { title: 'Hypothèses en cours', items: [
+        { id: 'r8', text: "L'image unifie le récit national plus que le texte", origin: 'note n3' },
+        { id: 'r9', text: 'Glissement du vocabulaire critique 1887 → 1889', origin: 'note n4' },
+      ] },
+    ],
+  };
+
+  R_NOTES = [
+    { id: 'n1', title: 'Cadre de recherche', updated: 'base du projet',
+      content: "## Objet\nÉtudier la **réception de l'Exposition Universelle de 1889** dans la presse française, de l'inauguration (6 mai) à la clôture.\n\n## Corpus mobilisé\n- Plusieurs milliers de notices indexées dans le cluster RAG\n- Quotidiens nationaux, presse illustrée, estampes et rapports officiels\n- Sources d'amorçage : [[ark:/12148/bpt6k2839841|Le Figaro, 6 mai 1889|1]] · [[ark:/12148/bpt6k227349z|Le Temps, 5 mai 1889|1]]\n\n## Questions directrices\n- Comment la presse quotidienne a-t-elle couvert l'inauguration ?\n- Quelles lignes éditoriales se distinguent ?\n- Comment les controverses esthétiques sont-elles relayées ?\n\n> Note rédigée automatiquement à partir des métadonnées du corpus. Les références [ARK] ouvrent la source sur la BnF." },
+    { id: 'n0', title: 'Chronologie de référence', updated: 'épinglée',
+      content: "## Repères chronologiques\n\n- **6 mai 1889** — inauguration officielle au Champ de Mars. [[ark:/12148/bpt6k2839841|Le Figaro, 6 mai|1]]\n- **15 mai** — ouverture au grand public ; affluence record.\n- **31 octobre** — clôture de l'Exposition.\n\n### Avant l'événement\n- *14 février 1887* — publication de la « Protestation des artistes » contre la Tour Eiffel. [[ark:/12148/bpt6k227349z|Le Temps, 1887|1]]\n\n> Repères utiles pour situer les articles dépouillés." },
+  ];
+
+  R_SCRIPT = [
+    { user: "Comment la presse quotidienne a-t-elle accueilli l'inauguration du 6 mai 1889 ?",
+      busy: 'Recherche sémantique dans le cluster…', query: 'accueil inauguration 6 mai 1889 presse quotidienne', found: 142,
+      answer: "L'accueil est largement enthousiaste. Le Figaro (6 mai) parle d'une « fête du travail et de la paix » et insiste sur l'affluence ; Le Temps (5 mai) adopte un ton plus mesuré, soulignant l'enjeu diplomatique du boycott monarchique. Le Petit Journal (7 mai), populaire, met en avant le spectacle et la Tour Eiffel comme prouesse nationale.",
+      cites: [{ label: 'Le Figaro — 6 mai', ark: 'ark:/12148/bpt6k2839841', vue: 1 }, { label: 'Le Temps — 5 mai', ark: 'ark:/12148/bpt6k227349z', vue: 1 }, { label: 'Le Petit Journal', ark: 'ark:/12148/bpt6k6151234', vue: 1 }],
+      note: { id: 'n2', title: "Réception de l'inauguration", updated: "rédigée par l'agent · à l'instant",
+        content: "## Réception de l'inauguration (6 mai 1889)\n\nLa tonalité dominante de la presse quotidienne est **enthousiaste et patriotique**, avec des nuances selon le lectorat.\n\n### Trois registres\n- **Le Figaro** — registre solennel : « fête du travail et de la paix », accent sur l'affluence et le prestige international. [[ark:/12148/bpt6k2839841|Le Figaro, 6 mai 1889|1]]\n- **Le Temps** — registre diplomatique : souligne le *boycott des monarchies* et l'enjeu pour la jeune République. [[ark:/12148/bpt6k227349z|Le Temps, 5 mai 1889|1]]\n- **Le Petit Journal** — registre populaire : spectacle, foule, et la Tour Eiffel comme **prouesse nationale**. [[ark:/12148/bpt6k6151234|Le Petit Journal, 7 mai 1889|1]]\n\n### À retenir\n> La célébration du centenaire de 1789 sous-tend implicitement la couverture, sans toujours être nommée." } },
+    { user: 'Le ton diffère-t-il vraiment entre Le Figaro et Le Petit Journal ?',
+      busy: 'Comparaison des passages…', query: 'comparaison ligne éditoriale Figaro Petit Journal lectorat', found: 88,
+      answer: "Oui, et la différence tient surtout au lectorat. Le Figaro vise un public bourgeois et cultive un ton littéraire, avec des chroniques signées. Le Petit Journal, premier tirage de masse, privilégie le récit concret, l'image et l'émotion. Tous deux convergent néanmoins sur la fierté nationale.",
+      cites: [{ label: 'Le Figaro — 6 mai', ark: 'ark:/12148/bpt6k2839841', vue: 1 }, { label: 'Le Petit Journal', ark: 'ark:/12148/bpt6k6151234', vue: 1 }, { label: 'Le Monde illustré', ark: 'ark:/12148/bpt6k6293847', vue: 3 }],
+      note: { id: 'n3', title: 'Ligne éditoriale & lectorat', updated: "rédigée par l'agent · à l'instant",
+        content: "## Ligne éditoriale & lectorat\n\n- **Le Figaro** — bourgeoisie cultivée ; ton littéraire, chroniques signées. [[ark:/12148/bpt6k2839841|Le Figaro, 6 mai|1]]\n- **Le Petit Journal** — public de masse ; récit concret, primat de l'**image** et de l'émotion. [[ark:/12148/bpt6k6151234|Le Petit Journal, 7 mai|1]]\n\n### Convergence\nMalgré ces écarts, les deux titres convergent sur la **fierté nationale** et la valorisation de la prouesse technique. La presse illustrée fait le pont par l'image. [[ark:/12148/bpt6k6293847|Le Monde illustré, 11 mai|3]]\n\n> Hypothèse : l'image, plus que le texte, unifie le récit national de 1889." } },
+    { user: 'Recense les critiques esthétiques visant la Tour Eiffel.',
+      busy: 'Extraction des passages critiques…', query: 'protestation artistes critiques esthétiques Tour Eiffel', found: 57,
+      answer: "Les critiques précèdent l'Exposition : la « Protestation des artistes » (relayée par Le Temps, 14 février 1887) qualifie la tour de « lampadaire véritablement tragique ». En 1889, le ton s'inverse largement : la réussite populaire désarme l'opposition, même si quelques chroniques conservent une réserve ironique.",
+      cites: [{ label: 'Le Temps — 1887', ark: 'ark:/12148/bpt6k227349z', vue: 1 }, { label: "L'Illustration", ark: 'ark:/12148/bpt6k104789x', vue: 5 }, { label: 'Gil Blas', ark: 'ark:/12148/bpt6k7529018', vue: 1 }],
+      note: { id: 'n4', title: 'Controverses esthétiques', updated: "rédigée par l'agent · à l'instant",
+        content: "## Controverses esthétiques autour de la Tour Eiffel\n\n### Avant (1887)\nLa **Protestation des artistes** (Le Temps, 14 février 1887) dénonce un « lampadaire véritablement tragique » et une « cheminée d'usine ». [[ark:/12148/bpt6k227349z|Le Temps, 14 fév. 1887|1]]\n\n### Pendant (1889)\nLe **succès populaire désarme** largement la critique. La presse illustrée célèbre la tour [[ark:/12148/bpt6k104789x|L'Illustration, n°2412|5]] ; quelques chroniques maintiennent une réserve ironique. [[ark:/12148/bpt6k7529018|Gil Blas, 6 mai 1889|1]]\n\n### Piste\n> Suivre le glissement du vocabulaire : de « monstre » (1887) à « clou de l'Exposition » (1889)." } },
+  ];
+
+  // ===================== PROJECT 2 — Manuscrits médiévaux Loire =====================
+  P2_DIST0 = { manuscript: 312, enlum: 286, charte: 178, book: 66 };
+  P2_SEED = [
+    { ark: 'ark:/12148/btv1b8452103k', title: 'Évangiles de Marmoutier', author: 'Scriptorium de Tours', year: 845, type: 'manuscript', lang: 'la', source: 'gallica', pages: 248,
+      excerpt: "Incipit liber generationis Iesu Christi filii David… Manuscrit carolingien sur parchemin, minuscule caroline. Tables de canons à l'or et au minium. Provenance : abbaye de Marmoutier, près de Tours." },
+    { ark: 'ark:/12148/btv1b9061204', title: 'Bible de Saint-Martin de Tours', author: 'Atelier de Tours (abbatiat de Vivien)', year: 846, type: 'manuscript', lang: 'la', source: 'gallica', pages: 412,
+      excerpt: "Pandecte — Bible complète en un volume, produite sous l'abbatiat de Vivien. Frontispices à pleine page, Christ en majesté, lettres ornées d'or bruni. Chef-d'œuvre de la renaissance carolingienne tourangelle." },
+    { ark: 'ark:/12148/btv1b8530021', title: 'Sacramentaire de Saint-Martin', author: 'Scriptorium de Tours', year: 980, type: 'manuscript', lang: 'la', source: 'arsenal', pages: 186 },
+    { ark: 'ark:/12148/btv1b8470339', title: 'Psautier de Fleury', author: 'Abbaye de Fleury (Saint-Benoît)', year: 1030, type: 'manuscript', lang: 'la', source: 'gallica', pages: 204,
+      excerpt: "Psautier glosé, écriture du XIe siècle. Initiales historiées en tête de chaque nocturne. Provenance : abbaye de Fleury, Saint-Benoît-sur-Loire." },
+    { ark: 'ark:/12148/btv1b8492210', title: 'Vita sancti Martini, copie enluminée', author: "d'après Sulpice Sévère", year: 1110, type: 'manuscript', lang: 'la', source: 'arsenal', pages: 96 },
+    { ark: 'ark:/12148/btv1b5300912', title: 'Lectionnaire de Marmoutier', author: 'Scriptorium de Marmoutier', year: 1150, type: 'manuscript', lang: 'la', source: 'gallica', pages: 312 },
+    { ark: 'ark:/12148/btv1b5491002', title: 'Recueil hagiographique ligérien', author: 'Abbaye de Cormery', year: 1180, type: 'manuscript', lang: 'la', source: 'gallica', pages: 158 },
+    { ark: 'ark:/12148/btv1b6000789', title: 'Saint Martin partageant son manteau', author: 'Enluminure, f. 12v', year: 1110, type: 'enlum', lang: 'la', source: 'gallica', pages: 1,
+      excerpt: "Miniature à pleine page : saint Martin à cheval tranchant son manteau pour le pauvre d'Amiens. Or bruni, bleu de lapis-lazuli, vermillon. Style roman tourangeau." },
+    { ark: 'ark:/12148/btv1b5901234', title: 'Initiale historiée « B » — Beatus vir', author: 'Psautier de Fleury, f. 1', year: 1030, type: 'enlum', lang: 'la', source: 'gallica', pages: 1 },
+    { ark: 'ark:/12148/btv1b5512098', title: 'Tables de canons enluminées', author: 'Évangiles de Marmoutier', year: 845, type: 'enlum', lang: 'la', source: 'gallica', pages: 1 },
+    { ark: 'ark:/12148/btv1b5530771', title: 'Christ en majesté — frontispice', author: 'Bible de Saint-Martin de Tours', year: 846, type: 'enlum', lang: 'la', source: 'gallica', pages: 1,
+      excerpt: "Frontispice à pleine page. Le Christ en majesté dans une mandorle, entouré du tétramorphe. Encadrement d'entrelacs insulaires réinterprétés. Or et pourpre." },
+    { ark: 'ark:/12148/btv1b5610344', title: 'Drôlerie marginale — bestiaire', author: 'Lectionnaire de Marmoutier', year: 1150, type: 'enlum', lang: 'la', source: 'gallica', pages: 1 },
+    { ark: 'ark:/12148/btv1b8901882', title: 'Charte de donation à Marmoutier', author: 'Eudes II, comte de Blois', year: 1032, type: 'charte', lang: 'la', source: 'archives37', pages: 1,
+      excerpt: "Notum sit omnibus tam praesentibus quam futuris… Donation d'un alleu et de ses dépendances à l'abbaye de Marmoutier, souscrite par témoins. Parchemin, sceau de cire pendant sur double queue." },
+    { ark: 'ark:/12148/btv1b8451200', title: 'Diplôme de Charles le Chauve', author: 'Chancellerie royale', year: 862, type: 'charte', lang: 'la', source: 'gallica', pages: 1 },
+    { ark: 'ark:/12148/btv1b8455510', title: 'Cartulaire de Saint-Benoît-sur-Loire', author: 'Abbaye de Fleury', year: 1080, type: 'charte', lang: 'la', source: 'archives37', pages: 64 },
+    { ark: 'ark:/12148/btv1b8460012', title: "Acte de l'abbé Bérenger, en français", author: 'Marmoutier', year: 1212, type: 'charte', lang: 'fr', source: 'archives37', pages: 1 },
+    { ark: 'ark:/12148/bpt6k9801234', title: 'Catalogue des manuscrits de Tours', author: 'M. Collon, 1900', year: 1900, type: 'book', lang: 'fr', source: 'gallica', pages: 520 },
+    { ark: 'ark:/12148/bpt6k7720198', title: 'Les scriptoria de la Loire', author: 'É. Lesne, 1938', year: 1938, type: 'book', lang: 'fr', source: 'gallica', pages: 288 },
+  ];
+  P2_BUILD = [
+    { user: "Ajoute les manuscrits carolingiens du scriptorium de Tours.",
+      busy: 'Interrogation du catalogue BnF…', tool: 'bnf.search', query: 'manuscrits carolingiens scriptorium Tours IXe', found: '418',
+      addDist: { manuscript: 96, enlum: 64 }, found2: 160,
+      sampleAdds: [
+        { ark: 'ark:/12148/btv1b5530992', title: 'Évangéliaire de Lothaire (fragment)', author: 'Atelier de Tours', year: 850, type: 'manuscript', lang: 'la', source: 'gallica', pages: 88 },
+        { ark: 'ark:/12148/btv1b5901777', title: 'Lettre ornée — Bible de Tours', author: 'Atelier de Tours', year: 846, type: 'enlum', lang: 'la', source: 'gallica', pages: 1 },
+      ],
+      reasoning: "160 notices ajoutées : manuscrits et feuillets enluminés de l'atelier de Saint-Martin de Tours, datés du IXe siècle. La production tourangelle est désormais bien représentée." },
+    { user: 'Inclus les chartes et cartulaires de Marmoutier et de Fleury.',
+      busy: 'Recherche dans les fonds diplomatiques…', tool: 'bnf.search', query: 'chartes cartulaires Marmoutier Fleury Xe-XIIe', found: '263',
+      addDist: { charte: 128 }, found2: 128,
+      sampleAdds: [
+        { ark: 'ark:/12148/btv1b8460788', title: 'Notice de plaid — abbaye de Fleury', author: 'Fleury', year: 1055, type: 'charte', lang: 'la', source: 'archives37', pages: 1 },
+      ],
+      reasoning: "128 chartes ajoutées, dont le cartulaire de Saint-Benoît-sur-Loire. Plusieurs pièces conservent leur sceau ; je les ai signalées dans les métadonnées." },
+    { user: 'Ajoute les éditions critiques et catalogues modernes pour référence.',
+      busy: 'Recherche dans les monographies…', tool: 'bnf.search', query: 'édition critique catalogue manuscrits ligériens', found: '94',
+      addDist: { book: 42 }, found2: 42,
+      reasoning: "42 références savantes ajoutées (catalogues, études paléographiques). Elles serviront de socle critique sans alourdir le corpus primaire." },
+  ];
+  P2_SESS_CORPUS = [
+    { id: 'm1', title: 'Fonds carolingien de Tours', meta: '+312 manuscrits', time: '5 j', dotOn: false },
+    { id: 'm2', title: 'Enluminures & chartes', meta: 'session active', time: 'hier', dotOn: true },
+  ];
+  P2_SESS_RESEARCH = [
+    { id: 'mr1', title: "Styles d'enluminure", meta: '3 notes · session active', time: 'hier', dotOn: true },
+    { id: 'mr2', title: 'Mains de scribes', meta: '1 note · reprise', time: '3 j', dotOn: false },
+  ];
+  P2_CORPUS_SNAPS = {
+    'm1': {
+      dist: { manuscript: 312, enlum: 0, charte: 0, book: 0 }, hasEnglish: false, bIdx: 0,
+      samples: ['ark:/12148/btv1b8452103k','ark:/12148/btv1b9061204','ark:/12148/btv1b8530021','ark:/12148/btv1b8470339','ark:/12148/btv1b8492210','ark:/12148/btv1b5300912'],
+      messages: [
+        { role: 'event', kind: 'resume', text: 'Session reprise · « Fonds carolingien de Tours »' },
+        { role: 'agent', text: "Bon retour. Le noyau du corpus rassemble 312 manuscrits du scriptorium de Tours, du IXe au XIIe siècle. Souhaitez-vous étendre aux enluminures isolées ou aux chartes ?" },
+      ],
+    },
+  };
+  P2_R_NOTES = [
+    { id: 'q1', title: 'Cadre de recherche', updated: 'base du projet',
+      content: "## Objet\nÉtudier la **filiation des styles d'enluminure** dans les scriptoria ligériens, de la renaissance carolingienne (IXe s.) au roman tardif (XIIe s.).\n\n## Corpus mobilisé\n- 842 manuscrits, enluminures et chartes indexés dans le cluster RAG\n- Foyers principaux : Tours (Saint-Martin), Marmoutier, Fleury\n- Pièces d'amorçage : [[ark:/12148/btv1b9061204|Bible de Saint-Martin de Tours|7]] · [[ark:/12148/btv1b8470339|Psautier de Fleury|1]]\n\n## Questions directrices\n- Quels traits distinguent l'atelier de Tours ?\n- Peut-on tracer une filiation vers Fleury et Marmoutier ?\n- Comment évolue le répertoire ornemental entre IXe et XIIe s. ?" },
+    { id: 'q0', title: 'Repères paléographiques', updated: 'épinglée',
+      content: "## Jalons\n\n- **IXe s.** — apogée de l'atelier de Tours sous Alcuin puis Vivien. Minuscule caroline, grandes bibles. [[ark:/12148/btv1b9061204|Bible de Tours|7]]\n- **Xe–XIe s.** — Fleury devient un foyer majeur ; initiales historiées. [[ark:/12148/btv1b8470339|Psautier de Fleury|1]]\n- **XIIe s.** — style roman, drôleries marginales à Marmoutier.\n\n> Suivre la transmission des modèles d'un atelier à l'autre." },
+  ];
+  P2_R_NOTES_R2 = [
+    { id: 'h0', title: 'Mains & ductus', updated: 'épinglée',
+      content: "## Identification des mains\n\nRelevé des particularités de ductus dans les manuscrits tourangeaux.\n\n- Main A — ligatures *st* et *ct* fermées ; Bible de Tours.\n- Main B — hampes courtes, *a* ouvert ; Sacramentaire.\n\n> Comparer avec les chartes datées pour ancrer la chronologie." },
+  ];
+  P2_RESEARCH_SNAPS = {
+    'mr2': {
+      notes: null, openTabs: [{ kind: 'note', id: 'h0' }], activeTab: 'note:h0', rIdx: 0,
+      rMessages: [
+        { role: 'event', text: 'Session reprise · « Mains de scribes »' },
+        { role: 'agent', text: "Je reprends l'analyse paléographique. Une note de relevé des mains est en cours. Voulez-vous comparer le ductus de la Bible de Tours avec celui du Sacramentaire ?" },
+      ],
+    },
+  };
+  P2_R_SCRIPT = [
+    { user: "Quels traits distinguent l'enluminure carolingienne de Tours ?",
+      busy: 'Recherche sémantique dans le cluster…', query: 'traits enluminure carolingienne atelier Tours', found: 96,
+      answer: "L'atelier de Tours se reconnaît à ses frontispices à pleine page (Christ en majesté, Maiestas Domini), à l'usage de l'or bruni et de la pourpre, et à des encadrements d'entrelacs hérités des modèles insulaires. Les grandes bibles (Bible de Vivien) en sont l'aboutissement.",
+      cites: [{ label: 'Bible de Tours', ark: 'ark:/12148/btv1b9061204', vue: 7 }, { label: 'Christ en majesté', ark: 'ark:/12148/btv1b5530771', vue: 1 }, { label: 'Tables de canons', ark: 'ark:/12148/btv1b5512098', vue: 1 }],
+      note: { id: 'q2', title: "Signature de l'atelier de Tours", updated: "rédigée par l'agent · à l'instant",
+        content: "## Signature visuelle de l'atelier de Tours (IXe s.)\n\n### Traits caractéristiques\n- **Frontispices à pleine page** — Maiestas Domini, scènes bibliques encadrées. [[ark:/12148/btv1b5530771|Christ en majesté|1]]\n- **Or bruni et pourpre** — hiérarchie chromatique royale.\n- **Entrelacs insulaires** réinterprétés dans les encadrements. [[ark:/12148/btv1b5512098|Tables de canons|1]]\n\n### Aboutissement\nLes grandes **bibles pandectes** (Bible de Vivien) synthétisent ce langage. [[ark:/12148/btv1b9061204|Bible de Saint-Martin de Tours|7]]\n\n> À retenir : le modèle tourangeau rayonne ensuite vers Fleury et Marmoutier." } },
+    { user: 'Peut-on relier le Psautier de Fleury à l\'atelier de Tours ?',
+      busy: 'Comparaison des passages…', query: 'filiation Psautier Fleury atelier Tours initiales', found: 58,
+      answer: "Partiellement. Le Psautier de Fleury reprend le principe des initiales historiées et certains motifs d'entrelacs tourangeaux, mais sa palette plus sobre et son ductus propre indiquent un atelier local distinct, nourri du modèle de Tours sans en être une copie directe.",
+      cites: [{ label: 'Psautier de Fleury', ark: 'ark:/12148/btv1b8470339', vue: 1 }, { label: 'Initiale « B »', ark: 'ark:/12148/btv1b5901234', vue: 1 }],
+      note: { id: 'q3', title: 'Fleury et le modèle tourangeau', updated: "rédigée par l'agent · à l'instant",
+        content: "## Fleury face au modèle de Tours\n\n### Emprunts\n- Initiales historiées en tête de nocturne. [[ark:/12148/btv1b5901234|Initiale « B »|1]]\n- Schémas d'entrelacs apparentés.\n\n### Écarts\n- Palette plus sobre, moins d'or.\n- Ductus propre à l'atelier de Fleury. [[ark:/12148/btv1b8470339|Psautier de Fleury|1]]\n\n> Conclusion provisoire : filiation **indirecte** — réception, non copie." } },
+    { user: 'Recense les motifs récurrents dans les initiales historiées.',
+      busy: 'Extraction des motifs…', query: 'motifs récurrents initiales historiées ligériennes', found: 41,
+      answer: "Trois familles de motifs reviennent : les entrelacs zoomorphes (têtes d'animaux affrontées), les rinceaux végétaux peuplés, et les figures en pied insérées dans la lettre. Les drôleries marginales n'apparaissent qu'au XIIe siècle, à Marmoutier.",
+      cites: [{ label: 'Initiale « B »', ark: 'ark:/12148/btv1b5901234', vue: 1 }, { label: 'Drôlerie marginale', ark: 'ark:/12148/btv1b5610344', vue: 1 }],
+      note: { id: 'q4', title: 'Répertoire ornemental', updated: "rédigée par l'agent · à l'instant",
+        content: "## Répertoire des initiales historiées\n\n### Trois familles\n- **Entrelacs zoomorphes** — têtes affrontées, héritage insulaire.\n- **Rinceaux peuplés** — végétal habité de figures.\n- **Figures en pied** dans le corps de la lettre. [[ark:/12148/btv1b5901234|Initiale « B »|1]]\n\n### Évolution\nLes **drôleries marginales** émergent au XIIe s. à Marmoutier. [[ark:/12148/btv1b5610344|Drôlerie marginale|1]]\n\n> Piste : cartographier la diffusion de chaque famille par atelier et par décennie." } },
+  ];
+  P2_MEM_CORPUS = {
+    title: 'Mémoire du projet',
+    sections: [
+      { title: 'Périmètre du corpus', items: [
+        { id: 'mc1', text: "Sujet : enluminure des scriptoria de la Loire", origin: 'objectif' },
+        { id: 'mc2', text: 'Période : VIIIe – XIIIe siècle', origin: 'cadrage' },
+        { id: 'mc3', text: 'Foyers : Tours, Marmoutier, Fleury', origin: 'déduit' },
+      ] },
+      { title: 'Critères', items: [
+        { id: 'mc4', text: 'Langue : latin, ancien français', origin: 'consigne' },
+        { id: 'mc5', text: 'Privilégier les pièces datées ou localisées', origin: 'consigne' },
+        { id: 'mc6', text: 'Conserver les chartes scellées (datation)', origin: 'déduit' },
+      ] },
+      { title: 'Sources', items: [
+        { id: 'mc7', text: 'Gallica, BnF Arsenal, Archives dép. 37', origin: 'consigne' },
+      ] },
+      { title: 'État', items: [
+        { id: 'mc8', text: '842 notices · ingestion terminée', origin: 'état' },
+      ] },
+    ],
+  };
+  P2_MEM_RESEARCH = {
+    title: 'Mémoire du projet',
+    sections: [
+      { title: 'Question de recherche', items: [
+        { id: 'mr1', text: "Filiation des styles d'enluminure ligériens", origin: 'objectif' },
+        { id: 'mr2', text: 'Du carolingien (IXe) au roman (XIIe)', origin: 'cadrage' },
+      ] },
+      { title: 'Méthode', items: [
+        { id: 'mr3', text: 'Croiser enluminures et chartes datées', origin: 'approche' },
+        { id: 'mr4', text: 'Citer le folio (vue IIIF) de chaque pièce', origin: 'consigne' },
+      ] },
+      { title: 'Hypothèses', items: [
+        { id: 'mr5', text: 'Tours = foyer rayonnant vers Fleury et Marmoutier', origin: 'note q2' },
+        { id: 'mr6', text: 'Drôleries marginales = innovation XIIe s.', origin: 'note q4' },
+      ] },
+    ],
+  };
+  P2_MESSAGES = [
+    { role: 'event', kind: 'resume', text: 'Session reprise · « Enluminures & chartes »' },
+    { role: 'agent', text: "Bon retour. Ce corpus réunit 842 manuscrits, enluminures et chartes des scriptoria ligériens (Tours, Marmoutier, Fleury), du VIIIe au XIIIe siècle. L'ingestion est terminée — vous pouvez affiner le corpus ou passer directement à la recherche." },
+  ];
+  P2_RMESSAGES = [
+    { role: 'agent', text: "Le corpus est indexé. Interrogez-le sur les styles, les ateliers ou la datation : je cite le folio exact et je consigne les réponses en notes." },
+  ];
+
+  P1_MESSAGES = [
+    { role: 'event', kind: 'resume', text: 'Session reprise · « Presse illustrée 1889 »' },
+    { role: 'agent', text: "Bon retour. Votre corpus compte 1 730 documents — presse quotidienne et illustrée, iconographie, sources officielles. Sur quoi souhaitez-vous l'étendre ?" },
+  ];
+  P1_RMESSAGES = [{ role: 'agent', text: "Le corpus est indexé. Posez une question : je cite mes sources, j'ouvre les documents concernés et je consigne les réponses dans des notes." }];
+
+  // p1 originals captured once (field init runs before any project switch)
+  P1_BUNDLE = {
+    dist0: this.DIST0, seed: this.SEED, build: this.BUILD_SCRIPT,
+    sessCorpus: this.SESSIONS_CORPUS, sessResearch: this.SESSIONS_RESEARCH,
+    corpusSnaps: this.CORPUS_SNAPS, researchSnaps: this.RESEARCH_SNAPS,
+    rNotes: this.R_NOTES, rNotesR2: this.R_NOTES_R2, rScript: this.R_SCRIPT,
+    memCorpus: this.MEMORY_CORPUS, memResearch: this.MEMORY_RESEARCH,
+    messages: this.P1_MESSAGES, rMessages: this.P1_RMESSAGES,
+    activeSession: 's2', activeRSession: 'r1', ingestDone: false,
+  };
+
+  bundleFor(id) {
+    if (id === 'p2') return {
+      dist0: this.P2_DIST0, seed: this.P2_SEED, build: this.P2_BUILD,
+      sessCorpus: this.P2_SESS_CORPUS, sessResearch: this.P2_SESS_RESEARCH,
+      corpusSnaps: this.P2_CORPUS_SNAPS, researchSnaps: this.P2_RESEARCH_SNAPS,
+      rNotes: this.P2_R_NOTES, rNotesR2: this.P2_R_NOTES_R2, rScript: this.P2_R_SCRIPT,
+      memCorpus: this.P2_MEM_CORPUS, memResearch: this.P2_MEM_RESEARCH,
+      messages: this.P2_MESSAGES, rMessages: this.P2_RMESSAGES,
+      activeSession: 'm2', activeRSession: 'mr1', ingestDone: true,
+    };
+    return this.P1_BUNDLE;
+  }
+
+  loadProject(id) {
+    if (id === this.state.activeProject) { this.setState({ projPickerOpen: false }); return; }
+    const b = this.bundleFor(id);
+    // repoint live data fields used by play/render methods
+    this.DIST0 = b.dist0; this.SEED = b.seed; this.BUILD_SCRIPT = b.build;
+    this.SESSIONS_CORPUS = b.sessCorpus; this.SESSIONS_RESEARCH = b.sessResearch;
+    this.CORPUS_SNAPS = b.corpusSnaps; this.RESEARCH_SNAPS = b.researchSnaps;
+    this.R_NOTES = b.rNotes; this.R_NOTES_R2 = b.rNotesR2; this.R_SCRIPT = b.rScript;
+    this.MEMORY_CORPUS = b.memCorpus; this.MEMORY_RESEARCH = b.memResearch;
+    if (this.timers) this.timers.forEach(clearTimeout);
+    if (this.iv) clearInterval(this.iv);
+    this.setState({
+      activeProject: id, projPickerOpen: false, step: 'corpus',
+      dist: Object.assign({}, b.dist0), samples: b.seed.slice(), hasEnglish: true, bIdx: 0,
+      messages: b.messages.slice(), input: '', busy: false, busyLabel: '',
+      typeFilter: null, langFilter: null, sourceFilter: null, yearFilter: null, query: '', corpusDoc: null,
+      activeSession: b.activeSession, activeRSession: b.activeRSession,
+      ingestPct: b.ingestDone ? 100 : 0, ingesting: false, ingestDone: b.ingestDone,
+      rLayout: 'artifact', notes: b.rNotes.slice(),
+      openTabs: [{ kind: 'note', id: b.rNotes[0].id }], activeTab: 'note:' + b.rNotes[0].id,
+      cite: null, pickerQuery: '',
+      rMessages: b.rMessages.slice(), rInput: '', rIdx: 0, rBusy: false, rBusyLabel: '',
+      memCorpus: JSON.parse(JSON.stringify(b.memCorpus.sections)),
+      memResearch: JSON.parse(JSON.stringify(b.memResearch.sections)),
+    });
+    this.toast('Projet « ' + this.PROJECTS_META[id].name + ' » chargé');
+  }
+
+  INTROS = {
+    corpus: {
+      tag: 'Étape 1 · Constituer',
+      title: 'Constituer votre corpus',
+      lead: "Vous allez rassembler un ensemble de documents de la BnF avec l'aide de l'agent.",
+      points: [
+        { icon: '<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>', title: "Dialoguez avec l'agent, à gauche",
+          text: "Demandez-lui de chercher et d'ajouter des documents ; il interroge le catalogue de la BnF pour vous." },
+        { icon: '<path d="M3 4h18M3 12h18M3 20h18"/>', title: 'Suivez votre corpus, à droite',
+          text: "Le panneau affiche le nombre de documents, leur composition, et la liste complète. Ouvrez « Filtres et statistiques » pour explorer par type, langue ou période." },
+        { icon: '<path d="M5 12h14M12 5l7 7-7 7"/>', title: 'Puis ingérez le corpus',
+          text: "Quand votre corpus vous convient, cliquez « Ingérer le corpus » en haut à droite : il sera préparé pour la recherche." },
+      ],
+    },
+    research: {
+      tag: 'Étape 3 · Rechercher',
+      title: "Rechercher dans le corpus",
+      lead: "Votre corpus est indexé. Vous pouvez l'interroger en langage naturel.",
+      points: [
+        { icon: '<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>', title: "Posez vos questions à l'agent",
+          text: "Il cherche dans l'ensemble du corpus et répond en citant précisément ses sources." },
+        { icon: '<path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>', title: 'Ouvrez les sources citées',
+          text: "Cliquez une référence (en bleu) : un volet s'ouvre avec la notice et un lien vers la page exacte sur Gallica / la BnF." },
+        { icon: '<path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>', title: 'Conservez vos notes',
+          text: "L'agent rédige des notes de recherche, listées à gauche. La vue « Carnet » les rassemble en un seul document." },
+      ],
+    },
+  };
+
+  state = {
+    step: 'corpus',
+    introStep: 'corpus',
+    dist: Object.assign({}, this.DIST0),
+    samples: this.SEED.slice(),
+    hasEnglish: true,
+    bIdx: 0,
+    messages: [
+      { role: 'event', kind: 'resume', text: 'Session reprise · « Presse illustrée 1889 »' },
+      { role: 'agent', text: "Bon retour. Votre corpus compte 1 730 documents — presse quotidienne et illustrée, iconographie, sources officielles. Sur quoi souhaitez-vous l'étendre ?" },
+    ],
+    input: '', busy: false, busyLabel: '',
+    typeFilter: null, langFilter: null, sourceFilter: null, yearFilter: null, statusFilter: null,
+    statsOpen: false,
+    query: '', activeSession: 's2', activeRSession: 'r1',
+    corpusDoc: null,
+    ingestPct: 0, ingesting: false, ingestDone: false,
+    rLayout: 'artifact',
+    notes: this.R_NOTES.slice(),
+    openTabs: [{ kind: 'note', id: 'n1' }, { kind: 'note', id: 'n0' }],
+    activeTab: 'note:n1',
+    cite: null,
+    pickerQuery: '',
+    rMessages: [{ role: 'agent', text: "Le corpus est indexé. Posez une question : je cite mes sources, j'ouvre les documents concernés et je consigne les réponses dans des notes." }],
+    rInput: '', rIdx: 0, rBusy: false, rBusyLabel: '',
+    memCorpus: JSON.parse(JSON.stringify(this.MEMORY_CORPUS.sections)),
+    memResearch: JSON.parse(JSON.stringify(this.MEMORY_RESEARCH.sections)),
+    memOpen: false,
+    toastMsg: null,
+    projPickerOpen: false,
+    activeProject: 'p1',
+  };
+
+  toast(msg, dur) {
+    this.setState({ toastMsg: msg });
+    if (this._toastTimer) clearTimeout(this._toastTimer);
+    this._toastTimer = setTimeout(() => this.setState({ toastMsg: null }), dur || 2800);
+  }
+
+  loadCorpusSession(id) {
+    if (id === this.state.activeSession) return;
+    const snap = this.CORPUS_SNAPS[id];
+    if (!snap) { this.setState({ activeSession: id }); return; }
+    const samples = snap.samples
+      ? this.SEED.filter((d) => snap.samples.indexOf(d.ark) !== -1)
+      : this.SEED.slice();
+    this.setState({
+      activeSession: id, dist: Object.assign({}, snap.dist || this.DIST0),
+      samples, hasEnglish: snap.hasEnglish, bIdx: snap.bIdx,
+      messages: snap.messages.slice(), busy: false,
+      typeFilter: null, langFilter: null, sourceFilter: null, yearFilter: null, query: '', corpusDoc: null,
+    });
+    this.toast('Session « ' + this.SESSIONS_CORPUS.find((s) => s.id === id).title + ' » chargée');
+  }
+
+  newCorpusSession() {
+    const id = 'new' + Date.now();
+    this.SESSIONS_CORPUS.push({ id, title: 'Nouvelle session', meta: 'en cours', time: "à l'instant", dotOn: true });
+    this.setState({
+      activeSession: id, dist: Object.assign({}, this.state.dist),
+      samples: this.state.samples.slice(), bIdx: this.state.bIdx,
+      messages: [{ role: 'agent', text: "Nouvelle session démarrée. Le corpus actuel compte " + this.total() + " documents. Que souhaitez-vous explorer ou affiner ?" }],
+      busy: false, input: '', corpusDoc: null,
+    });
+  }
+
+  loadResearchSession(id) {
+    if (id === this.state.activeRSession) return;
+    const snap = this.RESEARCH_SNAPS[id];
+    if (!snap) { this.setState({ activeRSession: id }); return; }
+    const notes = snap.notes || this.R_NOTES_R2.slice();
+    this.setState({
+      activeRSession: id,
+      notes, openTabs: snap.openTabs.slice(), activeTab: snap.activeTab,
+      rMessages: snap.rMessages.slice(), rIdx: snap.rIdx || 0, rBusy: false, rInput: '', pickerQuery: '', cite: null,
+    });
+    this.toast('Session « ' + this.SESSIONS_RESEARCH.find((s) => s.id === id).title + ' » chargée');
+  }
+
+  newResearchSession() {
+    const id = 'rnew' + Date.now();
+    const baseNote = { id: 'nb' + id, title: 'Nouvelle note', updated: 'brouillon',
+      content: "## Nouvelle note de recherche\n\n> Posez une question à l'assistant pour démarrer." };
+    this.SESSIONS_RESEARCH.push({ id, title: 'Nouvelle session', meta: 'en cours', time: "à l'instant", dotOn: true });
+    this.setState({
+      activeRSession: id,
+      notes: [baseNote], openTabs: [{ kind: 'note', id: baseNote.id }], activeTab: 'note:' + baseNote.id,
+      rMessages: [{ role: 'agent', text: "Nouvelle session de recherche. Le corpus est disponible — posez votre première question." }],
+      rIdx: 0, rBusy: false, rInput: '', pickerQuery: '', cite: null,
+    });
+  }
+
+  forgetMemory(id) {
+    const strip = (secs) => secs.map((s) => ({ title: s.title, items: s.items.filter((it) => it.id !== id) })).filter((s) => s.items.length);
+    this.setState((s) => ({ memCorpus: strip(s.memCorpus), memResearch: strip(s.memResearch) }));
+  }
+
+  componentDidMount() {
+    this._introSeen = { corpus: true }; // corpus intro shown on first load
+    this._lastStep = this.state.step;
+    this._outsideClick = (e) => {
+      if (this.state.projPickerOpen && !e.target.closest('[data-proj-picker]')) {
+        this.setState({ projPickerOpen: false });
+      }
+    };
+    document.addEventListener('mousedown', this._outsideClick);
+  }
+  componentDidUpdate() {
+    const st = this.state.step;
+    if (st !== this._lastStep) {
+      this._lastStep = st;
+      if ((st === 'corpus' || st === 'research') && !this._introSeen[st]) {
+        this._introSeen[st] = true;
+        this.setState({ introStep: st });
+      }
+    }
+  }
+  componentWillUnmount() {
+    if (this.iv) clearInterval(this.iv);
+    this.timers && this.timers.forEach(clearTimeout);
+    if (this._toastTimer) clearTimeout(this._toastTimer);
+    document.removeEventListener('mousedown', this._outsideClick);
+  }
+
+  total() { const d = this.state.dist; return Object.keys(d).reduce((a, k) => a + (d[k] || 0), 0); }
+
+  mdToHtml(src) {
+    const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const inl = (s) => esc(s)
+      .replace(/\*\*(.+?)\*\*/g, '<strong style="color:var(--foreground);font-weight:600">$1</strong>')
+      .replace(/\*(.+?)\*/g, '<em style="color:var(--neutral-200)">$1</em>')
+      .replace(/`(.+?)`/g, '<code style="font-family:var(--font-mono);font-size:12px;background:var(--muted);padding:1px 5px;border-radius:4px;color:var(--brand-teal)">$1</code>')
+      .replace(/\[\[(.+?)\]\]/g, (m, inner) => {
+        const parts = inner.split('|'); const ark = parts[0], label = parts[1] || ark, vue = parts[2] || '1';
+        return '<a href="#" data-ark="' + ark + '" data-vue="' + vue + '" style="display:inline-flex;align-items:center;gap:4px;vertical-align:baseline;font-family:var(--font-mono);font-size:10.5px;color:var(--brand-teal);background:color-mix(in srgb,var(--brand-teal) 11%,transparent);border:1px solid color-mix(in srgb,var(--brand-teal) 32%,transparent);border-radius:var(--radius-full);padding:0 7px;margin:0 1px;text-decoration:none;white-space:nowrap;cursor:pointer"><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>' + label + '</a>';
+      });
+    const lines = src.split('\n'); let out = '', list = null;
+    const closeList = () => { if (list) { out += '</ul>'; list = null; } };
+    for (let raw of lines) {
+      const t = raw.trim();
+      if (!t) { closeList(); continue; }
+      if (t.startsWith('### ')) { closeList(); out += '<h3 style="font-family:var(--font-mono);font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted-foreground);margin:24px 0 8px">' + inl(t.slice(4)) + '</h3>'; }
+      else if (t.startsWith('## ')) { closeList(); out += '<h2 style="font-size:17px;font-weight:600;color:var(--foreground);margin:26px 0 10px;letter-spacing:var(--tracking-tight)">' + inl(t.slice(3)) + '</h2>'; }
+      else if (t.startsWith('> ')) { closeList(); out += '<blockquote style="border-left:2px solid var(--brand-teal);margin:14px 0;padding:2px 0 2px 14px;color:var(--muted-foreground);font-size:13.5px;line-height:1.6;font-style:italic">' + inl(t.slice(2)) + '</blockquote>'; }
+      else if (t.startsWith('- ')) { if (!list) { out += '<ul style="margin:8px 0;padding-left:0;list-style:none;display:flex;flex-direction:column;gap:7px">'; list = true; } out += '<li style="display:flex;gap:9px;font-size:14px;line-height:1.6;color:var(--neutral-200)"><span style="color:var(--brand-teal);flex-shrink:0">—</span><span>' + inl(t.slice(2)) + '</span></li>'; }
+      else { closeList(); out += '<p style="font-size:14px;line-height:1.7;color:var(--neutral-200);margin:0 0 12px">' + inl(t) + '</p>'; }
+    }
+    closeList(); return out;
+  }
+
+  // step 1
+  playBuild(entry) {
+    if (this.state.busy || !entry) return;
+    this.timers = this.timers || [];
+    const push = (msg) => this.setState((s) => ({ messages: s.messages.concat([msg]) }));
+    this.setState((s) => ({ messages: s.messages.concat([{ role: 'user', text: entry.user }]), input: '', busy: true, busyLabel: entry.busy }));
+    this.timers.push(setTimeout(() => push({ role: 'tool', tool: entry.tool, query: entry.query, found: entry.found }), 700));
+    this.timers.push(setTimeout(() => {
+      this.setState((s) => {
+        const dist = Object.assign({}, s.dist);
+        if (entry.addDist) Object.keys(entry.addDist).forEach((k) => dist[k] += entry.addDist[k]);
+        if (entry.removeDist) Object.keys(entry.removeDist).forEach((k) => dist[k] -= entry.removeDist[k]);
+        let samples = s.samples;
+        if (entry.sampleAdds) samples = samples.concat(entry.sampleAdds);
+        if (entry.removeArks) samples = samples.filter((d) => entry.removeArks.indexOf(d.ark) === -1);
+        return { dist, samples, hasEnglish: entry.dropEnglish ? false : s.hasEnglish };
+      });
+      push(entry.addDist ? { role: 'event', kind: 'add', count: entry.found2 } : { role: 'event', kind: 'remove', count: entry.removeCount });
+    }, 1550));
+    this.timers.push(setTimeout(() => this.setState((s) => ({ messages: s.messages.concat([{ role: 'agent', text: entry.reasoning }]), busy: false, bIdx: s.bIdx + 1 })), 2000));
+  }
+  sendBuild() {
+    if (this.state.busy) return;
+    const entry = this.BUILD_SCRIPT[this.state.bIdx];
+    if (entry) this.playBuild(entry);
+    else this.setState((s) => ({ messages: s.messages.concat([{ role: 'user', text: s.input.trim() || 'Le corpus est-il complet ?' }, { role: 'agent', text: "Le corpus couvre la presse quotidienne et illustrée, l'iconographie et les sources officielles, en français. Vous pouvez lancer l'ingestion." }]), input: '' }));
+  }
+
+  // step 2
+  openCorpusDoc(ark) { this.setState({ corpusDoc: ark }); }
+  closeCorpusDoc() { this.setState({ corpusDoc: null }); }
+
+  startIngest() {
+    if (this.state.ingesting || this.state.ingestDone) return;
+    this.setState({ ingesting: true, ingestPct: 0 });
+    this.iv = setInterval(() => this.setState((s) => {
+      const p = s.ingestPct + 2;
+      if (p >= 100) { clearInterval(this.iv); return { ingestPct: 100, ingesting: false, ingestDone: true }; }
+      return { ingestPct: p };
+    }), 50);
+  }
+
+  // step 3 tabs
+  openTab(kind, id) {
+    this.setState((s) => {
+      const key = kind + ':' + id;
+      const exists = s.openTabs.some((t) => t.kind === kind && t.id === id);
+      return { openTabs: exists ? s.openTabs : s.openTabs.concat([{ kind, id }]), activeTab: key };
+    });
+  }
+  closeTab(kind, id) {
+    this.setState((s) => {
+      const key = kind + ':' + id;
+      const tabs = s.openTabs.filter((t) => !(t.kind === kind && t.id === id));
+      let active = s.activeTab;
+      if (active === key) { const last = tabs[tabs.length - 1]; active = last ? last.kind + ':' + last.id : null; }
+      return { openTabs: tabs, activeTab: active };
+    });
+  }
+  openCite(ark, vue) { this.setState({ cite: { ark, vue: vue || 1 } }); }
+  closeCite() { this.setState({ cite: null }); }
+  onReaderClick(e) {
+    const el = e.target && e.target.closest ? e.target.closest('[data-ark]') : null;
+    if (el) { e.preventDefault(); this.openCite(el.getAttribute('data-ark'), el.getAttribute('data-vue')); }
+  }
+  newArtifact() {
+    const id = 'u' + Date.now();
+    const note = { id, title: 'Nouvelle note', updated: "brouillon · à l'instant",
+      content: "## Nouvelle note\n\nPosez une question à l'assistant pour que l'agent rédige ici, ou commencez votre propre synthèse.\n\n> Les références [ARK] insérées par l'agent ouvriront la source sur la BnF." };
+    this.setState((s) => ({ notes: s.notes.concat([note]) }));
+    this.openTab('note', id);
+  }
+  playResearch(entry) {
+    if (this.state.rBusy || !entry) return;
+    this.timers = this.timers || [];
+    const push = (msg) => this.setState((s) => ({ rMessages: s.rMessages.concat([msg]) }));
+    this.setState((s) => ({ rMessages: s.rMessages.concat([{ role: 'user', text: entry.user }]), rInput: '', rBusy: true, rBusyLabel: entry.busy }));
+    this.timers.push(setTimeout(() => push({ role: 'tool', query: entry.query, found: entry.found }), 700));
+    this.timers.push(setTimeout(() => {
+      push({ role: 'agent', text: entry.answer, cites: entry.cites });
+      if (entry.note) {
+        this.setState((s) => ({ notes: s.notes.concat([entry.note]) }));
+        this.openTab('note', entry.note.id);
+        push({ role: 'event', text: 'Note créée · ' + entry.note.title, noteId: entry.note.id });
+      }
+      this.setState((s) => ({ rBusy: false, rIdx: s.rIdx + 1 }));
+    }, 1750));
+  }
+  sendResearch() {
+    if (this.state.rBusy) return;
+    const entry = this.R_SCRIPT[this.state.rIdx];
+    if (entry) this.playResearch(entry);
+    else this.setState((s) => ({ rMessages: s.rMessages.concat([{ role: 'user', text: s.rInput.trim() || 'Merci.' }, { role: 'agent', text: 'Les notes de synthèse sont consignées dans ce projet ; vous pourrez les reprendre à tout moment.' }]), rInput: '' }));
+  }
+
+  fmt(n) { return n.toLocaleString('fr-FR'); }
+
+  renderVals() {
+    const S = this.state, T = this.TYPES, SRC = this.SOURCES;
+    const activeMeta = this.PROJECTS_META[S.activeProject] || this.PROJECTS_META.p1;
+    const projectName = (S.activeProject === 'p1' && this.props.projectName) ? this.props.projectName : activeMeta.name;
+    const showMemory = this.props.showMemory ?? true;
+    const total = this.total();
+
+    // stepper
+    const order = ['corpus', 'ingest', 'research'];
+    const curIdx = order.indexOf(S.step);
+    const stepDefs = [{ key: 'corpus', n: '1', label: 'Constituer' }, { key: 'ingest', n: '2', label: 'Ingérer' }, { key: 'research', n: '3', label: 'Rechercher' }];
+    const steps = stepDefs.map((d, i) => {
+      const active = i === curIdx, done = i < curIdx;
+      const bg = active ? 'var(--primary)' : (done ? 'color-mix(in srgb,var(--primary) 25%,var(--card))' : 'var(--card)');
+      const bd = active || done ? 'color-mix(in srgb,var(--brand-teal) 45%,transparent)' : 'var(--border)';
+      const dc = active ? 'var(--primary-foreground)' : (done ? 'var(--brand-teal)' : 'var(--muted-foreground)');
+      return { n: d.n, label: d.label, showLine: i > 0, done, showNum: !done,
+        onClick: () => this.setState({ step: d.key }),
+        btnStyle: 'display:flex;align-items:center;gap:8px;background:transparent;border:none;cursor:pointer;padding:4px 6px;border-radius:8px',
+        dotStyle: 'width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-family:var(--font-mono);font-size:11px;font-weight:600;background:' + bg + ';border:1px solid ' + bd + ';color:' + dc,
+        labelStyle: 'font-size:12.5px;font-weight:' + (active ? '600' : '500') + ';color:' + (active ? 'var(--foreground)' : 'var(--muted-foreground)') };
+    });
+
+    const isResearch = S.step === 'research', isCorpus = S.step === 'corpus';
+
+    // sessions
+    const sessData = isResearch ? this.SESSIONS_RESEARCH : this.SESSIONS_CORPUS;
+    const activeSessId = isResearch ? S.activeRSession : S.activeSession;
+    const sessions = sessData.map((s) => {
+      const on = s.id === activeSessId;
+      return { title: s.title, meta: s.meta, time: s.time,
+        onClick: () => isResearch ? this.loadResearchSession(s.id) : this.loadCorpusSession(s.id),
+        dotStyle: 'width:7px;height:7px;border-radius:50%;flex-shrink:0;background:' + (on ? 'var(--info)' : 'var(--neutral-700)'),
+        rowStyle: 'display:flex;flex-direction:column;gap:5px;text-align:left;width:100%;padding:9px 10px;border-radius:var(--radius-md);cursor:pointer;border:1px solid ' + (on ? 'color-mix(in srgb,var(--brand-teal) 30%,var(--border))' : 'transparent') + ';background:' + (on ? 'color-mix(in srgb,var(--brand-teal) 8%,transparent)' : 'transparent') };
+    });
+
+    // project memory — global, persisted across sessions, editable (Claude-Code-style memory file)
+    const memTitle = (isResearch ? this.MEMORY_RESEARCH : this.MEMORY_CORPUS).title;
+    const memSecsRaw = isResearch ? S.memResearch : S.memCorpus;
+    const memCount = memSecsRaw.reduce((a, s) => a + s.items.length, 0);
+    const memSections = memSecsRaw.map((s) => ({
+      title: s.title,
+      items: s.items.map((it) => ({ text: it.text, origin: it.origin, onRemove: () => this.forgetMemory(it.id) })),
+    }));
+    const memPreview = memSecsRaw.slice(0, 2).map((s) => s.title).join(' · ');
+
+    // research artifacts list (rail)
+    const pq = S.pickerQuery.trim().toLowerCase();
+    const artifactsAll = S.notes;
+    const pickerList = artifactsAll.filter((n) => !pq || (n.title + ' ' + n.content).toLowerCase().indexOf(pq) !== -1);
+    const artifactList = pickerList.map((n) => {
+      const isOpen = S.activeTab === 'note:' + n.id;
+      const ncites = (n.content.match(/\[\[/g) || []).length;
+      return { title: n.title, meta: n.updated + (ncites ? ' · ' + ncites + ' réf.' : ''),
+        onClick: () => this.openTab('note', n.id),
+        iconWrap: 'width:26px;height:32px;flex-shrink:0;display:flex;align-items:center;justify-content:center;border-radius:4px;color:' + (isOpen ? 'var(--brand-teal)' : 'var(--muted-foreground)') + ';background:' + (isOpen ? 'color-mix(in srgb,var(--brand-teal) 12%,transparent)' : 'var(--secondary)') + ';border:1px solid ' + (isOpen ? 'color-mix(in srgb,var(--brand-teal) 30%,transparent)' : 'var(--border)'),
+        rowStyle: 'display:flex;align-items:center;gap:10px;width:100%;padding:7px 8px;border-radius:var(--radius-md);cursor:pointer;border:1px solid ' + (isOpen ? 'color-mix(in srgb,var(--brand-teal) 28%,var(--border))' : 'transparent') + ';background:' + (isOpen ? 'color-mix(in srgb,var(--brand-teal) 8%,transparent)' : 'transparent') };
+    });
+
+    // ---- corpus facets ----
+    const maxType = Math.max(1, ...Object.values(S.dist));
+    const typeRows = Object.keys(S.dist).filter((k) => S.dist[k] > 0 && T[k]).map((k) => {
+      const c = S.dist[k], col = T[k].color, active = S.typeFilter === k;
+      return { label: T[k].label, count: this.fmt(c),
+        onClick: () => this.setState((s) => ({ typeFilter: s.typeFilter === k ? null : k })),
+        swatch: 'width:9px;height:9px;border-radius:2px;flex-shrink:0;background:' + col,
+        barStyle: 'height:100%;width:' + Math.round((c / maxType) * 100) + '%;background:' + col + ';border-radius:3px;transition:width .4s ease',
+        rowStyle: 'text-align:left;width:100%;background:transparent;border:none;cursor:pointer;padding:3px;margin:-3px;border-radius:6px;opacity:' + (S.typeFilter && !active ? '.5' : '1') };
+    });
+    const meta = this.PROJECTS_META[S.activeProject] || this.PROJECTS_META.p1;
+    let langData;
+    if (meta.useHasEnglish) {
+      const enCount = S.hasEnglish ? Math.round(total * 0.045) : 0;
+      langData = [{ k: 'fr', label: 'Français', c: total - enCount }, { k: 'en', label: 'Anglais', c: enCount }].filter((l) => l.c > 0);
+    } else {
+      langData = meta.langs.map((l) => ({ k: l.k, label: l.label, c: Math.round(total * l.ratio) }));
+    }
+    const maxLang = Math.max(1, ...langData.map((l) => l.c));
+    const langRows = langData.map((l, i) => {
+      const active = S.langFilter === l.k, primary = i === 0;
+      return { label: l.label, count: this.fmt(l.c),
+        onClick: () => this.setState((s) => ({ langFilter: s.langFilter === l.k ? null : l.k })),
+        swatch: 'width:9px;height:9px;border-radius:50%;flex-shrink:0;background:' + (primary ? 'var(--brand-teal)' : 'var(--neutral-500)'),
+        barStyle: 'height:100%;width:' + Math.round((l.c / maxLang) * 100) + '%;background:' + (primary ? 'var(--brand-teal)' : 'var(--neutral-500)') + ';border-radius:3px;transition:width .4s ease',
+        rowStyle: 'text-align:left;width:100%;background:transparent;border:none;cursor:pointer;padding:3px;margin:-3px;border-radius:6px;opacity:' + (S.langFilter && !active ? '.5' : '1') };
+    });
+    const srcRatio = meta.srcRatio;
+    const srcData = Object.keys(srcRatio).map((k) => ({ k, label: SRC[k], c: Math.round(total * srcRatio[k]) }));
+    const maxSrc = Math.max(1, ...srcData.map((s) => s.c));
+    const srcRows = srcData.map((s) => {
+      const active = S.sourceFilter === s.k;
+      return { label: s.label, count: this.fmt(s.c),
+        onClick: () => this.setState((st) => ({ sourceFilter: st.sourceFilter === s.k ? null : s.k })),
+        swatch: 'width:9px;height:9px;border-radius:2px;flex-shrink:0;background:var(--dataset-5)',
+        barStyle: 'height:100%;width:' + Math.round((s.c / maxSrc) * 100) + '%;background:var(--dataset-5);border-radius:3px;transition:width .4s ease',
+        rowStyle: 'text-align:left;width:100%;background:transparent;border:none;cursor:pointer;padding:3px;margin:-3px;border-radius:6px;opacity:' + (S.sourceFilter && !active ? '.5' : '1') };
+    });
+    const facetCards = [
+      { title: 'Par type de document', rows: typeRows },
+      { title: 'Par langue', rows: langRows },
+      { title: 'Par source', rows: srcRows },
+    ];
+
+    // period histogram (year or century — meta-driven)
+    const bins = meta.histBins;
+    const bmax = Math.max(1, ...bins.map((b) => b.ratio));
+    const yearBins = bins.map((b) => {
+      const c = Math.round(total * b.ratio);
+      const active = S.yearFilter && S.yearFilter.label === b.label;
+      const h = Math.max(8, Math.round((b.ratio / bmax) * 74));
+      return { year: b.label, count: this.fmt(c),
+        onClick: () => this.setState((s) => ({ yearFilter: (s.yearFilter && s.yearFilter.label === b.label) ? null : { label: b.label, lo: b.lo, hi: b.hi } })),
+        barStyle: 'width:100%;max-width:40px;height:' + h + 'px;border-radius:3px 3px 0 0;background:' + (active ? 'var(--brand-teal)' : 'linear-gradient(180deg,color-mix(in srgb,var(--brand-teal) 80%,transparent),color-mix(in srgb,var(--brand-teal) 35%,var(--card)))') + ';transition:height .4s ease;box-shadow:' + (active ? '0 0 0 2px color-mix(in srgb,var(--brand-teal) 40%,transparent)' : 'none'),
+        labelStyle: 'font-family:var(--font-mono);font-size:10px;color:' + (active ? 'var(--brand-teal)' : 'var(--neutral-500)') };
+    });
+
+    // summary
+    const summary = [
+      { label: 'Documents', value: this.fmt(total), sub: 'notices ARK' },
+      { label: 'Période', value: meta.periodLabel, sub: meta.periodSub },
+      { label: 'Types', value: String(typeRows.length), sub: 'catégories' },
+      { label: 'Langues', value: String(langData.length), sub: langData.map((l) => l.k.toUpperCase()).join(' · ') },
+    ];
+
+    // doc preview list
+    const q = S.query.trim().toLowerCase();
+    const docsRaw = S.samples.filter((d) => {
+      if (S.typeFilter && d.type !== S.typeFilter) return false;
+      if (S.langFilter && d.lang !== S.langFilter) return false;
+      if (S.sourceFilter && d.source !== S.sourceFilter) return false;
+      if (S.yearFilter && (d.year < S.yearFilter.lo || d.year > S.yearFilter.hi)) return false;
+      if (S.statusFilter && this.docStatus(d) !== S.statusFilter) return false;
+      if (q && (d.title + ' ' + d.author + ' ' + d.ark).toLowerCase().indexOf(q) === -1) return false;
+      return true;
+    });
+    const docs = docsRaw.slice().reverse().map((d) => {
+      const col = T[d.type].color, active = S.corpusDoc === d.ark;
+      return { ark: d.ark, title: d.title, author: d.author, source: SRC[d.source],
+        dateLabel: String(d.year) + (d.pages > 1 ? ' · ' + d.pages + ' p.' : ''),
+        typeLabel: T[d.type].label, langLabel: d.lang.toUpperCase(),
+        onClick: () => this.openCorpusDoc(d.ark),
+        rowStyle: 'display:flex;gap:13px;align-items:center;width:100%;border:1px solid ' + (active ? 'color-mix(in srgb,var(--brand-teal) 40%,var(--border))' : 'var(--border)') + ';background:' + (active ? 'color-mix(in srgb,var(--brand-teal) 8%,var(--card))' : 'var(--card)') + ';border-radius:var(--radius-md);padding:11px 14px;cursor:pointer',
+        thumbStyle: 'width:34px;height:46px;flex-shrink:0;border-radius:3px;border:1px solid var(--border);border-top:3px solid ' + col + ';background:repeating-linear-gradient(0deg,color-mix(in srgb,' + col + ' 7%,var(--background)),color-mix(in srgb,' + col + ' 7%,var(--background)) 4px,transparent 4px,transparent 7px)',
+        langStyle: 'flex-shrink:0;font-family:var(--font-mono);font-size:10px;padding:2px 7px;border-radius:var(--radius-full);color:var(--muted-foreground);border:1px solid var(--border)',
+        chipStyle: 'flex-shrink:0;font-family:var(--font-mono);font-size:10.5px;padding:3px 9px;border-radius:var(--radius-full);color:' + col + ';background:color-mix(in srgb,' + col + ' 13%,transparent);border:1px solid color-mix(in srgb,' + col + ' 28%,transparent)' };
+    });
+
+    // corpus doc detail panel
+    const cdObj = S.corpusDoc ? S.samples.find((d) => d.ark === S.corpusDoc) : null;
+    let cdTitle = '', cdAuthor = '', cdType = '', cdArk = '', cdChipStyle = '', cdThumb = '', cdFields = [], cdExcerpt = '', cdHasExcerpt = false, cdGallicaUrl = '#', cdIiifUrl = '#', cdManifestUrl = '#';
+    if (cdObj) {
+      const col = T[cdObj.type].color;
+      cdTitle = cdObj.title; cdAuthor = cdObj.author; cdType = T[cdObj.type].label; cdArk = cdObj.ark;
+      cdChipStyle = 'display:inline-block;font-family:var(--font-mono);font-size:10px;padding:2px 8px;border-radius:var(--radius-full);color:' + col + ';background:color-mix(in srgb,' + col + ' 13%,transparent);border:1px solid color-mix(in srgb,' + col + ' 28%,transparent)';
+      cdThumb = 'width:86px;height:118px;flex-shrink:0;border-radius:4px;border:1px solid var(--border);border-top:4px solid ' + col + ';background:repeating-linear-gradient(0deg,color-mix(in srgb,' + col + ' 9%,var(--background)),color-mix(in srgb,' + col + ' 9%,var(--background)) 5px,transparent 5px,transparent 9px)';
+      const cf = this.docFlags(cdObj);
+      const st = this.docStatus(cdObj);
+      const ST = { ocr: 'OCR · ingéré en texte', vision: 'Image · analyse visuelle (Gemma)', sans_texte: 'Sans OCR · non ingéré', non_numerise: '—' }[st];
+      cdFields = [
+        { k: 'Type', v: T[cdObj.type].label },
+        { k: 'Date', v: String(cdObj.year) },
+        { k: 'Pages', v: String(cdObj.pages) },
+        { k: 'Langue', v: cdObj.lang.toUpperCase() },
+        { k: 'Dépôt', v: SRC[cdObj.source] },
+        { k: 'Numérisation', v: cf.digitized ? 'Numérisé' : 'Non numérisé' },
+        { k: 'Océrisation', v: cf.ocr ? 'OCR disponible' : (this.isImageType(cdObj.type) && cf.digitized ? 'Sans OCR (image)' : 'Sans OCR') },
+        { k: 'Ingestion', v: ST },
+      ];
+      cdExcerpt = cdObj.excerpt || '';
+      cdHasExcerpt = !!cdObj.excerpt;
+      const base = 'https://gallica.bnf.fr/' + cdObj.ark;
+      cdGallicaUrl = base + '/f1.item';
+      cdIiifUrl = base + '/f1/full/full/0/native.jpg';
+      cdManifestUrl = 'https://gallica.bnf.fr/iiif/' + cdObj.ark + '/manifest.json';
+    }
+
+    // active filter chips
+    const activeFilters = [];
+    if (S.typeFilter) activeFilters.push({ label: T[S.typeFilter].label, onClear: () => this.setState({ typeFilter: null }) });
+    if (S.langFilter) activeFilters.push({ label: S.langFilter.toUpperCase(), onClear: () => this.setState({ langFilter: null }) });
+    if (S.sourceFilter) activeFilters.push({ label: SRC[S.sourceFilter], onClear: () => this.setState({ sourceFilter: null }) });
+    if (S.yearFilter) activeFilters.push({ label: S.yearFilter.label, onClear: () => this.setState({ yearFilter: null }) });
+    const STATUS_LABEL = { non_numerise: 'Non numérisés', ocr: 'Avec OCR', vision: 'Images → vision', sans_texte: 'Sans texte' };
+    if (S.statusFilter) activeFilters.push({ label: STATUS_LABEL[S.statusFilter], onClear: () => this.setState({ statusFilter: null }) });
+
+    // numérisation & OCR breakdown
+    const nm = this.numerisation();
+    const maxNm = Math.max(1, nm.ocr, nm.vision, nm.sansTexte, nm.nonNumerise);
+    const numerDefs = [
+      { key: 'ocr',          label: 'Avec couche OCR',          sub: 'ingéré en texte',   c: nm.ocr,         color: 'var(--info)' },
+      { key: 'vision',       label: 'Images → analyse visuelle', sub: 'décrites par Gemma', c: nm.vision,      color: 'var(--dataset-1)' },
+      { key: 'sans_texte',   label: 'Sans texte exploitable',    sub: 'non ingéré',         c: nm.sansTexte,   color: 'var(--warning)' },
+      { key: 'non_numerise', label: 'Non numérisés',             sub: 'non ingéré',         c: nm.nonNumerise, color: 'var(--neutral-500)' },
+    ];
+    const numerRows = numerDefs.map((r) => {
+      const active = S.statusFilter === r.key;
+      return { label: r.label, sub: r.sub, count: this.fmt(r.c),
+        onClick: () => this.setState((s) => ({ statusFilter: s.statusFilter === r.key ? null : r.key })),
+        swatch: 'width:9px;height:9px;border-radius:2px;flex-shrink:0;background:' + r.color,
+        barStyle: 'height:100%;width:' + Math.round((r.c / maxNm) * 100) + '%;background:' + r.color + ';border-radius:3px;transition:width .4s ease',
+        rowStyle: 'text-align:left;width:100%;background:transparent;border:none;cursor:pointer;padding:3px;margin:-3px;border-radius:6px;opacity:' + (S.statusFilter && !active ? '.5' : '1') };
+    });
+
+    // ingest — only ingestible docs are processed
+    const pct = S.ingestPct;
+    const estPages = Math.round(nm.ingestible * 4.3);
+    const chunks = Math.round(nm.ocr * 4.3 * 1.7 + nm.vision * 2);  // OCR pages chunked; images → ~2 passages each (vision description)
+    const stageDefs = [
+      { label: 'Extraction & OCR', desc: 'Lecture des fac-similés Gallica, normalisation du texte' },
+      { label: 'Découpage sémantique', desc: 'Segmentation en passages de ~512 tokens' },
+      { label: 'Vectorisation', desc: 'Calcul des plongements (embeddings)' },
+      { label: 'Indexation du cluster', desc: 'Écriture dans cluster-bnf-rag-01' },
+    ];
+    const stages = stageDefs.map((g, i) => {
+      const start = i * 25, local = Math.max(0, Math.min(100, (pct - start) / 25 * 100));
+      const isDone = pct >= start + 25, isActive = !isDone && pct > start && S.ingesting;
+      const isPending = !isDone && !isActive;
+      const col = isDone ? 'var(--info)' : (isActive ? 'var(--brand-teal)' : 'var(--muted-foreground)');
+      return { n: String(i + 1), label: g.label, desc: g.desc, isDone, isActive, isPending,
+        status: isDone ? 'terminé' : (isActive ? Math.round(local) + '%' : 'en attente'),
+        iconWrap: 'width:30px;height:30px;flex-shrink:0;border-radius:50%;display:flex;align-items:center;justify-content:center;color:' + col + ';background:' + (isDone ? 'color-mix(in srgb,var(--info) 15%,transparent)' : (isActive ? 'color-mix(in srgb,var(--brand-teal) 15%,transparent)' : 'var(--secondary)')) + ';border:1px solid ' + (isDone || isActive ? 'color-mix(in srgb,' + col + ' 35%,transparent)' : 'var(--border)'),
+        barStyle: 'height:100%;width:' + (isDone ? 100 : (isActive ? Math.round(local) : 0)) + '%;background:' + (isDone ? 'var(--info)' : 'var(--brand-teal)') + ';border-radius:3px;transition:width .2s linear' };
+    });
+
+    // ---- research tabs (artifacts only) ----
+    const notesArr = S.notes;
+    const noteById = {}; notesArr.forEach((n) => noteById[n.id] = n);
+    const docByArk = {}; S.samples.forEach((d) => docByArk[d.ark] = d);
+    const tabs = S.openTabs.map((t) => {
+      const active = S.activeTab === t.kind + ':' + t.id;
+      const obj = noteById[t.id];
+      const title = obj ? obj.title : '—';
+      return { title: title.length > 22 ? title.slice(0, 21) + '…' : title,
+        iconHtml: { __html: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" style="flex-shrink:0"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>' },
+        onClick: () => this.setState({ activeTab: t.kind + ':' + t.id }),
+        onClose: () => this.closeTab(t.kind, t.id),
+        wrapStyle: 'display:inline-flex;align-items:center;gap:2px;height:42px;padding-right:4px;border-bottom:2px solid ' + (active ? 'var(--brand-teal)' : 'transparent'),
+        style: 'display:inline-flex;align-items:center;gap:7px;height:42px;padding:0 6px 0 10px;background:transparent;border:none;color:' + (active ? 'var(--foreground)' : 'var(--muted-foreground)') + ';font-size:12.5px;font-weight:' + (active ? '600' : '500') + ';cursor:pointer;font-family:var(--font-sans);white-space:nowrap' };
+    });
+
+    const at = S.activeTab;
+    const activeIsNote = at && at.indexOf('note:') === 0;
+    const activeNoteObj = activeIsNote ? noteById[at.slice(5)] : null;
+    const activeNoteCiteCount = activeNoteObj ? (activeNoteObj.content.match(/\[\[/g) || []).length : 0;
+
+    // ---- citation side panel ----
+    const cite = S.cite;
+    const citeOpen = !!cite;
+    let citeTitle = '', citeAuthor = '', citeType = '', citeArk = '', citeVue = '', citeChipStyle = '', citeThumb = '', citeFields = [], citeGallicaUrl = '#', citeIiifUrl = '#', citeManifestUrl = '#';
+    if (cite) {
+      const d = docByArk[cite.ark];
+      citeArk = cite.ark; citeVue = String(cite.vue);
+      const base = 'https://gallica.bnf.fr/' + cite.ark;
+      citeGallicaUrl = base + '/f' + cite.vue + '.item';
+      citeIiifUrl = base + '/f' + cite.vue + '/full/full/0/native.jpg';
+      citeManifestUrl = 'https://gallica.bnf.fr/iiif/' + cite.ark + '/manifest.json';
+      const col = d ? T[d.type].color : 'var(--brand-teal)';
+      citeTitle = d ? d.title : 'Notice ' + cite.ark;
+      citeAuthor = d ? d.author : '—';
+      citeType = d ? T[d.type].label : 'Document';
+      citeChipStyle = 'display:inline-block;font-family:var(--font-mono);font-size:10px;padding:2px 8px;border-radius:var(--radius-full);color:' + col + ';background:color-mix(in srgb,' + col + ' 13%,transparent);border:1px solid color-mix(in srgb,' + col + ' 28%,transparent)';
+      citeThumb = 'width:86px;height:118px;flex-shrink:0;border-radius:4px;border:1px solid var(--border);border-top:4px solid ' + col + ';background:repeating-linear-gradient(0deg,color-mix(in srgb,' + col + ' 9%,var(--background)),color-mix(in srgb,' + col + ' 9%,var(--background)) 5px,transparent 5px,transparent 9px)';
+      citeFields = [
+        { k: 'Date', v: d ? String(d.year) : '—' },
+        { k: 'Dépôt', v: d ? SRC[d.source] : 'Gallica' },
+        { k: 'Pages', v: d ? String(d.pages) : '—' },
+        { k: 'Vue citée', v: 'f' + cite.vue },
+      ];
+    }
+
+    const rMessages = S.rMessages.map((m) => ({ isUser: m.role === 'user', isAgent: m.role === 'agent', isTool: m.role === 'tool', isEvent: m.role === 'event',
+      text: m.text, query: m.query, found: m.found, eventText: m.text,
+      onClick: m.noteId ? () => this.openTab('note', m.noteId) : () => {},
+      hasCites: !!(m.cites && m.cites.length),
+      cites: (m.cites || []).map((c) => ({ label: c.label, onClick: () => this.openCite(c.ark, c.vue) })) }));
+
+    const rEntry = this.R_SCRIPT[S.rIdx];
+    const rSuggestions = rEntry && !S.rBusy ? [{ text: rEntry.user, onClick: () => this.playResearch(rEntry) }] : [];
+
+    const isNotebook = S.rLayout === 'notebook';
+    const showRChat = !isNotebook;
+    const showTabs = !isNotebook;
+    const readerStyle = 'flex:1;min-width:0;display:flex;flex-direction:column;min-height:0;order:2';
+    const rChatStyle = 'flex:0 0 40%;min-width:360px;max-width:560px;display:flex;flex-direction:column;min-height:0;order:1;border-right:var(--border-width) solid var(--border)';
+
+    // compiled journal (Carnet)
+    const journalToc = notesArr.map((n, i) => {
+      const cc = (n.content.match(/\[\[/g) || []).length;
+      return { num: String(i + 1).padStart(2, '0'), title: n.title, cites: cc ? cc + ' réf.' : '' };
+    });
+    const journalNotes = notesArr.map((n, i) => ({
+      num: String(i + 1).padStart(2, '0'), meta: n.updated,
+      html: { __html: this.mdToHtml(n.content) },
+      wrapStyle: 'padding:24px 0;' + (i < notesArr.length - 1 ? 'border-bottom:1px solid var(--border);' : ''),
+    }));
+    const journalCount = notesArr.length + ' note' + (notesArr.length > 1 ? 's' : '');
+
+    // step 1 messages
+    const messages = S.messages.map((m) => {
+      const isEvent = m.role === 'event'; let eventText = m.text, eventStyle = '', eventIcon = '';
+      if (isEvent) {
+        if (m.kind === 'add') { eventText = '+' + this.fmt(m.count) + ' documents ajoutés au corpus';
+          eventStyle = 'display:inline-flex;align-self:flex-start;align-items:center;gap:7px;font-size:11.5px;font-family:var(--font-mono);color:var(--brand-teal);border:1px solid color-mix(in srgb,var(--brand-teal) 30%,transparent);background:color-mix(in srgb,var(--brand-teal) 9%,transparent);border-radius:var(--radius-md);padding:6px 11px'; eventIcon = '<path d="M5 12h14M12 5v14"/>'; }
+        else if (m.kind === 'remove') { eventText = '−' + this.fmt(m.count) + ' documents retirés';
+          eventStyle = 'display:inline-flex;align-self:flex-start;align-items:center;gap:7px;font-size:11.5px;font-family:var(--font-mono);color:var(--warning);border:1px solid color-mix(in srgb,var(--warning) 30%,transparent);background:color-mix(in srgb,var(--warning) 9%,transparent);border-radius:var(--radius-md);padding:6px 11px'; eventIcon = '<path d="M5 12h14"/>'; }
+        else { eventStyle = 'display:inline-flex;align-self:center;align-items:center;gap:7px;font-size:11px;font-family:var(--font-mono);color:var(--muted-foreground);border:1px dashed var(--border);border-radius:var(--radius-full);padding:4px 12px'; eventIcon = '<path d="M3 12a9 9 0 1 0 18 0 9 9 0 0 0-18 0"/><path d="M12 7v5l3 3"/>'; }
+      }
+      const eventIconHtml = { __html: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' + eventIcon + '</svg>' };
+      return { isUser: m.role === 'user', isAgent: m.role === 'agent', isTool: m.role === 'tool', isEvent, text: m.text, tool: m.tool, query: m.query, found: m.found, eventText, eventStyle, eventIconHtml };
+    });
+    const bEntry = this.BUILD_SCRIPT[S.bIdx];
+    const suggestions = bEntry && !S.busy ? [{ text: bEntry.user, onClick: () => this.playBuild(bEntry) }] : [];
+
+    return {
+      projectName, showMemoryCard: showMemory,
+      isCorpus, isIngest: S.step === 'ingest', isResearch,
+      showRail: isCorpus || isResearch, showPicker: isResearch,
+      railLabel: isResearch ? 'Sessions de recherche' : 'Sessions du corpus',
+      sessWrapStyle: 'overflow-y:auto;padding:4px 10px 10px;display:flex;flex-direction:column;gap:4px;' + (isResearch ? 'flex-shrink:0;max-height:118px' : 'flex:1'),
+      steps, sessions,
+      onNewSession: () => isResearch ? this.newResearchSession() : this.newCorpusSession(),
+      pickerQuery: S.pickerQuery, onPickerQuery: (e) => this.setState({ pickerQuery: e.target.value }),
+      artifactList, pickerCount: pickerList.length + ' artefact' + (pickerList.length > 1 ? 's' : ''),
+      memoryTitle: memTitle, memSections, memPreview,
+      memoryCountLabel: memCount + ' faits mémorisés',
+      memOpen: S.memOpen,
+      onOpenMemory: () => this.setState({ memOpen: true }),
+      onCloseMemory: () => this.setState({ memOpen: false }),
+      stop: (e) => e.stopPropagation(),
+      // chat
+      messages, busy: S.busy, busyLabel: S.busyLabel,
+      input: S.input, onInput: (e) => this.setState({ input: e.target.value }),
+      onKey: (e) => { if (e.key === 'Enter') { e.preventDefault(); this.sendBuild(); } },
+      onSend: () => this.sendBuild(),
+      sendStyle: 'width:34px;height:34px;flex-shrink:0;border-radius:8px;border:none;display:flex;align-items:center;justify-content:center;cursor:pointer;background:' + (S.busy ? 'var(--secondary)' : 'var(--primary)') + ';color:var(--primary-foreground)',
+      suggestions, hasSuggestions: suggestions.length > 0,
+      onGoIngest: () => this.setState({ step: 'ingest' }),
+      // corpus panel
+      summary, facetCards, yearBins, docs, activeFilters,
+      numerNumerise: this.fmt(nm.numerise), numerTotal: this.fmt(nm.total),
+      numerIngestible: this.fmt(nm.ingestible), numerRows,
+      hasActiveFilters: activeFilters.length > 0, activeFilterCount: activeFilters.length,
+      onToggleStats: () => this.setState((s) => ({ statsOpen: !s.statsOpen })),
+      statsHint: S.statsOpen ? 'masquer' : 'afficher',
+      statsChevronStyle: 'transition:transform .28s ease;transform:rotate(' + (S.statsOpen ? '180deg' : '0deg') + ')',
+      statsDrawerStyle: 'overflow:hidden;transition:max-height .32s ease,opacity .28s ease;max-height:' + (S.statsOpen ? '640px' : '0px') + ';opacity:' + (S.statsOpen ? '1' : '0'),
+      corpusDocOpen: !!S.corpusDoc, onCorpusDocClose: () => this.closeCorpusDoc(),
+      cdTitle, cdAuthor, cdType, cdArk, cdChipStyle, cdThumb, cdFields, cdExcerpt, cdHasExcerpt,
+      cdGallicaUrl, cdIiifUrl, cdManifestUrl,
+
+      shownCount: 'aperçu de ' + docs.length + ' sur ' + this.fmt(total),
+      query: S.query, onQuery: (e) => this.setState({ query: e.target.value }),
+      noDocs: docs.length === 0,
+      // ingest
+      ingestIdle: !S.ingesting && !S.ingestDone, ingesting: S.ingesting, ingestDone: S.ingestDone,
+      ingestTitle: S.ingestDone ? 'Ingestion terminée' : (S.ingesting ? 'Ingestion en cours…' : 'Prêt à ingérer le corpus'),
+      ingestIntro: S.ingestDone ? "Le corpus est désormais interrogeable dans l'espace de recherche." : "Le corpus va être traité puis indexé dans votre cluster RAG. Le traitement est asynchrone : il se poursuit côté serveur.",
+      stages, overallPct: pct,
+      ingestStats: this.fmt(nm.ingestible) + ' documents éligibles · ≈ ' + this.fmt(estPages) + ' pages · ≈ ' + this.fmt(chunks) + ' passages',
+      doneStats: this.fmt(nm.ingestible) + ' documents indexés (' + this.fmt(nm.ocr) + ' via OCR, ' + this.fmt(nm.vision) + ' images analysées) · ' + this.fmt(chunks) + ' passages dans cluster-bnf-rag-01.',
+      ingestOcr: this.fmt(nm.ocr), ingestVision: this.fmt(nm.vision),
+      ingestExcluded: this.fmt(nm.excluded), ingestSansTexte: this.fmt(nm.sansTexte), ingestNonNumerise: this.fmt(nm.nonNumerise),
+      ingestHasExcluded: nm.excluded > 0,
+      onStartIngest: () => this.startIngest(), onGoResearch: () => this.setState({ step: 'research' }),
+      // research
+      ragLabel: 'cluster-bnf-rag-01 · ' + this.fmt(total) + ' docs',
+      isNotebook, showRChat, readerStyle, rChatStyle,
+      onArtifactLayout: () => this.setState({ rLayout: 'artifact' }),
+      onNotebookLayout: () => this.setState({ rLayout: 'notebook' }),
+      artBtnStyle: 'padding:6px 13px;border:none;cursor:pointer;font-size:12px;font-family:var(--font-sans);background:' + (!isNotebook ? 'var(--secondary)' : 'transparent') + ';color:' + (!isNotebook ? 'var(--foreground)' : 'var(--muted-foreground)'),
+      noteBtnStyle: 'padding:6px 13px;border:none;cursor:pointer;font-size:12px;font-family:var(--font-sans);background:' + (isNotebook ? 'var(--secondary)' : 'transparent') + ';color:' + (isNotebook ? 'var(--foreground)' : 'var(--muted-foreground)'),
+      tabs, onNewArtifact: () => this.newArtifact(), onReaderClick: (e) => this.onReaderClick(e),
+      showTabs, journalToc, journalNotes, journalCount,
+      onExportJournal: () => this.toast('Carnet exporté en Markdown · ' + journalCount, 2800),
+      activeIsNote: activeIsNote && !isNotebook, noActiveTab: !activeIsNote && !isNotebook,
+      activeNoteTitle: activeNoteObj ? activeNoteObj.title : '', activeNoteMeta: activeNoteObj ? activeNoteObj.updated : '',
+      activeNoteCites: activeNoteCiteCount ? activeNoteCiteCount + ' référence' + (activeNoteCiteCount > 1 ? 's' : '') + ' ARK' : '',
+      activeNoteHtml: { __html: activeNoteObj ? this.mdToHtml(activeNoteObj.content) : '' },
+      citeOpen, onCiteClose: () => this.closeCite(),
+      citeTitle, citeAuthor, citeType, citeArk, citeVue, citeChipStyle, citeThumb, citeFields,
+      citeGallicaUrl, citeIiifUrl, citeManifestUrl,
+      rMessages, rBusy: S.rBusy, rBusyLabel: S.rBusyLabel,
+      rInput: S.rInput, onRInput: (e) => this.setState({ rInput: e.target.value }),
+      onRKey: (e) => { if (e.key === 'Enter') { e.preventDefault(); this.sendResearch(); } },
+      onRSend: () => this.sendResearch(),
+      rSuggestions, rHasSuggestions: rSuggestions.length > 0,
+      rSendStyle: 'width:32px;height:32px;flex-shrink:0;border-radius:8px;border:none;display:flex;align-items:center;justify-content:center;cursor:pointer;background:' + (S.rBusy ? 'var(--secondary)' : 'var(--primary)') + ';color:var(--primary-foreground)',
+      introOpen: !!(S.introStep && this.INTROS[S.introStep]),
+      intro: S.introStep ? (() => {
+        const r = this.INTROS[S.introStep];
+        return { tag: r.tag, title: r.title, lead: r.lead,
+          points: r.points.map((p) => ({ title: p.title, text: p.text,
+            iconHtml: { __html: '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">' + p.icon + '</svg>' } })) };
+      })() : null,
+      onCloseIntro: () => this.setState({ introStep: null }),
+      onOpenHelpCorpus: () => this.setState({ introStep: 'corpus' }),
+      onOpenHelpResearch: () => this.setState({ introStep: 'research' }),
+      toastMsg: S.toastMsg,
+      onProfileClick: () => this.toast('Marie Laforêt · BnF · Chercheure associée', 3200),
+      onOrgClick: () => this.toast('Espace de travail BnF · 2 projets actifs', 2800),
+      // project picker
+      projPickerOpen: S.projPickerOpen,
+      projPickerBorder: S.projPickerOpen ? 'color-mix(in srgb,var(--brand-teal) 45%,var(--border))' : 'var(--border)',
+      projPickerBg: S.projPickerOpen ? 'color-mix(in srgb,var(--brand-teal) 8%,var(--card))' : 'var(--card)',
+      projChevron: S.projPickerOpen ? 'm7 15 5 5 5-5' : 'm7 9 5-5 5 5',
+      onToggleProjPicker: () => this.setState((s) => ({ projPickerOpen: !s.projPickerOpen })),
+      activeProjectSub: activeMeta.sub,
+      projects: [
+        { id: 'p1', name: 'Exposition Universelle 1889', meta: '1 730+ docs · presse 1889',
+          active: S.activeProject === 'p1',
+          onClick: () => this.loadProject('p1'),
+          iconStyle: 'width:28px;height:28px;border-radius:6px;display:flex;align-items:center;justify-content:center;flex-shrink:0;background:color-mix(in srgb,var(--brand-teal) 15%,var(--background));color:var(--brand-teal);border:1px solid color-mix(in srgb,var(--brand-teal) 30%,transparent)',
+          rowStyle: 'display:flex;align-items:center;gap:10px;width:100%;padding:8px 10px;border-radius:var(--radius-md);border:none;background:' + (S.activeProject === 'p1' ? 'color-mix(in srgb,var(--brand-teal) 8%,transparent)' : 'transparent') + ';cursor:pointer' },
+        { id: 'p2', name: 'Manuscrits médiévaux — Loire', meta: '842 docs · ingestion terminée',
+          active: S.activeProject === 'p2',
+          onClick: () => this.loadProject('p2'),
+          iconStyle: 'width:28px;height:28px;border-radius:6px;display:flex;align-items:center;justify-content:center;flex-shrink:0;background:color-mix(in srgb,var(--dataset-7) 15%,var(--background));color:var(--dataset-7);border:1px solid color-mix(in srgb,var(--dataset-7) 30%,transparent)',
+          rowStyle: 'display:flex;align-items:center;gap:10px;width:100%;padding:8px 10px;border-radius:var(--radius-md);border:none;background:' + (S.activeProject === 'p2' ? 'color-mix(in srgb,var(--dataset-7) 8%,transparent)' : 'transparent') + ';cursor:pointer' },
+      ],
+      onNewProject: () => { this.setState({ projPickerOpen: false }); this.toast('Nouveau projet — fonctionnalité disponible dans la version complète', 3200); },
+      ingestDisabled: S.ingestDone,
+      ingestBtnLabel: S.ingestDone ? 'Corpus ingéré ✓' : 'Ingérer le corpus',
+      ingestBtnStyle: 'display:inline-flex;align-items:center;gap:8px;height:38px;padding:0 16px;border-radius:var(--radius-md);border:none;background:' + (S.ingestDone ? 'var(--secondary)' : 'var(--primary)') + ';color:' + (S.ingestDone ? 'var(--muted-foreground)' : 'var(--primary-foreground)') + ';font-family:var(--font-sans);font-size:13px;font-weight:600;cursor:' + (S.ingestDone ? 'default' : 'pointer') + ';flex-shrink:0',
+    };
+  }
+}
+</script>
+</body>
+</html>

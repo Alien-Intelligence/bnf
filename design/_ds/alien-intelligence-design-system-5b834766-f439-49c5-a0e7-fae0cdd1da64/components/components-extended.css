@@ -1,0 +1,155 @@
+/*
+ * Alien Intelligence — Extended component styles
+ * Patterns lifted from the AlienDS Platform Figma (Studio dashboard, marketplace,
+ * onboarding): stat cards, data tables, segmented controls, tooltips, empty
+ * states and the "Getting Started" checklist. Same .ds-* convention + tokens.
+ */
+
+/* ===================== Stat / metric card ===================== */
+.ds-stat {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    background: var(--card);
+    border: var(--border-width) solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: var(--space-5);
+    box-shadow: var(--shadow-sm);
+}
+.ds-stat__top { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
+.ds-stat__label { font-size: var(--text-sm); color: var(--muted-foreground); white-space: nowrap; }
+.ds-stat__icon { color: var(--muted-foreground); display: inline-flex; }
+.ds-stat__value { font-family: var(--font-mono); font-size: var(--text-3xl); font-weight: var(--weight-semibold); letter-spacing: var(--tracking-tight); line-height: 1; }
+.ds-stat__delta { display: inline-flex; align-items: center; gap: 4px; font-size: var(--text-xs); }
+.ds-stat__delta--up { color: var(--info); }
+.ds-stat__delta--down { color: var(--destructive); }
+.ds-stat__spark { margin-top: var(--space-1); }
+
+/* ===================== Data table ===================== */
+.ds-table-wrap { border: var(--border-width) solid var(--border); border-radius: var(--radius-lg); overflow: hidden; background: var(--card); }
+.ds-table { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
+.ds-table thead th {
+    text-align: left;
+    font-weight: var(--weight-medium);
+    color: var(--muted-foreground);
+    font-size: var(--text-xs);
+    padding: 10px 16px;
+    border-bottom: var(--border-width) solid var(--border);
+    background: color-mix(in srgb, var(--muted) 60%, transparent);
+    white-space: nowrap;
+}
+.ds-table tbody td { padding: 12px 16px; border-bottom: var(--border-width) solid var(--border); color: var(--neutral-200); vertical-align: middle; }
+.ds-table tbody tr:last-child td { border-bottom: none; }
+.ds-table tbody tr { transition: background-color .12s ease; }
+.ds-table tbody tr:hover { background: color-mix(in srgb, var(--accent) 28%, transparent); }
+.ds-table .num { font-family: var(--font-mono); text-align: right; }
+.ds-table th.num { text-align: right; }
+
+/* ===================== Segmented control / toggle group ===================== */
+.ds-segmented {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 3px;
+    background: var(--muted);
+    border: var(--border-width) solid var(--border);
+    border-radius: var(--radius-lg);
+}
+.ds-segmented__item {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 30px;
+    padding: 0 12px;
+    border: var(--border-width) solid transparent;
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--muted-foreground);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-medium);
+    cursor: pointer;
+    transition: color .12s ease, background-color .12s ease, box-shadow .12s ease;
+}
+.ds-segmented__item:hover { color: var(--foreground); }
+.ds-segmented__item[aria-pressed="true"], .ds-segmented__item.is-active {
+    background: color-mix(in srgb, var(--input) 40%, transparent);
+    color: var(--foreground);
+    border-color: var(--input);
+    box-shadow: var(--shadow-xs);
+}
+
+/* ===================== Tooltip ===================== */
+.ds-tooltip { position: relative; display: inline-flex; }
+.ds-tooltip__bubble {
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: 50%;
+    transform: translateX(-50%) translateY(4px);
+    background: var(--neutral-50);
+    color: var(--neutral-950);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-medium);
+    padding: 6px 10px;
+    border-radius: var(--radius-md);
+    white-space: nowrap;
+    box-shadow: var(--shadow-md);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .14s ease, transform .14s ease;
+    z-index: 60;
+}
+.ds-tooltip__bubble::after {
+    content: "";
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    border: 5px solid transparent;
+    border-top-color: var(--neutral-50);
+}
+.ds-tooltip:hover .ds-tooltip__bubble { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* ===================== Empty state ===================== */
+.ds-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    gap: var(--space-2);
+    padding: var(--space-12) var(--space-6);
+    border: 1px dashed var(--border);
+    border-radius: var(--radius-lg);
+    color: var(--muted-foreground);
+}
+.ds-empty__icon { color: var(--neutral-600); margin-bottom: var(--space-1); }
+.ds-empty__title { font-size: var(--text-base); font-weight: var(--weight-semibold); color: var(--foreground); }
+.ds-empty__desc { font-size: var(--text-sm); max-width: 36ch; line-height: var(--leading-snug); }
+
+/* ===================== Getting-started checklist ===================== */
+.ds-checklist { display: flex; flex-direction: column; gap: var(--space-3); }
+.ds-checklist__head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
+.ds-checklist__title { font-size: var(--text-base); font-weight: var(--weight-semibold); display: inline-flex; align-items: center; gap: 8px; }
+.ds-checklist__progress { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--muted-foreground); }
+.ds-checklist__bar { height: 4px; border-radius: var(--radius-full); background: var(--neutral-800); overflow: hidden; }
+.ds-checklist__bar > i { display: block; height: 100%; background: var(--primary); border-radius: inherit; }
+.ds-step {
+    display: flex;
+    gap: var(--space-3);
+    padding: var(--space-4);
+    border: var(--border-width) solid var(--border);
+    border-radius: var(--radius-lg);
+    background: color-mix(in srgb, var(--card) 60%, transparent);
+}
+.ds-step__check {
+    width: 20px; height: 20px; flex-shrink: 0; margin-top: 1px;
+    border-radius: var(--radius-full);
+    border: 1.5px solid var(--neutral-700);
+    display: inline-flex; align-items: center; justify-content: center;
+    color: var(--primary-foreground);
+}
+.ds-step.is-done .ds-step__check { background: var(--primary); border-color: var(--primary); }
+.ds-step__body { display: flex; flex-direction: column; gap: 6px; }
+.ds-step__title { font-size: var(--text-sm); font-weight: var(--weight-semibold); }
+.ds-step__desc { font-size: var(--text-xs); color: var(--muted-foreground); line-height: var(--leading-snug); }

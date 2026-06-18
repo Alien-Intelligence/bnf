@@ -1,0 +1,131 @@
+/*
+ * Alien Intelligence — Color tokens
+ *
+ * Two layers:
+ *   1. Base palette  — raw, named scales (--neutral-*, --teal-*, --dataset-*)
+ *   2. Semantic alias — role-based tokens (--background, --primary, --border…)
+ *
+ * The product is DARK-FIRST (the app renders <html class="dark"> by default and
+ * the marketing site is near-monochrome on black). So :root carries the dark
+ * theme. A `.light` scope is provided for the rare light surface.
+ *
+ * Values lifted verbatim from packages/frontend/styles (tailwind-theme.css +
+ * globals.css) in the-alien-club/web-app.
+ */
+
+:root {
+    /* ---------- Base · Neutral (the spine of the system) ---------- */
+    --neutral-50: hsl(0 0% 98%);
+    --neutral-100: hsl(0 0% 89%);
+    --neutral-200: hsl(0 0% 80%);
+    --neutral-300: hsl(0 0% 71%);
+    --neutral-400: hsl(0 0% 62%);
+    --neutral-500: hsl(0 0% 53%);
+    --neutral-600: hsl(0 0% 44%);
+    --neutral-700: hsl(0 0% 24%);
+    --neutral-800: hsl(0 0% 18%);
+    --neutral-900: hsl(0 0% 13%);
+    --neutral-950: hsl(0 0% 7%);
+    --black: hsl(0 0% 7%);
+    --white: hsl(0 0% 100%);
+
+    /* ---------- Base · Teal (brand / primary action) ---------- */
+    --teal-50: hsl(180 22% 95%);
+    --teal-100: hsl(184 20% 83%);
+    --teal-200: hsl(182 20% 71%);
+    --teal-300: hsl(183 21% 59%);
+    --teal-400: hsl(183 24% 47%);
+    --teal-500: hsl(183 39% 35%);
+    --teal-600: hsl(183 39% 30%);
+    --teal-700: hsl(182 39% 25%);
+    --teal-800: hsl(183 39% 20%);
+    --teal-900: hsl(184 38% 15%);
+    --teal-950: hsl(183 40% 10%);
+
+    /* Brand reference teal — the lighter swatch shown on the Logo / Brand
+       guidelines page (rgb 118,183,178). The product's *action* teal is the
+       deeper --primary below; this one is for brand marks, chart lines, and
+       large brand surfaces. */
+    --brand-teal: hsl(176 33% 59%);      /* #76B7B2 */
+    --brand-teal-soft: hsl(176 30% 72%); /* tints / chart fills */
+
+    /* ---------- Base · Dataset accents (data viz, category coding) ---------- */
+    /* Seven hues used to colour datasets, tags, chart series and category tags. */
+    --dataset-1: hsl(311 100% 84%);   /* pink   */
+    --dataset-2: hsl(237 88% 66%);    /* indigo */
+    --dataset-3: hsl(189 100% 66%);   /* cyan   */
+    --dataset-4: hsl(130 41% 67%);    /* green  */
+    --dataset-5: hsl(6 92% 67%);      /* red    */
+    --dataset-6: hsl(34 100% 59%);    /* orange */
+    --dataset-7: hsl(40 100% 67%);    /* yellow */
+    --dataset-1-muted: color-mix(in oklch, var(--dataset-1), black 70%);
+    --dataset-2-muted: color-mix(in oklch, var(--dataset-2), black 70%);
+    --dataset-3-muted: color-mix(in oklch, var(--dataset-3), black 70%);
+    --dataset-4-muted: color-mix(in oklch, var(--dataset-4), black 70%);
+    --dataset-5-muted: color-mix(in oklch, var(--dataset-5), black 70%);
+    --dataset-6-muted: color-mix(in oklch, var(--dataset-6), black 70%);
+    --dataset-7-muted: color-mix(in oklch, var(--dataset-7), black 70%);
+
+    /* ---------- Semantic · Surfaces & text (DARK theme) ---------- */
+    --background: hsl(0 0% 7%);
+    --foreground: hsl(0 0% 100%);
+    --card: hsl(0 0% 9%);
+    --card-foreground: hsl(0 0% 100%);
+    --popover: hsl(0 0% 9%);
+    --popover-foreground: hsl(0 0% 100%);
+    --muted: hsl(0 0% 9%);
+    --muted-foreground: hsl(0 0% 54%);
+
+    /* ---------- Semantic · Action ---------- */
+    --primary: hsl(183 39% 35%);
+    --primary-foreground: hsl(0 0% 100%);
+    --secondary: hsl(0 0% 25%);
+    --secondary-foreground: hsl(0 0% 100%);
+    --accent: hsl(0 0% 37%);
+    --accent-foreground: hsl(0 0% 100%);
+
+    /* ---------- Semantic · Lines & focus ---------- */
+    --border: hsl(0 0% 18%);
+    --input: hsl(0 0% 18%);
+    --ring: hsl(0 0% 80%);
+
+    /* ---------- Semantic · Status levels ---------- */
+    --info: hsl(130 41% 67%);
+    --info-foreground: hsl(0 0% 100%);
+    --success: hsl(130 41% 67%);
+    --warning: hsl(28 88% 59%);
+    --warning-foreground: hsl(0 0% 100%);
+    --destructive: hsl(6 92% 67%);
+    --destructive-foreground: hsl(5 100% 98%);
+
+    /* ---------- Semantic · Sidebar (app chrome) ---------- */
+    --sidebar: hsl(0 0% 7%);
+    --sidebar-foreground: hsl(0 0% 100%);
+    --sidebar-accent: hsl(184 38% 15%);
+    --sidebar-accent-foreground: hsl(184 20% 83%);
+    --sidebar-border: hsl(0 0% 18%);
+}
+
+.light {
+    --background: hsl(0 0% 100%);
+    --foreground: hsl(120 2% 10%);
+    --card: hsl(0 0% 100%);
+    --card-foreground: hsl(120 2% 10%);
+    --popover: hsl(0 0% 100%);
+    --popover-foreground: hsl(120 2% 10%);
+    --muted: hsl(0 0% 96%);
+    --muted-foreground: hsl(0 0% 45%);
+    --primary: hsl(0 0% 9%);
+    --primary-foreground: hsl(0 0% 98%);
+    --secondary: hsl(0 0% 96%);
+    --secondary-foreground: hsl(120 2% 10%);
+    --accent: hsl(0 0% 96%);
+    --accent-foreground: hsl(120 2% 10%);
+    --border: hsl(0 0% 90%);
+    --input: hsl(0 0% 90%);
+    --ring: hsl(0 0% 63%);
+    --destructive: hsl(232 100% 41%);
+    --sidebar: hsl(0 0% 98%);
+    --sidebar-foreground: hsl(120 2% 10%);
+    --sidebar-border: hsl(0 0% 90%);
+}

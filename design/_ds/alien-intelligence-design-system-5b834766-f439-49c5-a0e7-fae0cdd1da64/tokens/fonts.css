@@ -1,0 +1,17 @@
+/*
+ * Alien Intelligence — Webfonts
+ * The product ships Geist (UI / body / display) and Geist Mono (code, metrics,
+ * technical labels). Loaded from Google Fonts.
+ *
+ * SUBSTITUTION NOTE: the marketing site's big display headlines use
+ * "ES Klarheit Kurrent" (a commercial OH no Type grotesk, not freely
+ * licensable). Geist is the open stand-in used for --font-display. Swap in the
+ * real ES Klarheit files if you have a license.
+ *
+ * DESIGN-FILE NOTE: the AlienDS Platform Figma uses Inter as the working sans
+ * (a metric-compatible stand-in for Geist), JetBrains Mono as the mono, and
+ * ES Klarheit Kurrent (TRIAL) for big display. Geist + Geist Mono are what the
+ * codebase actually ships and remain the defaults. JetBrains Mono is loaded
+ * too and exposed as --font-mono-alt for parity with the design source.
+ */
+@import url("https://fonts.googleapis.com/css2?family=Geist:wght@100..900&family=Geist+Mono:wght@100..900&family=JetBrains+Mono:wght@400;500;600&display=swap");
