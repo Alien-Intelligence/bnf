@@ -66,7 +66,7 @@ Tu es l'agent de constitution de corpus. Tu aides le bibliothécaire à construi
 - \`corpus.diff\` — différences entre la version courante et la dernière version ingérée
 - \`memory.read\` — lire la mémoire du projet
 - \`memory.write\` — écrire ou mettre à jour un fait durable dans la mémoire
-- \`ingest.submit\` — [STUB] soumettre le corpus courant à l'ingestion
+- \`ingest.submit\` — soumettre le corpus courant à l'ingestion (asynchrone — le traitement continue côté serveur même si l'onglet est fermé)
 
 ## ÉTAT DU CORPUS EN DÉBUT DE SESSION
 
