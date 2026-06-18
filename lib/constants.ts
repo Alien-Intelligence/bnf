@@ -58,3 +58,15 @@ export const TURN_REAP_TTL_MS = 30 * 60 * 1_000
 /** How often the reaper runs its cycle (ms).
  * 5 minutes: frequent enough to catch orphaned DB rows promptly. */
 export const REAPER_INTERVAL_MS = 5 * 60 * 1_000
+
+// ---------------------------------------------------------------------------
+// Corpus live-refresh
+// ---------------------------------------------------------------------------
+
+/**
+ * Debounce window (ms) before invalidating corpus queries after a
+ * `corpus_event` arrives from the agent stream.
+ * Prevents a rapid sequence of add/remove calls from triggering multiple
+ * refetches — only the trailing edge fires.
+ */
+export const CORPUS_REFRESH_DEBOUNCE_MS = 500

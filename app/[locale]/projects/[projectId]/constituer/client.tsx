@@ -5,9 +5,10 @@
 // and the TanStack Query cache seed from the server-fetched initialCorpus.
 // Filter changes navigate via router.push; selectedArk survives filter changes.
 
-import { useMemo } from "react"
+import { useMemo, useState } from "react"
 import { useSearchParams, useRouter, usePathname } from "next/navigation"
 import { useCorpusFlattened } from "@/hooks/api/corpus"
+import { useTurnStream } from "@/hooks/api/turn-stream"
 import {
   corpusFiltersFromParams,
   corpusFiltersToParams,
@@ -16,24 +17,39 @@ import {
   type CorpusFilters,
 } from "@/models/corpus/types"
 import { LayoutCorpusChat } from "@/components/layouts/corpus/chat"
+import { LayoutSessionsSidebar } from "@/components/layouts/corpus/sessions-sidebar"
 import { CardCorpusSummary } from "@/components/cards/corpus/summary"
 import { CardCorpusFiltersDrawer } from "@/components/cards/corpus/filters-drawer"
 import { LayoutCorpusDocumentList } from "@/components/layouts/corpus/document-list"
 import { SheetDocumentDetail } from "@/components/sheets/corpus/document-detail"
 import { WorkspaceHeader } from "@/components/layouts/workspace/header"
 import type { CorpusSnapshot } from "@/models/corpus/schema"
+import type { AppSession } from "@/models/sessions/schema"
 
 interface Props {
   projectId: string
   initialCorpus: CorpusSnapshot
   initialUser: { name?: string; email: string }
   initialSessionId: string
+  initialSessions: AppSession[]
 }
 
-export function ConstituerClient({ projectId, initialCorpus, initialUser, initialSessionId }: Props) {
+export function ConstituerClient({
+  projectId,
+  initialCorpus,
+  initialUser,
+  initialSessionId,
+  initialSessions,
+}: Props) {
   const router = useRouter()
   const pathname = usePathname()
   const searchParams = useSearchParams()
+
+  // ── Active session state ──────────────────────────────────────────────────────
+  const [activeSessionId, setActiveSessionId] = useState(initialSessionId)
+
+  // ── Turn stream — lifted here so parent can observe domain events ─────────────
+  const stream = useTurnStream(activeSessionId)
 
   // ── Filter state — derived from URL ──────────────────────────────────────────
   const filters = useMemo(
@@ -91,38 +107,52 @@ export function ConstituerClient({ projectId, initialCorpus, initialUser, initia
   return (
     <div className="flex flex-col h-screen">
       <WorkspaceHeader user={initialUser} />
-      <div className="grid grid-cols-[40%_60%] gap-4 p-6 flex-1 overflow-hidden">
-        <LayoutCorpusChat appSessionId={initialSessionId} />
-
-        <div className="flex flex-col gap-4 overflow-auto">
-          <CardCorpusSummary corpus={displaySnapshot} />
-          <CardCorpusFiltersDrawer
-            corpus={displaySnapshot}
-            filters={filters}
-            onChange={onFiltersChange}
-          />
-          <LayoutCorpusDocumentList
-            corpus={snapshot}
-            selectedArk={selectedArk}
-            onSelectArk={onSelectArk}
-            isLoading={isLoading}
-            isError={isError}
-            onRetry={() => void refetch()}
-            hasActiveFilters={filtersActive}
-            hasNextPage={hasNextPage ?? false}
-            isFetchingNextPage={isFetchingNextPage}
-            fetchNextPage={() => void fetchNextPage()}
-            onClearFilters={onClearFilters}
+      <div className="flex flex-1 overflow-hidden">
+        {/* Sessions sidebar — left strip, fixed width */}
+        <div className="w-48 shrink-0 overflow-hidden">
+          <LayoutSessionsSidebar
+            projectId={projectId}
+            scope="corpus"
+            activeSessionId={activeSessionId}
+            onActiveSessionChange={setActiveSessionId}
+            initialSessions={initialSessions}
           />
         </div>
 
-        <SheetDocumentDetail
-          doc={selectedDoc}
-          open={!!selectedDoc}
-          onOpenChange={(open) => {
-            if (!open) onSelectArk(null)
-          }}
-        />
+        {/* Main 40/60 grid */}
+        <div className="grid grid-cols-[40%_60%] gap-4 p-6 flex-1 overflow-hidden">
+          <LayoutCorpusChat stream={stream} />
+
+          <div className="flex flex-col gap-4 overflow-auto">
+            <CardCorpusSummary corpus={displaySnapshot} />
+            <CardCorpusFiltersDrawer
+              corpus={displaySnapshot}
+              filters={filters}
+              onChange={onFiltersChange}
+            />
+            <LayoutCorpusDocumentList
+              corpus={snapshot}
+              selectedArk={selectedArk}
+              onSelectArk={onSelectArk}
+              isLoading={isLoading}
+              isError={isError}
+              onRetry={() => void refetch()}
+              hasActiveFilters={filtersActive}
+              hasNextPage={hasNextPage ?? false}
+              isFetchingNextPage={isFetchingNextPage}
+              fetchNextPage={() => void fetchNextPage()}
+              onClearFilters={onClearFilters}
+            />
+          </div>
+
+          <SheetDocumentDetail
+            doc={selectedDoc}
+            open={!!selectedDoc}
+            onOpenChange={(open) => {
+              if (!open) onSelectArk(null)
+            }}
+          />
+        </div>
       </div>
     </div>
   )
