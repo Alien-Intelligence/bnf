@@ -5,9 +5,10 @@
 // and the TanStack Query cache seed from the server-fetched initialCorpus.
 // Filter changes navigate via router.push; selectedArk survives filter changes.
 
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { useSearchParams, useRouter, usePathname } from "next/navigation"
-import { useCorpusFlattened } from "@/hooks/api/corpus"
+import { useQueryClient } from "@tanstack/react-query"
+import { useCorpusFlattened, corpusKeys } from "@/hooks/api/corpus"
 import { useTurnStream } from "@/hooks/api/turn-stream"
 import {
   corpusFiltersFromParams,
@@ -50,6 +51,39 @@ export function ConstituerClient({
 
   // ── Turn stream — lifted here so parent can observe domain events ─────────────
   const stream = useTurnStream(activeSessionId)
+
+  // ── Debounced corpus refresh on corpus_event ─────────────────────────────────
+  // When the agent adds or removes documents the corpus_event count grows.
+  // We debounce 500 ms (trailing edge) so rapid mutations don't hammer the API.
+  const CORPUS_REFRESH_DEBOUNCE_MS = 500
+  const qc = useQueryClient()
+  const corpusEventCountRef = useRef(0)
+  const corpusDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    const currentCount = stream.domainEvents.filter(
+      (e) => e.type === "corpus_event",
+    ).length
+
+    if (currentCount <= corpusEventCountRef.current) return
+
+    corpusEventCountRef.current = currentCount
+
+    if (corpusDebounceRef.current !== null) {
+      clearTimeout(corpusDebounceRef.current)
+    }
+
+    corpusDebounceRef.current = setTimeout(() => {
+      corpusDebounceRef.current = null
+      void qc.invalidateQueries({ queryKey: corpusKeys.all(projectId) })
+    }, CORPUS_REFRESH_DEBOUNCE_MS)
+
+    return () => {
+      if (corpusDebounceRef.current !== null) {
+        clearTimeout(corpusDebounceRef.current)
+      }
+    }
+  }, [stream.domainEvents, projectId, qc])
 
   // ── Filter state — derived from URL ──────────────────────────────────────────
   const filters = useMemo(
