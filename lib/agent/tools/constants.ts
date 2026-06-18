@@ -25,6 +25,18 @@ export const AGENT_TOOLS = {
   // --- Ingestion tools --------------------------------------------------------
   ingestSubmit: "ingest_submit",
 
+  // --- RAG tools --------------------------------------------------------------
+  ragQuery: "rag_query",
+
+  // --- Note tools -------------------------------------------------------------
+  noteList:   "note_list",
+  noteGet:    "note_get",
+  noteCreate: "note_create",
+  noteUpdate: "note_update",
+
+  // --- Document tools ---------------------------------------------------------
+  docGet: "doc_get",
+
   // --- BnF MCP tools (prefixed by the MCP server name "bnf") -----------------
   // These are NOT registered via defineTool — they come from the MCP server.
   // Listed here so the prompt-builder and the SSE event labels can reference

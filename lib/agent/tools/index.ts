@@ -14,11 +14,17 @@ export type { AgentToolName } from "./constants"
 export { corpusTools } from "./corpus"
 export { memoryTools } from "./memory"
 export { ingestTools } from "./ingest"
+export { ragTools } from "./rag"
+export { noteTools } from "./note"
+export { docTools } from "./doc"
 
 // Aggregate array — pass to createToolRegistry({ tools: appTools }).
 import { corpusTools } from "./corpus"
 import { memoryTools } from "./memory"
 import { ingestTools } from "./ingest"
+import { ragTools } from "./rag"
+import { noteTools } from "./note"
+import { docTools } from "./doc"
 
 /**
  * All app-defined `defineTool` handlers as a single flat array.
@@ -30,4 +36,7 @@ export const appTools = [
   ...corpusTools,
   ...memoryTools,
   ...ingestTools,
+  ...ragTools,
+  ...noteTools,
+  ...docTools,
 ] as const

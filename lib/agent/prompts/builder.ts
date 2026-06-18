@@ -42,7 +42,8 @@ export class PromptBuilder {
       const snapshot = await this.loadCorpusSnapshot(session.projectId)
       return renderCorpusPrompt(project, memory, snapshot)
     }
-    return renderResearchPrompt()
+    const ingestStatus = await this.loadIngestStatus(session.projectId)
+    return renderResearchPrompt(project, memory, ingestStatus)
   }
 
   private static async loadMemory(
@@ -67,6 +68,33 @@ export class PromptBuilder {
       sections.set(it.section, s)
     }
     return { sections: [...sections.values()] }
+  }
+
+  private static async loadIngestStatus(projectId: string) {
+    const project = await prisma.project.findUniqueOrThrow({
+      where: { id: projectId },
+      select: { ingestedVersionId: true },
+    })
+
+    if (!project.ingestedVersionId) {
+      return { ingested: false as const }
+    }
+
+    const [ingestedVersion, total] = await Promise.all([
+      prisma.corpusVersion.findUniqueOrThrow({
+        where: { id: project.ingestedVersionId },
+        select: { seq: true },
+      }),
+      prisma.corpusMembership.count({
+        where: { versionId: project.ingestedVersionId },
+      }),
+    ])
+
+    return {
+      ingested: true as const,
+      seq: ingestedVersion.seq,
+      total,
+    }
   }
 
   private static async loadCorpusSnapshot(projectId: string) {
