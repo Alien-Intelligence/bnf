@@ -45,10 +45,12 @@ model User {
   // tables (User is the one better-auth model we can safely extend per the
   // adapter docs). Domain enums live in models/users/schema.ts.
   role          String    @default("member")
+  alienUserId   String?   @unique @map("alien_user_id")
 
-  sessions  Session[]
-  accounts  Account[]
-  projects  Project[]
+  sessions        Session[]
+  accounts        Account[]
+  projects        Project[]
+  onboardingSeen  UserOnboardingSeen[]
 
   @@map("user")
 }
@@ -102,6 +104,23 @@ model Verification {
 // =============================================================================
 // DOMAIN TABLES
 // =============================================================================
+
+// -----------------------------------------------------------------------------
+// UserOnboardingSeen — tracks which onboarding intros a user has dismissed.
+// intro: "corpus" | "research" — one row per intro, per user.
+// Composite PK (userId, intro): natural dedup; no duplicates possible.
+// -----------------------------------------------------------------------------
+model UserOnboardingSeen {
+  userId  String   @map("user_id")
+  intro   String   // "corpus" | "research"
+  seenAt  DateTime @default(now()) @map("seen_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, intro])
+  @@map("user_onboarding_seen")
+}
+
 
 // -----------------------------------------------------------------------------
 // Project — top-level workspace
