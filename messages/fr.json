@@ -205,5 +205,47 @@
     "bnf.search_gallica": "Recherche Gallica",
     "bnf.get_catalogue_record": "Résolution notice BnF",
     "bnf.get_document_info": "Résolution document Gallica"
+  },
+  "ingest": {
+    "summary": {
+      "title": "État d'ingestion",
+      "head": "Version actuelle",
+      "ingested": "Dernière ingestion",
+      "neverIngested": "Jamais ingéré",
+      "delta": "Delta",
+      "added": "{count} à ingérer",
+      "removed": "{count} à retirer",
+      "submit": "Lancer une ingestion",
+      "submitting": "Envoi…"
+    },
+    "stages": {
+      "extract": "Extraction OCR",
+      "chunk": "Découpage sémantique",
+      "embed": "Embedding",
+      "index": "Indexation"
+    },
+    "status": {
+      "queued": "En attente",
+      "running": "En cours",
+      "done": "Terminé",
+      "failed": "Échec",
+      "canceled": "Annulé"
+    },
+    "history": {
+      "title": "Historique des ingestions",
+      "empty": "Aucune ingestion"
+    },
+    "cancel": {
+      "button": "Annuler l'ingestion",
+      "canceling": "Annulation…",
+      "confirmTitle": "Annuler l'ingestion ?",
+      "confirmBody": "Le traitement sera arrêté côté cluster…",
+      "confirm": "Confirmer",
+      "dismiss": "Garder en cours"
+    },
+    "comeBackLater": {
+      "title": "Traitement en cours",
+      "body": "Le traitement continue côté serveur. Vous pouvez fermer la page et revenir plus tard."
+    }
   }
 }

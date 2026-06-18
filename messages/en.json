@@ -205,5 +205,47 @@
     "bnf.search_gallica": "Gallica search",
     "bnf.get_catalogue_record": "Resolve BnF record",
     "bnf.get_document_info": "Resolve Gallica document"
+  },
+  "ingest": {
+    "summary": {
+      "title": "Ingestion state",
+      "head": "Current version",
+      "ingested": "Last ingested",
+      "neverIngested": "Never ingested",
+      "delta": "Delta",
+      "added": "{count} to add",
+      "removed": "{count} to remove",
+      "submit": "Start ingestion",
+      "submitting": "Submitting…"
+    },
+    "stages": {
+      "extract": "OCR extraction",
+      "chunk": "Semantic chunking",
+      "embed": "Embedding",
+      "index": "Indexing"
+    },
+    "status": {
+      "queued": "Queued",
+      "running": "Running",
+      "done": "Done",
+      "failed": "Failed",
+      "canceled": "Canceled"
+    },
+    "history": {
+      "title": "Ingestion history",
+      "empty": "No ingestions"
+    },
+    "cancel": {
+      "button": "Cancel ingestion",
+      "canceling": "Canceling…",
+      "confirmTitle": "Cancel ingestion?",
+      "confirmBody": "Processing will be stopped on the cluster…",
+      "confirm": "Confirm",
+      "dismiss": "Keep running"
+    },
+    "comeBackLater": {
+      "title": "Processing in progress",
+      "body": "Processing continues server-side. You can close the page and return later."
+    }
   }
 }

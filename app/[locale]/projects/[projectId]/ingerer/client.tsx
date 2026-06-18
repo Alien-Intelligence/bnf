@@ -1,0 +1,96 @@
+"use client"
+
+// app/[locale]/projects/[projectId]/ingerer/client.tsx
+// Ingérer step client component. Owns ingest job lifecycle state: submit,
+// poll, cancel. Renders the pipeline card only while a job is active.
+// No corpus mutation — ingest reads the corpus state set by Constituer.
+
+import { useState } from "react"
+import { useIngestStatus, useSubmitIngest, useCancelIngest } from "@/hooks/api/ingest"
+import { CardIngestSummary } from "@/components/cards/ingest/summary"
+import { CardIngestStagePipeline } from "@/components/cards/ingest/stage-pipeline"
+import { CardComeBackLater } from "@/components/cards/ingest/come-back-later"
+import { CardIngestJobHistory } from "@/components/cards/ingest/job-history"
+import { WorkspaceHeader } from "@/components/layouts/workspace/header"
+import { DialogIngestConfirmCancel } from "@/components/dialogs/ingest/confirm-cancel"
+import type { IngestJob } from "@/models/ingest/schema"
+
+interface Props {
+  projectId: string
+  initialUser: { name?: string; email: string }
+  headVersionSeq: number
+  ingestedVersionSeq: number | null
+  deltaPreview: { added: number; removed: number }
+  activeJobId: string | null
+  initialRecentJobs: IngestJob[]
+}
+
+export function IngererClient({
+  projectId,
+  initialUser,
+  headVersionSeq,
+  ingestedVersionSeq,
+  deltaPreview,
+  activeJobId: initialActiveJobId,
+  initialRecentJobs,
+}: Props) {
+  const [activeJobId, setActiveJobId] = useState<string | null>(
+    initialActiveJobId,
+  )
+  const [showCancel, setShowCancel] = useState(false)
+
+  const submitMutation = useSubmitIngest(projectId)
+  const cancelMutation = useCancelIngest(projectId)
+  const status = useIngestStatus(activeJobId)
+
+  const onSubmit = async () => {
+    const job = await submitMutation.mutateAsync({})
+    setActiveJobId(job.id)
+  }
+
+  const onCancel = () => setShowCancel(true)
+
+  const confirmCancel = async () => {
+    if (activeJobId) await cancelMutation.mutateAsync(activeJobId)
+    setShowCancel(false)
+  }
+
+  return (
+    <div className="flex flex-col h-screen">
+      <WorkspaceHeader user={initialUser} />
+
+      <div className="flex flex-col gap-6 p-6 max-w-4xl mx-auto w-full overflow-auto">
+        <CardIngestSummary
+          headSeq={headVersionSeq}
+          ingestedSeq={ingestedVersionSeq}
+          delta={deltaPreview}
+          activeJob={status.data ?? null}
+          onSubmit={() => void onSubmit()}
+          isSubmitting={submitMutation.isPending}
+        />
+
+        {activeJobId && status.data && (
+          <>
+            <CardIngestStagePipeline
+              job={status.data}
+              onCancel={onCancel}
+            />
+            <CardComeBackLater />
+          </>
+        )}
+
+        <CardIngestJobHistory
+          projectId={projectId}
+          jobs={initialRecentJobs}
+        />
+      </div>
+
+      <DialogIngestConfirmCancel
+        open={showCancel}
+        onOpenChange={setShowCancel}
+        onConfirm={() => void confirmCancel()}
+        isPending={cancelMutation.isPending}
+      />
+    </div>
+  )
+}
