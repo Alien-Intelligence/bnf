@@ -27,9 +27,10 @@ interface Props {
   projectId: string
   initialCorpus: CorpusSnapshot
   initialUser: { name?: string; email: string }
+  initialSessionId: string
 }
 
-export function ConstituerClient({ projectId, initialCorpus, initialUser }: Props) {
+export function ConstituerClient({ projectId, initialCorpus, initialUser, initialSessionId }: Props) {
   const router = useRouter()
   const pathname = usePathname()
   const searchParams = useSearchParams()
@@ -91,7 +92,7 @@ export function ConstituerClient({ projectId, initialCorpus, initialUser }: Prop
     <div className="flex flex-col h-screen">
       <WorkspaceHeader user={initialUser} />
       <div className="grid grid-cols-[40%_60%] gap-4 p-6 flex-1 overflow-hidden">
-        <LayoutCorpusChat projectId={projectId} />
+        <LayoutCorpusChat appSessionId={initialSessionId} />
 
         <div className="flex flex-col gap-4 overflow-auto">
           <CardCorpusSummary corpus={displaySnapshot} />

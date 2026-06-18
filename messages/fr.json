@@ -142,7 +142,9 @@
     "chat": {
       "headerTitle": "Conversation",
       "headerSubtitle": "Outils du corpus à venir",
-      "systemPromptIntro": "Bonjour, je suis votre assistant de constitution de corpus. Les outils de mutation arriveront dans la prochaine itération — pour l'instant je peux discuter de votre projet et de la BnF."
+      "systemPromptIntro": "Bonjour, je suis votre assistant de constitution de corpus. Les outils de mutation arriveront dans la prochaine itération — pour l'instant je peux discuter de votre projet et de la BnF.",
+      "placeholder": "Posez une question…",
+      "send": "Envoyer"
     },
     "intro": {
       "title": "Bienvenue dans la constitution du corpus",

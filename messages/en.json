@@ -142,7 +142,9 @@
     "chat": {
       "headerTitle": "Conversation",
       "headerSubtitle": "Corpus tools coming soon",
-      "systemPromptIntro": "Hello, I am your corpus-building assistant. Mutation tools will arrive in the next iteration — for now I can discuss your project and the BnF."
+      "systemPromptIntro": "Hello, I am your corpus-building assistant. Mutation tools will arrive in the next iteration — for now I can discuss your project and the BnF.",
+      "placeholder": "Ask a question…",
+      "send": "Send"
     },
     "intro": {
       "title": "Welcome to corpus building",
