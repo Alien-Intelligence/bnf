@@ -1,0 +1,74 @@
+{
+  "common": {
+    "save": "Save",
+    "cancel": "Cancel",
+    "close": "Close",
+    "loading": "Loading…",
+    "error": "An error occurred",
+    "tryAgain": "Try again",
+    "empty": "Empty",
+    "signIn": "Sign in",
+    "signUp": "Create an account",
+    "signOut": "Sign out"
+  },
+  "nav": {
+    "constituer": "Build",
+    "ingerer": "Ingest",
+    "rechercher": "Research",
+    "carnet": "Notebook"
+  },
+  "auth": {
+    "signIn": {
+      "title": "Sign in",
+      "emailLabel": "Email address",
+      "passwordLabel": "Password",
+      "submit": "Sign in",
+      "noAccount": "Don't have an account yet?"
+    },
+    "signUp": {
+      "title": "Create an account",
+      "nameLabel": "Name",
+      "emailLabel": "Email address",
+      "passwordLabel": "Password",
+      "submit": "Create account",
+      "hasAccount": "Already have an account?"
+    }
+  },
+  "projects": {
+    "title": "Projects",
+    "subtitle": "Your research workspaces"
+  },
+  "corpus": {
+    "summary": {
+      "total": "{count, plural, =0 {No documents} one {# document} other {# documents}}",
+      "period": "Period",
+      "types": "Types",
+      "languages": "Languages",
+      "sources": "Sources"
+    },
+    "filters": {
+      "title": "Filters and statistics",
+      "byType": "By type",
+      "byLang": "By language",
+      "bySource": "By source",
+      "byPeriod": "By period",
+      "expand": "Show filters",
+      "collapse": "Hide filters"
+    },
+    "documents": {
+      "empty": "No documents. Ask the agent to build a corpus.",
+      "askAgentHint": "Start a conversation on the left to begin.",
+      "openOnBnf": "View on BnF"
+    },
+    "chat": {
+      "headerTitle": "Conversation",
+      "headerSubtitle": "Corpus tools coming soon",
+      "systemPromptIntro": "Hello, I am your corpus-building assistant. Mutation tools will arrive in the next iteration — for now I can discuss your project and the BnF."
+    },
+    "intro": {
+      "title": "Welcome to corpus building",
+      "body": "On the left, the agent guides you through building your corpus. On the right, you stay in control of its content.",
+      "gotIt": "Got it"
+    }
+  }
+}

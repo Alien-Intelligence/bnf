@@ -1,0 +1,74 @@
+{
+  "common": {
+    "save": "Enregistrer",
+    "cancel": "Annuler",
+    "close": "Fermer",
+    "loading": "Chargement…",
+    "error": "Une erreur est survenue",
+    "tryAgain": "Réessayer",
+    "empty": "Vide",
+    "signIn": "Se connecter",
+    "signUp": "Créer un compte",
+    "signOut": "Se déconnecter"
+  },
+  "nav": {
+    "constituer": "Constituer",
+    "ingerer": "Ingérer",
+    "rechercher": "Rechercher",
+    "carnet": "Carnet"
+  },
+  "auth": {
+    "signIn": {
+      "title": "Connexion",
+      "emailLabel": "Adresse e-mail",
+      "passwordLabel": "Mot de passe",
+      "submit": "Se connecter",
+      "noAccount": "Pas encore de compte ?"
+    },
+    "signUp": {
+      "title": "Créer un compte",
+      "nameLabel": "Nom",
+      "emailLabel": "Adresse e-mail",
+      "passwordLabel": "Mot de passe",
+      "submit": "Créer le compte",
+      "hasAccount": "Déjà un compte ?"
+    }
+  },
+  "projects": {
+    "title": "Projets",
+    "subtitle": "Vos espaces de recherche"
+  },
+  "corpus": {
+    "summary": {
+      "total": "{count, plural, =0 {Aucun document} one {# document} other {# documents}}",
+      "period": "Période",
+      "types": "Types",
+      "languages": "Langues",
+      "sources": "Sources"
+    },
+    "filters": {
+      "title": "Filtres et statistiques",
+      "byType": "Par type",
+      "byLang": "Par langue",
+      "bySource": "Par source",
+      "byPeriod": "Par période",
+      "expand": "Afficher les filtres",
+      "collapse": "Masquer les filtres"
+    },
+    "documents": {
+      "empty": "Aucun document. Demandez à l'agent de constituer un corpus.",
+      "askAgentHint": "Démarrez une conversation à gauche pour commencer.",
+      "openOnBnf": "Voir sur la BnF"
+    },
+    "chat": {
+      "headerTitle": "Conversation",
+      "headerSubtitle": "Outils du corpus à venir",
+      "systemPromptIntro": "Bonjour, je suis votre assistant de constitution de corpus. Les outils de mutation arriveront dans la prochaine itération — pour l'instant je peux discuter de votre projet et de la BnF."
+    },
+    "intro": {
+      "title": "Bienvenue dans la constitution du corpus",
+      "body": "À gauche, l'agent vous accompagne dans la création de votre corpus. À droite, vous gardez la maîtrise de son contenu.",
+      "gotIt": "J'ai compris"
+    }
+  }
+}
