@@ -38,6 +38,8 @@ import type { User } from "@/models/users/schema"
 import { parseBnfDate, normalizeDocument, normalizeMany } from "@/lib/mcp/normalize"
 import { mapCatalogueDocType, sourceFromArk } from "@/lib/mcp/vocab"
 import { runReaperCycle } from "@/lib/agent/runtime/reaper"
+import { IngestService } from "@/models/ingest/service"
+import { INGEST_STATUS } from "@/models/ingest/schema"
 
 // ---------------------------------------------------------------------------
 // Stable smoke-owner email — same across runs so the user survives re-runs.
@@ -606,6 +608,79 @@ async function testReaperOrphanRecovery(owner: User): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Test 9: IngestService.submit no-op short-circuit (head == ingested)
+//
+// Creates a fresh project, manually sets ingestedVersionId = headVersionId so
+// the delta is empty, then calls IngestService.submit and asserts that it
+// returns a terminal done job with chunksWritten=0, stats.noOp=true, and that
+// project.ingestedVersionId is set to the target version — all without hitting
+// the cluster runner.
+// ---------------------------------------------------------------------------
+async function testIngestNoOpShortCircuit(owner: User): Promise<void> {
+  console.log("\nTest 9: ingest no-op short-circuit")
+
+  // Create a fresh project (gets an initial corpus_version at seq=1)
+  const project = await ProjectService.create({
+    name: `Smoke Ingest No-Op ${randomUUID()}`,
+    ownerId: owner.id,
+  })
+
+  // Manually set ingestedVersionId = headVersionId so the delta is empty
+  const headVersionId = project.headVersionId
+  assert.ok(headVersionId !== null, "project must have a headVersionId after creation")
+
+  await prisma.project.update({
+    where: { id: project.id },
+    data: { ingestedVersionId: headVersionId },
+  })
+
+  // Re-read so IngestService sees the updated ingestedVersionId
+  const freshProject = await prisma.project.findUniqueOrThrow({
+    where: { id: project.id },
+  })
+
+  // Submit — delta is empty (head == ingested) → no-op short-circuit
+  const job = await IngestService.submit(freshProject, owner, {})
+
+  // Assertions
+  assert.equal(job.status, INGEST_STATUS.DONE, `job.status must be "done", got "${job.status}"`)
+  assert.equal(job.chunksWritten, 0, `chunksWritten must be 0, got ${job.chunksWritten}`)
+  assert.ok(
+    typeof job.stats === "object" &&
+      job.stats !== null &&
+      (job.stats as Record<string, unknown>)["noOp"] === true,
+    `job.stats must contain noOp:true, got ${JSON.stringify(job.stats)}`,
+  )
+  assert.equal(
+    job.targetVersionId,
+    headVersionId,
+    "job.targetVersionId must equal headVersionId",
+  )
+
+  // Verify project.ingestedVersionId was advanced to targetVersionId
+  const afterProject = await prisma.project.findUniqueOrThrow({
+    where: { id: project.id },
+  })
+  assert.equal(
+    afterProject.ingestedVersionId,
+    job.targetVersionId,
+    "project.ingestedVersionId must equal job.targetVersionId after no-op",
+  )
+
+  // Cleanup
+  await prisma.ingestJob.delete({ where: { id: job.id } })
+  await prisma.corpusMembership.deleteMany({ where: { projectId: project.id } })
+  await prisma.corpusVersion.deleteMany({ where: { projectId: project.id } })
+  await prisma.project.update({
+    where: { id: project.id },
+    data: { headVersionId: null, ingestedVersionId: null },
+  })
+  await prisma.project.delete({ where: { id: project.id } })
+
+  console.log("  \u2713 ingest no-op short-circuit")
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 async function main(): Promise<void> {
@@ -622,6 +697,7 @@ async function main(): Promise<void> {
     sourceFromArk: false,
     normalizeManyRejection: false,
     reaperOrphanRecovery: false,
+    ingestNoOpShortCircuit: false,
   }
 
   // --- Setup: one real owner user for Tests 1 + 2 --------------------------
@@ -691,6 +767,13 @@ async function main(): Promise<void> {
     console.error("FAIL Test 8 (reaper orphan recovery):", err)
   }
 
+  try {
+    await testIngestNoOpShortCircuit(smokeUser)
+    results.ingestNoOpShortCircuit = true
+  } catch (err: unknown) {
+    console.error("FAIL Test 9 (ingest no-op short-circuit):", err)
+  }
+
   // --- Cleanup (always) ----------------------------------------------------
   console.log("\nCleaning up …")
   try {
@@ -713,6 +796,7 @@ async function main(): Promise<void> {
   console.log(`  ${tick(results.sourceFromArk)} sourceFromArk fixtures`)
   console.log(`  ${tick(results.normalizeManyRejection)} normalizeMany rejection`)
   console.log(`  ${tick(results.reaperOrphanRecovery)} reaper orphan recovery`)
+  console.log(`  ${tick(results.ingestNoOpShortCircuit)} ingest no-op short-circuit`)
   console.log("═══════════════════════════════════════════════")
 
   process.exit(Object.values(results).every(Boolean) ? 0 : 1)
