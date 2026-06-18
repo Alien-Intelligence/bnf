@@ -150,6 +150,42 @@
       "title": "Bienvenue dans la constitution du corpus",
       "body": "À gauche, l'agent vous accompagne dans la création de votre corpus. À droite, vous gardez la maîtrise de son contenu.",
       "gotIt": "J'ai compris"
+    },
+    "events": {
+      "added": "+{count} documents · v{versionSeq}",
+      "removed": "−{count} documents · v{versionSeq}",
+      "memoryWrite": "Mémoire mise à jour · {section}",
+      "ingestStub": "Ingestion à venir"
     }
+  },
+  "memory": {
+    "dialog": {
+      "title": "Mémoire du projet",
+      "empty": "Aucun élément",
+      "scopeCorpus": "Mémoire du corpus",
+      "scopeResearch": "Mémoire de recherche",
+      "delete": "Supprimer",
+      "deleting": "Suppression…"
+    },
+    "origin": {
+      "consigne": "consigne",
+      "deduit": "déduit",
+      "action": "action",
+      "user": "utilisateur"
+    }
+  },
+  "tools": {
+    "corpus.get_state": "État du corpus",
+    "corpus.add": "Ajout au corpus",
+    "corpus.remove": "Retrait du corpus",
+    "corpus.stats": "Statistiques",
+    "corpus.diff": "Diff de corpus",
+    "memory.read": "Lecture mémoire",
+    "memory.write": "Écriture mémoire",
+    "ingest.submit": "Soumettre l'ingestion",
+    "bnf.search_catalogue": "Recherche Catalogue BnF",
+    "bnf.search_gallica": "Recherche Gallica",
+    "bnf.get_catalogue_record": "Résolution notice BnF",
+    "bnf.get_document_info": "Résolution document Gallica"
   }
 }

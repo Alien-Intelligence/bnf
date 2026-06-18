@@ -150,6 +150,42 @@
       "title": "Welcome to corpus building",
       "body": "On the left, the agent guides you through building your corpus. On the right, you stay in control of its content.",
       "gotIt": "Got it"
+    },
+    "events": {
+      "added": "+{count} documents · v{versionSeq}",
+      "removed": "−{count} documents · v{versionSeq}",
+      "memoryWrite": "Memory updated · {section}",
+      "ingestStub": "Ingestion coming"
     }
+  },
+  "memory": {
+    "dialog": {
+      "title": "Project memory",
+      "empty": "No items",
+      "scopeCorpus": "Corpus memory",
+      "scopeResearch": "Research memory",
+      "delete": "Delete",
+      "deleting": "Deleting…"
+    },
+    "origin": {
+      "consigne": "instruction",
+      "deduit": "inferred",
+      "action": "action",
+      "user": "user"
+    }
+  },
+  "tools": {
+    "corpus.get_state": "Corpus state",
+    "corpus.add": "Add to corpus",
+    "corpus.remove": "Remove from corpus",
+    "corpus.stats": "Stats",
+    "corpus.diff": "Corpus diff",
+    "memory.read": "Read memory",
+    "memory.write": "Write memory",
+    "ingest.submit": "Submit ingestion",
+    "bnf.search_catalogue": "BnF Catalogue search",
+    "bnf.search_gallica": "Gallica search",
+    "bnf.get_catalogue_record": "Resolve BnF record",
+    "bnf.get_document_info": "Resolve Gallica document"
   }
 }
