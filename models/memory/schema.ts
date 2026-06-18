@@ -17,4 +17,7 @@ export const MEMORY_ORIGIN = {
 } as const
 export type MemoryOrigin = (typeof MEMORY_ORIGIN)[keyof typeof MEMORY_ORIGIN]
 
+export type MemorySection = { title: string; items: MemoryItem[] }
+export type MemorySnapshot = { sections: MemorySection[] }
+
 export type { MemoryItem }
