@@ -207,6 +207,42 @@
     "bnf.get_catalogue_record": "Resolve BnF record",
     "bnf.get_document_info": "Resolve Gallica document"
   },
+  "research": {
+    "page": {
+      "title": "Research"
+    },
+    "notIngested": {
+      "title": "Corpus not ingested",
+      "body": "The corpus must be ingested before you can run searches. Please start the ingestion.",
+      "openIngest": "Open ingestion"
+    },
+    "atelier": {
+      "chatTab": "Conversation",
+      "noteTab": "Note",
+      "newNote": "New note",
+      "viewInCarnet": "View notebook",
+      "noNotes": "No notes yet."
+    },
+    "carnet": {
+      "title": "Research notebook",
+      "export": "Export as Markdown",
+      "empty": "No notes in this notebook."
+    },
+    "note": {
+      "titlePlaceholder": "Note title",
+      "bodyPlaceholder": "Write your note…",
+      "create": "Create note"
+    }
+  },
+  "citations": {
+    "panel": {
+      "title": "Cited source",
+      "openIiif": "Open IIIF image",
+      "openGallica": "Open on Gallica",
+      "manifest": "IIIF manifest",
+      "usages": "Used in other notes"
+    }
+  },
   "ingest": {
     "summary": {
       "title": "Ingestion state",

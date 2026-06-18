@@ -207,6 +207,42 @@
     "bnf.get_catalogue_record": "Résolution notice BnF",
     "bnf.get_document_info": "Résolution document Gallica"
   },
+  "research": {
+    "page": {
+      "title": "Recherche"
+    },
+    "notIngested": {
+      "title": "Corpus non ingéré",
+      "body": "Le corpus doit être ingéré avant de pouvoir effectuer des recherches. Veuillez lancer l'ingestion.",
+      "openIngest": "Ouvrir l'ingestion"
+    },
+    "atelier": {
+      "chatTab": "Conversation",
+      "noteTab": "Note",
+      "newNote": "Nouvelle note",
+      "viewInCarnet": "Voir le carnet",
+      "noNotes": "Aucune note pour l'instant."
+    },
+    "carnet": {
+      "title": "Carnet de recherche",
+      "export": "Exporter en Markdown",
+      "empty": "Aucune note dans ce carnet."
+    },
+    "note": {
+      "titlePlaceholder": "Titre de la note",
+      "bodyPlaceholder": "Rédigez votre note…",
+      "create": "Créer la note"
+    }
+  },
+  "citations": {
+    "panel": {
+      "title": "Source citée",
+      "openIiif": "Ouvrir l'image IIIF",
+      "openGallica": "Ouvrir sur Gallica",
+      "manifest": "Manifeste IIIF",
+      "usages": "Utilisé dans d'autres notes"
+    }
+  },
   "ingest": {
     "summary": {
       "title": "État d'ingestion",
