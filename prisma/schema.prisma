@@ -403,6 +403,10 @@ model IngestJob {
   chunksWritten   Int?      @map("chunks_written")
   stats           Json?
   error           String?
+  callbackSecret  String?   @map("callback_secret")
+  clusterJobId    String?   @map("cluster_job_id")
+  addedArks       String[]  @default([]) @map("added_arks")
+  removedArks     String[]  @default([]) @map("removed_arks")
   createdAt       DateTime  @default(now()) @map("created_at")
   startedAt       DateTime? @map("started_at")
   finishedAt      DateTime? @map("finished_at")
