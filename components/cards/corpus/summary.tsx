@@ -1,8 +1,12 @@
+"use client"
+
 // components/cards/corpus/summary.tsx
 // Four-tile corpus overview card: total, period range, top types, top languages.
-// Server component — useTranslations works server-side in next-intl 4.x.
+// Client component: receives live corpus state from the constituer client
+// after TanStack Query revalidates; useTranslations is the client-side next-intl
+// hook (strings are hydrated via NextIntlClientProvider in the locale layout).
 
-import { getTranslations } from "next-intl/server"
+import { useTranslations } from "next-intl"
 import {
   Card,
   CardContent,
@@ -38,8 +42,8 @@ function periodRange(period: Record<string, number>): string | null {
   return first === last ? first : `${first} – ${last}`
 }
 
-export async function CardCorpusSummary({ corpus }: Props) {
-  const t = await getTranslations("corpus.summary")
+export function CardCorpusSummary({ corpus }: Props) {
+  const t = useTranslations("corpus.summary")
 
   const range = periodRange(corpus.facets.period)
   const topTypes = topEntries(corpus.facets.type, 3)
