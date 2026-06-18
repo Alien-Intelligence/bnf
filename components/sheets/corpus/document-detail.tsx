@@ -5,7 +5,6 @@
 // External BnF/IIIF deep-links + Citation panel come in slice 5.
 // Client component: controls Sheet open state via prop-driven open/onOpenChange.
 
-import { Dialog as SheetPrimitive } from "@base-ui/react/dialog"
 import { useTranslations } from "next-intl"
 import {
   Sheet,
