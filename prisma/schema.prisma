@@ -259,6 +259,8 @@ model Message {
   status       String    // MESSAGE_STATUS values live in models/messages/schema.ts
   error        String?
   model        String?   // Claude model id — for audit and future cost tracking
+  usage        Json?     @map("usage")    // Anthropic token counts (input / output / cache)
+  thinking     String?   @map("thinking") // Reserved: interleaved thinking (slice 5+ research agent)
   startedAt    DateTime? @map("started_at")
   finishedAt   DateTime? @map("finished_at")
   createdAt    DateTime  @default(now()) @map("created_at")
@@ -275,12 +277,14 @@ model Message {
 // -----------------------------------------------------------------------------
 // ToolCall — structured log of agent tool use, attached to a Message.
 // Slice-3: written at tool-call-end (status="running"), updated at tool-result.
-// Note: `source` and `serverName` columns are deferred to a later migration.
+// source / serverName added in add_turn_runtime_columns migration (slice 2.5).
 // -----------------------------------------------------------------------------
 model ToolCall {
   id         String    @id @default(uuid())
   messageId  String    @map("message_id")
   tool       String    // e.g. "bnf.search" | "corpus.add" | "rag.query"
+  source     String    @default("custom") @map("source")   // "custom" | "mcp"
+  serverName String?   @map("server_name")                 // MCP server prefix; null for custom tools
   input      Json
   output     Json?
   status     String    // "running" | "ok" | "error"
