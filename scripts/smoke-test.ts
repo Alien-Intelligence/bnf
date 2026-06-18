@@ -1,0 +1,433 @@
+/**
+ * scripts/smoke-test.ts — BnF Corpus Research smoke test.
+ *
+ * Run via:  npm run smoke
+ * Which executes: tsx --conditions react-server scripts/smoke-test.ts
+ *   (--conditions react-server makes `server-only` resolve to the empty shim
+ *   so we can import service modules that guard against client bundling.)
+ *
+ * Required environment variables (loaded from .env.local by tsx --env-file-if-exists):
+ *   DATABASE_URL, BETTER_AUTH_SECRET, BETTER_AUTH_URL, ANTHROPIC_API_KEY
+ *
+ * Exercises three invariants:
+ *   1. Advisory lock + monotonic seq — two concurrent addArks calls on the
+ *      same project must produce strictly monotonic seqs without gaps.
+ *   2. No-op delta short-circuit — addArks with all-existing ARKs must not
+ *      create a new corpus_version row.
+ *   3. better-auth round-trip — signUpEmail + signInEmail returns a session
+ *      token; treats USER_ALREADY_EXISTS as a previous-run survivor
+ *      (idempotency).
+ *
+ * Idempotent: re-running succeeds without manual cleanup.
+ * Exits 0 on full success, 1 on any assertion failure.
+ */
+
+// ---------------------------------------------------------------------------
+// Imports — these trigger lib/env.ts and lib/db.ts, which read DATABASE_URL
+// and other vars at module-init time. The tsx --env-file-if-exists flag
+// (set in the npm script) loads .env.local before ESM hoisting fires.
+// ---------------------------------------------------------------------------
+import assert from "node:assert/strict"
+import { randomUUID } from "node:crypto"
+import { auth } from "@/lib/auth"
+import { prisma } from "@/lib/db"
+import { ProjectService } from "@/models/projects/service"
+import { DocumentService } from "@/models/documents/service"
+import { CorpusService } from "@/models/corpus/service"
+import type { User } from "@/models/users/schema"
+
+// ---------------------------------------------------------------------------
+// Stable smoke-owner email — same across runs so the user survives re-runs.
+// Idempotency: if it already exists we fetch it; if not we create it.
+// Cleaned up at the end of every successful run.
+// ---------------------------------------------------------------------------
+const SMOKE_OWNER_EMAIL = "smoke-owner@bnf-smoke.local"
+const SMOKE_OWNER_PASSWORD = "smoke-owner-pw-42"
+
+// ---------------------------------------------------------------------------
+// Error helpers (mirrors the pattern in prisma/seed.ts)
+// ---------------------------------------------------------------------------
+function isEmailAlreadyExistsError(err: unknown): boolean {
+  if (err === null || typeof err !== "object") return false
+  const e = err as Record<string, unknown>
+  if (
+    typeof e["body"] === "object" &&
+    e["body"] !== null &&
+    (e["body"] as Record<string, unknown>)["code"] ===
+      "USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL"
+  ) {
+    return true
+  }
+  return e["status"] === "UNPROCESSABLE_ENTITY"
+}
+
+// ---------------------------------------------------------------------------
+// Global test state — accumulates across tests; all cleaned up in finally.
+// ---------------------------------------------------------------------------
+let smokeUser: User | null = null
+let smokeProjectId: string | null = null
+let smokeDocArks: string[] = []
+
+// ---------------------------------------------------------------------------
+// Delete one smoke project and all its dependent rows.
+//
+// Deletion order must respect FK constraints (no CASCADE on all FKs):
+//   corpus_membership → corpus_version → document → project
+// ---------------------------------------------------------------------------
+async function deleteProject(projectId: string): Promise<void> {
+  await prisma.corpusMembership.deleteMany({ where: { projectId } })
+  await prisma.corpusVersion.deleteMany({ where: { projectId } })
+  await prisma.document.deleteMany({ where: { projectId } })
+  // headVersionId is @unique and references a now-deleted corpus_version row;
+  // null it out before deleting the project to satisfy the FK check.
+  await prisma.project.update({
+    where: { id: projectId },
+    data: { headVersionId: null, ingestedVersionId: null },
+  })
+  await prisma.project.delete({ where: { id: projectId } })
+}
+
+// ---------------------------------------------------------------------------
+// Cleanup — runs unconditionally at the end (success OR failure).
+//
+// The smoke-owner user is a stable test account — we do NOT delete it on each
+// run so that idempotency works: the user survives re-runs and is only absent
+// on a fresh DB. Any projects owned by it (current run's or orphaned from a
+// prior failed run) are fully deleted.
+// ---------------------------------------------------------------------------
+async function cleanup(): Promise<void> {
+  if (smokeUser !== null) {
+    // Delete ALL projects owned by the smoke user (current run + any orphans
+    // from prior failed runs). This handles the case where a previous run's
+    // cleanup failed mid-way and left a dangling project row.
+    try {
+      const orphanedProjects = await prisma.project.findMany({
+        where: { ownerId: smokeUser.id },
+        select: { id: true },
+      })
+      for (const { id } of orphanedProjects) {
+        try {
+          await deleteProject(id)
+        } catch (err: unknown) {
+          console.error(`  ⚠ cleanup: project ${id} delete failed (non-fatal):`, err)
+        }
+      }
+      smokeProjectId = null
+      smokeDocArks = []
+    } catch (err: unknown) {
+      console.error("  ⚠ cleanup: listing orphaned projects failed (non-fatal):", err)
+    }
+
+    // Delete the stable smoke-owner user now that all its projects are gone.
+    try {
+      await prisma.user.delete({ where: { id: smokeUser.id } })
+      smokeUser = null
+    } catch (err: unknown) {
+      console.error("  ⚠ cleanup: smoke user delete failed (non-fatal):", err)
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Setup — ensure a real user row exists for the project FK constraint.
+// Uses a stable email so the user survives re-runs.
+// ---------------------------------------------------------------------------
+async function setupSmokeUser(): Promise<User> {
+  // Try signup first (first run creates it).
+  try {
+    await auth.api.signUpEmail({
+      body: {
+        email: SMOKE_OWNER_EMAIL,
+        password: SMOKE_OWNER_PASSWORD,
+        name: "Smoke Owner",
+      },
+    })
+    console.log("  ✓ smoke owner user created")
+  } catch (err: unknown) {
+    if (isEmailAlreadyExistsError(err)) {
+      console.log("  ✓ smoke owner user already exists — reusing")
+    } else {
+      throw err
+    }
+  }
+
+  // Fetch the Prisma row (betterAuth returns a session object, not the full row).
+  const user = await prisma.user.findUniqueOrThrow({
+    where: { email: SMOKE_OWNER_EMAIL },
+  })
+  return user
+}
+
+// ---------------------------------------------------------------------------
+// Test 1: Advisory lock + monotonic seq
+// ---------------------------------------------------------------------------
+async function testAdvisoryLockMonotonicSeq(owner: User): Promise<void> {
+  console.log("\nTest 1: advisory lock + monotonic seq")
+
+  // --- Create a dedicated test project ------------------------------------
+  const project = await ProjectService.create({
+    name: `Smoke Test Project ${randomUUID()}`,
+    ownerId: owner.id,
+  })
+  smokeProjectId = project.id
+
+  // --- Verify the initial head (seq=1) -------------------------------------
+  const initialVersions = await prisma.corpusVersion.findMany({
+    where: { projectId: project.id },
+    orderBy: { seq: "asc" },
+  })
+  assert.equal(
+    initialVersions.length,
+    1,
+    "Expected exactly one version after project creation",
+  )
+  const initialSeq = initialVersions[0]!.seq
+  assert.equal(initialSeq, 1, "Initial seq must be 1 (invariant 1)")
+
+  // --- Create Document rows for two non-overlapping ARK sets ---------------
+  const setA = [
+    `ark:/12148/smoketest-${randomUUID()}`,
+    `ark:/12148/smoketest-${randomUUID()}`,
+  ]
+  const setB = [
+    `ark:/12148/smoketest-${randomUUID()}`,
+    `ark:/12148/smoketest-${randomUUID()}`,
+  ]
+  smokeDocArks = [...setA, ...setB]
+
+  await DocumentService.upsertMany(project.id, [
+    ...setA.map((ark) => ({
+      ark,
+      title: `Smoke A – ${ark}`,
+      docType: "monographie",
+      rawMetadata: {},
+    })),
+    ...setB.map((ark) => ({
+      ark,
+      title: `Smoke B – ${ark}`,
+      docType: "monographie",
+      rawMetadata: {},
+    })),
+  ])
+
+  // --- Fire two concurrent addArks on the SAME project --------------------
+  // Promise.all fires both calls simultaneously. The advisory lock inside
+  // CorpusService.addArks (pg_advisory_xact_lock) serialises them so each
+  // transaction reads a consistent head seq before incrementing.
+  const [resultA, resultB] = await Promise.all([
+    CorpusService.addArks(project, owner, { arks: setA, reason: "smoke-lock-A" }),
+    CorpusService.addArks(project, owner, { arks: setB, reason: "smoke-lock-B" }),
+  ])
+
+  // --- Assert monotonic seqs with no gap -----------------------------------
+  const versions = await prisma.corpusVersion.findMany({
+    where: { projectId: project.id },
+    orderBy: { seq: "asc" },
+    select: { seq: true },
+  })
+
+  // seq=1 (initial empty) + seq=2 + seq=3 (one per addArks call)
+  assert.equal(
+    versions.length,
+    3,
+    `Expected 3 corpus_version rows, got ${versions.length}`,
+  )
+  const seqs = versions.map((v) => v.seq)
+  assert.deepEqual(
+    seqs,
+    [1, 2, 3],
+    `Seqs must be strictly monotonic [1,2,3], got ${JSON.stringify(seqs)}`,
+  )
+
+  // The two concurrent calls must have landed on different seqs (no collision).
+  assert.notEqual(
+    resultA.versionSeq,
+    resultB.versionSeq,
+    "Two concurrent addArks must produce different versionSeqs",
+  )
+
+  console.log(
+    `  seqs after concurrent adds: ${seqs.join(", ")} — no gap, strictly monotonic`,
+  )
+  console.log(
+    `  concurrent call seqs: ${resultA.versionSeq} and ${resultB.versionSeq} — distinct`,
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Test 2: No-op delta short-circuit
+// ---------------------------------------------------------------------------
+async function testNoOpDeltaShortCircuit(owner: User): Promise<void> {
+  console.log("\nTest 2: no-op delta short-circuit")
+
+  // Reuse the project from Test 1 (head is now at seq=3, both ARK sets added).
+  assert.ok(smokeProjectId !== null, "smokeProjectId must be set from Test 1")
+
+  const project = await prisma.project.findUniqueOrThrow({
+    where: { id: smokeProjectId },
+  })
+
+  // Count corpus_version rows before the no-op call.
+  const beforeCount = await prisma.corpusVersion.count({
+    where: { projectId: project.id },
+  })
+
+  // Pre-call head seq — read directly from DB for a clean assertion.
+  const headBefore = await prisma.corpusVersion.findFirstOrThrow({
+    where: { projectId: project.id },
+    orderBy: { seq: "desc" },
+    select: { seq: true },
+  })
+  const preCallHeadSeq = headBefore.seq
+
+  // All ARKs in smokeDocArks are already members of the head version.
+  const result = await CorpusService.addArks(project, owner, {
+    arks: smokeDocArks,
+    reason: "noop-test",
+  })
+
+  // Count corpus_version rows after the no-op call.
+  const afterCount = await prisma.corpusVersion.count({
+    where: { projectId: project.id },
+  })
+
+  assert.equal(
+    afterCount,
+    beforeCount,
+    `No-op addArks must not create a new corpus_version row (before=${beforeCount}, after=${afterCount})`,
+  )
+
+  assert.equal(
+    result.versionSeq,
+    preCallHeadSeq,
+    `No-op result.versionSeq must equal pre-call head seq (${preCallHeadSeq}), got ${result.versionSeq}`,
+  )
+
+  console.log(
+    `  corpus_version rows: before=${beforeCount}, after=${afterCount} — unchanged`,
+  )
+  console.log(
+    `  returned versionSeq=${result.versionSeq} (pre-call head was ${preCallHeadSeq}) — no advance`,
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Test 3: better-auth round-trip
+// ---------------------------------------------------------------------------
+async function testBetterAuthRoundTrip(): Promise<void> {
+  console.log("\nTest 3: better-auth round-trip")
+
+  // Use a fresh per-run email so this test is independent of the stable
+  // smoke-owner account (and so re-runs don't collide on the per-run UUID).
+  const email = `smoketest-${randomUUID()}@example.com`
+  const password = "smoke-test-pw-999"
+
+  // --- Sign up --------------------------------------------------------------
+  // On first run: creates the user. On re-run before cleanup: treats the
+  // duplicate-email error as an idempotency signal and proceeds to sign in.
+  try {
+    await auth.api.signUpEmail({
+      body: { email, password, name: "Smoke Test User" },
+    })
+    console.log(`  ✓ signUpEmail succeeded for ${email}`)
+  } catch (err: unknown) {
+    if (isEmailAlreadyExistsError(err)) {
+      console.log(`  ✓ signUpEmail: user already exists (idempotency path) — proceeding to signIn`)
+    } else {
+      throw err
+    }
+  }
+
+  // --- Sign in and verify a session token is returned ----------------------
+  const signInResult = await auth.api.signInEmail({
+    body: { email, password },
+  })
+
+  assert.ok(signInResult, "signInEmail must return a result object")
+  assert.ok(
+    typeof signInResult.token === "string" && signInResult.token.length > 0,
+    `signInEmail must return a non-empty token, got: ${JSON.stringify(signInResult.token)}`,
+  )
+
+  console.log(`  ✓ signInEmail returned token (length=${signInResult.token.length})`)
+
+  // --- Cleanup: delete the per-run test user --------------------------------
+  try {
+    await prisma.user.delete({ where: { email } })
+    console.log(`  ✓ per-run test user deleted`)
+  } catch (err: unknown) {
+    console.error("  ⚠ per-run test user delete failed (non-fatal):", err)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+async function main(): Promise<void> {
+  console.log("═══════════════════════════════════════════════")
+  console.log("BnF Corpus Research — Smoke Test")
+  console.log("═══════════════════════════════════════════════")
+
+  const results = {
+    advisoryLock: false,
+    noOpDelta: false,
+    betterAuth: false,
+  }
+
+  // --- Setup: one real owner user for Tests 1 + 2 --------------------------
+  console.log("\nSetup: ensuring smoke owner user …")
+  try {
+    smokeUser = await setupSmokeUser()
+  } catch (err: unknown) {
+    console.error("FATAL setup failed:", err)
+    process.exit(1)
+  }
+
+  // --- Run tests -----------------------------------------------------------
+  try {
+    await testAdvisoryLockMonotonicSeq(smokeUser)
+    results.advisoryLock = true
+  } catch (err: unknown) {
+    console.error("FAIL Test 1 (advisory lock):", err)
+  }
+
+  try {
+    await testNoOpDeltaShortCircuit(smokeUser)
+    results.noOpDelta = true
+  } catch (err: unknown) {
+    console.error("FAIL Test 2 (no-op delta):", err)
+  }
+
+  try {
+    await testBetterAuthRoundTrip()
+    results.betterAuth = true
+  } catch (err: unknown) {
+    console.error("FAIL Test 3 (better-auth):", err)
+  }
+
+  // --- Cleanup (always) ----------------------------------------------------
+  console.log("\nCleaning up …")
+  try {
+    await cleanup()
+    console.log("  ✓ cleanup done")
+  } catch (err: unknown) {
+    console.error("  ⚠ cleanup error (non-fatal):", err)
+  }
+
+  // --- Summary -------------------------------------------------------------
+  console.log("\n═══════════════════════════════════════════════")
+  console.log("Summary")
+  console.log("═══════════════════════════════════════════════")
+  const tick = (v: boolean) => (v ? "✓" : "✗")
+  console.log(`  ${tick(results.advisoryLock)} advisory lock + monotonic seq`)
+  console.log(`  ${tick(results.noOpDelta)} no-op delta short-circuit`)
+  console.log(`  ${tick(results.betterAuth)} better-auth round-trip`)
+  console.log("═══════════════════════════════════════════════")
+
+  process.exit(Object.values(results).every(Boolean) ? 0 : 1)
+}
+
+main().catch((err: unknown) => {
+  console.error("Unexpected top-level error:", err)
+  process.exit(1)
+})

@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "smoke": "tsx --env-file-if-exists .env.local --conditions react-server scripts/smoke-test.ts"
   },
   "dependencies": {
     "@alien/chat-sdk": "file:../../tooling/chat-sdk/alien-chat-sdk-0.3.0.tgz",
