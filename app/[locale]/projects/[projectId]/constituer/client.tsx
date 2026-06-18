@@ -1,12 +1,20 @@
 "use client"
 
 // app/[locale]/projects/[projectId]/constituer/client.tsx
-// 40/60 layout client — owns interactivity, URL-driven selection state, and
-// the TanStack Query cache seed from the server-fetched initialCorpus.
-// No data fetching beyond the useCorpus hook.
+// 40/60 layout client — owns interactivity, URL-driven filter + selection state,
+// and the TanStack Query cache seed from the server-fetched initialCorpus.
+// Filter changes navigate via router.push; selectedArk survives filter changes.
 
+import { useMemo } from "react"
 import { useSearchParams, useRouter, usePathname } from "next/navigation"
-import { useCorpus } from "@/hooks/api/corpus"
+import { useCorpusFlattened } from "@/hooks/api/corpus"
+import {
+  corpusFiltersFromParams,
+  corpusFiltersToParams,
+  emptyCorpusFilters,
+  hasActiveFilters,
+  type CorpusFilters,
+} from "@/models/corpus/types"
 import { LayoutCorpusChat } from "@/components/layouts/corpus/chat"
 import { CardCorpusSummary } from "@/components/cards/corpus/summary"
 import { CardCorpusFiltersDrawer } from "@/components/cards/corpus/filters-drawer"
@@ -26,14 +34,24 @@ export function ConstituerClient({ projectId, initialCorpus, initialUser }: Prop
   const pathname = usePathname()
   const searchParams = useSearchParams()
 
-  const selectedArk = searchParams.get("selectedArk")
+  // ── Filter state — derived from URL ──────────────────────────────────────────
+  const filters = useMemo(
+    () => corpusFiltersFromParams(searchParams),
+    [searchParams],
+  )
 
-  const {
-    data: corpus,
-    isLoading,
-    isError,
-    refetch,
-  } = useCorpus(projectId, { initialData: initialCorpus })
+  const onFiltersChange = (next: CorpusFilters) => {
+    const params = corpusFiltersToParams(next)
+    // Preserve the selected document ARK across filter changes.
+    const sa = searchParams.get("selectedArk")
+    if (sa) params.set("selectedArk", sa)
+    router.push(`${pathname}?${params.toString()}`)
+  }
+
+  const onClearFilters = () => onFiltersChange(emptyCorpusFilters())
+
+  // ── Selection state — also URL-driven ─────────────────────────────────────────
+  const selectedArk = searchParams.get("selectedArk")
 
   const onSelectArk = (ark: string | null) => {
     const next = new URLSearchParams(searchParams.toString())
@@ -45,10 +63,29 @@ export function ConstituerClient({ projectId, initialCorpus, initialUser }: Prop
     router.replace(`${pathname}?${next.toString()}`, { scroll: false })
   }
 
+  // ── Data ──────────────────────────────────────────────────────────────────────
+  const {
+    snapshot,
+    isLoading,
+    isError,
+    refetch,
+    hasNextPage,
+    isFetchingNextPage,
+    fetchNextPage,
+  } = useCorpusFlattened(projectId, filters, { initialSnapshot: initialCorpus })
+
+  // The active-filters flag is derived from the URL filter state (not the
+  // snapshot) so the noResults branch can show even while re-fetching.
+  const filtersActive = hasActiveFilters(filters)
+
   const selectedDoc =
-    selectedArk && corpus
-      ? (corpus.sample.find((d) => d.ark === selectedArk) ?? null)
+    selectedArk && snapshot
+      ? (snapshot.sample.find((d) => d.ark === selectedArk) ?? null)
       : null
+
+  // The comprehension panel components need a CorpusSnapshot; fall back to
+  // the server-rendered initial snapshot while the first page loads.
+  const displaySnapshot = snapshot ?? initialCorpus
 
   return (
     <div className="flex flex-col h-screen">
@@ -57,15 +94,24 @@ export function ConstituerClient({ projectId, initialCorpus, initialUser }: Prop
         <LayoutCorpusChat projectId={projectId} />
 
         <div className="flex flex-col gap-4 overflow-auto">
-          <CardCorpusSummary corpus={corpus ?? initialCorpus} />
-          <CardCorpusFiltersDrawer corpus={corpus ?? initialCorpus} />
+          <CardCorpusSummary corpus={displaySnapshot} />
+          <CardCorpusFiltersDrawer
+            corpus={displaySnapshot}
+            filters={filters}
+            onChange={onFiltersChange}
+          />
           <LayoutCorpusDocumentList
-            corpus={corpus}
+            corpus={snapshot}
             selectedArk={selectedArk}
             onSelectArk={onSelectArk}
             isLoading={isLoading}
             isError={isError}
             onRetry={() => void refetch()}
+            hasActiveFilters={filtersActive}
+            hasNextPage={hasNextPage ?? false}
+            isFetchingNextPage={isFetchingNextPage}
+            fetchNextPage={() => void fetchNextPage()}
+            onClearFilters={onClearFilters}
           />
         </div>
 
