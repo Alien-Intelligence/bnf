@@ -7,7 +7,7 @@ services:
       POSTGRES_USER: bnf_user
       POSTGRES_PASSWORD: bnf_dev_password
     ports:
-      - "5434:5432"
+      - "5437:5432"
     volumes:
       - bnf_postgres_data:/var/lib/postgresql/data
     healthcheck:

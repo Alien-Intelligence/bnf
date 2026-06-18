@@ -1,0 +1,409 @@
+// =============================================================================
+// BnF Corpus Research — Prisma Schema
+// =============================================================================
+// Source of truth for all tables. Uses camelCase field names with @map() to
+// keep SQL column names in snake_case per Postgres convention.
+//
+// Generator output: lib/generated/prisma/client (per playbook/models.md).
+// Domain enums (status, scope, role) live in models/<model>/schema.ts, NOT here.
+// No `enum` keyword in this file — all status fields are plain String.
+//
+// Better-auth owns: User, Session, Account, Verification.
+// Domain owns everything else. `AppSession` is our chat session; it is distinct
+// from better-auth's `Session` (auth session) — see plan §4 and §15.
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../lib/generated/prisma/client"
+}
+
+// In Prisma 7, the connection URL moves to prisma.config.ts (datasource.url).
+// This block declares the provider only; the URL is set via prisma.config.ts.
+datasource db {
+  provider = "postgresql"
+}
+
+// =============================================================================
+// BETTER-AUTH TABLES
+// These four models are owned by the better-auth Prisma adapter.
+// Do NOT add application foreign keys pointing *out of* domain tables into
+// these models' internal fields. Project.ownerId references User.id from the
+// domain side only (relation declared on Project, not on User).
+// =============================================================================
+
+model User {
+  id            String    @id
+  email         String    @unique
+  emailVerified Boolean   @default(false) @map("email_verified")
+  name          String
+  image         String?
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+  // Application role — not a better-auth concept; we add it here so we don't
+  // need a separate profile table for this single field. Kept off the auth
+  // tables (User is the one better-auth model we can safely extend per the
+  // adapter docs). Domain enums live in models/users/schema.ts.
+  role          String    @default("member")
+
+  sessions  Session[]
+  accounts  Account[]
+  projects  Project[]
+
+  @@map("user")
+}
+
+model Session {
+  id        String    @id
+  userId    String    @map("user_id")
+  token     String    @unique
+  expiresAt DateTime  @map("expires_at")
+  ipAddress String?   @map("ip_address")
+  userAgent String?   @map("user_agent")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("session")
+}
+
+model Account {
+  id                    String    @id
+  userId                String    @map("user_id")
+  accountId             String    @map("account_id")
+  providerId            String    @map("provider_id")
+  accessToken           String?   @map("access_token")
+  refreshToken          String?   @map("refresh_token")
+  idToken               String?   @map("id_token")
+  accessTokenExpiresAt  DateTime? @map("access_token_expires_at")
+  refreshTokenExpiresAt DateTime? @map("refresh_token_expires_at")
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now()) @map("created_at")
+  updatedAt             DateTime  @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("account")
+}
+
+model Verification {
+  id         String    @id
+  identifier String
+  value      String
+  expiresAt  DateTime  @map("expires_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  @@map("verification")
+}
+
+// =============================================================================
+// DOMAIN TABLES
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Project — top-level workspace
+// headVersionId: @unique so a project can be looked up by its head in one
+//   index lookup (per playbook/corpus-versioning.md).
+// ingestedVersionId: NOT @unique — advanced only by IngestService.commit().
+// ownerId references User.id; the relation is declared here (domain side) to
+//   keep the better-auth User table clean of app concerns.
+// -----------------------------------------------------------------------------
+model Project {
+  id                String   @id @default(uuid())
+  ownerId           String   @map("owner_id")
+  name              String
+  subtitle          String?
+  isPublic          Boolean  @default(false) @map("is_public")
+  // Denormalized corpus pointers — see playbook/corpus-versioning.md invariants.
+  headVersionId     String?  @unique @map("head_version_id")
+  ingestedVersionId String?  @map("ingested_version_id")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  owner          User             @relation(fields: [ownerId], references: [id])
+  versions       CorpusVersion[]
+  documents      Document[]
+  appSessions    AppSession[]
+  memoryItems    MemoryItem[]
+  notes          Note[]
+  ingestJobs     IngestJob[]
+
+  @@map("project")
+}
+
+// -----------------------------------------------------------------------------
+// Document — metadata projection of a BnF notice, keyed by ARK.
+// Composite PK (projectId, ark): a document is scoped to one project.
+// Documents are never deleted — only removed from corpus membership.
+// Indexes: (projectId, year) for period histogram queries; see design/docs/03.
+// Slice note: dateLabel deferred to a later migration per plan §4.
+// -----------------------------------------------------------------------------
+model Document {
+  ark             String
+  projectId       String    @map("project_id")
+  title           String
+  author          String?
+  year            Int?
+  docType         String    @map("doc_type")
+  lang            String?
+  source          String?
+  pages           Int?
+  excerpt         String?
+  iiifManifestUrl String?   @map("iiif_manifest_url")
+  rawMetadata     Json?     @map("raw_metadata")
+  resolvedAt      DateTime? @map("resolved_at")
+
+  project    Project            @relation(fields: [projectId], references: [id])
+  membership CorpusMembership[]
+
+  @@id([projectId, ark])
+  @@index([projectId, year])
+  @@map("document")
+}
+
+// -----------------------------------------------------------------------------
+// CorpusVersion — immutable membership snapshot.
+// seq: monotonic per project (1, 2, 3 …).
+// status: draft | sealed | ingested | failed  (enums in models/corpus/schema.ts).
+// parentId: self-FK for the version lineage tree.
+// headVersionId on Project is @unique and points here.
+// -----------------------------------------------------------------------------
+model CorpusVersion {
+  id        String   @id @default(uuid())
+  projectId String   @map("project_id")
+  seq       Int
+  status    String   // CORPUS_VERSION_STATUS values live in models/corpus/schema.ts
+  parentId  String?  @map("parent_id")
+  createdBy String   @map("created_by") // "agent:session:<sid>" | "user:<uid>"
+  note      String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  project    Project            @relation(fields: [projectId], references: [id])
+  parent     CorpusVersion?     @relation("VersionParent", fields: [parentId], references: [id])
+  children   CorpusVersion[]    @relation("VersionParent")
+  membership CorpusMembership[]
+  // IngestJob FKs: targetVersion and baseVersion reference this model.
+  targetJobs IngestJob[]        @relation("TargetVersion")
+  baseJobs   IngestJob[]        @relation("BaseVersion")
+
+  @@unique([projectId, seq])
+  @@map("corpus_version")
+}
+
+// -----------------------------------------------------------------------------
+// CorpusMembership — N:M join between CorpusVersion and Document.
+// Composite PK (versionId, ark). projectId is denormalized for filter perf.
+// Membership rows are NEVER updated or deleted — versions are immutable.
+// -----------------------------------------------------------------------------
+model CorpusMembership {
+  versionId String @map("version_id")
+  ark       String
+  projectId String @map("project_id")
+
+  version  CorpusVersion @relation(fields: [versionId], references: [id])
+  document Document      @relation(fields: [projectId, ark], references: [projectId, ark])
+
+  @@id([versionId, ark])
+  @@map("corpus_membership")
+}
+
+// =============================================================================
+// SLICE-3-READY STUBS
+// Tables below have zero service logic in slice 1 but ship with all the columns
+// slice 3 needs so we don't pay a migration cost then. See plan §4 and §15.
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// AppSession — our domain chat session.
+// DISTINCT from better-auth's `Session` (auth session cookie/token).
+// scope: "corpus" | "research"  (SESSION_SCOPE in models/sessions/schema.ts).
+// activeMessageId: points at the currently-streaming Message; null when idle.
+//   Slice-3 SSE reattach uses this to know whether to subscribe.
+// -----------------------------------------------------------------------------
+model AppSession {
+  id              String    @id @default(uuid())
+  projectId       String    @map("project_id")
+  scope           String    // SESSION_SCOPE values live in models/sessions/schema.ts
+  title           String
+  status          String?   // "active" | "draft" | "archived"
+  activeMessageId String?   @unique @map("active_message_id")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  project       Project   @relation(fields: [projectId], references: [id])
+  activeMessage Message?  @relation("ActiveMessage", fields: [activeMessageId], references: [id])
+  messages      Message[] @relation("SessionMessages")
+  notes         Note[]
+
+  @@map("app_session")
+}
+
+// -----------------------------------------------------------------------------
+// Message — one turn in a chat session.
+// seq: monotonic per AppSession.
+// role: "user" | "assistant" | "event"
+// status: "draft" | "streaming" | "done" | "error" | "canceled"
+// content: final text; updated at flush boundaries during streaming (plan §15).
+// Slice-3: TurnRunner writes rows here as the turn progresses.
+// -----------------------------------------------------------------------------
+model Message {
+  id           String    @id @default(uuid())
+  appSessionId String    @map("app_session_id")
+  seq          Int
+  role         String    // MESSAGE_ROLE values live in models/messages/schema.ts
+  content      String?
+  status       String    // MESSAGE_STATUS values live in models/messages/schema.ts
+  error        String?
+  model        String?   // Claude model id — for audit and future cost tracking
+  startedAt    DateTime? @map("started_at")
+  finishedAt   DateTime? @map("finished_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  appSession    AppSession  @relation("SessionMessages", fields: [appSessionId], references: [id])
+  toolCalls     ToolCall[]
+  // Reverse side of AppSession.activeMessageId — only one session can point here.
+  activeInSession AppSession? @relation("ActiveMessage")
+
+  @@unique([appSessionId, seq])
+  @@map("message")
+}
+
+// -----------------------------------------------------------------------------
+// ToolCall — structured log of agent tool use, attached to a Message.
+// Slice-3: written at tool-call-end (status="running"), updated at tool-result.
+// Note: `source` and `serverName` columns are deferred to a later migration.
+// -----------------------------------------------------------------------------
+model ToolCall {
+  id         String    @id @default(uuid())
+  messageId  String    @map("message_id")
+  tool       String    // e.g. "bnf.search" | "corpus.add" | "rag.query"
+  input      Json
+  output     Json?
+  status     String    // "running" | "ok" | "error"
+  latencyMs  Int?      @map("latency_ms")
+  error      String?
+  createdAt  DateTime  @default(now()) @map("created_at")
+  finishedAt DateTime? @map("finished_at")
+
+  message Message @relation(fields: [messageId], references: [id])
+
+  @@map("tool_call")
+}
+
+// -----------------------------------------------------------------------------
+// MemoryItem — per-project persistent facts, sectioned.
+// NOT a chat-context buffer — re-injected into the system prompt at session
+// start. See playbook/memory.md and CLAUDE.md hard rules.
+// Indexes: (projectId, scope, section) for efficient section-scoped reads.
+// -----------------------------------------------------------------------------
+model MemoryItem {
+  id        String   @id @default(uuid())
+  projectId String   @map("project_id")
+  scope     String   // "corpus" | "research"  (MEMORY_SCOPE in models/memory/schema.ts)
+  section   String   // "Périmètre du corpus" | "Contraintes & filtres" | …
+  text      String
+  origin    String?  // "consigne" | "déduit" | "action · session 2" | …
+  position  Int?     // ordering within section
+  createdAt DateTime @default(now()) @map("created_at")
+
+  project Project @relation(fields: [projectId], references: [id])
+
+  @@index([projectId, scope, section])
+  @@map("memory_item")
+}
+
+// -----------------------------------------------------------------------------
+// Note — Markdown research artifact produced in Step 3 (Rechercher).
+// body_md contains inline [[ark|label|folio]] citation syntax (see design/03).
+// appSessionId is nullable: notes outlive sessions and may be created by users.
+// Slice-5: NoteVersion + Citation + citations parser.
+// -----------------------------------------------------------------------------
+model Note {
+  id           String    @id @default(uuid())
+  projectId    String    @map("project_id")
+  appSessionId String?   @map("app_session_id")
+  title        String
+  body_md      String
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+  pinned       Boolean   @default(false)
+
+  project    Project     @relation(fields: [projectId], references: [id])
+  appSession AppSession? @relation(fields: [appSessionId], references: [id], onDelete: SetNull)
+  versions   NoteVersion[]
+  citations  Citation[]
+
+  @@map("note")
+}
+
+// -----------------------------------------------------------------------------
+// NoteVersion — audit history of note edits. Agent rewrites notes; we keep all.
+// seq: monotonic per Note.
+// -----------------------------------------------------------------------------
+model NoteVersion {
+  id        String   @id @default(uuid())
+  noteId    String   @map("note_id")
+  seq       Int
+  body_md   String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  note Note @relation(fields: [noteId], references: [id])
+
+  @@unique([noteId, seq])
+  @@map("note_version")
+}
+
+// -----------------------------------------------------------------------------
+// Citation — extracted from note bodies for the side panel and indexing.
+// Syntax: [[ark|label|folio]] where folio is mandatory (deep-links IIIF viewer).
+// Indexes: (noteId) — fetch all citations for a note; (ark) — cross-note lookup.
+// -----------------------------------------------------------------------------
+model Citation {
+  id     String @id @default(uuid())
+  noteId String @map("note_id")
+  ark    String
+  folio  Int?
+  label  String?
+
+  note Note @relation(fields: [noteId], references: [id])
+
+  @@index([noteId])
+  @@index([ark])
+  @@map("citation")
+}
+
+// -----------------------------------------------------------------------------
+// IngestJob — async ingestion job tracking.
+// targetVersionId: the corpus version this job will write to the RAG store.
+// baseVersionId: the last ingested version (null = first ingest ever).
+// status: queued | running | done | failed | canceled  (INGEST_STATUS in models/ingest/schema.ts).
+// stage: extract | chunk | embed | index  (INGEST_STAGE in models/ingest/schema.ts).
+// progress: 0..1 overall progress across all stages.
+// ingestedVersionId on Project is moved ONLY by IngestService.commit() on success.
+// -----------------------------------------------------------------------------
+model IngestJob {
+  id              String    @id @default(uuid())
+  projectId       String    @map("project_id")
+  targetVersionId String    @map("target_version_id")
+  baseVersionId   String?   @map("base_version_id")
+  status          String    // INGEST_STATUS values live in models/ingest/schema.ts
+  stage           String?   // INGEST_STAGE values live in models/ingest/schema.ts
+  progress        Decimal?
+  addedCount      Int?      @map("added_count")
+  removedCount    Int?      @map("removed_count")
+  chunksWritten   Int?      @map("chunks_written")
+  stats           Json?
+  error           String?
+  createdAt       DateTime  @default(now()) @map("created_at")
+  startedAt       DateTime? @map("started_at")
+  finishedAt      DateTime? @map("finished_at")
+
+  project       Project        @relation(fields: [projectId], references: [id])
+  targetVersion CorpusVersion  @relation("TargetVersion", fields: [targetVersionId], references: [id])
+  baseVersion   CorpusVersion? @relation("BaseVersion", fields: [baseVersionId], references: [id])
+
+  @@map("ingest_job")
+}
