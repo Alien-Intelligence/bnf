@@ -128,3 +128,17 @@
     @apply font-sans;
   }
 }
+
+/* @alien/chat-sdk — minimal BnF palette bridge.
+ * Overrides 2 variables so the panel blends with the Card surface.
+ * Full theming (accent colour, border radius) deferred to slice 2.5 polish.
+ */
+.chat-sdk-root {
+  --chat-sdk-bg: var(--card);
+  --chat-sdk-fg: var(--card-foreground);
+}
+
+.dark .chat-sdk-root {
+  --chat-sdk-bg: var(--card);
+  --chat-sdk-fg: var(--card-foreground);
+}
