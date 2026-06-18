@@ -89,3 +89,25 @@ export const INGEST_POLL_INTERVAL_MS = 2_000
  * for the Ingérer page job history panel.
  */
 export const INGEST_RECENT_JOBS_LIMIT = 20
+
+// ---------------------------------------------------------------------------
+// BnF IIIF / Gallica URL templates
+// ---------------------------------------------------------------------------
+// These are the single source of truth for all external BnF links.
+// Never construct these URLs inline — always use the functions below.
+// See playbook/citations.md § "External URLs — derived only".
+
+/** Gallica item page for a given ARK + folio (vue). */
+export function GALLICA_ITEM_URL(ark: string, folio: number): string {
+  return `https://gallica.bnf.fr/${ark}/f${folio}.item`
+}
+
+/** IIIF image URL for a given ARK + folio. `size` defaults to "full". */
+export function IIIF_IMAGE_URL(ark: string, folio: number, size = "full"): string {
+  return `https://gallica.bnf.fr/${ark}/f${folio}/${size}/0/native.jpg`
+}
+
+/** IIIF manifest URL for a given ARK. */
+export function IIIF_MANIFEST_URL(ark: string): string {
+  return `https://gallica.bnf.fr/iiif/${ark}/manifest.json`
+}
