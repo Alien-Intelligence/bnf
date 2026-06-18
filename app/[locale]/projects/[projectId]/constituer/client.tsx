@@ -12,14 +12,16 @@ import { CardCorpusSummary } from "@/components/cards/corpus/summary"
 import { CardCorpusFiltersDrawer } from "@/components/cards/corpus/filters-drawer"
 import { LayoutCorpusDocumentList } from "@/components/layouts/corpus/document-list"
 import { SheetDocumentDetail } from "@/components/sheets/corpus/document-detail"
+import { WorkspaceHeader } from "@/components/layouts/workspace/header"
 import type { CorpusSnapshot } from "@/models/corpus/schema"
 
 interface Props {
   projectId: string
   initialCorpus: CorpusSnapshot
+  initialUser: { name?: string; email: string }
 }
 
-export function ConstituerClient({ projectId, initialCorpus }: Props) {
+export function ConstituerClient({ projectId, initialCorpus, initialUser }: Props) {
   const router = useRouter()
   const pathname = usePathname()
   const searchParams = useSearchParams()
@@ -49,29 +51,32 @@ export function ConstituerClient({ projectId, initialCorpus }: Props) {
       : null
 
   return (
-    <div className="grid grid-cols-[40%_60%] gap-4 p-6 h-screen">
-      <LayoutCorpusChat projectId={projectId} />
+    <div className="flex flex-col h-screen">
+      <WorkspaceHeader user={initialUser} />
+      <div className="grid grid-cols-[40%_60%] gap-4 p-6 flex-1 overflow-hidden">
+        <LayoutCorpusChat projectId={projectId} />
 
-      <div className="flex flex-col gap-4 overflow-auto">
-        <CardCorpusSummary corpus={corpus ?? initialCorpus} />
-        <CardCorpusFiltersDrawer corpus={corpus ?? initialCorpus} />
-        <LayoutCorpusDocumentList
-          corpus={corpus}
-          selectedArk={selectedArk}
-          onSelectArk={onSelectArk}
-          isLoading={isLoading}
-          isError={isError}
-          onRetry={() => void refetch()}
+        <div className="flex flex-col gap-4 overflow-auto">
+          <CardCorpusSummary corpus={corpus ?? initialCorpus} />
+          <CardCorpusFiltersDrawer corpus={corpus ?? initialCorpus} />
+          <LayoutCorpusDocumentList
+            corpus={corpus}
+            selectedArk={selectedArk}
+            onSelectArk={onSelectArk}
+            isLoading={isLoading}
+            isError={isError}
+            onRetry={() => void refetch()}
+          />
+        </div>
+
+        <SheetDocumentDetail
+          doc={selectedDoc}
+          open={!!selectedDoc}
+          onOpenChange={(open) => {
+            if (!open) onSelectArk(null)
+          }}
         />
       </div>
-
-      <SheetDocumentDetail
-        doc={selectedDoc}
-        open={!!selectedDoc}
-        onOpenChange={(open) => {
-          if (!open) onSelectArk(null)
-        }}
-      />
     </div>
   )
 }

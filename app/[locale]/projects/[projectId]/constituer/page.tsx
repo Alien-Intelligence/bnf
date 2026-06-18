@@ -26,6 +26,10 @@ export default async function ConstituerPage({
   const initialCorpus = await CorpusQueries.snapshot(projectId, "head")
 
   return (
-    <ConstituerClient projectId={projectId} initialCorpus={initialCorpus} />
+    <ConstituerClient
+      projectId={projectId}
+      initialCorpus={initialCorpus}
+      initialUser={{ name: user.name, email: user.email }}
+    />
   )
 }

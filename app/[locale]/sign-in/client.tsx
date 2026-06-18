@@ -28,7 +28,7 @@ import {
 
 export function SignInClient() {
   const t = useTranslations("auth.signIn")
-  const tCommon = useTranslations("common")
+  const tSignUp = useTranslations("auth.signUp")
   const router = useRouter()
   const searchParams = useSearchParams()
   const [serverError, setServerError] = useState<string | null>(null)
@@ -51,7 +51,6 @@ export function SignInClient() {
         (body as { code?: string }).code ??
         (body as { error?: string }).error
 
-      // Map known better-auth error codes to localized messages; fall back to generic.
       const INVALID_CREDENTIAL_CODES = new Set([
         "INVALID_EMAIL_OR_PASSWORD",
         "INVALID_PASSWORD",
@@ -78,9 +77,12 @@ export function SignInClient() {
         </CardHeader>
         <CardContent>
           {serverError !== null && (
-            <p className="mb-4 text-sm font-medium text-destructive">
+            <div
+              role="alert"
+              className="mb-4 rounded-md border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive"
+            >
               {serverError}
-            </p>
+            </div>
           )}
           <Form {...form}>
             <form
@@ -117,12 +119,20 @@ export function SignInClient() {
                   </FormItem>
                 )}
               />
+              <div className="flex justify-end">
+                <Link
+                  href="/forgot-password"
+                  className="text-xs text-muted-foreground hover:text-foreground"
+                >
+                  {t("forgotPassword")}
+                </Link>
+              </div>
               <Button
                 type="submit"
                 className="w-full"
                 disabled={form.formState.isSubmitting}
               >
-                {form.formState.isSubmitting ? tCommon("loading") : t("submit")}
+                {form.formState.isSubmitting ? t("submitting") : t("submit")}
               </Button>
             </form>
           </Form>
@@ -130,7 +140,7 @@ export function SignInClient() {
         <CardFooter className="flex justify-center gap-1 text-sm text-muted-foreground">
           <span>{t("noAccount")}</span>
           <Link href="/sign-up" className="font-medium text-foreground underline">
-            {tCommon("signUp")}
+            {tSignUp("title")}
           </Link>
         </CardFooter>
       </Card>
