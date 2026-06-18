@@ -16,9 +16,19 @@ export class PromptBuilder {
     return built
   }
 
-  static async invalidate(sessionId: string): Promise<void> {
-    await prisma.appSession.update({
-      where: { id: sessionId },
+  /**
+   * Invalidate the cached system prompt for all sessions that belong to the
+   * given project and scope. Called by `memory_write` when a fact is added —
+   * the cached prompt now contains stale memory and must be rebuilt on the
+   * next turn.
+   *
+   * Invalidates by project+scope rather than by session so that any session
+   * opened on this project (e.g. a background worker resuming) picks up the
+   * fresh memory too.
+   */
+  static async invalidate(projectId: string, scope: string): Promise<void> {
+    await prisma.appSession.updateMany({
+      where: { projectId, scope },
       data: { systemPrompt: null },
     })
   }

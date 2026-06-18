@@ -7,6 +7,8 @@ import {
   type ToolLifecycleResult,
 } from "@alien/chat-sdk/claude"
 import { prisma } from "@/lib/db"
+import { requireMcpEnv } from "@/lib/env"
+import { appTools } from "./index"
 import type { Prisma, User } from "@/lib/generated/prisma/client"
 
 /**
@@ -35,6 +37,10 @@ export interface TurnScopedCtx extends ToolContext {
   /** Alias of `turnId` — kept so either name reads naturally in handlers. */
   turnMessageId: string
   pubsub: TurnPubSubLike
+  /** The project this session belongs to. */
+  projectId: string
+  /** Whether this is a corpus-building or RAG research session. */
+  scope: "corpus" | "research"
 }
 
 export interface BuildTurnRegistryOpts {
@@ -48,6 +54,10 @@ export interface BuildTurnRegistryOpts {
   turnMessageId: string
   /** PubSub instance for broadcasting tool events to connected SSE clients. */
   pubsub: TurnPubSubLike
+  /** The project this session belongs to. */
+  projectId: string
+  /** Whether this is a corpus-building or RAG research session. */
+  scope: "corpus" | "research"
 }
 
 /**
@@ -71,17 +81,20 @@ export function buildTurnScopedCtx(
     turnId: opts.turnId,
     turnMessageId: opts.turnMessageId,
     pubsub: opts.pubsub,
+    projectId: opts.projectId,
+    scope: opts.scope,
   }
 }
 
 /**
  * Construct a turn-scoped `ToolRegistry`.
  *
- * The registry is intentionally empty (`tools: []`, `mcpServers: []`) — slice
- * 3 adds domain `defineTool` handlers and the BnF MCP server entry. The
- * lifecycle hooks are the load-bearing piece this module ships: they persist
- * every tool invocation to the `ToolCall` table without any event-stream
- * parsing.
+ * Populates the registry with all app-defined `defineTool` handlers and,
+ * when `BNF_MCP_URL` / `BNF_MCP_TOKEN` are present in the environment, the
+ * BnF MCP server entry. If the MCP env vars are absent (common in local dev
+ * without a live BnF MCP endpoint) the registry still works — corpus, memory,
+ * and ingest tools remain functional; the agent just has no BnF search
+ * capability for that session.
  *
  * ## Lifecycle
  * - `onToolStart` — inserts a `ToolCall` row with `status="running"`.
@@ -97,9 +110,29 @@ export function buildTurnScopedCtx(
  * ```
  */
 export function buildTurnScopedRegistry(opts: BuildTurnRegistryOpts) {
+  // MCP server is optional: if BNF_MCP_URL / BNF_MCP_TOKEN are absent the
+  // app-defined corpus/memory/ingest tools still work — the agent just has no
+  // BnF search capability for that session. Never crash the dev server.
+  let mcpServers: { name: string; url: string; headers: Record<string, string> }[] = []
+  try {
+    const mcpEnv = requireMcpEnv()
+    mcpServers = [
+      {
+        name: "bnf",
+        url: mcpEnv.BNF_MCP_URL,
+        headers: { Authorization: `Bearer ${mcpEnv.BNF_MCP_TOKEN}` },
+      },
+    ]
+  } catch {
+    console.warn(
+      "[registry-factory] BNF_MCP_URL / BNF_MCP_TOKEN not set — " +
+        "agent will not have access to BnF search tools for this turn.",
+    )
+  }
+
   return createToolRegistry<TurnScopedCtx>({
-    tools: [],
-    mcpServers: [],
+    tools: [...appTools],
+    mcpServers,
 
     onToolStart: async (call: ToolLifecycleCall): Promise<void> => {
       if (!call.toolUseId) return

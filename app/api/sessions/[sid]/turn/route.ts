@@ -54,19 +54,6 @@ type StartTurnResponse = {
 type CancelTurnResponse = { canceled: boolean }
 
 // ---------------------------------------------------------------------------
-// System prompt
-// ---------------------------------------------------------------------------
-
-// TODO(slice-3): replace with the full composed corpus/research system prompt
-// built by lib/agent/prompts/ once that module lands. For now, a minimal
-// French-language orientation prompt keeps the agent functional and on-brand.
-const CORPUS_SYSTEM_PROMPT =
-  "Vous êtes un assistant de constitution de corpus pour la Bibliothèque " +
-  "nationale de France. Répondez toujours en français. Votre rôle est " +
-  "d'aider les bibliothécaires et chercheurs à construire des corpus de " +
-  "documents identifiés par leurs ARK Gallica."
-
-// ---------------------------------------------------------------------------
 // POST — start a new turn
 // ---------------------------------------------------------------------------
 
@@ -103,6 +90,11 @@ export const POST = withAuth(async (req, user, bouncer, ctx: RouteCtx) => {
   // turnId == assistantMessageId by convention (see lib/agent/runtime/registry.ts).
   const turnId = assistantMessageId
 
+  // Build the system prompt from PromptBuilder (lazy-cached on AppSession).
+  // Done after startTurn so the message rows exist before any DB reads the
+  // prompt builder might trigger.
+  const systemPrompt = await AgentService.buildSystemPrompt(session)
+
   // Register the detached AbortController before firing executeTurn — the
   // runner reads it from the registry synchronously at startup.
   const controller = createDetachedController()
@@ -115,14 +107,19 @@ export const POST = withAuth(async (req, user, bouncer, ctx: RouteCtx) => {
     startedAt: new Date(),
   })
 
+  // AppSession.scope is stored as a plain string column; cast to the narrower
+  // union after validation — the schema enforces only "corpus" | "research".
+  const scope = session.scope as "corpus" | "research"
+
   // Build the tool registry and context for this turn.
-  // The registry is intentionally empty until slice-3 wires in BnF tools.
   const registryOpts = {
     user,
     appSessionId: session.id,
     turnId,
     turnMessageId: assistantMessageId,
     pubsub: TurnPubSub,
+    projectId: session.projectId,
+    scope,
   }
   const tools = buildTurnScopedRegistry(registryOpts)
   // The detached signal (not request.signal) keeps the turn alive after the
@@ -144,7 +141,7 @@ export const POST = withAuth(async (req, user, bouncer, ctx: RouteCtx) => {
       messageId: assistantMessageId,
       appSessionId: session.id,
       messages,
-      system: CORPUS_SYSTEM_PROMPT,
+      system: systemPrompt,
       tools,
       toolContext,
     }).catch(() => {
