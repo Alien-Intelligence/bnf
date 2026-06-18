@@ -19,9 +19,21 @@ interface LayoutCorpusChatProps {
    * opening a second SSE connection.
    */
   stream: UseTurnStreamResult
+  /** Used to build the deep-link inside EventIngestRow. */
+  projectId: string
+  /** Active locale (e.g. "fr"). Used to build the deep-link inside EventIngestRow. */
+  locale: string
 }
 
-function DomainEventRow({ event }: { event: StreamDomainEvent }) {
+function DomainEventRow({
+  event,
+  projectId,
+  locale,
+}: {
+  event: StreamDomainEvent
+  projectId: string
+  locale: string
+}) {
   if (event.type === "corpus_event") {
     return (
       <EventCorpusRow
@@ -39,12 +51,18 @@ function DomainEventRow({ event }: { event: StreamDomainEvent }) {
   if (event.type === "ingest_event") {
     const status = event.data.status ?? event.data.kind
     const jobId = event.data.jobId
-    return <EventIngestRow status={status} jobId={jobId} />
+    return (
+      <EventIngestRow
+        status={status}
+        jobId={jobId}
+        projectLocaleHref={`/${locale}/projects/${projectId}/ingerer`}
+      />
+    )
   }
   return null
 }
 
-export function LayoutCorpusChat({ stream }: LayoutCorpusChatProps) {
+export function LayoutCorpusChat({ stream, projectId, locale }: LayoutCorpusChatProps) {
   const t = useTranslations("corpus.chat")
   const tCommon = useTranslations("common")
   const [draft, setDraft] = useState("")
@@ -141,7 +159,7 @@ export function LayoutCorpusChat({ stream }: LayoutCorpusChatProps) {
                 {stream.domainEvents.map((ev, idx) => (
                   // Domain events have no stable id — use index as key
                   // (list is append-only; index is stable for existing items)
-                  <DomainEventRow key={idx} event={ev} />
+                  <DomainEventRow key={idx} event={ev} projectId={projectId} locale={locale} />
                 ))}
               </div>
             )}

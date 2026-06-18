@@ -155,7 +155,8 @@
       "added": "+{count} documents · v{versionSeq}",
       "removed": "−{count} documents · v{versionSeq}",
       "memoryWrite": "Mémoire mise à jour · {section}",
-      "ingestStub": "Ingestion à venir"
+      "ingestSubmitted": "Ingestion soumise · {status}",
+      "openIngest": "Ouvrir Ingérer"
     }
   },
   "memory": {

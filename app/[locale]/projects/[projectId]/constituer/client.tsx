@@ -28,6 +28,7 @@ import type { CorpusSnapshot } from "@/models/corpus/schema"
 import type { AppSession } from "@/models/sessions/schema"
 
 interface Props {
+  locale: string
   projectId: string
   initialCorpus: CorpusSnapshot
   initialUser: { name?: string; email: string }
@@ -36,6 +37,7 @@ interface Props {
 }
 
 export function ConstituerClient({
+  locale,
   projectId,
   initialCorpus,
   initialUser,
@@ -155,7 +157,7 @@ export function ConstituerClient({
 
         {/* Main 40/60 grid */}
         <div className="grid grid-cols-[40%_60%] gap-4 p-6 flex-1 overflow-hidden">
-          <LayoutCorpusChat stream={stream} />
+          <LayoutCorpusChat stream={stream} projectId={projectId} locale={locale} />
 
           <div className="flex flex-col gap-4 overflow-auto">
             <CardCorpusSummary corpus={displaySnapshot} />

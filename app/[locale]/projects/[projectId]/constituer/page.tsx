@@ -19,7 +19,7 @@ export default async function ConstituerPage({
 }: {
   params: Promise<RouteParams>
 }) {
-  const { projectId } = await params
+  const { locale, projectId } = await params
 
   const user = await requireSessionUser(`/projects/${projectId}/constituer`)
 
@@ -37,6 +37,7 @@ export default async function ConstituerPage({
 
   return (
     <ConstituerClient
+      locale={locale}
       projectId={projectId}
       initialCorpus={initialCorpus}
       initialUser={{ name: user.name, email: user.email }}

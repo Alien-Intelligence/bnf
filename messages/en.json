@@ -155,7 +155,8 @@
       "added": "+{count} documents · v{versionSeq}",
       "removed": "−{count} documents · v{versionSeq}",
       "memoryWrite": "Memory updated · {section}",
-      "ingestStub": "Ingestion coming"
+      "ingestSubmitted": "Ingestion submitted · {status}",
+      "openIngest": "Open Ingest"
     }
   },
   "memory": {
