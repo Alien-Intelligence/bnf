@@ -24,6 +24,7 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     "lib/generated/**",
     "design/**",
+    "sandbox/**",
   ]),
 ]);
 
