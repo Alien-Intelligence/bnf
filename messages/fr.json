@@ -36,7 +36,8 @@
   },
   "projects": {
     "title": "Projets",
-    "subtitle": "Vos espaces de recherche"
+    "subtitle": "Vos espaces de recherche",
+    "empty": "Aucun projet pour l'instant."
   },
   "corpus": {
     "summary": {

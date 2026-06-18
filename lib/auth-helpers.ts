@@ -1,14 +1,21 @@
 import "server-only"
 import { headers } from "next/headers"
-import { redirect } from "next/navigation"
 import { auth } from "./auth"
+import { prisma } from "./db"
+import { redirect } from "@/i18n/navigation"
+import type { User } from "@/lib/generated/prisma/client"
 
-export async function requireSessionUser() {
+export async function requireSessionUser(nextPath?: string): Promise<User> {
   const session = await auth.api.getSession({ headers: await headers() })
   if (!session) {
-    // No request URL available here; redirect to plain /sign-in.
-    // Sign-in pages land in commit #12.
-    redirect("/sign-in")
+    const next = nextPath ? `?next=${encodeURIComponent(nextPath)}` : ""
+    return redirect({ href: `/sign-in${next}`, locale: "fr" })
   }
-  return session.user
+
+  const user = await prisma.user.findUnique({ where: { id: session.user.id } })
+  if (!user) {
+    return redirect({ href: "/sign-in", locale: "fr" })
+  }
+
+  return user
 }

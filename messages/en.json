@@ -36,7 +36,8 @@
   },
   "projects": {
     "title": "Projects",
-    "subtitle": "Your research workspaces"
+    "subtitle": "Your research workspaces",
+    "empty": "No projects yet."
   },
   "corpus": {
     "summary": {
