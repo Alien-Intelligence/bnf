@@ -62,6 +62,21 @@ Visit http://localhost:3000 — redirects to `/fr/sign-in`. Sign in with `leo@al
 - **Agent runtime**: `@alien/chat-sdk` as the base streaming layer; BnF domain layer (tools, prompts, persistence) on top.
 - **BnF integration**: direct HTTP client for the BnF MCP (`lib/mcp/bnf-client.ts`). chat-sdk also wires it via `mcpServers` in slice 3.
 
+## Deploy target
+
+**This app requires a long-running Node server. Do not deploy to Vercel functions or AWS Lambda.**
+
+The turn runner (`lib/agent/runtime/runner.ts`) launches a background task via `queueMicrotask` after the HTTP response is returned. Serverless runtimes tear down the process when the request ends, killing the background turn immediately — the "decoupled turn" behaviour simply does not work there.
+
+Supported targets:
+
+- **Fly.io** (`fly.toml` with `[processes] web = "node server.js"`) — simplest option.
+- **Railway** (Node service, no sleep).
+- **Kubernetes pod** (long-running `Deployment`; set `terminationGracePeriodSeconds` ≥ 120 so in-flight turns can finish on rollout).
+- **Bare Node** (`node .next/standalone/server.js` on a persistent VM).
+
+The reaper (`lib/agent/runtime/reaper.ts`, started in `instrumentation.ts`) handles orphan recovery on restart: any `Message` with `status="streaming"` that is not in the in-memory `TurnRegistry` is marked `status="error"` within one `REAPER_INTERVAL_MS` (5 minutes) after boot.
+
 ## Where to find what
 
 - **Design intent** — `design/docs/01..09` (frozen handoff; do not edit).

@@ -42,10 +42,10 @@ export function startReaper(): void {
 }
 
 // ---------------------------------------------------------------------------
-// Internal
+// Internal — exported for direct invocation in tests (smoke-test.ts).
 // ---------------------------------------------------------------------------
 
-async function runReaperCycle(): Promise<void> {
+export async function runReaperCycle(): Promise<void> {
   const now = new Date()
 
   // --- In-registry reaper: abort stale turns ---

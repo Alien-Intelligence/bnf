@@ -37,6 +37,7 @@ import { CorpusService } from "@/models/corpus/service"
 import type { User } from "@/models/users/schema"
 import { parseBnfDate, normalizeDocument, normalizeMany } from "@/lib/mcp/normalize"
 import { mapCatalogueDocType, sourceFromArk } from "@/lib/mcp/vocab"
+import { runReaperCycle } from "@/lib/agent/runtime/reaper"
 
 // ---------------------------------------------------------------------------
 // Stable smoke-owner email — same across runs so the user survives re-runs.
@@ -523,6 +524,88 @@ function testNormalizeManyRejection(): void {
 }
 
 // ---------------------------------------------------------------------------
+// Test 8: Reaper — orphaned streaming message is reaped in one cycle
+//
+// Simulates a server-restart scenario:
+//   - Insert a fake "streaming" Message with an old startedAt (no registry entry).
+//   - Call runReaperCycle() directly (no wait needed — no interval).
+//   - Assert the message status changed to "error" and activeMessageId cleared.
+//   - Cleans up after itself.
+// ---------------------------------------------------------------------------
+async function testReaperOrphanRecovery(owner: User): Promise<void> {
+  console.log("\nTest 8: reaper orphan recovery")
+
+  // --- Create project + session scaffolding ---------------------------------
+  const project = await ProjectService.create({
+    name: `Smoke Reaper Project ${randomUUID()}`,
+    ownerId: owner.id,
+  })
+
+  const session = await prisma.appSession.create({
+    data: {
+      projectId: project.id,
+      scope: "corpus",
+      title: "Smoke reaper session",
+    },
+  })
+
+  // Insert an orphaned assistant message — status "streaming", old startedAt,
+  // NOT registered in TurnRegistry (simulates a server restart mid-turn).
+  const orphanedMsg = await prisma.message.create({
+    data: {
+      appSessionId: session.id,
+      seq: 1,
+      role: "assistant",
+      content: "",
+      status: "streaming",
+      // Backdated well past TURN_REAP_TTL_MS (30 min) to be safe,
+      // though the DB reaper ignores TTL — it reaps any unregistered streaming row.
+      startedAt: new Date(Date.now() - 35 * 60 * 1_000),
+    },
+  })
+
+  // Point the session at this message (activeMessageId) so we can also verify
+  // the session pointer is cleared.
+  await prisma.appSession.update({
+    where: { id: session.id },
+    data: { activeMessageId: orphanedMsg.id },
+  })
+
+  // --- Invoke one reaper cycle synchronously --------------------------------
+  await runReaperCycle()
+
+  // --- Assert the message was marked "error" --------------------------------
+  const afterMsg = await prisma.message.findUniqueOrThrow({
+    where: { id: orphanedMsg.id },
+  })
+  assert.equal(afterMsg.status, "error", `Message status must be "error" after reap, got "${afterMsg.status}"`)
+  assert.ok(
+    typeof afterMsg.error === "string" && afterMsg.error.length > 0,
+    "Message.error must be set after reap",
+  )
+  assert.ok(afterMsg.finishedAt !== null, "Message.finishedAt must be set after reap")
+
+  // --- Assert activeMessageId was cleared -----------------------------------
+  const afterSession = await prisma.appSession.findUniqueOrThrow({
+    where: { id: session.id },
+  })
+  assert.equal(
+    afterSession.activeMessageId,
+    null,
+    "AppSession.activeMessageId must be null after reap",
+  )
+
+  // --- Cleanup --------------------------------------------------------------
+  await prisma.message.delete({ where: { id: orphanedMsg.id } })
+  await prisma.appSession.delete({ where: { id: session.id } })
+  await prisma.corpusVersion.deleteMany({ where: { projectId: project.id } })
+  await prisma.project.update({ where: { id: project.id }, data: { headVersionId: null } })
+  await prisma.project.delete({ where: { id: project.id } })
+
+  console.log("  ✓ reaper marked orphaned message as error and cleared activeMessageId")
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 async function main(): Promise<void> {
@@ -538,6 +621,7 @@ async function main(): Promise<void> {
     docTypeMapping: false,
     sourceFromArk: false,
     normalizeManyRejection: false,
+    reaperOrphanRecovery: false,
   }
 
   // --- Setup: one real owner user for Tests 1 + 2 --------------------------
@@ -600,6 +684,13 @@ async function main(): Promise<void> {
     console.error("FAIL Test 7 (normalizeMany rejection):", err)
   }
 
+  try {
+    await testReaperOrphanRecovery(smokeUser)
+    results.reaperOrphanRecovery = true
+  } catch (err: unknown) {
+    console.error("FAIL Test 8 (reaper orphan recovery):", err)
+  }
+
   // --- Cleanup (always) ----------------------------------------------------
   console.log("\nCleaning up …")
   try {
@@ -621,6 +712,7 @@ async function main(): Promise<void> {
   console.log(`  ${tick(results.docTypeMapping)} mapCatalogueDocType + normalizeDocument mapping fixtures`)
   console.log(`  ${tick(results.sourceFromArk)} sourceFromArk fixtures`)
   console.log(`  ${tick(results.normalizeManyRejection)} normalizeMany rejection`)
+  console.log(`  ${tick(results.reaperOrphanRecovery)} reaper orphan recovery`)
   console.log("═══════════════════════════════════════════════")
 
   process.exit(Object.values(results).every(Boolean) ? 0 : 1)
