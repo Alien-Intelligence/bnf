@@ -335,7 +335,10 @@ model Note {
   body_md      String
   createdAt    DateTime  @default(now()) @map("created_at")
   updatedAt    DateTime  @updatedAt @map("updated_at")
-  pinned       Boolean   @default(false)
+  pinned         Boolean  @default(false)
+  // Denormalized citation count — updated by Citation insert/delete triggers or service layer.
+  // Used in the notes list to avoid a COUNT join on every render. Reset on note body rewrite.
+  citationCount  Int      @default(0) @map("citation_count")
 
   project    Project     @relation(fields: [projectId], references: [id])
   appSession AppSession? @relation(fields: [appSessionId], references: [id], onDelete: SetNull)
