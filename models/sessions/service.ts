@@ -28,4 +28,34 @@ export class SessionService {
       },
     })
   }
+
+  static async create(
+    projectId: string,
+    scope: string,
+    title: string,
+  ): Promise<AppSession> {
+    return prisma.appSession.create({
+      data: {
+        projectId,
+        scope,
+        title,
+        status: "active",
+        updatedAt: new Date(),
+      },
+    })
+  }
+
+  static async rename(id: string, title: string): Promise<AppSession> {
+    return prisma.appSession.update({
+      where: { id },
+      data: { title },
+    })
+  }
+
+  static async archive(id: string): Promise<void> {
+    await prisma.appSession.update({
+      where: { id },
+      data: { status: "archived" },
+    })
+  }
 }
