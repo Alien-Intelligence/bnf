@@ -7,7 +7,12 @@
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import { apiFetch } from "@/lib/api-fetch"
-import type { MemorySnapshot } from "@/models/memory/schema"
+import type { MemorySnapshot, MemoryItem } from "@/models/memory/schema"
+import type {
+  CreateMemoryItemInput,
+  UpdateMemoryItemInput,
+  ReorderMemoryItemInput,
+} from "@/models/memory/types"
 
 // ── Query keys ────────────────────────────────────────────────────────────────
 
@@ -40,6 +45,54 @@ export function useForgetMemoryItem(projectId: string, scope: "corpus" | "resear
       )
       if (!res.ok) throw new Error(`Failed to delete memory item: ${res.status}`)
       return res.json() as Promise<{ deleted: true }>
+    },
+    onSuccess: () =>
+      qc.invalidateQueries({ queryKey: memoryKeys.all(projectId, scope) }),
+  })
+}
+
+export function useCreateMemoryItem(projectId: string, scope: "corpus" | "research") {
+  const qc = useQueryClient()
+  return useMutation<MemoryItem, Error, CreateMemoryItemInput>({
+    mutationFn: async (body) => {
+      const res = await apiFetch(`/api/projects/${projectId}/memory`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      })
+      if (!res.ok) throw new Error(`Failed to create memory item: ${res.status}`)
+      return res.json() as Promise<MemoryItem>
+    },
+    onSuccess: () =>
+      qc.invalidateQueries({ queryKey: memoryKeys.all(projectId, scope) }),
+  })
+}
+
+export function useUpdateMemoryItem(projectId: string, scope: "corpus" | "research") {
+  const qc = useQueryClient()
+  return useMutation<MemoryItem, Error, UpdateMemoryItemInput & { itemId: string }>({
+    mutationFn: async ({ itemId, ...body }) => {
+      const res = await apiFetch(`/api/projects/${projectId}/memory/${itemId}`, {
+        method: "PUT",
+        body: JSON.stringify(body),
+      })
+      if (!res.ok) throw new Error(`Failed to update memory item: ${res.status}`)
+      return res.json() as Promise<MemoryItem>
+    },
+    onSuccess: () =>
+      qc.invalidateQueries({ queryKey: memoryKeys.all(projectId, scope) }),
+  })
+}
+
+export function useReorderMemoryItem(projectId: string, scope: "corpus" | "research") {
+  const qc = useQueryClient()
+  return useMutation<MemoryItem, Error, ReorderMemoryItemInput & { itemId: string }>({
+    mutationFn: async ({ itemId, position }) => {
+      const res = await apiFetch(`/api/projects/${projectId}/memory/${itemId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ position }),
+      })
+      if (!res.ok) throw new Error(`Failed to reorder memory item: ${res.status}`)
+      return res.json() as Promise<MemoryItem>
     },
     onSuccess: () =>
       qc.invalidateQueries({ queryKey: memoryKeys.all(projectId, scope) }),

@@ -7,7 +7,7 @@
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import { apiFetch } from "@/lib/api-fetch"
-import type { NoteListItem, NoteWithCitations } from "@/models/notes/schema"
+import type { NoteListItem, NoteWithCitations, NoteVersionListItem } from "@/models/notes/schema"
 import type { CreateNoteInput, UpdateNoteInput } from "@/models/notes/types"
 
 // ── Query keys ────────────────────────────────────────────────────────────────
@@ -16,6 +16,7 @@ export const noteKeys = {
   all: (projectId: string) => ["notes", projectId] as const,
   list: (projectId: string) => ["notes", projectId, "list"] as const,
   detail: (noteId: string) => ["notes", "detail", noteId] as const,
+  versions: (noteId: string) => ["notes", "versions", noteId] as const,
 }
 
 // ── Read hooks ────────────────────────────────────────────────────────────────
@@ -32,6 +33,18 @@ export function useNotes(
       return res.json() as Promise<NoteListItem[]>
     },
     initialData: opts.initialData,
+  })
+}
+
+export function useNoteVersions(noteId: string | null) {
+  return useQuery<{ versions: NoteVersionListItem[] }>({
+    queryKey: noteId ? noteKeys.versions(noteId) : ["notes", "versions", null],
+    queryFn: async () => {
+      const res = await apiFetch(`/api/notes/${noteId!}/versions`)
+      if (!res.ok) throw new Error(`Failed to fetch note versions: ${res.status}`)
+      return res.json() as Promise<{ versions: NoteVersionListItem[] }>
+    },
+    enabled: !!noteId,
   })
 }
 

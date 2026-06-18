@@ -7,3 +7,6 @@ export type { Note, NoteVersion, Citation }
 
 export type NoteWithCitations = Note & { citations: Citation[] }
 export type NoteListItem = Pick<Note, "id" | "title" | "updatedAt" | "citationCount" | "pinned" | "createdAt">
+
+/** Lightweight row returned by GET /api/notes/:nid/versions */
+export type NoteVersionListItem = Pick<NoteVersion, "id" | "seq" | "createdAt">

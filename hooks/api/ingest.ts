@@ -106,3 +106,25 @@ export function useCancelIngest(projectId: string) {
     onSuccess: () => qc.invalidateQueries({ queryKey: ingestKeys.all(projectId) }),
   })
 }
+
+/**
+ * Retry the documents that failed in a previous ingest job.
+ *
+ * Takes `jobId` as the mutation variable. On success, invalidates all ingest
+ * queries for the project so the new job appears immediately in the UI.
+ *
+ * Returns the new IngestJob row created by IngestService.retryFailed().
+ */
+export function useRetryFailedIngest(projectId: string) {
+  const qc = useQueryClient()
+  return useMutation<IngestJob, Error, string>({
+    mutationFn: async (jobId) => {
+      const res = await apiFetch(`/api/ingest/${jobId}/retry-failed`, {
+        method: "POST",
+      })
+      if (!res.ok) throw new Error("Failed to retry failed documents")
+      return res.json() as Promise<IngestJob>
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ingestKeys.all(projectId) }),
+  })
+}

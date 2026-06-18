@@ -223,6 +223,74 @@ export class IngestService {
     ])
   }
 
+  /**
+   * Retry failed documents from a previous ingest job.
+   *
+   * Reads `stats.errors` from the source job for the list of failed ARKs.
+   * If there are no recorded per-document errors, returns `{ created: false }`.
+   * Otherwise creates a new ingest job targeting the same version with
+   * `addedArks = failed ARKs` and `removedArks = []`.
+   *
+   * The source job may be in any state — the deduplication guard in submit()
+   * does not apply here because we target a known ARK subset, not the full delta.
+   */
+  static async retryFailed(
+    jobId: string,
+    _user: User,
+  ): Promise<{ created: false } | IngestJob> {
+    const job = await prisma.ingestJob.findUniqueOrThrow({ where: { id: jobId } })
+
+    // Defensively read stats.errors — absent when no per-doc failures were
+    // recorded (e.g. FakeClusterRunner stub, or job died before emit).
+    const stats = job.stats as Record<string, unknown> | null | undefined
+    const rawErrors = stats?.errors
+    const errors = Array.isArray(rawErrors)
+      ? (rawErrors as { ark: string; stage: string; reason: string }[])
+      : []
+
+    if (errors.length === 0) return { created: false }
+
+    const failedArks = errors.map((e) => e.ark)
+
+    const addedDocs = await IngestService._loadClusterDocs(job.projectId, failedArks)
+
+    const callbackSecret = crypto.randomBytes(32).toString("hex")
+
+    const retryJob = await prisma.ingestJob.create({
+      data: {
+        projectId: job.projectId,
+        targetVersionId: job.targetVersionId,
+        baseVersionId: job.baseVersionId,
+        status: INGEST_STATUS.QUEUED,
+        addedCount: failedArks.length,
+        removedCount: 0,
+        addedArks: failedArks,
+        removedArks: [],
+        callbackSecret,
+      },
+    })
+
+    const callbackUrl = `${env.APP_URL}/api/internal/ingest/${retryJob.id}/progress`
+
+    const { clusterJobId } = await ClusterRunner.submit({
+      projectId: job.projectId,
+      targetVersionId: job.targetVersionId,
+      added: addedDocs,
+      removed: [],
+      callbackUrl,
+      callbackSecret,
+    })
+
+    return prisma.ingestJob.update({
+      where: { id: retryJob.id },
+      data: {
+        clusterJobId,
+        status: INGEST_STATUS.RUNNING,
+        startedAt: new Date(),
+      },
+    })
+  }
+
   // ---------------------------------------------------------------------------
   // Private helpers
   // ---------------------------------------------------------------------------

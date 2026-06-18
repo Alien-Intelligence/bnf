@@ -1,6 +1,6 @@
 import "server-only"
 import { prisma } from "@/lib/db"
-import type { NoteWithCitations, NoteListItem } from "./schema"
+import type { NoteWithCitations, NoteListItem, NoteVersionListItem } from "./schema"
 
 export class NoteQueries {
   static async listForProject(projectId: string): Promise<NoteListItem[]> {
@@ -23,6 +23,14 @@ export class NoteQueries {
       where: { id },
       include: { citations: true },
     }) as Promise<NoteWithCitations | null>
+  }
+
+  static async listVersions(noteId: string): Promise<NoteVersionListItem[]> {
+    return prisma.noteVersion.findMany({
+      where: { noteId },
+      orderBy: { seq: "desc" },
+      select: { id: true, seq: true, createdAt: true },
+    })
   }
 
   static async citationsForArk(
