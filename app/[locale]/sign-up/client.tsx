@@ -50,10 +50,20 @@ export function SignUpClient() {
 
     if (!response.ok) {
       const body = await response.json().catch(() => ({}))
-      const message: string =
-        (body as { message?: string }).message ??
-        (body as { error?: string }).error ??
-        tCommon("error")
+      const code: string | undefined =
+        (body as { code?: string }).code ??
+        (body as { error?: string }).error
+
+      // Map known better-auth error codes to localized messages; fall back to generic.
+      const EMAIL_TAKEN_CODES = new Set([
+        "USER_ALREADY_EXISTS",
+        "EMAIL_ALREADY_EXISTS",
+      ])
+      const message =
+        code !== undefined && EMAIL_TAKEN_CODES.has(code)
+          ? t("errorEmailTaken")
+          : tCommon("error")
+
       setServerError(message)
       return
     }

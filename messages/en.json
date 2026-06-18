@@ -23,7 +23,9 @@
       "emailLabel": "Email address",
       "passwordLabel": "Password",
       "submit": "Sign in",
-      "noAccount": "Don't have an account yet?"
+      "noAccount": "Don't have an account yet?",
+      "errorGeneric": "Invalid credentials",
+      "errorInvalidCredentials": "Invalid credentials"
     },
     "signUp": {
       "title": "Create an account",
@@ -31,7 +33,8 @@
       "emailLabel": "Email address",
       "passwordLabel": "Password",
       "submit": "Create account",
-      "hasAccount": "Already have an account?"
+      "hasAccount": "Already have an account?",
+      "errorEmailTaken": "Email already in use"
     }
   },
   "projects": {
@@ -45,7 +48,8 @@
       "period": "Period",
       "types": "Types",
       "languages": "Languages",
-      "sources": "Sources"
+      "sources": "Sources",
+      "empty": "No documents in the corpus"
     },
     "filters": {
       "title": "Filters and statistics",
@@ -54,12 +58,19 @@
       "bySource": "By source",
       "byPeriod": "By period",
       "expand": "Show filters",
-      "collapse": "Hide filters"
+      "collapse": "Hide filters",
+      "empty": "No facets to display"
     },
     "documents": {
       "empty": "No documents. Ask the agent to build a corpus.",
       "askAgentHint": "Start a conversation on the left to begin.",
-      "openOnBnf": "View on BnF"
+      "openOnBnf": "View on BnF",
+      "excerptLabel": "Excerpt",
+      "arkLabel": "ARK",
+      "authorLabel": "Author",
+      "yearLabel": "Year",
+      "pagesLabel": "Pages",
+      "iiifLabel": "IIIF Manifest"
     },
     "chat": {
       "headerTitle": "Conversation",

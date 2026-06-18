@@ -47,10 +47,21 @@ export function SignInClient() {
 
     if (!response.ok) {
       const body = await response.json().catch(() => ({}))
-      const message: string =
-        (body as { message?: string }).message ??
-        (body as { error?: string }).error ??
-        tCommon("error")
+      const code: string | undefined =
+        (body as { code?: string }).code ??
+        (body as { error?: string }).error
+
+      // Map known better-auth error codes to localized messages; fall back to generic.
+      const INVALID_CREDENTIAL_CODES = new Set([
+        "INVALID_EMAIL_OR_PASSWORD",
+        "INVALID_PASSWORD",
+        "USER_NOT_FOUND",
+      ])
+      const message =
+        code !== undefined && INVALID_CREDENTIAL_CODES.has(code)
+          ? t("errorInvalidCredentials")
+          : t("errorGeneric")
+
       setServerError(message)
       return
     }

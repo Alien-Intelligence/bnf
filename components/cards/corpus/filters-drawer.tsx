@@ -66,6 +66,22 @@ export function CardCorpusFiltersDrawer({ corpus }: Props) {
   const sourceEntries = facetEntries(corpus.facets.source)
   const periodEntries = facetEntries(corpus.facets.period)
 
+  const allEmpty =
+    typeEntries.length === 0 &&
+    langEntries.length === 0 &&
+    sourceEntries.length === 0 &&
+    periodEntries.length === 0
+
+  // Empty branch — header only with a small explanatory note.
+  if (allEmpty) {
+    return (
+      <div className="flex w-full items-center justify-between rounded-md border bg-card px-4 py-3 text-sm font-medium">
+        <span>{t("title")}</span>
+        <span className="text-xs text-muted-foreground">{t("empty")}</span>
+      </div>
+    )
+  }
+
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
       <CollapsibleTrigger className="flex w-full items-center justify-between rounded-md border bg-card px-4 py-3 text-sm font-medium hover:bg-accent hover:text-accent-foreground transition-colors">

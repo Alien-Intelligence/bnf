@@ -23,7 +23,9 @@
       "emailLabel": "Adresse e-mail",
       "passwordLabel": "Mot de passe",
       "submit": "Se connecter",
-      "noAccount": "Pas encore de compte ?"
+      "noAccount": "Pas encore de compte ?",
+      "errorGeneric": "Identifiants invalides",
+      "errorInvalidCredentials": "Identifiants invalides"
     },
     "signUp": {
       "title": "Créer un compte",
@@ -31,7 +33,8 @@
       "emailLabel": "Adresse e-mail",
       "passwordLabel": "Mot de passe",
       "submit": "Créer le compte",
-      "hasAccount": "Déjà un compte ?"
+      "hasAccount": "Déjà un compte ?",
+      "errorEmailTaken": "Cet e-mail est déjà utilisé"
     }
   },
   "projects": {
@@ -45,7 +48,8 @@
       "period": "Période",
       "types": "Types",
       "languages": "Langues",
-      "sources": "Sources"
+      "sources": "Sources",
+      "empty": "Aucun document dans le corpus"
     },
     "filters": {
       "title": "Filtres et statistiques",
@@ -54,12 +58,19 @@
       "bySource": "Par source",
       "byPeriod": "Par période",
       "expand": "Afficher les filtres",
-      "collapse": "Masquer les filtres"
+      "collapse": "Masquer les filtres",
+      "empty": "Aucune facette à afficher"
     },
     "documents": {
       "empty": "Aucun document. Demandez à l'agent de constituer un corpus.",
       "askAgentHint": "Démarrez une conversation à gauche pour commencer.",
-      "openOnBnf": "Voir sur la BnF"
+      "openOnBnf": "Voir sur la BnF",
+      "excerptLabel": "Extrait",
+      "arkLabel": "ARK",
+      "authorLabel": "Auteur",
+      "yearLabel": "Année",
+      "pagesLabel": "Pages",
+      "iiifLabel": "Manifest IIIF"
     },
     "chat": {
       "headerTitle": "Conversation",

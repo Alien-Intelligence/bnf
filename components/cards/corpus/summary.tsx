@@ -45,6 +45,19 @@ function periodRange(period: Record<string, number>): string | null {
 export function CardCorpusSummary({ corpus }: Props) {
   const t = useTranslations("corpus.summary")
 
+  // Empty branch — render a minimal card rather than a misleading zero tile.
+  if (corpus.total === 0) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base font-semibold text-muted-foreground">
+            {t("empty")}
+          </CardTitle>
+        </CardHeader>
+      </Card>
+    )
+  }
+
   const range = periodRange(corpus.facets.period)
   const topTypes = topEntries(corpus.facets.type, 3)
   const topLangs = topEntries(corpus.facets.lang, 3)

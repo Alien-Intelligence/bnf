@@ -59,7 +59,7 @@ export function SheetDocumentDetail({ doc, open, onOpenChange }: Props) {
               {/* ARK — monospace, selectable */}
               <div className="flex flex-col gap-1">
                 <span className="text-xs text-muted-foreground uppercase tracking-wide">
-                  ARK
+                  {t("arkLabel")}
                 </span>
                 <span className="text-xs font-mono select-all break-all">
                   {doc.ark}
@@ -70,7 +70,7 @@ export function SheetDocumentDetail({ doc, open, onOpenChange }: Props) {
               {doc.excerpt && (
                 <div className="flex flex-col gap-1">
                   <span className="text-xs text-muted-foreground uppercase tracking-wide">
-                    Extrait
+                    {t("excerptLabel")}
                   </span>
                   <p className="text-sm leading-relaxed">{doc.excerpt}</p>
                 </div>
@@ -80,7 +80,7 @@ export function SheetDocumentDetail({ doc, open, onOpenChange }: Props) {
               {doc.iiifManifestUrl && (
                 <div className="flex flex-col gap-1">
                   <span className="text-xs text-muted-foreground uppercase tracking-wide">
-                    Manifest IIIF
+                    {t("iiifLabel")}
                   </span>
                   <span className="text-xs text-muted-foreground font-mono break-all">
                     {doc.iiifManifestUrl}
