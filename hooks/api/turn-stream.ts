@@ -34,9 +34,17 @@ export type StreamToolCall = {
   finishedAt: string | null
 }
 
+/** A synthetic domain event derived from a persisted ToolCall row. */
+export type StreamDomainEvent =
+  | { type: "corpus_event"; data: { kind: "add" | "remove"; count: number; versionSeq: number } }
+  | { type: "memory_event"; data: { kind: "write"; itemId: string; section: string } }
+  | { type: "ingest_event"; data: { kind: "submitted-stub" | "submitted"; jobId?: string; status?: string } }
+
 export type UseTurnStreamResult = {
   messages: StreamMessage[]
   toolCalls: StreamToolCall[]
+  /** Domain events derived from past tool calls — populated on snapshot. */
+  domainEvents: StreamDomainEvent[]
   isConnecting: boolean
   isStreaming: boolean
   error: string | null
@@ -51,6 +59,9 @@ export type UseTurnStreamResult = {
 type SnapshotPayload = {
   messages: StreamMessage[]
   toolCalls: StreamToolCall[]
+  /** Synthetic domain events derived from past tool calls. May be absent on
+   *  old server versions; always treat as optional. */
+  events?: StreamDomainEvent[]
 }
 
 type TextDeltaPayload = {
@@ -140,6 +151,7 @@ export function useTurnStream(
 ): UseTurnStreamResult {
   const [messages, setMessages] = useState<StreamMessage[]>([])
   const [toolCalls, setToolCalls] = useState<StreamToolCall[]>([])
+  const [domainEvents, setDomainEvents] = useState<StreamDomainEvent[]>([])
   const [isConnecting, setConnecting] = useState(false)
   const [isStreaming, setStreaming] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -210,6 +222,9 @@ export function useTurnStream(
                 const payload = frame.data as SnapshotPayload
                 setMessages(payload.messages)
                 setToolCalls(payload.toolCalls)
+                if (payload.events) {
+                  setDomainEvents(payload.events)
+                }
                 // Track highest seq so reconnect starts from here.
                 const maxSeq = payload.messages.reduce(
                   (m, msg) => Math.max(m, msg.seq),
@@ -304,6 +319,7 @@ export function useTurnStream(
       // This clears stale state from the previous session.
       setMessages([])
       setToolCalls([])
+      setDomainEvents([])
       setStreaming(false)
       setConnecting(false)
       setError(null)
@@ -454,6 +470,7 @@ export function useTurnStream(
   return {
     messages,
     toolCalls,
+    domainEvents,
     isConnecting,
     isStreaming,
     error,

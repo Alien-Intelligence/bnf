@@ -28,7 +28,80 @@ import { AgentPolicy } from "@/models/agents/policy"
 import { AgentService } from "@/models/agents/service"
 import { streamQuerySchema } from "@/models/agents/types"
 import { TurnPubSub } from "@/lib/agent/runtime/pubsub"
-import type { AppEvent } from "@/lib/agent/runtime/types"
+import type { AppEvent, DomainEvent } from "@/lib/agent/runtime/types"
+import type { TurnSnapshot } from "@/models/agents/schema"
+
+// ---------------------------------------------------------------------------
+// Snapshot event derivation
+// ---------------------------------------------------------------------------
+
+/**
+ * Derives synthetic domain events from a list of completed ToolCall rows.
+ * Called once per stream connection to give a reattaching client the full
+ * chip/event-row history without re-running the live pubsub path.
+ *
+ * Derivation is purely additive: only status=ok rows are considered, and any
+ * missing output fields are silently skipped (no crash, no partial frame).
+ */
+function deriveSyntheticEvents(
+  toolCalls: TurnSnapshot["toolCalls"],
+): DomainEvent[] {
+  const events: DomainEvent[] = []
+
+  for (const tc of toolCalls) {
+    if (tc.status !== "ok") continue
+
+    // output is stored as Prisma JsonValue — narrow to a plain object so we can
+    // safely access properties without casting to any.
+    const out = tc.output !== null && typeof tc.output === "object" && !Array.isArray(tc.output)
+      ? (tc.output as Record<string, unknown>)
+      : null
+
+    if (!out) continue
+
+    switch (tc.tool) {
+      case "corpus_add": {
+        const count = typeof out.added === "number" ? out.added : null
+        const versionSeq = typeof out.version === "number" ? out.version : null
+        if (count === null || versionSeq === null) break
+        events.push({ type: "corpus_event", data: { kind: "add", count, versionSeq } })
+        break
+      }
+
+      case "corpus_remove": {
+        const count = typeof out.removed === "number" ? out.removed : null
+        const versionSeq = typeof out.version === "number" ? out.version : null
+        if (count === null || versionSeq === null) break
+        events.push({ type: "corpus_event", data: { kind: "remove", count, versionSeq } })
+        break
+      }
+
+      case "memory_write": {
+        const itemId = typeof out.id === "string" ? out.id : null
+        const section = typeof out.section === "string" ? out.section : null
+        if (!itemId || !section) break
+        events.push({ type: "memory_event", data: { kind: "write", itemId, section } })
+        break
+      }
+
+      case "ingest_submit": {
+        const status = typeof out.status === "string" ? out.status : undefined
+        const jobId = typeof out.job_id === "string" ? out.job_id : undefined
+        events.push({
+          type: "ingest_event",
+          data: { kind: "submitted-stub", status, jobId },
+        })
+        break
+      }
+
+      default:
+        // No synthetic event for this tool.
+        break
+    }
+  }
+
+  return events
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -93,7 +166,10 @@ export const GET = withAuth(async (req, _user, bouncer, ctx: RouteCtx) => {
       // --- 1. Snapshot event -------------------------------------------------
       // Always emitted first, even if empty, so the client knows the server
       // is alive and has processed the request.
-      write(sseEvent("snapshot", snapshot))
+      // Include synthetic domain events derived from past tool calls so that a
+      // reattaching client reconstructs the full chip/event-row history.
+      const syntheticEvents = deriveSyntheticEvents(snapshot.toolCalls)
+      write(sseEvent("snapshot", { ...snapshot, events: syntheticEvents }))
 
       // --- 2. Subscribe to in-flight turn (if any) --------------------------
       // Use the activeMessageId from the snapshot — it is consistent with the
