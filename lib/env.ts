@@ -10,6 +10,8 @@ const bootEnvSchema = z.object({
   BETTER_AUTH_SECRET: z.string().min(32),
   BETTER_AUTH_URL: z.string().url(),
   ANTHROPIC_API_KEY: z.string().min(1),
+  APP_URL: z.string().url(),
+  JOB_CALLBACK_SECRET: z.string().min(32).optional(),
 })
 
 // Throws immediately on process start if any required var is absent / invalid.

@@ -70,3 +70,22 @@ export const REAPER_INTERVAL_MS = 5 * 60 * 1_000
  * refetches — only the trailing edge fires.
  */
 export const CORPUS_REFRESH_DEBOUNCE_MS = 500
+
+// ---------------------------------------------------------------------------
+// Ingest polling
+// ---------------------------------------------------------------------------
+
+/**
+ * How often the client polls GET /api/ingest/:job_id while the job is in a
+ * non-terminal state (queued | running). Stops automatically on done/failed/
+ * canceled via TanStack Query's refetchInterval stop condition.
+ * Prefer the SSE stream (/api/ingest/:job_id/stream) for real-time progress;
+ * polling is the fallback for environments where long-lived connections drop.
+ */
+export const INGEST_POLL_INTERVAL_MS = 2_000
+
+/**
+ * Maximum number of recent jobs to return from IngestQueries.listForProject
+ * for the Ingérer page job history panel.
+ */
+export const INGEST_RECENT_JOBS_LIMIT = 20
