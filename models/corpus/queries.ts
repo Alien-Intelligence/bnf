@@ -81,17 +81,44 @@ export class CorpusQueries {
    *   - "ingested" → Project.ingestedVersionId (throws if never ingested)
    *   - { seq: N } → looks up by (projectId, seq)
    *
-   * Facets computed: type, lang, source (exact-value counts), period
-   * (per-decade bins from `year`, nulls skipped).
+   * `opts.filters` — optional filter set. When supplied, `total`, `facets`,
+   * and `sample` all reflect the filtered subset (not the full corpus). This
+   * is what makes facet counts shrink under active filters.
    *
-   * Sample: up to CORPUS_SAMPLE_SIZE documents, no ordering guarantee this
-   * slice (ordering + filtering land in slice 2).
+   * `opts.cursor` — opaque cursor from a previous response's `nextCursor`.
+   * Format: `<versionSeq>:<lastArk>`. Decoded as `WHERE ark > lastArk
+   * ORDER BY ark ASC`. Stable for the same version + filters.
+   *
+   * `opts.limit` — page size, defaults to CORPUS_SAMPLE_SIZE (25).
+   *
+   * Facets are computed with TWO queries that share the same filter WHERE
+   * clause: one `groupBy` per facet dimension (type/lang/source/period), all
+   * run in parallel. No separate "unfiltered" query — facets always reflect
+   * the current filtered set per the plan §6 spec.
+   *
+   * Full-text (`opts.filters.q`): Prisma `OR` of case-insensitive `contains`
+   * over `title`, `author`, and `excerpt`. Prisma translates `contains` +
+   * `mode: "insensitive"` to `ILIKE` on Postgres, which avoids a raw query
+   * while staying dependency-free (no pg_trgm) per plan §10.
    *
    * IMPORTANT: always use `total`, never `sample.length`.
    */
   static async snapshot(
     projectId: string,
     ref: "head" | "ingested" | { seq: number },
+    opts?: {
+      filters?: {
+        type?: string[]
+        lang?: string[]
+        source?: string[]
+        yearFrom?: number
+        yearTo?: number
+        undated?: boolean
+        q?: string
+      }
+      cursor?: string
+      limit?: number
+    },
   ): Promise<CorpusSnapshot> {
     // --- Resolve the version --------------------------------------------------
     let version: CorpusVersionWithArks
@@ -112,54 +139,154 @@ export class CorpusQueries {
     }
 
     const versionId = version.id
+    const filters = opts?.filters
+    const limit = opts?.limit ?? CORPUS_SAMPLE_SIZE
 
-    // --- Total membership count -----------------------------------------------
-    const total = await prisma.corpusMembership.count({ where: { versionId } })
+    // --- Build the shared filter WHERE clause --------------------------------
+    // All facet queries and the sample query share this exact WHERE predicate
+    // so that facets always reflect counts within the active filtered set.
 
-    // --- Facets ---------------------------------------------------------------
-    // Each facet is a count-by group over the documents in the version's
-    // membership. We join membership → document in a single query per facet
-    // dimension, then fold into a Record<string, number>.
+    // Year filter: if both yearFrom/yearTo are present, use the range.
+    // If only undated=true, use year IS NULL.
+    // If yearFrom/yearTo AND undated both arrive, the range wins (per plan §6).
+    const hasYearRange =
+      filters?.yearFrom !== undefined || filters?.yearTo !== undefined
+    const yearWhere: Parameters<typeof prisma.document.groupBy>[0]["where"] =
+      hasYearRange
+        ? {
+            year: {
+              ...(filters?.yearFrom !== undefined
+                ? { gte: filters.yearFrom }
+                : {}),
+              ...(filters?.yearTo !== undefined ? { lte: filters.yearTo } : {}),
+            },
+          }
+        : filters?.undated === true
+          ? { year: null }
+          : {}
 
-    const [typeRows, langRows, sourceRows, periodRows] = await Promise.all([
-      // Facet: docType
-      prisma.document.groupBy({
-        by: ["docType"],
-        where: {
-          membership: { some: { versionId } },
-        },
-        _count: { ark: true },
-      }),
-      // Facet: lang (skip null lang values)
-      prisma.document.groupBy({
-        by: ["lang"],
-        where: {
-          membership: { some: { versionId } },
-          lang: { not: null },
-        },
-        _count: { ark: true },
-      }),
-      // Facet: source (skip null source values)
-      prisma.document.groupBy({
-        by: ["source"],
-        where: {
-          membership: { some: { versionId } },
-          source: { not: null },
-        },
-        _count: { ark: true },
-      }),
-      // Period: fetch years and bin into decades client-side (JS is faster for
-      // small sets than a raw SQL histogram; raw SQL approach deferred to slice 2
-      // if the set grows large enough to matter).
-      prisma.document.findMany({
-        where: {
-          membership: { some: { versionId } },
-          year: { not: null },
-        },
-        select: { year: true },
-      }),
-    ])
+    // Multi-select filters: arrays come in pre-split from the route.
+    const typeWhere =
+      filters?.type && filters.type.length > 0
+        ? { docType: { in: filters.type } }
+        : {}
 
+    const langWhere =
+      filters?.lang && filters.lang.length > 0
+        ? { lang: { in: filters.lang } }
+        : {}
+
+    const sourceWhere =
+      filters?.source && filters.source.length > 0
+        ? { source: { in: filters.source } }
+        : {}
+
+    // Full-text: Prisma OR over contains (ILIKE on Postgres, mode-insensitive).
+    // We match title, author, and excerpt. excerpt may be null — Prisma skips
+    // null columns in LIKE comparisons automatically.
+    const fullTextWhere =
+      filters?.q && filters.q.trim().length > 0
+        ? {
+            OR: [
+              {
+                title: {
+                  contains: filters.q,
+                  mode: "insensitive" as const,
+                },
+              },
+              {
+                author: {
+                  contains: filters.q,
+                  mode: "insensitive" as const,
+                },
+              },
+              {
+                excerpt: {
+                  contains: filters.q,
+                  mode: "insensitive" as const,
+                },
+              },
+            ],
+          }
+        : {}
+
+    // Combine all filter clauses. Every doc must be in this version's
+    // membership AND satisfy the active filter predicates.
+    const sharedWhere = {
+      membership: { some: { versionId } },
+      ...typeWhere,
+      ...langWhere,
+      ...sourceWhere,
+      ...yearWhere,
+      ...fullTextWhere,
+    }
+
+    // --- Decode cursor -------------------------------------------------------
+    // Cursor format: "<versionSeq>:<lastArk>" — we only use lastArk here.
+    // versionSeq is included in the cursor so the client can detect a version
+    // change (invalidated cursor), but we do not validate it on the server —
+    // the Prisma WHERE clause naturally returns an empty page if the ARK is
+    // gone, which is safe.
+    let cursorArk: string | undefined
+    if (opts?.cursor) {
+      const colonIdx = opts.cursor.indexOf(":")
+      if (colonIdx !== -1) {
+        cursorArk = opts.cursor.slice(colonIdx + 1)
+      }
+    }
+
+    // --- Total filtered count + undated count --------------------------------
+    // Run in parallel with facets (below).
+    const [total, undatedCount, typeRows, langRows, sourceRows, periodRows] =
+      await Promise.all([
+        // Total within filtered set
+        prisma.document.count({ where: sharedWhere }),
+        // Undated count within filtered set
+        prisma.document.count({
+          where: {
+            membership: { some: { versionId } },
+            ...typeWhere,
+            ...langWhere,
+            ...sourceWhere,
+            ...fullTextWhere,
+            // Do NOT apply yearWhere here — undatedCount is always the count
+            // of undated docs irrespective of the year filter, so the "Période
+            // non datée" tile remains informative even when a year range is active.
+            year: null,
+          },
+        }),
+
+        // --- Facets -----------------------------------------------------------
+        // All four run in parallel. Each reflects counts within sharedWhere.
+
+        // Facet: docType
+        prisma.document.groupBy({
+          by: ["docType"],
+          where: sharedWhere,
+          _count: { ark: true },
+        }),
+        // Facet: lang (skip null lang values)
+        prisma.document.groupBy({
+          by: ["lang"],
+          where: { ...sharedWhere, lang: { not: null } },
+          _count: { ark: true },
+        }),
+        // Facet: source (skip null source values)
+        prisma.document.groupBy({
+          by: ["source"],
+          where: { ...sharedWhere, source: { not: null } },
+          _count: { ark: true },
+        }),
+        // Period: fetch years and bin into decades in JS (fast for typical set
+        // sizes; raw SQL histogram deferred until benchmarks justify it).
+        // Only dated docs contribute to decade bins (nulls skipped).
+        prisma.document.findMany({
+          where: { ...sharedWhere, year: { not: null } },
+          select: { year: true },
+        }),
+      ])
+
+    // --- Fold facet rows into Record<string, number> -------------------------
     const typeFacet: Record<string, number> = {}
     for (const r of typeRows) {
       typeFacet[r.docType] = r._count.ark
@@ -179,7 +306,7 @@ export class CorpusQueries {
       }
     }
 
-    // Period: bin each year into a decade bucket ("1880s", "1890s", …).
+    // Bin years into decade buckets ("1880s", "1890s", …).
     const periodFacet: Record<string, number> = {}
     for (const r of periodRows) {
       if (r.year === null) continue
@@ -188,24 +315,42 @@ export class CorpusQueries {
       periodFacet[bucket] = (periodFacet[bucket] ?? 0) + 1
     }
 
-    // --- Sample ---------------------------------------------------------------
+    // --- Sample (cursor-paginated) -------------------------------------------
+    // ORDER BY ark ASC — alphabetic ARK order is stable and deterministic.
+    // Cursor: WHERE ark > lastArk (keyset pagination, no offset, O(log n)).
     const sampleRows = await prisma.document.findMany({
-      where: { membership: { some: { versionId } } },
-      take: CORPUS_SAMPLE_SIZE,
+      where: cursorArk
+        ? { ...sharedWhere, ark: { gt: cursorArk } }
+        : sharedWhere,
+      orderBy: { ark: "asc" },
+      // Fetch one extra to detect whether a next page exists.
+      take: limit + 1,
       ...documentRow,
     })
+
+    // Determine next cursor before trimming the extra row.
+    let nextCursor: string | undefined
+    if (sampleRows.length > limit) {
+      const lastRow = sampleRows[limit - 1]
+      nextCursor = `${version.seq}:${lastRow.ark}`
+    }
+
+    // Return exactly `limit` rows (drop the sentinel).
+    const sample = sampleRows.slice(0, limit)
 
     return {
       versionSeq: version.seq,
       versionStatus: version.status as CorpusVersionStatus,
       total,
+      undatedCount,
       facets: {
         type: typeFacet,
         lang: langFacet,
         source: sourceFacet,
         period: periodFacet,
       },
-      sample: sampleRows,
+      sample,
+      ...(nextCursor !== undefined ? { nextCursor } : {}),
     }
   }
 

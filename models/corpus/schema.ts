@@ -68,11 +68,24 @@ export type DocumentRow = Prisma.DocumentGetPayload<typeof documentRow>
  * IMPORTANT: `sample` is bounded (CORPUS_SAMPLE_SIZE items). Never use
  * `sample.length` as a proxy for the corpus size — use `total` instead.
  * See playbook/corpus-versioning.md §"Sample is sampled".
+ *
+ * `total` — count of documents matching the active filters (or the full
+ * corpus when no filters are set). `total === 0` means:
+ *   • no filters active → fresh project with zero documents
+ *   • filters active    → the filter matches nothing ("no results" branch)
+ *
+ * `undatedCount` — count of documents with `year IS NULL` within the
+ * filtered set. Informational; drives the "Période non datée (N)" tile.
+ *
+ * `nextCursor` — opaque pagination cursor. Present when more documents exist
+ * beyond the current `sample` page. Pass as `?cursor=` on the next request.
+ * Format: `<versionSeq>:<lastArk>` (stable for the same version + filters).
  */
 export type CorpusSnapshot = {
   versionSeq: number
   versionStatus: CorpusVersionStatus
   total: number
+  undatedCount: number
   facets: {
     type: Record<string, number>
     lang: Record<string, number>
@@ -81,6 +94,7 @@ export type CorpusSnapshot = {
     period: Record<string, number>
   }
   sample: DocumentRow[]
+  nextCursor?: string
 }
 
 /**

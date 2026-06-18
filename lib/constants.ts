@@ -3,7 +3,12 @@
 // Rule: no magic numbers in routes, services, or components — import from here.
 // See playbook/constants.md.
 
-/** Number of sample documents returned in a CorpusSnapshot. */
+/**
+ * Number of documents per page in a CorpusSnapshot.
+ * Also used as the initial sample size when no pagination cursor is provided.
+ * Applies to both the slice-1 "first 25" preview and the slice-2 paginated
+ * list (cursor-based pagination uses the same page size).
+ */
 export const CORPUS_SAMPLE_SIZE = 25
 
 /**
