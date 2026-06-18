@@ -22,10 +22,13 @@ interface Props {
 /**
  * Derives the i18n key from the raw tool name.
  *
- * - Custom tools use the tool name as-is, replacing dots with dots
- *   (e.g. "corpus.add" → key "corpus.add").
- * - MCP tools arrive as "bnf__bnf_search_gallica"; we strip the
- *   "<server>__<server>_" prefix and produce "bnf.search_gallica".
+ * MCP tools arrive as "bnf__bnf_search_gallica" — strip the
+ * "<server>__<server>_" prefix and produce "bnf.search_gallica".
+ *
+ * Custom tools arrive with underscores as the domain separator:
+ * "corpus_add" → "corpus.add". Only the first underscore becomes a
+ * dot; subsequent underscores are preserved (e.g. "corpus_get_state"
+ * → "corpus.get_state").
  *
  * The key is looked up in the "tools" namespace.
  */
@@ -38,11 +41,17 @@ function deriveI18nKey(tool: string, source: "custom" | "mcp"): string {
       const [, server, suffix] = mcpMatch
       return `${server}.${suffix}`
     }
-    // Fallback for unexpected MCP naming: strip double-underscore prefix
-    const fallback = tool.replace(/^[^_]+__/, "")
-    return fallback.replace("_", ".")
+    // Fallback for unexpected MCP naming: strip double-underscore prefix,
+    // then replace only the first underscore with a dot.
+    const bare = tool.replace(/^[^_]+__/, "")
+    const sep = bare.indexOf("_")
+    return sep === -1 ? bare : bare.slice(0, sep) + "." + bare.slice(sep + 1)
   }
-  return tool
+  // Custom tools: "corpus_add" → "corpus.add"
+  // Replace only the first underscore so "corpus_get_state" → "corpus.get_state"
+  const i = tool.indexOf("_")
+  if (i === -1) return tool
+  return tool.slice(0, i) + "." + tool.slice(i + 1)
 }
 
 function LatencyLabel({ ms }: { ms: number }) {
