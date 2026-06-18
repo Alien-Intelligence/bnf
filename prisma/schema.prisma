@@ -139,7 +139,7 @@ model Project {
 // Composite PK (projectId, ark): a document is scoped to one project.
 // Documents are never deleted — only removed from corpus membership.
 // Indexes: (projectId, year) for period histogram queries; see design/docs/03.
-// Slice note: dateLabel deferred to a later migration per plan §4.
+// Slice note: dateLabel added in slice-2 migration (add_document_date_label).
 // -----------------------------------------------------------------------------
 model Document {
   ark             String
@@ -147,6 +147,7 @@ model Document {
   title           String
   author          String?
   year            Int?
+  dateLabel       String?   @map("date_label")
   docType         String    @map("doc_type")
   lang            String?
   source          String?

@@ -46,6 +46,7 @@ export const documentRow = {
     title: true,
     author: true,
     year: true,
+    dateLabel: true,
     docType: true,
     lang: true,
     source: true,
