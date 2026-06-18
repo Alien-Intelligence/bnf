@@ -2,120 +2,328 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 
+/* Dark-first: the `.dark` class is applied by layout.tsx on <html>. */
 @custom-variant dark (&:is(.dark *));
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-sans);
-  --font-mono: var(--font-geist-mono);
-  --font-heading: var(--font-sans);
-  --color-sidebar-ring: var(--sidebar-ring);
-  --color-sidebar-border: var(--sidebar-border);
-  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
-  --color-sidebar-accent: var(--sidebar-accent);
-  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
-  --color-sidebar-primary: var(--sidebar-primary);
-  --color-sidebar-foreground: var(--sidebar-foreground);
-  --color-sidebar: var(--sidebar);
-  --color-chart-5: var(--chart-5);
-  --color-chart-4: var(--chart-4);
-  --color-chart-3: var(--chart-3);
-  --color-chart-2: var(--chart-2);
-  --color-chart-1: var(--chart-1);
-  --color-ring: var(--ring);
-  --color-input: var(--input);
-  --color-border: var(--border);
-  --color-destructive: var(--destructive);
-  --color-accent-foreground: var(--accent-foreground);
-  --color-accent: var(--accent);
-  --color-muted-foreground: var(--muted-foreground);
-  --color-muted: var(--muted);
-  --color-secondary-foreground: var(--secondary-foreground);
-  --color-secondary: var(--secondary);
-  --color-primary-foreground: var(--primary-foreground);
-  --color-primary: var(--primary);
-  --color-popover-foreground: var(--popover-foreground);
-  --color-popover: var(--popover);
-  --color-card-foreground: var(--card-foreground);
-  --color-card: var(--card);
-  --radius-sm: calc(var(--radius) * 0.6);
-  --radius-md: calc(var(--radius) * 0.8);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) * 1.4);
-  --radius-2xl: calc(var(--radius) * 1.8);
-  --radius-3xl: calc(var(--radius) * 2.2);
-  --radius-4xl: calc(var(--radius) * 2.6);
-}
+/* ─────────────────────────────────────────────────────────────────────────────
+   DESIGN SYSTEM — BASE TOKENS
+   Source: design/_ds/alien-intelligence-design-system-*/tokens/
+   All values are verbatim from the DS files. Do not invent values.
+   ───────────────────────────────────────────────────────────────────────────── */
 
 :root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  /* ── Neutrals ─────────────────────────────────────────────────────────── */
+  --neutral-50:  hsl(0 0% 98%);
+  --neutral-100: hsl(0 0% 89%);
+  --neutral-200: hsl(0 0% 80%);
+  --neutral-300: hsl(0 0% 71%);
+  --neutral-400: hsl(0 0% 62%);
+  --neutral-500: hsl(0 0% 53%);
+  --neutral-600: hsl(0 0% 44%);
+  --neutral-700: hsl(0 0% 24%);
+  --neutral-800: hsl(0 0% 18%);
+  --neutral-900: hsl(0 0% 13%);
+  --neutral-950: hsl(0 0% 7%);
+  --black:       hsl(0 0% 7%);
+  --white:       hsl(0 0% 100%);
+
+  /* ── Teal scale ───────────────────────────────────────────────────────── */
+  --teal-50:  hsl(180 22% 95%);
+  --teal-100: hsl(184 20% 83%);
+  --teal-200: hsl(182 20% 71%);
+  --teal-300: hsl(183 21% 59%);
+  --teal-400: hsl(183 24% 47%);
+  --teal-500: hsl(183 39% 35%);
+  --teal-600: hsl(183 39% 30%);
+  --teal-700: hsl(182 39% 25%);
+  --teal-800: hsl(183 39% 20%);
+  --teal-900: hsl(184 38% 15%);
+  --teal-950: hsl(183 40% 10%);
+
+  /* ── Brand ────────────────────────────────────────────────────────────── */
+  --brand-teal:      hsl(176 33% 59%);  /* #76B7B2 — primary action / accent */
+  --brand-teal-soft: hsl(176 30% 72%);  /* tints, chart fills                */
+
+  /* ── Dataset accents (doctype badges, facet bars, histogram) ──────────── */
+  --dataset-1: hsl(311 100% 84%);  /* pink   */
+  --dataset-2: hsl(237 88%  66%);  /* indigo */
+  --dataset-3: hsl(189 100% 66%);  /* cyan   */
+  --dataset-4: hsl(130 41%  67%);  /* green  */
+  --dataset-5: hsl(6   92%  67%);  /* red    */
+  --dataset-6: hsl(34  100% 59%);  /* orange */
+  --dataset-7: hsl(40  100% 67%);  /* yellow */
+  --dataset-1-muted: color-mix(in oklch, var(--dataset-1), black 70%);
+  --dataset-2-muted: color-mix(in oklch, var(--dataset-2), black 70%);
+  --dataset-3-muted: color-mix(in oklch, var(--dataset-3), black 70%);
+  --dataset-4-muted: color-mix(in oklch, var(--dataset-4), black 70%);
+  --dataset-5-muted: color-mix(in oklch, var(--dataset-5), black 70%);
+  --dataset-6-muted: color-mix(in oklch, var(--dataset-6), black 70%);
+  --dataset-7-muted: color-mix(in oklch, var(--dataset-7), black 70%);
+
+  /* ── Typography ───────────────────────────────────────────────────────── */
+  /* layout.tsx injects --font-geist-sans and --font-geist-mono via next/font */
+  --font-sans:     var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono:     var(--font-geist-mono), ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --font-display:  var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+
+  --weight-regular:  400;
+  --weight-medium:   500;
+  --weight-semibold: 600;
+  --weight-bold:     700;
+
+  --text-xs:   0.75rem;
+  --text-sm:   0.875rem;
+  --text-base: 1rem;
+  --text-lg:   1.125rem;
+  --text-xl:   1.25rem;
+  --text-2xl:  1.5rem;
+  --text-3xl:  1.875rem;
+  --text-4xl:  2.25rem;
+
+  --leading-none:    1;
+  --leading-tight:   1.1;
+  --leading-snug:    1.25;
+  --leading-normal:  1.5;
+  --leading-relaxed: 1.65;
+
+  --tracking-tighter: -0.03em;
+  --tracking-tight:   -0.015em;
+  --tracking-normal:   0em;
+  --tracking-wide:     0.04em;
+  --tracking-widest:   0.12em;
+
+  /* ── Spacing ──────────────────────────────────────────────────────────── */
+  --space-0:  0;
+  --space-1:  0.25rem;
+  --space-2:  0.5rem;
+  --space-3:  0.75rem;
+  --space-4:  1rem;
+  --space-5:  1.25rem;
+  --space-6:  1.5rem;
+  --space-8:  2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+  --space-16: 4rem;
+  --space-24: 6rem;
+
+  /* ── Border width ─────────────────────────────────────────────────────── */
+  --border-width: 0.5px;
+
+  /* ── Radius ───────────────────────────────────────────────────────────── */
+  /* shadcn components read `--radius` as the base; we set it to the DS lg value */
+  --radius:      0.5rem;
+  --radius-sm:   calc(var(--radius) - 4px);  /* 4px  */
+  --radius-md:   calc(var(--radius) - 2px);  /* 6px  */
+  --radius-lg:   var(--radius);               /* 8px  */
+  --radius-xl:   calc(var(--radius) + 4px);   /* 12px */
+  --radius-full: 9999px;
+
+  /* ── Shadows ──────────────────────────────────────────────────────────── */
+  --shadow-2xs: 0 1px 3px 0 hsl(0 0% 0% / 0.05);
+  --shadow-xs:  0 1px 3px 0 hsl(0 0% 0% / 0.05);
+  --shadow-sm:  0 1px 3px 0 hsl(0 0% 0% / 0.1), 0 1px 2px -1px hsl(0 0% 0% / 0.1);
+  --shadow:     0 1px 3px 0 hsl(0 0% 0% / 0.1), 0 1px 2px -1px hsl(0 0% 0% / 0.1);
+  --shadow-md:  0 1px 3px 0 hsl(0 0% 0% / 0.1), 0 2px 4px -1px hsl(0 0% 0% / 0.1);
+  --shadow-lg:  0 1px 3px 0 hsl(0 0% 0% / 0.1), 0 4px 6px -1px hsl(0 0% 0% / 0.1);
+  --shadow-xl:  0 1px 3px 0 hsl(0 0% 0% / 0.1), 0 8px 10px -1px hsl(0 0% 0% / 0.1);
 }
 
+/* ─────────────────────────────────────────────────────────────────────────────
+   SHADCN SEMANTIC VARS — DARK THEME (DEFAULT / applied when html.dark)
+   Source: design/_ds/.../tokens/colors.css — dark scope
+   These are the exact values the DS defines for the dark theme; we treat dark
+   as `:root` because the app is dark-first and <html class="dark"> is always set.
+   ───────────────────────────────────────────────────────────────────────────── */
+
+:root,
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  /* Surfaces */
+  --background:         hsl(0 0% 7%);   /* --neutral-950 */
+  --foreground:         hsl(0 0% 100%); /* --white        */
+
+  --card:               hsl(0 0% 9%);   /* slightly lifted surface */
+  --card-foreground:    hsl(0 0% 100%);
+
+  --popover:            hsl(0 0% 9%);
+  --popover-foreground: hsl(0 0% 100%);
+
+  --muted:              hsl(0 0% 9%);
+  --muted-foreground:   hsl(0 0% 54%);  /* ≈ --neutral-500 */
+
+  /* Actions */
+  --primary:            hsl(183 39% 35%); /* --teal-500 — buttons, active rings */
+  --primary-foreground: hsl(0 0% 100%);
+
+  --secondary:          hsl(0 0% 25%);   /* --neutral-700-ish */
+  --secondary-foreground: hsl(0 0% 100%);
+
+  --accent:             hsl(0 0% 37%);   /* hover surfaces */
+  --accent-foreground:  hsl(0 0% 100%);
+
+  /* Lines & focus */
+  --border: hsl(0 0% 18%);   /* --neutral-800 */
+  --input:  hsl(0 0% 18%);
+  --ring:   hsl(0 0% 80%);   /* --neutral-200 */
+
+  /* Status */
+  --info:                  hsl(130 41% 67%);  /* --dataset-4 green */
+  --info-foreground:       hsl(0 0% 100%);
+  --success:               hsl(130 41% 67%);
+  --warning:               hsl(28 88% 59%);
+  --warning-foreground:    hsl(0 0% 100%);
+  --destructive:           hsl(6 92% 67%);    /* --dataset-5 red */
+  --destructive-foreground: hsl(5 100% 98%);
+
+  /* Chart — mapped to dataset palette for consistency */
+  --chart-1: var(--dataset-1);
+  --chart-2: var(--dataset-2);
+  --chart-3: var(--dataset-3);
+  --chart-4: var(--dataset-4);
+  --chart-5: var(--dataset-5);
+
+  /* Sidebar */
+  --sidebar:                    hsl(0 0% 7%);   /* same as --background */
+  --sidebar-foreground:         hsl(0 0% 100%);
+  --sidebar-primary:            hsl(183 39% 35%); /* --teal-500 */
+  --sidebar-primary-foreground: hsl(0 0% 100%);
+  --sidebar-accent:             hsl(184 38% 15%); /* --teal-900 */
+  --sidebar-accent-foreground:  hsl(184 20% 83%); /* --teal-100 */
+  --sidebar-border:             hsl(0 0% 18%);    /* --neutral-800 */
+  --sidebar-ring:               hsl(176 33% 59%); /* --brand-teal */
 }
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   SHADCN SEMANTIC VARS — LIGHT THEME
+   Applied when `.light` is explicitly set. Not the default for this app.
+   ───────────────────────────────────────────────────────────────────────────── */
+
+.light {
+  --background:         hsl(0 0% 100%);
+  --foreground:         hsl(120 2% 10%);
+
+  --card:               hsl(0 0% 100%);
+  --card-foreground:    hsl(120 2% 10%);
+
+  --popover:            hsl(0 0% 100%);
+  --popover-foreground: hsl(120 2% 10%);
+
+  --muted:              hsl(0 0% 96%);
+  --muted-foreground:   hsl(0 0% 45%);
+
+  --primary:            hsl(183 39% 35%);  /* keep brand teal even in light */
+  --primary-foreground: hsl(0 0% 100%);
+
+  --secondary:          hsl(0 0% 96%);
+  --secondary-foreground: hsl(120 2% 10%);
+
+  --accent:             hsl(0 0% 96%);
+  --accent-foreground:  hsl(120 2% 10%);
+
+  --border: hsl(0 0% 90%);
+  --input:  hsl(0 0% 90%);
+  --ring:   hsl(0 0% 63%);
+
+  --destructive:           hsl(6 92% 50%);
+  --destructive-foreground: hsl(0 0% 100%);
+
+  --chart-1: var(--dataset-1);
+  --chart-2: var(--dataset-2);
+  --chart-3: var(--dataset-3);
+  --chart-4: var(--dataset-4);
+  --chart-5: var(--dataset-5);
+
+  --sidebar:                    hsl(0 0% 98%);
+  --sidebar-foreground:         hsl(120 2% 10%);
+  --sidebar-primary:            hsl(183 39% 35%);
+  --sidebar-primary-foreground: hsl(0 0% 100%);
+  --sidebar-accent:             hsl(184 20% 83%);
+  --sidebar-accent-foreground:  hsl(120 2% 10%);
+  --sidebar-border:             hsl(0 0% 90%);
+  --sidebar-ring:               hsl(176 33% 59%);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   TAILWIND V4 — @theme bridge
+   Maps shadcn semantic vars to Tailwind color/font/radius utilities.
+   Inline so values resolve at build time against the custom properties above.
+   ───────────────────────────────────────────────────────────────────────────── */
+
+@theme inline {
+  /* Colors */
+  --color-background:              var(--background);
+  --color-foreground:              var(--foreground);
+  --color-card:                    var(--card);
+  --color-card-foreground:         var(--card-foreground);
+  --color-popover:                 var(--popover);
+  --color-popover-foreground:      var(--popover-foreground);
+  --color-primary:                 var(--primary);
+  --color-primary-foreground:      var(--primary-foreground);
+  --color-secondary:               var(--secondary);
+  --color-secondary-foreground:    var(--secondary-foreground);
+  --color-muted:                   var(--muted);
+  --color-muted-foreground:        var(--muted-foreground);
+  --color-accent:                  var(--accent);
+  --color-accent-foreground:       var(--accent-foreground);
+  --color-destructive:             var(--destructive);
+  --color-destructive-foreground:  var(--destructive-foreground);
+  --color-border:                  var(--border);
+  --color-input:                   var(--input);
+  --color-ring:                    var(--ring);
+  --color-chart-1:                 var(--chart-1);
+  --color-chart-2:                 var(--chart-2);
+  --color-chart-3:                 var(--chart-3);
+  --color-chart-4:                 var(--chart-4);
+  --color-chart-5:                 var(--chart-5);
+  --color-sidebar:                 var(--sidebar);
+  --color-sidebar-foreground:      var(--sidebar-foreground);
+  --color-sidebar-primary:         var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent:          var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border:          var(--sidebar-border);
+  --color-sidebar-ring:            var(--sidebar-ring);
+
+  /* Brand + dataset utilities — exposed to Tailwind as `bg-brand-teal` etc. */
+  --color-brand-teal:      var(--brand-teal);
+  --color-brand-teal-soft: var(--brand-teal-soft);
+  --color-dataset-1:       var(--dataset-1);
+  --color-dataset-2:       var(--dataset-2);
+  --color-dataset-3:       var(--dataset-3);
+  --color-dataset-4:       var(--dataset-4);
+  --color-dataset-5:       var(--dataset-5);
+  --color-dataset-6:       var(--dataset-6);
+  --color-dataset-7:       var(--dataset-7);
+  --color-dataset-1-muted: var(--dataset-1-muted);
+  --color-dataset-2-muted: var(--dataset-2-muted);
+  --color-dataset-3-muted: var(--dataset-3-muted);
+  --color-dataset-4-muted: var(--dataset-4-muted);
+  --color-dataset-5-muted: var(--dataset-5-muted);
+  --color-dataset-6-muted: var(--dataset-6-muted);
+  --color-dataset-7-muted: var(--dataset-7-muted);
+
+  /* Status */
+  --color-info:    var(--info);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+
+  /* Fonts — layout.tsx injects --font-geist-sans / --font-geist-mono at runtime */
+  --font-sans:    var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono:    var(--font-geist-mono), ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --font-heading: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+
+  /* Radius — shadcn reads --radius-sm/md/lg from @theme inline */
+  --radius-sm:  calc(var(--radius) - 4px);
+  --radius-md:  calc(var(--radius) - 2px);
+  --radius-lg:  var(--radius);
+  --radius-xl:  calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+  --radius-3xl: calc(var(--radius) + 12px);
+  --radius-4xl: calc(var(--radius) + 16px);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   BASE LAYER
+   ───────────────────────────────────────────────────────────────────────────── */
 
 @layer base {
   * {
@@ -127,12 +335,26 @@
   html {
     @apply font-sans;
   }
+  /* Scrollbar — matches the design HTML prototype */
+  ::-webkit-scrollbar {
+    width: 9px;
+    height: 9px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: hsl(0 0% 24%); /* --neutral-700 */
+    border-radius: 6px;
+    border: 2px solid var(--background);
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
 }
 
-/* @alien/chat-sdk — minimal BnF palette bridge.
- * Overrides 2 variables so the panel blends with the Card surface.
- * Full theming (accent colour, border radius) deferred to slice 2.5 polish.
- */
+/* ─────────────────────────────────────────────────────────────────────────────
+   @alien/chat-sdk — BnF palette bridge
+   Chat panel blends with the Card surface (--surface-raised equivalent).
+   ───────────────────────────────────────────────────────────────────────────── */
+
 .chat-sdk-root {
   --chat-sdk-bg: var(--card);
   --chat-sdk-fg: var(--card-foreground);
