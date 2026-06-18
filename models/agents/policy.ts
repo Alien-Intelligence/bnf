@@ -48,4 +48,15 @@ export class AgentPolicy {
   cancel(resource: { session: AppSession; project: Project }): boolean {
     return resource.project.ownerId === this.user.id
   }
+
+  /**
+   * An SSE stream can be opened by anyone who can read the session — the
+   * project owner, or any user if the project is public.
+   * Mirrors the `read` policy: stream access is read-only access.
+   */
+  stream(resource: { session: AppSession; project: Project }): boolean {
+    return (
+      resource.project.ownerId === this.user.id || resource.project.isPublic
+    )
+  }
 }
