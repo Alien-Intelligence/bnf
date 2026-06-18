@@ -9,7 +9,8 @@
     "empty": "Vide",
     "signIn": "Se connecter",
     "signUp": "Créer un compte",
-    "signOut": "Se déconnecter"
+    "signOut": "Se déconnecter",
+    "welcome": "Bienvenue, {name}"
   },
   "nav": {
     "constituer": "Constituer",
@@ -25,7 +26,9 @@
       "submit": "Se connecter",
       "noAccount": "Pas encore de compte ?",
       "errorGeneric": "Identifiants invalides",
-      "errorInvalidCredentials": "Identifiants invalides"
+      "errorInvalidCredentials": "Identifiants invalides",
+      "forgotPassword": "Mot de passe oublié ?",
+      "submitting": "Connexion en cours…"
     },
     "signUp": {
       "title": "Créer un compte",
@@ -34,13 +37,23 @@
       "passwordLabel": "Mot de passe",
       "submit": "Créer le compte",
       "hasAccount": "Déjà un compte ?",
-      "errorEmailTaken": "Cet e-mail est déjà utilisé"
+      "errorEmailTaken": "Cet e-mail est déjà utilisé",
+      "submitting": "Création du compte…"
+    },
+    "forgotPassword": {
+      "title": "Mot de passe oublié",
+      "body": "Pas encore disponible — contactez votre administrateur."
     }
   },
   "projects": {
     "title": "Projets",
     "subtitle": "Vos espaces de recherche",
-    "empty": "Aucun projet pour l'instant."
+    "empty": "Aucun projet pour l'instant.",
+    "list": {
+      "openCorpus": "Ouvrir le corpus",
+      "openIngest": "Ingestion",
+      "openResearch": "Recherche"
+    }
   },
   "corpus": {
     "summary": {
@@ -59,7 +72,20 @@
       "byPeriod": "Par période",
       "expand": "Afficher les filtres",
       "collapse": "Masquer les filtres",
-      "empty": "Aucune facette à afficher"
+      "empty": "Aucune facette à afficher",
+      "active": {
+        "title": "Filtres actifs",
+        "clearAll": "Effacer tous les filtres"
+      },
+      "histogram": {
+        "title": "Distribution chronologique",
+        "undatedTile": "Période non datée ({count})"
+      },
+      "fulltext": {
+        "placeholder": "Rechercher dans le titre, auteur, extrait…",
+        "helper": "Recherche plein-texte sur titre, auteur et extrait OCR"
+      },
+      "decadeLabel": "Décennie {decade}, {count} documents"
     },
     "documents": {
       "empty": "Aucun document. Demandez à l'agent de constituer un corpus.",
@@ -70,7 +96,48 @@
       "authorLabel": "Auteur",
       "yearLabel": "Année",
       "pagesLabel": "Pages",
-      "iiifLabel": "Manifest IIIF"
+      "iiifLabel": "Manifest IIIF",
+      "noResults": "Aucun résultat pour ces filtres.",
+      "clearFilters": "Effacer les filtres",
+      "loadMore": "Charger plus"
+    },
+    "docTypes": {
+      "book": "Livre",
+      "press": "Presse",
+      "image": "Image",
+      "map": "Carte",
+      "manuscript": "Manuscrit",
+      "score": "Partition",
+      "video": "Vidéo",
+      "audio": "Son",
+      "poster": "Affiche",
+      "other": "Autre",
+      "estampe": "Estampe",
+      "enlum": "Enluminure",
+      "charte": "Charte"
+    },
+    "langs": {
+      "fr": "Français",
+      "en": "Anglais",
+      "la": "Latin",
+      "de": "Allemand",
+      "it": "Italien",
+      "es": "Espagnol",
+      "pt": "Portugais",
+      "nl": "Néerlandais",
+      "grc": "Grec ancien",
+      "el": "Grec moderne",
+      "ru": "Russe",
+      "ja": "Japonais",
+      "zh": "Chinois",
+      "ar": "Arabe",
+      "he": "Hébreu"
+    },
+    "sources": {
+      "gallica": "Gallica",
+      "catalogue": "Catalogue BnF",
+      "databnf": "data.bnf.fr",
+      "other": "Autre"
     },
     "chat": {
       "headerTitle": "Conversation",

@@ -9,7 +9,8 @@
     "empty": "Empty",
     "signIn": "Sign in",
     "signUp": "Create an account",
-    "signOut": "Sign out"
+    "signOut": "Sign out",
+    "welcome": "Welcome, {name}"
   },
   "nav": {
     "constituer": "Build",
@@ -25,7 +26,9 @@
       "submit": "Sign in",
       "noAccount": "Don't have an account yet?",
       "errorGeneric": "Invalid credentials",
-      "errorInvalidCredentials": "Invalid credentials"
+      "errorInvalidCredentials": "Invalid credentials",
+      "forgotPassword": "Forgot password?",
+      "submitting": "Signing in…"
     },
     "signUp": {
       "title": "Create an account",
@@ -34,13 +37,23 @@
       "passwordLabel": "Password",
       "submit": "Create account",
       "hasAccount": "Already have an account?",
-      "errorEmailTaken": "Email already in use"
+      "errorEmailTaken": "Email already in use",
+      "submitting": "Creating account…"
+    },
+    "forgotPassword": {
+      "title": "Forgot password",
+      "body": "Not yet available — contact your administrator."
     }
   },
   "projects": {
     "title": "Projects",
     "subtitle": "Your research workspaces",
-    "empty": "No projects yet."
+    "empty": "No projects yet.",
+    "list": {
+      "openCorpus": "Open corpus",
+      "openIngest": "Ingest",
+      "openResearch": "Research"
+    }
   },
   "corpus": {
     "summary": {
@@ -59,7 +72,20 @@
       "byPeriod": "By period",
       "expand": "Show filters",
       "collapse": "Hide filters",
-      "empty": "No facets to display"
+      "empty": "No facets to display",
+      "active": {
+        "title": "Active filters",
+        "clearAll": "Clear all filters"
+      },
+      "histogram": {
+        "title": "Chronological distribution",
+        "undatedTile": "Undated period ({count})"
+      },
+      "fulltext": {
+        "placeholder": "Search title, author, excerpt…",
+        "helper": "Full-text search across title, author, OCR excerpt"
+      },
+      "decadeLabel": "Decade {decade}, {count} documents"
     },
     "documents": {
       "empty": "No documents. Ask the agent to build a corpus.",
@@ -70,7 +96,48 @@
       "authorLabel": "Author",
       "yearLabel": "Year",
       "pagesLabel": "Pages",
-      "iiifLabel": "IIIF Manifest"
+      "iiifLabel": "IIIF Manifest",
+      "noResults": "No results match these filters.",
+      "clearFilters": "Clear filters",
+      "loadMore": "Load more"
+    },
+    "docTypes": {
+      "book": "Book",
+      "press": "Press",
+      "image": "Image",
+      "map": "Map",
+      "manuscript": "Manuscript",
+      "score": "Musical score",
+      "video": "Video",
+      "audio": "Audio",
+      "poster": "Poster",
+      "other": "Other",
+      "estampe": "Print",
+      "enlum": "Illumination",
+      "charte": "Charter"
+    },
+    "langs": {
+      "fr": "French",
+      "en": "English",
+      "la": "Latin",
+      "de": "German",
+      "it": "Italian",
+      "es": "Spanish",
+      "pt": "Portuguese",
+      "nl": "Dutch",
+      "grc": "Ancient Greek",
+      "el": "Modern Greek",
+      "ru": "Russian",
+      "ja": "Japanese",
+      "zh": "Chinese",
+      "ar": "Arabic",
+      "he": "Hebrew"
+    },
+    "sources": {
+      "gallica": "Gallica",
+      "catalogue": "BnF Catalogue",
+      "databnf": "data.bnf.fr",
+      "other": "Other"
     },
     "chat": {
       "headerTitle": "Conversation",
