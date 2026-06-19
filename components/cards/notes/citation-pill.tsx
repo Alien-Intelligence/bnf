@@ -13,9 +13,9 @@ export function CitationPill({ citation, onClick }: CitationPillProps) {
     <button
       type="button"
       onClick={() => onClick(citation)}
-      className="inline-block align-middle mx-0.5"
+      className="mx-0.5 inline-block align-middle"
     >
-      <Badge variant="secondary" className="font-mono text-xs">
+      <Badge className="border border-brand-teal/30 bg-brand-teal/12 font-mono text-xs text-brand-teal transition-colors hover:bg-brand-teal/20">
         {citation.label} · f{citation.folio}
       </Badge>
     </button>

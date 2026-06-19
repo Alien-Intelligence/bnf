@@ -28,7 +28,7 @@ export function CarnetClient({
 
   return (
     <div className="flex flex-col h-screen">
-      <WorkspaceHeader user={user} />
+      <WorkspaceHeader user={user} projectId={projectId} />
       <div className="flex-1 overflow-hidden">
         <LayoutCarnet
           notes={notes}

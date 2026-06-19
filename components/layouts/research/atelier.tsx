@@ -1,12 +1,14 @@
 "use client"
 
+import { FileText, HelpCircle, Plus } from "lucide-react"
+import { useTranslations } from "next-intl"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button, buttonVariants } from "@/components/ui/button"
-import { Plus } from "lucide-react"
 import { Link } from "@/i18n/navigation"
 import { LayoutCorpusChat } from "@/components/layouts/corpus/chat"
+import { LayoutSharedEmptyState } from "@/components/layouts/shared/empty-state"
 import { NoteTab } from "@/components/cards/notes/tab"
-import { useTranslations } from "next-intl"
+import { ROUTES } from "@/lib/constants"
 import type { ParsedCitation } from "@/lib/citations/syntax"
 import type { UseTurnStreamResult } from "@/hooks/api/turn-stream"
 
@@ -24,6 +26,7 @@ interface LayoutAtelierProps {
   onActiveNoteChange: (id: string) => void
   onOpenNewNote: () => void
   onCitationClick: (c: ParsedCitation) => void
+  onOpenHelp: () => void
 }
 
 export function LayoutAtelier({
@@ -35,60 +38,84 @@ export function LayoutAtelier({
   onActiveNoteChange,
   onOpenNewNote,
   onCitationClick,
+  onOpenHelp,
 }: LayoutAtelierProps) {
   const t = useTranslations("research.atelier")
+  const tChat = useTranslations("research.chat")
+  const tResearch = useTranslations("research")
 
   return (
-    <div className="grid grid-cols-[2fr_3fr] h-full divide-x">
-      {/* Chat panel — 40% */}
+    <div className="grid h-full grid-cols-[2fr_3fr] divide-x">
+      {/* Chat panel — 40% (reuses the corpus chat with research agent copy) */}
       <div className="flex flex-col overflow-hidden">
         <LayoutCorpusChat
           stream={stream}
           projectId={projectId}
           locale={locale}
+          headerSubtitle={tChat("subtitle")}
+          introText={tChat("intro")}
+          placeholder={tChat("placeholder")}
         />
       </div>
 
       {/* Notes panel — 60% */}
       <div className="flex flex-col overflow-hidden">
         {notes.length === 0 ? (
-          <div className="flex-1 flex flex-col items-center justify-center gap-4 text-muted-foreground p-6">
-            <p className="text-sm">{t("noNotes")}</p>
-            <Button variant="outline" size="sm" onClick={onOpenNewNote}>
-              <Plus className="mr-2 h-4 w-4" />
-              {t("newNote")}
-            </Button>
-          </div>
+          <LayoutSharedEmptyState
+            icon={FileText}
+            title={t("noNotes")}
+            action={
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm" onClick={onOpenNewNote}>
+                  <Plus className="size-4" />
+                  {t("newNote")}
+                </Button>
+                <Button variant="ghost" size="sm" onClick={onOpenHelp}>
+                  <HelpCircle className="size-4" />
+                  {tResearch("help")}
+                </Button>
+              </div>
+            }
+          />
         ) : (
           <Tabs
             value={activeNoteId ?? notes[0]?.id}
             onValueChange={onActiveNoteChange}
-            className="flex flex-col h-full"
+            className="flex h-full flex-col"
           >
-            <div className="flex items-center border-b px-2 gap-1 shrink-0">
-              <TabsList className="h-10 rounded-none bg-transparent border-0 p-0 flex-1 justify-start overflow-x-auto">
+            <div className="flex shrink-0 items-center gap-1 border-b px-2">
+              <TabsList className="h-10 flex-1 justify-start overflow-x-auto rounded-none border-0 bg-transparent p-0">
                 {notes.map((note) => (
                   <TabsTrigger
                     key={note.id}
                     value={note.id}
-                    className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:shadow-none text-xs max-w-[160px] truncate"
+                    className="max-w-[160px] truncate rounded-none border-b-2 border-transparent text-xs data-[state=active]:border-primary data-[state=active]:shadow-none"
                   >
                     {note.title}
                   </TabsTrigger>
                 ))}
               </TabsList>
-              <div className="flex items-center gap-1 shrink-0">
+              <div className="flex shrink-0 items-center gap-1">
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="h-8 w-8"
+                  className="size-8"
                   onClick={onOpenNewNote}
                   title={t("newNote")}
                 >
-                  <Plus className="h-4 w-4" />
+                  <Plus className="size-4" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-8"
+                  onClick={onOpenHelp}
+                  title={tResearch("help")}
+                >
+                  <HelpCircle className="size-4" />
                 </Button>
                 <Link
-                  href={`/projects/${projectId}/rechercher/carnet`}
+                  href={ROUTES.carnet(projectId)}
                   className={buttonVariants({ variant: "ghost", size: "sm" }) + " text-xs"}
                 >
                   {t("viewInCarnet")}
@@ -100,12 +127,9 @@ export function LayoutAtelier({
                 <TabsContent
                   key={note.id}
                   value={note.id}
-                  className="h-full mt-0 overflow-y-auto"
+                  className="mt-0 h-full overflow-y-auto"
                 >
-                  <NoteTab
-                    noteId={note.id}
-                    onCitationClick={onCitationClick}
-                  />
+                  <NoteTab noteId={note.id} onCitationClick={onCitationClick} />
                 </TabsContent>
               ))}
             </div>

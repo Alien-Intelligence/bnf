@@ -39,9 +39,7 @@ export function LayoutCarnet({ notes, onCitationClick }: LayoutCarnetProps) {
     <div className="flex h-full">
       {/* Sidebar TOC */}
       <aside className="w-64 shrink-0 border-r overflow-y-auto p-4 space-y-1">
-        <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">
-          {t("title")}
-        </p>
+        <p className="mono-eyebrow mb-3 block">{t("title")}</p>
         {notes.map((note) => (
           <a
             key={note.id}
