@@ -1,10 +1,6 @@
 // Re-export the registry factory so callers only need to import from this module.
 export { buildTurnScopedCtx, buildTurnScopedRegistry } from "./registry-factory"
-export type {
-  BuildTurnRegistryOpts,
-  TurnPubSubLike,
-  TurnScopedCtx,
-} from "./registry-factory"
+export type { BuildTurnCtxOpts, TurnScopedCtx } from "./registry-factory"
 
 // Tool name constants and the derived union type.
 export { AGENT_TOOLS } from "./constants"

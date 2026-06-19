@@ -11,7 +11,7 @@
     "seed:from-mcp": "tsx --env-file-if-exists .env.local --conditions react-server scripts/seed-from-mcp.ts"
   },
   "dependencies": {
-    "@alien/chat-sdk": "file:../../tooling/chat-sdk",
+    "@alien/chat-sdk": "file:../../tooling/chat-sdk/alien-chat-sdk-0.4.0.tgz",
     "@base-ui/react": "^1.6.0",
     "@hookform/resolvers": "^3.10.0",
     "@prisma/adapter-pg": "^7.8.0",

@@ -28,7 +28,7 @@ export const ingestSubmitTool = defineTool<typeof inputSchema, TurnScopedCtx>({
       const job = await IngestService.submit(project, ctx.user, {
         targetVersionSeq: input.target_version,
       })
-      ctx.pubsub.publish(ctx.turnId, {
+      ctx.emit?.({
         type: "ingest_event",
         data: { kind: "submitted", jobId: job.id, status: job.status },
       })

@@ -7,7 +7,7 @@
  *   - note_create — create a new Markdown research note
  *   - note_update — update an existing note (snapshots prior body to NoteVersion)
  *
- * note_create and note_update publish a `note_event` via `ctx.pubsub` so
+ * note_create and note_update publish a `note_event` via `ctx.emit` so
  * connected SSE clients receive real-time feedback without polling.
  *
  * Citation syntax: [[<ark>|<short label>|<folio>]] — the folio is mandatory
@@ -102,7 +102,7 @@ export const noteCreateTool = defineTool<
       bodyMd: input.body_md,
     })
 
-    ctx.pubsub.publish(ctx.turnId, {
+    ctx.emit?.({
       type: "note_event",
       data: { kind: "created", noteId: note.id, title: note.title },
     })
@@ -150,7 +150,7 @@ export const noteUpdateTool = defineTool<
       bodyMd: input.body_md,
     })
 
-    ctx.pubsub.publish(ctx.turnId, {
+    ctx.emit?.({
       type: "note_event",
       data: { kind: "updated", noteId: note.id, title: note.title },
     })

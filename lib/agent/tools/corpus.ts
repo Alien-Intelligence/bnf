@@ -8,7 +8,7 @@
  *   - corpus_stats      — lightweight facet-only view (no sample)
  *   - corpus_diff       — compare two version seqs
  *
- * Every mutating tool publishes a `corpus_event` via `ctx.pubsub` so connected
+ * Every mutating tool publishes a `corpus_event` via `ctx.emit` so connected
  * SSE clients receive real-time feedback without polling.
  *
  * ProjectId resolution: resolved lazily from the session row rather than
@@ -141,7 +141,7 @@ export const corpusAddTool = defineTool<
       reason: input.reason,
     })
 
-    ctx.pubsub.publish(ctx.turnId, {
+    ctx.emit?.({
       type: "corpus_event",
       data: {
         kind: "add",
@@ -200,7 +200,7 @@ export const corpusRemoveTool = defineTool<
       reason: input.reason,
     })
 
-    ctx.pubsub.publish(ctx.turnId, {
+    ctx.emit?.({
       type: "corpus_event",
       data: {
         kind: "remove",

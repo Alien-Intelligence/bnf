@@ -1,59 +1,38 @@
 import "server-only"
 
-import {
-  createToolRegistry,
-  type ToolContext,
-  type ToolLifecycleCall,
-  type ToolLifecycleResult,
-} from "@alien/chat-sdk/claude"
+import { createToolRegistry, type ToolContext } from "@alien/chat-sdk/claude"
 import { prisma } from "@/lib/db"
 import { requireMcpEnv } from "@/lib/env"
+import { openMcpSession } from "@/lib/mcp/session"
 import { appTools } from "./index"
-import type { Prisma, User } from "@/lib/generated/prisma/client"
-
-/**
- * Minimal pubsub interface. The concrete `TurnPubSub` from
- * `lib/agent/runtime/pubsub` (a parallel commit) satisfies this shape.
- * Typed loosely here so this module compiles independently.
- */
-export interface TurnPubSubLike {
-  publish(turnId: string, event: unknown): void
-}
+import type { User } from "@/lib/generated/prisma/client"
 
 /**
  * Per-turn tool context threaded into every tool handler.
  *
- * Extends the base `ToolContext` so it satisfies the `TCtx extends ToolContext`
- * constraint on `ToolRegistry`. `request` is kept non-null per the base
- * contract; callers that have no incoming HTTP request should pass a synthetic
- * `Request` (e.g. `new Request("about:blank")`).
+ * Extends the SDK's base `ToolContext` (which now carries `emit` for domain
+ * events) so it satisfies the `TCtx extends ToolContext` constraint on
+ * `ToolRegistry`. The SDK `TurnRuntime` injects `signal` (the detached turn
+ * signal) and `emit` at dispatch time; the rest is built per request by the
+ * chat route's `buildToolContext`.
+ *
+ * Domain tools publish via `ctx.emit?.({ type, data })` — the runtime fans the
+ * event onto the same SSE stream. There is no app-level pubsub or turnId here
+ * anymore (the runtime owns both).
  */
 export interface TurnScopedCtx extends ToolContext {
   db: typeof prisma
   user: User
   appSessionId: string
-  /** The assistant Message.id being constructed for this turn. */
-  turnId: string
-  /** Alias of `turnId` — kept so either name reads naturally in handlers. */
-  turnMessageId: string
-  pubsub: TurnPubSubLike
   /** The project this session belongs to. */
   projectId: string
   /** Whether this is a corpus-building or RAG research session. */
   scope: "corpus" | "research"
 }
 
-export interface BuildTurnRegistryOpts {
+export interface BuildTurnCtxOpts {
   user: User
   appSessionId: string
-  /**
-   * The assistant Message.id for this turn. Stored as `toolCall.messageId` so
-   * every `ToolCall` row traces back to the message that produced it.
-   */
-  turnId: string
-  turnMessageId: string
-  /** PubSub instance for broadcasting tool events to connected SSE clients. */
-  pubsub: TurnPubSubLike
   /** The project this session belongs to. */
   projectId: string
   /** Whether this is a corpus-building or RAG research session. */
@@ -61,14 +40,12 @@ export interface BuildTurnRegistryOpts {
 }
 
 /**
- * Build a turn-scoped tool context for use with `ToolRegistry.dispatch`.
- *
- * Called by the runner for each turn — `request` and `signal` come from the
- * runner's own AbortController and incoming HTTP request (or a synthetic one
- * for server-driven turns).
+ * Build a turn-scoped tool context. The SDK runtime overrides `signal` (with
+ * the detached turn signal) and injects `emit`, so the `signal` passed here is
+ * only a placeholder for the inline/non-runtime path.
  */
 export function buildTurnScopedCtx(
-  opts: BuildTurnRegistryOpts,
+  opts: BuildTurnCtxOpts,
   request: Request,
   signal: AbortSignal,
 ): TurnScopedCtx {
@@ -78,9 +55,6 @@ export function buildTurnScopedCtx(
     db: prisma,
     user: opts.user,
     appSessionId: opts.appSessionId,
-    turnId: opts.turnId,
-    turnMessageId: opts.turnMessageId,
-    pubsub: opts.pubsub,
     projectId: opts.projectId,
     scope: opts.scope,
   }
@@ -96,71 +70,62 @@ export function buildTurnScopedCtx(
  * and ingest tools remain functional; the agent just has no BnF search
  * capability for that session.
  *
- * ## Lifecycle
- * - `onToolStart` — inserts a `ToolCall` row with `status="running"`.
- * - `onToolEnd`   — updates the same row with output, final status, and
- *                   latency. Both writes throw on failure (fail loudly rather
- *                   than silently losing persistence data).
+ * ## Persistence
+ * ToolCall rows are persisted by the SDK `TurnRuntime` (it wraps
+ * `registry.dispatch` and awaits the adapter's recordToolStart/End in order),
+ * NOT by registry lifecycle hooks — see the note in the body.
  *
  * ## Usage
  * ```ts
- * const registry = buildTurnScopedRegistry(opts)
+ * const registry = await buildTurnScopedRegistry(signal)
  * const ctx = buildTurnScopedCtx(opts, request, signal)
- * // pass registry to runClaudeSdk, pass ctx via the runner's dispatch call
+ * // pass registry as the SDK handler's per-request `buildTools` result
  * ```
+ *
+ * No per-turn opts are needed: the registry is stateless apart from the MCP
+ * session it opens (keyed off the signal). Tool-scoped data (user, project,
+ * scope) lives on the `TurnScopedCtx` built by `buildTurnScopedCtx`.
  */
-export function buildTurnScopedRegistry(opts: BuildTurnRegistryOpts) {
-  // MCP server is optional: if BNF_MCP_URL / BNF_MCP_TOKEN are absent the
-  // app-defined corpus/memory/ingest tools still work — the agent just has no
-  // BnF search capability for that session. Never crash the dev server.
+export async function buildTurnScopedRegistry(signal?: AbortSignal) {
+  // MCP server is optional: if BNF_MCP_URL / BNF_MCP_TOKEN are absent — or the
+  // session handshake fails (server down) — the app-defined corpus/memory/
+  // ingest tools still work; the agent just has no BnF search capability for
+  // this turn. Never crash the dev server.
   let mcpServers: { name: string; url: string; headers: Record<string, string> }[] = []
   try {
     const mcpEnv = requireMcpEnv()
+    // The BnF MCP is a stateful Streamable-HTTP server: open a session and
+    // thread its id back as a header so the chat-sdk's (stateless) client
+    // includes it on every tools/list + tools/call. See lib/mcp/session.ts.
+    const sessionId = await openMcpSession(
+      mcpEnv.BNF_MCP_URL,
+      mcpEnv.BNF_MCP_TOKEN,
+      signal,
+    )
     mcpServers = [
       {
         name: "bnf",
         url: mcpEnv.BNF_MCP_URL,
-        headers: { Authorization: `Bearer ${mcpEnv.BNF_MCP_TOKEN}` },
+        headers: {
+          Authorization: `Bearer ${mcpEnv.BNF_MCP_TOKEN}`,
+          "Mcp-Session-Id": sessionId,
+        },
       },
     ]
-  } catch {
+  } catch (err) {
     console.warn(
-      "[registry-factory] BNF_MCP_URL / BNF_MCP_TOKEN not set — " +
-        "agent will not have access to BnF search tools for this turn.",
+      "[registry-factory] BnF MCP unavailable — agent has no BnF search " +
+        `tools for this turn: ${err instanceof Error ? err.message : String(err)}`,
     )
   }
 
+  // NOTE: ToolCall persistence is intentionally NOT done via registry lifecycle
+  // hooks. The SDK's TurnRuntime owns it — it wraps `registry.dispatch` and
+  // awaits the persistence adapter's recordToolStart → tool → recordToolEnd in
+  // order (see @alien/chat-sdk/server runtime). The Prisma adapter
+  // (lib/agent/persistence/prisma-adapter.ts) writes the ToolCall rows.
   return createToolRegistry<TurnScopedCtx>({
     tools: [...appTools],
     mcpServers,
-
-    onToolStart: async (call: ToolLifecycleCall): Promise<void> => {
-      if (!call.toolUseId) return
-      await prisma.toolCall.create({
-        data: {
-          id: call.toolUseId,
-          messageId: opts.turnMessageId,
-          tool: call.toolName,
-          input: (call.input ?? {}) as Prisma.InputJsonObject,
-          source: call.source,
-          serverName: call.serverName ?? null,
-          status: "running",
-          createdAt: new Date(),
-        },
-      })
-    },
-
-    onToolEnd: async (call: ToolLifecycleCall, result: ToolLifecycleResult): Promise<void> => {
-      if (!call.toolUseId) return
-      await prisma.toolCall.update({
-        where: { id: call.toolUseId },
-        data: {
-          output: result.content as Prisma.InputJsonValue,
-          status: result.isError ? "error" : "ok",
-          latencyMs: result.elapsedMs,
-          finishedAt: new Date(),
-        },
-      })
-    },
   })
 }

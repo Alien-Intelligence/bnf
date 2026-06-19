@@ -11,7 +11,7 @@
  * after a `memory_write` — the agent does NOT need to call it at session
  * start (the system prompt already carries the snapshot).
  *
- * `memory_write` publishes a `memory_event` via `ctx.pubsub` so the memory
+ * `memory_write` publishes a `memory_event` via `ctx.emit` so the memory
  * dialog (if open) re-renders without polling.
  *
  * NOTE: MemoryQueries and MemoryService are stubs in this branch.
@@ -180,7 +180,7 @@ export const memoryWriteTool = defineTool<
       })
     }
 
-    ctx.pubsub.publish(ctx.turnId, {
+    ctx.emit?.({
       type: "memory_event",
       data: {
         kind:    "write",

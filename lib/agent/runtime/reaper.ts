@@ -1,76 +1,29 @@
 // lib/agent/runtime/reaper.ts
-// Server-only background reaper.
+// Crash-recovery orphan sweep.
 //
-// Two complementary safety nets:
+// As of the chat-sdk v0.4 migration the live turn lifecycle is owned by the
+// SDK TurnRuntime (it aborts stale in-memory turns itself via its reaper). The
+// one thing the SDK's storage-agnostic contract does NOT cover is DB orphans:
+// Message rows left in status="streaming" with AppSession.activeMessageId set
+// after a PROCESS RESTART, where the in-memory turn that was driving them is
+// gone. `runReaperCycle` marks those rows as error and clears the pointer so
+// the UI doesn't show a forever-spinner.
 //
-// 1. In-registry reaper: iterates TurnRegistry and aborts any turn whose
-//    startedAt age exceeds TURN_REAP_TTL_MS.  Handles the case where the
-//    runner never finishes and the entry stays in memory.
-//
-// 2. DB reaper: queries for Message rows whose status is still "streaming"
-//    but whose id is NOT in TurnRegistry.activeMessageIds().  These are
-//    "orphaned" rows — the process restarted (hot-reload, crash) while a
-//    turn was in flight.  The reaper marks them "error" so the UI doesn't
-//    show a spinner forever.
-//
-// The reaper is started once at module load time via startReaper() — call it
-// from the app bootstrap path (e.g. lib/agent/index.ts or the first route
-// file that imports the runtime).  Calling it multiple times is safe; the
-// flag guard prevents duplicate intervals.
+// Without an in-process registry to cross-check (the SDK runtime owns that and
+// does not expose a full active-id list), this is intended as a BOOT-TIME or
+// manual sweep — run it at startup before serving, when nothing is in flight.
+// Do NOT wire it to a periodic interval during normal operation: mid-flight
+// turns legitimately sit in status="streaming".
 
 import "server-only"
 
 import { prisma } from "@/lib/db"
-import { TURN_REAP_TTL_MS, REAPER_INTERVAL_MS } from "@/lib/constants"
-import { TurnRegistry } from "./registry"
-
-let started = false
-
-/**
- * Start the background reaper interval.  Idempotent — safe to call multiple
- * times (only one interval is ever created).
- */
-export function startReaper(): void {
-  if (started) return
-  started = true
-
-  setInterval(() => {
-    void runReaperCycle().catch((err) => {
-      console.error("[reaper] cycle failed:", err)
-    })
-  }, REAPER_INTERVAL_MS)
-}
-
-// ---------------------------------------------------------------------------
-// Internal — exported for direct invocation in tests (smoke-test.ts).
-// ---------------------------------------------------------------------------
 
 export async function runReaperCycle(): Promise<void> {
   const now = new Date()
 
-  // --- In-registry reaper: abort stale turns ---
-  for (const turn of TurnRegistry.all()) {
-    const ageMs = now.getTime() - turn.startedAt.getTime()
-    if (ageMs > TURN_REAP_TTL_MS) {
-      console.warn(
-        `[reaper] aborting stale turn ${turn.turnId} ` +
-          `(age ${Math.round(ageMs / 1000)}s > TTL ${TURN_REAP_TTL_MS / 1000}s)`,
-      )
-      turn.controller.abort()
-      // The runner's finally block will handle DB cleanup and unregistration.
-    }
-  }
-
-  // --- DB reaper: mark orphaned streaming rows as error ---
-  const activeIds = TurnRegistry.activeMessageIds()
-
-  // Find Message rows that are still "streaming" but not in the registry
   const orphaned = await prisma.message.findMany({
-    where: {
-      status: "streaming",
-      // Exclude rows currently being written by the registry
-      ...(activeIds.length > 0 ? { id: { notIn: activeIds } } : {}),
-    },
+    where: { status: "streaming" },
     select: { id: true, appSessionId: true },
   })
 
@@ -92,7 +45,6 @@ export async function runReaperCycle(): Promise<void> {
         finishedAt: now,
       },
     }),
-    // Clear activeMessageId on any session pointing at an orphaned message
     prisma.appSession.updateMany({
       where: {
         id: { in: appSessionIds },
