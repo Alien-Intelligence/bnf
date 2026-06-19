@@ -351,6 +351,46 @@
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
+   MOTION + TYPOGRAPHY UTILITIES
+   Lifted verbatim from the design prototype (BnF Corpus Research.dc.html) and
+   the DS base layer (_ds/.../tokens/base.css). These are the only bespoke
+   animations the prototype uses; everything else relies on tw-animate-css.
+   ───────────────────────────────────────────────────────────────────────────── */
+
+@keyframes bnf-blink {
+  0%, 80%, 100% { opacity: 0.25; }
+  40% { opacity: 1; }
+}
+@keyframes bnf-spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes bnf-up {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+@utility animate-bnf-up {
+  animation: bnf-up 0.25s ease;
+}
+@utility animate-bnf-spin {
+  animation: bnf-spin 1s linear infinite;
+}
+@utility animate-bnf-blink {
+  animation: bnf-blink 1.2s infinite;
+}
+
+/* Mono eyebrow / technical label — recurring DS + app pattern.
+   12px, uppercase, widest tracking, muted. See _ds tokens/base.css. */
+@utility mono-eyebrow {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
    @alien/chat-sdk — BnF palette bridge
    Chat panel blends with the Card surface (--surface-raised equivalent).
    ───────────────────────────────────────────────────────────────────────────── */
