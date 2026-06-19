@@ -371,9 +371,13 @@ export class IngestService {
     })
     return rows.map((doc) => ({
       ark: doc.ark,
-      title: doc.title,
+      // title/docType are null on stubs whose metadata hasn't resolved yet. The
+      // cluster contract requires strings; fall back rather than crash. Such a
+      // doc has no full text anyway and the cluster will record it as a per-doc
+      // skip (see ingestion-jobs.md — one bad doc never fails the whole job).
+      title: doc.title ?? doc.ark,
       year: doc.year,
-      docType: doc.docType,
+      docType: doc.docType ?? "other",
       lang: doc.lang,
       source: doc.source ?? "unknown",
       iiifManifestUrl: doc.iiifManifestUrl,

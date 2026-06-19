@@ -10,7 +10,9 @@ import { useIngestStatus, useSubmitIngest, useCancelIngest } from "@/hooks/api/i
 import { CardIngestSummary } from "@/components/cards/ingest/summary"
 import { CardIngestStagePipeline } from "@/components/cards/ingest/stage-pipeline"
 import { CardComeBackLater } from "@/components/cards/ingest/come-back-later"
+import { CardIngestCompletion } from "@/components/cards/ingest/completion"
 import { CardIngestJobHistory } from "@/components/cards/ingest/job-history"
+import { INGEST_STATUS } from "@/models/ingest/schema"
 import { WorkspaceHeader } from "@/components/layouts/workspace/header"
 import { DialogIngestConfirmCancel } from "@/components/dialogs/ingest/confirm-cancel"
 import type { IngestJob } from "@/models/ingest/schema"
@@ -57,7 +59,7 @@ export function IngererClient({
 
   return (
     <div className="flex flex-col h-screen">
-      <WorkspaceHeader user={initialUser} />
+      <WorkspaceHeader user={initialUser} projectId={projectId} />
 
       <div className="flex flex-col gap-6 p-6 max-w-4xl mx-auto w-full overflow-auto">
         <CardIngestSummary
@@ -70,13 +72,17 @@ export function IngererClient({
         />
 
         {activeJobId && status.data && (
-          <>
-            <CardIngestStagePipeline
-              job={status.data}
-              onCancel={onCancel}
-            />
-            <CardComeBackLater />
-          </>
+          status.data.status === INGEST_STATUS.DONE ? (
+            <CardIngestCompletion projectId={projectId} />
+          ) : (
+            <>
+              <CardIngestStagePipeline job={status.data} onCancel={onCancel} />
+              {(status.data.status === INGEST_STATUS.QUEUED ||
+                status.data.status === INGEST_STATUS.RUNNING) && (
+                <CardComeBackLater />
+              )}
+            </>
+          )
         )}
 
         <CardIngestJobHistory

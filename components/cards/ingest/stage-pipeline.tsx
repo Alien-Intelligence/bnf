@@ -15,14 +15,8 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Progress } from "@/components/ui/progress"
-import {
-  CheckCircle,
-  Circle,
-  Loader2,
-  Minus,
-  XCircle,
-} from "lucide-react"
+import { Check, Loader2, Minus, X } from "lucide-react"
+import { cn } from "@/lib/utils"
 import { INGEST_STATUS, INGEST_STAGE } from "@/models/ingest/schema"
 import type { IngestJob } from "@/models/ingest/schema"
 
@@ -83,18 +77,42 @@ function deriveStageInfos(job: IngestJob): StageInfo[] {
   })
 }
 
-function StageIcon({ state }: { state: StageState }) {
+/** The circular stage indicator: teal check (done), teal spinner (running),
+ *  destructive cross (failed), dash (skipped), or the 1-based ordinal. */
+function StageBadge({ state, ordinal }: { state: StageState; ordinal: number }) {
+  const base =
+    "flex size-7 shrink-0 items-center justify-center rounded-full text-[11px] font-medium"
   switch (state) {
     case "done":
-      return <CheckCircle className="h-4 w-4 text-green-600 dark:text-green-400" />
+      return (
+        <span className={cn(base, "bg-brand-teal/20 text-brand-teal")}>
+          <Check className="size-4" strokeWidth={2.5} />
+        </span>
+      )
     case "running":
-      return <Loader2 className="h-4 w-4 animate-spin text-primary" />
+      return (
+        <span className={cn(base, "bg-brand-teal/20 text-brand-teal")}>
+          <Loader2 className="size-4 animate-spin" strokeWidth={2.4} />
+        </span>
+      )
     case "failed":
-      return <XCircle className="h-4 w-4 text-destructive" />
+      return (
+        <span className={cn(base, "bg-destructive/15 text-destructive")}>
+          <X className="size-4" strokeWidth={2.5} />
+        </span>
+      )
     case "skipped":
-      return <Minus className="h-4 w-4 text-muted-foreground" />
+      return (
+        <span className={cn(base, "bg-secondary text-muted-foreground")}>
+          <Minus className="size-4" />
+        </span>
+      )
     case "pending":
-      return <Circle className="h-4 w-4 text-muted-foreground" />
+      return (
+        <span className={cn(base, "border bg-card font-mono text-muted-foreground")}>
+          {ordinal}
+        </span>
+      )
   }
 }
 
@@ -104,7 +122,10 @@ interface Props {
 }
 
 export function CardIngestStagePipeline({ job, onCancel }: Props) {
-  const t = useTranslations("ingest")
+  const tStages = useTranslations("ingest.stages")
+  const tDesc = useTranslations("ingest.stageDesc")
+  const tStatus = useTranslations("ingest.status")
+  const tPipeline = useTranslations("ingest.pipeline")
   const tCancel = useTranslations("ingest.cancel")
 
   const stageInfos = deriveStageInfos(job)
@@ -114,41 +135,88 @@ export function CardIngestStagePipeline({ job, onCancel }: Props) {
     job.status === INGEST_STATUS.FAILED ||
     job.status === INGEST_STATUS.CANCELED
 
+  // Overall progress: each completed stage contributes its full quarter; the
+  // running stage contributes its fraction. Deterministic, no poll guessing.
+  const overall = Math.round(
+    stageInfos.reduce(
+      (sum, s) => sum + (s.state === "done" ? 100 : s.state === "running" ? s.progress : 0),
+      0,
+    ) / stageInfos.length,
+  )
+
+  function statusLabel(state: StageState, progress: number): string {
+    switch (state) {
+      case "done":
+        return tStatus("done")
+      case "running":
+        return `${progress}%`
+      case "failed":
+        return tStatus("failed")
+      case "skipped":
+        return tPipeline("skipped")
+      case "pending":
+        return tPipeline("pending")
+    }
+  }
+
   return (
     <Card>
       <CardHeader>
-        <CardTitle>
-          {/* No dedicated i18n key for pipeline title in spec — use stage label context */}
-          {t("comeBackLater.title")}
-        </CardTitle>
+        <CardTitle>{tPipeline("title")}</CardTitle>
       </CardHeader>
       <CardContent>
-        <ol className="flex flex-col gap-4">
-          {stageInfos.map(({ stage, state, progress }) => (
-            <li key={stage} className="flex flex-col gap-1">
-              <div className="flex items-center gap-2">
-                <StageIcon state={state} />
-                <span
-                  className={
-                    state === "pending" || state === "skipped"
-                      ? "text-sm text-muted-foreground"
-                      : "text-sm font-medium"
-                  }
-                >
-                  {t(`stages.${stage}` as `stages.${typeof stage}`)}
-                </span>
-              </div>
-              {state === "running" && (
-                <div className="mt-1 flex items-center gap-2">
-                  <Progress value={progress} className="flex-1" />
-                  <span className="text-xs tabular-nums text-muted-foreground">
-                    {progress}%
+        <ol className="flex flex-col">
+          {stageInfos.map(({ stage, state, progress }, idx) => (
+            <li
+              key={stage}
+              className="flex gap-3.5 border-b py-4 last:border-b-0"
+            >
+              <StageBadge state={state} ordinal={idx + 1} />
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center justify-between gap-2">
+                  <span
+                    className={cn(
+                      "text-[13.5px] font-semibold",
+                      (state === "pending" || state === "skipped") &&
+                        "text-muted-foreground",
+                    )}
+                  >
+                    {tStages(stage as "extract")}
+                  </span>
+                  <span className="font-mono text-[11px] tabular-nums text-muted-foreground">
+                    {statusLabel(state, progress)}
                   </span>
                 </div>
-              )}
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  {tDesc(stage as "extract")}
+                </p>
+                <span className="mt-2 block h-1.25 overflow-hidden rounded-full bg-secondary">
+                  <span
+                    className={cn(
+                      "block h-full rounded-full transition-[width] duration-500",
+                      state === "failed" ? "bg-destructive" : "bg-brand-teal",
+                    )}
+                    style={{
+                      width: `${state === "done" ? 100 : state === "running" ? progress : 0}%`,
+                    }}
+                  />
+                </span>
+              </div>
             </li>
           ))}
         </ol>
+
+        <div className="flex items-center justify-between border-t pt-4">
+          <span className="text-xs text-muted-foreground">
+            {tPipeline("target")} :{" "}
+            <span className="font-mono text-neutral-200">
+              {tPipeline("targetValue")}
+            </span>
+          </span>
+          <span className="font-mono text-[13px] font-semibold text-brand-teal">
+            {overall}%
+          </span>
+        </div>
 
         {!isTerminal && (
           <div className="mt-4">

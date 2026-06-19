@@ -16,16 +16,12 @@ export function CardComeBackLater() {
   const t = useTranslations("ingest.comeBackLater")
 
   return (
-    <Card className="border-blue-200 bg-blue-50/50 dark:border-blue-900 dark:bg-blue-950/30">
-      <CardContent className="flex gap-3 pt-4">
-        <Info className="mt-0.5 h-4 w-4 shrink-0 text-blue-600 dark:text-blue-400" />
+    <Card className="border-brand-teal/25 bg-brand-teal/6">
+      <CardContent className="flex gap-3">
+        <Info className="mt-0.5 size-4 shrink-0 text-brand-teal" />
         <div className="flex flex-col gap-1">
-          <p className="text-sm font-medium text-blue-900 dark:text-blue-100">
-            {t("title")}
-          </p>
-          <p className="text-sm text-blue-700 dark:text-blue-300">
-            {t("body")}
-          </p>
+          <p className="text-sm font-medium text-foreground">{t("title")}</p>
+          <p className="text-sm text-muted-foreground">{t("body")}</p>
         </div>
       </CardContent>
     </Card>

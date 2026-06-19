@@ -57,18 +57,14 @@ export function CardIngestSummary({
           {/* Left column: version state */}
           <div className="flex flex-col gap-3">
             <div className="flex flex-col gap-0.5">
-              <span className="text-xs uppercase tracking-wide text-muted-foreground">
-                {t("head")}
-              </span>
-              <span className="text-sm font-medium tabular-nums">
+              <span className="mono-eyebrow">{t("head")}</span>
+              <span className="font-mono text-sm font-medium tabular-nums">
                 v{headSeq}
               </span>
             </div>
             <div className="flex flex-col gap-0.5">
-              <span className="text-xs uppercase tracking-wide text-muted-foreground">
-                {t("ingested")}
-              </span>
-              <span className="text-sm font-medium tabular-nums">
+              <span className="mono-eyebrow">{t("ingested")}</span>
+              <span className="font-mono text-sm font-medium tabular-nums">
                 {ingestedSeq !== null ? (
                   <>v{ingestedSeq}</>
                 ) : (
@@ -82,15 +78,9 @@ export function CardIngestSummary({
 
           {/* Right column: delta */}
           <div className="flex flex-col gap-3">
-            <span className="text-xs uppercase tracking-wide text-muted-foreground">
-              {t("delta")}
-            </span>
+            <span className="mono-eyebrow">{t("delta")}</span>
             <div className="flex flex-col gap-1 text-sm font-medium tabular-nums">
-              <span
-                className={
-                  delta.added > 0 ? "text-green-700 dark:text-green-400" : ""
-                }
-              >
+              <span className={delta.added > 0 ? "text-brand-teal" : ""}>
                 +{t("added", { count: delta.added })}
               </span>
               <span
