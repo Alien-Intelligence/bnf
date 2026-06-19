@@ -15,9 +15,10 @@
 // so the SDK smoother is disabled here to avoid double animation.
 
 import { useCallback, useMemo, useState } from "react"
-import { useChat } from "@alien/chat-sdk/react"
+import { useChat, type UseChatReturn } from "@alien/chat-sdk/react"
 import type { AgentPart, ChatTurn } from "@alien/chat-sdk"
 import { apiFetch } from "@/lib/api-fetch"
+import { CHAT_STREAM_REVEAL_MS } from "@/lib/constants"
 
 // ---------------------------------------------------------------------------
 // Public types (unchanged — the UI depends on these)
@@ -64,6 +65,9 @@ export type UseTurnStreamResult = {
   error: string | null
   post: (text: string) => Promise<void>
   cancel: () => Promise<void>
+  /** The underlying SDK chat handle — pass to `<ChatPanel chat={…} />`. The
+   *  flat fields above are derived from it for non-ChatPanel consumers. */
+  chat: UseChatReturn
 }
 
 // ---------------------------------------------------------------------------
@@ -164,8 +168,9 @@ export function useTurnStream(appSessionId: string | null): UseTurnStreamResult 
   const chat = useChat({
     endpoint,
     resume: appSessionId ? { sessionId: appSessionId } : undefined,
-    // <StreamingMarkdown> owns the word-reveal animation; don't double-smooth.
-    smooth: false,
+    // The SDK smoother drives the word-by-word reveal; <StreamingMarkdown> is
+    // rendered with streaming=false (plain markdown of the current content).
+    smooth: { delayMs: CHAT_STREAM_REVEAL_MS, chunking: "word" },
     onDomainEvent: (event) => {
       if (DOMAIN_EVENT_TYPES.has(event.type)) {
         setDomainEvents((prev) => [...prev, event as StreamDomainEvent])
@@ -200,5 +205,6 @@ export function useTurnStream(appSessionId: string | null): UseTurnStreamResult 
     error: chat.error,
     post,
     cancel,
+    chat,
   }
 }

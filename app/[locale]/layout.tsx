@@ -5,6 +5,9 @@ import { getMessages, setRequestLocale } from "next-intl/server"
 import { notFound } from "next/navigation"
 import { routing } from "@/i18n/routing"
 import { QueryProvider } from "@/components/providers/query"
+// chat-sdk structural styles first, so globals.css's "BnF palette bridge"
+// (the `--chat-sdk-*` overrides) wins the cascade.
+import "@alien/chat-sdk/react/styles.css"
 import "../globals.css"
 
 const geistSans = Geist({
