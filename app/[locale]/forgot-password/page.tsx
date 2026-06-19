@@ -8,6 +8,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
+import { LayoutAuthShell } from "@/components/layouts/auth/shell"
 
 export async function generateMetadata(): Promise<Metadata> {
   const t = await getTranslations("auth.forgotPassword")
@@ -19,8 +20,8 @@ export default async function ForgotPasswordPage() {
   const tSignIn = await getTranslations("auth.signIn")
 
   return (
-    <div className="flex min-h-screen items-center justify-center p-4">
-      <Card className="w-full max-w-sm">
+    <LayoutAuthShell>
+      <Card className="w-full">
         <CardHeader>
           <CardTitle>{t("title")}</CardTitle>
         </CardHeader>
@@ -33,6 +34,6 @@ export default async function ForgotPasswordPage() {
           </Link>
         </CardFooter>
       </Card>
-    </div>
+    </LayoutAuthShell>
   )
 }

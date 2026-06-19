@@ -25,6 +25,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
+import { LayoutAuthShell } from "@/components/layouts/auth/shell"
 
 export function SignInClient() {
   const t = useTranslations("auth.signIn")
@@ -70,8 +71,8 @@ export function SignInClient() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center p-4">
-      <Card className="w-full max-w-sm">
+    <LayoutAuthShell>
+      <Card className="w-full">
         <CardHeader>
           <CardTitle>{t("title")}</CardTitle>
         </CardHeader>
@@ -144,6 +145,6 @@ export function SignInClient() {
           </Link>
         </CardFooter>
       </Card>
-    </div>
+    </LayoutAuthShell>
   )
 }
