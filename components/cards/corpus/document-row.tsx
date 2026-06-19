@@ -1,12 +1,17 @@
 "use client"
 
 // components/cards/corpus/document-row.tsx
-// Clickable document row for the corpus comprehension list.
-// Client component: onClick callback.
+// Clickable document row for the corpus comprehension list. Horizontal layout
+// (type-colored thumb · title/meta/ARK · lang+type chips · arrow) mirroring the
+// prototype rows (design/BnF Corpus Research.dc.html lines 410-421).
 
+import { ArrowRight, Loader2, TriangleAlert } from "lucide-react"
+import { useTranslations } from "next-intl"
 import { BadgeDocumentType } from "@/components/badges/documents/type-badge"
 import { BadgeDocumentLang } from "@/components/badges/documents/lang-badge"
-import { BadgeDocumentSource } from "@/components/badges/documents/source-badge"
+import { TYPE_DATASET_COLOR } from "@/lib/constants"
+import { cn } from "@/lib/utils"
+import { DOCUMENT_RESOLVE_STATUS } from "@/models/documents/schema"
 import type { DocumentRow } from "@/models/corpus/schema"
 
 interface Props {
@@ -15,40 +20,65 @@ interface Props {
 }
 
 export function CardCorpusDocumentRow({ doc, onClick }: Props) {
+  const t = useTranslations("corpus.documents")
+
+  const meta = [doc.author, doc.dateLabel ?? doc.year, doc.source]
+    .filter(Boolean)
+    .join(" · ")
+
+  const isPending = doc.resolveStatus === DOCUMENT_RESOLVE_STATUS.PENDING
+  const isFailed = doc.resolveStatus === DOCUMENT_RESOLVE_STATUS.FAILED
+  // Stubs have no title until the background resolver fills it in.
+  const titleText = doc.title ?? (isFailed ? t("resolveFailed") : t("resolving"))
+
+  const thumbColor = doc.docType
+    ? (TYPE_DATASET_COLOR[doc.docType] ?? "var(--muted)")
+    : "var(--muted)"
+
   return (
-    <div
-      role="button"
-      tabIndex={0}
+    <button
+      type="button"
       onClick={onClick}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault()
-          onClick?.()
-        }
-      }}
-      className="flex flex-col gap-2 rounded-md border bg-card px-4 py-3 cursor-pointer hover:bg-accent hover:text-accent-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="group flex w-full items-center gap-3 rounded-lg border bg-card px-3 py-2.5 text-left transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
-      {/* Title */}
-      <p className="text-sm font-medium leading-snug truncate">{doc.title}</p>
+      <span
+        className="size-9 shrink-0 rounded-md"
+        style={{ background: `color-mix(in srgb, ${thumbColor} 20%, var(--card))` }}
+        aria-hidden
+      />
 
-      {/* Author + year */}
-      <p className="text-xs text-muted-foreground truncate">
-        {[doc.author, doc.year].filter(Boolean).join(" · ")}
-      </p>
+      <span className="min-w-0 flex-1">
+        <span
+          className={cn(
+            "flex items-center gap-1.5 truncate text-[13px] font-semibold",
+            doc.title ? "text-foreground" : "text-muted-foreground italic",
+          )}
+        >
+          {isPending && (
+            <Loader2 className="size-3 shrink-0 animate-spin text-muted-foreground" aria-hidden />
+          )}
+          {isFailed && (
+            <TriangleAlert className="size-3 shrink-0 text-destructive" aria-hidden />
+          )}
+          <span className="truncate">{titleText}</span>
+        </span>
+        {meta && (
+          <span className="mt-0.5 block truncate text-[11.5px] text-muted-foreground">
+            {meta}
+          </span>
+        )}
+        <span className="mt-0.5 block truncate font-mono text-[10.5px] text-muted-foreground/70">
+          {doc.ark}
+        </span>
+      </span>
 
-      {/* Badges */}
-      <div className="flex flex-wrap gap-1">
-        {doc.docType && <BadgeDocumentType code={doc.docType} />}
-        {doc.lang && <BadgeDocumentLang code={doc.lang} />}
-        {doc.source && <BadgeDocumentSource code={doc.source} />}
-      </div>
+      {doc.lang && <BadgeDocumentLang code={doc.lang} />}
+      {doc.docType && <BadgeDocumentType code={doc.docType} />}
 
-      {/* Excerpt */}
-      {doc.excerpt && (
-        <p className="text-xs text-muted-foreground line-clamp-2">
-          {doc.excerpt}
-        </p>
-      )}
-    </div>
+      <ArrowRight
+        className="size-3.5 shrink-0 text-muted-foreground/60 transition-colors group-hover:text-brand-teal"
+        aria-hidden
+      />
+    </button>
   )
 }

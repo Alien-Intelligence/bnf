@@ -12,6 +12,8 @@ interface Props {
   periodFacet: Record<string, number>
   /** Number of documents with no datable year. */
   undatedCount: number
+  /** Number of documents whose metadata (incl. date) is still resolving. */
+  pendingCount?: number
   /** Inclusive lower bound of the active range (decade start). */
   yearFrom?: number
   /** Inclusive upper bound of the active range (decade end). */
@@ -35,6 +37,7 @@ const LABEL_HEIGHT = 14
 export function CardCorpusPeriodHistogram({
   periodFacet,
   undatedCount,
+  pendingCount = 0,
   yearFrom,
   yearTo,
   onSelectRange,
@@ -47,7 +50,7 @@ export function CardCorpusPeriodHistogram({
     .filter(({ decade }) => !isNaN(decade))
     .sort((a, b) => a.decade - b.decade)
 
-  if (decades.length === 0 && undatedCount === 0) return null
+  if (decades.length === 0 && undatedCount === 0 && pendingCount === 0) return null
 
   const maxCount = Math.max(...decades.map((d) => d.count), 1)
 
@@ -105,8 +108,8 @@ export function CardCorpusPeriodHistogram({
                   rx={2}
                   className={
                     isActive
-                      ? "fill-primary"
-                      : "fill-muted-foreground/40 group-hover:fill-muted-foreground/70 transition-colors"
+                      ? "fill-brand-teal"
+                      : "fill-brand-teal/45 group-hover:fill-brand-teal/70 transition-colors"
                   }
                 />
                 {/* decade label below bar */}
@@ -137,6 +140,20 @@ export function CardCorpusPeriodHistogram({
             {t("undated")}
           </span>
         </button>
+      )}
+
+      {/* Pending stubs have no date yet — a non-clickable status tile (not a
+          filter), shrinks to zero as the background resolver completes. */}
+      {pendingCount > 0 && (
+        <div
+          className="flex flex-col items-center justify-center rounded border border-dashed px-2 py-1 text-xs text-muted-foreground"
+          aria-label={t("pendingAriaLabel", { count: pendingCount })}
+        >
+          <span className="font-semibold tabular-nums">{pendingCount}</span>
+          <span className="mt-0.5 text-[9px] leading-tight text-center whitespace-nowrap">
+            {t("pending")}
+          </span>
+        </div>
       )}
     </div>
   )

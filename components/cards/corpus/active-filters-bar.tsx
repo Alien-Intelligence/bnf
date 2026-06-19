@@ -70,6 +70,27 @@ export function CardCorpusActiveFiltersBar({
     })
   }
 
+  // Ingestion classes — readable labels from the numérisation vocabulary.
+  if (filters.ingest) {
+    const ingestLabelKey: Record<string, string> = {
+      ocr: "numerisation.ocr",
+      vision: "numerisation.vision",
+      sans_texte: "numerisation.sansTexte",
+      non_numerise: "numerisation.nonNumerise",
+    }
+    filters.ingest.split(",").forEach((value) => {
+      if (!value) return
+      const key = ingestLabelKey[value]
+      chips.push(
+        <ActiveChip
+          key={`ingest:${value}`}
+          label={key ? t(key) : value}
+          onRemove={() => onChange(removeFromFilter(filters, "ingest", value))}
+        />,
+      )
+    })
+  }
+
   // Year range
   if (filters.yearFrom !== undefined || filters.yearTo !== undefined) {
     const from = filters.yearFrom
@@ -125,7 +146,7 @@ export function CardCorpusActiveFiltersBar({
           onClearAll()
         }}
       >
-        {t("clearAll")}
+        {t("active.clearAll")}
       </Button>
     </div>
   )
