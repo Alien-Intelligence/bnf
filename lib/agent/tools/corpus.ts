@@ -21,6 +21,7 @@ import "server-only"
 import { z } from "zod"
 import { defineTool } from "@alien/chat-sdk/claude"
 import { prisma } from "@/lib/db"
+import { kickResolve } from "@/lib/documents/resolver"
 import { CorpusQueries } from "@/models/corpus/queries"
 import { CorpusService } from "@/models/corpus/service"
 import { arkSchema } from "@/models/corpus/types"
@@ -109,9 +110,23 @@ export const corpusAddTool = defineTool<
   name: AGENT_TOOLS.corpusAdd,
   description:
     "Add one or more documents (identified by ARK) to the project's corpus. " +
-    "Each call creates a new immutable corpus version. ARKs must be valid BnF ARKs " +
-    "(format: ark:/12148/<name>). The reason is stored as a version note and should " +
-    "describe why these documents are relevant to the research project.",
+    "The add is INSTANT — documents join the corpus immediately and a new corpus " +
+    "version is created. Their BnF metadata (title, date, type, language) is then " +
+    "resolved in the BACKGROUND, so this returns before resolution completes. " +
+    "ARKs must be valid BnF ARKs (format: ark:/12148/<name>). The reason is stored " +
+    "as a version note describing why these documents are relevant. " +
+    "IMPORTANT — do NOT pre-filter, cross-reference, or deduplicate against the " +
+    "current corpus yourself: pass EVERY ARK you found in one call. This tool " +
+    "deduplicates server-side (against the corpus and within the batch) and tells " +
+    "you what actually happened — never reason about uniqueness in your head. " +
+    "Result fields: `requested` (ARKs you supplied), `added` (newly added this " +
+    "call), `duplicates` (supplied ARKs skipped because already present or " +
+    "repeated; requested = added + duplicates), `total` (corpus size), `pending` " +
+    "(added docs still resolving in the background — tell the librarian their " +
+    "metadata is being fetched and will appear shortly), and, when present, " +
+    "`nonIngestable` — added ARKs with no digitized full text (e.g. catalogue " +
+    "cb… notices) that cannot be searched once ingested; relay these rather than " +
+    "implying every document is full-text.",
   inputSchema: z.object({
     arks: z
       .array(arkSchema)
@@ -141,6 +156,11 @@ export const corpusAddTool = defineTool<
       reason: input.reason,
     })
 
+    // Resolve the newly-added stubs' metadata in the background, after this
+    // turn's response is flushed. Detached from the request — its MCP calls are
+    // individually timeout-bounded.
+    if (result.pending > 0) kickResolve(projectId)
+
     ctx.emit?.({
       type: "corpus_event",
       data: {
@@ -151,9 +171,17 @@ export const corpusAddTool = defineTool<
     })
 
     return {
+      requested: result.requested,
       added: result.lastDeltaAdded,
+      duplicates: result.duplicates,
       versionSeq: result.versionSeq,
       total: result.total,
+      pending: result.pending,
+      // Only surface the non-ingestable list when non-empty, so a clean add
+      // stays terse. When present, the agent relays it (see description).
+      ...(result.nonIngestable.length > 0
+        ? { nonIngestable: result.nonIngestable }
+        : {}),
     }
   },
 })

@@ -49,6 +49,8 @@ export interface NormalizedDocument {
   pages?: number | null
   excerpt?: string | null
   iiifManifestUrl?: string | null
+  /** OCR text-layer availability as reported by the MCP; null when unknown. */
+  ocrAvailable?: boolean | null
   rawMetadata: unknown // full MCP payload preserved for re-normalize without re-fetch
 }
 
@@ -299,6 +301,12 @@ export function normalizeDocument(
   // ── 9. IIIF manifest URL ──────────────────────────────────────────────────
   const manifestUrl = iiifManifestUrl(fullArk, source)
 
+  // ── 9b. OCR availability ──────────────────────────────────────────────────
+  // The MCP reports a text layer via `ocr_available`. Preserve true/false as
+  // given; leave null (unknown) when the field is absent rather than guessing.
+  const ocrAvailable =
+    typeof mcp.ocr_available === "boolean" ? mcp.ocr_available : null
+
   // ── 10. rawMetadata ───────────────────────────────────────────────────────
   // Preserve the full MCP payload so we can re-normalize without re-fetching.
   const rawMetadata: unknown = mcp
@@ -315,6 +323,7 @@ export function normalizeDocument(
     pages,
     excerpt,
     iiifManifestUrl: manifestUrl,
+    ocrAvailable,
     rawMetadata,
   }
 }

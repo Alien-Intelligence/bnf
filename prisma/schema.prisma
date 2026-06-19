@@ -161,26 +161,41 @@ model Project {
 // Slice note: dateLabel added in slice-2 migration (add_document_date_label).
 // -----------------------------------------------------------------------------
 model Document {
-  ark             String
-  projectId       String    @map("project_id")
-  title           String
-  author          String?
-  year            Int?
-  dateLabel       String?   @map("date_label")
-  docType         String    @map("doc_type")
-  lang            String?
+  ark       String
+  projectId String  @map("project_id")
+  // title and docType are null until background MCP resolution completes (a
+  // freshly-added ARK is a "stub" row). See lib/documents/resolver.ts.
+  title     String?
+  author    String?
+  year      Int?
+  dateLabel String? @map("date_label")
+  docType   String? @map("doc_type")
+  lang      String?
+  // source + iiifManifestUrl are derived from the ARK at stub time (no MCP).
   source          String?
   pages           Int?
   excerpt         String?
   iiifManifestUrl String?   @map("iiif_manifest_url")
+  // OCR text-layer availability, reported by the BnF MCP (ocr_available). Null
+  // until resolution completes. With iiifManifestUrl (digitized) + docType it
+  // drives the numérisation/ingestability buckets — see classifyIngestion() in
+  // models/documents/schema.ts.
+  ocrAvailable    Boolean?  @map("ocr_available")
   rawMetadata     Json?     @map("raw_metadata")
   resolvedAt      DateTime? @map("resolved_at")
+
+  // Background metadata-resolution lifecycle (the Document table is the queue).
+  resolveStatus   String  @default("pending") @map("resolve_status") // pending | resolved | failed
+  resolveError    String? @map("resolve_error")
+  resolveAttempts Int     @default(0) @map("resolve_attempts")
 
   project    Project            @relation(fields: [projectId], references: [id])
   membership CorpusMembership[]
 
   @@id([projectId, ark])
   @@index([projectId, year])
+  // Drainer lookup: pending rows (under the retry ceiling) per project.
+  @@index([resolveStatus, projectId])
   @@map("document")
 }
 

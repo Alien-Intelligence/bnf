@@ -5,7 +5,38 @@
 import "server-only"
 
 import { prisma } from "@/lib/db"
+import type { Prisma } from "@/lib/generated/prisma/client"
 import { CORPUS_SAMPLE_SIZE } from "@/lib/constants"
+import {
+  DOCUMENT_RESOLVE_STATUS,
+  INGESTION_CLASS,
+  INGESTION_IMAGE_LIKE_TYPES,
+  classifyIngestion,
+} from "@/models/documents/schema"
+
+// Prisma WHERE fragment matching one ingestion class — the SQL mirror of
+// classifyIngestion(). digitized ⇔ iiifManifestUrl is set (Gallica-only);
+// "no OCR" is false OR null (unknown counts as none, as in the classifier).
+// Returns null for an unrecognised class so callers can filter it out.
+function ingestClassWhere(cls: string): Prisma.DocumentWhereInput | null {
+  const imageLike = [...INGESTION_IMAGE_LIKE_TYPES]
+  const noOcr: Prisma.DocumentWhereInput["OR"] = [
+    { ocrAvailable: false },
+    { ocrAvailable: null },
+  ]
+  switch (cls) {
+    case INGESTION_CLASS.OCR:
+      return { iiifManifestUrl: { not: null }, ocrAvailable: true }
+    case INGESTION_CLASS.VISION:
+      return { iiifManifestUrl: { not: null }, docType: { in: imageLike }, OR: noOcr }
+    case INGESTION_CLASS.SANS_TEXTE:
+      return { iiifManifestUrl: { not: null }, docType: { notIn: imageLike }, OR: noOcr }
+    case INGESTION_CLASS.NON_NUMERISE:
+      return { iiifManifestUrl: null }
+    default:
+      return null
+  }
+}
 import {
   corpusVersionWithArks,
   documentRow,
@@ -111,6 +142,8 @@ export class CorpusQueries {
         type?: string[]
         lang?: string[]
         source?: string[]
+        /** Ingestion classes: ocr | vision | sans_texte | non_numerise. */
+        ingest?: string[]
         yearFrom?: number
         yearTo?: number
         undated?: boolean
@@ -210,15 +243,47 @@ export class CorpusQueries {
           }
         : {}
 
+    // Ingestion-class filter: an OR over the selected classes, each a SQL
+    // mirror of classifyIngestion(). Constrained to resolved rows (the class is
+    // unknown for stubs). null when no class is selected.
+    const ingestPredicates =
+      filters?.ingest && filters.ingest.length > 0
+        ? filters.ingest
+            .map(ingestClassWhere)
+            .filter((w): w is Prisma.DocumentWhereInput => w !== null)
+        : []
+    const ingestWhere: Prisma.DocumentWhereInput | null =
+      ingestPredicates.length > 0
+        ? {
+            resolveStatus: DOCUMENT_RESOLVE_STATUS.RESOLVED,
+            OR: ingestPredicates,
+          }
+        : null
+
     // Combine all filter clauses. Every doc must be in this version's
-    // membership AND satisfy the active filter predicates.
+    // membership AND satisfy the active filter predicates. fullText and ingest
+    // each carry their own `OR`, so they are AND-ed via an explicit `AND` array
+    // rather than spread (two `OR` keys at one level would collide).
+    const andClauses: Prisma.DocumentWhereInput[] = []
+    if (filters?.q && filters.q.trim().length > 0) andClauses.push(fullTextWhere)
+    if (ingestWhere) andClauses.push(ingestWhere)
+
     const sharedWhere = {
       membership: { some: { versionId } },
       ...typeWhere,
       ...langWhere,
       ...sourceWhere,
       ...yearWhere,
-      ...fullTextWhere,
+      ...(andClauses.length > 0 ? { AND: andClauses } : {}),
+    }
+
+    // Resolved-only predicate for the type/lang/period facets and undatedCount:
+    // pending/failed stubs have no type/lang/year yet, so they must not pollute
+    // the real buckets. They surface separately via pendingCount/failedCount and
+    // the synthetic PENDING_FACET_KEY bucket below.
+    const resolvedWhere = {
+      ...sharedWhere,
+      resolveStatus: DOCUMENT_RESOLVE_STATUS.RESOLVED,
     }
 
     // --- Decode cursor -------------------------------------------------------
@@ -237,59 +302,95 @@ export class CorpusQueries {
 
     // --- Total filtered count + undated count --------------------------------
     // Run in parallel with facets (below).
-    const [total, undatedCount, typeRows, langRows, sourceRows, periodRows] =
-      await Promise.all([
-        // Total within filtered set
-        prisma.document.count({ where: sharedWhere }),
-        // Undated count within filtered set
-        prisma.document.count({
-          where: {
-            membership: { some: { versionId } },
-            ...typeWhere,
-            ...langWhere,
-            ...sourceWhere,
-            ...fullTextWhere,
-            // Do NOT apply yearWhere here — undatedCount is always the count
-            // of undated docs irrespective of the year filter, so the "Période
-            // non datée" tile remains informative even when a year range is active.
-            year: null,
-          },
-        }),
+    const [
+      total,
+      undatedCount,
+      pendingCount,
+      failedCount,
+      typeRows,
+      langRows,
+      sourceRows,
+      resolvedRows,
+    ] = await Promise.all([
+      // Total within filtered set (includes pending/failed members when no
+      // type/lang/year/q filter excludes them).
+      prisma.document.count({ where: sharedWhere }),
+      // Undated count: RESOLVED docs with no year (genuinely undated, not
+      // merely unresolved). Year filter intentionally not applied so the
+      // "Période non datée" tile stays informative under an active year range.
+      prisma.document.count({
+        where: {
+          membership: { some: { versionId } },
+          ...typeWhere,
+          ...langWhere,
+          ...sourceWhere,
+          ...fullTextWhere,
+          resolveStatus: DOCUMENT_RESOLVE_STATUS.RESOLVED,
+          year: null,
+        },
+      }),
+      // Pending / failed: respect only the source filter (type/lang/year/q
+      // cannot describe an unresolved doc). source is derived from the ARK so
+      // it is known even for stubs.
+      prisma.document.count({
+        where: {
+          membership: { some: { versionId } },
+          ...sourceWhere,
+          resolveStatus: DOCUMENT_RESOLVE_STATUS.PENDING,
+        },
+      }),
+      prisma.document.count({
+        where: {
+          membership: { some: { versionId } },
+          ...sourceWhere,
+          resolveStatus: DOCUMENT_RESOLVE_STATUS.FAILED,
+        },
+      }),
 
-        // --- Facets -----------------------------------------------------------
-        // All four run in parallel. Each reflects counts within sharedWhere.
+      // --- Facets -----------------------------------------------------------
+      // type / lang / period reflect RESOLVED docs only. source spans all
+      // members (it's ARK-derived, so accurate for pending stubs too).
 
-        // Facet: docType
-        prisma.document.groupBy({
-          by: ["docType"],
-          where: sharedWhere,
-          _count: { ark: true },
-        }),
-        // Facet: lang (skip null lang values)
-        prisma.document.groupBy({
-          by: ["lang"],
-          where: { ...sharedWhere, lang: { not: null } },
-          _count: { ark: true },
-        }),
-        // Facet: source (skip null source values)
-        prisma.document.groupBy({
-          by: ["source"],
-          where: { ...sharedWhere, source: { not: null } },
-          _count: { ark: true },
-        }),
-        // Period: fetch years and bin into decades in JS (fast for typical set
-        // sizes; raw SQL histogram deferred until benchmarks justify it).
-        // Only dated docs contribute to decade bins (nulls skipped).
-        prisma.document.findMany({
-          where: { ...sharedWhere, year: { not: null } },
-          select: { year: true },
-        }),
-      ])
+      // Facet: docType (resolved; docType is non-null once resolved)
+      prisma.document.groupBy({
+        by: ["docType"],
+        where: { ...resolvedWhere, docType: { not: null } },
+        _count: { ark: true },
+      }),
+      // Facet: lang (resolved; skip null lang values)
+      prisma.document.groupBy({
+        by: ["lang"],
+        where: { ...resolvedWhere, lang: { not: null } },
+        _count: { ark: true },
+      }),
+      // Facet: source (all members; skip null source values)
+      prisma.document.groupBy({
+        by: ["source"],
+        where: { ...sharedWhere, source: { not: null } },
+        _count: { ark: true },
+      }),
+      // Resolved rows: one pass over the resolved set powers BOTH the period
+      // histogram (binned in JS) and the numérisation/ingestion buckets
+      // (classified in JS). Cheap for typical set sizes; raw SQL deferred until
+      // benchmarks justify it. Dated-only filtering for the histogram happens
+      // in the fold below, so this query is not constrained to year != null.
+      prisma.document.findMany({
+        where: resolvedWhere,
+        select: {
+          year: true,
+          docType: true,
+          ocrAvailable: true,
+          iiifManifestUrl: true,
+        },
+      }),
+    ])
 
     // --- Fold facet rows into Record<string, number> -------------------------
     const typeFacet: Record<string, number> = {}
     for (const r of typeRows) {
-      typeFacet[r.docType] = r._count.ark
+      // docType is nullable in the schema; resolvedWhere + `not: null` already
+      // exclude nulls, but guard for the type-checker.
+      if (r.docType !== null) typeFacet[r.docType] = r._count.ark
     }
 
     const langFacet: Record<string, number> = {}
@@ -306,14 +407,54 @@ export class CorpusQueries {
       }
     }
 
-    // Bin years into decade buckets ("1880s", "1890s", …).
+    // Bin years into decade buckets ("1880s", "1890s", …) AND classify each
+    // resolved row into a numérisation/ingestion bucket — both from the single
+    // resolvedRows pass.
     const periodFacet: Record<string, number> = {}
-    for (const r of periodRows) {
-      if (r.year === null) continue
-      const decade = Math.floor(r.year / 10) * 10
-      const bucket = `${decade}s`
-      periodFacet[bucket] = (periodFacet[bucket] ?? 0) + 1
+    const numerisation = {
+      resolved: resolvedRows.length,
+      digitized: 0,
+      ingestable: 0,
+      ocr: 0,
+      vision: 0,
+      sansTexte: 0,
+      nonNumerise: 0,
     }
+    for (const r of resolvedRows) {
+      if (r.year !== null) {
+        const decade = Math.floor(r.year / 10) * 10
+        const bucket = `${decade}s`
+        periodFacet[bucket] = (periodFacet[bucket] ?? 0) + 1
+      }
+
+      const cls = classifyIngestion({
+        docType: r.docType,
+        ocrAvailable: r.ocrAvailable,
+        digitized: Boolean(r.iiifManifestUrl),
+      })
+      switch (cls) {
+        case INGESTION_CLASS.OCR:
+          numerisation.ocr++
+          break
+        case INGESTION_CLASS.VISION:
+          numerisation.vision++
+          break
+        case INGESTION_CLASS.SANS_TEXTE:
+          numerisation.sansTexte++
+          break
+        case INGESTION_CLASS.NON_NUMERISE:
+          numerisation.nonNumerise++
+          break
+      }
+    }
+    numerisation.digitized =
+      numerisation.ocr + numerisation.vision + numerisation.sansTexte
+    numerisation.ingestable = numerisation.ocr + numerisation.vision
+
+    // NOTE: pending stubs are NOT injected into the facet records — that would
+    // corrupt the summary's derived values (period range, type/lang counts).
+    // They are surfaced via pendingCount/failedCount, which the UI renders as a
+    // dedicated "En cours de résolution" bucket alongside each facet.
 
     // --- Sample (cursor-paginated) -------------------------------------------
     // ORDER BY ark ASC — alphabetic ARK order is stable and deterministic.
@@ -343,12 +484,15 @@ export class CorpusQueries {
       versionStatus: version.status as CorpusVersionStatus,
       total,
       undatedCount,
+      pendingCount,
+      failedCount,
       facets: {
         type: typeFacet,
         lang: langFacet,
         source: sourceFacet,
         period: periodFacet,
       },
+      numerisation,
       sample,
       ...(nextCursor !== undefined ? { nextCursor } : {}),
     }

@@ -7,6 +7,7 @@
 
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import { apiFetch } from "@/lib/api-fetch"
+import { CORPUS_RESOLVE_POLL_MS } from "@/lib/constants"
 import type { CorpusDiff, CorpusSnapshot } from "@/models/corpus/schema"
 import type { CorpusMutationResult } from "@/models/corpus/service"
 import {
@@ -56,6 +57,13 @@ export function useCorpus(
       ? { pages: [opts.initialSnapshot], pageParams: [undefined] }
       : undefined,
     staleTime: 30_000,
+    // While documents are still resolving in the background, poll so newly
+    // resolved titles/facets appear without a manual refresh. Snapshot-level
+    // counts are identical across pages, so the first page is authoritative.
+    refetchInterval: (query) => {
+      const first = query.state.data?.pages[0]
+      return first && first.pendingCount > 0 ? CORPUS_RESOLVE_POLL_MS : false
+    },
   })
 }
 

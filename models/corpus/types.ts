@@ -24,6 +24,12 @@ export const corpusFiltersSchema = z.object({
   lang: z.string().optional(),
   /** Comma-separated source identifiers */
   source: z.string().optional(),
+  /**
+   * Comma-separated ingestion classes (numérisation buckets):
+   * "ocr" | "vision" | "sans_texte" | "non_numerise". A derived classification,
+   * not a stored column — see classifyIngestion() / the snapshot query.
+   */
+  ingest: z.string().optional(),
   /** Decade start (inclusive), e.g. 1880 */
   yearFrom: z.coerce.number().int().optional(),
   /** Decade end (inclusive), e.g. 1889 */
@@ -46,6 +52,7 @@ export function corpusFiltersToParams(filters: CorpusFilters): URLSearchParams {
   if (filters.type) p.set("type", filters.type)
   if (filters.lang) p.set("lang", filters.lang)
   if (filters.source) p.set("source", filters.source)
+  if (filters.ingest) p.set("ingest", filters.ingest)
   if (filters.yearFrom !== undefined) p.set("yearFrom", String(filters.yearFrom))
   if (filters.yearTo !== undefined) p.set("yearTo", String(filters.yearTo))
   if (filters.undated !== undefined) p.set("undated", String(filters.undated))
@@ -73,7 +80,7 @@ export function corpusFiltersFromParams(params: URLSearchParams): CorpusFilters 
  */
 export function removeFromFilter(
   filters: CorpusFilters,
-  key: "type" | "lang" | "source",
+  key: "type" | "lang" | "source" | "ingest",
   value: string,
 ): CorpusFilters {
   const current = filters[key]
@@ -96,6 +103,7 @@ export function hasActiveFilters(filters: CorpusFilters): boolean {
     (!!filters.type && filters.type.length > 0) ||
     (!!filters.lang && filters.lang.length > 0) ||
     (!!filters.source && filters.source.length > 0) ||
+    (!!filters.ingest && filters.ingest.length > 0) ||
     filters.yearFrom !== undefined ||
     filters.yearTo !== undefined ||
     filters.undated === true ||

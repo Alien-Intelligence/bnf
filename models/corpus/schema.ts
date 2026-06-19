@@ -53,6 +53,12 @@ export const documentRow = {
     pages: true,
     excerpt: true,
     iiifManifestUrl: true,
+    // OCR availability — drives the detail panel's Océrisation/Ingestion fields
+    // (with iiifManifestUrl for digitization). See classifyIngestion().
+    ocrAvailable: true,
+    // Resolution lifecycle: "pending" rows render a placeholder until their MCP
+    // metadata lands; "failed" rows surface a resolution-error affordance.
+    resolveStatus: true,
   },
 } satisfies Prisma.DocumentDefaultArgs
 
@@ -74,8 +80,16 @@ export type DocumentRow = Prisma.DocumentGetPayload<typeof documentRow>
  *   • no filters active → fresh project with zero documents
  *   • filters active    → the filter matches nothing ("no results" branch)
  *
- * `undatedCount` — count of documents with `year IS NULL` within the
+ * `undatedCount` — count of RESOLVED documents with `year IS NULL` within the
  * filtered set. Informational; drives the "Période non datée (N)" tile.
+ * Pending/failed stubs are excluded (their date is unknown, not absent).
+ *
+ * `pendingCount` / `failedCount` — documents whose BnF metadata is still
+ * resolving in the background, or whose resolution exhausted its retries. These
+ * are real corpus members (counted in `total`) but carry no type/lang/period
+ * yet, so they are excluded from the facet records and surfaced separately by
+ * the UI (a dedicated "En cours de résolution" bucket / tile) rather than
+ * polluting the real distributions.
  *
  * `nextCursor` — opaque pagination cursor. Present when more documents exist
  * beyond the current `sample` page. Pass as `?cursor=` on the next request.
@@ -86,12 +100,39 @@ export type CorpusSnapshot = {
   versionStatus: CorpusVersionStatus
   total: number
   undatedCount: number
+  /** Members still resolving metadata in the background (counted in `total`). */
+  pendingCount: number
+  /** Members whose metadata resolution exhausted its retries. */
+  failedCount: number
   facets: {
     type: Record<string, number>
     lang: Record<string, number>
     source: Record<string, number>
     /** Per-decade buckets, e.g. "1880s", "1890s". Nulls are skipped. */
     period: Record<string, number>
+  }
+  /**
+   * Numérisation & océrisation breakdown — the ingestability picture for the
+   * comprehension panel. Computed over RESOLVED documents only (OCR/digitization
+   * is unknown for pending/failed stubs), so `resolved` is the denominator for
+   * "Numérisés X / Y", not `total`. Buckets are mutually exclusive and sum to
+   * `resolved`. See classifyIngestion() in models/documents/schema.ts.
+   */
+  numerisation: {
+    /** Resolved documents classified here (the bucket denominator). */
+    resolved: number
+    /** Have a Gallica IIIF surface (ocr + vision + sansTexte). */
+    digitized: number
+    /** Will be written to the index (ocr + vision). */
+    ingestable: number
+    /** Has an OCR text layer → ingested via text. */
+    ocr: number
+    /** Digitized image without OCR → ingested via vision description. */
+    vision: number
+    /** Digitized text without OCR → not ingested. */
+    sansTexte: number
+    /** Not digitized → not ingested. */
+    nonNumerise: number
   }
   sample: DocumentRow[]
   nextCursor?: string

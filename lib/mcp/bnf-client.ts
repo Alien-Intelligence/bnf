@@ -16,11 +16,14 @@ import {
   BNF_MCP_RETRY_ATTEMPTS,
   BNF_MCP_RETRY_BASE_MS,
   BNF_MCP_RETRY_CAP_MS,
+  BNF_MCP_TIMEOUT_MS,
 } from "@/lib/constants"
 import { requireMcpEnv } from "@/lib/env"
 
+import { withTimeout } from "./abort"
 import { BnfMcpAuthError, BnfMcpError, BnfMcpNotFoundError, BnfMcpRateLimitError } from "./errors"
 import { type Settled, withConcurrency, withRetry } from "./retry"
+import { openMcpSession } from "./session"
 import { sourceFromArk } from "./vocab"
 
 // ---------------------------------------------------------------------------
@@ -53,6 +56,21 @@ export interface BnfMcpDocumentDetail {
   gallica_url?: string
   ocr_available?: boolean
   nqa_score?: number
+  [key: string]: unknown
+}
+
+/**
+ * The BnF MCP wraps every tool result in a success envelope:
+ *   success → { success: true,  data: <payload>, … }
+ *   failure → { success: false, error: "…", status_code: <http>, context: … }
+ * A logical failure is returned with HTTP 200, so it must be detected from the
+ * parsed body — not the transport status. See lib/mcp/bnf-client.ts unwrap.
+ */
+interface BnfMcpEnvelope<T> {
+  success: boolean
+  data?: T
+  error?: string
+  status_code?: number
   [key: string]: unknown
 }
 
@@ -144,10 +162,13 @@ type JsonRpcEnvelope = JsonRpcOk | JsonRpcErr
 /**
  * Thin direct HTTP client for the BnF MCP (streamable HTTP / JSON-RPC 2.0).
  *
- * Session handshake: NOT required. mcp-base derives a session ID server-side
- * from the Bearer token (synthetic ``syn-{sha256(token)[:16]}`` id) so the
- * client emitting only an Authorization header is sufficient. Reference:
- * MCPs/mcp-base/src/mcp_base/session_id.py — ``derive_session_id``.
+ * Session handshake: REQUIRED. The BnF MCP (mcp-base) is a stateful
+ * Streamable-HTTP server — a call without a session id is rejected with
+ * `400 Bad Request: Missing session ID`. The client lazily performs the
+ * `initialize` handshake (shared across concurrent calls on one instance) and
+ * echoes the resulting `Mcp-Session-Id` on every request. A 400 mid-flight
+ * (session expired) drops the cached session so the next attempt re-initializes.
+ * See lib/mcp/session.ts.
  *
  * Auth: long-lived service Bearer token held in BNF_MCP_TOKEN (env var).
  * Per-user OIDC tokens are a slice 6 concern.
@@ -157,11 +178,23 @@ export class BnfMcpClient {
   private readonly token: string
   private readonly signal: AbortSignal | undefined
 
+  /** In-flight or resolved session handshake, shared across concurrent calls
+   *  on this instance. Reset to null on a session error to force re-init. */
+  private sessionPromise: Promise<string> | null = null
+
   constructor(opts?: { signal?: AbortSignal }) {
     const mcpEnv = requireMcpEnv()
     this.baseUrl = mcpEnv.BNF_MCP_URL
     this.token = mcpEnv.BNF_MCP_TOKEN
     this.signal = opts?.signal
+  }
+
+  /** Open (or reuse) the MCP session. Concurrent callers share one handshake. */
+  private ensureSession(): Promise<string> {
+    if (!this.sessionPromise) {
+      this.sessionPromise = openMcpSession(this.baseUrl, this.token, this.signal)
+    }
+    return this.sessionPromise
   }
 
   // -------------------------------------------------------------------------
@@ -175,14 +208,49 @@ export class BnfMcpClient {
    *   cb*-prefix ARKs   → `bnf_get_catalogue_record`  (Catalogue bibliographic)
    *   Gallica-prefix    → `bnf_get_document_info`      (Gallica digitized docs)
    *
-   * Throws BnfMcpNotFoundError if the ARK does not exist in BnF.
+   * Throws BnfMcpNotFoundError if the ARK does not exist / is malformed in BnF.
    * Throws BnfMcpAuthError on 401/403 — not retried.
    */
   async resolveArk(ark: string): Promise<BnfMcpDocumentDetail> {
     const source = sourceFromArk(ark)
     const tool =
       source === "catalogue" ? "bnf_get_catalogue_record" : "bnf_get_document_info"
-    return this.callTool<BnfMcpDocumentDetail>(tool, { ark })
+    const envelope = await this.callTool<BnfMcpEnvelope<BnfMcpDocumentDetail>>(
+      tool,
+      { ark },
+    )
+    return this.unwrapDocument(envelope, ark, tool)
+  }
+
+  /**
+   * Unwrap the BnF MCP success envelope around a resolved document.
+   *
+   * The MCP returns logical failures (`success: false`) with HTTP 200, so the
+   * transport layer (callTool) cannot detect them — we do it here. A 400/404/410
+   * means the ARK doesn't resolve (bad/unknown identifier): raise the terminal
+   * BnfMcpNotFoundError so the batch caller records it as a per-ARK failure
+   * rather than retrying. Any other status is a transport-ish error.
+   */
+  private unwrapDocument(
+    envelope: BnfMcpEnvelope<BnfMcpDocumentDetail>,
+    ark: string,
+    tool: string,
+  ): BnfMcpDocumentDetail {
+    if (!envelope.success) {
+      const status = envelope.status_code
+      const detail = envelope.error ?? "unknown error"
+      const msg = `MCP ${tool} failed for ${ark}: ${detail}${status !== undefined ? ` (HTTP ${status})` : ""}`
+      if (status === 400 || status === 404 || status === 410) {
+        throw new BnfMcpNotFoundError(msg)
+      }
+      throw new BnfMcpError(msg)
+    }
+    if (!envelope.data || typeof envelope.data.ark !== "string") {
+      throw new BnfMcpError(
+        `MCP ${tool} returned success but no usable document for ${ark}`,
+      )
+    }
+    return envelope.data
   }
 
   /**
@@ -254,6 +322,7 @@ export class BnfMcpClient {
     return withRetry(
       async () => {
         const id = crypto.randomUUID()
+        const sessionId = await this.ensureSession()
 
         const res = await fetch(this.baseUrl, {
           method: "POST",
@@ -261,6 +330,7 @@ export class BnfMcpClient {
             "Content-Type": "application/json",
             Accept: "application/json, text/event-stream",
             Authorization: `Bearer ${this.token}`,
+            "Mcp-Session-Id": sessionId,
           },
           body: JSON.stringify({
             jsonrpc: "2.0",
@@ -268,7 +338,9 @@ export class BnfMcpClient {
             method: "tools/call",
             params: { name, arguments: args },
           }),
-          signal: this.signal,
+          // Bound each attempt: abort on turn cancel OR a stalled transport.
+          // Computed per attempt so every retry gets a fresh deadline.
+          signal: withTimeout(this.signal, BNF_MCP_TIMEOUT_MS),
         })
 
         // Map HTTP status codes to typed errors before reading the body.
@@ -277,6 +349,16 @@ export class BnfMcpClient {
         }
         if (res.status === 404) {
           throw new BnfMcpNotFoundError(`MCP returned 404 for tool ${name}`)
+        }
+        if (res.status === 400) {
+          // Most often a stale/expired session ("Missing session ID"). Drop the
+          // cached session so the retry re-initializes, then throw a retryable
+          // error (withRetry re-runs ensureSession on the next attempt).
+          this.sessionPromise = null
+          const body = await res.text().catch(() => "")
+          throw new BnfMcpError(
+            `MCP HTTP 400 calling ${name}: ${body.slice(0, 200)}`,
+          )
         }
         if (res.status === 429) {
           const retryAfterRaw = res.headers.get("retry-after")

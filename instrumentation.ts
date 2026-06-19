@@ -8,4 +8,11 @@ export async function register() {
   await runReaperCycle().catch((err) => {
     console.error("[instrumentation] boot reaper sweep failed:", err)
   })
+
+  // Resume background metadata resolution for any document stubs left pending by
+  // a restart mid-resolution. Fire-and-forget — must not block serving.
+  const { resumePendingResolves } = await import("@/lib/documents/resolver")
+  void resumePendingResolves().catch((err) => {
+    console.error("[instrumentation] boot resolver resume failed:", err)
+  })
 }

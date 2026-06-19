@@ -47,6 +47,8 @@ const corpusQuerySchema = z.object({
   lang: z.string().optional(),
   /** Comma-separated source identifiers */
   source: z.string().optional(),
+  /** Comma-separated ingestion classes (ocr|vision|sans_texte|non_numerise) */
+  ingest: z.string().optional(),
   /** Year range lower bound (inclusive) */
   yearFrom: z.coerce.number().int().optional(),
   /** Year range upper bound (inclusive) */
@@ -94,10 +96,12 @@ export const GET = withAuth(async (req, user, bouncer, ctx: RouteCtx) => {
   const typeArr = splitCsv(parsed.type)
   const langArr = splitCsv(parsed.lang)
   const sourceArr = splitCsv(parsed.source)
+  const ingestArr = splitCsv(parsed.ingest)
   const hasFilters =
     typeArr !== undefined ||
     langArr !== undefined ||
     sourceArr !== undefined ||
+    ingestArr !== undefined ||
     parsed.yearFrom !== undefined ||
     parsed.yearTo !== undefined ||
     parsed.undated !== undefined ||
@@ -108,6 +112,7 @@ export const GET = withAuth(async (req, user, bouncer, ctx: RouteCtx) => {
         type: typeArr,
         lang: langArr,
         source: sourceArr,
+        ingest: ingestArr,
         yearFrom: parsed.yearFrom,
         yearTo: parsed.yearTo,
         undated: parsed.undated,

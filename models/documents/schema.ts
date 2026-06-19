@@ -28,30 +28,48 @@ export type VocabEntry = {
 }
 
 // ---------------------------------------------------------------------------
+// Background metadata-resolution lifecycle (Document.resolveStatus)
+// A freshly-added ARK is inserted as a "stub" (pending); the drainer resolves
+// it via the BnF MCP (resolved) or marks it failed after the retry ceiling.
+// See lib/documents/resolver.ts and playbook-adjacent plan async-resolve.
+// ---------------------------------------------------------------------------
+
+export const DOCUMENT_RESOLVE_STATUS = {
+  PENDING: "pending",
+  RESOLVED: "resolved",
+  FAILED: "failed",
+} as const
+
+export type DocumentResolveStatus =
+  (typeof DOCUMENT_RESOLVE_STATUS)[keyof typeof DOCUMENT_RESOLVE_STATUS]
+
+// ---------------------------------------------------------------------------
 // Document type vocabulary (doc_type column)
 // Canonical codes produced by lib/mcp/normalize.ts mapDocType().
 // "open": unknown codes from future MCP output fall through to badge rendering
 // with the raw code as label — they will not crash the UI.
 // ---------------------------------------------------------------------------
 
+// Colors are dark-first dataset tints (bg-{hue}/15 + text-{hue}); the hue
+// mapping follows the prototype TYPES map (design/.dc.html lines 917-925).
 export const DOC_TYPE: Record<string, VocabEntry> = {
   // Core codes observed via Gallica enum and Catalogue free-text mapping
-  press: { label: "press", color: "bg-blue-100 text-blue-900" },
-  book: { label: "book", color: "bg-amber-100 text-amber-900" },
-  image: { label: "image", color: "bg-purple-100 text-purple-900" },
-  map: { label: "map", color: "bg-green-100 text-green-900" },
-  manuscript: { label: "manuscript", color: "bg-yellow-100 text-yellow-900" },
+  press: { label: "press", color: "bg-dataset-3/15 text-dataset-3" },
+  book: { label: "book", color: "bg-dataset-2/15 text-dataset-2" },
+  image: { label: "image", color: "bg-dataset-1/15 text-dataset-1" },
+  map: { label: "map", color: "bg-dataset-4/15 text-dataset-4" },
+  manuscript: { label: "manuscript", color: "bg-dataset-7/15 text-dataset-7" },
   // Gallica-enum-specific codes added in slice 2 (real MCP output observed)
-  score: { label: "score", color: "bg-purple-100 text-purple-900" },
-  video: { label: "video", color: "bg-rose-100 text-rose-900" },
-  audio: { label: "audio", color: "bg-cyan-100 text-cyan-900" },
-  poster: { label: "poster", color: "bg-orange-100 text-orange-900" },
+  score: { label: "score", color: "bg-dataset-2/15 text-dataset-2" },
+  video: { label: "video", color: "bg-dataset-5/15 text-dataset-5" },
+  audio: { label: "audio", color: "bg-dataset-3/15 text-dataset-3" },
+  poster: { label: "poster", color: "bg-dataset-6/15 text-dataset-6" },
   // Low-priority codes from older design-doc spec; present in some Catalogue records
-  estampe: { label: "estampe", color: "bg-rose-100 text-rose-900" },
-  enlum: { label: "enlum", color: "bg-orange-100 text-orange-900" },
-  charte: { label: "charte", color: "bg-teal-100 text-teal-900" },
+  estampe: { label: "estampe", color: "bg-dataset-6/15 text-dataset-6" },
+  enlum: { label: "enlum", color: "bg-dataset-1/15 text-dataset-1" },
+  charte: { label: "charte", color: "bg-dataset-4/15 text-dataset-4" },
   // Catch-all for Catalogue free-text types that do not match any known pattern
-  other: { label: "other", color: "bg-gray-100 text-gray-900" },
+  other: { label: "other", color: "bg-muted text-muted-foreground" },
 } as const
 
 // ---------------------------------------------------------------------------
@@ -60,22 +78,25 @@ export const DOC_TYPE: Record<string, VocabEntry> = {
 // Open set: unknown codes are stored as-is; extend the MARC map on observation.
 // ---------------------------------------------------------------------------
 
+// Languages render as a subtle neutral chip (the prototype keeps language a
+// secondary signal; type carries the color). Uniform, dark-first.
+const LANG_CHIP = "bg-secondary text-muted-foreground"
 export const LANG: Record<string, VocabEntry> = {
-  fr: { label: "fr", color: "bg-indigo-100 text-indigo-900" },
-  en: { label: "en", color: "bg-sky-100 text-sky-900" },
-  la: { label: "la", color: "bg-stone-100 text-stone-900" },
-  de: { label: "de", color: "bg-lime-100 text-lime-900" },
-  it: { label: "it", color: "bg-emerald-100 text-emerald-900" },
-  es: { label: "es", color: "bg-red-100 text-red-900" },
-  pt: { label: "pt", color: "bg-orange-100 text-orange-900" },
-  nl: { label: "nl", color: "bg-amber-100 text-amber-900" },
-  grc: { label: "grc", color: "bg-violet-100 text-violet-900" },
-  el: { label: "el", color: "bg-purple-100 text-purple-900" },
-  ru: { label: "ru", color: "bg-rose-100 text-rose-900" },
-  ja: { label: "ja", color: "bg-pink-100 text-pink-900" },
-  zh: { label: "zh", color: "bg-fuchsia-100 text-fuchsia-900" },
-  ar: { label: "ar", color: "bg-teal-100 text-teal-900" },
-  he: { label: "he", color: "bg-cyan-100 text-cyan-900" },
+  fr: { label: "fr", color: LANG_CHIP },
+  en: { label: "en", color: LANG_CHIP },
+  la: { label: "la", color: LANG_CHIP },
+  de: { label: "de", color: LANG_CHIP },
+  it: { label: "it", color: LANG_CHIP },
+  es: { label: "es", color: LANG_CHIP },
+  pt: { label: "pt", color: LANG_CHIP },
+  nl: { label: "nl", color: LANG_CHIP },
+  grc: { label: "grc", color: LANG_CHIP },
+  el: { label: "el", color: LANG_CHIP },
+  ru: { label: "ru", color: LANG_CHIP },
+  ja: { label: "ja", color: LANG_CHIP },
+  zh: { label: "zh", color: LANG_CHIP },
+  ar: { label: "ar", color: LANG_CHIP },
+  he: { label: "he", color: LANG_CHIP },
 } as const
 
 // ---------------------------------------------------------------------------
@@ -85,8 +106,76 @@ export const LANG: Record<string, VocabEntry> = {
 // ---------------------------------------------------------------------------
 
 export const SOURCE: Record<string, VocabEntry> = {
-  gallica: { label: "gallica", color: "bg-cyan-100 text-cyan-900" },
-  catalogue: { label: "catalogue", color: "bg-violet-100 text-violet-900" },
-  databnf: { label: "databnf", color: "bg-fuchsia-100 text-fuchsia-900" },
-  other: { label: "other", color: "bg-gray-100 text-gray-900" },
+  gallica: { label: "gallica", color: "bg-dataset-3/15 text-dataset-3" },
+  catalogue: { label: "catalogue", color: "bg-dataset-2/15 text-dataset-2" },
+  databnf: { label: "databnf", color: "bg-dataset-1/15 text-dataset-1" },
+  other: { label: "other", color: "bg-muted text-muted-foreground" },
 } as const
+
+// ---------------------------------------------------------------------------
+// Ingestion classification (numérisation & océrisation)
+// Mirrors the ingestion pipeline contract in design/docs/07: a document is
+// ingestable iff it carries text the pipeline can index. Derived from real
+// signals — digitization (a Gallica IIIF manifest), OCR availability
+// (ocr_available from the MCP), and doc type — NOT a per-type heuristic.
+//
+//   ocr          — has an OCR text layer → ingested via its text
+//   vision       — digitized image-like type without OCR → described by a
+//                  vision model (Gemma), then ingested
+//   sans_texte   — digitized text-like type without OCR → NOT ingested
+//                  (this pipeline does not run fallback OCR)
+//   non_numerise — not digitized at all → NOT ingested
+// ---------------------------------------------------------------------------
+
+export const INGESTION_CLASS = {
+  OCR: "ocr",
+  VISION: "vision",
+  SANS_TEXTE: "sans_texte",
+  NON_NUMERISE: "non_numerise",
+} as const
+
+export type IngestionClass =
+  (typeof INGESTION_CLASS)[keyof typeof INGESTION_CLASS]
+
+/**
+ * Doc types whose primary content is a single image (no native text), so an
+ * OCR-less copy is still ingestable via vision description rather than dropped.
+ * Exported so the snapshot query can build the equivalent SQL predicate when
+ * filtering by ingestion class (keep the two in sync — one source of truth).
+ */
+export const INGESTION_IMAGE_LIKE_TYPES = [
+  "image",
+  "poster",
+  "estampe",
+  "map",
+  "enlum",
+  "video",
+  "audio",
+] as const
+
+const IMAGE_LIKE_TYPES = new Set<string>(INGESTION_IMAGE_LIKE_TYPES)
+
+/**
+ * Classify a resolved document for the numérisation/ingestion buckets.
+ *
+ * `digitized` is whether the document has a Gallica IIIF surface — callers pass
+ * `Boolean(doc.iiifManifestUrl)` (manifests are Gallica-only; see
+ * lib/mcp/vocab.ts iiifManifestUrl).
+ */
+export function classifyIngestion(d: {
+  docType: string | null
+  ocrAvailable: boolean | null
+  digitized: boolean
+}): IngestionClass {
+  if (!d.digitized) return INGESTION_CLASS.NON_NUMERISE
+  if (d.ocrAvailable === true) return INGESTION_CLASS.OCR
+  if (d.docType !== null && IMAGE_LIKE_TYPES.has(d.docType)) {
+    return INGESTION_CLASS.VISION
+  }
+  return INGESTION_CLASS.SANS_TEXTE
+}
+
+/** Whether a classification will be sent to the index (text or vision). */
+export function isIngestableClass(c: IngestionClass): boolean {
+  return c === INGESTION_CLASS.OCR || c === INGESTION_CLASS.VISION
+}
