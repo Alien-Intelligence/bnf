@@ -1,6 +1,7 @@
 "use client"
 
 import { useState } from "react"
+import { Plus } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Button } from "@/components/ui/button"
@@ -38,18 +39,19 @@ export function LayoutSessionsSidebar({
   const archive = useArchiveSession(projectId)
 
   return (
-    <div className="flex flex-col h-full border-r">
+    <div className="flex h-full flex-col border-r bg-sidebar">
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2 border-b shrink-0">
-        <span className="text-sm font-semibold">{t("title")}</span>
-        <Button
-          size="sm"
-          variant="ghost"
+      <div className="flex shrink-0 items-center justify-between px-3.5 pb-2 pt-3.5">
+        <span className="mono-eyebrow">{t("title")}</span>
+        <button
+          type="button"
           onClick={() => setDialogOpen(true)}
-          className="text-xs h-7 px-2"
+          title={t("newButton")}
+          aria-label={t("newButton")}
+          className="flex size-6 items-center justify-center rounded-md border bg-card text-neutral-300 transition-colors hover:border-brand-teal/45 hover:text-brand-teal"
         >
-          {t("newButton")}
-        </Button>
+          <Plus className="size-3.5" />
+        </button>
       </div>
 
       {/* List */}

@@ -8,6 +8,7 @@ import { Trash2 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { useToast } from "@/components/ui/toast"
 import { useForgetMemoryItem } from "@/hooks/api/memory"
 import type { MemoryItem } from "@/models/memory/schema"
 
@@ -27,6 +28,7 @@ const ORIGIN_KEY_MAP: Record<string, "origin.consigne" | "origin.action" | "orig
 export function CardMemoryItem({ item, projectId, scope }: Props) {
   const t = useTranslations("memory")
   const tCommon = useTranslations("common")
+  const { toast } = useToast()
   const forget = useForgetMemoryItem(projectId, scope)
 
   const isSubmitting = forget.isPending
@@ -48,7 +50,12 @@ export function CardMemoryItem({ item, projectId, scope }: Props) {
           className="shrink-0 text-muted-foreground hover:text-destructive"
           disabled={isSubmitting}
           aria-label={isSubmitting ? t("dialog.deleting") : t("dialog.delete")}
-          onClick={() => forget.mutate({ itemId: item.id })}
+          onClick={() =>
+            forget.mutate(
+              { itemId: item.id },
+              { onSuccess: () => toast(t("dialog.deleted")) },
+            )
+          }
         >
           <Trash2 className="h-3.5 w-3.5" />
           <span className="sr-only">

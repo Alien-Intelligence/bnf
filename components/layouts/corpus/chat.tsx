@@ -1,37 +1,55 @@
 "use client"
 
+// components/layouts/corpus/chat.tsx
+// The corpus/research chat panel. Renders the SDK chat handle's `turns` directly
+// (rather than via <ChatPanel>) so we control two things the SDK doesn't expose:
+//   1. scroll — stick to the bottom ONLY when the user is already there; never
+//      yank them down while they've scrolled up to read.
+//   2. thinking — a custom collapsible "Réflexion · Ns" box with a live timer +
+//      spinner so a long reasoning pass never looks stuck.
+// Streaming still lives entirely in the chat handle (stream.chat); this is a
+// pure view over it.
+
+import { useEffect, useRef, useState } from "react"
 import Image from "next/image"
 import { useTranslations } from "next-intl"
-import { ArrowUp, Loader2, Search } from "lucide-react"
-import { ChatPanel } from "@alien/chat-sdk/react"
+import { ArrowUp, ChevronDown, Loader2, Search, Sparkles } from "lucide-react"
 import type { UseChatReturn } from "@alien/chat-sdk/react"
-import type { ToolPartEntry, UserTurn } from "@alien/chat-sdk"
+import type {
+  AgentPart,
+  AssistantTurn,
+  ChatTurn,
+  NoticeTurn,
+  ToolPartEntry,
+} from "@alien/chat-sdk"
 import type { UseTurnStreamResult, StreamDomainEvent } from "@/hooks/api/turn-stream"
 import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
 import { BadgeToolCall } from "@/components/badges/tools/call"
+import { BadgeToolMutation } from "@/components/badges/tools/mutation-pill"
+import { CardToolAskUser } from "@/components/cards/tools/ask-user"
+import {
+  isCorpusMutationTool,
+  mutationCount,
+  mutationDuplicates,
+} from "@/lib/tools/display"
 import { StreamingMarkdown } from "./streaming-markdown"
-import { EventCorpusRow } from "@/components/events/agent/corpus-event"
 import { EventMemoryRow } from "@/components/events/agent/memory-event"
 import { EventIngestRow } from "@/components/events/agent/ingest-event"
 
 interface LayoutCorpusChatProps {
-  /** Turn-stream handle (a thin adapter over the SDK's useChat); we render via
-   *  its underlying `.chat` through the SDK `<ChatPanel>`. Lifted to the parent
-   *  so it can observe domain events without a second connection. */
+  /** Turn-stream handle (a thin adapter over the SDK's useChat). Lifted to the
+   *  parent so it can observe domain events without a second connection. */
   stream: UseTurnStreamResult
-  /** Used to build the deep-link inside EventIngestRow. */
   projectId: string
-  /** Active locale (e.g. "fr"). Used to build the deep-link inside EventIngestRow. */
   locale: string
-  /** Optional agent-copy overrides so the research atelier reuses this panel
-   *  without showing the corpus agent's strings. Default to corpus i18n. */
+  /** Optional agent-copy overrides so the research atelier reuses this panel. */
   headerSubtitle?: string
   introText?: string
   placeholder?: string
 }
 
-/** The Alien glyph avatar shown beside every agent turn (prototype lines 217). */
+/** The Alien glyph avatar shown beside every agent turn. */
 function AgentAvatar() {
   return (
     <span className="flex size-6.5 shrink-0 items-center justify-center rounded-full border border-brand-teal/30 bg-primary/20">
@@ -40,7 +58,7 @@ function AgentAvatar() {
   )
 }
 
-/** Three blinking teal dots — the agent "thinking" indicator (prototype 242-244). */
+/** Three blinking teal dots — the agent "typing" indicator. */
 function TypingDots() {
   return (
     <span className="inline-flex gap-1" aria-hidden>
@@ -51,7 +69,104 @@ function TypingDots() {
   )
 }
 
-function DomainEventRow({
+// ---------------------------------------------------------------------------
+// Thinking box — collapsible, dashed, with a live elapsed-seconds timer.
+// `active` is true while the model is still reasoning (this thinking part is the
+// last part of a streaming turn). The timer ticks while active and freezes when
+// reasoning ends; historical (reloaded) thinking shows no seconds (unknown).
+// ---------------------------------------------------------------------------
+
+function ThinkingBox({ text, active }: { text: string; active: boolean }) {
+  const t = useTranslations("corpus.chat")
+  const [open, setOpen] = useState(true)
+  const [elapsed, setElapsed] = useState(0)
+  const startRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    if (!active) return
+    if (startRef.current === null) startRef.current = Date.now()
+    const tick = () =>
+      setElapsed(Math.max(0, Math.round((Date.now() - (startRef.current ?? Date.now())) / 1000)))
+    tick()
+    const id = setInterval(tick, 250)
+    return () => clearInterval(id)
+  }, [active])
+
+  return (
+    <div className="rounded-md border border-dashed bg-muted/30 px-3 py-2">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className="flex w-full items-center gap-2 text-left"
+      >
+        {active ? (
+          <Loader2 className="size-3.5 shrink-0 animate-spin text-brand-teal" aria-hidden />
+        ) : (
+          <Sparkles className="size-3.5 shrink-0 text-brand-teal/70" aria-hidden />
+        )}
+        <span className="text-[12px] font-medium text-foreground/80">
+          {active ? t("thinkingActive") : t("thinkingDone")}
+        </span>
+        {elapsed > 0 && (
+          <span className="font-mono text-[10.5px] text-muted-foreground">
+            · {t("thinkingSeconds", { count: elapsed })}
+          </span>
+        )}
+        <ChevronDown
+          className={cn(
+            "ml-auto size-3.5 shrink-0 text-muted-foreground transition-transform",
+            open && "rotate-180",
+          )}
+          aria-hidden
+        />
+      </button>
+      {open && (
+        <div className="mt-2 border-l-2 pl-3 text-[12px] leading-relaxed whitespace-pre-wrap text-muted-foreground">
+          {text}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Tool part dispatch — ask_user chooser / mutation pill / uniform block.
+// ---------------------------------------------------------------------------
+
+function ToolPartView({ tool, chat }: { tool: ToolPartEntry; chat: UseChatReturn }) {
+  if (tool.toolName === "ask_user") {
+    return (
+      <CardToolAskUser
+        input={tool.input}
+        disabled={chat.isStreaming}
+        onSubmit={(text) => void chat.sendMessage(text)}
+      />
+    )
+  }
+  const mutation = isCorpusMutationTool(tool.toolName)
+  if (mutation) {
+    return (
+      <BadgeToolMutation
+        kind={mutation}
+        count={mutationCount(tool.result)}
+        duplicates={mutationDuplicates(tool.result)}
+        running={tool.running}
+        isError={tool.isError}
+      />
+    )
+  }
+  return (
+    <BadgeToolCall
+      toolName={tool.toolName}
+      input={tool.input}
+      running={tool.running}
+      isError={tool.isError}
+    />
+  )
+}
+
+function DomainPartView({
   event,
   projectId,
   locale,
@@ -60,30 +175,122 @@ function DomainEventRow({
   projectId: string
   locale: string
 }) {
-  if (event.type === "corpus_event") {
-    return (
-      <EventCorpusRow
-        kind={event.data.kind}
-        count={event.data.count}
-        versionSeq={event.data.versionSeq}
-      />
-    )
-  }
+  // Corpus mutations render from their tool part (the +N/−N pill), so the
+  // corpus_event row is suppressed to avoid doubling the count.
+  if (event.type === "corpus_event") return null
   if (event.type === "memory_event") {
     return <EventMemoryRow kind={event.data.kind} section={event.data.section} />
   }
   if (event.type === "ingest_event") {
-    const status = event.data.status ?? event.data.kind
-    const jobId = event.data.jobId
     return (
       <EventIngestRow
-        status={status}
-        jobId={jobId}
+        status={event.data.status ?? event.data.kind}
+        jobId={event.data.jobId}
         projectLocaleHref={`/${locale}/projects/${projectId}/ingerer`}
       />
     )
   }
   return null
+}
+
+// One assistant part (text / thinking / tool / domain). `active` flags the
+// last part of a streaming turn so the thinking timer runs.
+function PartView({
+  part,
+  active,
+  chat,
+  projectId,
+  locale,
+}: {
+  part: AgentPart
+  active: boolean
+  chat: UseChatReturn
+  projectId: string
+  locale: string
+}) {
+  if (part.kind === "text") {
+    if (!part.text) return null
+    return <StreamingMarkdown content={part.text} streaming={false} />
+  }
+  if (part.kind === "thinking") {
+    if (!part.text) return null
+    return <ThinkingBox text={part.text} active={active} />
+  }
+  if (part.kind === "tool") {
+    return <ToolPartView tool={part.tool} chat={chat} />
+  }
+  if (part.kind === "domain") {
+    return (
+      <DomainPartView
+        event={part.event as StreamDomainEvent}
+        projectId={projectId}
+        locale={locale}
+      />
+    )
+  }
+  return null
+}
+
+function AssistantTurnView({
+  turn,
+  chat,
+  projectId,
+  locale,
+  thinkingLabel,
+}: {
+  turn: AssistantTurn
+  chat: UseChatReturn
+  projectId: string
+  locale: string
+  thinkingLabel: string
+}) {
+  const lastIndex = turn.parts.length - 1
+  const hasText = turn.parts.some((p) => p.kind === "text" && p.text.trim().length > 0)
+
+  return (
+    <div className="animate-bnf-up relative pl-9">
+      <span className="absolute top-0.5 left-0">
+        <AgentAvatar />
+      </span>
+      <div className="flex min-w-0 flex-col gap-2 pt-0.5">
+        {turn.parts.map((part, i) => (
+          <PartView
+            key={i}
+            part={part}
+            active={turn.streaming && i === lastIndex && part.kind === "thinking"}
+            chat={chat}
+            projectId={projectId}
+            locale={locale}
+          />
+        ))}
+        {turn.streaming && !hasText && (
+          <div className="flex items-center gap-2.5">
+            <TypingDots />
+            <span className="font-mono text-[11.5px] text-muted-foreground">{thinkingLabel}</span>
+          </div>
+        )}
+        {turn.error && (
+          <div className="text-[12px] text-destructive">{turn.error}</div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function NoticePill({ turn }: { turn: NoticeTurn }) {
+  const tone =
+    turn.level === "error"
+      ? "border-destructive/30 bg-destructive/10 text-destructive"
+      : turn.level === "warn"
+        ? "border-warning/30 bg-warning/10 text-warning"
+        : "border-border bg-muted/40 text-muted-foreground"
+  return (
+    <div className="flex justify-center">
+      <span className={cn("rounded-full border px-3 py-1 text-[11px]", tone)}>
+        {turn.text}
+      </span>
+    </div>
+  )
 }
 
 export function LayoutCorpusChat({
@@ -97,65 +304,101 @@ export function LayoutCorpusChat({
   const t = useTranslations("corpus.chat")
   const chat = stream.chat
 
+  const scrollRef = useRef<HTMLDivElement>(null)
+  // Pinned to the bottom? Updated on user scroll; drives whether new content
+  // auto-scrolls. Starts true so the first paint lands at the bottom.
+  const stickRef = useRef(true)
+
+  // Track whether the user is near the bottom of the scroll area.
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const onScroll = () => {
+      stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+    }
+    el.addEventListener("scroll", onScroll, { passive: true })
+    return () => el.removeEventListener("scroll", onScroll)
+  }, [])
+
+  // After every render (content streams in), keep pinned ONLY if the user is at
+  // the bottom. No dependency array: runs each paint, cheap (one property read).
+  useEffect(() => {
+    const el = scrollRef.current
+    if (el && stickRef.current) el.scrollTop = el.scrollHeight
+  })
+
+  function pinToBottom() {
+    stickRef.current = true
+    const el = scrollRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }
+
   return (
-    <ChatPanel
-      chat={chat}
-      showModeToggle={false}
-      className="bnf-corpus-chat overflow-hidden rounded-xl border"
-      header={
-        <div className="flex items-center justify-between gap-2 border-b px-4 py-3">
-          <div className="space-y-0.5">
-            <div className="text-sm font-semibold">{t("headerTitle")}</div>
-            <div className="text-xs text-muted-foreground">{headerSubtitle ?? t("headerSubtitle")}</div>
-          </div>
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-info/30 bg-info/10 px-2 py-0.5 font-mono text-[10.5px] text-info">
-            <span className="size-1.5 rounded-full bg-info" aria-hidden />
-            {t("connected")}
-          </span>
+    <div className="flex h-full flex-col overflow-hidden rounded-xl border bg-card">
+      {/* Header */}
+      <div className="flex shrink-0 items-center justify-between gap-2 border-b px-4 py-3">
+        <div className="space-y-0.5">
+          <div className="text-sm font-semibold">{t("headerTitle")}</div>
+          <div className="text-xs text-muted-foreground">{headerSubtitle ?? t("headerSubtitle")}</div>
         </div>
-      }
-      renderEmpty={() => (
-        <div className="p-4 text-sm text-muted-foreground">{introText ?? t("systemPromptIntro")}</div>
-      )}
-      renderUser={(turn: UserTurn) => (
-        <div className="flex justify-end">
-          <div className="animate-bnf-up max-w-[88%] rounded-[14px_14px_4px_14px] bg-secondary px-3.25 py-2.25 text-[13px] leading-normal whitespace-pre-wrap text-foreground">
-            {turn.text}
-          </div>
-        </div>
-      )}
-      renderAvatar={() => <AgentAvatar />}
-      renderText={(text) => <StreamingMarkdown content={text} streaming={false} />}
-      renderTool={(tool: ToolPartEntry) => (
-        <BadgeToolCall
-          tool={tool.toolName}
-          status={tool.running ? "running" : tool.isError ? "error" : "ok"}
-          source={tool.toolName.includes("__") ? "mcp" : "custom"}
-          latencyMs={tool.endedAt != null ? tool.endedAt - tool.startedAt : null}
-          error={null}
-        />
-      )}
-      renderDomainEvent={(event) => (
-        <DomainEventRow event={event as StreamDomainEvent} projectId={projectId} locale={locale} />
-      )}
-      renderTyping={() => (
-        <div className="ml-9 flex items-center gap-2.5">
-          <TypingDots />
-          <span className="font-mono text-[11.5px] text-muted-foreground">{t("thinking")}</span>
-        </div>
-      )}
-      composer={(c: UseChatReturn) => <CorpusComposer chat={c} placeholder={placeholder ?? t("placeholder")} sendLabel={t("send")} />}
-    />
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-info/30 bg-info/10 px-2 py-0.5 font-mono text-[10.5px] text-info">
+          <span className="size-1.5 rounded-full bg-info" aria-hidden />
+          {t("connected")}
+        </span>
+      </div>
+
+      {/* Scroll area */}
+      <div ref={scrollRef} className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 py-4">
+        {chat.turns.length === 0 ? (
+          <div className="text-sm text-muted-foreground">{introText ?? t("systemPromptIntro")}</div>
+        ) : (
+          chat.turns.map((turn: ChatTurn) => {
+            if (turn.role === "user") {
+              return (
+                <div key={turn.id} className="flex justify-end">
+                  <div className="animate-bnf-up max-w-[88%] rounded-[14px_14px_4px_14px] bg-secondary px-3.25 py-2.25 text-[13px] leading-normal whitespace-pre-wrap text-foreground">
+                    {turn.text}
+                  </div>
+                </div>
+              )
+            }
+            if (turn.role === "notice") {
+              return <NoticePill key={turn.id} turn={turn} />
+            }
+            return (
+              <AssistantTurnView
+                key={turn.id}
+                turn={turn}
+                chat={chat}
+                projectId={projectId}
+                locale={locale}
+                thinkingLabel={t("thinking")}
+              />
+            )
+          })
+        )}
+      </div>
+
+      {/* Composer */}
+      <CorpusComposer
+        chat={chat}
+        onSent={pinToBottom}
+        placeholder={placeholder ?? t("placeholder")}
+        sendLabel={t("send")}
+      />
+    </div>
   )
 }
 
 /** BnF's search-style composer, driven by the SDK chat handle. */
 function CorpusComposer({
   chat,
+  onSent,
   placeholder,
   sendLabel,
 }: {
   chat: UseChatReturn
+  onSent: () => void
   placeholder: string
   sendLabel: string
 }) {
@@ -164,12 +407,13 @@ function CorpusComposer({
     e.preventDefault()
     if (!canSend) return
     void chat.sendMessage()
+    onSent()
   }
   return (
     <div className="border-t p-3">
       <form
         onSubmit={onSubmit}
-        className="flex items-end gap-2 rounded-lg border border-input bg-card py-1.5 pl-3 pr-1.5"
+        className="flex items-end gap-2 rounded-lg border border-input bg-card py-1.5 pr-1.5 pl-3"
       >
         <Search className="mb-2 size-4 shrink-0 text-muted-foreground" aria-hidden />
         <Input

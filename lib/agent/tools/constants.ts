@@ -37,6 +37,11 @@ export const AGENT_TOOLS = {
   // --- Document tools ---------------------------------------------------------
   docGet: "doc_get",
 
+  // --- Interaction tools ------------------------------------------------------
+  // Ends the turn and renders an interactive multiple-choice chooser; the user's
+  // selections come back as the next user message. See lib/agent/tools/interaction.ts.
+  askUser: "ask_user",
+
   // --- BnF MCP tools (prefixed by the MCP server name "bnf") -----------------
   // These are NOT registered via defineTool — they come from the MCP server.
   // Listed here so the prompt-builder and the SSE event labels can reference

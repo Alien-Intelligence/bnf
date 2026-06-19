@@ -1,103 +1,106 @@
-// components/badges/tools/call.tsx
-// Renders a chip for a single tool call event inside the chat panel.
-// Shows the tool label (i18n), source suffix, status icon, and optional latency.
-// Client component — reads translations and the tool status at render time.
-
 "use client"
 
-import { Check, Loader2, X } from "lucide-react"
+// components/badges/tools/call.tsx
+// BadgeToolCall — the uniform tool-call block used for every (non-mutation)
+// agent tool, following the Alien × BnF chat design:
+//   • top    — leading icon + tool name (dotted, mono) + "via MCP",
+//              with a status PILL on the right (running → terminé / échec)
+//   • body   — the input params as a key/value table (query, type, …)
+//
+// No result-count line: a reliable count isn't available across every tool/MCP
+// route, so state is conveyed by the pill alone. Corpus add/remove use the
+// +N/−N count pill instead (components/badges/tools/mutation-pill.tsx).
+
+import { Search, Wrench } from "lucide-react"
 import { useTranslations } from "next-intl"
 
-import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
+import { deriveToolKey, toolSource } from "@/lib/tools/display"
 
 interface Props {
-  tool: string
-  status: "running" | "ok" | "error"
-  source: "custom" | "mcp"
-  latencyMs?: number | null
-  error?: string | null
+  toolName: string
+  /** Parsed tool input (null until tool-call-end). */
+  input: Record<string, unknown> | null
+  running: boolean
+  isError: boolean
 }
 
-/**
- * Derives the i18n key from the raw tool name.
- *
- * MCP tools arrive as "bnf__bnf_search_gallica" — strip the
- * "<server>__<server>_" prefix and produce "bnf.search_gallica".
- *
- * Custom tools arrive with underscores as the domain separator:
- * "corpus_add" → "corpus.add". Only the first underscore becomes a
- * dot; subsequent underscores are preserved (e.g. "corpus_get_state"
- * → "corpus.get_state").
- *
- * The key is looked up in the "tools" namespace.
- */
-function deriveI18nKey(tool: string, source: "custom" | "mcp"): string {
-  if (source === "mcp") {
-    // MCP tool pattern: "<server>__<server>_<suffix>"
-    // e.g. "bnf__bnf_search_gallica" → "bnf.search_gallica"
-    const mcpMatch = /^(\w+)__\1_(.+)$/.exec(tool)
-    if (mcpMatch) {
-      const [, server, suffix] = mcpMatch
-      return `${server}.${suffix}`
-    }
-    // Fallback for unexpected MCP naming: strip double-underscore prefix,
-    // then replace only the first underscore with a dot.
-    const bare = tool.replace(/^[^_]+__/, "")
-    const sep = bare.indexOf("_")
-    return sep === -1 ? bare : bare.slice(0, sep) + "." + bare.slice(sep + 1)
+// Render one param value compactly: strings quoted, scalars as-is, objects as
+// compact JSON. Long values are truncated by the row's `truncate`.
+function formatValue(value: unknown): string {
+  if (typeof value === "string") return `"${value}"`
+  if (typeof value === "number" || typeof value === "boolean") return String(value)
+  if (value === null) return "null"
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return String(value)
   }
-  // Custom tools: "corpus_add" → "corpus.add"
-  // Replace only the first underscore so "corpus_get_state" → "corpus.get_state"
-  const i = tool.indexOf("_")
-  if (i === -1) return tool
-  return tool.slice(0, i) + "." + tool.slice(i + 1)
 }
 
-function LatencyLabel({ ms }: { ms: number }) {
-  const seconds = (ms / 1000).toFixed(1)
-  return <span className="text-muted-foreground">· {seconds}s</span>
+function StatusPill({ running, isError }: { running: boolean; isError: boolean }) {
+  const t = useTranslations("tools.parts")
+  const tone = running
+    ? "border-info/30 bg-info/10 text-info"
+    : isError
+      ? "border-destructive/30 bg-destructive/10 text-destructive"
+      : "border-brand-teal/30 bg-brand-teal/10 text-brand-teal"
+  const label = running ? t("running") : isError ? t("failed") : t("done")
+  return (
+    <span
+      className={cn(
+        "inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] tracking-wide uppercase",
+        tone,
+      )}
+    >
+      <span
+        className={cn("size-1.5 rounded-full bg-current", running && "animate-bnf-blink")}
+        aria-hidden
+      />
+      {label}
+    </span>
+  )
 }
 
-export function BadgeToolCall({ tool, status, source, latencyMs, error }: Props) {
-  const t = useTranslations("tools")
+export function BadgeToolCall({ toolName, input, running, isError }: Props) {
+  const t = useTranslations("tools.parts")
+  const source = toolSource(toolName)
+  const label = deriveToolKey(toolName, source)
+  const isSearch = /search/i.test(toolName)
+  const Icon = isSearch ? Search : Wrench
 
-  const i18nKey = deriveI18nKey(tool, source)
-  // next-intl throws if the key is missing — use has() guard and fall back to
-  // the raw tool name. This prevents crashes for future tools not yet in the
-  // catalog before both files are updated in concert.
-  const label = t.has(i18nKey) ? t(i18nKey) : tool
-  const sourceSuffix = source === "mcp" ? " · via MCP" : null
-
-  const variant =
-    status === "running" ? "outline"
-    : status === "error"  ? "destructive"
-    : "secondary"
+  const entries =
+    input != null ? Object.entries(input).filter(([, v]) => v !== undefined) : []
 
   return (
-    <Badge
-      variant={variant}
-      className={cn("gap-1 font-mono text-[11px]", status === "error" && "cursor-help")}
-      title={status === "error" && error ? error : undefined}
-    >
-      {status === "running" && (
-        <Loader2 className="animate-spin" aria-hidden="true" />
-      )}
-      {status === "ok" && (
-        <Check aria-hidden="true" />
-      )}
-      {status === "error" && (
-        <X aria-hidden="true" />
-      )}
+    <div className="animate-bnf-up rounded-md border bg-card px-3 py-2.5 font-mono text-[11.5px]">
+      {/* Top: icon + name + source, status pill on the right */}
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2 text-brand-teal">
+          <Icon className="size-3.5 shrink-0" aria-hidden />
+          <span className="truncate font-semibold">{label}</span>
+          {source === "mcp" && (
+            <span className="shrink-0 text-muted-foreground">{t("viaMcp")}</span>
+          )}
+        </div>
+        <StatusPill running={running} isError={isError} />
+      </div>
 
-      <span>
-        {label}
-        {sourceSuffix}
-      </span>
-
-      {status === "ok" && latencyMs != null && (
-        <LatencyLabel ms={latencyMs} />
+      {/* Body: param key/value table. Auto-sized key column (sizes to the
+          widest key) + a flexible value column that truncates — avoids the
+          fixed-width overlap when keys are long (e.g. maximum_records). */}
+      {entries.length > 0 && (
+        <div className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1">
+          {entries.map(([key, value]) => (
+            <div key={key} className="contents">
+              <span className="whitespace-nowrap text-muted-foreground">{key}</span>
+              <span className="min-w-0 truncate text-foreground/90">
+                {formatValue(value)}
+              </span>
+            </div>
+          ))}
+        </div>
       )}
-    </Badge>
+    </div>
   )
 }

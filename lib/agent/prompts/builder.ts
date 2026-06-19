@@ -133,7 +133,9 @@ export class PromptBuilder {
     const docs = membership.map((m) => m.document)
     const sample = docs
       .slice(0, 25)
-      .map((d) => ({ ark: d.ark, title: d.title }))
+      // title is null for stubs still resolving — show a placeholder so the
+      // agent can tell the metadata hasn't landed yet.
+      .map((d) => ({ ark: d.ark, title: d.title ?? "(métadonnées en cours)" }))
     const type: Record<string, number> = {}
     const lang: Record<string, number> = {}
     const period: Record<string, number> = {}
