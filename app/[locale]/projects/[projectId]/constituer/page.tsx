@@ -10,6 +10,8 @@ import { ProjectQueries } from "@/models/projects/queries"
 import { CorpusQueries } from "@/models/corpus/queries"
 import { SessionService } from "@/models/sessions/service"
 import { SessionQueries } from "@/models/sessions/queries"
+import { OnboardingQueries } from "@/models/onboarding/queries"
+import { ONBOARDING_INTRO } from "@/models/onboarding/schema"
 import { ConstituerClient } from "./client"
 
 type RouteParams = { locale: string; projectId: string }
@@ -35,6 +37,8 @@ export default async function ConstituerPage({
   // always has at least one entry.
   const initialSessions = await SessionQueries.listForProject(projectId, "corpus")
 
+  const seenIntros = await OnboardingQueries.listSeen(user.id)
+
   return (
     <ConstituerClient
       locale={locale}
@@ -43,6 +47,7 @@ export default async function ConstituerPage({
       initialUser={{ name: user.name, email: user.email }}
       initialSessionId={session.id}
       initialSessions={initialSessions}
+      introSeen={seenIntros.includes(ONBOARDING_INTRO.CORPUS)}
     />
   )
 }

@@ -10,6 +10,9 @@ import { WorkspaceHeader } from "@/components/layouts/workspace/header"
 import { LayoutAtelier } from "@/components/layouts/research/atelier"
 import { SheetCitationSource } from "@/components/sheets/citations/source"
 import { DialogNewNote } from "@/components/dialogs/notes/create"
+import { DialogOnboardingResearch } from "@/components/dialogs/onboarding/research"
+import { useMarkOnboardingSeen } from "@/hooks/api/onboarding"
+import { ONBOARDING_INTRO } from "@/models/onboarding/schema"
 import type { NoteListItem } from "@/models/notes/schema"
 import type { ParsedCitation } from "@/lib/citations/syntax"
 import { useTranslations } from "next-intl"
@@ -21,6 +24,7 @@ interface RechercherClientProps {
   initialSessionId: string
   initialNotes: NoteListItem[]
   isIngested: boolean
+  introSeen: boolean
 }
 
 export function RechercherClient({
@@ -30,6 +34,7 @@ export function RechercherClient({
   initialSessionId,
   initialNotes,
   isIngested,
+  introSeen,
 }: RechercherClientProps) {
   const t = useTranslations("research")
 
@@ -39,6 +44,16 @@ export function RechercherClient({
   const [selectedCitation, setSelectedCitation] =
     useState<ParsedCitation | null>(null)
   const [newNoteOpen, setNewNoteOpen] = useState(false)
+
+  // Onboarding intro — auto-open once per user; "?" reopens without resetting.
+  const [introOpen, setIntroOpen] = useState(!introSeen)
+  const markIntroSeen = useMarkOnboardingSeen()
+  const onIntroOpenChange = (open: boolean) => {
+    setIntroOpen(open)
+    if (!open && !introSeen) {
+      markIntroSeen.mutate({ intro: ONBOARDING_INTRO.RESEARCH })
+    }
+  }
 
   const stream = useTurnStream(initialSessionId)
 
@@ -55,7 +70,7 @@ export function RechercherClient({
   if (!isIngested) {
     return (
       <div className="flex flex-col h-screen">
-        <WorkspaceHeader user={user} />
+        <WorkspaceHeader user={user} projectId={projectId} />
         <div className="flex-1 flex items-center justify-center p-6">
           <Card className="max-w-md">
             <CardHeader>
@@ -78,7 +93,7 @@ export function RechercherClient({
 
   return (
     <div className="flex flex-col h-screen">
-      <WorkspaceHeader user={user} />
+      <WorkspaceHeader user={user} projectId={projectId} />
       <div className="flex-1 overflow-hidden">
         <LayoutAtelier
           projectId={projectId}
@@ -89,8 +104,11 @@ export function RechercherClient({
           onActiveNoteChange={setActiveNoteId}
           onOpenNewNote={() => setNewNoteOpen(true)}
           onCitationClick={onCitationClick}
+          onOpenHelp={() => setIntroOpen(true)}
         />
       </div>
+
+      <DialogOnboardingResearch open={introOpen} onOpenChange={onIntroOpenChange} />
 
       <SheetCitationSource
         projectId={projectId}

@@ -23,7 +23,13 @@ import { CardCorpusSummary } from "@/components/cards/corpus/summary"
 import { CardCorpusFiltersDrawer } from "@/components/cards/corpus/filters-drawer"
 import { LayoutCorpusDocumentList } from "@/components/layouts/corpus/document-list"
 import { SheetDocumentDetail } from "@/components/sheets/corpus/document-detail"
+import { HelpCircle } from "lucide-react"
+import { useTranslations } from "next-intl"
 import { WorkspaceHeader } from "@/components/layouts/workspace/header"
+import { DialogOnboardingCorpus } from "@/components/dialogs/onboarding/corpus"
+import { useMarkOnboardingSeen } from "@/hooks/api/onboarding"
+import { ONBOARDING_INTRO } from "@/models/onboarding/schema"
+import { SESSIONS_RAIL_WIDTH } from "@/lib/constants"
 import type { CorpusSnapshot } from "@/models/corpus/schema"
 import type { AppSession } from "@/models/sessions/schema"
 
@@ -34,6 +40,7 @@ interface Props {
   initialUser: { name?: string; email: string }
   initialSessionId: string
   initialSessions: AppSession[]
+  introSeen: boolean
 }
 
 export function ConstituerClient({
@@ -43,10 +50,25 @@ export function ConstituerClient({
   initialUser,
   initialSessionId,
   initialSessions,
+  introSeen,
 }: Props) {
   const router = useRouter()
   const pathname = usePathname()
   const searchParams = useSearchParams()
+  const t = useTranslations("corpus")
+
+  // ── Onboarding intro — auto-open once per user; "?" reopens without resetting.
+  const [introOpen, setIntroOpen] = useState(!introSeen)
+  const markIntroSeen = useMarkOnboardingSeen()
+
+  const onIntroOpenChange = (open: boolean) => {
+    setIntroOpen(open)
+    // Closing the intro (either the auto-open or a manual reopen) records it as
+    // seen. Idempotent server-side, so reopening via "?" never resets it.
+    if (!open && !introSeen) {
+      markIntroSeen.mutate({ intro: ONBOARDING_INTRO.CORPUS })
+    }
+  }
 
   // ── Active session state ──────────────────────────────────────────────────────
   const [activeSessionId, setActiveSessionId] = useState(initialSessionId)
@@ -142,10 +164,13 @@ export function ConstituerClient({
 
   return (
     <div className="flex flex-col h-screen">
-      <WorkspaceHeader user={initialUser} />
+      <WorkspaceHeader user={initialUser} projectId={projectId} />
       <div className="flex flex-1 overflow-hidden">
         {/* Sessions sidebar — left strip, fixed width */}
-        <div className="w-48 shrink-0 overflow-hidden">
+        <div
+          className="shrink-0 overflow-hidden"
+          style={{ width: SESSIONS_RAIL_WIDTH }}
+        >
           <LayoutSessionsSidebar
             projectId={projectId}
             scope="corpus"
@@ -160,6 +185,18 @@ export function ConstituerClient({
           <LayoutCorpusChat stream={stream} projectId={projectId} locale={locale} />
 
           <div className="flex flex-col gap-4 overflow-auto">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-semibold">{t("panelTitle")}</h2>
+              <button
+                type="button"
+                onClick={() => setIntroOpen(true)}
+                title={t("help")}
+                aria-label={t("help")}
+                className="flex size-5.5 items-center justify-center rounded-full border bg-card text-muted-foreground transition-colors hover:border-brand-teal/45 hover:text-brand-teal"
+              >
+                <HelpCircle className="size-3.5" />
+              </button>
+            </div>
             <CardCorpusSummary corpus={displaySnapshot} />
             <CardCorpusFiltersDrawer
               corpus={displaySnapshot}
@@ -183,6 +220,7 @@ export function ConstituerClient({
 
           <SheetDocumentDetail
             doc={selectedDoc}
+            projectId={projectId}
             open={!!selectedDoc}
             onOpenChange={(open) => {
               if (!open) onSelectArk(null)
@@ -190,6 +228,8 @@ export function ConstituerClient({
           />
         </div>
       </div>
+
+      <DialogOnboardingCorpus open={introOpen} onOpenChange={onIntroOpenChange} />
     </div>
   )
 }

@@ -8,6 +8,8 @@ import { requireSessionUser } from "@/lib/auth-helpers"
 import { ProjectQueries } from "@/models/projects/queries"
 import { NoteQueries } from "@/models/notes/queries"
 import { SessionService } from "@/models/sessions/service"
+import { OnboardingQueries } from "@/models/onboarding/queries"
+import { ONBOARDING_INTRO } from "@/models/onboarding/schema"
 import { RechercherClient } from "./client"
 
 type RouteParams = { locale: string; projectId: string }
@@ -25,9 +27,10 @@ export default async function RechercherPage({
   if (!project) notFound()
   if (project.ownerId !== user.id && !project.isPublic) notFound()
 
-  const [session, initialNotes] = await Promise.all([
+  const [session, initialNotes, seenIntros] = await Promise.all([
     SessionService.ensureDefaultForScope(projectId, "research"),
     NoteQueries.listForProject(projectId),
+    OnboardingQueries.listSeen(user.id),
   ])
 
   const isIngested = project.ingestedVersionId !== null
@@ -40,6 +43,7 @@ export default async function RechercherPage({
       initialSessionId={session.id}
       initialNotes={initialNotes}
       isIngested={isIngested}
+      introSeen={seenIntros.includes(ONBOARDING_INTRO.RESEARCH)}
     />
   )
 }
