@@ -88,6 +88,19 @@ const handler = createChatHandler<TurnScopedCtx>({
         signal,
       )
     },
+    // Langfuse trace identity. The SDK already groups by the durable session id;
+    // this supplies the one thing it can't infer — the user — plus scope/project
+    // labels. No-op unless LANGFUSE_* env keys are set.
+    trace: async (req) => {
+      const session = await AgentQueries.getAppSessionOrThrow(sidFromUrl(req))
+      const user = await resolveUser(req)
+      return {
+        name: `agent-${session.scope}`,
+        userId: user.id,
+        tags: [session.scope],
+        metadata: { projectId: session.projectId, appSessionId: session.id },
+      }
+    },
   },
 })
 

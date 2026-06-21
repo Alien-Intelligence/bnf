@@ -12,6 +12,13 @@ const bootEnvSchema = z.object({
   ANTHROPIC_API_KEY: z.string().min(1),
   APP_URL: z.string().url(),
   JOB_CALLBACK_SECRET: z.string().min(32).optional(),
+  // Langfuse observability — OPTIONAL. When all three are set, @alien/chat-sdk
+  // traces every agent turn to Langfuse automatically (the SDK reads these from
+  // process.env itself). Absent → tracing is simply off. `LANGFUSE_BASE_URL` is
+  // also the base for any future "view trace in Langfuse" deep-link.
+  LANGFUSE_PUBLIC_KEY: z.string().min(1).optional(),
+  LANGFUSE_SECRET_KEY: z.string().min(1).optional(),
+  LANGFUSE_BASE_URL: z.string().url().optional(),
 })
 
 // Throws immediately on process start if any required var is absent / invalid.
