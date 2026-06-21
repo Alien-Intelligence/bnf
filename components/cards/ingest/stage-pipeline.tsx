@@ -38,18 +38,112 @@ interface StageInfo {
 }
 
 /**
- * Derive the display state for every stage from the job's current stage
- * and status. This is a pure function — deterministic, no side-effects.
+ * Per-doc state counters the worker reports in every progress event and the
+ * server persists into `ingest_job.stats`. Each document flows through all four
+ * stages independently (extract → chunk → embed → index), so progress is NOT a
+ * single global stage marching forward — at any instant docs are scattered
+ * across stages and many may already be fully done. We therefore render each
+ * stage bar from the fraction of the corpus that has passed THAT stage.
+ */
+type StageCounters = {
+  total: number
+  done: number
+  failed: number
+  skipped: number
+  indexing: number
+  embedding: number
+  chunking: number
+  extracting: number
+}
+
+function readCounters(stats: unknown): StageCounters | null {
+  if (!stats || typeof stats !== "object") return null
+  const s = stats as Record<string, unknown>
+  if (typeof s.total !== "number" || s.total <= 0) return null
+  const n = (k: string): number => (typeof s[k] === "number" ? (s[k] as number) : 0)
+  return {
+    total: s.total,
+    done: n("done"),
+    failed: n("failed"),
+    skipped: n("skipped"),
+    indexing: n("indexing"),
+    embedding: n("embedding"),
+    chunking: n("chunking"),
+    extracting: n("extracting"),
+  }
+}
+
+/**
+ * Linear ETA from per-doc throughput: (elapsed / completed) × remaining.
+ * Rough by nature — documents vary from 2 to 800+ chunks — so it's prefixed
+ * "~" and only shown once at least one document is terminal. Returns null when
+ * not computable (no counters, nothing done yet, or already finished).
+ */
+function ingestEtaMs(job: IngestJob): number | null {
+  const c = readCounters(job.stats)
+  if (!c) return null
+  const completed = c.done + c.skipped + c.failed
+  if (completed < 1 || completed >= c.total) return null
+  const startedAt = job.startedAt ?? job.createdAt
+  if (!startedAt) return null
+  const elapsed = Date.now() - new Date(startedAt).getTime()
+  if (!Number.isFinite(elapsed) || elapsed <= 0) return null
+  const remaining = c.total - completed
+  return (elapsed / completed) * remaining
+}
+
+/** Compact, locale-neutral duration ("< 1 min", "~7 min", "~1 h 12 min"). */
+function formatEtaShort(ms: number): string {
+  if (ms < 60_000) return "< 1 min"
+  const totalMin = Math.round(ms / 60_000)
+  if (totalMin < 60) return `~${totalMin} min`
+  const h = Math.floor(totalMin / 60)
+  const m = totalMin % 60
+  return m === 0 ? `~${h} h` : `~${h} h ${m} min`
+}
+
+/**
+ * Derive the display state for every stage. Prefers the per-doc counters
+ * (`job.stats`) so all four bars advance as documents complete; falls back to
+ * the legacy single-stage model when counters are absent (e.g. fake mode or an
+ * old job row). Pure function — deterministic, no side-effects.
  */
 function deriveStageInfos(job: IngestJob): StageInfo[] {
+  const counters = readCounters(job.stats)
+
+  // --- Counter-based model (preferred): one fraction per stage. ---
+  if (counters && job.status !== INGEST_STATUS.FAILED && job.status !== INGEST_STATUS.CANCELED) {
+    const c = counters
+    const terminal = c.done + c.skipped + c.failed // fully-processed docs
+    // Docs that have PASSED each stage (a doc currently in a stage hasn't
+    // passed it yet). chunking/embedding are atomic in the worker, so those
+    // bars track extract closely; index trails by the docs still indexing.
+    const passed: Record<(typeof STAGE_ORDER)[number], number> = {
+      [INGEST_STAGE.EXTRACT]: c.chunking + c.embedding + c.indexing + terminal,
+      [INGEST_STAGE.CHUNK]: c.embedding + c.indexing + terminal,
+      [INGEST_STAGE.EMBED]: c.indexing + terminal,
+      [INGEST_STAGE.INDEX]: terminal,
+    }
+    return STAGE_ORDER.map((stage) => {
+      if (job.status === INGEST_STATUS.DONE) return { stage, state: "done", progress: 100 }
+      const fraction = Math.max(0, Math.min(1, passed[stage] / c.total))
+      const pct = Math.round(fraction * 100)
+      if (fraction >= 1) return { stage, state: "done", progress: 100 }
+      if (pct > 0) return { stage, state: "running", progress: pct }
+      return { stage, state: "pending", progress: 0 }
+    })
+  }
+
+  // --- Legacy single-stage fallback. ---
   const currentStageIndex = job.stage
     ? STAGE_ORDER.indexOf(job.stage as (typeof STAGE_ORDER)[number])
     : -1
 
-  // Clamp job.progress (Decimal from Prisma) to a 0–100 integer.
+  // job.progress is a 0–1 fraction (Decimal from Prisma); scale to a 0–100
+  // integer for display. (Was rounding the raw fraction → always 0%.)
   const jobProgress = Math.max(
     0,
-    Math.min(100, Math.round(Number(job.progress ?? 0))),
+    Math.min(100, Math.round(Number(job.progress ?? 0) * 100)),
   )
 
   return STAGE_ORDER.map((stage, idx) => {
@@ -135,6 +229,14 @@ export function CardIngestStagePipeline({ job, onCancel }: Props) {
     job.status === INGEST_STATUS.FAILED ||
     job.status === INGEST_STATUS.CANCELED
 
+  // ETA: a number once enough is done, "estimating…" early in a running job.
+  const etaMs = ingestEtaMs(job)
+  const etaText = isTerminal
+    ? null
+    : etaMs != null
+      ? formatEtaShort(etaMs)
+      : tPipeline("etaComputing")
+
   // Overall progress: each completed stage contributes its full quarter; the
   // running stage contributes its fraction. Deterministic, no poll guessing.
   const overall = Math.round(
@@ -206,16 +308,24 @@ export function CardIngestStagePipeline({ job, onCancel }: Props) {
           ))}
         </ol>
 
-        <div className="flex items-center justify-between border-t pt-4">
+        <div className="flex items-center justify-between gap-2 border-t pt-4">
           <span className="text-xs text-muted-foreground">
             {tPipeline("target")} :{" "}
             <span className="font-mono text-neutral-200">
               {tPipeline("targetValue")}
             </span>
           </span>
-          <span className="font-mono text-[13px] font-semibold text-brand-teal">
-            {overall}%
-          </span>
+          <div className="flex items-center gap-3">
+            {etaText && (
+              <span className="text-xs text-muted-foreground">
+                {tPipeline("eta")} :{" "}
+                <span className="font-mono text-neutral-200">{etaText}</span>
+              </span>
+            )}
+            <span className="font-mono text-[13px] font-semibold text-brand-teal">
+              {overall}%
+            </span>
+          </div>
         </div>
 
         {!isTerminal && (

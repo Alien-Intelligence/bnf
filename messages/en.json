@@ -496,7 +496,9 @@
       "targetValue": "BnF RAG cluster",
       "overall": "Overall progress",
       "pending": "Pending",
-      "skipped": "Skipped"
+      "skipped": "Skipped",
+      "eta": "Est. time remaining",
+      "etaComputing": "estimating…"
     },
     "status": {
       "queued": "Queued",

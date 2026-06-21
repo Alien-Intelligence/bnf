@@ -1,7 +1,15 @@
+networks:
+  bnf:
+    name: bnf
+
 services:
   postgres:
     image: postgres:16
     restart: unless-stopped
+    networks:
+      bnf:
+        aliases:
+          - postgres
     environment:
       POSTGRES_DB: bnf_dev
       POSTGRES_USER: bnf_user
@@ -16,6 +24,43 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+
+  # bnf-ingest worker — pulls jobs from pg-boss and runs the prepare→embed→
+  # register pipeline. Scale horizontally with `docker compose up --scale
+  # ingest-worker=N`; pg-boss row-locks prevent double processing.
+  ingest-worker:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile.worker
+    restart: unless-stopped
+    networks:
+      - bnf
+    extra_hosts:
+      # Lets the worker reach the host's Next.js dev server on :3001 to fire
+      # ingest-progress callbacks. On Docker Desktop this is automatic; on
+      # native Linux we have to map host.docker.internal → host-gateway.
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - ./worker/.env
+    environment:
+      # Inside the compose network postgres is reachable at host=postgres:5432.
+      # We override DATABASE_URL here so the .env's localhost:5437 still works
+      # for host-side scripts (prepare:one, register:one, etc.).
+      DATABASE_URL: "postgresql://bnf_user:bnf_dev_password@postgres:5432/bnf_dev"
+      # The host-side app talks to the worker over loopback on port 7777 (see
+      # WORKER_RUNNER_URL in bnf/.env.local). On Linux that means we bind the
+      # container's port to the host.
+      WORKER_HTTP_PORT: "7777"
+    ports:
+      - "7777:7777"
+    stop_grace_period: 60s
+    profiles:
+      # Opt-in: `docker compose --profile worker up` so the worker doesn't
+      # start by accident on a plain `docker compose up postgres`.
+      - worker
 
 volumes:
   bnf_postgres_data:

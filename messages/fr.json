@@ -496,7 +496,9 @@
       "targetValue": "cluster RAG BnF",
       "overall": "Progression globale",
       "pending": "En attente",
-      "skipped": "Ignoré"
+      "skipped": "Ignoré",
+      "eta": "Temps restant estimé",
+      "etaComputing": "estimation…"
     },
     "status": {
       "queued": "En attente",
