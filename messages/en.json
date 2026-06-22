@@ -50,9 +50,11 @@
   "askUser": {
     "pending": "Awaiting reply",
     "answered": "Answered",
+    "superseded": "Superseded",
     "validate": "Submit",
     "free": "Answer freely",
     "freeHint": "Reply to the agent in the message box below.",
+    "supersededHint": "A newer question was asked — answer that one instead.",
     "progress": "{count}/{total} answered",
     "answersHeading": "Here are my answers:"
   },
@@ -189,6 +191,7 @@
       "facetTypeTitle": "By document type",
       "facetLangTitle": "By language",
       "facetSourceTitle": "By source",
+      "facetSessionTitle": "By session",
       "chrono": {
         "title": "Chronological distribution",
         "hint": "click to filter by period"
@@ -223,6 +226,7 @@
       "loadMore": "Load more",
       "resolving": "Resolving metadata…",
       "resolveFailed": "Resolution failed",
+      "filtering": "Updating…",
       "detail": {
         "eyebrow": "Notice · BnF",
         "close": "Close",
@@ -325,8 +329,14 @@
     }
   },
   "memory": {
+    "box": {
+      "count": "{count, plural, =0 {Nothing remembered yet} one {# item remembered} other {# items remembered}}"
+    },
     "dialog": {
       "title": "Project memory",
+      "persistent": "persistent",
+      "description": "What the agent remembers about this project, kept across sessions and re-read at the start of every conversation.",
+      "footnote": "Updated automatically by the agent · persistent memory",
       "empty": "No items",
       "scopeCorpus": "Corpus memory",
       "scopeResearch": "Research memory",
@@ -344,6 +354,8 @@
   "sessions": {
     "sidebar": {
       "title": "Sessions",
+      "titleCorpus": "Corpus sessions",
+      "titleResearch": "Research sessions",
       "newButton": "New session",
       "empty": "No sessions"
     },
@@ -370,6 +382,11 @@
     "memory": {
       "read": "Read memory",
       "write": "Write memory"
+    },
+    "rag": {
+      "query": "Semantic search",
+      "keyword_search": "Keyword search",
+      "get_text": "Read full text"
     },
     "ingest": {
       "submit": "Submit ingestion"
@@ -428,15 +445,41 @@
       "body": "The corpus must be ingested before you can run searches. Please start the ingestion.",
       "openIngest": "Open ingestion"
     },
+    "espace": {
+      "title": "Research workspace",
+      "docs": "{count, number} docs",
+      "disposition": "Layout",
+      "atelier": "Workbench",
+      "carnet": "Notebook",
+      "emptyReader": "Open an artifact from the list, or ask a question to generate one.",
+      "openSource": "Research assistant",
+      "openSubtitle": "Queries the corpus · cites its sources"
+    },
+    "artefacts": {
+      "title": "Research artifacts",
+      "new": "New note",
+      "search": "Search a note…",
+      "empty": "No notes yet.",
+      "noMatch": "No results.",
+      "count": "{count, plural, =0 {No artifacts} one {# artifact} other {# artifacts}}",
+      "meta": "{count, plural, =0 {no refs} one {# ref} other {# refs}} · {time}"
+    },
     "atelier": {
       "chatTab": "Conversation",
       "noteTab": "Note",
       "newNote": "New note",
       "viewInCarnet": "View notebook",
-      "noNotes": "No notes yet."
+      "noNotes": "No notes yet.",
+      "closeTab": "Close",
+      "artefactHeader": "Research artifact · written by the agent",
+      "cites": "{count, plural, =0 {no references} one {# ARK reference} other {# ARK references}}",
+      "loadError": "Could not load the note.",
+      "retry": "Retry"
     },
     "carnet": {
       "title": "Research notebook",
+      "projectEyebrow": "Research project",
+      "compiledHeader": "Research notebook · {count, plural, =0 {no notes} one {# note} other {# notes}}",
       "export": "Export as Markdown",
       "empty": "No notes in this notebook."
     },
@@ -449,9 +492,14 @@
   "citations": {
     "panel": {
       "title": "Cited source",
-      "openIiif": "Open IIIF image",
-      "openGallica": "Open on Gallica",
-      "manifest": "IIIF manifest",
+      "eyebrow": "Reference · cited source",
+      "folioLabel": "Folio {folio}",
+      "arkLabel": "ARK identifier",
+      "consult": "View on the BnF",
+      "iiifViewer": "IIIF viewer — view {folio}",
+      "iiifViewerSub": "Open the exact page in the viewer",
+      "gallicaViewer": "View on Gallica",
+      "gallicaViewerSub": "The document in the Gallica viewer",
       "usages": "Used in other notes"
     }
   },

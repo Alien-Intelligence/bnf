@@ -19,6 +19,12 @@ interface Props {
   filters: CorpusFilters
   onChange: (next: CorpusFilters) => void
   onClearAll: () => void
+  /**
+   * Maps an AppSession id to its human title, for the session chip label.
+   * Sessions live only on the snapshot (not in vocab), so the drawer threads
+   * this through. Missing ids fall back to the raw id.
+   */
+  sessionTitleById?: Record<string, string>
 }
 
 interface ChipProps {
@@ -46,6 +52,7 @@ export function CardCorpusActiveFiltersBar({
   filters,
   onChange,
   onClearAll,
+  sessionTitleById,
 }: Props) {
   const t = useTranslations("corpus.filters")
 
@@ -65,6 +72,21 @@ export function CardCorpusActiveFiltersBar({
           key={`${key}:${value}`}
           label={value}
           onRemove={() => onChange(removeFromFilter(filters, key, value))}
+        />,
+      )
+    })
+  }
+
+  // Sessions — label with the session title (resolved from the snapshot via the
+  // threaded title map); fall back to the raw id when unknown.
+  if (filters.session) {
+    filters.session.split(",").forEach((value) => {
+      if (!value) return
+      chips.push(
+        <ActiveChip
+          key={`session:${value}`}
+          label={sessionTitleById?.[value] ?? value}
+          onRemove={() => onChange(removeFromFilter(filters, "session", value))}
         />,
       )
     })

@@ -139,6 +139,9 @@ model Project {
   // Denormalized corpus pointers — see playbook/corpus-versioning.md invariants.
   headVersionId     String?  @unique @map("head_version_id")
   ingestedVersionId String?  @map("ingested_version_id")
+  // Numeric id of this project's dataset in the data cluster (slug `bnf-<id>`).
+  // Populated lazily on the first real RAG query — see lib/cluster/real-rag.ts.
+  clusterDatasetId  Int?     @map("cluster_dataset_id")
   createdAt         DateTime @default(now()) @map("created_at")
   updatedAt         DateTime @updatedAt @map("updated_at")
 
@@ -189,8 +192,9 @@ model Document {
   resolveError    String? @map("resolve_error")
   resolveAttempts Int     @default(0) @map("resolve_attempts")
 
-  project    Project            @relation(fields: [projectId], references: [id])
-  membership CorpusMembership[]
+  project       Project              @relation(fields: [projectId], references: [id])
+  membership    CorpusMembership[]
+  contributions CorpusContribution[]
 
   @@id([projectId, ark])
   @@index([projectId, year])
@@ -273,8 +277,34 @@ model AppSession {
   activeMessage Message?  @relation("ActiveMessage", fields: [activeMessageId], references: [id])
   messages      Message[] @relation("SessionMessages")
   notes         Note[]
+  contributions CorpusContribution[]
 
   @@map("app_session")
+}
+
+// -----------------------------------------------------------------------------
+// CorpusContribution — N:M join recording WHICH session added a document.
+// A document added across several sessions carries one row per session, so the
+// corpus can be filtered by "what session A contributed" (multi-session tag).
+// Composite PK (projectId, ark, sessionId): a session contributes a given ARK
+// at most once; re-adding the same ARK in the same session is a no-op (the PK
+// dedupes via createMany skipDuplicates). Rows are historical — never deleted on
+// corpus removal (removing membership does not unmake the act of adding it).
+// Distinct from CorpusMembership: membership decides visibility in a version;
+// contribution records authorship. The two are deliberately NOT entangled.
+// -----------------------------------------------------------------------------
+model CorpusContribution {
+  projectId String   @map("project_id")
+  ark       String
+  sessionId String   @map("session_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  document Document   @relation(fields: [projectId, ark], references: [projectId, ark])
+  session  AppSession @relation(fields: [sessionId], references: [id])
+
+  @@id([projectId, ark, sessionId])
+  @@index([sessionId])
+  @@map("corpus_contribution")
 }
 
 // -----------------------------------------------------------------------------

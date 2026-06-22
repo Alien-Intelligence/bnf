@@ -26,7 +26,9 @@ export const AGENT_TOOLS = {
   ingestSubmit: "ingest_submit",
 
   // --- RAG tools --------------------------------------------------------------
-  ragQuery: "rag_query",
+  ragQuery:         "rag_query",
+  ragKeywordSearch: "rag_keyword_search",
+  ragGetText:       "rag_get_text",
 
   // --- Note tools -------------------------------------------------------------
   noteList:   "note_list",

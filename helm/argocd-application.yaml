@@ -1,0 +1,59 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: bnf-demo-prod
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/the-alien-club/datastreaming-demos.git
+    targetRevision: main
+    path: bnf/helm/bnf-demo-chart
+    helm:
+      valueFiles:
+        - values.yaml
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: bnf
+
+  # ArgoCD's `helm template` runs without cluster access, so the chart's
+  # lookup-based password/secret preservation does not work — every sync would
+  # otherwise rotate POSTGRES_PASSWORD, BETTER_AUTH_SECRET and JOB_CALLBACK_SECRET,
+  # breaking auth against an initialized Postgres, invalidating all sessions, and
+  # breaking in-flight ingest callbacks. Ignore drift on /data of the two
+  # generated Secrets; first install still creates them with random values,
+  # subsequent syncs leave them untouched.
+  ignoreDifferences:
+    - group: ""
+      kind: Secret
+      name: bnf-demo-prod-postgres
+      jsonPointers:
+        - /data
+    - group: ""
+      kind: Secret
+      name: bnf-demo-prod-app
+      jsonPointers:
+        - /data
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+      # Without this, sync IGNORES the ignoreDifferences block above and
+      # patches the rendered (rotated) Secret values back into the cluster.
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

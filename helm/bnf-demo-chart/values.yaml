@@ -1,0 +1,255 @@
+namespace: bnf
+
+# ===========================================================================
+# App (Next.js) — the Constituer / Ingérer / Rechercher workspace.
+# ===========================================================================
+replicaCount: 1
+
+image:
+  repository: rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo
+  pullPolicy: Always
+  tag: "0.1.0"
+
+imagePullSecrets: []
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 3000
+
+resources:
+  requests:
+    cpu: 300m
+    memory: 512Mi
+  limits:
+    cpu: 1000m
+    memory: 2Gi
+
+# App boots at root `/`; the locale middleware 307-redirects, which counts as a
+# probe success (k8s treats any 2xx/3xx as healthy).
+livenessProbe:
+  httpGet:
+    path: /
+    port: 3000
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /
+    port: 3000
+  initialDelaySeconds: 10
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+config:
+  # Public hostname the app is served on. BETTER_AUTH_URL and APP_URL both use
+  # it; APP_URL is the base for cluster-callback URLs (overridden in-cluster by
+  # WORKER_CALLBACK_BASE_URL, set automatically — see configmap.yaml).
+  publicUrl: https://bnf.demo.alien.club
+
+  # Ingest path + research RAG path. "real" routes ingestion to the bundled
+  # worker (WORKER_RUNNER_URL) and RAG to the data-cluster MCP. "fake" uses the
+  # in-process fixtures (no worker, no network) — handy for a UI-only deploy.
+  clusterMode: real
+
+  # BnF MCP — corpus building (Constituer). URL is public; token is a secret.
+  bnfMcpUrl: https://bnf.mcp.alien.club/mcp
+
+  # Data-cluster MCP — research RAG (Rechercher), required when clusterMode=real.
+  # The research agent's rag_query tool queries this over dataset `bnf-<projectId>`.
+  dataclusterMcpUrl: https://mcp-test-bnf-corpus-1781899491112.mcp.alpha.alien.club/mcp
+
+  # Langfuse observability — OPTIONAL. Set publicKey here + secretKey in the
+  # ExternalSecret to enable per-turn tracing. Leave blank → tracing off.
+  langfusePublicKey: "pk-lf-014385ed-18f6-4fa1-84eb-4a7fdc7c7adf"
+  langfuseBaseUrl: https://langfuse.alien.club
+
+  # Service name reported to SigNoz. Keep stable across deploys.
+  otelServiceName: "bnf-demo-prod"
+
+# ===========================================================================
+# Ingest worker — the major difference from the other demos.
+#
+# A long-running consumer: it pulls doc-ingest jobs from a pg-boss queue (in
+# the bundled Postgres), runs prepare → embed → register against Gallica /
+# Scaleway GenAI / RunPod / the data cluster, and serves an HTTP submit API on
+# :7777 that the app calls (WORKER_RUNNER_URL). pg-boss row-locks make it safe
+# to scale horizontally (worker.replicaCount > 1) — they share one queue.
+#
+# Active only when config.clusterMode=real. In fake mode set worker.enabled=false.
+# ===========================================================================
+worker:
+  enabled: true
+  replicaCount: 1
+
+  image:
+    repository: rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo-worker
+    pullPolicy: Always
+    tag: "0.1.0"
+
+  service:
+    type: ClusterIP
+    port: 7777
+
+  config:
+    # Blob storage — "s3" (Scaleway Object Storage) for real, "local" for debug.
+    blobStore: s3
+    s3Bucket: bnf-corpus-demo
+    s3Endpoint: https://s3.fr-par.scw.cloud
+    s3Region: fr-par
+
+    # Scaleway Generative API — primary vision (Holo2). Key is a secret.
+    genaiBaseUrl: https://api.scaleway.ai/77c152cc-4d27-4d9b-a449-143df07bcaad/v1
+    holoModel: holo2-30b-a3b
+
+    # Google AI — vision provider (primary or fallback per visionPrimary). Key is a secret.
+    geminiVisionModel: gemma-4-31b-it
+    visionPrimary: holo
+
+    # RunPod bge-m3 embedder. Key is a secret.
+    runpodEndpointId: pngrbp0y1aj28i
+    runpodEmbeddingModel: BAAI/bge-m3
+
+    # Data cluster (register/upsert). Proxy base = backendApiUrl + /clusters/<id>/proxy.
+    # bearer token is a secret. clusterId MUST match the dataset region the app's
+    # DATACLUSTER_MCP_URL points at.
+    backendApiUrl: https://api.alpha.alien.club
+    clusterId: "158"
+
+    # Gallica politeness / rate-limit knobs (see worker/.env.example).
+    gallicaRps: "0.083"
+    gallicaBurst: "5"
+    gallicaGeneralRps: "8"
+    gallicaGeneralBurst: "16"
+    viewerOcrConcurrency: "10"
+    viewerOcrDelayMs: "40"
+
+    # Ingest reliability — slow-but-completes (a long OCR book at 5 req/min is
+    # legitimately tens of minutes; keep pg-boss patient instead of expire-looping).
+    ingestJobExpireSeconds: "14400"
+    ingestRetryLimit: "5"
+    ingestRetryDelaySeconds: "120"
+    maxOcrPages: "300"
+    maxImageCanvases: "40"
+    imageConcurrency: "3"
+    workerConcurrency: "4"
+
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+
+  # The worker drains in-flight jobs on SIGTERM; give it room (a doc can be
+  # mid-OCR). Must comfortably exceed a single doc's prepare time, not the full
+  # job ceiling.
+  terminationGracePeriodSeconds: 120
+
+# ===========================================================================
+# Bundled Postgres — single replica, PVC-backed, no replication. Shared by the
+# app (domain tables + better-auth) and the worker (pg-boss queue, own schema).
+# Fine for a demo; not for real production data.
+# ===========================================================================
+postgres:
+  enabled: true
+  image:
+    repository: postgres
+    tag: "16-alpine"
+    pullPolicy: IfNotPresent
+  database: bnf_demo
+  username: bnf_demo
+  # Password generated once and preserved across upgrades (see postgres-secret.yaml).
+  port: 5432
+  persistence:
+    size: 10Gi
+    accessModes:
+      - ReadWriteOnce
+    # storageClassName: leave unset to use the cluster default (sbs-default on Scaleway)
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+
+# ===========================================================================
+# Istio ingress. bnf.demo.alien.club is a dedicated subdomain served at root
+# (no basePath / URI rewrite), so the chart provisions its OWN Gateway +
+# cert-manager Certificate. Requires DNS bnf.demo.alien.club → istio ingress
+# and the `letsencrypt` ClusterIssuer.
+# ===========================================================================
+istio:
+  hosts:
+    - host: bnf.demo.alien.club
+      path: /
+      gateway: own
+
+  gatewayNamespace: istio-system
+  # REQUIRED only if any host uses `gateway: shared`. Name of an existing Istio
+  # Gateway already serving the host. Discover with:
+  #   kubectl get vs -A -o wide | grep <host>
+  sharedGatewayName: ""
+
+  gateway:
+    # Required true if any host uses `gateway: own`. Provisions a Gateway
+    # covering the `own` hosts (port 80 for ACME HTTP-01 + 443 TLS).
+    create: true
+
+  virtualService:
+    enabled: true
+    # Both null on purpose — the agent streams SSE for the full duration of a
+    # turn (a finite timeout would chop long answers), and POST /api/.../messages
+    # has side effects (creates rows, starts a run) so auto-retry would duplicate.
+    # Istio rejects "0s" but treats an absent field as "no limit / no retries".
+    timeout: null
+    retries: null
+
+  certificate:
+    # Required true if any host uses `gateway: own`. Issues a Certificate
+    # covering all `own` hosts and mounts it as the Gateway's TLS credential.
+    enabled: true
+    issuerName: letsencrypt
+
+# ===========================================================================
+# Secrets — pulled from Scaleway Secret Manager via external-secrets. One
+# remote secret holds all real credentials as properties; each property below
+# maps to one env var. Leave a property name blank to skip that key.
+# ===========================================================================
+secrets:
+  # Name of the Scaleway Secret Manager secret holding every credential below.
+  scalewaySecretName: bnf-demo-prod
+
+  # --- App credentials ---
+  anthropicApiKeyProperty: ANTHROPIC_API_KEY
+  bnfMcpTokenProperty: BNF_MCP_TOKEN
+  # data-cluster bearer (RAG via datacluster MCP); shared with the worker.
+  clusterBearerTokenProperty: CLUSTER_BEARER_TOKEN
+  # Optional — only consumed if config.langfusePublicKey is set.
+  langfuseSecretKeyProperty: LANGFUSE_SECRET_KEY
+
+  # --- Worker credentials ---
+  scwS3AccessKeyProperty: SCW_S3_ACCESS_KEY
+  scwS3SecretKeyProperty: SCW_S3_SECRET_KEY
+  scwApiKeyProperty: SCW_API_KEY
+  googleAiApiKeyProperty: GOOGLE_AI_API_KEY
+  runpodApiKeyProperty: RUNPOD_API_KEY
+
+podAnnotations:
+  # OTel Node.js auto-instrumentation sidecar (Instrumentation CR in signoz ns).
+  instrumentation.opentelemetry.io/inject-nodejs: "signoz/signoz-instrumentation"
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

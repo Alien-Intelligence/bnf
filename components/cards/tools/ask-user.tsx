@@ -31,6 +31,9 @@ interface Props {
   onSubmit: (text: string) => void
   /** Disable interaction (e.g. a turn is streaming). */
   disabled?: boolean
+  /** A newer ask_user exists (or this one was already answered) — render inert.
+   *  Only the most recent unanswered chooser is interactive. */
+  superseded?: boolean
 }
 
 // Tolerant parse of the tool input into a typed question list.
@@ -68,7 +71,12 @@ function parseInput(input: Record<string, unknown> | null): {
   return { intro, questions }
 }
 
-export function CardToolAskUser({ input, onSubmit, disabled = false }: Props) {
+export function CardToolAskUser({
+  input,
+  onSubmit,
+  disabled = false,
+  superseded = false,
+}: Props) {
   const t = useTranslations("askUser")
   const { intro, questions } = useMemo(() => parseInput(input), [input])
 
@@ -86,7 +94,8 @@ export function CardToolAskUser({ input, onSubmit, disabled = false }: Props) {
     (_, i) => (selected[i]?.length ?? 0) > 0,
   ).length
   const allAnswered = answeredCount === questions.length
-  const locked = submitted || skipped || disabled
+  const locked = submitted || skipped || disabled || superseded
+  const dim = skipped || (superseded && !submitted)
 
   function toggle(qIndex: number, label: string, multi: boolean) {
     if (locked) return
@@ -117,7 +126,7 @@ export function CardToolAskUser({ input, onSubmit, disabled = false }: Props) {
     <div
       className={cn(
         "animate-bnf-up rounded-md border bg-card px-4 py-3.5 transition-opacity",
-        skipped && "opacity-60",
+        dim && "opacity-60",
       )}
     >
       {/* Header */}
@@ -131,11 +140,13 @@ export function CardToolAskUser({ input, onSubmit, disabled = false }: Props) {
             "inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-0.5 font-mono text-[10px] tracking-wide uppercase",
             submitted
               ? "border-brand-teal/30 bg-brand-teal/10 text-brand-teal"
-              : "border-info/30 bg-info/10 text-info",
+              : superseded
+                ? "border-border bg-muted/40 text-muted-foreground"
+                : "border-info/30 bg-info/10 text-info",
           )}
         >
           <span className="size-1.5 rounded-full bg-current" aria-hidden />
-          {submitted ? t("answered") : t("pending")}
+          {submitted ? t("answered") : superseded ? t("superseded") : t("pending")}
         </span>
       </div>
 
@@ -179,7 +190,9 @@ export function CardToolAskUser({ input, onSubmit, disabled = false }: Props) {
       </div>
 
       {/* Footer */}
-      {skipped ? (
+      {superseded && !submitted ? (
+        <p className="mt-3.5 text-[11.5px] text-muted-foreground">{t("supersededHint")}</p>
+      ) : skipped ? (
         <p className="mt-3.5 text-[11.5px] text-muted-foreground">{t("freeHint")}</p>
       ) : (
         <div className="mt-3.5 flex flex-wrap items-center gap-x-4 gap-y-2">

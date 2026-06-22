@@ -1,0 +1,112 @@
+{{- if and .Values.worker.enabled (eq .Values.config.clusterMode "real") }}
+# Ingest worker — the structural difference from the other demos.
+#
+# A long-running consumer of the pg-boss queue (in the bundled Postgres) that
+# also serves the HTTP submit API the app calls on :7777. It is NOT fronted by
+# Istio — only the app reaches it, over the in-cluster Service. pg-boss
+# row-locks make replicaCount > 1 safe (one shared queue, no double-processing).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "bnf-demo.fullname" . }}-worker
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "bnf-demo.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  replicas: {{ .Values.worker.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "bnf-demo.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/worker-configmap.yaml") . | sha256sum }}
+      labels:
+        {{- include "bnf-demo.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: worker
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.securityContext | nindent 8 }}
+      # The worker drains in-flight jobs on SIGTERM (no pm2/systemd — the
+      # process traps the signal). Give it time to finish the doc it's on.
+      terminationGracePeriodSeconds: {{ .Values.worker.terminationGracePeriodSeconds }}
+      {{- if .Values.postgres.enabled }}
+      # The worker connects to pg-boss immediately on boot; without this gate it
+      # crash-loops (and burns restart backoff) until the bundled Postgres is up.
+      # The app pod waits in its entrypoint instead — the worker image has no
+      # psql, so we borrow pg_isready from the postgres image here.
+      initContainers:
+        - name: wait-for-postgres
+          image: "{{ .Values.postgres.image.repository }}:{{ .Values.postgres.image.tag }}"
+          imagePullPolicy: {{ .Values.postgres.image.pullPolicy }}
+          command:
+            - sh
+            - -c
+            # -U is required: this pod runs as uid 1000, which has no entry in
+            # the postgres image's /etc/passwd. Without an explicit user, libpq
+            # calls getpwuid(1000), fails, and reports "no attempt" before ever
+            # connecting. Passing -U skips that lookup entirely.
+            - |
+              until pg_isready -h {{ include "bnf-demo.fullname" . }}-postgres.{{ .Values.namespace }}.svc.cluster.local -p {{ .Values.postgres.port }} -U {{ .Values.postgres.username }}; do
+                echo "[wait-for-postgres] not ready, retrying in 2s..."
+                sleep 2
+              done
+              echo "[wait-for-postgres] Postgres is ready."
+      {{- end }}
+      containers:
+        - name: worker
+          image: "{{ .Values.worker.image.repository }}:{{ .Values.worker.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.worker.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.worker.service.port }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "bnf-demo.fullname" . }}-worker-config
+            - secretRef:
+                name: {{ include "bnf-demo.fullname" . }}-worker-creds
+          env:
+            # Same Postgres as the app — the worker owns its own pg-boss schema.
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "bnf-demo.fullname" . }}-postgres
+                  key: DATABASE_URL
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

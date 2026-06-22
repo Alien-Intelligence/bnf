@@ -39,9 +39,11 @@ export const askUserTool = defineTool<
     "them answer by clicking options — use this INSTEAD of writing choices as " +
     "prose (e.g. 'Option A / B / C'). Ideal for scoping decisions: chronological " +
     "range, languages, document types, depth, which subset to add, etc. " +
-    "CALL THIS AS THE FINAL ACTION OF YOUR TURN: it ends the turn. Do not write " +
-    "anything after it and do not call other tools — the user will reply by " +
-    "selecting options, which arrives as your next message. Each question needs a " +
+    "CALL THIS AS THE FINAL ACTION OF YOUR TURN, AT MOST ONCE: it ends the turn. " +
+    "Never emit two ask_user calls in the same turn — put every question you have " +
+    "into ONE ask_user (up to 4 questions). Do not write anything after it and do " +
+    "not call other tools — the user will reply by selecting options, which " +
+    "arrives as your next message. Each question needs a " +
     "short question text and 2–6 concise options; set multiSelect=true when more " +
     "than one option may be chosen. Provide an optional `intro` framing the set " +
     "(e.g. 'Cadrons le corpus avant de chercher'). Write all text in French.",

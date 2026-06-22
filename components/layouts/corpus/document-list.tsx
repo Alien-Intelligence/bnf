@@ -7,6 +7,7 @@
 
 import { Loader2 } from "lucide-react"
 import { useTranslations } from "next-intl"
+import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { CardCorpusDocumentRow } from "@/components/cards/corpus/document-row"
 import { CardCorpusDocumentRowSkeleton } from "@/components/cards/corpus/document-row-skeleton"
@@ -32,6 +33,9 @@ interface Props {
   fetchNextPage: () => void
   /** Called when the user clears all active filters from the no-results state. */
   onClearFilters: () => void
+  /** True while a filter change is being applied (URL nav + refetch). Dims the
+   *  current rows and shows an "updating" indicator over them. */
+  isFiltering?: boolean
 }
 
 export function LayoutCorpusDocumentList({
@@ -46,6 +50,7 @@ export function LayoutCorpusDocumentList({
   isFetchingNextPage,
   fetchNextPage,
   onClearFilters,
+  isFiltering = false,
 }: Props) {
   const t = useTranslations("corpus.documents")
 
@@ -76,10 +81,25 @@ export function LayoutCorpusDocumentList({
     return <CardCorpusEmpty />
   }
 
-  // Content — render the (flattened, paginated) document rows.
+  // Content — render the (flattened, paginated) document rows. While a filter
+  // change is in flight, dim the (stale) rows and float an "updating" pill so
+  // the slow URL-nav + refetch doesn't look like a hang.
   return (
-    <div className="flex flex-col gap-2">
-      <ul className="flex flex-col gap-2 list-none p-0 m-0">
+    <div className="relative flex flex-col gap-2">
+      {isFiltering && (
+        <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex justify-center pt-4">
+          <span className="inline-flex items-center gap-2 rounded-full border bg-card/95 px-3 py-1.5 text-xs text-muted-foreground shadow-sm backdrop-blur-sm">
+            <Loader2 className="size-3.5 animate-spin" />
+            {t("filtering")}
+          </span>
+        </div>
+      )}
+      <ul
+        className={cn(
+          "m-0 flex list-none flex-col gap-2 p-0 transition-opacity",
+          isFiltering && "pointer-events-none opacity-50",
+        )}
+      >
         {corpus.sample.map((doc) => (
           <li key={doc.ark}>
             <CardCorpusDocumentRow

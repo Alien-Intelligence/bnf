@@ -1,0 +1,22 @@
+{{- if .Values.postgres.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "bnf-demo.fullname" . }}-postgres
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "bnf-demo.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+spec:
+  type: ClusterIP
+  # Headless — StatefulSet expects stable network identities.
+  clusterIP: None
+  ports:
+    - port: {{ .Values.postgres.port }}
+      targetPort: postgres
+      protocol: TCP
+      name: postgres
+  selector:
+    {{- include "bnf-demo.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+{{- end }}

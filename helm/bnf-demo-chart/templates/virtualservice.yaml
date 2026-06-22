@@ -1,0 +1,79 @@
+{{- if .Values.istio.virtualService.enabled }}
+{{- $ns := .Values.istio.gatewayNamespace }}
+{{- $sharedRef := "" }}
+{{- $ownRef := "" }}
+{{- $hasShared := false }}
+{{- $hasOwn := false }}
+{{- range .Values.istio.hosts }}
+  {{- if eq (.gateway | default "shared") "own" }}
+    {{- $hasOwn = true }}
+  {{- else }}
+    {{- $hasShared = true }}
+  {{- end }}
+{{- end }}
+{{- if $hasShared }}
+  {{- $sharedName := required "istio.sharedGatewayName must be set when any host uses gateway: shared — provide the name of an existing Istio Gateway in istio.gatewayNamespace" .Values.istio.sharedGatewayName }}
+  {{- $sharedRef = printf "%s/%s" $ns $sharedName }}
+{{- end }}
+{{- if $hasOwn }}
+  {{- if not .Values.istio.gateway.create }}
+    {{- fail "istio.gateway.create must be true when any host uses gateway: own" }}
+  {{- end }}
+  {{- $ownRef = printf "%s/%s-gateway" $ns (include "bnf-demo.fullname" .) }}
+{{- end }}
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: {{ include "bnf-demo.fullname" . }}-vs
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "bnf-demo.labels" . | nindent 4 }}
+    app.kubernetes.io/component: virtualservice
+spec:
+  hosts:
+    {{- $allHosts := list }}
+    {{- range .Values.istio.hosts }}
+    {{- $allHosts = append $allHosts .host }}
+    {{- end }}
+    {{- range ($allHosts | uniq) }}
+    - {{ . }}
+    {{- end }}
+  gateways:
+    {{- if $hasShared }}
+    - {{ $sharedRef }}
+    {{- end }}
+    {{- if $hasOwn }}
+    - {{ $ownRef }}
+    {{- end }}
+  http:
+    {{- range .Values.istio.hosts }}
+    {{- $gwRef := $sharedRef }}
+    {{- if eq (.gateway | default "shared") "own" }}
+    {{- $gwRef = $ownRef }}
+    {{- end }}
+    - name: bnf-demo-route-{{ .host | replace "." "-" }}{{ if ne .path "/" }}-{{ trimPrefix "/" .path | replace "/" "-" }}{{ else }}-root{{ end }}
+      match:
+        - uri:
+            prefix: {{ .path }}
+          authority:
+            exact: {{ .host }}
+          gateways:
+            - {{ $gwRef }}
+      {{- with .rewrite }}
+      rewrite:
+        uri: {{ . }}
+      {{- end }}
+      route:
+        - destination:
+            host: {{ include "bnf-demo.fullname" $ }}.{{ $.Values.namespace }}.svc.cluster.local
+            port:
+              number: {{ $.Values.service.port }}
+      {{- with $.Values.istio.virtualService.timeout }}
+      timeout: {{ . }}
+      {{- end }}
+      {{- with $.Values.istio.virtualService.retries }}
+      retries:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- end }}
+{{- end }}

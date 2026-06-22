@@ -24,8 +24,8 @@ import { XMLParser } from "fast-xml-parser"
 import { Agent, fetch as undiciFetch } from "undici"
 
 import {
+  BNF_DIRECT_CONCURRENCY,
   BNF_HTTP_TIMEOUT_MS,
-  BNF_MCP_CONCURRENCY,
   BNF_MCP_RETRY_ATTEMPTS,
   BNF_MCP_RETRY_BASE_MS,
   BNF_MCP_RETRY_CAP_MS,
@@ -164,7 +164,7 @@ export class BnfDirectClient {
     const settled: Settled<BnfMcpDocumentDetail>[] = await withConcurrency(
       arks,
       (ark) => this.resolveArk(ark),
-      BNF_MCP_CONCURRENCY,
+      BNF_DIRECT_CONCURRENCY,
     )
     return arks.map((ark, i) => {
       const s = settled[i]

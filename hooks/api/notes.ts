@@ -5,7 +5,7 @@
 // All HTTP calls go through apiFetch — never raw fetch().
 // Query keys are defined once at the top; never inlined at the call site.
 
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
+import { useQuery, useQueries, useMutation, useQueryClient } from "@tanstack/react-query"
 import { apiFetch } from "@/lib/api-fetch"
 import type { NoteListItem, NoteWithCitations, NoteVersionListItem } from "@/models/notes/schema"
 import type { CreateNoteInput, UpdateNoteInput } from "@/models/notes/types"
@@ -57,6 +57,25 @@ export function useNote(noteId: string | null) {
       return res.json() as Promise<NoteWithCitations>
     },
     enabled: !!noteId,
+  })
+}
+
+/**
+ * Fetch the full body (+ citations) of several notes at once — the in-page
+ * Carnet stitches every note into one document. Shares the per-note detail
+ * cache with {@link useNote}, so notes already opened in the Atelier resolve
+ * instantly. Order follows `noteIds`.
+ */
+export function useNoteDetails(noteIds: string[]) {
+  return useQueries({
+    queries: noteIds.map((id) => ({
+      queryKey: noteKeys.detail(id),
+      queryFn: async () => {
+        const res = await apiFetch(`/api/notes/${id}`)
+        if (!res.ok) throw new Error(`Failed to fetch note: ${res.status}`)
+        return res.json() as Promise<NoteWithCitations>
+      },
+    })),
   })
 }
 

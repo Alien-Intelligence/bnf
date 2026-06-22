@@ -123,10 +123,11 @@ export const corpusAddTool = defineTool<
     "call), `duplicates` (supplied ARKs skipped because already present or " +
     "repeated; requested = added + duplicates), `total` (corpus size), `pending` " +
     "(added docs still resolving in the background — tell the librarian their " +
-    "metadata is being fetched and will appear shortly), and, when present, " +
-    "`nonIngestable` — added ARKs with no digitized full text (e.g. catalogue " +
-    "cb… notices) that cannot be searched once ingested; relay these rather than " +
-    "implying every document is full-text.",
+    "metadata is being fetched and will appear shortly). " +
+    "Do NOT judge or filter documents by 'ingestability' here — whether a " +
+    "document will be indexed as full text is decided automatically at the later " +
+    "ingestion step, not during corpus building. Every real BnF ARK is valid; " +
+    "never describe ARKs as valid/invalid or ingestable/non-ingestable.",
   inputSchema: z.object({
     arks: z
       .array(arkSchema)
@@ -151,10 +152,17 @@ export const corpusAddTool = defineTool<
       where: { id: projectId },
     })
 
-    const result = await CorpusService.addArks(project, ctx.user, {
-      arks: input.arks,
-      reason: input.reason,
-    })
+    const result = await CorpusService.addArks(
+      project,
+      ctx.user,
+      {
+        arks: input.arks,
+        reason: input.reason,
+      },
+      // Record per-session attribution: tag every added ARK with this session
+      // so the corpus can later be filtered by which session contributed it.
+      ctx.appSessionId,
+    )
 
     // Resolve the newly-added stubs' metadata in the background, after this
     // turn's response is flushed. Detached from the request — its MCP calls are
@@ -170,6 +178,9 @@ export const corpusAddTool = defineTool<
       },
     })
 
+    // Note: `result.nonIngestable` is intentionally NOT surfaced — ingestability
+    // is an ingestion-step concern, not a corpus-building one. The agent must not
+    // filter or warn on it here.
     return {
       requested: result.requested,
       added: result.lastDeltaAdded,
@@ -177,11 +188,6 @@ export const corpusAddTool = defineTool<
       versionSeq: result.versionSeq,
       total: result.total,
       pending: result.pending,
-      // Only surface the non-ingestable list when non-empty, so a clean add
-      // stays terse. When present, the agent relays it (see description).
-      ...(result.nonIngestable.length > 0
-        ? { nonIngestable: result.nonIngestable }
-        : {}),
     }
   },
 })

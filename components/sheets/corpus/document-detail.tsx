@@ -22,10 +22,11 @@ import {
 } from "@/components/ui/sheet"
 import { Button } from "@/components/ui/button"
 import { BadgeDocumentType } from "@/components/badges/documents/type-badge"
+import { BadgeDocumentThumb } from "@/components/badges/documents/thumb"
 import {
   CATALOGUE_RECORD_URL,
-  GALLICA_DOCUMENT_URL,
   GALLICA_IIIF_VIEWER_URL,
+  GALLICA_ITEM_URL,
   GALLICA_OAI_URL,
   IIIF_MANIFEST_URL,
   TYPE_DATASET_COLOR,
@@ -180,11 +181,7 @@ export function SheetDocumentDetail({ doc, projectId, open, onOpenChange }: Prop
         <div className="flex-1 overflow-y-auto px-4 pt-4 pb-6">
           {/* Header: thumb + type chip + title + author */}
           <div className="flex items-start gap-3.5">
-            <span
-              className="size-14 shrink-0 rounded-md"
-              style={{ background: `color-mix(in srgb, ${thumbColor} 22%, var(--card))` }}
-              aria-hidden
-            />
+            <BadgeDocumentThumb color={thumbColor} size="lg" />
             <div className="min-w-0 flex-1">
               {doc.docType && <BadgeDocumentType code={doc.docType} />}
               <h2 className="mt-2 text-[15px] leading-snug font-semibold tracking-tight">
@@ -252,7 +249,7 @@ export function SheetDocumentDetail({ doc, projectId, open, onOpenChange }: Prop
                     subtitle={t("detail.iiifViewerSub")}
                   />
                   <LinkCard
-                    href={GALLICA_DOCUMENT_URL(doc.ark)}
+                    href={GALLICA_ITEM_URL(doc.ark, 1)}
                     icon={<FileText className="size-4" />}
                     title={t("detail.gallicaNotice")}
                     subtitle={t("detail.gallicaNoticeSub")}

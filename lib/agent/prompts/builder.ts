@@ -97,61 +97,56 @@ export class PromptBuilder {
     }
   }
 
+  // Aggregate-only corpus snapshot for the system prompt: total + facet counts,
+  // NO per-document list. The agent inspects specific documents on demand via the
+  // corpus.get_state tool, so the prompt stays a fixed small size regardless of
+  // corpus size (a 5k-doc corpus produces the same prompt as a 50-doc one).
+  // Computed with groupBy aggregates — never loads the full membership.
   private static async loadCorpusSnapshot(projectId: string) {
     const project = await prisma.project.findUniqueOrThrow({
       where: { id: projectId },
       select: { headVersionId: true },
     })
     if (!project.headVersionId) {
-      return {
-        versionSeq: 0,
-        total: 0,
-        facets: { type: {}, lang: {}, period: {} },
-        sample: [],
-      }
+      return { versionSeq: 0, total: 0, facets: { type: {}, lang: {}, period: {} } }
     }
-    const [headVersion, membership] = await Promise.all([
+    const versionId = project.headVersionId
+    const memberOf = { membership: { some: { versionId } } }
+
+    const [headVersion, total, typeRows, langRows, yearRows] = await Promise.all([
       prisma.corpusVersion.findUniqueOrThrow({
-        where: { id: project.headVersionId },
+        where: { id: versionId },
         select: { seq: true },
       }),
-      prisma.corpusMembership.findMany({
-        where: { versionId: project.headVersionId },
-        select: {
-          document: {
-            select: {
-              ark: true,
-              title: true,
-              docType: true,
-              lang: true,
-              year: true,
-            },
-          },
-        },
+      prisma.corpusMembership.count({ where: { versionId } }),
+      prisma.document.groupBy({
+        by: ["docType"],
+        where: { ...memberOf, docType: { not: null } },
+        _count: { ark: true },
+      }),
+      prisma.document.groupBy({
+        by: ["lang"],
+        where: { ...memberOf, lang: { not: null } },
+        _count: { ark: true },
+      }),
+      prisma.document.groupBy({
+        by: ["year"],
+        where: { ...memberOf, year: { not: null } },
+        _count: { ark: true },
       }),
     ])
-    const docs = membership.map((m) => m.document)
-    const sample = docs
-      .slice(0, 25)
-      // title is null for stubs still resolving — show a placeholder so the
-      // agent can tell the metadata hasn't landed yet.
-      .map((d) => ({ ark: d.ark, title: d.title ?? "(métadonnées en cours)" }))
+
     const type: Record<string, number> = {}
+    for (const r of typeRows) if (r.docType) type[r.docType] = r._count.ark
     const lang: Record<string, number> = {}
+    for (const r of langRows) if (r.lang) lang[r.lang] = r._count.ark
     const period: Record<string, number> = {}
-    for (const d of docs) {
-      if (d.docType) type[d.docType] = (type[d.docType] ?? 0) + 1
-      if (d.lang) lang[d.lang] = (lang[d.lang] ?? 0) + 1
-      if (d.year) {
-        const dec = `${Math.floor(d.year / 10) * 10}s`
-        period[dec] = (period[dec] ?? 0) + 1
-      }
+    for (const r of yearRows) {
+      if (r.year === null) continue
+      const dec = `${Math.floor(r.year / 10) * 10}s`
+      period[dec] = (period[dec] ?? 0) + r._count.ark
     }
-    return {
-      versionSeq: headVersion.seq,
-      total: docs.length,
-      facets: { type, lang, period },
-      sample,
-    }
+
+    return { versionSeq: headVersion.seq, total, facets: { type, lang, period } }
   }
 }

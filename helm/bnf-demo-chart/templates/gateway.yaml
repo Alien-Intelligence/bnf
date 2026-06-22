@@ -1,0 +1,48 @@
+{{- if .Values.istio.gateway.create }}
+{{- $ownHostsRaw := list }}
+{{- range .Values.istio.hosts }}
+  {{- if eq (.gateway | default "shared") "own" }}
+    {{- $ownHostsRaw = append $ownHostsRaw .host }}
+  {{- end }}
+{{- end }}
+{{- $ownHosts := $ownHostsRaw | uniq }}
+{{- if $ownHosts }}
+---
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: {{ include "bnf-demo.fullname" . }}-gateway
+  namespace: {{ .Values.istio.gatewayNamespace }}
+  labels:
+    {{- include "bnf-demo.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+    # HTTP server for ACME HTTP-01 challenges (no redirect).
+    - port:
+        number: 80
+        name: http-bnf-demo
+        protocol: HTTP
+      hosts:
+        {{- range $ownHosts }}
+        - {{ . }}
+        {{- end }}
+      tls:
+        httpsRedirect: false
+
+    # HTTPS server with the cert-manager issued certificate (see certificate.yaml).
+    - port:
+        number: 443
+        name: https-bnf-demo
+        protocol: HTTPS
+      hosts:
+        {{- range $ownHosts }}
+        - {{ . }}
+        {{- end }}
+      tls:
+        mode: SIMPLE
+        credentialName: {{ include "bnf-demo.fullname" . }}-tls
+{{- end }}
+{{- end }}

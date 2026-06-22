@@ -58,3 +58,39 @@ export function requireMcpEnv(): z.infer<typeof mcpEnvSchema> {
   _mcpEnv = parsed.data
   return _mcpEnv
 }
+
+// ---------------------------------------------------------------------------
+// Lazy data-cluster MCP env — only required when real RAG (CLUSTER_MODE=real)
+// queries the datacluster MCP. Same throw-on-missing contract as requireMcpEnv:
+// the dev server boots without these; the first real RAG call throws naming the
+// offending key(s). NO defaults (CLAUDE_ERROR_PATTERNS §10).
+// ---------------------------------------------------------------------------
+
+const clusterEnvSchema = z.object({
+  DATACLUSTER_MCP_URL: z.string().url(),
+  CLUSTER_BEARER_TOKEN: z.string().min(1),
+})
+
+let _clusterEnv: z.infer<typeof clusterEnvSchema> | null = null
+
+/**
+ * Returns the validated data-cluster MCP env object.
+ * Throws on first call if DATACLUSTER_MCP_URL or CLUSTER_BEARER_TOKEN are
+ * absent / invalid. Subsequent calls return the cached object (no re-parsing).
+ */
+export function requireClusterEnv(): z.infer<typeof clusterEnvSchema> {
+  if (_clusterEnv !== null) return _clusterEnv
+
+  const parsed = clusterEnvSchema.safeParse(process.env)
+  if (!parsed.success) {
+    const missing = parsed.error.issues.map((i) => i.path.join(".")).join(", ")
+    throw new Error(
+      `Data-cluster MCP env not configured: ${missing}. ` +
+        `Set DATACLUSTER_MCP_URL and CLUSTER_BEARER_TOKEN in .env.local ` +
+        `(required when CLUSTER_MODE=real). See .env.example.`,
+    )
+  }
+
+  _clusterEnv = parsed.data
+  return _clusterEnv
+}

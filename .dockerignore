@@ -1,0 +1,30 @@
+# Build artifacts and local state — never ship these into the image.
+node_modules
+.next
+.git
+.gitignore
+
+# Local env / secrets — runtime config comes from the ConfigMap / Secrets.
+.env
+.env.local
+.env.*.local
+
+# The worker has its own image (worker/Dockerfile.worker); don't bloat the
+# app context with it or its local sandbox data.
+worker
+
+# Docs, design, scratch — irrelevant to the runtime image.
+ai_docs
+design
+playbook
+sandbox
+README.md
+CLAUDE.md
+AGENTS.md
+
+# IDE / OS noise
+.vscode
+.idea
+.DS_Store
+*.log
+tsconfig.tsbuildinfo

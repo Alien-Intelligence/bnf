@@ -24,6 +24,8 @@ export const corpusFiltersSchema = z.object({
   lang: z.string().optional(),
   /** Comma-separated source identifiers */
   source: z.string().optional(),
+  /** Comma-separated AppSession ids — filter to docs a given session contributed */
+  session: z.string().optional(),
   /**
    * Comma-separated ingestion classes (numérisation buckets):
    * "ocr" | "vision" | "sans_texte" | "non_numerise". A derived classification,
@@ -52,6 +54,7 @@ export function corpusFiltersToParams(filters: CorpusFilters): URLSearchParams {
   if (filters.type) p.set("type", filters.type)
   if (filters.lang) p.set("lang", filters.lang)
   if (filters.source) p.set("source", filters.source)
+  if (filters.session) p.set("session", filters.session)
   if (filters.ingest) p.set("ingest", filters.ingest)
   if (filters.yearFrom !== undefined) p.set("yearFrom", String(filters.yearFrom))
   if (filters.yearTo !== undefined) p.set("yearTo", String(filters.yearTo))
@@ -80,7 +83,7 @@ export function corpusFiltersFromParams(params: URLSearchParams): CorpusFilters 
  */
 export function removeFromFilter(
   filters: CorpusFilters,
-  key: "type" | "lang" | "source" | "ingest",
+  key: "type" | "lang" | "source" | "session" | "ingest",
   value: string,
 ): CorpusFilters {
   const current = filters[key]
@@ -103,6 +106,7 @@ export function hasActiveFilters(filters: CorpusFilters): boolean {
     (!!filters.type && filters.type.length > 0) ||
     (!!filters.lang && filters.lang.length > 0) ||
     (!!filters.source && filters.source.length > 0) ||
+    (!!filters.session && filters.session.length > 0) ||
     (!!filters.ingest && filters.ingest.length > 0) ||
     filters.yearFrom !== undefined ||
     filters.yearTo !== undefined ||

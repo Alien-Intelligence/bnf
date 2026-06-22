@@ -2,6 +2,7 @@
 
 import { useState } from "react"
 import { useTranslations } from "next-intl"
+import { formatRelativeFr } from "@/lib/format"
 import type { AppSession } from "@/models/sessions/schema"
 
 interface CardSessionListItemProps {
@@ -24,7 +25,7 @@ export function CardSessionListItem({
   const [renameValue, setRenameValue] = useState(session.title)
   const [menuOpen, setMenuOpen] = useState(false)
 
-  const relativeTime = formatRelative(session.updatedAt)
+  const relativeTime = formatRelativeFr(session.updatedAt)
 
   const handleRenameSubmit = () => {
     const trimmed = renameValue.trim()
@@ -139,19 +140,4 @@ export function CardSessionListItem({
       )}
     </div>
   )
-}
-
-function formatRelative(date: Date | string): string {
-  const d = typeof date === "string" ? new Date(date) : date
-  const now = Date.now()
-  const diff = now - d.getTime()
-  const minute = 60_000
-  const hour = 60 * minute
-  const day = 24 * hour
-
-  if (diff < minute) return "à l'instant"
-  if (diff < hour) return `il y a ${Math.floor(diff / minute)} min`
-  if (diff < day) return `il y a ${Math.floor(diff / hour)} h`
-  if (diff < 7 * day) return `il y a ${Math.floor(diff / day)} j`
-  return d.toLocaleDateString("fr-FR", { day: "numeric", month: "short" })
 }

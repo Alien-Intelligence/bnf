@@ -34,6 +34,7 @@ import { prisma } from "@/lib/db"
 import { ProjectService } from "@/models/projects/service"
 import { DocumentService } from "@/models/documents/service"
 import { CorpusService } from "@/models/corpus/service"
+import { CorpusQueries } from "@/models/corpus/queries"
 import type { User } from "@/models/users/schema"
 import { parseBnfDate, normalizeDocument, normalizeMany } from "@/lib/mcp/normalize"
 import { mapCatalogueDocType, sourceFromArk } from "@/lib/mcp/vocab"
@@ -83,6 +84,10 @@ let smokeDocArks: string[] = []
 async function deleteProject(projectId: string): Promise<void> {
   await prisma.corpusMembership.deleteMany({ where: { projectId } })
   await prisma.corpusVersion.deleteMany({ where: { projectId } })
+  // Contributions reference both document and app_session; drop them before the
+  // documents (FK) and before any session rows the test created.
+  await prisma.corpusContribution.deleteMany({ where: { projectId } })
+  await prisma.appSession.deleteMany({ where: { projectId } })
   await prisma.document.deleteMany({ where: { projectId } })
   // headVersionId is @unique and references a now-deleted corpus_version row;
   // null it out before deleting the project to satisfy the FK check.
@@ -757,6 +762,134 @@ async function testNoteCitationsParsedAndPersisted(owner: User): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Test 11: per-session corpus attribution + session facet/filter
+//
+// Two sessions add documents to one project:
+//   - session A adds {shared, onlyA}
+//   - session B adds {shared, onlyB}   ← `shared` is re-added from B
+// Asserts:
+//   1. `shared` carries TWO contribution rows (one per session); onlyA/onlyB one.
+//   2. The snapshot session facet counts each session's contribution within the
+//      filtered head set (A → 2, B → 2).
+//   3. Filtering by session A narrows the corpus to {shared, onlyA} and excludes
+//      onlyB; the multi-session `shared` appears under BOTH A and B filters.
+// ---------------------------------------------------------------------------
+async function testSessionAttributionFacet(owner: User): Promise<void> {
+  console.log("\nTest 11: per-session attribution + session facet/filter")
+
+  const project = await ProjectService.create({
+    name: `Smoke Session Attribution ${randomUUID()}`,
+    ownerId: owner.id,
+  })
+
+  // Two corpus sessions on the same project.
+  const sessionA = await prisma.appSession.create({
+    data: { projectId: project.id, scope: "corpus", title: "Mésopotamie" },
+  })
+  const sessionB = await prisma.appSession.create({
+    data: { projectId: project.id, scope: "corpus", title: "Chine" },
+  })
+
+  const shared = `ark:/12148/smoketest-${randomUUID()}`
+  const onlyA = `ark:/12148/smoketest-${randomUUID()}`
+  const onlyB = `ark:/12148/smoketest-${randomUUID()}`
+
+  // Session A adds {shared, onlyA}; session B adds {shared, onlyB}. addArks
+  // stubs unknown ARKs itself, so no pre-seeding is needed.
+  await CorpusService.addArks(
+    project,
+    owner,
+    { arks: [shared, onlyA], reason: "smoke-session-A" },
+    sessionA.id,
+  )
+  await CorpusService.addArks(
+    project,
+    owner,
+    { arks: [shared, onlyB], reason: "smoke-session-B" },
+    sessionB.id,
+  )
+
+  // --- 1. Contribution rows: shared has two, the singletons have one ----------
+  const sharedContribs = await prisma.corpusContribution.findMany({
+    where: { projectId: project.id, ark: shared },
+  })
+  assert.equal(
+    sharedContribs.length,
+    2,
+    `Shared ARK must carry two contribution rows (multi-session), got ${sharedContribs.length}`,
+  )
+  const onlyAContribs = await prisma.corpusContribution.count({
+    where: { projectId: project.id, ark: onlyA },
+  })
+  const onlyBContribs = await prisma.corpusContribution.count({
+    where: { projectId: project.id, ark: onlyB },
+  })
+  assert.equal(onlyAContribs, 1, "onlyA must carry exactly one contribution row")
+  assert.equal(onlyBContribs, 1, "onlyB must carry exactly one contribution row")
+
+  // Re-adding `shared` from session A again must NOT create a duplicate row
+  // (composite PK + skipDuplicates).
+  await CorpusService.addArks(
+    project,
+    owner,
+    { arks: [shared], reason: "smoke-session-A-readd" },
+    sessionA.id,
+  )
+  const sharedContribsAfter = await prisma.corpusContribution.count({
+    where: { projectId: project.id, ark: shared },
+  })
+  assert.equal(
+    sharedContribsAfter,
+    2,
+    `Same-session re-add must not duplicate the contribution row, got ${sharedContribsAfter}`,
+  )
+
+  // --- 2. Session facet counts (unfiltered head) -----------------------------
+  const full = await CorpusQueries.snapshot(project.id, "head")
+  const facetById = new Map(full.sessions.map((s) => [s.sessionId, s.count]))
+  assert.equal(
+    facetById.get(sessionA.id),
+    2,
+    `Session A facet count must be 2, got ${facetById.get(sessionA.id)}`,
+  )
+  assert.equal(
+    facetById.get(sessionB.id),
+    2,
+    `Session B facet count must be 2, got ${facetById.get(sessionB.id)}`,
+  )
+  // Titles are resolved onto the facet.
+  const titleA = full.sessions.find((s) => s.sessionId === sessionA.id)?.title
+  assert.equal(titleA, "Mésopotamie", "Session facet must carry the session title")
+
+  // --- 3. Filtering by session A narrows the corpus --------------------------
+  const filteredA = await CorpusQueries.snapshot(project.id, "head", {
+    filters: { session: [sessionA.id] },
+    limit: 100,
+  })
+  const arksA = new Set(filteredA.sample.map((d) => d.ark))
+  assert.equal(filteredA.total, 2, `Session A filter must yield 2 docs, got ${filteredA.total}`)
+  assert.ok(arksA.has(shared), "Session A filter must include the shared (multi-session) doc")
+  assert.ok(arksA.has(onlyA), "Session A filter must include onlyA")
+  assert.ok(!arksA.has(onlyB), "Session A filter must exclude onlyB")
+
+  // The shared doc appears under session B too (multi-session attribution).
+  const filteredB = await CorpusQueries.snapshot(project.id, "head", {
+    filters: { session: [sessionB.id] },
+    limit: 100,
+  })
+  const arksB = new Set(filteredB.sample.map((d) => d.ark))
+  assert.equal(filteredB.total, 2, `Session B filter must yield 2 docs, got ${filteredB.total}`)
+  assert.ok(arksB.has(shared), "Shared doc must appear under session B too")
+  assert.ok(arksB.has(onlyB), "Session B filter must include onlyB")
+  assert.ok(!arksB.has(onlyA), "Session B filter must exclude onlyA")
+
+  // --- Cleanup ---------------------------------------------------------------
+  await deleteProject(project.id)
+
+  console.log("  ✓ per-session attribution + session facet/filter")
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 async function main(): Promise<void> {
@@ -775,6 +908,7 @@ async function main(): Promise<void> {
     reaperOrphanRecovery: false,
     ingestNoOpShortCircuit: false,
     noteCitationsPersisted: false,
+    sessionAttributionFacet: false,
   }
 
   // --- Setup: one real owner user for Tests 1 + 2 --------------------------
@@ -858,6 +992,13 @@ async function main(): Promise<void> {
     console.error("FAIL Test 10 (note citations parsed + persisted):", err)
   }
 
+  try {
+    await testSessionAttributionFacet(smokeUser)
+    results.sessionAttributionFacet = true
+  } catch (err: unknown) {
+    console.error("FAIL Test 11 (per-session attribution + session facet/filter):", err)
+  }
+
   // --- Cleanup (always) ----------------------------------------------------
   console.log("\nCleaning up …")
   try {
@@ -882,6 +1023,7 @@ async function main(): Promise<void> {
   console.log(`  ${tick(results.reaperOrphanRecovery)} reaper orphan recovery`)
   console.log(`  ${tick(results.ingestNoOpShortCircuit)} ingest no-op short-circuit`)
   console.log(`  ${tick(results.noteCitationsPersisted)} note citations parsed + persisted`)
+  console.log(`  ${tick(results.sessionAttributionFacet)} per-session attribution + session facet/filter`)
   console.log("═══════════════════════════════════════════════")
 
   process.exit(Object.values(results).every(Boolean) ? 0 : 1)

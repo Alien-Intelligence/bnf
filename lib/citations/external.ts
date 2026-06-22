@@ -15,7 +15,12 @@
  * URL templates live in lib/constants.ts — the single source of truth.
  */
 
-import { GALLICA_ITEM_URL, IIIF_IMAGE_URL, IIIF_MANIFEST_URL } from "@/lib/constants"
+import {
+  GALLICA_IIIF_VIEWER_URL,
+  GALLICA_ITEM_URL,
+  IIIF_IMAGE_URL,
+  IIIF_MANIFEST_URL,
+} from "@/lib/constants"
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -54,6 +59,12 @@ export function citationLinks(
  * Thin re-export so call sites can import from a single location.
  */
 export { GALLICA_ITEM_URL as gallicaItemUrl }
+
+/**
+ * Gallica IIIF (Universal) viewer URL for a document (no folio).
+ * The "open on Gallica" surface, distinct from the exact-folio item page.
+ */
+export { GALLICA_IIIF_VIEWER_URL as gallicaViewerUrl }
 
 /**
  * IIIF image URL for a given ARK + folio.

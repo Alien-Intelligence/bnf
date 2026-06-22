@@ -28,14 +28,25 @@ export interface RetryOptions {
   baseMs?: number
   /** Maximum delay cap in ms. Default: BNF_MCP_RETRY_CAP_MS (8000). */
   capMs?: number
+  /**
+   * Decides whether an error is terminal (re-thrown immediately, no retry).
+   * Defaults to the BnF MCP classification (BnfMcpAuthError / BnfMcpNotFoundError).
+   * Other transports (e.g. the data-cluster MCP) pass their own predicate keyed
+   * on their own error classes so they can reuse this backoff loop verbatim.
+   */
+  isTerminal?: (err: unknown) => boolean
+}
+
+/** Default terminal classification: BnF MCP auth (401/403) and not-found (404). */
+function defaultIsTerminal(err: unknown): boolean {
+  return err instanceof BnfMcpAuthError || err instanceof BnfMcpNotFoundError
 }
 
 /**
  * Runs `fn` with exponential backoff over `attempts` total tries.
  *
- * Terminal errors (no retry):
- *   - BnfMcpAuthError (401/403)
- *   - BnfMcpNotFoundError (404)
+ * Terminal errors (no retry) are decided by `opts.isTerminal`; the default
+ * treats BnfMcpAuthError (401/403) and BnfMcpNotFoundError (404) as terminal.
  *
  * BnfMcpRateLimitError honours `retryAfterMs` when present, otherwise falls
  * back to the computed exponential delay.
@@ -52,6 +63,7 @@ export async function withRetry<T>(
   const maxAttempts = opts.attempts ?? BNF_MCP_RETRY_ATTEMPTS
   const baseMs = opts.baseMs ?? BNF_MCP_RETRY_BASE_MS
   const capMs = opts.capMs ?? BNF_MCP_RETRY_CAP_MS
+  const isTerminal = opts.isTerminal ?? defaultIsTerminal
 
   let lastError: unknown
 
@@ -62,7 +74,7 @@ export async function withRetry<T>(
       lastError = err
 
       // Terminal — never retry these.
-      if (err instanceof BnfMcpAuthError || err instanceof BnfMcpNotFoundError) {
+      if (isTerminal(err)) {
         throw err
       }
 

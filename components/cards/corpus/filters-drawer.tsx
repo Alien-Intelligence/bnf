@@ -93,6 +93,11 @@ function langColorVar(_code: string, index: number): string {
 function sourceColorVar(): string {
   return "var(--dataset-5)"
 }
+// Sessions have no fixed semantic color — cycle the dataset palette by index so
+// adjacent sessions stay visually distinct.
+function sessionColorVar(_id: string, index: number): string {
+  return DATASET_COLOR_CYCLE[index % DATASET_COLOR_CYCLE.length]
+}
 
 // ---------------------------------------------------------------------------
 // Non-clickable status row (resolution buckets). Visually matches a facet bar
@@ -151,13 +156,33 @@ export function CardCorpusFiltersDrawer({
   const typeSelected = csvToSelected(filters.type)
   const langSelected = csvToSelected(filters.lang)
   const sourceSelected = csvToSelected(filters.source)
+  const sessionSelected = csvToSelected(filters.session)
   const ingestSelected = csvToSelected(filters.ingest)
+
+  // Session facet record + title map, derived from the snapshot's `sessions`
+  // array. The facet bars want a Record<id, count>; the active-filters chips
+  // want id → title. Both are memoized off `corpus.sessions`.
+  const sessionFacet = useMemo(() => {
+    const rec: Record<string, number> = {}
+    for (const s of corpus.sessions) rec[s.sessionId] = s.count
+    return rec
+  }, [corpus.sessions])
+  const sessionTitleById = useMemo(() => {
+    const m: Record<string, string> = {}
+    for (const s of corpus.sessions) m[s.sessionId] = s.title
+    return m
+  }, [corpus.sessions])
+  const sessionLabel = useCallback(
+    (id: string) => sessionTitleById[id] ?? id,
+    [sessionTitleById],
+  )
 
   // Count of active filter dimensions, for the trigger badge.
   const activeCount =
     typeSelected.length +
     langSelected.length +
     sourceSelected.length +
+    sessionSelected.length +
     ingestSelected.length +
     (filters.yearFrom !== undefined || filters.yearTo !== undefined ? 1 : 0) +
     (filters.undated ? 1 : 0) +
@@ -184,6 +209,11 @@ export function CardCorpusFiltersDrawer({
   const handleSourceToggle = useCallback(
     (code: string) =>
       onChange({ ...filters, source: toggleInCsv(filters.source, code) }),
+    [filters, onChange],
+  )
+  const handleSessionToggle = useCallback(
+    (id: string) =>
+      onChange({ ...filters, session: toggleInCsv(filters.session, id) }),
     [filters, onChange],
   )
   const handleIngestToggle = useCallback(
@@ -272,6 +302,7 @@ export function CardCorpusFiltersDrawer({
             filters={filters}
             onChange={onChange}
             onClearAll={handleClearAll}
+            sessionTitleById={sessionTitleById}
           />
 
           {/* Facet cards: type / lang / source side-by-side */}
@@ -330,6 +361,22 @@ export function CardCorpusFiltersDrawer({
                   onToggle={handleSourceToggle}
                   getLabel={sourceLabel}
                   getColor={sourceColorVar}
+                  swatchShape="square"
+                />
+              </FacetCard>
+            )}
+
+            {/* Session attribution — which session contributed each document.
+                Hidden until a session has added documents (no backfill for
+                pre-existing corpora). */}
+            {corpus.sessions.length > 0 && (
+              <FacetCard title={t("facetSessionTitle")}>
+                <CardCorpusFacetBars
+                  facet={sessionFacet}
+                  selected={sessionSelected}
+                  onToggle={handleSessionToggle}
+                  getLabel={sessionLabel}
+                  getColor={sessionColorVar}
                   swatchShape="square"
                 />
               </FacetCard>

@@ -142,6 +142,8 @@ export class CorpusQueries {
         type?: string[]
         lang?: string[]
         source?: string[]
+        /** AppSession ids — keep only docs contributed by one of these sessions. */
+        session?: string[]
         /** Ingestion classes: ocr | vision | sans_texte | non_numerise. */
         ingest?: string[]
         yearFrom?: number
@@ -214,6 +216,15 @@ export class CorpusQueries {
         ? { source: { in: filters.source } }
         : {}
 
+    // Session filter: keep only documents at least one of the selected sessions
+    // contributed. A multi-session document (added in several sessions) matches
+    // whenever any of its contributing sessions is selected — `some` over the
+    // CorpusContribution relation gives exactly that.
+    const sessionWhere: Prisma.DocumentWhereInput =
+      filters?.session && filters.session.length > 0
+        ? { contributions: { some: { sessionId: { in: filters.session } } } }
+        : {}
+
     // Full-text: Prisma OR over contains (ILIKE on Postgres, mode-insensitive).
     // We match title, author, and excerpt. excerpt may be null — Prisma skips
     // null columns in LIKE comparisons automatically.
@@ -273,6 +284,7 @@ export class CorpusQueries {
       ...typeWhere,
       ...langWhere,
       ...sourceWhere,
+      ...sessionWhere,
       ...yearWhere,
       ...(andClauses.length > 0 ? { AND: andClauses } : {}),
     }
@@ -310,6 +322,7 @@ export class CorpusQueries {
       typeRows,
       langRows,
       sourceRows,
+      sessionRows,
       resolvedRows,
     ] = await Promise.all([
       // Total within filtered set (includes pending/failed members when no
@@ -369,6 +382,16 @@ export class CorpusQueries {
         where: { ...sharedWhere, source: { not: null } },
         _count: { ark: true },
       }),
+      // Facet: session (all members; ARK-derived attribution, accurate for
+      // pending stubs too). Grouped over CorpusContribution, scoped via the
+      // `document` relation to the current filtered head set (sharedWhere) so the
+      // per-session counts shrink under the active filters exactly like the other
+      // facets. A document contributed by N sessions counts once under each.
+      prisma.corpusContribution.groupBy({
+        by: ["sessionId"],
+        where: { projectId, document: { ...sharedWhere } },
+        _count: { ark: true },
+      }),
       // Resolved rows: one pass over the resolved set powers BOTH the period
       // histogram (binned in JS) and the numérisation/ingestion buckets
       // (classified in JS). Cheap for typical set sizes; raw SQL deferred until
@@ -406,6 +429,31 @@ export class CorpusQueries {
         sourceFacet[r.source] = r._count.ark
       }
     }
+
+    // Session facet: resolve each contributing session's title (the groupBy only
+    // yields ids) and assemble a count-sorted list. Kept a dedicated array — not
+    // a Record like the other facets — because each entry carries a title the UI
+    // renders as the chip/bar label. Empty when no session has contributed yet
+    // (e.g. pre-existing corpora with no contribution rows — not backfilled).
+    const sessionCounts = new Map<string, number>()
+    for (const r of sessionRows) {
+      sessionCounts.set(r.sessionId, r._count.ark)
+    }
+    const sessionTitles =
+      sessionCounts.size > 0
+        ? await prisma.appSession.findMany({
+            where: { id: { in: [...sessionCounts.keys()] } },
+            select: { id: true, title: true },
+          })
+        : []
+    const titleById = new Map(sessionTitles.map((s) => [s.id, s.title]))
+    const sessions = [...sessionCounts.entries()]
+      .map(([sessionId, count]) => ({
+        sessionId,
+        title: titleById.get(sessionId) ?? sessionId,
+        count,
+      }))
+      .sort((a, b) => b.count - a.count)
 
     // Bin years into decade buckets ("1880s", "1890s", …) AND classify each
     // resolved row into a numérisation/ingestion bucket — both from the single
@@ -492,6 +540,7 @@ export class CorpusQueries {
         source: sourceFacet,
         period: periodFacet,
       },
+      sessions,
       numerisation,
       sample,
       ...(nextCursor !== undefined ? { nextCursor } : {}),

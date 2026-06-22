@@ -1,14 +1,19 @@
 "use client"
 
 // app/[locale]/projects/[projectId]/constituer/client.tsx
-// 40/60 layout client — owns interactivity, URL-driven filter + selection state,
-// and the TanStack Query cache seed from the server-fetched initialCorpus.
-// Filter changes navigate via router.push; selectedArk survives filter changes.
+// 40/60 layout client — owns interactivity, filter + selection state, and the
+// TanStack Query cache seed from the server-fetched initialCorpus.
+//
+// Filters/selection live in React STATE (not the URL): changing one refetches
+// the corpus client-side via TanStack Query — no server round-trip / page
+// reload. The URL is only MIRRORED (shallow history.replaceState) so the view is
+// copy-paste/reload-able, and the initial state is seeded from it once on mount.
 
-import { useEffect, useMemo, useRef, useState } from "react"
-import { useSearchParams, useRouter, usePathname } from "next/navigation"
+import { useCallback, useEffect, useRef, useState } from "react"
+import { useSearchParams, usePathname } from "next/navigation"
 import { useQueryClient } from "@tanstack/react-query"
 import { useCorpusFlattened, corpusKeys } from "@/hooks/api/corpus"
+import { memoryKeys } from "@/hooks/api/memory"
 import { useTurnStream } from "@/hooks/api/turn-stream"
 import {
   corpusFiltersFromParams,
@@ -52,7 +57,6 @@ export function ConstituerClient({
   initialSessions,
   introSeen,
 }: Props) {
-  const router = useRouter()
   const pathname = usePathname()
   const searchParams = useSearchParams()
   const t = useTranslations("corpus")
@@ -109,48 +113,80 @@ export function ConstituerClient({
     }
   }, [stream.domainEvents, projectId, qc])
 
-  // ── Filter state — derived from URL ──────────────────────────────────────────
-  const filters = useMemo(
-    () => corpusFiltersFromParams(searchParams),
-    [searchParams],
+  // ── Memory refresh on memory_event ───────────────────────────────────────────
+  // When the agent writes to project memory, refresh the memory query so the
+  // sidebar box + dialog reflect it without a reload. No debounce — memory
+  // writes are infrequent.
+  const memoryEventCountRef = useRef(0)
+  useEffect(() => {
+    const currentCount = stream.domainEvents.filter(
+      (e) => e.type === "memory_event",
+    ).length
+    if (currentCount <= memoryEventCountRef.current) return
+    memoryEventCountRef.current = currentCount
+    void qc.invalidateQueries({ queryKey: memoryKeys.all(projectId, "corpus") })
+  }, [stream.domainEvents, projectId, qc])
+
+  // ── Reconcile panels when a turn finishes ─────────────────────────────────────
+  // The corpus_event / memory_event live channel only fires for events the SDK
+  // forwards mid-stream and can be missed, so the corpus count + document list
+  // could go stale until a manual refresh. As a reliable safety net, refresh both
+  // the corpus and memory queries whenever the agent's turn completes
+  // (isStreaming true → false).
+  const prevStreamingRef = useRef(false)
+  useEffect(() => {
+    const streaming = stream.isStreaming
+    if (prevStreamingRef.current && !streaming) {
+      void qc.invalidateQueries({ queryKey: corpusKeys.all(projectId) })
+      void qc.invalidateQueries({ queryKey: memoryKeys.all(projectId, "corpus") })
+    }
+    prevStreamingRef.current = streaming
+  }, [stream.isStreaming, projectId, qc])
+
+  // ── Filter + selection state (React state; seeded from the URL once) ──────────
+  const [filters, setFilters] = useState<CorpusFilters>(() =>
+    corpusFiltersFromParams(searchParams),
+  )
+  const [selectedArk, setSelectedArk] = useState<string | null>(() =>
+    searchParams.get("selectedArk"),
   )
 
-  const onFiltersChange = (next: CorpusFilters) => {
-    const params = corpusFiltersToParams(next)
-    // Preserve the selected document ARK across filter changes.
-    const sa = searchParams.get("selectedArk")
-    if (sa) params.set("selectedArk", sa)
-    router.push(`${pathname}?${params.toString()}`)
-  }
+  const onFiltersChange = useCallback((next: CorpusFilters) => setFilters(next), [])
+  const onClearFilters = useCallback(() => setFilters(emptyCorpusFilters()), [])
+  const onSelectArk = useCallback((ark: string | null) => setSelectedArk(ark), [])
 
-  const onClearFilters = () => onFiltersChange(emptyCorpusFilters())
-
-  // ── Selection state — also URL-driven ─────────────────────────────────────────
-  const selectedArk = searchParams.get("selectedArk")
-
-  const onSelectArk = (ark: string | null) => {
-    const next = new URLSearchParams(searchParams.toString())
-    if (ark) {
-      next.set("selectedArk", ark)
-    } else {
-      next.delete("selectedArk")
-    }
-    router.replace(`${pathname}?${next.toString()}`, { scroll: false })
-  }
+  // Mirror state → URL with a shallow history replace (NO Next navigation, so no
+  // server round-trip / page reload). Purely for copy-paste + reload.
+  useEffect(() => {
+    const params = corpusFiltersToParams(filters)
+    if (selectedArk) params.set("selectedArk", selectedArk)
+    const qs = params.toString()
+    window.history.replaceState(null, "", qs ? `${pathname}?${qs}` : pathname)
+  }, [filters, selectedArk, pathname])
 
   // ── Data ──────────────────────────────────────────────────────────────────────
+  // Seed the unfiltered head from the server; let filtered keys fetch fresh
+  // (otherwise the unfiltered snapshot would seed a filtered key as if it
+  // matched). keepPreviousData (in useCorpus) keeps the prior rows visible while
+  // the new filter loads — isPlaceholderData flags that transition.
   const {
     snapshot,
     isLoading,
     isError,
+    isPlaceholderData,
     refetch,
     hasNextPage,
     isFetchingNextPage,
     fetchNextPage,
-  } = useCorpusFlattened(projectId, filters, { initialSnapshot: initialCorpus })
+  } = useCorpusFlattened(projectId, filters, {
+    initialSnapshot: hasActiveFilters(filters) ? undefined : initialCorpus,
+  })
 
-  // The active-filters flag is derived from the URL filter state (not the
-  // snapshot) so the noResults branch can show even while re-fetching.
+  // "Updating" indicator: a filter change is in flight and we're showing the
+  // previous result (placeholder). The background resolve-poll does NOT set this
+  // (same key), so the overlay never strobes.
+  const isFiltering = isPlaceholderData
+
   const filtersActive = hasActiveFilters(filters)
 
   const selectedDoc =
@@ -215,6 +251,7 @@ export function ConstituerClient({
               isFetchingNextPage={isFetchingNextPage}
               fetchNextPage={() => void fetchNextPage()}
               onClearFilters={onClearFilters}
+              isFiltering={isFiltering}
             />
           </div>
 

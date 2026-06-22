@@ -4,13 +4,17 @@ import "server-only"
 // Static BnF domain knowledge injected into the corpus agent's system prompt.
 // The production agent has NO internet access, so everything it needs to write
 // correct SPARQL against data.bnf.fr and to resolve catalogue (cb) notices to
-// digitized Gallica ARKs must live here.
+// digitized Gallica documents must live here.
 //
 // Sourced from the official BnF API docs (api.bnf.fr), the data.bnf.fr Virtuoso
-// namespace declarations, and live SRU/SPARQL verification (2026-06-19). See
-// the research notes for provenance. Keep facts here verifiable — do not add
-// unconfirmed predicates, namespaces, or ARK families (e.g. "bd6t" was NOT
-// confirmed and is deliberately omitted).
+// namespace declarations, and live SRU/SPARQL verification (2026-06-19). Keep
+// facts here verifiable — do not add unconfirmed predicates, namespaces, or ARK
+// families (e.g. "bd6t" was NOT confirmed and is deliberately omitted).
+//
+// NOTE: corpus building is NOT where "ingestability" is decided — that is the
+// Ingérer (ingestion) step, computed automatically downstream. So this guide
+// frames the cb-vs-digitized distinction around consultation/citation, never as
+// an add-time filter, and never tells the agent to judge ARK validity.
 
 // ---------------------------------------------------------------------------
 // Catalogue notices (cb ARKs) vs. digitized documents
@@ -18,28 +22,29 @@ import "server-only"
 
 export const BNF_CATALOGUE_GUIDE = `## NOTICES CATALOGUE (ARK \`cb…\`) vs DOCUMENTS NUMÉRISÉS
 
-\`bnf__bnf_search_catalogue\` renvoie des **notices** du Catalogue général, identifiées par un ARK \`cb…\` (ex. \`ark:/12148/cb40096442t\`). **Une notice \`cb…\` n'est PAS un document numérisé** : pas de manifeste IIIF, pas de page Gallica, pas de texte intégral. Elle peut tout de même être ajoutée au corpus (l'application l'accepte et la marque « non ingérable »), mais elle ne sera pas indexée ni interrogeable après ingestion. Préfère donc toujours résoudre vers l'ARK Gallica quand il existe, et **préviens explicitement l'utilisateur** quand tu ajoutes une notice \`cb…\` non numérisée.
+**La constitution du corpus ne se soucie PAS de l'« ingestabilité ».** L'étape d'**ingestion** (ultérieure) détermine automatiquement ce qui sera indexé en texte intégral — ce n'est pas ton affaire ici. Donc : ne filtre pas, n'écarte pas, ne classe pas les documents selon qu'ils seraient « ingérables » ou non. **Tous les ARK BnF réels sont valides** et peuvent être ajoutés ; ne parle jamais d'ARK « valides / invalides » ni « ingérables / non ingérables ».
 
-Familles d'ARK (le préfixe après \`ark:/12148/\` indique le système source) :
-- \`cb…\` — notice du Catalogue général. Description bibliographique seulement. **Pas d'IIIF, pas de texte.**
-- \`cc…\` — instrument de recherche archives (EAD). **Pas d'IIIF.**
-- \`bpt6k…\` — Gallica, imprimés (livres, presse). **Manifeste IIIF + OCR.** Ingérable.
-- \`btv1b…\` — Gallica, manuscrits / images / cartes / estampes. **Manifeste IIIF.** Ingérable.
+La distinction ci-dessous sert seulement à **comprendre et consulter** les documents (ouvrir la page, citer une vue précise) — pas à filtrer :
 
-Seuls les ARK \`bpt6k…\` et \`btv1b…\` sont ingérables. Manifeste IIIF d'un document numérisé :
-\`https://gallica.bnf.fr/iiif/ark:/12148/<id>/manifest.json\`
+- \`cb…\` — **notice** du Catalogue général : une référence bibliographique (pas de page numérisée ni de viewer IIIF rattaché à cet ARK).
+- \`cc…\` — instrument de recherche archives (EAD).
+- \`bpt6k…\` — document **numérisé** Gallica (imprimés) : pages consultables + manifeste IIIF.
+- \`btv1b…\` — document **numérisé** Gallica (manuscrits, images, cartes, estampes) : manifeste IIIF.
 
-### Passer d'une notice \`cb…\` à son ARK Gallica (par ordre de fiabilité)
+Manifeste IIIF d'un document numérisé : \`https://gallica.bnf.fr/iiif/ark:/12148/<id>/manifest.json\`.
 
-1. **Champ UNIMARC 856 $u** — appelle \`bnf__bnf_get_catalogue_record\`. Si la notice a une version numérisée, le champ \`856 $u\` contient l'URL Gallica (ex. \`http://gallica.bnf.fr/ark:/12148/bpt6k2029874\`) : en extraire l'ARK \`bpt6k…\`/\`btv1b…\`. Déterministe quand présent. (Absence possible si la notice n'est pas numérisée, ou en variante Intermarc.)
-2. **SPARQL data.bnf.fr** — \`rdarelationships:electronicReproduction\` au niveau de la manifestation donne l'URL Gallica (voir la section « SPARQL sur data.bnf.fr »). Déterministe quand le lien existe.
-3. **Re-recherche Gallica** — à défaut, \`bnf__bnf_search_gallica\` par titre + auteur + date. Vérifie la concordance des métadonnées avant de traiter le résultat comme la même édition. Heuristique.
+### Obtenir le document numérisé d'une notice \`cb…\`
 
-### Règle de décision
+Utile **uniquement** quand le bibliothécaire veut le document lui-même (consultable, citable) plutôt que la seule référence — jamais comme condition d'ajout :
 
-- L'utilisateur veut des documents **ingérables** (texte intégral / IIIF) → privilégie directement \`bnf__bnf_search_gallica\` (ARK \`bpt6k…\`/\`btv1b…\`, avec manifeste IIIF). Utilise-les tels quels.
-- Tu as une notice \`cb…\` → tente 1, puis 2, puis 3. Dès qu'un ARK Gallica est obtenu, c'est lui qu'on ajoute (de préférence à la notice).
-- Aucun document numérisé trouvé par aucune voie → tu **peux** quand même ajouter la notice \`cb…\` si elle a une valeur pour le corpus (référence catalographique, complétude), mais **préviens l'utilisateur** : « Ce document n'est pas numérisé sur Gallica ; la notice sera ajoutée mais ne sera pas ingérée (non interrogeable en texte intégral). » N'ajoute jamais une notice \`cb…\` en silence comme si c'était un document numérisé.`
+1. **Champ UNIMARC 856 $u** — \`bnf__bnf_get_catalogue_record\` : si la notice a une version numérisée, le champ \`856 $u\` contient l'URL Gallica (ex. \`http://gallica.bnf.fr/ark:/12148/bpt6k2029874\`) → en extraire l'ARK \`bpt6k…\`/\`btv1b…\`.
+2. **SPARQL data.bnf.fr** — \`rdarelationships:electronicReproduction\` au niveau de la manifestation donne l'URL Gallica (voir la section « SPARQL sur data.bnf.fr »).
+3. **Re-recherche Gallica** — à défaut, \`bnf__bnf_search_gallica\` par titre + auteur + date (vérifie la concordance des métadonnées).
+
+### En pratique
+
+- Pour des documents directement consultables et citables, \`bnf__bnf_search_gallica\` renvoie d'emblée des ARK \`bpt6k…\`/\`btv1b…\`.
+- Une notice \`cb…\` est un membre du corpus parfaitement valide : ajoute-la sans hésiter si elle correspond à la demande. Tu peux signaler en passant que c'est une référence catalographique (sans copie numérisée rattachée à cet ARK) si c'est utile au bibliothécaire — mais ce n'est ni un blocage, ni un avertissement d'ingestion.\``
 
 // ---------------------------------------------------------------------------
 // SPARQL over data.bnf.fr
@@ -47,7 +52,7 @@ Seuls les ARK \`bpt6k…\` et \`btv1b…\` sont ingérables. Manifeste IIIF d'un
 
 export const BNF_SPARQL_GUIDE = `## SPARQL sur data.bnf.fr (outil \`bnf__bnf_sparql_query\`)
 
-Le graphe data.bnf.fr relie personnes, œuvres, sujets (Rameau) et **documents numérisés Gallica**. SPARQL sert surtout à découvrir des œuvres/auteurs/sujets et à **récupérer l'ARK Gallica ingérable** (\`bpt6k…\`/\`btv1b…\`) d'une œuvre ou d'un sujet.
+Le graphe data.bnf.fr relie personnes, œuvres, sujets (Rameau) et **documents numérisés Gallica**. SPARQL sert surtout à découvrir des œuvres/auteurs/sujets et à **récupérer l'ARK Gallica d'un document numérisé** (\`bpt6k…\`/\`btv1b…\`) d'une œuvre ou d'un sujet.
 
 Quand l'utiliser : pour une simple personne → \`bnf__bnf_find_person\` ; pour une simple œuvre → \`bnf__bnf_find_work\`. Réserve SPARQL aux **jointures** (œuvres d'un auteur sur un sujet, par période, énumérer les éditions numérisées d'une œuvre, etc.).
 
@@ -140,4 +145,4 @@ SELECT DISTINCT ?p ?v WHERE {
 } LIMIT 200
 \`\`\`
 
-Une fois l'ARK Gallica obtenu (\`bpt6k…\`/\`btv1b…\`) : manifeste IIIF = \`https://gallica.bnf.fr/iiif/ark:/12148/<id>/manifest.json\`. Ajoute cet ARK au corpus — jamais le \`cb…\`.`
+Une fois l'ARK Gallica obtenu (\`bpt6k…\`/\`btv1b…\`) : manifeste IIIF = \`https://gallica.bnf.fr/iiif/ark:/12148/<id>/manifest.json\`. Ajoute l'ARK trouvé au corpus.\``

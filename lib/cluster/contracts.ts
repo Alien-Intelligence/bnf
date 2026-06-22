@@ -15,6 +15,12 @@ export interface ClusterDoc {
 export interface ClusterIngestRequest {
   projectId: string
   targetVersionId: string
+  /**
+   * The app-side IngestJob id. Carried explicitly on the wire so the cluster
+   * worker does not need to parse it out of callbackUrl. Both sides of the
+   * contract own this field.
+   */
+  appJobId: string
   added: ClusterDoc[]
   removed: string[]
   callbackUrl: string

@@ -1,11 +1,13 @@
 "use client"
 
 // components/cards/corpus/period-histogram.tsx
-// Custom SVG period histogram for corpus chronological distribution.
-// Keys in periodFacet look like "1880s" — each is a decade bucket.
-// No external chart library. Roughly 80 lines of logic.
+// Chronological distribution as evenly-spread clickable bars (design:
+// "Répartition chronologique"). Flexbox — each decade bar is flex-1 so the bars
+// fill the full width regardless of how few there are (no left-bunching).
+// Keys in periodFacet look like "1880s" — each a decade bucket.
 
 import { useTranslations } from "next-intl"
+import { cn } from "@/lib/utils"
 
 interface Props {
   /** Map of decade label → document count, e.g. { "1880s": 42, "1890s": 17 }. */
@@ -29,10 +31,8 @@ function parseDecadeLabel(label: string): number {
   return parseInt(label.replace(/s$/i, ""), 10)
 }
 
-const SVG_HEIGHT = 60
-const BAR_WIDTH = 20
-const BAR_GAP = 4
-const LABEL_HEIGHT = 14
+// Max bar height in px; bars scale proportionally to the largest bucket.
+const BAR_AREA = 80
 
 export function CardCorpusPeriodHistogram({
   periodFacet,
@@ -54,28 +54,12 @@ export function CardCorpusPeriodHistogram({
 
   const maxCount = Math.max(...decades.map((d) => d.count), 1)
 
-  const totalWidth =
-    decades.length * (BAR_WIDTH + BAR_GAP) - BAR_GAP
-
   return (
     <div className="flex items-end gap-4">
       {decades.length > 0 && (
-        <svg
-          width={totalWidth}
-          height={SVG_HEIGHT + LABEL_HEIGHT}
-          aria-label={t("histogramAriaLabel")}
-          role="img"
-          className="overflow-visible"
-        >
-          <title>{t("histogramAriaLabel")}</title>
-          {decades.map(({ decade, label, count }, i) => {
-            const barH = Math.max(
-              Math.round((count / maxCount) * SVG_HEIGHT),
-              2,
-            )
-            const x = i * (BAR_WIDTH + BAR_GAP)
-            const y = SVG_HEIGHT - barH
-
+        <div className="flex flex-1 items-end gap-2">
+          {decades.map(({ decade, label, count }) => {
+            const barH = Math.max(Math.round((count / maxCount) * BAR_AREA), 3)
             const isActive =
               yearFrom !== undefined &&
               yearTo !== undefined &&
@@ -83,60 +67,42 @@ export function CardCorpusPeriodHistogram({
               decade <= yearTo
 
             return (
-              <g
+              <button
                 key={decade}
+                type="button"
                 onClick={() => onSelectRange(decade, decade + 9)}
-                className="cursor-pointer group"
-                role="button"
-                tabIndex={0}
+                aria-pressed={isActive}
                 aria-label={t("barAriaLabel", { decade, count })}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault()
-                    onSelectRange(decade, decade + 9)
-                  }
-                }}
+                className="group flex flex-1 flex-col items-center justify-end gap-1.5 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
-                <title>
-                  {t("barAriaLabel", { decade, count })}
-                </title>
-                <rect
-                  x={x}
-                  y={y}
-                  width={BAR_WIDTH}
-                  height={barH}
-                  rx={2}
-                  className={
+                <span className="font-mono text-[10px] tabular-nums text-muted-foreground">
+                  {count.toLocaleString("fr-FR")}
+                </span>
+                <span
+                  className={cn(
+                    "w-full max-w-10 rounded-t-[3px] transition-colors",
                     isActive
-                      ? "fill-brand-teal"
-                      : "fill-brand-teal/45 group-hover:fill-brand-teal/70 transition-colors"
-                  }
+                      ? "bg-brand-teal"
+                      : "bg-brand-teal/45 group-hover:bg-brand-teal/70",
+                  )}
+                  style={{ height: barH }}
                 />
-                {/* decade label below bar */}
-                <text
-                  x={x + BAR_WIDTH / 2}
-                  y={SVG_HEIGHT + LABEL_HEIGHT - 2}
-                  textAnchor="middle"
-                  className="text-[9px] fill-muted-foreground select-none"
-                  style={{ fontSize: 9 }}
-                >
-                  {label}
-                </text>
-              </g>
+                <span className="text-[9px] text-muted-foreground">{label}</span>
+              </button>
             )
           })}
-        </svg>
+        </div>
       )}
 
       {undatedCount > 0 && (
         <button
           type="button"
           onClick={onSelectUndated}
-          className="flex flex-col items-center justify-center rounded border px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="flex flex-col items-center justify-center rounded border px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
           aria-label={t("undatedAriaLabel", { count: undatedCount })}
         >
           <span className="font-semibold tabular-nums">{undatedCount}</span>
-          <span className="mt-0.5 text-[9px] leading-tight text-center whitespace-nowrap">
+          <span className="mt-0.5 text-[9px] leading-tight whitespace-nowrap">
             {t("undated")}
           </span>
         </button>
@@ -150,7 +116,7 @@ export function CardCorpusPeriodHistogram({
           aria-label={t("pendingAriaLabel", { count: pendingCount })}
         >
           <span className="font-semibold tabular-nums">{pendingCount}</span>
-          <span className="mt-0.5 text-[9px] leading-tight text-center whitespace-nowrap">
+          <span className="mt-0.5 text-[9px] leading-tight whitespace-nowrap">
             {t("pending")}
           </span>
         </div>

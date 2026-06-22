@@ -79,11 +79,18 @@ export class CorpusService {
    * After commit, the comprehension snapshot is built from the committed head;
    * its versionSeq/status/total are overridden with the tx-captured values so
    * two concurrent adds report their own distinct versions.
+   *
+   * `sessionId` (optional) — the agent session performing the add. When given,
+   * a CorpusContribution row is recorded for EVERY supplied (deduped) ARK, not
+   * only the newly-added ones: a duplicate re-added from another session must be
+   * tagged with that session too (multi-session attribution). The composite PK
+   * dedupes same-session re-adds. Seed / API paths without a session skip this.
    */
   static async addArks(
     project: Project,
     user: User,
     input: AddToCorpusInput,
+    sessionId?: string,
   ): Promise<CorpusAddResult> {
     const projectId = project.id
 
@@ -132,6 +139,21 @@ export class CorpusService {
         total,
       }
     })
+
+    // --- Record session attribution (optional) --------------------------------
+    // Tag every supplied (deduped) ARK with the contributing session — including
+    // ARKs that were already corpus members, so a document re-added from another
+    // session shows under both. The composite PK (projectId, ark, sessionId)
+    // dedupes same-session re-adds via skipDuplicates. Every uniqueArk has a
+    // Document row by now (createStubs ran above), so the FK holds. Contributions
+    // are a separate concern from membership/versions — recorded outside the
+    // version-advance tx, after commit.
+    if (sessionId !== undefined) {
+      await prisma.corpusContribution.createMany({
+        data: uniqueArks.map((ark) => ({ projectId, ark, sessionId })),
+        skipDuplicates: true,
+      })
+    }
 
     // --- Build the comprehension snapshot from the committed head -------------
     const snapshot = await CorpusQueries.snapshot(projectId, "head")

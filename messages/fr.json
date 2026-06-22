@@ -50,9 +50,11 @@
   "askUser": {
     "pending": "En attente",
     "answered": "Répondu",
+    "superseded": "Remplacée",
     "validate": "Valider",
     "free": "Répondre librement",
     "freeHint": "Répondez à l'agent dans la zone de message ci-dessous.",
+    "supersededHint": "Une question plus récente a été posée — répondez à celle-ci.",
     "progress": "{count}/{total} répondu",
     "answersHeading": "Voici mes réponses :"
   },
@@ -189,6 +191,7 @@
       "facetTypeTitle": "Par type de document",
       "facetLangTitle": "Par langue",
       "facetSourceTitle": "Par source",
+      "facetSessionTitle": "Par session",
       "chrono": {
         "title": "Répartition chronologique",
         "hint": "cliquer pour filtrer par période"
@@ -223,6 +226,7 @@
       "loadMore": "Charger plus",
       "resolving": "Métadonnées en cours…",
       "resolveFailed": "Échec de résolution",
+      "filtering": "Mise à jour…",
       "detail": {
         "eyebrow": "Notice · BnF",
         "close": "Fermer",
@@ -325,8 +329,14 @@
     }
   },
   "memory": {
+    "box": {
+      "count": "{count, plural, =0 {Aucun élément retenu} one {# élément retenu} other {# éléments retenus}}"
+    },
     "dialog": {
       "title": "Mémoire du projet",
+      "persistent": "persistante",
+      "description": "Ce que l'agent retient de ce projet, conservé d'une session à l'autre et relu au début de chaque conversation.",
+      "footnote": "Mise à jour automatique par l'agent · mémoire persistante",
       "empty": "Aucun élément",
       "scopeCorpus": "Mémoire du corpus",
       "scopeResearch": "Mémoire de recherche",
@@ -344,6 +354,8 @@
   "sessions": {
     "sidebar": {
       "title": "Sessions",
+      "titleCorpus": "Sessions du corpus",
+      "titleResearch": "Sessions de recherche",
       "newButton": "Nouvelle session",
       "empty": "Aucune session"
     },
@@ -370,6 +382,11 @@
     "memory": {
       "read": "Lecture mémoire",
       "write": "Écriture mémoire"
+    },
+    "rag": {
+      "query": "Recherche sémantique",
+      "keyword_search": "Recherche par mots-clés",
+      "get_text": "Lecture du texte intégral"
     },
     "ingest": {
       "submit": "Soumettre l'ingestion"
@@ -428,15 +445,41 @@
       "body": "Le corpus doit être ingéré avant de pouvoir effectuer des recherches. Veuillez lancer l'ingestion.",
       "openIngest": "Ouvrir l'ingestion"
     },
+    "espace": {
+      "title": "Espace de recherche",
+      "docs": "{count, number} docs",
+      "disposition": "Disposition",
+      "atelier": "Atelier",
+      "carnet": "Carnet",
+      "emptyReader": "Ouvrez un artefact depuis la liste, ou posez une question pour en générer un.",
+      "openSource": "Assistant de recherche",
+      "openSubtitle": "Interroge le corpus · cite ses sources"
+    },
+    "artefacts": {
+      "title": "Artefacts de recherche",
+      "new": "Nouvelle note",
+      "search": "Rechercher une note…",
+      "empty": "Aucune note pour l'instant.",
+      "noMatch": "Aucun résultat.",
+      "count": "{count, plural, =0 {Aucun artefact} one {# artefact} other {# artefacts}}",
+      "meta": "{count, plural, =0 {aucune réf.} one {# réf.} other {# réf.}} · {time}"
+    },
     "atelier": {
       "chatTab": "Conversation",
       "noteTab": "Note",
       "newNote": "Nouvelle note",
       "viewInCarnet": "Voir le carnet",
-      "noNotes": "Aucune note pour l'instant."
+      "noNotes": "Aucune note pour l'instant.",
+      "closeTab": "Fermer",
+      "artefactHeader": "Artefact de recherche · rédigé par l'agent",
+      "cites": "{count, plural, =0 {aucune référence} one {# référence ARK} other {# références ARK}}",
+      "loadError": "Impossible de charger la note.",
+      "retry": "Réessayer"
     },
     "carnet": {
       "title": "Carnet de recherche",
+      "projectEyebrow": "Projet de recherche",
+      "compiledHeader": "Carnet de recherche · {count, plural, =0 {aucune note} one {# note} other {# notes}}",
       "export": "Exporter en Markdown",
       "empty": "Aucune note dans ce carnet."
     },
@@ -449,9 +492,14 @@
   "citations": {
     "panel": {
       "title": "Source citée",
-      "openIiif": "Ouvrir l'image IIIF",
-      "openGallica": "Ouvrir sur Gallica",
-      "manifest": "Manifeste IIIF",
+      "eyebrow": "Référence · source citée",
+      "folioLabel": "Folio {folio}",
+      "arkLabel": "Identifiant ARK",
+      "consult": "Consulter sur la BnF",
+      "iiifViewer": "Visionneuse IIIF — vue {folio}",
+      "iiifViewerSub": "Ouvrir la page exacte dans le viewer",
+      "gallicaViewer": "Voir sur Gallica",
+      "gallicaViewerSub": "Le document dans la visionneuse Gallica",
       "usages": "Utilisé dans d'autres notes"
     }
   },

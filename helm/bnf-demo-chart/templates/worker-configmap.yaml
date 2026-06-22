@@ -1,0 +1,57 @@
+{{- if and .Values.worker.enabled (eq .Values.config.clusterMode "real") }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "bnf-demo.fullname" . }}-worker-config
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "bnf-demo.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+data:
+  # --- Blob storage ---
+  BLOB_STORE: {{ .Values.worker.config.blobStore | quote }}
+  SCW_S3_BUCKET: {{ .Values.worker.config.s3Bucket | quote }}
+  SCW_S3_ENDPOINT_URL: {{ .Values.worker.config.s3Endpoint | quote }}
+  SCW_S3_REGION: {{ .Values.worker.config.s3Region | quote }}
+
+  # --- Scaleway GenAI / Holo2 (primary vision) ---
+  SCW_GENAI_BASE_URL: {{ .Values.worker.config.genaiBaseUrl | quote }}
+  HOLO_MODEL: {{ .Values.worker.config.holoModel | quote }}
+
+  # --- Google AI (vision provider) ---
+  GEMINI_VISION_MODEL: {{ .Values.worker.config.geminiVisionModel | quote }}
+  VISION_PRIMARY: {{ .Values.worker.config.visionPrimary | quote }}
+
+  # --- RunPod embedder ---
+  RUNPOD_EMBEDDING_ENDPOINT_ID: {{ .Values.worker.config.runpodEndpointId | quote }}
+  RUNPOD_EMBEDDING_MODEL: {{ .Values.worker.config.runpodEmbeddingModel | quote }}
+
+  # --- Data cluster (register) ---
+  BACKEND_API_URL: {{ .Values.worker.config.backendApiUrl | quote }}
+  CLUSTER_ID: {{ .Values.worker.config.clusterId | quote }}
+
+  # --- Worker HTTP API ---
+  WORKER_HTTP_PORT: {{ .Values.worker.service.port | quote }}
+  # Callback host allow-list: the worker rejects any callbackUrl whose host
+  # doesn't match this. Must equal the app's WORKER_CALLBACK_BASE_URL.
+  APP_BASE_URL: {{ include "bnf-demo.appInternalUrl" . | quote }}
+
+  # --- Gallica rate limiting ---
+  GALLICA_RPS: {{ .Values.worker.config.gallicaRps | quote }}
+  GALLICA_BURST: {{ .Values.worker.config.gallicaBurst | quote }}
+  GALLICA_GENERAL_RPS: {{ .Values.worker.config.gallicaGeneralRps | quote }}
+  GALLICA_GENERAL_BURST: {{ .Values.worker.config.gallicaGeneralBurst | quote }}
+  VIEWER_OCR_CONCURRENCY: {{ .Values.worker.config.viewerOcrConcurrency | quote }}
+  VIEWER_OCR_DELAY_MS: {{ .Values.worker.config.viewerOcrDelayMs | quote }}
+
+  # --- Ingest reliability ---
+  INGEST_JOB_EXPIRE_SECONDS: {{ .Values.worker.config.ingestJobExpireSeconds | quote }}
+  INGEST_RETRY_LIMIT: {{ .Values.worker.config.ingestRetryLimit | quote }}
+  INGEST_RETRY_DELAY_SECONDS: {{ .Values.worker.config.ingestRetryDelaySeconds | quote }}
+  MAX_OCR_PAGES: {{ .Values.worker.config.maxOcrPages | quote }}
+  MAX_IMAGE_CANVASES: {{ .Values.worker.config.maxImageCanvases | quote }}
+  IMAGE_CONCURRENCY: {{ .Values.worker.config.imageConcurrency | quote }}
+  WORKER_CONCURRENCY: {{ .Values.worker.config.workerConcurrency | quote }}
+{{- end }}

@@ -38,6 +38,16 @@ export const SESSIONS_RAIL_WIDTH = "16.375rem" // 262px
 export const CHAT_WORKSPACE_SPLIT = "40% 60%"
 /** Document-detail / citation source side panel width (prototype: 380px). */
 export const SIDE_PANEL_WIDTH = "23.75rem" // 380px
+/** Research chat / reader split on Step 3 — chat 40%, reader 60% (prototype). */
+export const RESEARCH_CHAT_SPLIT = "40% 60%"
+
+// ---------------------------------------------------------------------------
+// RAG cluster — the data-cluster the corpus is indexed into. Single-cluster
+// for now; shown in the research espace sub-header beside the doc count.
+// (Prototype label: "cluster-bnf-rag-01 · N docs".)
+// ---------------------------------------------------------------------------
+
+export const RAG_CLUSTER_ID = "cluster-bnf-rag-01"
 
 // ---------------------------------------------------------------------------
 // Facet bar colors — the 7-hue dataset palette as CSS custom properties.
@@ -112,6 +122,12 @@ export const MCP_CLIENT_VERSION = "0.1.0"
 /** Maximum number of in-flight MCP calls when resolving a batch of ARKs. */
 export const BNF_MCP_CONCURRENCY = 8
 
+/** Max in-flight DIRECT HTTP calls when resolving a batch of ARKs.
+ * Lower than BNF_MCP_CONCURRENCY: the direct path hits the public
+ * gallica.bnf.fr / catalogue.bnf.fr endpoints, and catalogue.bnf.fr's SRU
+ * rate-limits (HTTP 429) aggressive bursts. Keep it gentle. */
+export const BNF_DIRECT_CONCURRENCY = 4
+
 /** Total call attempts (1 initial + N-1 retries) per MCP request. */
 export const BNF_MCP_RETRY_ATTEMPTS = 3
 
@@ -128,6 +144,38 @@ export const BNF_MCP_RETRY_CAP_MS = 8_000
  * retry attempt, combined with the caller's turn AbortSignal.
  */
 export const BNF_MCP_TIMEOUT_MS = 30_000
+
+// ---------------------------------------------------------------------------
+// Data-cluster MCP (real RAG) — see lib/cluster/datacluster-mcp-client.ts
+// Same Streamable-HTTP / JSON-RPC contract as the BnF MCP (shared session +
+// retry helpers in lib/mcp/), so the protocol/client constants above are
+// reused; only the retry/timeout tuning is restated for clarity.
+// ---------------------------------------------------------------------------
+
+/** Total call attempts (1 initial + N-1 retries) per data-cluster MCP request. */
+export const DATACLUSTER_MCP_RETRY_ATTEMPTS = 3
+
+/** Base retry delay in ms (before jitter). Doubles on each attempt. */
+export const DATACLUSTER_MCP_RETRY_BASE_MS = 500
+
+/** Maximum retry delay cap in ms (before jitter). */
+export const DATACLUSTER_MCP_RETRY_CAP_MS = 8_000
+
+/**
+ * Per-attempt wall-clock ceiling for a single data-cluster MCP HTTP call.
+ * Bounds every await so a stalled transport cannot hang the research turn
+ * (CLAUDE_ERROR_PATTERNS §14). Vector search is typically < 100ms server-side.
+ */
+export const DATACLUSTER_MCP_TIMEOUT_MS = 30_000
+
+/** Slug prefix of a project's data-cluster dataset: `bnf-<projectId>`. */
+export const DATACLUSTER_DATASET_SLUG_PREFIX = "bnf-"
+
+/** Page size used when listing datasets to resolve a project's dataset id. */
+export const DATACLUSTER_LIST_PAGE_SIZE = 100
+
+/** Default number of passages requested per RAG query when the agent omits k. */
+export const RAG_DEFAULT_K = 12
 
 // ---------------------------------------------------------------------------
 // Background document metadata resolution (the Document table is the queue)
@@ -150,6 +198,17 @@ export const RESOLVE_BATCH_SIZE = 30
  * Anything still pending after this is picked up by the next kick / boot.
  */
 export const RESOLVE_DRAIN_MAX_BATCHES = 50
+
+/**
+ * Cadence of the background resolve sweep. `corpus_add` kicks a drain and boot
+ * resumes one, but a transient BnF outage (e.g. a 429 burst on catalogue.bnf.fr)
+ * leaves rows `pending` with no further trigger — they would never recover
+ * without a new add or a restart. This periodic sweep re-drains any project with
+ * pending stubs so resolution is self-healing. Each pass increments
+ * resolveAttempts, so a genuinely-unresolvable ARK still terminates at
+ * RESOLVE_MAX_ATTEMPTS. 3 min: prompt recovery without hammering BnF.
+ */
+export const RESOLVE_SWEEP_INTERVAL_MS = 3 * 60 * 1_000
 
 /**
  * How often the comprehension panel re-fetches the corpus snapshot while
@@ -183,10 +242,13 @@ export const BNF_HTTP_TIMEOUT_MS = 30_000
  * Must be a Sonnet-class model per the design spec (design/docs/08-prompting). */
 export const AGENT_MODEL = "claude-sonnet-4-6"
 
-/** Hard cap on tool-loop iterations per turn.  Matches the chat-sdk default
- * (maxToolTurns = 12) but declared here so it can be tuned without touching
- * the runner. */
-export const AGENT_MAX_ITERATIONS = 12
+/** Hard cap on tool-loop iterations per turn — a runaway-loop backstop, NOT a
+ * working limit. Set well above any legitimate research/corpus turn (which
+ * chains search → resolve → add → memory → note, realistically well under 20)
+ * so normal work never trips it, while a stuck/looping agent still gets stopped
+ * (CLAUDE_ERROR_PATTERNS §14: no unbounded loops). The chat-sdk default is 12;
+ * passed to the runner as `maxToolTurns`. */
+export const AGENT_MAX_ITERATIONS = 100
 
 // ---------------------------------------------------------------------------
 // Reaper tuning
@@ -240,13 +302,12 @@ export const INGEST_RECENT_JOBS_LIMIT = 20
 // See playbook/citations.md § "External URLs — derived only".
 
 // `ark` is the full canonical form "ark:/12148/<id>" throughout.
-
-/** Gallica document page (document-level). Redirects into the Gallica viewer.
- *  The `.r=…?rk=…` suffix Gallica adds in the address bar is just search-term
- *  highlight + result-rank state — omit it; the bare ARK URL is canonical. */
-export function GALLICA_DOCUMENT_URL(ark: string): string {
-  return `https://gallica.bnf.fr/${ark}`
-}
+//
+// NOTE: the BARE document URL `https://gallica.bnf.fr/<ark>` is NOT reliable —
+// Gallica returns 403 "Accès interdit" for it on some documents. Link to the
+// page-level viewer URL instead (GALLICA_ITEM_URL → `…/<ark>/f1.item`), which is
+// stable. The `.r=<q>?rk=<rank>` form you see in the address bar carries a
+// search-result rank cursor that cannot be reconstructed, so don't build it.
 
 /** Gallica IIIF (Universal) viewer for a document. */
 export function GALLICA_IIIF_VIEWER_URL(ark: string): string {

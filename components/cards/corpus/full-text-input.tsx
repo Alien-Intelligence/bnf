@@ -44,13 +44,18 @@ export function CardCorpusFullTextInput({
   }
 
   // Debounce: commit draft → parent after the configured delay.
+  // Only commit when the value actually CHANGED. `onCommit`'s identity changes
+  // on every parent render (it closes over the URL-derived filters), so without
+  // this guard the effect would re-commit the same query each render → a
+  // navigation per commit → an infinite reload loop (?q=… fetched forever).
   useEffect(() => {
     const id = setTimeout(() => {
       const trimmed = draft.trim()
-      onCommit(trimmed.length > 0 ? trimmed : undefined)
+      const next = trimmed.length > 0 ? trimmed : undefined
+      if (next !== value) onCommit(next)
     }, debounceMs)
     return () => clearTimeout(id)
-  }, [draft, debounceMs, onCommit])
+  }, [draft, value, debounceMs, onCommit])
 
   return (
     <div className="relative">

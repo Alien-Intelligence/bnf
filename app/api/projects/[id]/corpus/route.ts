@@ -11,6 +11,7 @@
  *   type     — comma-separated doc-type codes, e.g. "book,press"
  *   lang     — comma-separated BCP-47 codes, e.g. "fr,la"
  *   source   — comma-separated source identifiers, e.g. "gallica,catalogue"
+ *   session  — comma-separated AppSession ids; filters to docs those sessions added
  *   yearFrom — decade start (inclusive), e.g. 1880
  *   yearTo   — decade end (inclusive), e.g. 1889
  *   undated  — when "true"/"1", filter to documents with year IS NULL
@@ -47,6 +48,8 @@ const corpusQuerySchema = z.object({
   lang: z.string().optional(),
   /** Comma-separated source identifiers */
   source: z.string().optional(),
+  /** Comma-separated AppSession ids — filter to docs a given session contributed */
+  session: z.string().optional(),
   /** Comma-separated ingestion classes (ocr|vision|sans_texte|non_numerise) */
   ingest: z.string().optional(),
   /** Year range lower bound (inclusive) */
@@ -96,11 +99,13 @@ export const GET = withAuth(async (req, user, bouncer, ctx: RouteCtx) => {
   const typeArr = splitCsv(parsed.type)
   const langArr = splitCsv(parsed.lang)
   const sourceArr = splitCsv(parsed.source)
+  const sessionArr = splitCsv(parsed.session)
   const ingestArr = splitCsv(parsed.ingest)
   const hasFilters =
     typeArr !== undefined ||
     langArr !== undefined ||
     sourceArr !== undefined ||
+    sessionArr !== undefined ||
     ingestArr !== undefined ||
     parsed.yearFrom !== undefined ||
     parsed.yearTo !== undefined ||
@@ -112,6 +117,7 @@ export const GET = withAuth(async (req, user, bouncer, ctx: RouteCtx) => {
         type: typeArr,
         lang: langArr,
         source: sourceArr,
+        session: sessionArr,
         ingest: ingestArr,
         yearFrom: parsed.yearFrom,
         yearTo: parsed.yearTo,

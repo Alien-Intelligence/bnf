@@ -112,6 +112,16 @@ export type CorpusSnapshot = {
     period: Record<string, number>
   }
   /**
+   * Per-session attribution facet: how many documents in the current filtered
+   * head set each AppSession contributed. A document contributed by several
+   * sessions is counted once under each (multi-session attribution). Carries the
+   * session `title` so the UI can label the facet/chip without a second lookup —
+   * which is why it is a dedicated array rather than a `Record` inside `facets`.
+   * Sorted by `count` descending. Empty when no session has contributed (e.g. a
+   * pre-existing corpus with no contribution rows — these are not backfilled).
+   */
+  sessions: { sessionId: string; title: string; count: number }[]
+  /**
    * Numérisation & océrisation breakdown — the ingestability picture for the
    * comprehension panel. Computed over RESOLVED documents only (OCR/digitization
    * is unknown for pending/failed stubs), so `resolved` is the denominator for

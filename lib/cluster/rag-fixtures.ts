@@ -13,7 +13,9 @@
 
 import type { RagPassage } from "./rag"
 
-export type RagFixture = RagPassage & { topics: string[] }
+// Fixtures carry no entryId — the FakeRagRunner derives a stable one from the
+// ARK (and uses it to reconstruct full text). Everything else mirrors RagPassage.
+export type RagFixture = Omit<RagPassage, "entryId"> & { topics: string[] }
 
 export const RAG_FIXTURES: RagFixture[] = [
   // ── Le Figaro — 6 mai 1889 ──────────────────────────────────────────────

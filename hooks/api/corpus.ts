@@ -5,7 +5,13 @@
 // All HTTP calls go through apiFetch — never raw fetch().
 // Query keys are defined once at the top; never inlined at the call site.
 
-import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
+import {
+  useInfiniteQuery,
+  useQuery,
+  useMutation,
+  useQueryClient,
+  keepPreviousData,
+} from "@tanstack/react-query"
 import { apiFetch } from "@/lib/api-fetch"
 import { CORPUS_RESOLVE_POLL_MS } from "@/lib/constants"
 import type { CorpusDiff, CorpusSnapshot } from "@/models/corpus/schema"
@@ -56,6 +62,10 @@ export function useCorpus(
     initialData: opts.initialSnapshot
       ? { pages: [opts.initialSnapshot], pageParams: [undefined] }
       : undefined,
+    // On a filter change the query key changes; keep showing the previous
+    // result (instead of a blank/skeleton flash) until the new one lands.
+    // `isPlaceholderData` then flags the in-flight transition for the UI.
+    placeholderData: keepPreviousData,
     staleTime: 30_000,
     // While documents are still resolving in the background, poll so newly
     // resolved titles/facets appear without a manual refresh. Snapshot-level

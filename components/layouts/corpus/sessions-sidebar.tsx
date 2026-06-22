@@ -6,7 +6,9 @@ import { useTranslations } from "next-intl"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Button } from "@/components/ui/button"
 import { CardSessionListItem } from "@/components/cards/sessions/list-item"
+import { CardMemoryBox } from "@/components/cards/memory/box"
 import { DialogNewSession } from "@/components/dialogs/sessions/new"
+import { DialogMemory } from "@/components/dialogs/memory"
 import { useSessions, useRenameSession, useArchiveSession } from "@/hooks/api/sessions"
 import type { AppSession } from "@/models/sessions/schema"
 
@@ -16,6 +18,13 @@ interface LayoutSessionsSidebarProps {
   activeSessionId: string
   onActiveSessionChange: (id: string) => void
   initialSessions?: AppSession[]
+  /**
+   * Research-only: the artefacts (notes) picker, rendered between the session
+   * list and the memory box (prototype rail, lines 142-168). When present the
+   * session list is height-capped so the picker gets the elastic space, exactly
+   * as the design does for Step 3.
+   */
+  artefactsSlot?: React.ReactNode
 }
 
 export function LayoutSessionsSidebar({
@@ -24,10 +33,12 @@ export function LayoutSessionsSidebar({
   activeSessionId,
   onActiveSessionChange,
   initialSessions,
+  artefactsSlot,
 }: LayoutSessionsSidebarProps) {
   const t = useTranslations("sessions.sidebar")
   const tCommon = useTranslations("common")
   const [dialogOpen, setDialogOpen] = useState(false)
+  const [memoryOpen, setMemoryOpen] = useState(false)
 
   const { data: sessions, isLoading, isError, refetch } = useSessions(
     projectId,
@@ -42,7 +53,9 @@ export function LayoutSessionsSidebar({
     <div className="flex h-full flex-col border-r bg-sidebar">
       {/* Header */}
       <div className="flex shrink-0 items-center justify-between px-3.5 pb-2 pt-3.5">
-        <span className="mono-eyebrow">{t("title")}</span>
+        <span className="mono-eyebrow">
+          {t(scope === "research" ? "titleResearch" : "titleCorpus")}
+        </span>
         <button
           type="button"
           onClick={() => setDialogOpen(true)}
@@ -54,8 +67,14 @@ export function LayoutSessionsSidebar({
         </button>
       </div>
 
-      {/* List */}
-      <div className="flex-1 overflow-y-auto py-1">
+      {/* List — height-capped when an artefacts picker shares the rail. */}
+      <div
+        className={
+          artefactsSlot
+            ? "max-h-[38%] shrink-0 overflow-y-auto py-1"
+            : "flex-1 overflow-y-auto py-1"
+        }
+      >
         {isLoading ? (
           <div className="flex flex-col gap-1 px-2 py-1">
             {Array.from({ length: 3 }).map((_, i) => (
@@ -102,12 +121,28 @@ export function LayoutSessionsSidebar({
         )}
       </div>
 
+      {/* Research artefacts picker — elastic middle section (research only). */}
+      {artefactsSlot}
+
+      {/* Project memory — compact info box, opens the full memory dialog. */}
+      <CardMemoryBox
+        projectId={projectId}
+        scope={scope}
+        onOpen={() => setMemoryOpen(true)}
+      />
+
       <DialogNewSession
         open={dialogOpen}
         onOpenChange={setDialogOpen}
         projectId={projectId}
         scope={scope}
         onCreated={(session) => onActiveSessionChange(session.id)}
+      />
+      <DialogMemory
+        open={memoryOpen}
+        onOpenChange={setMemoryOpen}
+        projectId={projectId}
+        scope={scope}
       />
     </div>
   )

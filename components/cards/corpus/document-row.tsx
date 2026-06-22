@@ -9,6 +9,7 @@ import { ArrowRight, Loader2, TriangleAlert } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { BadgeDocumentType } from "@/components/badges/documents/type-badge"
 import { BadgeDocumentLang } from "@/components/badges/documents/lang-badge"
+import { BadgeDocumentThumb } from "@/components/badges/documents/thumb"
 import { TYPE_DATASET_COLOR } from "@/lib/constants"
 import { cn } from "@/lib/utils"
 import { DOCUMENT_RESOLVE_STATUS } from "@/models/documents/schema"
@@ -41,11 +42,7 @@ export function CardCorpusDocumentRow({ doc, onClick }: Props) {
       onClick={onClick}
       className="group flex w-full items-center gap-3 rounded-lg border bg-card px-3 py-2.5 text-left transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
-      <span
-        className="size-9 shrink-0 rounded-md"
-        style={{ background: `color-mix(in srgb, ${thumbColor} 20%, var(--card))` }}
-        aria-hidden
-      />
+      <BadgeDocumentThumb color={thumbColor} size="sm" />
 
       <span className="min-w-0 flex-1">
         <span

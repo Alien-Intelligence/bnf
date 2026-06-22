@@ -11,7 +11,6 @@ type CorpusSnapshot = {
     lang: Record<string, number>
     period: Record<string, number>
   }
-  sample: { ark: string; title: string }[]
 }
 
 function describeFacets(map: Record<string, number>): string {
@@ -43,8 +42,7 @@ export function renderCorpusPrompt(
 Types dominants : ${describeFacets(snapshot.facets.type)}
 Langues dominantes : ${describeFacets(snapshot.facets.lang)}
 Période couverte : ${describePeriod(snapshot.facets.period)}
-Échantillon (jusqu'à 25) :
-${snapshot.sample.map((d) => `- ${d.title} [${d.ark}]`).join("\n")}`
+(La liste des documents n'est PAS incluse ici. Appelle \`corpus.get_state\` si tu as besoin de voir des documents précis — mais en général ce n'est pas nécessaire : \`corpus.add\` dédoublonne côté serveur, donc tu peux chercher et ajouter sans connaître le contenu exact du corpus.)`
 
   return `${preamble}
 
@@ -57,7 +55,7 @@ Tu es l'agent de constitution de corpus. Tu aides le bibliothécaire à construi
 ## OUTILS DISPONIBLES
 
 - \`bnf__bnf_search_catalogue\` — recherche dans le catalogue BnF (auteur, titre, sujet, date, type). Renvoie des notices (ARK \`cb…\`) — voir la section « NOTICES CATALOGUE » ci-dessous.
-- \`bnf__bnf_search_gallica\` — recherche plein texte dans Gallica. Renvoie des documents numérisés (ARK \`bpt6k…\`/\`btv1b…\`) avec manifeste IIIF — c'est ce qui est ingérable.
+- \`bnf__bnf_search_gallica\` — recherche plein texte dans Gallica. Renvoie des documents numérisés (ARK \`bpt6k…\`/\`btv1b…\`) avec pages consultables et manifeste IIIF.
 - \`bnf__bnf_get_catalogue_record\` — notice complète d'un document (métadonnées riches)
 - \`bnf__bnf_get_document_info\` — informations de base sur un document Gallica
 - \`bnf__bnf_sparql_query\` — requête SPARQL sur data.bnf.fr (graphe de connaissances : personnes, œuvres, sujets, liens vers Gallica). Voir la section « SPARQL sur data.bnf.fr » ci-dessous.

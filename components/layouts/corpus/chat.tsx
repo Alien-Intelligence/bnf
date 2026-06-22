@@ -10,7 +10,7 @@
 // Streaming still lives entirely in the chat handle (stream.chat); this is a
 // pure view over it.
 
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import Image from "next/image"
 import { useTranslations } from "next-intl"
 import { ArrowUp, ChevronDown, Loader2, Search, Sparkles } from "lucide-react"
@@ -44,6 +44,7 @@ interface LayoutCorpusChatProps {
   projectId: string
   locale: string
   /** Optional agent-copy overrides so the research atelier reuses this panel. */
+  headerTitle?: string
   headerSubtitle?: string
   introText?: string
   placeholder?: string
@@ -134,12 +135,21 @@ function ThinkingBox({ text, active }: { text: string; active: boolean }) {
 // Tool part dispatch — ask_user chooser / mutation pill / uniform block.
 // ---------------------------------------------------------------------------
 
-function ToolPartView({ tool, chat }: { tool: ToolPartEntry; chat: UseChatReturn }) {
+function ToolPartView({
+  tool,
+  chat,
+  activeAskUserId,
+}: {
+  tool: ToolPartEntry
+  chat: UseChatReturn
+  activeAskUserId: string | null
+}) {
   if (tool.toolName === "ask_user") {
     return (
       <CardToolAskUser
         input={tool.input}
         disabled={chat.isStreaming}
+        superseded={tool.toolUseId !== activeAskUserId}
         onSubmit={(text) => void chat.sendMessage(text)}
       />
     )
@@ -201,12 +211,14 @@ function PartView({
   chat,
   projectId,
   locale,
+  activeAskUserId,
 }: {
   part: AgentPart
   active: boolean
   chat: UseChatReturn
   projectId: string
   locale: string
+  activeAskUserId: string | null
 }) {
   if (part.kind === "text") {
     if (!part.text) return null
@@ -217,7 +229,7 @@ function PartView({
     return <ThinkingBox text={part.text} active={active} />
   }
   if (part.kind === "tool") {
-    return <ToolPartView tool={part.tool} chat={chat} />
+    return <ToolPartView tool={part.tool} chat={chat} activeAskUserId={activeAskUserId} />
   }
   if (part.kind === "domain") {
     return (
@@ -237,12 +249,14 @@ function AssistantTurnView({
   projectId,
   locale,
   thinkingLabel,
+  activeAskUserId,
 }: {
   turn: AssistantTurn
   chat: UseChatReturn
   projectId: string
   locale: string
   thinkingLabel: string
+  activeAskUserId: string | null
 }) {
   const lastIndex = turn.parts.length - 1
   const hasText = turn.parts.some((p) => p.kind === "text" && p.text.trim().length > 0)
@@ -261,6 +275,7 @@ function AssistantTurnView({
             chat={chat}
             projectId={projectId}
             locale={locale}
+            activeAskUserId={activeAskUserId}
           />
         ))}
         {turn.streaming && !hasText && (
@@ -297,12 +312,34 @@ export function LayoutCorpusChat({
   stream,
   projectId,
   locale,
+  headerTitle,
   headerSubtitle,
   introText,
   placeholder,
 }: LayoutCorpusChatProps) {
   const t = useTranslations("corpus.chat")
   const chat = stream.chat
+
+  // Only ONE ask_user is interactive at a time: the most recent one with no
+  // user reply after it. Every earlier ask_user renders as superseded (inert),
+  // so answering the latest can't "kill" a still-active older chooser.
+  const activeAskUserId = useMemo(() => {
+    let lastId: string | null = null
+    let answered = false
+    for (const turn of chat.turns) {
+      if (turn.role === "assistant") {
+        for (const p of turn.parts) {
+          if (p.kind === "tool" && p.tool.toolName === "ask_user") {
+            lastId = p.tool.toolUseId
+            answered = false
+          }
+        }
+      } else if (turn.role === "user" && lastId) {
+        answered = true
+      }
+    }
+    return answered ? null : lastId
+  }, [chat.turns])
 
   const scrollRef = useRef<HTMLDivElement>(null)
   // Pinned to the bottom? Updated on user scroll; drives whether new content
@@ -338,7 +375,7 @@ export function LayoutCorpusChat({
       {/* Header */}
       <div className="flex shrink-0 items-center justify-between gap-2 border-b px-4 py-3">
         <div className="space-y-0.5">
-          <div className="text-sm font-semibold">{t("headerTitle")}</div>
+          <div className="text-sm font-semibold">{headerTitle ?? t("headerTitle")}</div>
           <div className="text-xs text-muted-foreground">{headerSubtitle ?? t("headerSubtitle")}</div>
         </div>
         <span className="inline-flex items-center gap-1.5 rounded-full border border-info/30 bg-info/10 px-2 py-0.5 font-mono text-[10.5px] text-info">
@@ -373,6 +410,7 @@ export function LayoutCorpusChat({
                 projectId={projectId}
                 locale={locale}
                 thinkingLabel={t("thinking")}
+                activeAskUserId={activeAskUserId}
               />
             )
           })
