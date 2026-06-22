@@ -86,6 +86,17 @@ class PreparePipeline implements DocPipeline {
       info = await this.bnf.getDocumentInfo(ark);
     } catch (e) {
       if (e instanceof PermanentBnfError) {
+        // A catalogue notice (cb*) is not a missing-metadata problem — it's a
+        // doc that can never be ingested. Surface it as its own skip reason so
+        // the UI reads it as "skipped: not digitized", not a generic failure.
+        if (e.cause === "not_digitized") {
+          return {
+            skip: true,
+            reason: "not_digitized",
+            ark,
+            cause: e.message,
+          };
+        }
         return {
           skip: true,
           reason: "metadata_unavailable",

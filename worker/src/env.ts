@@ -57,22 +57,25 @@ export const blob = {
 
 // --- Ingest reliability knobs (Track 2) ---
 //
-// Tuned for "slow but always completes". Gallica's ALTO endpoint is capped at
-// ~5 req/min (GALLICA_RPS), so a long OCR book legitimately takes tens of
-// minutes. These knobs make pg-boss patient enough to let that finish instead
-// of force-expiring and looping:
-//   - jobExpireSeconds: per-doc-job wall-clock ceiling. MUST exceed the
-//     worst-case time to OCR `maxOcrPages` at the configured rate (with
-//     concurrency contention on the shared token bucket). Default 4h.
-//   - retryLimit / retryDelaySeconds: a transiently-throttled doc gets retried
-//     several times with exponential backoff, spreading attempts across ~1h so
-//     Gallica's throttle window has cleared by the time we come back.
+// Tuned for "completes cleanly without tripping Gallica". A 205-doc run at high
+// concurrency + 8 rps got our egress IP hard-blocked by Gallica, and a short
+// retry base then failed the throttled docs inside the (sticky) block window.
+// So the retry span is deliberately long — prevention is the concurrency/rate
+// knobs (WORKER_CONCURRENCY / GALLICA_GENERAL_RPS); this is the safety net:
+//   - jobExpireSeconds: per-doc-job wall-clock ceiling. Generous (4h) so the
+//     rare slow book or ALTO fallback still finishes; bounded so a wedged job
+//     can't run forever. MUST exceed the worst-case OCR time for maxOcrPages.
+//   - retryLimit / retryDelaySeconds: a transiently-failed doc retries with
+//     exponential backoff off a 60s base (60→120→240→480→960s, ~32 min span) —
+//     long enough to OUTLAST a Gallica throttle window. Parked docs are visible
+//     as "N en reprise" in the UI (stage-pipeline outcomes line), so the long
+//     park no longer reads as a frozen bar the way it did before that landed.
 //   - maxOcrPages: hard ceiling so the worst case is bounded (no unbounded loop
 //     — see ../../CLAUDE_ERROR_PATTERNS.md §14).
 export const ingest = {
   jobExpireSeconds: () => optionalInt("INGEST_JOB_EXPIRE_SECONDS", 4 * 60 * 60),
   retryLimit: () => optionalInt("INGEST_RETRY_LIMIT", 5),
-  retryDelaySeconds: () => optionalInt("INGEST_RETRY_DELAY_SECONDS", 120),
+  retryDelaySeconds: () => optionalInt("INGEST_RETRY_DELAY_SECONDS", 60),
   maxOcrPages: () => optionalInt("MAX_OCR_PAGES", 300),
 };
 

@@ -444,6 +444,12 @@ model IngestJob {
   clusterJobId    String?   @map("cluster_job_id")
   addedArks       String[]  @default([]) @map("added_arks")
   removedArks     String[]  @default([]) @map("removed_arks")
+  // Docs in the added delta that were dropped before queueing because they are
+  // not ingestable (catalogue notices / non-digitized / no text layer). Kept
+  // for an honest record — the worker never sees these, so they carry no
+  // per-doc terminal status. See IngestService.submit() / classifyIngestion().
+  excludedArks    String[]  @default([]) @map("excluded_arks")
+  excludedCount   Int?      @map("excluded_count")
   createdAt       DateTime  @default(now()) @map("created_at")
   startedAt       DateTime? @map("started_at")
   finishedAt      DateTime? @map("finished_at")

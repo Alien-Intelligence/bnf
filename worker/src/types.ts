@@ -17,6 +17,7 @@ export type Pipeline =
 export type SkipReason =
   | { skip: true; reason: "no_ocr_and_not_single_image"; arkInfo: BnfDocInfo }
   | { skip: true; reason: "metadata_unavailable"; ark: string; cause: string }
+  | { skip: true; reason: "not_digitized"; ark: string; cause: string }
   | { skip: true; reason: "holo_failed"; ark: string; cause: string }
   | { skip: true; reason: "ocr_fetch_failed"; ark: string; cause: string };
 

@@ -6,11 +6,17 @@
 // No corpus mutation — ingest reads the corpus state set by Constituer.
 
 import { useState } from "react"
-import { useIngestStatus, useSubmitIngest, useCancelIngest } from "@/hooks/api/ingest"
+import {
+  useIngestStatus,
+  useSubmitIngest,
+  useCancelIngest,
+  useRetryFailedIngest,
+} from "@/hooks/api/ingest"
 import { CardIngestSummary } from "@/components/cards/ingest/summary"
 import { CardIngestStagePipeline } from "@/components/cards/ingest/stage-pipeline"
 import { CardComeBackLater } from "@/components/cards/ingest/come-back-later"
 import { CardIngestCompletion } from "@/components/cards/ingest/completion"
+import { CardIngestRetryFailed } from "@/components/cards/ingest/retry-failed"
 import { CardIngestJobHistory } from "@/components/cards/ingest/job-history"
 import { INGEST_STATUS } from "@/models/ingest/schema"
 import { WorkspaceHeader } from "@/components/layouts/workspace/header"
@@ -43,10 +49,17 @@ export function IngererClient({
 
   const submitMutation = useSubmitIngest(projectId)
   const cancelMutation = useCancelIngest(projectId)
+  const retryMutation = useRetryFailedIngest(projectId)
   const status = useIngestStatus(activeJobId)
 
   const onSubmit = async () => {
     const job = await submitMutation.mutateAsync({})
+    setActiveJobId(job.id)
+  }
+
+  const onRetryFailed = async () => {
+    if (!activeJobId) return
+    const job = await retryMutation.mutateAsync(activeJobId)
     setActiveJobId(job.id)
   }
 
@@ -80,6 +93,13 @@ export function IngererClient({
               {(status.data.status === INGEST_STATUS.QUEUED ||
                 status.data.status === INGEST_STATUS.RUNNING) && (
                 <CardComeBackLater />
+              )}
+              {status.data.status === INGEST_STATUS.FAILED && (
+                <CardIngestRetryFailed
+                  error={status.data.error}
+                  onRetry={() => void onRetryFailed()}
+                  isRetrying={retryMutation.isPending}
+                />
               )}
             </>
           )

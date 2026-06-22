@@ -303,6 +303,19 @@ export class BnfApi {
 
   async getDocumentInfo(ark: string): Promise<BnfDocInfo> {
     const canonicalArk = ensureCanonicalArk(ark);
+    // Fail fast on catalogue notices. `cb*` ARKs are bibliographic/authority
+    // records, not digitized documents — they have no pages, so Pagination and
+    // the viewer endpoint ECONNRESET on every call. Without this guard the
+    // runner reads those resets as transient and retries the doc-job six times
+    // over ~an hour before giving up, which is exactly what wedged a demo run.
+    // The prefix is deterministic, so this is a permanent classification — NOT
+    // a generic "network error → permanent" rule (real Gallica throttling on a
+    // digitized ARK must still retry).
+    if (isCatalogueNotice(canonicalArk)) {
+      throw new PermanentBnfError("not_digitized", {
+        hint: `${canonicalArk}: catalogue notice (cb*), not a digitized document`,
+      });
+    }
     try {
       return await this.getDocumentInfoFromOAIRecord(canonicalArk);
     } catch (e) {
@@ -738,6 +751,16 @@ function ensureCanonicalArk(ark: string): string {
     });
   }
   return trimmed;
+}
+
+/**
+ * True for BnF catalogue-notice ARKs (`ark:/12148/cb…`) — bibliographic or
+ * authority records, not digitized documents. They have no IIIF surface and no
+ * pages, so any attempt to fetch text resets the connection. Mirrors the app's
+ * `sourceFromArk` "catalogue" mapping (lib/mcp/vocab.ts) — keep the two in sync.
+ */
+function isCatalogueNotice(canonicalArk: string): boolean {
+  return /^ark:\/12148\/cb/.test(canonicalArk);
 }
 
 /**

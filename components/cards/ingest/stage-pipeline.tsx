@@ -54,6 +54,8 @@ type StageCounters = {
   embedding: number
   chunking: number
   extracting: number
+  awaitingRetry: number
+  pending: number
 }
 
 function readCounters(stats: unknown): StageCounters | null {
@@ -70,6 +72,11 @@ function readCounters(stats: unknown): StageCounters | null {
     embedding: n("embedding"),
     chunking: n("chunking"),
     extracting: n("extracting"),
+    // The worker emits these (callback.ts) but the stage bars don't consume
+    // them — the outcomes line does, so a parked doc reads as "retrying"
+    // instead of silently dragging the overall % down.
+    awaitingRetry: n("awaiting_retry"),
+    pending: n("pending"),
   }
 }
 
@@ -222,12 +229,55 @@ export function CardIngestStagePipeline({ job, onCancel }: Props) {
   const tPipeline = useTranslations("ingest.pipeline")
   const tCancel = useTranslations("ingest.cancel")
 
+  const tOutcomes = useTranslations("ingest.pipeline.outcomes")
+
   const stageInfos = deriveStageInfos(job)
 
   const isTerminal =
     job.status === INGEST_STATUS.DONE ||
     job.status === INGEST_STATUS.FAILED ||
     job.status === INGEST_STATUS.CANCELED
+
+  // Per-doc outcome chips. Distinguishes a doc that is *retrying* (parked in
+  // pg-boss backoff — transient, will resume) from one that is terminally
+  // *skipped*/*failed*, and from a doc *excluded* at submission (a catalogue
+  // notice never queued). Without this, a parked or excluded doc just makes the
+  // overall % sit short of 100 and reads as a frozen pipeline.
+  const counters = readCounters(job.stats)
+  const excludedCount = job.excludedCount ?? 0
+  const outcomes: { key: string; label: string; tone: string }[] = []
+  if (counters) {
+    if (counters.done > 0)
+      outcomes.push({
+        key: "ingested",
+        label: tOutcomes("ingested", { count: counters.done }),
+        tone: "text-brand-teal",
+      })
+    if (!isTerminal && counters.awaitingRetry > 0)
+      outcomes.push({
+        key: "retrying",
+        label: tOutcomes("retrying", { count: counters.awaitingRetry }),
+        tone: "text-amber-500",
+      })
+    if (counters.skipped > 0)
+      outcomes.push({
+        key: "skipped",
+        label: tOutcomes("skipped", { count: counters.skipped }),
+        tone: "text-muted-foreground",
+      })
+    if (counters.failed > 0)
+      outcomes.push({
+        key: "failed",
+        label: tOutcomes("failed", { count: counters.failed }),
+        tone: "text-destructive",
+      })
+  }
+  if (excludedCount > 0)
+    outcomes.push({
+      key: "excluded",
+      label: tOutcomes("excluded", { count: excludedCount }),
+      tone: "text-muted-foreground",
+    })
 
   // ETA: a number once enough is done, "estimating…" early in a running job.
   const etaMs = ingestEtaMs(job)
@@ -307,6 +357,17 @@ export function CardIngestStagePipeline({ job, onCancel }: Props) {
             </li>
           ))}
         </ol>
+
+        {outcomes.length > 0 && (
+          <ul className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t pt-3 text-[11px] tabular-nums">
+            {outcomes.map((o) => (
+              <li key={o.key} className="flex items-center gap-1.5">
+                <span className={cn("size-1.5 rounded-full bg-current", o.tone)} />
+                <span className={o.tone}>{o.label}</span>
+              </li>
+            ))}
+          </ul>
+        )}
 
         <div className="flex items-center justify-between gap-2 border-t pt-4">
           <span className="text-xs text-muted-foreground">

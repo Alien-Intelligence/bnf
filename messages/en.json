@@ -498,7 +498,14 @@
       "pending": "Pending",
       "skipped": "Skipped",
       "eta": "Est. time remaining",
-      "etaComputing": "estimating…"
+      "etaComputing": "estimating…",
+      "outcomes": {
+        "ingested": "{count} ingested",
+        "retrying": "{count} retrying",
+        "skipped": "{count} skipped",
+        "failed": "{count} failed",
+        "excluded": "{count} not ingestable"
+      }
     },
     "status": {
       "queued": "Queued",
@@ -527,6 +534,11 @@
       "title": "Corpus ingested",
       "body": "Your corpus is indexed and ready to query. Start researching to ask your questions.",
       "cta": "Go to research"
+    },
+    "retry": {
+      "title": "Ingestion incomplete",
+      "body": "Some documents could not be ingested. You can re-run only the failed documents.",
+      "button": "Retry failed documents"
     }
   }
 }

@@ -498,7 +498,14 @@
       "pending": "En attente",
       "skipped": "Ignoré",
       "eta": "Temps restant estimé",
-      "etaComputing": "estimation…"
+      "etaComputing": "estimation…",
+      "outcomes": {
+        "ingested": "{count} ingéré·s",
+        "retrying": "{count} en reprise",
+        "skipped": "{count} ignoré·s",
+        "failed": "{count} en échec",
+        "excluded": "{count} non ingérable·s"
+      }
     },
     "status": {
       "queued": "En attente",
@@ -527,6 +534,11 @@
       "title": "Corpus ingéré",
       "body": "Votre corpus est indexé et prêt à être interrogé. Lancez la recherche pour poser vos questions.",
       "cta": "Passer à la recherche"
+    },
+    "retry": {
+      "title": "Ingestion incomplète",
+      "body": "Certains documents n'ont pas pu être ingérés. Vous pouvez relancer uniquement les documents en échec.",
+      "button": "Réessayer les documents échoués"
     }
   }
 }

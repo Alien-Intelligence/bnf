@@ -12,6 +12,11 @@ import crypto from "node:crypto"
 import { prisma } from "@/lib/db"
 import type { IngestJob, Project, User } from "@/lib/generated/prisma/client"
 import { CorpusQueries } from "@/models/corpus/queries"
+import {
+  classifyIngestion,
+  DOCUMENT_RESOLVE_STATUS,
+  isIngestableClass,
+} from "@/models/documents/schema"
 import { INGEST_STATUS } from "./schema"
 import type { IngestResults, IngestSubmitInput } from "./types"
 import type { ClusterProgressEvent } from "@/lib/cluster/contracts"
@@ -66,8 +71,17 @@ export class IngestService {
     const baseSet = new Set(baseArks)
     const targetSet = new Set(targetArks)
 
-    const addedArks = targetArks.filter((a) => !baseSet.has(a))
+    const deltaAddedArks = targetArks.filter((a) => !baseSet.has(a))
     const removedArks = baseArks.filter((a) => !targetSet.has(a))
+
+    // 3b. Drop non-ingestable docs from the added delta. Catalogue notices
+    // (cb*), non-digitized records, and digitized-but-text-less docs have no
+    // OCR and no image to describe — sending them to the worker only produces
+    // retry-loops on ARKs that can never succeed. They are already flagged
+    // non-ingestable in the corpus view; honor that here. The excluded set is
+    // recorded on the job for an honest count (the worker never sees them).
+    const { ingestable: addedArks, excluded: excludedArks } =
+      await IngestService._partitionByIngestability(project.id, deltaAddedArks)
 
     // 4. Deduplication guard
     const existing = await prisma.ingestJob.findFirst({
@@ -79,9 +93,18 @@ export class IngestService {
     })
     if (existing) return existing
 
-    // 5. No-op short-circuit
+    // 5. No-op short-circuit. Nothing ingestable to add and nothing to remove
+    // means the index content for the target version already matches what's
+    // there — advance the pointer without a cluster round-trip. Excluded docs
+    // don't change index content, so an all-excluded added delta is a no-op.
     if (addedArks.length === 0 && removedArks.length === 0) {
-      return IngestService._commitNoOp(project, user, targetVersion.id, baseVersion?.id ?? null)
+      return IngestService._commitNoOp(
+        project,
+        user,
+        targetVersion.id,
+        baseVersion?.id ?? null,
+        excludedArks,
+      )
     }
 
     // 6. Fetch document metadata for the cluster
@@ -101,16 +124,25 @@ export class IngestService {
         removedCount: removedArks.length,
         addedArks,
         removedArks,
+        excludedArks,
+        excludedCount: excludedArks.length,
         callbackSecret,
       },
     })
 
     // 9. Enqueue to cluster runner (fire-and-forget; route handles progress via callback)
-    const callbackUrl = `${env.APP_URL}/api/internal/ingest/${job.id}/progress`
+    // WORKER_CALLBACK_BASE_URL lets us override the host the cluster runner
+    // calls back on. In docker-compose dev the worker can't resolve
+    // `localhost:3001` (that's the container itself); set this to
+    // `http://host.docker.internal:3001`. In prod the worker reaches the
+    // public APP_URL so leave it unset.
+    const callbackBase = process.env.WORKER_CALLBACK_BASE_URL ?? env.APP_URL
+    const callbackUrl = `${callbackBase}/api/internal/ingest/${job.id}/progress`
 
     const { clusterJobId } = await ClusterRunner.submit({
       projectId: project.id,
       targetVersionId: targetVersion.id,
+      appJobId: job.id,
       added: addedDocs,
       removed: removedArks,
       callbackUrl,
@@ -160,10 +192,25 @@ export class IngestService {
     event: ClusterProgressEvent,
   ): Promise<void> {
     if (event.stage === "done") {
-      await IngestService.commit(job, {
-        chunksWritten: event.chunksWritten,
-        stats: event.stats,
-      })
+      // Commit gating: the target version becomes the ingested baseline ONLY
+      // when every queued doc succeeded. If any failed, the version is only
+      // partially in the index — advancing the pointer would silently mark the
+      // failed docs as ingested and orphan them. Record the outcome + errors
+      // (so retryFailed can re-queue them) but leave the pointer where it is.
+      const failedCount = Number(
+        (event.stats as Record<string, unknown>)?.failed ?? 0,
+      )
+      if (failedCount > 0) {
+        await IngestService.commitPartialFailure(job, {
+          chunksWritten: event.chunksWritten,
+          stats: event.stats,
+        })
+      } else {
+        await IngestService.commit(job, {
+          chunksWritten: event.chunksWritten,
+          stats: event.stats,
+        })
+      }
     } else if (event.stage === "failed") {
       await prisma.ingestJob.update({
         where: { id: job.id },
@@ -224,6 +271,35 @@ export class IngestService {
   }
 
   /**
+   * Terminal state for a job that finished but had per-doc failures.
+   *
+   * Marks the job FAILED and persists `stats` (which carries the per-doc
+   * `errors[]` the worker emitted) so retryFailed can re-queue exactly the
+   * failed ARKs. Deliberately does NOT advance project.ingestedVersionId or
+   * mark the target version ingested — only IngestService.commit() does that,
+   * and only on a fully-successful job. Counterpart to commit(); see the
+   * commit-gating note in applyProgress and corpus-versioning.md invariant 4.
+   */
+  static async commitPartialFailure(
+    job: IngestJob,
+    results: IngestResults,
+  ): Promise<void> {
+    const stats = results.stats as Record<string, unknown>
+    const failed = Number(stats?.failed ?? 0)
+    const total = Number(stats?.total ?? 0)
+    await prisma.ingestJob.update({
+      where: { id: job.id },
+      data: {
+        status: INGEST_STATUS.FAILED,
+        finishedAt: new Date(),
+        chunksWritten: results.chunksWritten,
+        stats: results.stats as never,
+        error: `${failed}/${total} document(s) en échec — réessayez les documents échoués`,
+      },
+    })
+  }
+
+  /**
    * Retry failed documents from a previous ingest job.
    *
    * Reads `stats.errors` from the source job for the list of failed ARKs.
@@ -270,11 +346,13 @@ export class IngestService {
       },
     })
 
-    const callbackUrl = `${env.APP_URL}/api/internal/ingest/${retryJob.id}/progress`
+    const retryCallbackBase = process.env.WORKER_CALLBACK_BASE_URL ?? env.APP_URL
+    const callbackUrl = `${retryCallbackBase}/api/internal/ingest/${retryJob.id}/progress`
 
     const { clusterJobId } = await ClusterRunner.submit({
       projectId: job.projectId,
       targetVersionId: job.targetVersionId,
+      appJobId: retryJob.id,
       added: addedDocs,
       removed: [],
       callbackUrl,
@@ -305,6 +383,7 @@ export class IngestService {
     _user: User,
     targetVersionId: string,
     baseVersionId: string | null,
+    excludedArks: string[] = [],
   ): Promise<IngestJob> {
     const now = new Date()
     let job!: IngestJob
@@ -319,6 +398,8 @@ export class IngestService {
           removedCount: 0,
           addedArks: [],
           removedArks: [],
+          excludedArks,
+          excludedCount: excludedArks.length,
           chunksWritten: 0,
           stats: { noOp: true },
           startedAt: now,
@@ -335,6 +416,66 @@ export class IngestService {
       })
     })
     return job
+  }
+
+  /**
+   * Split an added-delta ARK list into the docs worth ingesting and the docs
+   * to drop. A doc is dropped only when we are CONFIDENT it is non-ingestable:
+   *
+   *   • not digitized (no IIIF manifest — catalogue `cb*` notices). This is
+   *     deterministic from the ARK at stub time, so it holds even before
+   *     metadata resolution.
+   *   • OR fully resolved AND classified non-ingestable (digitized but no OCR
+   *     and not an image-like type → no text and nothing to vision-describe).
+   *
+   * A digitized doc whose metadata hasn't resolved yet is NEVER dropped — its
+   * classification is still provisional, so we let the worker attempt it (and
+   * the worker's fail-fast path skips it cleanly if it turns out to be empty).
+   *
+   * A corpus member always has a Document row; an ARK with no row is treated as
+   * ingestable (the worker resolves it from scratch) rather than silently lost.
+   */
+  private static async _partitionByIngestability(
+    projectId: string,
+    arks: string[],
+  ): Promise<{ ingestable: string[]; excluded: string[] }> {
+    if (arks.length === 0) return { ingestable: [], excluded: [] }
+    const rows = await prisma.document.findMany({
+      where: { projectId, ark: { in: arks } },
+      select: {
+        ark: true,
+        docType: true,
+        ocrAvailable: true,
+        iiifManifestUrl: true,
+        resolveStatus: true,
+      },
+    })
+    const byArk = new Map(rows.map((r) => [r.ark, r]))
+
+    const ingestable: string[] = []
+    const excluded: string[] = []
+    for (const ark of arks) {
+      const doc = byArk.get(ark)
+      if (!doc) {
+        // No row — let the worker resolve and decide rather than drop blindly.
+        ingestable.push(ark)
+        continue
+      }
+      const digitized = Boolean(doc.iiifManifestUrl)
+      const cls = classifyIngestion({
+        docType: doc.docType,
+        ocrAvailable: doc.ocrAvailable,
+        digitized,
+      })
+      const confident =
+        !digitized || doc.resolveStatus === DOCUMENT_RESOLVE_STATUS.RESOLVED
+      if (!isIngestableClass(cls) && confident) {
+        excluded.push(ark)
+      } else {
+        ingestable.push(ark)
+      }
+    }
+    return { ingestable, excluded }
   }
 
   /**

@@ -86,6 +86,34 @@ async function fetchRequest(
   return rows[0] ?? null;
 }
 
+/**
+ * Per-doc failure records for the terminal callback. The app stores these in
+ * `ingest_job.stats.errors` and `IngestService.retryFailed` reads them to
+ * re-queue exactly the failed ARKs. Without this the retry path is inert (it
+ * has no ARK list to work from) and failures are unrecoverable.
+ *
+ * `stage` is best-effort: the doc-job row doesn't record which of the four
+ * stages it died in, but transient failures are overwhelmingly in extract
+ * (Gallica fetch / vision), so we label them that way for the UI/record. The
+ * value is informational — retryFailed keys off `ark` alone.
+ */
+async function fetchFailedErrors(
+  pool: Pool,
+  ingestJobId: string,
+): Promise<Array<{ ark: string; stage: string; reason: string }>> {
+  const { rows } = await pool.query<{ ark: string; error: string | null }>(
+    `SELECT ark, error
+       FROM document_ingest_job
+      WHERE ingest_job_id = $1 AND status = 'failed'`,
+    [ingestJobId],
+  );
+  return rows.map((r) => ({
+    ark: r.ark,
+    stage: "extract",
+    reason: r.error ?? "unknown",
+  }));
+}
+
 async function fetchCounters(
   pool: Pool,
   ingestJobId: string,
@@ -278,6 +306,10 @@ export async function emitProgressForIngestJob(
       clearTimeout(state.pending);
       state.pending = null;
     }
+    // Per-doc failure list travels with BOTH terminal shapes so the app can
+    // record it (stats.errors) and retryFailed can re-queue exactly these ARKs.
+    const errors =
+      counters.failed > 0 ? await fetchFailedErrors(pool, ingestJobId) : [];
     const anyUnhandled = counters.failed > 0 && counters.done === 0;
     if (anyUnhandled) {
       await postSigned(req.callback_url, req.callback_secret, {
@@ -288,6 +320,7 @@ export async function emitProgressForIngestJob(
           failed: counters.failed,
           skipped: counters.skipped,
           total: counters.total,
+          errors,
         },
       });
       await pool.query(
@@ -303,6 +336,7 @@ export async function emitProgressForIngestJob(
           failed: counters.failed,
           skipped: counters.skipped,
           total: counters.total,
+          errors,
         },
       });
       await pool.query(
