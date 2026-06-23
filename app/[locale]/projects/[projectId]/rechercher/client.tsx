@@ -25,7 +25,7 @@ import { DialogNewNote } from "@/components/dialogs/notes/create"
 import { DialogOnboardingResearch } from "@/components/dialogs/onboarding/research"
 import { useMarkOnboardingSeen } from "@/hooks/api/onboarding"
 import { ONBOARDING_INTRO } from "@/models/onboarding/schema"
-import { SESSIONS_RAIL_WIDTH } from "@/lib/constants"
+import { SESSIONS_RAIL_WIDTH, AGENT_DEFAULT_MODEL, type AgentProvider } from "@/lib/constants"
 import type { NoteListItem } from "@/models/notes/schema"
 import type { AppSession } from "@/models/sessions/schema"
 import type { ParsedCitation } from "@/lib/citations/syntax"
@@ -45,6 +45,9 @@ interface RechercherClientProps {
   clusterId: string
   docCount: number
   introSeen: boolean
+  /** Active agent provider (from env, server-rendered). Drives whether the
+   *  research chat model selector is shown. */
+  agentProvider: AgentProvider
 }
 
 export function RechercherClient({
@@ -59,12 +62,19 @@ export function RechercherClient({
   clusterId,
   docCount,
   introSeen,
+  agentProvider,
 }: RechercherClientProps) {
   const t = useTranslations("research")
 
   // ── Active session ────────────────────────────────────────────────────────
   const [activeSessionId, setActiveSessionId] = useState(initialSessionId)
-  const stream = useTurnStream(activeSessionId)
+
+  // ── Selected model (openrouter only) — see ConstituerClient. ────────────────
+  const [selectedModel, setSelectedModel] = useState<string>(AGENT_DEFAULT_MODEL)
+  const stream = useTurnStream(
+    activeSessionId,
+    agentProvider === "openrouter" ? selectedModel : undefined,
+  )
 
   // ── Notes (live; seeded from the server) ───────────────────────────────────
   const { data: notes } = useNotes(projectId, { initialData: initialNotes })
@@ -232,6 +242,9 @@ export function RechercherClient({
             onOpenNewNote={() => setNewNoteOpen(true)}
             onCitationClick={onCitationClick}
             onOpenHelp={() => setIntroOpen(true)}
+            agentProvider={agentProvider}
+            selectedModel={selectedModel}
+            onModelChange={setSelectedModel}
           />
         </div>
       </div>

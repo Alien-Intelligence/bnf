@@ -159,7 +159,19 @@ function deriveFlat(turns: ChatTurn[]): {
 // Hook
 // ---------------------------------------------------------------------------
 
-export function useTurnStream(appSessionId: string | null): UseTurnStreamResult {
+/**
+ * @param appSessionId  the durable session whose turn this stream drives.
+ * @param model  optional OpenRouter model id. When set, it is merged into every
+ *   request body as `{ model }` — the server handler reads `body.model ?? cfg.model`,
+ *   so the chosen model drives the next turn. Pass this ONLY under the openrouter
+ *   provider: a vendor-namespaced id (`anthropic/…`) sent to the direct-Anthropic
+ *   provider would be rejected. Omit it (undefined) and the handler falls back to
+ *   its configured model.
+ */
+export function useTurnStream(
+  appSessionId: string | null,
+  model?: string,
+): UseTurnStreamResult {
   const endpoint = `${BASE_PATH}/api/sessions/${appSessionId ?? "_none_"}/messages`
   const [domainEvents, setDomainEvents] = useState<StreamDomainEvent[]>([])
 
@@ -174,6 +186,10 @@ export function useTurnStream(appSessionId: string | null): UseTurnStreamResult 
   const chat = useChat({
     endpoint,
     resume: appSessionId ? { sessionId: appSessionId } : undefined,
+    // Per-request model override (openrouter only). Only attach `body.model`
+    // when a model is set — an absent key lets the handler use its configured
+    // default, and never sends a namespaced id down the direct-Anthropic path.
+    ...(model ? { body: { model } } : {}),
     // The SDK smoother drives the word-by-word reveal; <StreamingMarkdown> is
     // rendered with streaming=false (plain markdown of the current content).
     smooth: { delayMs: CHAT_STREAM_REVEAL_MS, chunking: "word" },

@@ -28,6 +28,7 @@ import { cn } from "@/lib/utils"
 import type { NoteListItem } from "@/models/notes/schema"
 import type { ParsedCitation } from "@/lib/citations/syntax"
 import type { UseTurnStreamResult } from "@/hooks/api/turn-stream"
+import type { AgentProvider } from "@/lib/constants"
 
 type Disposition = "atelier" | "carnet"
 
@@ -48,6 +49,11 @@ interface LayoutResearchEspaceProps {
   onOpenNewNote: () => void
   onCitationClick: (c: ParsedCitation) => void
   onOpenHelp: () => void
+  /** Model selector wiring, forwarded to the research chat panel (openrouter
+   *  only). See LayoutCorpusChat. */
+  agentProvider?: AgentProvider
+  selectedModel?: string
+  onModelChange?: (id: string) => void
 }
 
 export function LayoutResearchEspace({
@@ -67,6 +73,9 @@ export function LayoutResearchEspace({
   onOpenNewNote,
   onCitationClick,
   onOpenHelp,
+  agentProvider,
+  selectedModel,
+  onModelChange,
 }: LayoutResearchEspaceProps) {
   const t = useTranslations("research.espace")
   const tChat = useTranslations("research.chat")
@@ -121,6 +130,9 @@ export function LayoutResearchEspace({
             headerSubtitle={t("openSubtitle")}
             introText={tChat("intro")}
             placeholder={tChat("placeholder")}
+            agentProvider={agentProvider}
+            selectedModel={selectedModel}
+            onModelChange={onModelChange}
           />
         </div>
 

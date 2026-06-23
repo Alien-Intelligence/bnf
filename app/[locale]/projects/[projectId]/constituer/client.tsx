@@ -35,7 +35,7 @@ import { WorkspaceHeader } from "@/components/layouts/workspace/header"
 import { DialogOnboardingCorpus } from "@/components/dialogs/onboarding/corpus"
 import { useMarkOnboardingSeen } from "@/hooks/api/onboarding"
 import { ONBOARDING_INTRO } from "@/models/onboarding/schema"
-import { SESSIONS_RAIL_WIDTH } from "@/lib/constants"
+import { SESSIONS_RAIL_WIDTH, AGENT_DEFAULT_MODEL, type AgentProvider } from "@/lib/constants"
 import type { CorpusSnapshot } from "@/models/corpus/schema"
 import type { AppSession } from "@/models/sessions/schema"
 
@@ -47,6 +47,9 @@ interface Props {
   initialSessionId: string
   initialSessions: AppSession[]
   introSeen: boolean
+  /** Active agent provider (from env, server-rendered). Drives whether the chat
+   *  model selector is shown. */
+  agentProvider: AgentProvider
 }
 
 export function ConstituerClient({
@@ -57,6 +60,7 @@ export function ConstituerClient({
   initialSessionId,
   initialSessions,
   introSeen,
+  agentProvider,
 }: Props) {
   const pathname = usePathname()
   const searchParams = useSearchParams()
@@ -78,8 +82,17 @@ export function ConstituerClient({
   // ── Active session state ──────────────────────────────────────────────────────
   const [activeSessionId, setActiveSessionId] = useState(initialSessionId)
 
+  // ── Selected model (openrouter only) ─────────────────────────────────────────
+  // The selector switches the model for the next turn. Under the anthropic
+  // provider there is nothing to switch, so we never send body.model (a
+  // namespaced id would be rejected by the direct-Anthropic path).
+  const [selectedModel, setSelectedModel] = useState<string>(AGENT_DEFAULT_MODEL)
+
   // ── Turn stream — lifted here so parent can observe domain events ─────────────
-  const stream = useTurnStream(activeSessionId)
+  const stream = useTurnStream(
+    activeSessionId,
+    agentProvider === "openrouter" ? selectedModel : undefined,
+  )
 
   // ── Debounced corpus refresh on corpus_event ─────────────────────────────────
   // When the agent adds or removes documents the corpus_event count grows.
@@ -221,7 +234,14 @@ export function ConstituerClient({
 
         {/* Main 40/60 grid */}
         <div className="grid grid-cols-[40%_60%] gap-4 p-6 flex-1 overflow-hidden">
-          <LayoutCorpusChat stream={stream} projectId={projectId} locale={locale} />
+          <LayoutCorpusChat
+            stream={stream}
+            projectId={projectId}
+            locale={locale}
+            agentProvider={agentProvider}
+            selectedModel={selectedModel}
+            onModelChange={setSelectedModel}
+          />
 
           <div className="flex flex-col gap-4 overflow-auto">
             <div className="flex items-center justify-between">

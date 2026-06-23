@@ -45,7 +45,8 @@
     "workspace": "Espace de travail BnF",
     "newProject": "Nouveau projet",
     "switchProject": "Changer de projet",
-    "userMenu": "Menu utilisateur"
+    "userMenu": "Menu utilisateur",
+    "language": "Langue"
   },
   "askUser": {
     "pending": "En attente",
@@ -533,6 +534,7 @@
       "delta": "Delta",
       "added": "{count} à ingérer",
       "removed": "{count} à retirer",
+      "excluded": "{count, plural, =0 {} one {# document non ingérable exclu} other {# documents non ingérables exclus}}",
       "submit": "Lancer une ingestion",
       "submitting": "Envoi…"
     },
@@ -598,5 +600,14 @@
       "body": "Certains documents n'ont pas pu être ingérés. Vous pouvez relancer uniquement les documents en échec.",
       "button": "Réessayer les documents échoués"
     }
+  },
+  "models": {
+    "label": "Modèle",
+    "claudeSonnet46": "Claude Sonnet 4.6",
+    "glm52": "GLM 5.2",
+    "gemini35Flash": "Gemini 3.5 Flash",
+    "mistralMedium35": "Mistral Medium 3.5",
+    "qwen37Max": "Qwen3.7 Max",
+    "deepseekV4Pro": "DeepSeek V4 Pro"
   }
 }

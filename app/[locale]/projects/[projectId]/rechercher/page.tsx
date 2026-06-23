@@ -13,6 +13,7 @@ import { SessionQueries } from "@/models/sessions/queries"
 import { OnboardingQueries } from "@/models/onboarding/queries"
 import { ONBOARDING_INTRO } from "@/models/onboarding/schema"
 import { RAG_CLUSTER_ID } from "@/lib/constants"
+import { env } from "@/lib/env"
 import { RechercherClient } from "./client"
 
 type RouteParams = { locale: string; projectId: string }
@@ -66,6 +67,7 @@ export default async function RechercherPage({
       clusterId={RAG_CLUSTER_ID}
       docCount={ingestedArks.length}
       introSeen={seenIntros.includes(ONBOARDING_INTRO.RESEARCH)}
+      agentProvider={env.AGENT_PROVIDER}
     />
   )
 }

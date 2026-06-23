@@ -22,7 +22,7 @@ import { withAuth } from "@/app/api/_middleware"
 import { ok, notFound } from "@/lib/api-response"
 import { auth } from "@/lib/auth"
 import { env } from "@/lib/env"
-import { AGENT_MODEL, AGENT_MAX_ITERATIONS } from "@/lib/constants"
+import { AGENT_MODEL, AGENT_MAX_ITERATIONS, OPENROUTER_APP_NAME } from "@/lib/constants"
 import { AgentQueries } from "@/models/agents/queries"
 import { AgentPolicy } from "@/models/agents/policy"
 import { AgentService } from "@/models/agents/service"
@@ -62,7 +62,22 @@ async function resolveUser(req: Request) {
 const handler = createChatHandler<TurnScopedCtx>({
   persistence: createPrismaChatAdapter(),
   claude: {
-    apiKey: env.ANTHROPIC_API_KEY,
+    // Provider toggle (@alien/chat-sdk v0.7+): `anthropic` (default) calls
+    // Anthropic directly; `openrouter` routes the SAME turns + tools + MCP
+    // through the OpenRouter gateway. Fixed per handler (the durable runtime
+    // holds one runner), so flipping AGENT_PROVIDER is a boot-time choice, not
+    // per-request. The browser still speaks mode "claude" either way.
+    provider: env.AGENT_PROVIDER,
+    apiKey:
+      env.AGENT_PROVIDER === "openrouter"
+        ? // Guaranteed present: the env superRefine throws at boot if
+          // AGENT_PROVIDER=openrouter without OPENROUTER_API_KEY.
+          env.OPENROUTER_API_KEY!
+        : env.ANTHROPIC_API_KEY,
+    // App attribution on the OpenRouter dashboard (HTTP-Referer / X-Title).
+    // Ignored under the anthropic provider.
+    siteUrl: env.APP_URL,
+    appName: OPENROUTER_APP_NAME,
     model: AGENT_MODEL,
     maxToolTurns: AGENT_MAX_ITERATIONS,
     system: async (req) => {

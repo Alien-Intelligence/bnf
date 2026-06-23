@@ -45,7 +45,8 @@
     "workspace": "BnF workspace",
     "newProject": "New project",
     "switchProject": "Switch project",
-    "userMenu": "User menu"
+    "userMenu": "User menu",
+    "language": "Language"
   },
   "askUser": {
     "pending": "Awaiting reply",
@@ -533,6 +534,7 @@
       "delta": "Delta",
       "added": "{count} to add",
       "removed": "{count} to remove",
+      "excluded": "{count, plural, =0 {} one {# non-ingestable document excluded} other {# non-ingestable documents excluded}}",
       "submit": "Start ingestion",
       "submitting": "Submitting…"
     },
@@ -598,5 +600,14 @@
       "body": "Some documents could not be ingested. You can re-run only the failed documents.",
       "button": "Retry failed documents"
     }
+  },
+  "models": {
+    "label": "Model",
+    "claudeSonnet46": "Claude Sonnet 4.6",
+    "glm52": "GLM 5.2",
+    "gemini35Flash": "Gemini 3.5 Flash",
+    "mistralMedium35": "Mistral Medium 3.5",
+    "qwen37Max": "Qwen3.7 Max",
+    "deepseekV4Pro": "DeepSeek V4 Pro"
   }
 }

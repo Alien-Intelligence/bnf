@@ -264,8 +264,51 @@ export const BNF_CANONICALIZE_BUDGET_MS = 12_000
 // ---------------------------------------------------------------------------
 
 /** Claude model id used for both the corpus and research agent loops.
- * Must be a Sonnet-class model per the design spec (design/docs/08-prompting). */
+ * Must be a Sonnet-class model per the design spec (design/docs/08-prompting).
+ * A bare Claude id is auto-namespaced to `anthropic/claude-sonnet-4-6` under the
+ * OpenRouter provider (@alien/chat-sdk), so this constant serves both providers. */
 export const AGENT_MODEL = "claude-sonnet-4-6"
+
+/** App-attribution name sent to OpenRouter as the `X-Title` header (shown on the
+ * OpenRouter dashboard). Only used when AGENT_PROVIDER=openrouter; ignored under
+ * the direct-Anthropic provider. The companion `HTTP-Referer` (site URL) is
+ * derived from `env.APP_URL` in the chat handler — it is NOT a constant here
+ * because constants.ts is client-safe and must never import the server-only env. */
+export const OPENROUTER_APP_NAME = "Alien × BnF"
+
+/**
+ * The curated allow-list of models the UI selector may pick from — ONLY meaningful
+ * under AGENT_PROVIDER=openrouter (the selector is hidden under the anthropic
+ * provider). An explicit allow-list, not free text, so a tester can never route
+ * to an arbitrary / mistyped model (uncontrolled spend, hard 4xx). Every `id` is
+ * an OpenRouter `vendor/model` slug verified live against the gateway's model
+ * list. `labelKey` is an i18n key under the `models` namespace (NOT the raw id —
+ * ids carry dots/slashes that collide with next-intl's key nesting); the display
+ * name lives in messages/{fr,en}.json. The first entry is the default.
+ */
+export const AGENT_AVAILABLE_MODELS = [
+  { id: "anthropic/claude-sonnet-4.6", labelKey: "claudeSonnet46" },
+  { id: "z-ai/glm-5.2", labelKey: "glm52" },
+  { id: "google/gemini-3.5-flash", labelKey: "gemini35Flash" },
+  { id: "mistralai/mistral-medium-3-5", labelKey: "mistralMedium35" },
+  { id: "qwen/qwen3.7-max", labelKey: "qwen37Max" },
+  { id: "deepseek/deepseek-v4-pro", labelKey: "deepseekV4Pro" },
+] as const
+
+export type AgentModelId = (typeof AGENT_AVAILABLE_MODELS)[number]["id"]
+
+/** Which gateway drives the agent — mirrors the `AGENT_PROVIDER` env enum, but
+ * declared here (client-safe) so client components can be typed by it without
+ * importing the server-only `env`. The page reads `env.AGENT_PROVIDER` and
+ * passes it down as a prop. */
+export type AgentProvider = "anthropic" | "openrouter"
+
+/** Default selected model under the openrouter provider — the first allow-list
+ * entry (Claude Sonnet 4.6, OpenRouter's canonical id). The set of valid ids is
+ * AGENT_AVAILABLE_MODELS; this is the one pre-selected in the dropdown. Distinct
+ * from AGENT_MODEL (the bare `claude-sonnet-4-6` the direct-Anthropic path uses):
+ * here the id is already vendor-namespaced for the gateway. */
+export const AGENT_DEFAULT_MODEL: AgentModelId = AGENT_AVAILABLE_MODELS[0].id
 
 /** Hard cap on tool-loop iterations per turn — a runaway-loop backstop, NOT a
  * working limit. Set well above any legitimate research/corpus turn (which

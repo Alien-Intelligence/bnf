@@ -31,7 +31,52 @@ const bootEnvSchema = z.object({
   AUTHENTIK_APP_SLUG: z.string().min(1).default("datastreaming"),
   AUTHENTIK_CLIENT_ID: z.string().min(1).optional(),
   AUTHENTIK_CLIENT_SECRET: z.string().min(1).optional(),
+  // Gallica browser-handshake relay — OPTIONAL, DEMO STOPGAP. Cloudflare
+  // bot-fight-mode on gallica.bnf.fr 403s our server's TLS/HTTP2 fingerprint
+  // (a real browser from the same IP passes; the cf_clearance cookie is
+  // IP-bound, so injecting a captured cookie does NOT work from the server).
+  // When set, the direct metadata resolver (lib/bnf/direct.ts) routes its
+  // gallica.bnf.fr calls through this sidecar (curl_cffi Firefox handshake) —
+  // the SAME relay the ingest worker uses (worker/gallica-relay.py). Absent →
+  // resolver talks to Gallica directly (prod / once the BnF IP-allowlist lands).
+  GALLICA_RELAY_URL: z.string().url().optional(),
+  // BnF broker — OPTIONAL. The single egress chokepoint for BnF traffic: it
+  // owns the OAuth token + the shared 300/min global / 12-per-IP manifest /
+  // politeness rate caps + 429 backoff (broker/ service). When set, the
+  // metadata resolver (lib/bnf/direct.ts) routes ALL its BnF calls through it
+  // (replacing the curl_cffi relay and the IPv4-direct path). Absent → the
+  // resolver falls back to its direct/relay transport. The BnF KEY/SECRET live
+  // in the broker, NOT here — this is just the broker's URL.
+  BNF_BROKER_URL: z.string().url().optional(),
+  // Agent provider — which gateway drives the `claude` agent mode (@alien/chat-sdk
+  // v0.7+). `anthropic` (default) calls Anthropic directly with ANTHROPIC_API_KEY;
+  // `openrouter` routes the same turns + tools + MCP through the OpenRouter gateway
+  // (one key for every vendor, access to non-Anthropic models). This is a genuine
+  // feature toggle with a safe default — like AUTHENTIK_APP_SLUG — NOT a defaulted
+  // secret (CLAUDE_ERROR_PATTERNS §10 forbids defaulting secrets, not toggles).
+  // Rollback is a flip back to `anthropic`. The key itself is NOT defaulted; see
+  // the superRefine below.
+  AGENT_PROVIDER: z.enum(["anthropic", "openrouter"]).default("anthropic"),
+  // OpenRouter API key (`sk-or-…`). OPTIONAL at the schema level, but REQUIRED
+  // when AGENT_PROVIDER=openrouter — enforced by the superRefine below so the
+  // server throws at boot rather than silently defaulting (CLAUDE_ERROR_PATTERNS
+  // §10). Ignored under the default `anthropic` provider.
+  OPENROUTER_API_KEY: z.string().min(1).optional(),
 })
+  .superRefine((cfg, ctx) => {
+    // No silent default for the OpenRouter key: if the operator selects the
+    // openrouter provider, the key MUST be present, or the server refuses to
+    // boot. (CLAUDE_ERROR_PATTERNS §10 — secrets are never defaulted/empty.)
+    if (cfg.AGENT_PROVIDER === "openrouter" && !cfg.OPENROUTER_API_KEY) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["OPENROUTER_API_KEY"],
+        message:
+          "OPENROUTER_API_KEY is required when AGENT_PROVIDER=openrouter " +
+          "(set it in .env.local, sk-or-…).",
+      })
+    }
+  })
 
 // Throws immediately on process start if any required var is absent / invalid.
 // NO defaults — see platform-wide CLAUDE_ERROR_PATTERNS.md §10.

@@ -37,8 +37,10 @@ import {
   mutationDuplicates,
 } from "@/lib/tools/display"
 import { StreamingMarkdown } from "./streaming-markdown"
+import { ModelSelector } from "./model-selector"
 import { EventMemoryRow } from "@/components/events/agent/memory-event"
 import { EventIngestRow } from "@/components/events/agent/ingest-event"
+import type { AgentProvider } from "@/lib/constants"
 
 interface LayoutCorpusChatProps {
   /** Turn-stream handle (a thin adapter over the SDK's useChat). Lifted to the
@@ -51,6 +53,13 @@ interface LayoutCorpusChatProps {
   headerSubtitle?: string
   introText?: string
   placeholder?: string
+  /** Active agent provider. The model selector is shown ONLY under "openrouter"
+   *  (under "anthropic" there is a single fixed model — nothing to switch). */
+  agentProvider?: AgentProvider
+  /** Currently-selected model id and its setter (openrouter only). Required for
+   *  the selector to render; ignored under the anthropic provider. */
+  selectedModel?: string
+  onModelChange?: (id: string) => void
 }
 
 /** The Alien glyph avatar shown beside every agent turn. */
@@ -327,6 +336,9 @@ export function LayoutCorpusChat({
   headerSubtitle,
   introText,
   placeholder,
+  agentProvider,
+  selectedModel,
+  onModelChange,
 }: LayoutCorpusChatProps) {
   const t = useTranslations("corpus.chat")
   const chat = stream.chat
@@ -389,10 +401,22 @@ export function LayoutCorpusChat({
           <div className="text-sm font-semibold">{headerTitle ?? t("headerTitle")}</div>
           <div className="text-xs text-muted-foreground">{headerSubtitle ?? t("headerSubtitle")}</div>
         </div>
-        <span className="inline-flex items-center gap-1.5 rounded-full border border-info/30 bg-info/10 px-2 py-0.5 font-mono text-[10.5px] text-info">
-          <span className="size-1.5 rounded-full bg-info" aria-hidden />
-          {t("connected")}
-        </span>
+        <div className="flex shrink-0 items-center gap-2">
+          {/* Selector shows ONLY under openrouter, and only when the parent
+              supplies controlled model state (the inline null checks also let
+              TS narrow value/onChange to non-optional). */}
+          {agentProvider === "openrouter" && selectedModel != null && onModelChange != null && (
+            <ModelSelector
+              value={selectedModel}
+              onChange={onModelChange}
+              disabled={chat.isStreaming}
+            />
+          )}
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-info/30 bg-info/10 px-2 py-0.5 font-mono text-[10.5px] text-info">
+            <span className="size-1.5 rounded-full bg-info" aria-hidden />
+            {t("connected")}
+          </span>
+        </div>
       </div>
 
       {/* Scroll area */}

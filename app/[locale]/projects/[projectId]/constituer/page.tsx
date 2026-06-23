@@ -12,6 +12,7 @@ import { SessionService } from "@/models/sessions/service"
 import { SessionQueries } from "@/models/sessions/queries"
 import { OnboardingQueries } from "@/models/onboarding/queries"
 import { ONBOARDING_INTRO } from "@/models/onboarding/schema"
+import { env } from "@/lib/env"
 import { ConstituerClient } from "./client"
 
 type RouteParams = { locale: string; projectId: string }
@@ -53,6 +54,7 @@ export default async function ConstituerPage({
       initialSessionId={initialSessionId}
       initialSessions={initialSessions}
       introSeen={seenIntros.includes(ONBOARDING_INTRO.CORPUS)}
+      agentProvider={env.AGENT_PROVIDER}
     />
   )
 }
