@@ -2,10 +2,16 @@
  * Interaction tools — let the agent hand a structured choice back to the user.
  *
  * `ask_user` renders an interactive multiple-choice chooser in the chat instead
- * of writing the options as prose. Calling it ENDS THE TURN: the handler returns
- * an acknowledgement instructing the model to stop, the UI renders the chooser
- * from the persisted tool input, and the user's selections are sent as the next
- * user message (a new turn). There is no mid-turn suspend/resume.
+ * of writing the options as prose. Calling it ENDS THE TURN: `endsTurn: true`
+ * makes the runner stop the tool loop after this tool's result is emitted (it
+ * does NOT call the model again), the UI renders the chooser from the persisted
+ * tool input, and the user's selections are sent as the next user message (a new
+ * turn). There is no mid-turn suspend/resume.
+ *
+ * `endsTurn` is what makes this deterministic on EVERY model: before it (SDK
+ * < 0.8), termination relied on the model obeying a soft "stop now" note in the
+ * result — Claude did, but other models over OpenRouter re-called ask_user
+ * (duplicate choosers) or kept thinking. The flag is now runner-enforced.
  */
 import "server-only"
 
@@ -34,6 +40,9 @@ export const askUserTool = defineTool<
   TurnScopedCtx
 >({
   name: AGENT_TOOLS.askUser,
+  // Terminal tool — the runner ends the turn after this returns (SDK ≥ 0.8),
+  // so non-Claude models can't re-call it or keep going. See the file header.
+  endsTurn: true,
   description:
     "Ask the librarian one to four structured multiple-choice questions and let " +
     "them answer by clicking options — use this INSTEAD of writing choices as " +
