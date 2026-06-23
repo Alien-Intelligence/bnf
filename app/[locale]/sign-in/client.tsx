@@ -7,6 +7,8 @@ import { useRouter, useSearchParams } from "next/navigation"
 import { useTranslations } from "next-intl"
 import { Link } from "@/i18n/navigation"
 import { apiFetch } from "@/lib/api-fetch"
+import { authClient } from "@/lib/auth-client"
+import { OAUTH_PROVIDER_ID, ROUTES } from "@/lib/constants"
 import { signInSchema, type SignInInput } from "@/models/users/types"
 import {
   Form,
@@ -27,17 +29,34 @@ import {
 } from "@/components/ui/card"
 import { LayoutAuthShell } from "@/components/layouts/auth/shell"
 
-export function SignInClient() {
+export function SignInClient({ ssoEnabled }: { ssoEnabled: boolean }) {
   const t = useTranslations("auth.signIn")
   const tSignUp = useTranslations("auth.signUp")
   const router = useRouter()
   const searchParams = useSearchParams()
   const [serverError, setServerError] = useState<string | null>(null)
+  const [ssoLoading, setSsoLoading] = useState(false)
 
   const form = useForm<SignInInput>({
     resolver: zodResolver(signInSchema),
     defaultValues: { email: "", password: "" },
   })
+
+  async function handleSso() {
+    setServerError(null)
+    setSsoLoading(true)
+    // Better Auth redirects the browser to Authentik; callbackURL is where it
+    // lands after a successful round-trip. Respect ?next= like the email flow.
+    const next = searchParams.get("next") ?? ROUTES.projects
+    const { error } = await authClient.signIn.oauth2({
+      providerId: OAUTH_PROVIDER_ID,
+      callbackURL: next,
+    })
+    if (error) {
+      setServerError(t("errorGeneric"))
+      setSsoLoading(false)
+    }
+  }
 
   async function handleSubmit(values: SignInInput) {
     setServerError(null)
@@ -83,6 +102,24 @@ export function SignInClient() {
               className="mb-4 rounded-md border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive"
             >
               {serverError}
+            </div>
+          )}
+          {ssoEnabled && (
+            <div className="mb-4 flex flex-col gap-4">
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full"
+                onClick={handleSso}
+                disabled={ssoLoading}
+              >
+                {ssoLoading ? t("submitting") : t("ssoButton")}
+              </Button>
+              <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                <span className="h-px flex-1 bg-border" />
+                <span>{t("or")}</span>
+                <span className="h-px flex-1 bg-border" />
+              </div>
             </div>
           )}
           <Form {...form}>

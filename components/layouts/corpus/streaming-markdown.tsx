@@ -136,4 +136,19 @@ const MARKDOWN_COMPONENTS: Components = {
       {children}
     </pre>
   ),
+  table: ({ children }) => (
+    <div className="my-2.5 overflow-x-auto">
+      <table className="w-full border-collapse text-[12px]">{children}</table>
+    </div>
+  ),
+  th: ({ children }) => (
+    <th className="border-b border-border px-2 py-1.5 text-left align-bottom font-mono text-[10px] font-medium uppercase tracking-wide whitespace-nowrap text-muted-foreground">
+      {children}
+    </th>
+  ),
+  td: ({ children }) => (
+    <td className="border-b border-border/60 px-2 py-1.5 align-top text-neutral-200">
+      {children}
+    </td>
+  ),
 }

@@ -35,6 +35,7 @@ export const AGENT_TOOLS = {
   noteGet:    "note_get",
   noteCreate: "note_create",
   noteUpdate: "note_update",
+  noteAppend: "note_append",
 
   // --- Document tools ---------------------------------------------------------
   docGet: "doc_get",

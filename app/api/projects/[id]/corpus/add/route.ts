@@ -34,7 +34,12 @@ export const POST = withAuth(async (req, user, bouncer, ctx: RouteCtx) => {
   if (!project) return notFound("Projet introuvable")
   await bouncer.with(CorpusPolicy).authorize("mutate", project)
 
-  const result = await CorpusService.addArks(project, user, parsed)
+  // canonicalize: upgrade catalogue notices (cb…) to their digitized Gallica
+  // doc where one exists, so the corpus member is the consultable/ingestable
+  // form — consistent with the agent add path.
+  const result = await CorpusService.addArks(project, user, parsed, undefined, {
+    canonicalize: true,
+  })
   // Resolve the new stubs' metadata in the background, after the response flushes.
   if (result.pending > 0) kickResolve(projectId)
   return ok<CorpusAddResult>(result)

@@ -64,11 +64,26 @@ export class DataclusterMcpNotFoundError extends DataclusterMcpError {
   }
 }
 
-/** Auth and not-found are terminal; everything else (429/5xx/transport) retries. */
+/**
+ * The tool ran but returned a tool-level error (`result.isError`), e.g. an
+ * invalid filter. Terminal: the input is deterministic, so retrying is futile —
+ * and unlike a transport blip, the message is the cluster's own and must reach
+ * the caller verbatim (not be masked as a JSON parse error).
+ */
+export class DataclusterMcpToolError extends DataclusterMcpError {
+  constructor(m: string) {
+    super(m)
+    this.name = "DataclusterMcpToolError"
+  }
+}
+
+/** Auth, not-found, and tool-level errors are terminal; everything else
+ *  (429/5xx/transport) retries. */
 function isTerminal(err: unknown): boolean {
   return (
     err instanceof DataclusterMcpAuthError ||
-    err instanceof DataclusterMcpNotFoundError
+    err instanceof DataclusterMcpNotFoundError ||
+    err instanceof DataclusterMcpToolError
   )
 }
 
@@ -474,6 +489,14 @@ export class DataclusterMcpClient {
         }
 
         const contentText = envelope.result?.content?.[0]?.text
+        // A tool-level error returns isError + a human-readable message as the
+        // content text (NOT the JSON success envelope). Surface that message
+        // verbatim — JSON.parsing it would mask it as "Unexpected token …".
+        if (envelope.result?.isError) {
+          throw new DataclusterMcpToolError(
+            `data-cluster MCP tool ${name} failed: ${contentText ?? "(no message)"}`,
+          )
+        }
         if (typeof contentText !== "string") {
           throw new DataclusterMcpError(
             `data-cluster MCP returned no text content for ${name}`,

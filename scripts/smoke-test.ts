@@ -744,6 +744,44 @@ async function testNoteCitationsParsedAndPersisted(owner: User): Promise<void> {
   assert.equal(citeB.ark, ark1, `Second citation (folio 42) must have ark=${ark1}`)
   assert.equal(citeB.folio, 42, `Second citation must have folio=42, got ${citeB.folio}`)
 
+  // --- note_append: add a paragraph with a 3rd citation, without resending body.
+  const appended = await NoteService.append(note.id, {
+    bodyMd:
+      "## Suite\n\nUn troisième témoignage le confirme " +
+      "[[ark:/12148/bpt6k9999999z|Le Temps, 8 mai 1889|3]].",
+  })
+
+  assert.equal(
+    appended.citationCount,
+    3,
+    `After append, citationCount must be 3, got ${appended.citationCount}`,
+  )
+  assert.ok(
+    appended.body_md.includes(bodyMd) && appended.body_md.includes("## Suite"),
+    "Appended note must contain BOTH the original body and the new section",
+  )
+  assert.ok(
+    appended.body_md.indexOf("## Suite") > appended.body_md.indexOf("Le Figaro"),
+    "Appended section must come AFTER the original body",
+  )
+
+  // The prior body must be snapshotted to a NoteVersion (seq 0).
+  const versions = await prisma.noteVersion.findMany({
+    where: { noteId: note.id },
+    orderBy: { seq: "asc" },
+  })
+  assert.equal(versions.length, 1, `Expected 1 NoteVersion after append, got ${versions.length}`)
+  assert.equal(versions[0]!.body_md, bodyMd, "Snapshot must hold the pre-append body verbatim")
+
+  const afterAppend = await prisma.citation.count({ where: { noteId: note.id } })
+  assert.equal(afterAppend, 3, `Expected 3 Citation rows after append, got ${afterAppend}`)
+
+  // An empty append is a no-op: no new version, body unchanged.
+  const noop = await NoteService.append(note.id, { bodyMd: "   \n  " })
+  assert.equal(noop.body_md, appended.body_md, "Empty append must not change the body")
+  const versionsAfterNoop = await prisma.noteVersion.count({ where: { noteId: note.id } })
+  assert.equal(versionsAfterNoop, 1, "Empty append must not create a NoteVersion")
+
   // Cleanup: Citations + NoteVersions cascade when Note is deleted via Prisma
   // but there are no cascade rules in the schema — delete explicitly.
   await prisma.citation.deleteMany({ where: { noteId: note.id } })

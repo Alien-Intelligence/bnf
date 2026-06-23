@@ -6,7 +6,9 @@ import { z } from "zod"
 
 export const createSessionSchema = z.object({
   scope: z.enum(["corpus", "research"]),
-  title: z.string().trim().min(1).max(100),
+  // Optional: the rail's "+" creates an unnamed session (placeholder title set
+  // server-side) that the first message auto-names. See SessionService.create.
+  title: z.string().trim().min(1).max(100).optional(),
 })
 export type CreateSessionInput = z.infer<typeof createSessionSchema>
 

@@ -17,6 +17,12 @@ import { NoteBody } from "@/components/cards/notes/note-body"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Button } from "@/components/ui/button"
 import { useNote, useNoteDetails } from "@/hooks/api/notes"
+import {
+  noteToMarkdown,
+  notesToMarkdown,
+  downloadMarkdown,
+  filenameFromTitle,
+} from "@/lib/notes/export"
 import { formatRelativeFr } from "@/lib/format"
 import { cn } from "@/lib/utils"
 import type { NoteListItem } from "@/models/notes/schema"
@@ -303,9 +309,25 @@ function NoteReader({
             <PenLine className="size-3.5" strokeWidth={1.8} aria-hidden />
             {t("artefactHeader")}
           </span>
-          <span className="shrink-0 font-mono text-[10.5px] text-neutral-600">
-            {t("cites", { count: citeCount })}
-          </span>
+          <div className="flex shrink-0 items-center gap-3">
+            <span className="font-mono text-[10.5px] text-neutral-600">
+              {t("cites", { count: citeCount })}
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() =>
+                downloadMarkdown(
+                  filenameFromTitle(note.title, "note"),
+                  noteToMarkdown(note),
+                )
+              }
+              className="h-7 gap-1.5 text-[11.5px]"
+            >
+              <Download className="size-3.5" strokeWidth={1.8} />
+              {t("export")}
+            </Button>
+          </div>
         </div>
         <h1 className="mb-1 mt-2.5 text-[25px] font-semibold tracking-tight">{note.title}</h1>
         <div className="mb-5 font-mono text-[11.5px] text-muted-foreground">
@@ -336,16 +358,15 @@ function ReaderCarnet({
     .filter((n): n is NonNullable<typeof n> => Boolean(n))
 
   const onExport = () => {
-    const content = loaded
-      .map((n) => `## ${n.title}\n\n${n.body_md ?? ""}\n\n---\n\n`)
-      .join("")
-    const blob = new Blob([content], { type: "text/markdown;charset=utf-8" })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement("a")
-    a.href = url
-    a.download = "carnet-de-recherche.md"
-    a.click()
-    URL.revokeObjectURL(url)
+    downloadMarkdown("carnet-de-recherche.md", notesToMarkdown(loaded))
+  }
+
+  // Clicking a TOC row scrolls its stitched section into view (smoothly) within
+  // the carnet's own scroll area — no URL hash mutation.
+  const scrollToSection = (noteId: string) => {
+    document
+      .getElementById(carnetSectionId(noteId))
+      ?.scrollIntoView({ behavior: "smooth", block: "start" })
   }
 
   return (
@@ -381,15 +402,23 @@ function ReaderCarnet({
               <h1 className="mb-3.5 mt-2 text-[27px] font-semibold tracking-tight">{projectName}</h1>
               <div className="flex flex-col gap-1.5">
                 {notes.map((n, i) => (
-                  <div key={n.id} className="flex items-baseline gap-2.5 text-[13px] text-neutral-300">
-                    <span className="w-5.5 shrink-0 font-mono text-[11px] text-neutral-600">
+                  <button
+                    key={n.id}
+                    type="button"
+                    onClick={() => scrollToSection(n.id)}
+                    title={n.title}
+                    className="group flex items-baseline gap-2.5 text-left text-[13px] text-neutral-300 transition-colors hover:text-foreground"
+                  >
+                    <span className="w-5.5 shrink-0 font-mono text-[11px] text-neutral-600 group-hover:text-brand-teal">
                       {String(i + 1).padStart(2, "0")}
                     </span>
-                    <span className="min-w-0 flex-1 truncate">{n.title}</span>
+                    <span className="min-w-0 flex-1 truncate group-hover:underline">
+                      {n.title}
+                    </span>
                     <span className="shrink-0 font-mono text-[10px] text-neutral-600">
                       {n.citationCount}
                     </span>
-                  </div>
+                  </button>
                 ))}
               </div>
             </div>
@@ -398,6 +427,7 @@ function ReaderCarnet({
             {results.map((r, i) => (
               <CarnetSection
                 key={notes[i].id}
+                sectionId={carnetSectionId(notes[i].id)}
                 index={i}
                 fallbackTitle={notes[i].title}
                 note={r.data}
@@ -412,13 +442,21 @@ function ReaderCarnet({
   )
 }
 
+/** Stable DOM id for a carnet section, shared by the TOC scroll target and the
+ *  section element. Prefixed so it can't collide with other ids on the page. */
+function carnetSectionId(noteId: string): string {
+  return `carnet-${noteId}`
+}
+
 function CarnetSection({
+  sectionId,
   index,
   fallbackTitle,
   note,
   isLoading,
   onCitationClick,
 }: {
+  sectionId: string
   index: number
   fallbackTitle: string
   note: { title: string; body_md: string | null; updatedAt: Date | string } | undefined
@@ -426,7 +464,7 @@ function CarnetSection({
   onCitationClick: (c: ParsedCitation) => void
 }) {
   return (
-    <section className={cn(index > 0 && "mt-9 border-t pt-7")}>
+    <section id={sectionId} className={cn("scroll-mt-6", index > 0 && "mt-9 border-t pt-7")}>
       <div className="mb-1 flex items-baseline gap-2.5">
         <span className="font-mono text-xs text-neutral-600">{String(index + 1).padStart(2, "0")}</span>
         <span className="font-mono text-[11px] text-muted-foreground">

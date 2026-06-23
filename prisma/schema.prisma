@@ -192,6 +192,16 @@ model Document {
   resolveError    String? @map("resolve_error")
   resolveAttempts Int     @default(0) @map("resolve_attempts")
 
+  // Outcome of the add-time cb→Gallica canonicalization pass, recorded ONLY on a
+  // catalogue (cb…) notice that stayed a notice (was not upgraded to its
+  // digitized doc). Lets the UI offer a manual "promote" only when a retry could
+  // help, and otherwise state the notice simply isn't on Gallica:
+  //   null            — not a notice, never attempted, or it WAS upgraded (no cb row left)
+  //   "api_error"     — last pass failed transiently (BnF API) → promotable / retryable
+  //   "not_digitized" — pass ran cleanly, no Gallica reproduction exists → catalogue-only
+  // Values live in models/documents/schema.ts (DOCUMENT_CANONICAL_STATUS).
+  canonicalStatus String? @map("canonical_status")
+
   project       Project              @relation(fields: [projectId], references: [id])
   membership    CorpusMembership[]
   contributions CorpusContribution[]

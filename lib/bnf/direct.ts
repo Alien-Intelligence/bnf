@@ -46,8 +46,33 @@ import {
 import { type Settled, withConcurrency, withRetry } from "@/lib/mcp/retry"
 import { sourceFromArk } from "@/lib/mcp/vocab"
 
+/**
+ * Outcome of classifying a catalogue (`cb…`) ARK against its digitized Gallica
+ * reproduction. `upgraded` carries the digitized ARK to substitute; the other
+ * two record why the notice stayed a notice (see Document.canonicalStatus).
+ */
+export type CanonicalizeOutcome =
+  | { ark: string; status: "upgraded"; canonical: string }
+  | { ark: string; status: "not_digitized" }
+  | { ark: string; status: "api_error" }
+
 const GALLICA_OAI_URL = "https://gallica.bnf.fr/services/OAIRecord"
 const CATALOGUE_SRU_URL = "http://catalogue.bnf.fr/api/SRU"
+const DATABNF_SPARQL_URL = "https://data.bnf.fr/sparql"
+
+// The RDA predicate data.bnf.fr puts on a manifestation node to link it to its
+// digitized Gallica reproduction. The subject is the `#about` node of the
+// catalogue ARK; the object is the full `https://gallica.bnf.fr/ark:/…` URL.
+// Verified live 2026-06-22 (cb30055832f → bpt6k104247x). data.bnf.fr also
+// carries the newer rdaregistry.info/Elements/m/#P30016 URI for the same link,
+// but this older one is equally populated and matches the SPARQL guide.
+const ELECTRONIC_REPRODUCTION =
+  "http://rdvocab.info/RDARelationshipsWEMI/electronicReproduction"
+
+// ARK families that denote a genuine digitized Gallica document (one with a
+// IIIF manifest + consultable pages) — as opposed to a `cb…` notice echo or a
+// `…/date` periodical-collection URL, which we must NOT treat as canonical.
+const GALLICA_ARK_FAMILY = /^(bpt6k|btv1b|bd6t)/
 
 /** ARK short form: strip the `ark:/<naan>/` prefix. */
 function localArk(ark: string): string {
@@ -138,6 +163,44 @@ function pickDocType(root: XmlNode): string | undefined {
   return nodeText(fr) ?? nodeText(types[0]) ?? undefined
 }
 
+/** Read a string attribute (e.g. "tag", "code") off a parsed element. */
+function attrText(node: XmlNode, name: string): string | undefined {
+  if (node === null || typeof node !== "object" || Array.isArray(node)) return undefined
+  const v = (node as Record<string, unknown>)[`@_${name}`]
+  return typeof v === "string" ? v : typeof v === "number" ? String(v) : undefined
+}
+
+/**
+ * First text value of `<subfield code="…">` inside the first UNIMARC
+ * `<datafield tag="…">` that carries it. Used to read 856 $u / 325 $u (the
+ * Gallica reproduction URL) out of a unimarcxchange SRU record.
+ */
+function datafieldSubfield(root: XmlNode, tag: string, code: string): string | undefined {
+  for (const field of findAll(root, "datafield")) {
+    if (attrText(field, "tag") !== tag) continue
+    for (const sub of findAll(field, "subfield")) {
+      if (attrText(sub, "code") !== code) continue
+      const t = nodeText(sub)
+      if (t) return t
+    }
+  }
+  return undefined
+}
+
+/**
+ * Extract a canonical digitized-Gallica ARK from a Gallica URL/URI, or null.
+ * Accepts only genuine digitized families (bpt6k/btv1b/bd6t) — a `…/cb…/date`
+ * periodical-collection URL or a notice echo yields null (not canonical).
+ * Returns the full `ark:/12148/<id>` form.
+ */
+function extractGallicaArk(url: string): string | null {
+  const m = url.match(/ark:\/(\d+)\/([A-Za-z0-9]+)/)
+  if (!m) return null
+  const [, naan, id] = m
+  if (!GALLICA_ARK_FAMILY.test(id)) return null
+  return `ark:/${naan}/${id}`
+}
+
 // ---------------------------------------------------------------------------
 // Client
 // ---------------------------------------------------------------------------
@@ -181,9 +244,106 @@ export class BnfDirectClient {
       : this.resolveGallica(ark)
   }
 
+  // ---- Catalogue → Gallica canonicalization ---------------------------------
+  // A catalogue notice (`cb…`) is a bibliographic reference, not a consultable
+  // document. When the BnF has digitized it, that digitized doc has its own
+  // Gallica ARK (bpt6k…/btv1b…) — the one that actually carries pages, OCR and a
+  // IIIF manifest, hence the one worth holding in the corpus and ingesting.
+  // These methods map a `cb…` ARK to that digitized ARK when one exists.
+
+  /**
+   * Classify a catalogue (`cb…`) ARK against its digitized Gallica reproduction.
+   *
+   * Two documented routes, tried in order (cheapest/richest first):
+   *   1. data.bnf.fr SPARQL — `electronicReproduction` on the notice's #about node.
+   *   2. Catalogue SRU (UNIMARC) — field 856 $u, then 325 $u (periodicals).
+   *
+   * Distinguishes the three outcomes the UI needs:
+   *   - `upgraded`      — a digitized Gallica ARK was found.
+   *   - `not_digitized` — BOTH routes ran cleanly and found no reproduction.
+   *   - `api_error`     — at least one route threw (timeout/transport/parse) and
+   *                       none produced an ARK, so absence is unconfirmed → a
+   *                       later retry may succeed.
+   * Never throws.
+   */
+  async classifyCanonical(ark: string): Promise<CanonicalizeOutcome> {
+    let apiError = false
+    try {
+      const g = await this.canonicalViaSparql(ark)
+      if (g) return { ark, status: "upgraded", canonical: g }
+    } catch {
+      apiError = true
+    }
+    try {
+      const g = await this.canonicalViaUnimarc(ark)
+      if (g) return { ark, status: "upgraded", canonical: g }
+    } catch {
+      apiError = true
+    }
+    // Neither route produced an ARK. If a route errored we cannot trust the
+    // "absent" verdict — treat it as retryable rather than "not on Gallica".
+    return { ark, status: apiError ? "api_error" : "not_digitized" }
+  }
+
+  /**
+   * Classify each catalogue notice in `arks` against its digitized Gallica
+   * reproduction, with bounded concurrency. Returns one outcome per `cb…` ARK
+   * (non-catalogue ARKs are skipped — they need no canonicalization).
+   */
+  async canonicalizeArks(arks: string[]): Promise<CanonicalizeOutcome[]> {
+    const cbArks = arks.filter((a) => sourceFromArk(a) === "catalogue")
+    if (cbArks.length === 0) return []
+
+    const settled: Settled<CanonicalizeOutcome>[] = await withConcurrency(
+      cbArks,
+      (ark) => this.classifyCanonical(ark),
+      BNF_DIRECT_CONCURRENCY,
+    )
+    // classifyCanonical never throws, but withConcurrency wraps regardless; a
+    // wrapped rejection is the same unconfirmed-absence case → api_error.
+    return cbArks.map((ark, i) => {
+      const s = settled[i]
+      return s.ok ? s.value : { ark, status: "api_error" as const }
+    })
+  }
+
+  /** Route 1: data.bnf.fr SPARQL — `electronicReproduction`. */
+  private async canonicalViaSparql(ark: string): Promise<string | null> {
+    // data.bnf.fr resource URIs MUST be http:// (https:// yields zero results).
+    const query =
+      `SELECT ?gallica WHERE { ` +
+      `<http://data.bnf.fr/${fullArk(ark)}#about> ` +
+      `<${ELECTRONIC_REPRODUCTION}> ?gallica } LIMIT 1`
+    const body = await this.httpGetText(
+      DATABNF_SPARQL_URL,
+      { query, format: "json" },
+      "application/sparql-results+json",
+    )
+    const parsed = JSON.parse(body) as {
+      results?: { bindings?: Array<{ gallica?: { value?: string } }> }
+    }
+    const value = parsed.results?.bindings?.[0]?.gallica?.value
+    return value ? extractGallicaArk(value) : null
+  }
+
+  /** Route 2: Catalogue SRU (UNIMARC) — field 856 $u, then 325 $u. */
+  private async canonicalViaUnimarc(ark: string): Promise<string | null> {
+    const xml = await this.httpGetText(CATALOGUE_SRU_URL, {
+      version: "1.2",
+      operation: "searchRetrieve",
+      query: `bib.persistentId all "${fullArk(ark)}"`,
+      recordSchema: "unimarcxchange",
+      maximumRecords: "1",
+    })
+    const root = parser.parse(xml)
+    const url =
+      datafieldSubfield(root, "856", "u") ?? datafieldSubfield(root, "325", "u")
+    return url ? extractGallicaArk(url) : null
+  }
+
   // ---- Gallica: OAIRecord ---------------------------------------------------
   private async resolveGallica(ark: string): Promise<BnfMcpDocumentDetail> {
-    const xml = await this.getXml(GALLICA_OAI_URL, {
+    const xml = await this.httpGetText(GALLICA_OAI_URL, {
       ark: fullArk(ark),
     })
     const root = parser.parse(xml)
@@ -215,7 +375,7 @@ export class BnfDirectClient {
 
   // ---- Catalogue: SRU -------------------------------------------------------
   private async resolveCatalogue(ark: string): Promise<BnfMcpDocumentDetail> {
-    const xml = await this.getXml(CATALOGUE_SRU_URL, {
+    const xml = await this.httpGetText(CATALOGUE_SRU_URL, {
       version: "1.2",
       operation: "searchRetrieve",
       query: `bib.persistentId all "${fullArk(ark)}"`,
@@ -242,16 +402,17 @@ export class BnfDirectClient {
   }
 
   // ---- transport ------------------------------------------------------------
-  private async getXml(
+  private async httpGetText(
     baseUrl: string,
     query: Record<string, string>,
+    accept = "application/xml",
   ): Promise<string> {
     const url = `${baseUrl}?${new URLSearchParams(query).toString()}`
     return withRetry(
       async () => {
         const res = await undiciFetch(url, {
           method: "GET",
-          headers: { "User-Agent": BNF_USER_AGENT, Accept: "application/xml" },
+          headers: { "User-Agent": BNF_USER_AGENT, Accept: accept },
           dispatcher: this.dispatcher,
           signal: withTimeout(this.signal, BNF_HTTP_TIMEOUT_MS),
         })

@@ -74,7 +74,9 @@
       "errorGeneric": "Identifiants invalides",
       "errorInvalidCredentials": "Identifiants invalides",
       "forgotPassword": "Mot de passe oublié ?",
-      "submitting": "Connexion en cours…"
+      "submitting": "Connexion en cours…",
+      "ssoButton": "Se connecter avec Alien",
+      "or": "ou"
     },
     "signUp": {
       "title": "Créer un compte",
@@ -245,6 +247,12 @@
         "catalogueRecordSub": "catalogue.bnf.fr",
         "remove": "Retirer du corpus",
         "removing": "Retrait…",
+        "resolvingMeta": "Extraction des métadonnées en cours…",
+        "metaFailed": "L'extraction des métadonnées a échoué.",
+        "retry": "Réessayer",
+        "promoteHint": "La conversion vers le document numérisé Gallica a échoué (API BnF momentanément indisponible). Vous pouvez réessayer.",
+        "promote": "Promouvoir vers le document numérisé",
+        "notOnGallica": "Ce document n'est pas numérisé sur Gallica — notice catalographique uniquement.",
         "fields": {
           "type": "Type",
           "date": "Date",
@@ -313,6 +321,7 @@
       "systemPromptIntro": "Bonjour, je vous aide à constituer votre corpus à partir des fonds de la BnF. Décrivez le sujet, la période ou les sources qui vous intéressent.",
       "placeholder": "Affiner le corpus…",
       "send": "Envoyer",
+      "stop": "Arrêter",
       "connected": "connecté",
       "reconnecting": "Reconnexion…",
       "thinking": "Recherche en cours…",
@@ -363,12 +372,6 @@
       "rename": "Renommer",
       "archive": "Archiver",
       "archived": "Archivée"
-    },
-    "new": {
-      "title": "Nouvelle session",
-      "titleLabel": "Titre",
-      "submit": "Créer",
-      "submitting": "Création…"
     }
   },
   "tools": {
@@ -390,6 +393,12 @@
     },
     "ingest": {
       "submit": "Soumettre l'ingestion"
+    },
+    "note": {
+      "writing": "Rédaction de la note…",
+      "updating": "Mise à jour de la note…",
+      "appending": "Ajout à la note…",
+      "seconds": "{count} s"
     },
     "bnf": {
       "search_catalogue": "Recherche Catalogue BnF",
@@ -473,6 +482,7 @@
       "closeTab": "Fermer",
       "artefactHeader": "Artefact de recherche · rédigé par l'agent",
       "cites": "{count, plural, =0 {aucune référence} one {# référence ARK} other {# références ARK}}",
+      "export": "Exporter en Markdown",
       "loadError": "Impossible de charger la note.",
       "retry": "Réessayer"
     },

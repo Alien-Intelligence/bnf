@@ -25,6 +25,7 @@ import type {
 import { Prisma } from "@/lib/generated/prisma/client"
 import { prisma } from "@/lib/db"
 import { AgentQueries } from "@/models/agents/queries"
+import { SessionService } from "@/models/sessions/service"
 
 /** Narrow BnF's free-form Message.role / status to the SDK's closed unions. */
 function toSnapshotRole(role: string): SnapshotTurn["role"] {
@@ -55,7 +56,7 @@ export function createPrismaChatAdapter(): ChatPersistenceAdapter {
      */
     async beginTurn(input: BeginTurnInput): Promise<PersistedTurnRef> {
       const sessionId = input.sessionId
-      return prisma.$transaction(async (tx) => {
+      const { ref, isFirstMessage } = await prisma.$transaction(async (tx) => {
         const lastMessage = await tx.message.findFirst({
           where: { appSessionId: sessionId },
           orderBy: { seq: "desc" },
@@ -90,8 +91,25 @@ export function createPrismaChatAdapter(): ChatPersistenceAdapter {
           data: { activeMessageId: assistant.id },
         })
 
-        return { turnId: assistant.id, seq: nextSeq + 1 }
+        return {
+          ref: { turnId: assistant.id, seq: nextSeq + 1 },
+          isFirstMessage: nextSeq === 0,
+        }
       })
+
+      // First user message of the session → auto-name it from that message.
+      // Fired after the transaction commits (so the message row exists) and
+      // deliberately NOT awaited: naming is a cosmetic enhancement that must
+      // never block or fail the turn. A failure leaves the placeholder title.
+      if (isFirstMessage) {
+        void SessionService.maybeAutoTitle(sessionId, input.userMessage.content).catch(
+          (err) => {
+            console.error(`[auto-title] session ${sessionId} naming failed:`, err)
+          },
+        )
+      }
+
+      return ref
     },
 
     async appendContent(turnId: string, content: string): Promise<void> {

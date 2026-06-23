@@ -27,6 +27,8 @@
  *     return empty-as-if-textless.
  */
 
+import { gallicaRelayUrl, relayGet } from "./gallica-relay.js";
+
 const GALLICA = "https://gallica.bnf.fr";
 
 /** Browser-like headers — Gallica gates this AJAX endpoint on them. No cookie needed. */
@@ -134,20 +136,36 @@ async function fetchFolio(
 
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
-      const res = await fetch(url, {
-        headers: viewerHeaders(ark, folio),
-        signal: AbortSignal.timeout(perRequestTimeoutMs),
-      });
-      if (res.status === 429 || res.status >= 500) {
-        lastErr = new Error(`HTTP ${res.status}`);
+      // Demo stopgap: route through the browser-handshake relay when set, so
+      // Cloudflare doesn't reject our fingerprint (see gallica-relay.ts).
+      let status: number;
+      let getBody: () => Promise<string>;
+      if (gallicaRelayUrl()) {
+        const r = await relayGet(
+          url,
+          "application/json, text/javascript, */*;q=0.8",
+          perRequestTimeoutMs,
+        );
+        status = r.status;
+        getBody = () => Promise.resolve(r.bytes.toString("utf8"));
+      } else {
+        const res = await fetch(url, {
+          headers: viewerHeaders(ark, folio),
+          signal: AbortSignal.timeout(perRequestTimeoutMs),
+        });
+        status = res.status;
+        getBody = () => res.text();
+      }
+      if (status === 429 || status >= 500) {
+        lastErr = new Error(`HTTP ${status}`);
         if (attempt < retries) await sleep(attempt * 1500);
         continue;
       }
-      if (!res.ok) {
+      if (status < 200 || status >= 300) {
         // Other 4xx → terminal for this view.
-        throw new Error(`Gallica viewer ${folio} -> HTTP ${res.status}`);
+        throw new Error(`Gallica viewer ${folio} -> HTTP ${status}`);
       }
-      const body = await res.text();
+      const body = await getBody();
       let json: unknown;
       try {
         json = JSON.parse(body);

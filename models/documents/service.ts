@@ -88,4 +88,36 @@ export class DocumentService {
     })
     return newArks
   }
+
+  /**
+   * Re-queue metadata resolution for the given ARKs: flip them back to `pending`
+   * and reset the attempt counter so the background resolver picks them up on the
+   * next kick. Used by the manual "retry" affordance on a failed document and by
+   * the panel's auto-retry on first paint.
+   *
+   * Scoped to the project and to documents currently in a terminal/limbo state
+   * (`failed`, or `pending` with attempts exhausted) — a row mid-resolution is
+   * left alone. Returns the number of rows actually re-queued so the caller knows
+   * whether to kick the resolver.
+   */
+  static async retryResolution(
+    projectId: string,
+    arks: string[],
+  ): Promise<{ retried: number }> {
+    if (arks.length === 0) return { retried: 0 }
+
+    const res = await prisma.document.updateMany({
+      where: {
+        projectId,
+        ark: { in: arks },
+        resolveStatus: { not: DOCUMENT_RESOLVE_STATUS.RESOLVED },
+      },
+      data: {
+        resolveStatus: DOCUMENT_RESOLVE_STATUS.PENDING,
+        resolveAttempts: 0,
+        resolveError: null,
+      },
+    })
+    return { retried: res.count }
+  }
 }

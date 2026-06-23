@@ -28,6 +28,19 @@ export const WORKSPACE_STEPS = ["constituer", "ingerer", "rechercher"] as const
 export type WorkspaceStep = (typeof WORKSPACE_STEPS)[number]
 
 // ---------------------------------------------------------------------------
+// Authentication — Alien Auth (Authentik) SSO.
+// ---------------------------------------------------------------------------
+
+/**
+ * Better Auth genericOAuth provider id for Alien Auth (Authentik). Shared
+ * verbatim with the alien-agents demo so the OAuth callback path
+ * (`/api/auth/oauth2/callback/authentik`) matches the redirect URI registered
+ * on the shared Authentik application. Used server-side (lib/auth.ts) and
+ * client-side (the sign-in button).
+ */
+export const OAUTH_PROVIDER_ID = "authentik"
+
+// ---------------------------------------------------------------------------
 // Layout geometry — prototype proportions (BnF Corpus Research.dc.html).
 // Kept here so no screen hard-codes a magic width/ratio in JSX.
 // ---------------------------------------------------------------------------
@@ -234,6 +247,18 @@ export const BNF_USER_AGENT =
 /** Per-attempt wall-clock ceiling for a single direct BnF HTTP call. */
 export const BNF_HTTP_TIMEOUT_MS = 30_000
 
+/**
+ * Overall wall-clock budget for canonicalizing a batch of catalogue (`cb…`)
+ * ARKs to their digitized Gallica equivalent at corpus-add time
+ * (BnfDirectClient.canonicalizeArks). This runs SYNCHRONOUSLY in the add path
+ * (it changes which ARK becomes the corpus member, so it cannot be deferred to
+ * the background resolver), and it is strictly best-effort: when the budget
+ * elapses, every still-in-flight lookup aborts and those notices are added
+ * as-is. Kept short so a slow/stalled data.bnf.fr can never hang an add
+ * (CLAUDE_ERROR_PATTERNS §14). Only `cb…` ARKs incur this; Gallica adds skip it.
+ */
+export const BNF_CANONICALIZE_BUDGET_MS = 12_000
+
 // ---------------------------------------------------------------------------
 // Agent runtime
 // ---------------------------------------------------------------------------
@@ -249,6 +274,31 @@ export const AGENT_MODEL = "claude-sonnet-4-6"
  * (CLAUDE_ERROR_PATTERNS §14: no unbounded loops). The chat-sdk default is 12;
  * passed to the runner as `maxToolTurns`. */
 export const AGENT_MAX_ITERATIONS = 100
+
+// ---------------------------------------------------------------------------
+// Session auto-naming
+// ---------------------------------------------------------------------------
+
+/** Claude model used to name a session from its first user message. Haiku-class
+ * because this is a cheap, one-shot summarization — not an agent loop. See
+ * lib/agent/title.ts. */
+export const SESSION_TITLE_MODEL = "claude-haiku-4-5"
+
+/** Title a session opened from the rail's "+" is born with, until its first
+ * message auto-names it. French-first, matching the default locale. */
+export const DEFAULT_SESSION_TITLE = "Nouvelle session"
+
+/** Title the very first session of a project's scope is seeded with on first
+ * render (SessionService.ensureDefaultForScope). */
+export const FIRST_SESSION_TITLE = "Première session"
+
+/** The placeholder titles auto-naming is allowed to overwrite. A session whose
+ * title is none of these has been named (by the user, or by a prior auto-title)
+ * and is left untouched. */
+export const AUTO_TITLE_PLACEHOLDERS: readonly string[] = [
+  DEFAULT_SESSION_TITLE,
+  FIRST_SESSION_TITLE,
+]
 
 // ---------------------------------------------------------------------------
 // Reaper tuning
@@ -335,6 +385,11 @@ export function GALLICA_ITEM_URL(ark: string, folio: number): string {
 export function IIIF_IMAGE_URL(ark: string, folio: number, size = "full"): string {
   return `https://gallica.bnf.fr/iiif/${ark}/f${folio}/full/${size}/0/native.jpg`
 }
+
+/** IIIF size (`{width},` syntax) for a folio image embedded in a note figure.
+ * Constrained so a full press-page scan isn't fetched at native resolution;
+ * the source panel uses a smaller `200,` thumbnail. */
+export const NOTE_IMAGE_IIIF_SIZE = "843,"
 
 /** IIIF manifest URL for a given ARK. */
 export function IIIF_MANIFEST_URL(ark: string): string {

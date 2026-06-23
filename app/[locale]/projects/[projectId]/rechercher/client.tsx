@@ -7,12 +7,13 @@
 // server can't: active session, which notes are OPEN as tabs, the active tab,
 // and the Atelier/Carnet disposition.
 
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { Link } from "@/i18n/navigation"
 import { useQueryClient } from "@tanstack/react-query"
 import { useTurnStream } from "@/hooks/api/turn-stream"
 import { useNotes, noteKeys } from "@/hooks/api/notes"
 import { memoryKeys } from "@/hooks/api/memory"
+import { sessionKeys } from "@/hooks/api/sessions"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { buttonVariants } from "@/components/ui/button"
 import { WorkspaceHeader } from "@/components/layouts/workspace/header"
@@ -79,11 +80,11 @@ export function RechercherClient({
   )
   const [disposition, setDisposition] = useState<Disposition>("atelier")
 
-  const openNote = (id: string) => {
+  const openNote = useCallback((id: string) => {
     setOpenNoteIds((prev) => (prev.includes(id) ? prev : [...prev, id]))
     setActiveNoteId(id)
     setDisposition("atelier")
-  }
+  }, [])
 
   const closeNote = (id: string) => {
     setOpenNoteIds((prev) => {
@@ -113,18 +114,48 @@ export function RechercherClient({
   const [newNoteOpen, setNewNoteOpen] = useState(false)
   const onCitationClick = (c: ParsedCitation) => setSelectedCitation(c)
 
-  // ── Reconcile on turn finish ────────────────────────────────────────────────
-  // The agent authors notes and writes memory mid-turn; the live SSE channel
-  // doesn't yet carry a note_event, so — exactly as ConstituerClient does for
-  // corpus/memory — refresh the notes list and memory whenever a turn completes
-  // (isStreaming true → false). Reliable safety net, no polling.
   const qc = useQueryClient()
+
+  // ── Auto-open notes the agent writes ─────────────────────────────────────────
+  // When a note_create / note_update tool resolves it emits a note_event on the
+  // live stream. As each one arrives we refresh the notes list (so the new/edited
+  // body is loaded) and open the note in the reader — the librarian sees the
+  // agent's work appear without hunting for it. domainEvents accumulates and
+  // resets to [] on session change, so the cursor resyncs when it shrinks.
+  const processedNoteEventsRef = useRef(0)
+  useEffect(() => {
+    const events = stream.domainEvents
+    if (events.length < processedNoteEventsRef.current) processedNoteEventsRef.current = 0
+    if (events.length === processedNoteEventsRef.current) return
+
+    const fresh = events.slice(processedNoteEventsRef.current)
+    processedNoteEventsRef.current = events.length
+
+    // Narrowing loop (not filter/map) so the discriminated union resolves to the
+    // note_event variant and `data.noteId` is typed.
+    const noteIds: string[] = []
+    for (const e of fresh) {
+      if (e.type === "note_event") noteIds.push(e.data.noteId)
+    }
+    if (noteIds.length === 0) return
+
+    void qc.invalidateQueries({ queryKey: noteKeys.list(projectId) })
+    // Open each in arrival order; the last becomes the active tab.
+    noteIds.forEach(openNote)
+  }, [stream.domainEvents, projectId, qc, openNote])
+
+  // ── Reconcile on turn finish ────────────────────────────────────────────────
+  // Memory writes have no live reconciliation here, and the notes list is
+  // refreshed again as a safety net (covers any note_event missed mid-stream)
+  // whenever a turn completes (isStreaming true → false).
   const prevStreamingRef = useRef(false)
   useEffect(() => {
     const streaming = stream.isStreaming
     if (prevStreamingRef.current && !streaming) {
       void qc.invalidateQueries({ queryKey: noteKeys.list(projectId) })
       void qc.invalidateQueries({ queryKey: memoryKeys.all(projectId, "research") })
+      // A session's first turn auto-names it server-side — pull the new title.
+      void qc.invalidateQueries({ queryKey: sessionKeys.list(projectId, "research") })
     }
     prevStreamingRef.current = streaming
   }, [stream.isStreaming, projectId, qc])

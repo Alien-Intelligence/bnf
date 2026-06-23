@@ -7,9 +7,13 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Button } from "@/components/ui/button"
 import { CardSessionListItem } from "@/components/cards/sessions/list-item"
 import { CardMemoryBox } from "@/components/cards/memory/box"
-import { DialogNewSession } from "@/components/dialogs/sessions/new"
 import { DialogMemory } from "@/components/dialogs/memory"
-import { useSessions, useRenameSession, useArchiveSession } from "@/hooks/api/sessions"
+import {
+  useSessions,
+  useCreateSession,
+  useRenameSession,
+  useArchiveSession,
+} from "@/hooks/api/sessions"
 import type { AppSession } from "@/models/sessions/schema"
 
 interface LayoutSessionsSidebarProps {
@@ -37,7 +41,6 @@ export function LayoutSessionsSidebar({
 }: LayoutSessionsSidebarProps) {
   const t = useTranslations("sessions.sidebar")
   const tCommon = useTranslations("common")
-  const [dialogOpen, setDialogOpen] = useState(false)
   const [memoryOpen, setMemoryOpen] = useState(false)
 
   const { data: sessions, isLoading, isError, refetch } = useSessions(
@@ -46,8 +49,21 @@ export function LayoutSessionsSidebar({
     { initialData: initialSessions },
   )
 
+  const create = useCreateSession(projectId)
   const rename = useRenameSession()
   const archive = useArchiveSession(projectId)
+
+  // The "+" opens an unnamed session immediately and makes it active — no title
+  // prompt. The session is born with a placeholder; its first message
+  // auto-names it (SessionService.maybeAutoTitle), and the rename action in the
+  // list item is always available.
+  const onCreate = () => {
+    if (create.isPending) return
+    create.mutate(
+      { scope },
+      { onSuccess: (session) => onActiveSessionChange(session.id) },
+    )
+  }
 
   return (
     <div className="flex h-full flex-col border-r bg-sidebar">
@@ -58,10 +74,11 @@ export function LayoutSessionsSidebar({
         </span>
         <button
           type="button"
-          onClick={() => setDialogOpen(true)}
+          onClick={onCreate}
+          disabled={create.isPending}
           title={t("newButton")}
           aria-label={t("newButton")}
-          className="flex size-6 items-center justify-center rounded-md border bg-card text-neutral-300 transition-colors hover:border-brand-teal/45 hover:text-brand-teal"
+          className="flex size-6 items-center justify-center rounded-md border bg-card text-neutral-300 transition-colors hover:border-brand-teal/45 hover:text-brand-teal disabled:opacity-50"
         >
           <Plus className="size-3.5" />
         </button>
@@ -71,7 +88,7 @@ export function LayoutSessionsSidebar({
       <div
         className={
           artefactsSlot
-            ? "max-h-[38%] shrink-0 overflow-y-auto py-1"
+            ? "max-h-[38%] shrink-0 overflow-y-auto pt-1 pb-4"
             : "flex-1 overflow-y-auto py-1"
         }
       >
@@ -131,13 +148,6 @@ export function LayoutSessionsSidebar({
         onOpen={() => setMemoryOpen(true)}
       />
 
-      <DialogNewSession
-        open={dialogOpen}
-        onOpenChange={setDialogOpen}
-        projectId={projectId}
-        scope={scope}
-        onCreated={(session) => onActiveSessionChange(session.id)}
-      />
       <DialogMemory
         open={memoryOpen}
         onOpenChange={setMemoryOpen}

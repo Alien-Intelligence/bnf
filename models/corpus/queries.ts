@@ -507,15 +507,25 @@ export class CorpusQueries {
     // --- Sample (cursor-paginated) -------------------------------------------
     // ORDER BY ark ASC — alphabetic ARK order is stable and deterministic.
     // Cursor: WHERE ark > lastArk (keyset pagination, no offset, O(log n)).
-    const sampleRows = await prisma.document.findMany({
-      where: cursorArk
-        ? { ...sharedWhere, ark: { gt: cursorArk } }
-        : sharedWhere,
-      orderBy: { ark: "asc" },
-      // Fetch one extra to detect whether a next page exists.
-      take: limit + 1,
-      ...documentRow,
-    })
+    //
+    // limit === 0 means the caller wants counts/facets only (corpus_stats, or
+    // corpus_get_state with include_sample=false) — the sample is discarded by
+    // the caller. Skip the query entirely: it would not only be wasted work, but
+    // `take: limit + 1` would fetch a single sentinel row that makes the
+    // `sampleRows.length > limit` page-detection below misfire on a non-empty
+    // corpus (sampleRows[limit - 1] === sampleRows[-1] === undefined → throw).
+    const sampleRows =
+      limit > 0
+        ? await prisma.document.findMany({
+            where: cursorArk
+              ? { ...sharedWhere, ark: { gt: cursorArk } }
+              : sharedWhere,
+            orderBy: { ark: "asc" },
+            // Fetch one extra to detect whether a next page exists.
+            take: limit + 1,
+            ...documentRow,
+          })
+        : []
 
     // Determine next cursor before trimming the extra row.
     let nextCursor: string | undefined

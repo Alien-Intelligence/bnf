@@ -55,6 +55,7 @@ export type StreamDomainEvent =
   | { type: "corpus_event"; data: { kind: "add" | "remove"; count: number; versionSeq: number } }
   | { type: "memory_event"; data: { kind: "write"; itemId: string; section: string } }
   | { type: "ingest_event"; data: { kind: "submitted-stub" | "submitted"; jobId?: string; status?: string } }
+  | { type: "note_event"; data: { kind: "created" | "updated"; noteId: string; title: string } }
 
 export type UseTurnStreamResult = {
   messages: StreamMessage[]
@@ -76,7 +77,12 @@ export type UseTurnStreamResult = {
 
 const BASE_PATH = process.env["NEXT_PUBLIC_BASE_PATH"] ?? ""
 
-const DOMAIN_EVENT_TYPES = new Set(["corpus_event", "memory_event", "ingest_event"])
+const DOMAIN_EVENT_TYPES = new Set([
+  "corpus_event",
+  "memory_event",
+  "ingest_event",
+  "note_event",
+])
 
 function joinText(parts: AgentPart[]): string {
   let out = ""

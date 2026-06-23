@@ -151,6 +151,27 @@ export const removeFromCorpusSchema = z.object({
 
 export type RemoveFromCorpusInput = z.infer<typeof removeFromCorpusSchema>
 
+/**
+ * Re-queue background metadata resolution for one or more documents (the detail
+ * panel's "retry" affordance + its auto-retry on first paint). Capped low: this
+ * is a per-document user action, not a bulk import.
+ */
+export const retryResolveSchema = z.object({
+  arks: z.array(arkSchema).min(1).max(50),
+})
+
+export type RetryResolveInput = z.infer<typeof retryResolveSchema>
+
+/**
+ * Promote a single catalogue notice (`cb…`) to its digitized Gallica document
+ * on demand. One ARK per call — it is a per-notice action from the detail panel.
+ */
+export const promoteNoticeSchema = z.object({
+  ark: arkSchema,
+})
+
+export type PromoteNoticeInput = z.infer<typeof promoteNoticeSchema>
+
 // ---------------------------------------------------------------------------
 // Diff query params
 // ---------------------------------------------------------------------------

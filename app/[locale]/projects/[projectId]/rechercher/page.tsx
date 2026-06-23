@@ -48,13 +48,18 @@ export default async function RechercherPage({
 
   const isIngested = project.ingestedVersionId !== null
 
+  // Open on the most-recently-active session (the list is updatedAt desc), not
+  // the oldest. ensureDefaultForScope only guarantees one exists; its return is
+  // the createdAt-asc first session, so use it only as a fallback.
+  const initialSessionId = initialSessions[0]?.id ?? session.id
+
   return (
     <RechercherClient
       projectId={projectId}
       locale={locale}
       projectName={project.name}
       initialUser={{ name: user.name, email: user.email }}
-      initialSessionId={session.id}
+      initialSessionId={initialSessionId}
       initialSessions={initialSessions}
       initialNotes={initialNotes}
       isIngested={isIngested}

@@ -44,6 +44,25 @@ export type DocumentResolveStatus =
   (typeof DOCUMENT_RESOLVE_STATUS)[keyof typeof DOCUMENT_RESOLVE_STATUS]
 
 // ---------------------------------------------------------------------------
+// cb→Gallica canonicalization outcome (Document.canonicalStatus)
+// Recorded on a catalogue notice that stayed a notice after the add-time
+// canonicalization pass. Drives the detail panel's "promote" affordance:
+// "api_error" → offer a manual retry; "not_digitized" → state it isn't on
+// Gallica. A notice that WAS upgraded leaves no cb row, so it carries neither.
+// See lib/bnf/direct.ts (classifyCanonical) and CorpusService.promoteNotice().
+// ---------------------------------------------------------------------------
+
+export const DOCUMENT_CANONICAL_STATUS = {
+  /** Last pass failed transiently (BnF API flakiness) — a retry may succeed. */
+  API_ERROR: "api_error",
+  /** Pass ran cleanly; no Gallica reproduction exists — catalogue-only notice. */
+  NOT_DIGITIZED: "not_digitized",
+} as const
+
+export type DocumentCanonicalStatus =
+  (typeof DOCUMENT_CANONICAL_STATUS)[keyof typeof DOCUMENT_CANONICAL_STATUS]
+
+// ---------------------------------------------------------------------------
 // Document type vocabulary (doc_type column)
 // Canonical codes produced by lib/mcp/normalize.ts mapDocType().
 // "open": unknown codes from future MCP output fall through to badge rendering

@@ -11,8 +11,20 @@
 // Client component: drives Sheet open state, derives external links, and owns
 // the remove mutation.
 
+import { useEffect, useRef } from "react"
 import { useTranslations } from "next-intl"
-import { Braces, Code2, Eye, FileText, ExternalLink, Trash2 } from "lucide-react"
+import {
+  Braces,
+  Code2,
+  Eye,
+  FileText,
+  ExternalLink,
+  Loader2,
+  RotateCw,
+  Sparkles,
+  TriangleAlert,
+  Trash2,
+} from "lucide-react"
 import {
   Sheet,
   SheetContent,
@@ -31,9 +43,11 @@ import {
   IIIF_MANIFEST_URL,
   TYPE_DATASET_COLOR,
 } from "@/lib/constants"
-import { useRemoveFromCorpus } from "@/hooks/api/corpus"
+import { usePromoteNotice, useRemoveFromCorpus, useRetryResolve } from "@/hooks/api/corpus"
 import {
   DOC_TYPE,
+  DOCUMENT_CANONICAL_STATUS,
+  DOCUMENT_RESOLVE_STATUS,
   INGESTION_CLASS,
   LANG,
   SOURCE,
@@ -102,6 +116,24 @@ function LinkCard({
 export function SheetDocumentDetail({ doc, projectId, open, onOpenChange }: Props) {
   const t = useTranslations("corpus.documents")
   const remove = useRemoveFromCorpus(projectId)
+  const retry = useRetryResolve(projectId)
+  const promote = usePromoteNotice(projectId)
+
+  // Auto-retry metadata resolution on first paint of a failed document, so the
+  // librarian lands on a loading state rather than the error — most failures are
+  // transient BnF flakiness that a fresh attempt clears. Once per ARK per mount
+  // (guard ref): if it fails again the manual "retry" button takes over, rather
+  // than hammering a genuinely-unresolvable document.
+  const autoRetried = useRef<Set<string>>(new Set())
+  const ark = doc?.ark
+  const isFailed = doc?.resolveStatus === DOCUMENT_RESOLVE_STATUS.FAILED
+  const retryMutate = retry.mutate
+  useEffect(() => {
+    if (!open || !ark || !isFailed) return
+    if (autoRetried.current.has(ark)) return
+    autoRetried.current.add(ark)
+    retryMutate({ arks: [ark] })
+  }, [open, ark, isFailed, retryMutate])
 
   if (!doc) {
     // Keep the Sheet mounted (with an a11y title) so open/close transitions run.
@@ -159,11 +191,40 @@ export function SheetDocumentDetail({ doc, projectId, open, onOpenChange }: Prop
     ? (TYPE_DATASET_COLOR[doc.docType] ?? "var(--muted)")
     : "var(--muted)"
 
+  // Resolution lifecycle — drives the metadata region (loading / failed / grid).
+  const isPending = doc.resolveStatus === DOCUMENT_RESOLVE_STATUS.PENDING
+
+  // cb→Gallica canonicalization outcome, recorded only on a notice that stayed a
+  // notice. `canPromote` (transient BnF error) offers a manual retry; `notOnGallica`
+  // (confirmed no digitization) states the document simply isn't on Gallica.
+  const isCatalogue = doc.source === SOURCE.catalogue.label
+  const canPromote =
+    isCatalogue && doc.canonicalStatus === DOCUMENT_CANONICAL_STATUS.API_ERROR
+  const notOnGallica =
+    isCatalogue && doc.canonicalStatus === DOCUMENT_CANONICAL_STATUS.NOT_DIGITIZED
+
   function onRemove() {
     if (!doc) return
     remove.mutate(
       { arks: [doc.ark], reason: "Retiré du corpus depuis le panneau de notice" },
       { onSuccess: () => onOpenChange(false) },
+    )
+  }
+
+  function onRetry() {
+    if (!doc) return
+    retry.mutate({ arks: [doc.ark] })
+  }
+
+  function onPromote() {
+    if (!doc) return
+    // On a successful upgrade the notice leaves the corpus (replaced by its
+    // digitized doc), so this panel's document disappears — close it. On
+    // not_digitized / api_error nothing is removed; the query refetch updates the
+    // recorded status and the panel stays open to reflect it.
+    promote.mutate(
+      { ark: doc.ark },
+      { onSuccess: (res) => { if (res.promoted) onOpenChange(false) } },
     )
   }
 
@@ -195,36 +256,69 @@ export function SheetDocumentDetail({ doc, projectId, open, onOpenChange }: Prop
             </div>
           </div>
 
-          {/* Metadata grid */}
-          <div className="mt-5 grid grid-cols-2 gap-x-3 gap-y-3.5">
-            <Field label={t("detail.fields.type")} value={typeLabel} />
-            <Field label={t("detail.fields.date")} value={dateLabel} />
-            <Field
-              label={t("detail.fields.pages")}
-              value={doc.pages != null ? String(doc.pages) : "—"}
-            />
-            <Field label={t("detail.fields.lang")} value={langLabel} />
-            <Field label={t("detail.fields.deposit")} value={sourceLabel} />
-            <Field
-              label={t("detail.fields.digitization")}
-              value={
-                digitized
-                  ? t("detail.values.digitized")
-                  : t("detail.values.notDigitized")
-              }
-            />
-            <Field label={t("detail.fields.ocr")} value={ocrLabel} />
-            <Field label={t("detail.fields.ingestion")} value={ingestionLabel} />
-          </div>
-
-          {/* OCR excerpt */}
-          {doc.excerpt && (
-            <div className="mt-5">
-              <span className="mono-eyebrow">{t("detail.excerptOcr")}</span>
-              <p className="mt-2 border-l-2 pl-3.5 text-[13px] leading-relaxed whitespace-pre-line text-muted-foreground">
-                {doc.excerpt}
+          {/* Metadata region — loading while resolving, a single retry-able
+              message on failure, the full grid + excerpt once resolved. */}
+          {isPending ? (
+            <div className="mt-5 flex flex-col items-center gap-2.5 rounded-md border border-dashed bg-input/10 px-4 py-8 text-center">
+              <Loader2 className="size-5 animate-spin text-muted-foreground" />
+              <p className="text-[12.5px] text-muted-foreground">
+                {t("detail.resolvingMeta")}
               </p>
             </div>
+          ) : isFailed ? (
+            <div className="mt-5 flex flex-col items-center gap-3 rounded-md border border-destructive/30 bg-destructive/5 px-4 py-7 text-center">
+              <TriangleAlert className="size-5 text-destructive" />
+              <p className="text-[12.5px] text-muted-foreground">
+                {t("detail.metaFailed")}
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={onRetry}
+                disabled={retry.isPending}
+              >
+                {retry.isPending ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <RotateCw className="size-3.5" />
+                )}
+                {t("detail.retry")}
+              </Button>
+            </div>
+          ) : (
+            <>
+              {/* Metadata grid */}
+              <div className="mt-5 grid grid-cols-2 gap-x-3 gap-y-3.5">
+                <Field label={t("detail.fields.type")} value={typeLabel} />
+                <Field label={t("detail.fields.date")} value={dateLabel} />
+                <Field
+                  label={t("detail.fields.pages")}
+                  value={doc.pages != null ? String(doc.pages) : "—"}
+                />
+                <Field label={t("detail.fields.lang")} value={langLabel} />
+                <Field label={t("detail.fields.deposit")} value={sourceLabel} />
+                <Field
+                  label={t("detail.fields.digitization")}
+                  value={
+                    digitized
+                      ? t("detail.values.digitized")
+                      : t("detail.values.notDigitized")
+                  }
+                />
+                <Field label={t("detail.fields.ocr")} value={ocrLabel} />
+                <Field label={t("detail.fields.ingestion")} value={ingestionLabel} />
+              </div>
+
+              {/* OCR excerpt */}
+              {doc.excerpt && (
+                <div className="mt-5">
+                  <span className="mono-eyebrow">{t("detail.excerptOcr")}</span>
+                  <p className="mt-2 border-l-2 pl-3.5 text-[13px] leading-relaxed whitespace-pre-line text-muted-foreground">
+                    {doc.excerpt}
+                  </p>
+                </div>
+              )}
+            </>
           )}
 
           {/* ARK box */}
@@ -277,6 +371,37 @@ export function SheetDocumentDetail({ doc, projectId, open, onOpenChange }: Prop
               )}
             </div>
           </div>
+
+          {/* Promote a catalogue notice to its digitized Gallica document — only
+              when the add-time conversion failed transiently (a retry may help).
+              When it ran cleanly and found no digitization, just say so. */}
+          {canPromote && (
+            <div className="mt-5 rounded-md border border-brand-teal/30 bg-brand-teal/5 px-3 py-3">
+              <p className="text-[12px] leading-relaxed text-muted-foreground">
+                {t("detail.promoteHint")}
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                className="mt-2.5 w-full text-brand-teal hover:text-brand-teal"
+                onClick={onPromote}
+                disabled={promote.isPending}
+              >
+                {promote.isPending ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <Sparkles className="size-3.5" />
+                )}
+                {t("detail.promote")}
+              </Button>
+            </div>
+          )}
+          {notOnGallica && (
+            <p className="mt-5 flex items-start gap-2 text-[12px] leading-relaxed text-muted-foreground">
+              <TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-muted-foreground/70" />
+              {t("detail.notOnGallica")}
+            </p>
+          )}
 
           {/* Remove from corpus */}
           <Button

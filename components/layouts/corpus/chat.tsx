@@ -13,7 +13,8 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import Image from "next/image"
 import { useTranslations } from "next-intl"
-import { ArrowUp, ChevronDown, Loader2, Search, Sparkles } from "lucide-react"
+import { ArrowUp, ChevronDown, Loader2, Search, Sparkles, Square } from "lucide-react"
+import { useThinkingExpanded } from "@/components/providers/thinking"
 import type { UseChatReturn } from "@alien/chat-sdk/react"
 import type {
   AgentPart,
@@ -27,9 +28,11 @@ import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
 import { BadgeToolCall } from "@/components/badges/tools/call"
 import { BadgeToolMutation } from "@/components/badges/tools/mutation-pill"
+import { BadgeNoteProgress } from "@/components/badges/tools/note-progress"
 import { CardToolAskUser } from "@/components/cards/tools/ask-user"
 import {
   isCorpusMutationTool,
+  isNoteWriteTool,
   mutationCount,
   mutationDuplicates,
 } from "@/lib/tools/display"
@@ -79,7 +82,9 @@ function TypingDots() {
 
 function ThinkingBox({ text, active }: { text: string; active: boolean }) {
   const t = useTranslations("corpus.chat")
-  const [open, setOpen] = useState(true)
+  // Expanded/collapsed is an app-wide preference, not per-box: toggling any
+  // thinking block toggles them all (like Claude Code). See ThinkingProvider.
+  const { expanded: open, toggle } = useThinkingExpanded()
   const [elapsed, setElapsed] = useState(0)
   const startRef = useRef<number | null>(null)
 
@@ -97,7 +102,7 @@ function ThinkingBox({ text, active }: { text: string; active: boolean }) {
     <div className="rounded-md border border-dashed bg-muted/30 px-3 py-2">
       <button
         type="button"
-        onClick={() => setOpen((o) => !o)}
+        onClick={toggle}
         aria-expanded={open}
         className="flex w-full items-center gap-2 text-left"
       >
@@ -165,6 +170,12 @@ function ToolPartView({
         isError={tool.isError}
       />
     )
+  }
+  // A note's body streams in as the tool input — show live progress while it
+  // does, then fall through to the uniform block once the write lands.
+  const noteWrite = isNoteWriteTool(tool.toolName)
+  if (noteWrite && tool.running) {
+    return <BadgeNoteProgress kind={noteWrite} startedAt={tool.startedAt} />
   }
   return (
     <BadgeToolCall
@@ -421,8 +432,10 @@ export function LayoutCorpusChat({
       <CorpusComposer
         chat={chat}
         onSent={pinToBottom}
+        onCancel={stream.cancel}
         placeholder={placeholder ?? t("placeholder")}
         sendLabel={t("send")}
+        stopLabel={t("stop")}
       />
     </div>
   )
@@ -432,13 +445,19 @@ export function LayoutCorpusChat({
 function CorpusComposer({
   chat,
   onSent,
+  onCancel,
   placeholder,
   sendLabel,
+  stopLabel,
 }: {
   chat: UseChatReturn
   onSent: () => void
+  /** Stop the in-flight turn: aborts the client stream AND cancels the detached
+   *  server turn (see useTurnStream.cancel). */
+  onCancel: () => void
   placeholder: string
   sendLabel: string
+  stopLabel: string
 }) {
   const canSend = chat.input.trim().length > 0 && !chat.isStreaming
   const onSubmit = (e: React.FormEvent) => {
@@ -447,6 +466,21 @@ function CorpusComposer({
     void chat.sendMessage()
     onSent()
   }
+
+  // Esc stops an in-flight turn (like Claude Code). Bound to the window — the
+  // composer input is disabled while streaming, so it can't receive the key —
+  // and only while streaming, so Esc stays free for dialogs/sheets otherwise.
+  useEffect(() => {
+    if (!chat.isStreaming) return
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault()
+        onCancel()
+      }
+    }
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [chat.isStreaming, onCancel])
   return (
     <div className="border-t p-3">
       <form
@@ -461,19 +495,31 @@ function CorpusComposer({
           disabled={chat.isStreaming}
           className="flex-1 border-0 bg-transparent px-0 shadow-none focus-visible:ring-0 dark:bg-transparent"
         />
-        <button
-          type="submit"
-          disabled={!canSend}
-          aria-label={sendLabel}
-          className={cn(
-            "flex size-8 shrink-0 items-center justify-center rounded-full transition-colors",
-            canSend
-              ? "bg-primary text-primary-foreground hover:bg-primary/90"
-              : "bg-secondary text-muted-foreground",
-          )}
-        >
-          {chat.isStreaming ? <Loader2 className="size-4 animate-spin" /> : <ArrowUp className="size-4" />}
-        </button>
+        {chat.isStreaming ? (
+          <button
+            type="button"
+            onClick={onCancel}
+            aria-label={stopLabel}
+            title={stopLabel}
+            className="flex size-8 shrink-0 items-center justify-center rounded-full bg-secondary text-foreground transition-colors hover:bg-secondary/70"
+          >
+            <Square className="size-3.5 fill-current" />
+          </button>
+        ) : (
+          <button
+            type="submit"
+            disabled={!canSend}
+            aria-label={sendLabel}
+            className={cn(
+              "flex size-8 shrink-0 items-center justify-center rounded-full transition-colors",
+              canSend
+                ? "bg-primary text-primary-foreground hover:bg-primary/90"
+                : "bg-secondary text-muted-foreground",
+            )}
+          >
+            <ArrowUp className="size-4" />
+          </button>
+        )}
       </form>
     </div>
   )

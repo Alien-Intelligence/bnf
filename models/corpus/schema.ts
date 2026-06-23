@@ -59,6 +59,10 @@ export const documentRow = {
     // Resolution lifecycle: "pending" rows render a placeholder until their MCP
     // metadata lands; "failed" rows surface a resolution-error affordance.
     resolveStatus: true,
+    // cb→Gallica canonicalization outcome on a notice that stayed a notice —
+    // drives the detail panel's "promote" (api_error) vs "not on Gallica"
+    // (not_digitized) affordance. Null for digitized docs / upgraded notices.
+    canonicalStatus: true,
   },
 } satisfies Prisma.DocumentDefaultArgs
 

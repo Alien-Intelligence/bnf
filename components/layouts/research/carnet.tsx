@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Download } from "lucide-react"
 import { useTranslations } from "next-intl"
 import type { ParsedCitation } from "@/lib/citations/syntax"
+import { notesToMarkdown, downloadMarkdown } from "@/lib/notes/export"
 
 interface Note {
   id: string
@@ -17,19 +18,6 @@ interface Note {
 interface LayoutCarnetProps {
   notes: Note[]
   onCitationClick: (c: ParsedCitation) => void
-}
-
-function exportMarkdown(notes: Note[]): void {
-  const content = notes
-    .map((n) => `## ${n.title}\n\n${n.body_md ?? ""}\n\n---\n\n`)
-    .join("")
-  const blob = new Blob([content], { type: "text/markdown;charset=utf-8" })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement("a")
-  a.href = url
-  a.download = "carnet-de-recherche.md"
-  a.click()
-  URL.revokeObjectURL(url)
 }
 
 export function LayoutCarnet({ notes, onCitationClick }: LayoutCarnetProps) {
@@ -59,7 +47,7 @@ export function LayoutCarnet({ notes, onCitationClick }: LayoutCarnetProps) {
             <Button
               variant="outline"
               size="sm"
-              onClick={() => exportMarkdown(notes)}
+              onClick={() => downloadMarkdown("carnet-de-recherche.md", notesToMarkdown(notes))}
               disabled={notes.length === 0}
             >
               <Download className="mr-2 h-4 w-4" />

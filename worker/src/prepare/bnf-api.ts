@@ -22,6 +22,7 @@ import type { BnfDocInfo } from "../types.js";
 import { arkToSlug } from "../slug.js";
 
 import { PermanentBnfError, TransientBnfError } from "./errors.js";
+import { gallicaRelayUrl, relayGet } from "./gallica-relay.js";
 import { altoRateLimit, gallicaRateLimit, type TokenBucket } from "./rate-limiter.js";
 import { withBnfRetry } from "./retry.js";
 import { fetchViewerOcr } from "./viewer-ocr.js";
@@ -124,6 +125,23 @@ async function fetchText(
   // abort before sending. Defaults to the GENERAL limiter; the ALTO path
   // passes the strict one.
   await (opts.rateLimiter ?? gallicaRateLimit).acquire();
+  // Demo stopgap: when a relay is configured, borrow a browser handshake so
+  // Cloudflare's bot-fight-mode doesn't reject our client fingerprint. The
+  // relay mirrors the upstream status, so classification downstream is identical.
+  if (gallicaRelayUrl()) {
+    try {
+      const { status, bytes } = await relayGet(
+        url,
+        opts.accept ?? "application/xml, text/xml, */*",
+        timeoutMs,
+      );
+      return { status, body: bytes.toString("utf8") };
+    } catch (err) {
+      throw new TransientBnfError("network", {
+        hint: `${url}: relay ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {

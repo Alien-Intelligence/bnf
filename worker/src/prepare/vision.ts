@@ -19,6 +19,7 @@ import { GoogleGenAI } from "@google/genai";
 import { Agent, request } from "undici";
 
 import { genai, google, vision } from "../env.js";
+import { gallicaRelayUrl, relayGet } from "./gallica-relay.js";
 import { gallicaRateLimit } from "./rate-limiter.js";
 
 // Holo is called over RAW fetch, NOT the OpenAI SDK. The OpenAI Node SDK
@@ -163,20 +164,34 @@ async function fetchImage(url: string): Promise<FetchedImage> {
   // IIIF image fetches go through the GENERAL Gallica limiter (generous, not
   // the strict 5/min ALTO bucket) — a politeness cap, not a serializer, so
   // many image docs can be described in parallel.
-  if (/(^|\.)bnf\.fr$/i.test(new URL(url).hostname)) {
+  const isGallica = /(^|\.)bnf\.fr$/i.test(new URL(url).hostname);
+  if (isGallica) {
     await gallicaRateLimit.acquire();
   }
-  const res = await fetch(url, {
-    headers: {
-      "User-Agent": "bnf-ingest/0.1 (leo@alien.club)",
-      Accept: "image/jpeg,image/png,image/*;q=0.9",
-    },
-  });
-  if (!res.ok) {
-    throw new Error(`Image fetch failed: ${res.status} ${res.statusText} for ${url}`);
+  // Demo stopgap: route Gallica image fetches through the browser-handshake
+  // relay when configured (see gallica-relay.ts). Non-Gallica URLs never relay.
+  let mimeType: string;
+  let buffer: Buffer;
+  if (isGallica && gallicaRelayUrl()) {
+    const r = await relayGet(url, "image/jpeg,image/png,image/*;q=0.9", 60_000);
+    if (r.status < 200 || r.status >= 300) {
+      throw new Error(`Image fetch failed: ${r.status} (relay) for ${url}`);
+    }
+    mimeType = r.contentType || "image/jpeg";
+    buffer = r.bytes;
+  } else {
+    const res = await fetch(url, {
+      headers: {
+        "User-Agent": "bnf-ingest/0.1 (leo@alien.club)",
+        Accept: "image/jpeg,image/png,image/*;q=0.9",
+      },
+    });
+    if (!res.ok) {
+      throw new Error(`Image fetch failed: ${res.status} ${res.statusText} for ${url}`);
+    }
+    mimeType = res.headers.get("content-type") ?? "image/jpeg";
+    buffer = Buffer.from(await res.arrayBuffer());
   }
-  const mimeType = res.headers.get("content-type") ?? "image/jpeg";
-  const buffer = Buffer.from(await res.arrayBuffer());
   const base64 = buffer.toString("base64");
   return {
     dataUrl: `data:${mimeType};base64,${base64}`,

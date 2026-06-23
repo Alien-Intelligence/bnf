@@ -39,13 +39,18 @@ export default async function ConstituerPage({
 
   const seenIntros = await OnboardingQueries.listSeen(user.id)
 
+  // Open on the most-recently-active session (the list is updatedAt desc), not
+  // the oldest. ensureDefaultForScope only guarantees one exists; its return is
+  // the createdAt-asc first session, so use it only as a fallback.
+  const initialSessionId = initialSessions[0]?.id ?? session.id
+
   return (
     <ConstituerClient
       locale={locale}
       projectId={projectId}
       initialCorpus={initialCorpus}
       initialUser={{ name: user.name, email: user.email }}
-      initialSessionId={session.id}
+      initialSessionId={initialSessionId}
       initialSessions={initialSessions}
       introSeen={seenIntros.includes(ONBOARDING_INTRO.CORPUS)}
     />

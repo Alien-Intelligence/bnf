@@ -8,7 +8,7 @@ replicaCount: 1
 image:
   repository: rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo
   pullPolicy: Always
-  tag: "0.1.0"
+  tag: "0.2.3"
 
 imagePullSecrets: []
 
@@ -68,6 +68,14 @@ config:
   langfusePublicKey: "pk-lf-014385ed-18f6-4fa1-84eb-4a7fdc7c7adf"
   langfuseBaseUrl: https://langfuse.alien.club
 
+  # Alien Auth (Authentik) SSO. Base URL + app slug are non-secret (here); the
+  # client id/secret are pulled from Scaleway via the ExternalSecret below.
+  # Shared with the alien-agents demo (same Authentik application). The OAuth
+  # callback `https://bnf.demo.alien.club/api/auth/oauth2/callback/authentik`
+  # must be registered on that application or Authentik rejects the flow.
+  authentikBaseUrl: https://auth.alien.club
+  authentikAppSlug: datastreaming
+
   # Service name reported to SigNoz. Keep stable across deploys.
   otelServiceName: "bnf-demo-prod"
 
@@ -89,7 +97,7 @@ worker:
   image:
     repository: rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo-worker
     pullPolicy: Always
-    tag: "0.1.0"
+    tag: "0.2.3"
 
   service:
     type: ClusterIP
@@ -233,6 +241,14 @@ secrets:
   clusterBearerTokenProperty: CLUSTER_BEARER_TOKEN
   # Optional — only consumed if config.langfusePublicKey is set.
   langfuseSecretKeyProperty: LANGFUSE_SECRET_KEY
+
+  # --- Alien Auth (Authentik) SSO credentials ---
+  # AUTHENTIK_CLIENT_ID / AUTHENTIK_CLIENT_SECRET live in a SHARED Scaleway
+  # secret (`authentik-prod`), NOT the per-demo `bnf-demo-prod` secret — the
+  # same OAuth application is reused across all demos (openaire, agents, bnf).
+  # Pulled into a dedicated ExternalSecret and projected via envFrom only when
+  # config.authentikBaseUrl is set. Mirrors the openaire-chart pattern.
+  authentikScalewaySecretName: authentik-prod
 
   # --- Worker credentials ---
   scwS3AccessKeyProperty: SCW_S3_ACCESS_KEY

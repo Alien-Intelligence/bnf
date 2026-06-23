@@ -15,12 +15,17 @@ import {
 import { apiFetch } from "@/lib/api-fetch"
 import { CORPUS_RESOLVE_POLL_MS } from "@/lib/constants"
 import type { CorpusDiff, CorpusSnapshot } from "@/models/corpus/schema"
-import type { CorpusMutationResult } from "@/models/corpus/service"
+import type {
+  CorpusMutationResult,
+  CorpusPromoteResult,
+} from "@/models/corpus/service"
 import {
   corpusFiltersToParams,
   type AddToCorpusInput,
   type CorpusFilters,
+  type PromoteNoticeInput,
   type RemoveFromCorpusInput,
+  type RetryResolveInput,
 } from "@/models/corpus/types"
 
 // ── Query keys ────────────────────────────────────────────────────────────────
@@ -145,6 +150,46 @@ export function useRemoveFromCorpus(projectId: string) {
       })
       if (!res.ok) throw new Error("Failed to remove from corpus")
       return res.json() as Promise<CorpusMutationResult>
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: corpusKeys.all(projectId) }),
+  })
+}
+
+/**
+ * Re-queue background metadata resolution for failed documents. On success we
+ * invalidate the corpus query so the row flips to its "pending" (loading) state
+ * and the snapshot's pendingCount resumes polling until it resolves or re-fails.
+ */
+export function useRetryResolve(projectId: string) {
+  const qc = useQueryClient()
+  return useMutation<{ retried: number }, Error, RetryResolveInput>({
+    mutationFn: async (body) => {
+      const res = await apiFetch(`/api/projects/${projectId}/corpus/retry`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      })
+      if (!res.ok) throw new Error("Failed to retry resolution")
+      return res.json() as Promise<{ retried: number }>
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: corpusKeys.all(projectId) }),
+  })
+}
+
+/**
+ * Promote a catalogue notice (`cb…`) to its digitized Gallica document. On a
+ * successful upgrade the corpus membership changes (new version), so invalidate
+ * the corpus query to pull in the digitized doc in place of the notice.
+ */
+export function usePromoteNotice(projectId: string) {
+  const qc = useQueryClient()
+  return useMutation<CorpusPromoteResult, Error, PromoteNoticeInput>({
+    mutationFn: async (body) => {
+      const res = await apiFetch(`/api/projects/${projectId}/corpus/promote`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      })
+      if (!res.ok) throw new Error("Failed to promote notice")
+      return res.json() as Promise<CorpusPromoteResult>
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: corpusKeys.all(projectId) }),
   })

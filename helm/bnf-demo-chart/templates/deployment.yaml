@@ -45,6 +45,11 @@ spec:
                 name: {{ include "bnf-demo.fullname" . }}-app
             - secretRef:
                 name: {{ include "bnf-demo.fullname" . }}-app-creds
+            {{- if .Values.config.authentikBaseUrl }}
+            # Alien Auth (Authentik) SSO client id/secret — see externalsecret.yaml.
+            - secretRef:
+                name: {{ include "bnf-demo.fullname" . }}-authentik
+            {{- end }}
           env:
             - name: DATABASE_URL
               valueFrom:

@@ -27,3 +27,10 @@ data:
   LANGFUSE_PUBLIC_KEY: {{ . | quote }}
   LANGFUSE_BASE_URL: {{ $.Values.config.langfuseBaseUrl | quote }}
   {{- end }}
+  {{- with .Values.config.authentikBaseUrl }}
+  # Alien Auth (Authentik) SSO — non-secret half. The client id/secret arrive
+  # via the -app-creds ExternalSecret. The app enables SSO only when all three
+  # are present (lib/env.ssoEnabled).
+  AUTHENTIK_BASE_URL: {{ . | quote }}
+  AUTHENTIK_APP_SLUG: {{ $.Values.config.authentikAppSlug | quote }}
+  {{- end }}

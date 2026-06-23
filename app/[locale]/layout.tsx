@@ -5,6 +5,7 @@ import { getMessages, setRequestLocale } from "next-intl/server"
 import { notFound } from "next/navigation"
 import { routing } from "@/i18n/routing"
 import { QueryProvider } from "@/components/providers/query"
+import { ThinkingProvider } from "@/components/providers/thinking"
 // chat-sdk structural styles first, so globals.css's "BnF palette bridge"
 // (the `--chat-sdk-*` overrides) wins the cascade.
 import "@alien/chat-sdk/react/styles.css"
@@ -53,7 +54,9 @@ export default async function LocaleLayout({
     >
       <body className="min-h-full flex flex-col">
         <NextIntlClientProvider messages={messages}>
-          <QueryProvider>{children}</QueryProvider>
+          <QueryProvider>
+            <ThinkingProvider>{children}</ThinkingProvider>
+          </QueryProvider>
         </NextIntlClientProvider>
       </body>
     </html>

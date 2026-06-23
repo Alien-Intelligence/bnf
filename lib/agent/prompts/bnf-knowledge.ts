@@ -33,18 +33,15 @@ La distinction ci-dessous sert seulement à **comprendre et consulter** les docu
 
 Manifeste IIIF d'un document numérisé : \`https://gallica.bnf.fr/iiif/ark:/12148/<id>/manifest.json\`.
 
-### Obtenir le document numérisé d'une notice \`cb…\`
+### Notices \`cb…\` : l'upgrade vers le numérisé est AUTOMATIQUE à l'ajout
 
-Utile **uniquement** quand le bibliothécaire veut le document lui-même (consultable, citable) plutôt que la seule référence — jamais comme condition d'ajout :
+Quand tu ajoutes une notice \`cb…\` au corpus, l'application tente automatiquement de la **remplacer par son document numérisé Gallica** (\`bpt6k…\`/\`btv1b…\`) s'il en existe un — via \`rdarelationships:electronicReproduction\` (SPARQL data.bnf.fr) puis, à défaut, le champ UNIMARC \`856 $u\`. **Tu n'as donc pas à faire cette résolution toi-même** : ajoute l'ARK \`cb…\` tel quel et c'est la version consultable/citable qui entrera dans le corpus quand elle existe. Si la notice n'a pas de numérisation, elle reste un membre \`cb…\` parfaitement valide (référence bibliographique, sans copie numérisée rattachée à cet ARK).
 
-1. **Champ UNIMARC 856 $u** — \`bnf__bnf_get_catalogue_record\` : si la notice a une version numérisée, le champ \`856 $u\` contient l'URL Gallica (ex. \`http://gallica.bnf.fr/ark:/12148/bpt6k2029874\`) → en extraire l'ARK \`bpt6k…\`/\`btv1b…\`.
-2. **SPARQL data.bnf.fr** — \`rdarelationships:electronicReproduction\` au niveau de la manifestation donne l'URL Gallica (voir la section « SPARQL sur data.bnf.fr »).
-3. **Re-recherche Gallica** — à défaut, \`bnf__bnf_search_gallica\` par titre + auteur + date (vérifie la concordance des métadonnées).
+Inutile donc de précharger l'ARK Gallica avant d'ajouter ; n'écarte jamais une notice « parce qu'elle est \`cb…\` ». Les routes ci-dessous (856 $u, \`electronicReproduction\`, re-recherche Gallica) ne te servent plus qu'en **diagnostic**, si tu veux toi-même montrer/consulter le document numérisé d'une notice donnée :
 
-### En pratique
-
-- Pour des documents directement consultables et citables, \`bnf__bnf_search_gallica\` renvoie d'emblée des ARK \`bpt6k…\`/\`btv1b…\`.
-- Une notice \`cb…\` est un membre du corpus parfaitement valide : ajoute-la sans hésiter si elle correspond à la demande. Tu peux signaler en passant que c'est une référence catalographique (sans copie numérisée rattachée à cet ARK) si c'est utile au bibliothécaire — mais ce n'est ni un blocage, ni un avertissement d'ingestion.\``
+1. **Champ UNIMARC 856 $u** — \`bnf__bnf_get_catalogue_record\` : URL Gallica (ex. \`http://gallica.bnf.fr/ark:/12148/bpt6k2029874\`) → ARK \`bpt6k…\`/\`btv1b…\`.
+2. **SPARQL data.bnf.fr** — \`rdarelationships:electronicReproduction\` au niveau de la manifestation (voir « SPARQL sur data.bnf.fr »).
+3. **Re-recherche Gallica** — \`bnf__bnf_search_gallica\` par titre + auteur + date (vérifie la concordance des métadonnées).\``
 
 // ---------------------------------------------------------------------------
 // SPARQL over data.bnf.fr

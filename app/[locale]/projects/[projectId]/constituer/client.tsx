@@ -14,6 +14,7 @@ import { useSearchParams, usePathname } from "next/navigation"
 import { useQueryClient } from "@tanstack/react-query"
 import { useCorpusFlattened, corpusKeys } from "@/hooks/api/corpus"
 import { memoryKeys } from "@/hooks/api/memory"
+import { sessionKeys } from "@/hooks/api/sessions"
 import { useTurnStream } from "@/hooks/api/turn-stream"
 import {
   corpusFiltersFromParams,
@@ -139,6 +140,8 @@ export function ConstituerClient({
     if (prevStreamingRef.current && !streaming) {
       void qc.invalidateQueries({ queryKey: corpusKeys.all(projectId) })
       void qc.invalidateQueries({ queryKey: memoryKeys.all(projectId, "corpus") })
+      // A session's first turn auto-names it server-side — pull the new title.
+      void qc.invalidateQueries({ queryKey: sessionKeys.list(projectId, "corpus") })
     }
     prevStreamingRef.current = streaming
   }, [stream.isStreaming, projectId, qc])

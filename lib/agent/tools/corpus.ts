@@ -127,7 +127,11 @@ export const corpusAddTool = defineTool<
     "Do NOT judge or filter documents by 'ingestability' here — whether a " +
     "document will be indexed as full text is decided automatically at the later " +
     "ingestion step, not during corpus building. Every real BnF ARK is valid; " +
-    "never describe ARKs as valid/invalid or ingestable/non-ingestable.",
+    "never describe ARKs as valid/invalid or ingestable/non-ingestable. " +
+    "Catalogue notices are handled for you: if you add a `cb…` notice that the " +
+    "BnF has digitized, it is upgraded automatically to its digitized Gallica " +
+    "document (`bpt6k…`/`btv1b…`) before it enters the corpus — so just add the " +
+    "`cb…` ARK as-is; you do NOT need to resolve it to its Gallica form yourself.",
   inputSchema: z.object({
     arks: z
       .array(arkSchema)
@@ -162,6 +166,9 @@ export const corpusAddTool = defineTool<
       // Record per-session attribution: tag every added ARK with this session
       // so the corpus can later be filtered by which session contributed it.
       ctx.appSessionId,
+      // Upgrade catalogue notices (cb…) to their digitized Gallica doc when one
+      // exists, so the corpus member is the consultable/citable/ingestable form.
+      { canonicalize: true },
     )
 
     // Resolve the newly-added stubs' metadata in the background, after this

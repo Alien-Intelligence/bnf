@@ -29,6 +29,24 @@ function initials(user: { name?: string; email: string }): string {
   return source.slice(0, 2).toUpperCase()
 }
 
+/** Discreet build identifier beside the MCP indicator — `v<version>` plus the
+ *  git short SHA when available. Both inlined at build (next.config.ts). Helps
+ *  pin down which build is running when debugging. */
+function AppVersion() {
+  const version = process.env.NEXT_PUBLIC_APP_VERSION
+  if (!version) return null
+  const sha = process.env.NEXT_PUBLIC_GIT_SHA
+  const label = sha ? `v${version}·${sha}` : `v${version}`
+  return (
+    <span
+      className="hidden font-mono text-[10px] text-muted-foreground/60 select-none sm:inline"
+      title={sha ? `Version ${version} · ${sha}` : `Version ${version}`}
+    >
+      {label}
+    </span>
+  )
+}
+
 export function WorkspaceHeader({
   user,
   projectId,
@@ -68,8 +86,9 @@ export function WorkspaceHeader({
       {/* Step navigation — only inside a project workspace */}
       {projectId && <LayoutWorkspaceStepNav projectId={projectId} />}
 
-      {/* MCP status + user menu */}
+      {/* Version + MCP status + user menu */}
       <div className="flex items-center gap-3">
+        <AppVersion />
         <span className="inline-flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
           <span
             className="size-1.75 rounded-full bg-info shadow-[0_0_8px_var(--info)]"

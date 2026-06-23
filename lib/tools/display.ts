@@ -43,6 +43,20 @@ export function isCorpusMutationTool(toolName: string): "add" | "remove" | null 
   return null
 }
 
+/**
+ * True for the note-writing tools whose input IS the artifact — the whole note
+ * body streams in as the tool input, so while running they get a live progress
+ * view (char count + elapsed) instead of a motionless "running" badge.
+ */
+export function isNoteWriteTool(
+  toolName: string,
+): "create" | "update" | "append" | null {
+  if (toolName === "note_create") return "create"
+  if (toolName === "note_update") return "update"
+  if (toolName === "note_append") return "append"
+  return null
+}
+
 /** Safely JSON-parse a tool result string; returns null on any failure. */
 function parseResult(result: string): unknown {
   if (!result) return null

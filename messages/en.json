@@ -74,7 +74,9 @@
       "errorGeneric": "Invalid credentials",
       "errorInvalidCredentials": "Invalid credentials",
       "forgotPassword": "Forgot password?",
-      "submitting": "Signing in…"
+      "submitting": "Signing in…",
+      "ssoButton": "Sign in with Alien",
+      "or": "or"
     },
     "signUp": {
       "title": "Create an account",
@@ -245,6 +247,12 @@
         "catalogueRecordSub": "catalogue.bnf.fr",
         "remove": "Remove from corpus",
         "removing": "Removing…",
+        "resolvingMeta": "Extracting metadata…",
+        "metaFailed": "Metadata extraction failed.",
+        "retry": "Retry",
+        "promoteHint": "Conversion to the digitized Gallica document failed (BnF API temporarily unavailable). You can retry.",
+        "promote": "Promote to digitized document",
+        "notOnGallica": "This document is not digitized on Gallica — catalogue notice only.",
         "fields": {
           "type": "Type",
           "date": "Date",
@@ -313,6 +321,7 @@
       "systemPromptIntro": "Hello, I help you build your corpus from the BnF holdings. Describe the topic, period or sources you are interested in.",
       "placeholder": "Refine the corpus…",
       "send": "Send",
+      "stop": "Stop",
       "connected": "connected",
       "reconnecting": "Reconnecting…",
       "thinking": "Searching…",
@@ -363,12 +372,6 @@
       "rename": "Rename",
       "archive": "Archive",
       "archived": "Archived"
-    },
-    "new": {
-      "title": "New session",
-      "titleLabel": "Title",
-      "submit": "Create",
-      "submitting": "Creating…"
     }
   },
   "tools": {
@@ -390,6 +393,12 @@
     },
     "ingest": {
       "submit": "Submit ingestion"
+    },
+    "note": {
+      "writing": "Writing the note…",
+      "updating": "Updating the note…",
+      "appending": "Adding to the note…",
+      "seconds": "{count}s"
     },
     "bnf": {
       "search_catalogue": "BnF Catalogue search",
@@ -473,6 +482,7 @@
       "closeTab": "Close",
       "artefactHeader": "Research artifact · written by the agent",
       "cites": "{count, plural, =0 {no references} one {# ARK reference} other {# ARK references}}",
+      "export": "Export as Markdown",
       "loadError": "Could not load the note.",
       "retry": "Retry"
     },
