@@ -382,6 +382,10 @@ model ToolCall {
 
   message Message @relation(fields: [messageId], references: [id])
 
+  // Powers the workspace health indicator: a recurring 5-minute-window
+  // aggregation (recent calls grouped by tool/source/status) needs a fast range
+  // scan on the timestamp regardless of how large the table grows.
+  @@index([createdAt])
   @@map("tool_call")
 }
 

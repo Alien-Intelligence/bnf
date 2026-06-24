@@ -24,6 +24,7 @@ import type {
 } from "@alien/chat-sdk/persistence"
 import { Prisma } from "@/lib/generated/prisma/client"
 import { prisma } from "@/lib/db"
+import { toolCallErrored } from "@/lib/tools/display"
 import { AgentQueries } from "@/models/agents/queries"
 import { SessionService } from "@/models/sessions/service"
 
@@ -137,7 +138,11 @@ export function createPrismaChatAdapter(): ChatPersistenceAdapter {
           // Preserve the existing {content} shape the UI / synthetic-event
           // derivation reads.
           output: { content: call.output } as Prisma.InputJsonValue,
-          status: call.isError ? "error" : "ok",
+          // A BnF-MCP soft failure (Gallica 403/429/…) is relayed as a transport
+          // success with `isError` unset — its body is a `{ success: false }`
+          // envelope. Fold that in so the persisted status (and thus the health
+          // indicator) reflects the real failure, not a false "ok".
+          status: toolCallErrored(call.isError, call.output) ? "error" : "ok",
           latencyMs: Math.round(call.elapsedMs),
           finishedAt: new Date(),
         },

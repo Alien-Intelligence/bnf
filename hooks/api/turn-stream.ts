@@ -19,6 +19,7 @@ import { useChat, type UseChatReturn } from "@alien/chat-sdk/react"
 import type { AgentPart, ChatTurn } from "@alien/chat-sdk"
 import { apiFetch } from "@/lib/api-fetch"
 import { CHAT_STREAM_REVEAL_MS } from "@/lib/constants"
+import { toolCallErrored } from "@/lib/tools/display"
 
 // ---------------------------------------------------------------------------
 // Public types (unchanged — the UI depends on these)
@@ -142,7 +143,13 @@ function deriveFlat(turns: ChatTurn[]): {
         tool: tc.toolName,
         input: tc.input,
         output: tc.result,
-        status: tc.running ? "running" : tc.isError ? "error" : "ok",
+        // A BnF-MCP soft failure (success:false envelope, transport 200) leaves
+        // tc.isError false — fold the result envelope in so it reads as error.
+        status: tc.running
+          ? "running"
+          : toolCallErrored(tc.isError, tc.result)
+            ? "error"
+            : "ok",
         source: isMcp ? "mcp" : "custom",
         serverName: isMcp ? (tc.toolName.split("__")[0] ?? null) : null,
         latencyMs: tc.endedAt != null ? tc.endedAt - tc.startedAt : null,

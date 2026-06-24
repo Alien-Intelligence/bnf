@@ -15,6 +15,7 @@ import { useTranslations } from "next-intl"
 import { LayoutWorkspaceStepNav } from "./step-nav"
 import { LayoutWorkspaceProjectSwitcher } from "./project-switcher"
 import { LayoutWorkspaceLangToggle } from "./lang-toggle"
+import { WorkspaceHealthStatus } from "./health-status"
 import { SignOutButton } from "./sign-out-button"
 
 interface WorkspaceHeaderProps {
@@ -30,7 +31,7 @@ function initials(user: { name?: string; email: string }): string {
   return source.slice(0, 2).toUpperCase()
 }
 
-/** Discreet build identifier beside the MCP indicator — `v<version>` plus the
+/** Discreet build identifier beside the health indicator — `v<version>` plus the
  *  git short SHA when available. Both inlined at build (next.config.ts). Helps
  *  pin down which build is running when debugging. */
 function AppVersion() {
@@ -91,13 +92,7 @@ export function WorkspaceHeader({
       <div className="flex items-center gap-3">
         <AppVersion />
         <LayoutWorkspaceLangToggle />
-        <span className="inline-flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
-          <span
-            className="size-1.75 rounded-full bg-info shadow-[0_0_8px_var(--info)]"
-            aria-hidden
-          />
-          MCP
-        </span>
+        <WorkspaceHealthStatus />
         <span
           className="flex size-7 items-center justify-center rounded-full bg-secondary text-[11px] font-semibold text-foreground"
           title={user.name ?? user.email}
