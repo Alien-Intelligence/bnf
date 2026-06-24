@@ -113,6 +113,14 @@ export class StubClusterSink implements ClusterSink {
     return { datasetId: 1 };
   }
 
+  async removeEntry(_input: {
+    datasetId: number;
+    arkSlug: string;
+  }): Promise<{ removed: boolean }> {
+    void _input;
+    return { removed: true };
+  }
+
   async upsert(input: {
     datasetId: number;
     prepared: PreparedDoc;

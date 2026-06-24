@@ -21,6 +21,11 @@ export type IngestJobView = Omit<
   "progress" | "callbackSecret"
 > & {
   progress: number | null
+  // Base/target version seqs for the history "v{base} → v{target}" label. Only
+  // populated where the loader joined the versions (the Ingérer history); the
+  // single-job API serializers leave them undefined.
+  baseVersionSeq?: number | null
+  targetVersionSeq?: number
 }
 
 /**

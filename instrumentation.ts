@@ -23,10 +23,32 @@ export async function register() {
   // project with pending stubs so resolution self-heals. Unlike the turn reaper
   // (which must NOT run periodically — live streaming turns are legitimate),
   // pending stubs are never "in flight", so a periodic sweep is safe.
-  const { RESOLVE_SWEEP_INTERVAL_MS } = await import("@/lib/constants")
+  const { RESOLVE_SWEEP_INTERVAL_MS, CANONICALIZE_SWEEP_INTERVAL_MS } =
+    await import("@/lib/constants")
   setInterval(() => {
     void resumePendingResolves().catch((err) => {
       console.error("[instrumentation] periodic resolver sweep failed:", err)
     })
   }, RESOLVE_SWEEP_INTERVAL_MS)
+
+  // Resume background cb→Gallica canonicalization for any catalogue notices left
+  // `pending` by a restart mid-upgrade. Same fire-and-forget contract as the
+  // resolver above: `corpus_add` adds notices as-is and marks them pending; the
+  // canonicalizer swaps each digitized one for its Gallica doc out-of-band.
+  const { resumePendingCanonicalize } = await import(
+    "@/lib/documents/canonicalizer"
+  )
+  void resumePendingCanonicalize().catch((err) => {
+    console.error("[instrumentation] boot canonicalize resume failed:", err)
+  })
+
+  // Periodic canonicalize sweep — the counterpart to the resolve sweep. A
+  // transient data.bnf.fr/SRU outage flips notices to `api_error` (terminal for
+  // the auto-loop), but a restart or a notice still `pending` with no further
+  // kick is recovered here so canonicalization self-heals.
+  setInterval(() => {
+    void resumePendingCanonicalize().catch((err) => {
+      console.error("[instrumentation] periodic canonicalize sweep failed:", err)
+    })
+  }, CANONICALIZE_SWEEP_INTERVAL_MS)
 }

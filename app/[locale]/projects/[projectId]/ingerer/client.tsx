@@ -89,11 +89,14 @@ export function IngererClient({
             <CardIngestCompletion projectId={projectId} />
           ) : (
             <>
-              <CardIngestStagePipeline job={status.data} onCancel={onCancel} />
+              {/* "Traitement en cours / vous pouvez fermer la page" sits ABOVE
+                  the stage progress bars — the reassurance banner first, the
+                  detailed per-stage progress under it. */}
               {(status.data.status === INGEST_STATUS.QUEUED ||
                 status.data.status === INGEST_STATUS.RUNNING) && (
                 <CardComeBackLater />
               )}
+              <CardIngestStagePipeline job={status.data} onCancel={onCancel} />
               {status.data.status === INGEST_STATUS.FAILED && (
                 <CardIngestRetryFailed
                   error={status.data.error}
@@ -105,10 +108,7 @@ export function IngererClient({
           )
         )}
 
-        <CardIngestJobHistory
-          projectId={projectId}
-          jobs={initialRecentJobs}
-        />
+        <CardIngestJobHistory projectId={projectId} jobs={initialRecentJobs} />
       </div>
 
       <DialogIngestConfirmCancel

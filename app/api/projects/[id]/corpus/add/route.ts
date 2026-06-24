@@ -17,7 +17,9 @@
 import { withAuth } from "@/app/api/_middleware"
 import { parseBody } from "@/app/api/_helpers"
 import { ok, notFound } from "@/lib/api-response"
+import { kickCanonicalize } from "@/lib/documents/canonicalizer"
 import { kickResolve } from "@/lib/documents/resolver"
+import { sourceFromArk } from "@/lib/mcp/vocab"
 import { addToCorpusSchema } from "@/models/corpus/types"
 import { CorpusPolicy } from "@/models/corpus/policy"
 import { CorpusService, type CorpusAddResult } from "@/models/corpus/service"
@@ -34,13 +36,17 @@ export const POST = withAuth(async (req, user, bouncer, ctx: RouteCtx) => {
   if (!project) return notFound("Projet introuvable")
   await bouncer.with(CorpusPolicy).authorize("mutate", project)
 
-  // canonicalize: upgrade catalogue notices (cb…) to their digitized Gallica
-  // doc where one exists, so the corpus member is the consultable/ingestable
-  // form — consistent with the agent add path.
+  // canonicalize: queue added catalogue notices (cb…) for background upgrade to
+  // their digitized Gallica doc, so the corpus member becomes the consultable/
+  // ingestable form — consistent with the agent add path. The add stays instant.
   const result = await CorpusService.addArks(project, user, parsed, undefined, {
     canonicalize: true,
   })
   // Resolve the new stubs' metadata in the background, after the response flushes.
   if (result.pending > 0) kickResolve(projectId)
+  // Upgrade any added catalogue notices out-of-band too (no-op when none).
+  if (parsed.arks.some((a) => sourceFromArk(a) === "catalogue")) {
+    kickCanonicalize(projectId)
+  }
   return ok<CorpusAddResult>(result)
 })

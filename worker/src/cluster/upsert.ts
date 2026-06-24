@@ -8,6 +8,9 @@
  *
  * Implements the `ClusterSink` contract from src/types.ts.
  */
+import type { BlobStore } from "../blob/interface.js";
+import { getBlobStore } from "../blob/index.js";
+import { docKeys } from "../slug.js";
 import type { ClusterSink, PreparedDoc, UpsertResult } from "../types.js";
 import type { Embedder } from "../embed/index.js";
 import { getEmbedder } from "../embed/index.js";
@@ -17,15 +20,18 @@ import { bnfDatasetSchema, bnfDatasetSlug } from "./dataset.js";
 export interface BnfClusterSinkOptions {
   client?: ClusterClient;
   embedder?: Embedder;
+  blob?: BlobStore;
 }
 
 export class BnfClusterSink implements ClusterSink {
   private readonly client: ClusterClient;
   private readonly embedder: Embedder;
+  private readonly blob: BlobStore;
 
   constructor(opts: BnfClusterSinkOptions = {}) {
     this.client = opts.client ?? new ClusterClient();
     this.embedder = opts.embedder ?? getEmbedder();
+    this.blob = opts.blob ?? getBlobStore();
   }
 
   async ensureDataset(input: {
@@ -93,15 +99,41 @@ export class BnfClusterSink implements ClusterSink {
     }
     void tLookupStart;
 
-    // 1. Embed
-    await onStage?.("embedding");
+    // 1. Embed — reuse cached vectors for unchanged content, else embed + cache.
+    // Embeddings (RunPod) are the second-most-expensive cost after BnF; caching
+    // them by content-hash makes re-indexing a removed/re-added doc embed-free.
     const t0 = Date.now();
     const texts = prepared.chunks.map((c) => c.text);
-    const vectors = await this.embedder.embed(texts);
-    if (vectors.length !== prepared.chunks.length) {
-      throw new Error(
-        `Embedder returned ${vectors.length} vectors for ${prepared.chunks.length} chunks`,
+    const vectorsKey = docKeys(prepared.projectId, prepared.metadata.ark).vectors;
+    let vectors = await this.loadCachedVectors(
+      vectorsKey,
+      prepared.contentHash,
+      prepared.chunks.length,
+    );
+    if (vectors) {
+      console.log(
+        `[upsert] vector cache hit for ${prepared.metadata.ark} — skipping embed`,
       );
+    } else {
+      await onStage?.("embedding");
+      vectors = await this.embedder.embed(texts);
+      if (vectors.length !== prepared.chunks.length) {
+        throw new Error(
+          `Embedder returned ${vectors.length} vectors for ${prepared.chunks.length} chunks`,
+        );
+      }
+      // Cache for next time (best-effort: a write failure must not fail ingest).
+      await this.blob
+        .put(
+          vectorsKey,
+          JSON.stringify({ contentHash: prepared.contentHash, vectors }),
+          "application/json; charset=utf-8",
+        )
+        .catch((e: unknown) =>
+          console.warn(
+            `[upsert] vector cache write failed for ${prepared.metadata.ark}: ${e instanceof Error ? e.message : String(e)}`,
+          ),
+        );
     }
     const tEmbed = Date.now() - t0;
 
@@ -177,5 +209,51 @@ export class BnfClusterSink implements ClusterSink {
         total: Date.now() - totalStart,
       },
     };
+  }
+
+  /**
+   * Remove a document's entry by ARK slug (corpus-delta removal). Idempotent:
+   * an already-absent entry returns `{ removed: false }` without error. The
+   * cluster DELETE cascades through MinIO + Qdrant + Meilisearch.
+   */
+  async removeEntry(input: {
+    datasetId: number;
+    arkSlug: string;
+  }): Promise<{ removed: boolean }> {
+    const existing = await this.client.findEntryBySlug(
+      input.datasetId,
+      input.arkSlug,
+    );
+    if (!existing) return { removed: false };
+    await this.client.deleteEntry(existing.id);
+    return { removed: true };
+  }
+
+  /**
+   * Load cached embedding vectors for a doc, or null if absent / stale / corrupt.
+   * Keyed implicitly by ark (the blob path) and validated by content-hash so a
+   * doc whose content changed re-embeds rather than reusing stale vectors. A
+   * chunk-count mismatch is also treated as stale.
+   */
+  private async loadCachedVectors(
+    key: string,
+    contentHash: string,
+    expectedCount: number,
+  ): Promise<number[][] | null> {
+    const buf = await this.blob.get(key);
+    if (!buf) return null;
+    try {
+      const o = JSON.parse(buf.toString("utf8")) as {
+        contentHash?: string;
+        vectors?: unknown;
+      };
+      if (o.contentHash !== contentHash) return null;
+      if (!Array.isArray(o.vectors) || o.vectors.length !== expectedCount) {
+        return null;
+      }
+      return o.vectors as number[][];
+    } catch {
+      return null;
+    }
   }
 }

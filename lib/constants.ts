@@ -100,6 +100,15 @@ export const TYPE_DATASET_COLOR: Record<string, string> = {
 export const CORPUS_SAMPLE_SIZE = 25
 
 /**
+ * Maximum ARKs echoed back in a remove-by-filter DRY RUN preview. The full
+ * `matched` count is always reported; this only caps the illustrative sample so
+ * a 800-document match does not flood the agent's context. The commit path uses
+ * the full matched set regardless — this is a presentation cap, not a limit on
+ * what gets removed.
+ */
+export const CORPUS_REMOVE_PREVIEW_LIMIT = 50
+
+/**
  * The seq assigned to the first (empty) CorpusVersion created by
  * ProjectService.create(). Invariant 1: every project always has a head.
  */
@@ -248,16 +257,45 @@ export const BNF_USER_AGENT =
 export const BNF_HTTP_TIMEOUT_MS = 30_000
 
 /**
- * Overall wall-clock budget for canonicalizing a batch of catalogue (`cb…`)
- * ARKs to their digitized Gallica equivalent at corpus-add time
- * (BnfDirectClient.canonicalizeArks). This runs SYNCHRONOUSLY in the add path
- * (it changes which ARK becomes the corpus member, so it cannot be deferred to
- * the background resolver), and it is strictly best-effort: when the budget
- * elapses, every still-in-flight lookup aborts and those notices are added
- * as-is. Kept short so a slow/stalled data.bnf.fr can never hang an add
- * (CLAUDE_ERROR_PATTERNS §14). Only `cb…` ARKs incur this; Gallica adds skip it.
+ * Per-pass wall-clock budget for canonicalizing a batch of catalogue (`cb…`)
+ * ARKs to their digitized Gallica equivalent (BnfDirectClient.canonicalizeArks).
+ * This runs in the BACKGROUND canonicalizer (lib/documents/canonicalizer.ts),
+ * NOT in the add path — `corpus_add` returns instantly and the notice is
+ * upgraded out-of-band — so the budget no longer bounds a user-facing request;
+ * it only caps how long one detached drain pass may run before yielding
+ * (CLAUDE_ERROR_PATTERNS §14). Still used by the on-demand
+ * CorpusService.promoteNotice() too. Only `cb…` ARKs incur it; Gallica adds
+ * never reach the canonicalizer.
  */
 export const BNF_CANONICALIZE_BUDGET_MS = 12_000
+
+/**
+ * Safety bound on the canonicalize drain loop: at most this many pending
+ * notices are processed per pass, so a single detached run can never spin
+ * unboundedly (CLAUDE_ERROR_PATTERNS §14). Anything still `pending` after this
+ * is picked up by the next kick / periodic sweep / boot resume.
+ */
+export const CANONICALIZE_DRAIN_MAX = 500
+
+/**
+ * Notices classified per sub-batch within a drain pass. Each sub-batch gets a
+ * fresh BNF_CANONICALIZE_BUDGET_MS window, so the budget stays meaningful (a
+ * single 500-notice fan-out under one 12 s budget would abort most lookups and
+ * wrongly flip them to api_error). Sized so one sub-batch comfortably finishes
+ * inside the budget at BNF_DIRECT_CONCURRENCY.
+ */
+export const CANONICALIZE_BATCH_SIZE = 25
+
+/**
+ * Cadence of the background canonicalize sweep. `corpus_add` kicks a drain and
+ * boot resumes one, but a transient data.bnf.fr/SRU outage would leave notices
+ * `pending` with no further trigger. This periodic sweep re-drains any project
+ * with pending notices so canonicalization is self-healing. A pass that hits a
+ * hard error flips the notice to `api_error` (terminal for the auto-loop; the
+ * detail panel's manual "promote" remains), so the sweep cannot hammer BnF on a
+ * genuinely-undigitized notice. Shares the resolver's 3-min cadence.
+ */
+export const CANONICALIZE_SWEEP_INTERVAL_MS = RESOLVE_SWEEP_INTERVAL_MS
 
 // ---------------------------------------------------------------------------
 // Agent runtime
@@ -287,8 +325,8 @@ export const OPENROUTER_APP_NAME = "Alien × BnF"
  * name lives in messages/{fr,en}.json. The first entry is the default.
  */
 export const AGENT_AVAILABLE_MODELS = [
-  { id: "anthropic/claude-sonnet-4.6", labelKey: "claudeSonnet46" },
   { id: "z-ai/glm-5.2", labelKey: "glm52" },
+  { id: "anthropic/claude-sonnet-4.6", labelKey: "claudeSonnet46" },
   { id: "google/gemini-3.5-flash", labelKey: "gemini35Flash" },
   { id: "mistralai/mistral-medium-3-5", labelKey: "mistralMedium35" },
   { id: "qwen/qwen3.7-max", labelKey: "qwen37Max" },
@@ -304,10 +342,12 @@ export type AgentModelId = (typeof AGENT_AVAILABLE_MODELS)[number]["id"]
 export type AgentProvider = "anthropic" | "openrouter"
 
 /** Default selected model under the openrouter provider — the first allow-list
- * entry (Claude Sonnet 4.6, OpenRouter's canonical id). The set of valid ids is
- * AGENT_AVAILABLE_MODELS; this is the one pre-selected in the dropdown. Distinct
- * from AGENT_MODEL (the bare `claude-sonnet-4-6` the direct-Anthropic path uses):
- * here the id is already vendor-namespaced for the gateway. */
+ * entry (GLM 5.2, `z-ai/glm-5.2`). The set of valid ids is AGENT_AVAILABLE_MODELS;
+ * this is the one pre-selected when a session starts, and the model selector
+ * stays collapsed to a bare icon while it is in effect (the name only appears
+ * once the user switches away from it). Distinct from AGENT_MODEL (the bare
+ * `claude-sonnet-4-6` the direct-Anthropic path uses): here the id is already
+ * vendor-namespaced for the gateway. */
 export const AGENT_DEFAULT_MODEL: AgentModelId = AGENT_AVAILABLE_MODELS[0].id
 
 /** Hard cap on tool-loop iterations per turn — a runaway-loop backstop, NOT a
@@ -367,6 +407,41 @@ export const REAPER_INTERVAL_MS = 5 * 60 * 1_000
  * refetches — only the trailing edge fires.
  */
 export const CORPUS_REFRESH_DEBOUNCE_MS = 500
+
+// ---------------------------------------------------------------------------
+// Workspace health indicator
+// ---------------------------------------------------------------------------
+
+/**
+ * Sliding window (ms) the workspace health indicator aggregates tool-call
+ * outcomes over. A lane is "green" with no failures in this window, "orange"
+ * with a mix of successes and failures, "red" with failures and no success.
+ * Five minutes balances responsiveness (a flare shows quickly) against
+ * stability (a single blip clears on its own once successes resume).
+ */
+export const HEALTH_WINDOW_MS = 5 * 60 * 1_000
+
+/** How often the header re-polls GET /api/health (ms). 30s keeps the dots
+ *  near-real-time without hammering the DB — the query is a single indexed
+ *  range scan over the last HEALTH_WINDOW_MS of tool calls. */
+export const HEALTH_POLL_MS = 30 * 1_000
+
+/**
+ * Timeout (ms) for a single connectivity probe — an MCP `initialize` handshake
+ * against the BnF MCP / data-cluster MCP. Short so a dead server fails the probe
+ * quickly rather than stalling the /api/health response. Tighter than the
+ * full BNF_MCP_TIMEOUT_MS used for real tool calls — reachability is binary and
+ * a healthy handshake returns in well under a second.
+ */
+export const HEALTH_PROBE_TIMEOUT_MS = 4_000
+
+/**
+ * Server-side cache TTL (ms) for the connectivity probe result. The header
+ * polls every HEALTH_POLL_MS PER TAB; caching the probe just under that window
+ * means many tabs / repeated polls share one handshake instead of each opening
+ * a fresh MCP session. Reachability changes slowly, so a ~20s staleness is fine.
+ */
+export const HEALTH_PROBE_TTL_MS = 20 * 1_000
 
 // ---------------------------------------------------------------------------
 // Ingest polling

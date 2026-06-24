@@ -152,4 +152,15 @@ export interface ClusterSink {
      */
     onStage?: (stage: "embedding" | "indexing") => Promise<void>;
   }): Promise<UpsertResult>;
+
+  /**
+   * Remove a document's entry from the dataset (corpus-delta removal). Looks the
+   * entry up by ARK slug and deletes it; the cluster DELETE cascades through
+   * MinIO + Qdrant + Meilisearch. Returns `{ removed: false }` when the entry
+   * was already absent (a no-op success — re-running a removal is idempotent).
+   */
+  removeEntry(input: {
+    datasetId: number;
+    arkSlug: string;
+  }): Promise<{ removed: boolean }>;
 }

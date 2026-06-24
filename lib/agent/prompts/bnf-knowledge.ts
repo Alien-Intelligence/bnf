@@ -44,6 +44,26 @@ Inutile donc de précharger l'ARK Gallica avant d'ajouter ; n'écarte jamais une
 3. **Re-recherche Gallica** — \`bnf__bnf_search_gallica\` par titre + auteur + date (vérifie la concordance des métadonnées).\``
 
 // ---------------------------------------------------------------------------
+// Enumerating a periodical (newspaper / serial)
+// ---------------------------------------------------------------------------
+
+export const BNF_PERIODICAL_GUIDE = `## ÉNUMÉRER UN PÉRIODIQUE (outil \`bnf__bnf_get_periodical_issues\`)
+
+Un périodique (journal, revue) n'est pas un document unique : c'est une **collection** de numéros, chacun avec son propre ARK numérisé \`bpt6k…\`. Pour « ajouter toute l'année X de tel journal », tu dois énumérer ses numéros — \`bnf__bnf_search_gallica\` ne le fait pas.
+
+L'API a **deux niveaux** :
+
+1. **Identifie la collection.** Il te faut l'ARK **de collection** \`cb…\` du périodique (ex. \`cb34355551z\` pour Le Figaro, \`cb34431794k\` pour Le Temps). Trouve-le via \`bnf__bnf_search_catalogue\` si tu ne l'as pas. **N'utilise jamais un \`bpt6k…\` de numéro isolé ici** — seuls les \`cb…\` de collection sont valides.
+2. **Liste les années.** Appelle \`bnf__bnf_get_periodical_issues\` avec l'ARK \`cb…\` **sans** \`year\` : tu obtiens \`available_years[]\` et le total de numéros.
+3. **Liste les numéros d'une année.** Rappelle l'outil **avec** \`year\` (ex. \`"1889"\`) : tu obtiens \`issues[{ark, date, gallica_url}]\`.
+
+**Pagination obligatoire.** Un quotidien compte 250–365 numéros par an, mais l'outil en renvoie un nombre limité par appel : continue avec \`start_record\` croissant (et \`maximum_records\`) jusqu'à avoir parcouru tous les numéros de l'année — comme toute recherche paginée (voir « EXHAUSTIVITÉ ET PAGINATION »). Ne t'arrête jamais au premier appel.
+
+**Puis ajoute.** Accumule les ARK \`bpt6k…\` de tous les numéros visés (toutes les pages, toutes les années demandées) et fais **un seul** \`corpus.add\`. La déduplication est côté serveur.
+
+Préviens l'utilisateur avant un balayage long (« je parcours l'ensemble des numéros de 1889, cela peut prendre un instant ») et, pour de très gros volumes, annonce le total et propose de confirmer le périmètre (une année ? plusieurs ? tout ?) avant de tout tirer.`
+
+// ---------------------------------------------------------------------------
 // SPARQL over data.bnf.fr
 // ---------------------------------------------------------------------------
 
@@ -52,6 +72,10 @@ export const BNF_SPARQL_GUIDE = `## SPARQL sur data.bnf.fr (outil \`bnf__bnf_spa
 Le graphe data.bnf.fr relie personnes, œuvres, sujets (Rameau) et **documents numérisés Gallica**. SPARQL sert surtout à découvrir des œuvres/auteurs/sujets et à **récupérer l'ARK Gallica d'un document numérisé** (\`bpt6k…\`/\`btv1b…\`) d'une œuvre ou d'un sujet.
 
 Quand l'utiliser : pour une simple personne → \`bnf__bnf_find_person\` ; pour une simple œuvre → \`bnf__bnf_find_work\`. Réserve SPARQL aux **jointures** (œuvres d'un auteur sur un sujet, par période, énumérer les éditions numérisées d'une œuvre, etc.).
+
+**Corpus thématiques (vérifié en direct, 2026-06-24).** SPARQL est le bon outil pour **constituer un corpus de départ par thème** : sujet Rameau (ou auteur / œuvre / période) → manifestations → ARK Gallica via \`rdarelationships:electronicReproduction\`. Voir Q3 (par sujet) et Q4 (par sujet + plage d'années) ci-dessous : une seule requête renvoie des ARK numérisés datés, prêts pour le corpus. Aucun détour par les pages web Gallica n'est nécessaire.
+
+**Ce que SPARQL ne sait PAS faire (ne perds pas de temps à essayer).** Les **sélections éditoriales** publiées sur le site (« Les sélections de Gallica », « Le Blog Gallica ») ne sont **pas** modélisées dans data.bnf.fr : aucune classe ni prédicat ne relie une sélection nommée à la liste de ses ARK. (\`bnf-onto:ExpositionVirtuelle\` désigne des pièces individuelles mises en avant, sans prédicat d'appartenance ; \`skos:Collection\` ne compte que 3 facettes Rameau.) Pour approcher une telle sélection, reconstruis-la **par sujet/période** via SPARQL ; ne cherche pas une « collection » ou « sélection » comme entité.
 
 ### Règles impératives
 

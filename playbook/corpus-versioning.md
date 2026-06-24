@@ -27,9 +27,14 @@ These must hold at all times:
 3. **Membership is immutable per version.** Once a version has any
    `corpus_membership` rows, those rows are never updated or deleted. New
    versions are created instead.
-4. **`ingested_version_id` only moves forward.** A failed ingest does not
-   advance it. A successful ingest advances it to `target_version_id` and
-   marks that version's `status = "ingested"`.
+4. **`ingested_version_id` only moves forward, and is the "Dernière ingestion"
+   label — NOT the delta source.** A successful **or partial** ingest advances
+   it to `target_version_id` and marks that version `status = "ingested"`; only a
+   whole-job failure leaves it. The ingestion delta is computed **per document**
+   from `Document.indexed_at` (set/cleared by `commit()` /
+   `commitPartialFailure()`), so a partial run advances the pointer while the
+   docs that failed stay in the delta (`indexed_at = null` + `index_error`). See
+   `CorpusQueries.indexedArks()`.
 5. **`head_version_id` is always sealed or draft.** Never points at an
    ingested version directly (the head can later become ingested, but the
    pointer is reassigned by the ingest commit, not by a status flip).

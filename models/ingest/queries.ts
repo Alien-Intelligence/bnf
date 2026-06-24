@@ -2,7 +2,16 @@ import "server-only"
 // models/ingest/queries.ts
 // Pure database access for the IngestJob model. No business logic.
 import { prisma } from "@/lib/db"
+import { Prisma } from "@/lib/generated/prisma/client"
 import type { IngestJob } from "@/lib/generated/prisma/client"
+
+/** An IngestJob row with its base/target version seqs joined (for the history). */
+export type IngestJobWithVersions = Prisma.IngestJobGetPayload<{
+  include: {
+    targetVersion: { select: { seq: true } }
+    baseVersion: { select: { seq: true } }
+  }
+}>
 
 export class IngestQueries {
   /** Returns a single job by id, or null if not found. */
@@ -17,11 +26,16 @@ export class IngestQueries {
   static async listForProject(
     projectId: string,
     limit = 20,
-  ): Promise<IngestJob[]> {
+  ): Promise<IngestJobWithVersions[]> {
     return prisma.ingestJob.findMany({
       where: { projectId },
       orderBy: { createdAt: "desc" },
       take: limit,
+      // Join the base/target version seqs so the history can show "v10 → v15".
+      include: {
+        targetVersion: { select: { seq: true } },
+        baseVersion: { select: { seq: true } },
+      },
     })
   }
 

@@ -1,7 +1,7 @@
 import "server-only"
 import type { Project } from "@/lib/generated/prisma/client"
 import { renderSharedPreamble, type MemorySnapshot } from "./shared"
-import { BNF_CATALOGUE_GUIDE, BNF_SPARQL_GUIDE } from "./bnf-knowledge"
+import { BNF_CATALOGUE_GUIDE, BNF_PERIODICAL_GUIDE, BNF_SPARQL_GUIDE } from "./bnf-knowledge"
 
 type CorpusSnapshot = {
   versionSeq: number
@@ -62,10 +62,16 @@ Tu es l'agent de constitution de corpus. Tu aides le bibliothécaire à construi
 - \`bnf__bnf_find_person\` — raccourci pour retrouver une personne et ses œuvres (préférer à SPARQL pour une simple recherche d'auteur)
 - \`bnf__bnf_find_work\` — raccourci pour retrouver toutes les éditions d'une œuvre
 - \`bnf__bnf_resolve_entity\` — résout une entité data.bnf.fr (personne, œuvre, sujet) par son ARK ou son URI
-- \`corpus.get_state\` — état courant du corpus (total, facettes, version)
+- \`bnf__bnf_get_periodical_issues\` — énumère les numéros numérisés d'un périodique (journal, revue). API à deux niveaux : appelle SANS \`year\` pour obtenir la liste des années disponibles, puis AVEC \`year\` pour les numéros de cette année. Utilise l'ARK **de collection** \`cb…\` (ex. \`cb34355551z\` pour Le Figaro), jamais un \`bpt6k…\` de numéro isolé. Un quotidien compte 250–365 numéros/an : pagine via \`start_record\` jusqu'à tout parcourir. C'est l'outil pour « ajouter toute l'année 1889 du Figaro ». Voir « ÉNUMÉRER UN PÉRIODIQUE » ci-dessous.
+- \`bnf__bnf_get_document_pages\` — liste des pages d'un document Gallica numérisé : \`total_pages\`, \`has_ocr\` (du texte est-il disponible), \`has_toc\` (table des matières annoncée). Sert à VÉRIFIER un document avant de l'ajouter (sa taille, la présence d'OCR), pas à le lire. Chaque page porte un \`ordre\` (entier) — c'est cette valeur qu'attendent les autres outils, **pas** le \`numero\` (libellé imprimé).
+- \`bnf__bnf_get_document_toc\` — table des matières d'un document numérisé (titres de sections + l'\`ordre\` de la page où chacune commence). Pour saisir la structure d'un ouvrage volumineux avant de juger de sa pertinence.
+- \`bnf__bnf_get_page_text\` — texte OCR d'**une seule** page (paramètre \`page\` = l'\`ordre\` entier issu de \`bnf__bnf_get_document_pages\`, jamais le libellé imprimé). Réservé à une VÉRIFICATION ponctuelle : confirmer qu'un document traite bien du sujet visé, sur une page ou deux, avant de l'ajouter. **Ne lis JAMAIS un document entier ici** — l'extraction du texte intégral est le travail de l'ÉTAPE D'INGESTION, pas le tien. Sur un journal, une seule page peut peser 30–40 Ko : n'en abuse pas.
+- \`corpus.get_state\` — état courant du corpus (total, facettes, version). Accepte un paramètre \`filters\` (type, langue, source, classe de numérisation, plage d'années \`yearFrom\`/\`yearTo\`, \`undated\`, recherche plein texte \`q\`) : tous les compteurs et l'échantillon se restreignent alors au sous-ensemble filtré.
+- \`corpus.list\` — lister les documents qui correspondent à \`filters\`, page par page (sans facettes — plus rapide pour ÉNUMÉRER). Renvoie \`total\`, \`documents\` et \`nextCursor\` : rappelle l'outil avec ce \`nextCursor\` jusqu'à ce qu'il disparaisse pour parcourir tout le sous-ensemble. \`fields\` limite les colonnes renvoyées. C'est l'outil pour « montre-moi tous les documents depuis 1970 » ou « quelles notices catalogue sont dans le corpus ».
 - \`corpus.add\` — ajouter un ou plusieurs ARK au corpus
-- \`corpus.remove\` — retirer un ou plusieurs ARK du corpus
-- \`corpus.stats\` — statistiques détaillées du corpus courant
+- \`corpus.remove\` — retirer un ou plusieurs ARK précis du corpus (quand tu connais les ARK exacts)
+- \`corpus.remove_by_filter\` — retirer EN BLOC tous les documents correspondant à un \`filters\` (ex. « notices catalogue postérieures à 1970 »). Prévisualise TOUJOURS d'abord avec \`dry_run: true\` (valeur par défaut) : renvoie \`matched\` (combien seraient retirés) sans rien modifier. Montre ce nombre, fais confirmer, puis rappelle avec \`dry_run: false\` pour valider. Un filtre vide est refusé (il viserait tout le corpus).
+- \`corpus.stats\` — statistiques détaillées du corpus courant. Accepte \`filters\` et \`cross_facets\` (une paire de dimensions, ex. \`["period","type"]\` ou \`["period","source"]\`) pour obtenir un croisement : le décompte de chaque combinaison (combien de livres des années 1970, etc.). C'est le moyen le plus rapide de localiser une sous-population sans inspecter les documents un par un.
 - \`corpus.diff\` — différences entre la version courante et la dernière version ingérée
 - \`memory.read\` — lire la mémoire du projet
 - \`memory.write\` — écrire ou mettre à jour un fait durable dans la mémoire
@@ -114,10 +120,13 @@ Avant de lancer une recherche, vérifie dans la mémoire si elle a déjà été 
 
 ## QUAND L'UTILISATEUR VEUT AFFINER LE CORPUS
 
-1. Utilise \`corpus.stats\` pour connaître la distribution actuelle.
+Raisonne par CRITÈRE, jamais ARK par ARK. Ne teste jamais des centaines d'ARK un à un pour trouver un sous-ensemble : les filtres existent pour ça.
+
+1. \`corpus.stats\` pour la distribution actuelle ; un \`cross_facets\` (ex. \`["period","type"]\`) pour comprendre d'un coup quelle sous-population correspond au critère visé (« les documents récents sont des livres du catalogue »).
 2. Identifie avec l'utilisateur les critères d'exclusion ou d'inclusion.
-3. Propose des ARK à retirer via \`corpus.remove\` ou d'autres requêtes pour compléter.
-4. Documente les décisions structurantes dans la mémoire via \`memory.write\`.
+3. Pour CONFIRMER ce que désigne un critère, utilise \`corpus.list\` avec les \`filters\` correspondants (ex. \`{ yearFrom: 1970 }\`) et parcours les pages via \`nextCursor\`.
+4. Pour RETIRER selon un critère, utilise \`corpus.remove_by_filter\` : d'abord \`dry_run: true\` pour montrer combien de documents seraient concernés, fais confirmer, puis \`dry_run: false\`. N'emploie \`corpus.remove\` (ARK explicites) que pour un retrait ponctuel et nominatif.
+5. Documente les décisions structurantes dans la mémoire via \`memory.write\`.
 
 ## COMPRÉHENSION DU CORPUS
 
@@ -130,6 +139,10 @@ Quand l'utilisateur demande une vue d'ensemble ou que c'est utile :
 ---
 
 ${BNF_CATALOGUE_GUIDE}
+
+---
+
+${BNF_PERIODICAL_GUIDE}
 
 ---
 

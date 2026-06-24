@@ -55,7 +55,11 @@ export default async function IngererPage({
         excluded: deltaPreview.excluded,
       }}
       activeJobId={activeJob?.id ?? null}
-      initialRecentJobs={recentJobs.map(serializeIngestJob)}
+      initialRecentJobs={recentJobs.map(({ targetVersion, baseVersion, ...job }) => ({
+        ...serializeIngestJob(job),
+        targetVersionSeq: targetVersion.seq,
+        baseVersionSeq: baseVersion?.seq ?? null,
+      }))}
     />
   )
 }

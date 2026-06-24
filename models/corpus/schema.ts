@@ -153,6 +153,39 @@ export type CorpusSnapshot = {
 }
 
 /**
+ * A flat, cursor-paginated page of corpus documents — the result of
+ * `CorpusQueries.list()`. Unlike `CorpusSnapshot` it computes NO facets (it is
+ * the cheap exhaustive-listing path); `total` is the count within the active
+ * filters, `documents` is one keyset page, and `nextCursor` is present iff more
+ * pages exist. The agent tool may trim `documents` to a requested field subset
+ * for token economy — that projection happens at the tool boundary, not here.
+ */
+export type CorpusListPage = {
+  versionSeq: number
+  total: number
+  documents: DocumentRow[]
+  nextCursor?: string
+}
+
+/**
+ * The two dimensions a cross-facet tabulates. `period` is the derived decade
+ * bucket (e.g. "1970s"); the others are stored columns. Both dims are computed
+ * over RESOLVED documents only (the dimensions are unknown for stubs).
+ */
+export type CorpusFacetDimension = "period" | "type" | "lang" | "source"
+
+/**
+ * A crossed-facet table — the result of `CorpusQueries.crossFacets()`. `cells`
+ * is sparse (only non-zero combinations), sorted by `count` descending, so
+ * "1970s × book = 10" is the kind of single-call insight the corpus agent needs
+ * to locate a sub-population without probing ARKs one by one.
+ */
+export type CorpusCrossFacets = {
+  dims: [CorpusFacetDimension, CorpusFacetDimension]
+  cells: { a: string; b: string; count: number }[]
+}
+
+/**
  * Delta between two corpus versions: which ARKs were added and which removed.
  * Computed in CorpusQueries.diff(); never client-side (sample is sampled).
  */

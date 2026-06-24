@@ -85,6 +85,75 @@ function asScope(value: unknown): Record<string, unknown> | null {
 }
 
 /**
+ * Recursively pull the BnF-MCP envelope object out of a tool result, walking
+ * the shapes a result can arrive in: a JSON string, the persisted
+ * `{ content: "<json>" }` wrapper, and an MCP `[{ type:"text", text }]`
+ * content-block array. Returns the first object that carries a `success` flag,
+ * or null. Depth-bounded to stay cheap and avoid pathological nesting.
+ */
+function extractEnvelope(
+  value: unknown,
+  depth: number,
+): Record<string, unknown> | null {
+  if (depth > 4 || value == null) return null
+  if (typeof value === "string") {
+    const parsed = parseResult(value)
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null
+  }
+  if (Array.isArray(value)) {
+    // MCP content-block array — the envelope JSON lives in a text block.
+    for (const block of value) {
+      if (
+        block &&
+        typeof block === "object" &&
+        typeof (block as Record<string, unknown>).text === "string"
+      ) {
+        const env = extractEnvelope((block as Record<string, unknown>).text, depth + 1)
+        if (env && "success" in env) return env
+      }
+    }
+    return null
+  }
+  if (typeof value === "object") {
+    const obj = value as Record<string, unknown>
+    if ("success" in obj) return obj
+    // Unwrap the persisted / MCP `{ content: <envelope|string|blocks> }` form.
+    if ("content" in obj) return extractEnvelope(obj.content, depth + 1)
+    return null
+  }
+  return null
+}
+
+/**
+ * Detect a BnF-MCP "soft failure": the MCP relays an upstream HTTP failure
+ * (Gallica 403/429/500…) as a SUCCESSFUL MCP call — transport 200, the
+ * CallToolResult `isError` flag unset — whose body is the documented failure
+ * envelope `{ success: false, status_code, error }` (see lib/mcp/bnf-client.ts
+ * §"success envelope"). Without this, such a call records as "ok": the chip
+ * shows ✓ and the health indicator stays green despite a real failure.
+ *
+ * Returns true ONLY on an explicit `success === false`; it never guesses from
+ * free text, so a legitimate result that merely mentions an error is unaffected.
+ */
+export function mcpResultFailed(result: unknown): boolean {
+  return extractEnvelope(result, 0)?.success === false
+}
+
+/**
+ * Whether a settled tool call should count as an ERROR for status display and
+ * health aggregation: the SDK transport-level `isError`, OR a BnF-MCP soft
+ * failure the transport reported as success. Shared by the chat chip
+ * (components/layouts/corpus/chat.tsx), the flat tool-call mapper
+ * (hooks/api/turn-stream.ts), and the persistence adapter
+ * (lib/agent/persistence/prisma-adapter.ts) so all three agree byte-for-byte.
+ */
+export function toolCallErrored(sdkIsError: boolean, result: unknown): boolean {
+  return sdkIsError || mcpResultFailed(result)
+}
+
+/**
  * Pull an integer field out of a tool result JSON, trying several keys.
  * The BnF MCP wraps payloads in `{ success, data }`, so we look inside `data`
  * too. Returns null when no numeric field is found.
@@ -105,6 +174,58 @@ function pickNumber(result: string, keys: string[]): number | null {
     for (const key of keys) {
       const v = scope[key]
       if (typeof v === "number" && Number.isFinite(v)) return v
+    }
+  }
+  return null
+}
+
+/** Pull a string field out of a tool result JSON, trying several keys. */
+function pickString(result: string, keys: string[]): string | null {
+  const parsed = parseResult(result)
+  if (parsed === null || typeof parsed !== "object") return null
+  const obj = parsed as Record<string, unknown>
+  const scopes: Record<string, unknown>[] = [obj]
+  for (const wrapper of ["content", "data"]) {
+    const inner = asScope(obj[wrapper])
+    if (inner) scopes.push(inner)
+  }
+  for (const scope of scopes) {
+    for (const key of keys) {
+      const v = scope[key]
+      if (typeof v === "string" && v.length > 0) return v
+    }
+  }
+  return null
+}
+
+/** True for the bulk remove-by-filter tool (rendered as a dedicated pill). */
+export function isCorpusRemoveByFilterTool(toolName: string): boolean {
+  return toolName === "corpus_remove_by_filter"
+}
+
+/**
+ * The settled outcome of a corpus_remove_by_filter call, parsed from its result
+ * JSON. Mirrors `CorpusRemoveByFilterResult` (models/corpus/service.ts). Returns
+ * null while the result is not yet available (still running) or unparseable —
+ * the pill then shows its running/neutral state.
+ */
+export type RemoveByFilterView =
+  | { status: "empty_filter" }
+  | { status: "dry_run"; matched: number }
+  | { status: "removed"; removed: number; matched: number }
+  | null
+
+export function corpusRemoveByFilterView(result: string): RemoveByFilterView {
+  const status = pickString(result, ["status"])
+  if (status === "empty_filter") return { status: "empty_filter" }
+  if (status === "dry_run") {
+    return { status: "dry_run", matched: pickNumber(result, ["matched"]) ?? 0 }
+  }
+  if (status === "removed") {
+    return {
+      status: "removed",
+      removed: pickNumber(result, ["removed"]) ?? 0,
+      matched: pickNumber(result, ["matched"]) ?? 0,
     }
   }
   return null

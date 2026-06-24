@@ -48,6 +48,20 @@
     "userMenu": "Menu utilisateur",
     "language": "Langue"
   },
+  "health": {
+    "aria": "État des services",
+    "app": "App",
+    "alien": "Alien",
+    "bnf": "BnF",
+    "status": {
+      "green": "opérationnel",
+      "orange": "dégradé",
+      "red": "indisponible"
+    },
+    "tooltip": "{lane} · {status} — {ok} appels réussis, {errors} échecs (5 dernières min)",
+    "tooltipIdle": "{lane} · aucune activité récente",
+    "tooltipUnreachable": "{lane} · indisponible — serveur MCP injoignable"
+  },
   "askUser": {
     "pending": "En attente",
     "answered": "Répondu",
@@ -378,8 +392,10 @@
   "tools": {
     "corpus": {
       "get_state": "État du corpus",
+      "list": "Liste du corpus",
       "add": "Ajout au corpus",
       "remove": "Retrait du corpus",
+      "remove_by_filter": "Retrait par filtre",
       "stats": "Statistiques",
       "diff": "Diff de corpus"
     },
@@ -405,7 +421,20 @@
       "search_catalogue": "Recherche Catalogue BnF",
       "search_gallica": "Recherche Gallica",
       "get_catalogue_record": "Résolution notice BnF",
-      "get_document_info": "Résolution document Gallica"
+      "get_document_info": "Résolution document Gallica",
+      "sparql_query": "Requête SPARQL data.bnf.fr",
+      "find_person": "Recherche d'une personne",
+      "find_work": "Recherche d'une œuvre",
+      "resolve_entity": "Résolution d'entité data.bnf.fr",
+      "get_periodical_issues": "Numéros d'un périodique",
+      "get_document_pages": "Pages du document",
+      "get_document_toc": "Table des matières",
+      "get_page_text": "Texte d'une page",
+      "get_document_text": "Texte du document",
+      "get_manifest": "Manifeste IIIF",
+      "get_image_url": "URL d'image IIIF",
+      "get_image_info": "Dimensions de l'image",
+      "get_page_ocr_boxes": "OCR avec coordonnées"
     },
     "parts": {
       "viaMcp": "via MCP",
@@ -418,7 +447,11 @@
       "addedUnknown": "Documents ajoutés au corpus",
       "removedUnknown": "Documents retirés",
       "adding": "Ajout au corpus…",
-      "removing": "Retrait du corpus…"
+      "removing": "Retrait du corpus…",
+      "removingByFilter": "Analyse du corpus…",
+      "previewMatched": "{count} documents correspondent · aperçu",
+      "emptyFilter": "Filtre vide — aucun retrait",
+      "noMatch": "Aucun document ne correspond"
     }
   },
   "research": {
@@ -564,7 +597,8 @@
         "retrying": "{count} en reprise",
         "skipped": "{count} ignoré·s",
         "failed": "{count} en échec",
-        "excluded": "{count} non ingérable·s"
+        "excluded": "{count} non ingérable·s",
+        "removed": "{count} retiré·s"
       }
     },
     "status": {
@@ -577,7 +611,8 @@
     },
     "history": {
       "title": "Historique des ingestions",
-      "empty": "Aucune ingestion"
+      "empty": "Aucune ingestion",
+      "ranFor": "durée {duration}"
     },
     "cancel": {
       "button": "Annuler l'ingestion",
@@ -610,5 +645,23 @@
     "mistralMedium35": "Mistral Medium 3.5",
     "qwen37Max": "Qwen3.7 Max",
     "deepseekV4Pro": "DeepSeek V4 Pro"
+  },
+  "feedback": {
+    "button": "Avis",
+    "dialogTitle": "Votre avis",
+    "editTitle": "Modifier votre avis",
+    "ratingLabel": "Qualité",
+    "rating": {
+      "bad": "Décevant",
+      "ok": "Correct",
+      "great": "Excellent"
+    },
+    "commentLabel": "Commentaire (facultatif)",
+    "commentPlaceholder": "Qu'est-ce qui a bien marché, ou pas ?",
+    "submit": "Envoyer",
+    "submitting": "Envoi…",
+    "success": "Merci pour votre retour",
+    "error": "Échec de l'envoi de l'avis",
+    "cancel": "Annuler"
   }
 }

@@ -76,6 +76,17 @@ class PreparePipeline implements DocPipeline {
     projectId: string,
     ark: string,
   ): Promise<PreparedDoc | SkipReason> {
+    // ---- 0) Processed-doc cache ----
+    // If a previous prepare() persisted this doc's artifacts (doc.json + doc.md
+    // + chunks.jsonl), reconstruct the PreparedDoc from the blob and SKIP the
+    // BnF round-trip entirely. This is what makes re-adding a removed doc cheap:
+    // the expensive cost is BnF (metadata + per-page OCR), not registration.
+    const cached = await this.loadCachedPrepared(projectId, ark);
+    if (cached) {
+      console.log(`[prepare] cache hit for ${ark} — skipping BnF`);
+      return cached;
+    }
+
     // ---- 1) Document info ----
     //
     // Permanent errors (404, bad ARK) become a SkipReason — the doc is never
@@ -206,6 +217,53 @@ class PreparePipeline implements DocPipeline {
       blobKeys: keys,
     };
     return prepared;
+  }
+
+  /**
+   * Reconstruct a PreparedDoc from the blob cache (doc.json + doc.md +
+   * chunks.jsonl) written by a prior prepare(), or null if any artifact is
+   * missing / corrupt. doc.json deliberately mirrors the PreparedDoc shape
+   * (sans markdown + chunks), so reconstruction is gymnastics-free. A chunk-count
+   * mismatch is treated as a stale cache → null (re-prepare from BnF).
+   */
+  private async loadCachedPrepared(
+    projectId: string,
+    ark: string,
+  ): Promise<PreparedDoc | null> {
+    const keys = docKeys(projectId, ark);
+    const [docJsonBuf, mdBuf, chunksBuf] = await Promise.all([
+      this.blob.get(keys.docJson),
+      this.blob.get(keys.docMd),
+      this.blob.get(keys.chunksJsonl),
+    ]);
+    if (!docJsonBuf || !mdBuf || !chunksBuf) return null;
+    try {
+      const meta = JSON.parse(docJsonBuf.toString("utf8")) as {
+        pipeline: PreparedDoc["pipeline"];
+        metadata: DocMetadata;
+        contentHash: string;
+        chunkCount: number;
+      };
+      const markdown = mdBuf.toString("utf8");
+      const chunks: ChunkRow[] = chunksBuf
+        .toString("utf8")
+        .split("\n")
+        .filter((l) => l.trim().length > 0)
+        .map((l) => JSON.parse(l) as ChunkRow);
+      if (chunks.length !== meta.chunkCount) return null;
+      return {
+        skip: false,
+        projectId,
+        pipeline: meta.pipeline,
+        metadata: meta.metadata,
+        markdown,
+        chunks,
+        contentHash: meta.contentHash,
+        blobKeys: keys,
+      };
+    } catch {
+      return null;
+    }
   }
 }
 

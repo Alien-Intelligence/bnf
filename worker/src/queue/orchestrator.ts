@@ -55,9 +55,9 @@ export class IngestOrchestrator {
   }
 
   async submit(input: SubmitInput): Promise<SubmitResult> {
-    if (input.arks.length === 0) {
-      throw new Error("IngestOrchestrator.submit: arks must not be empty");
-    }
+    // An empty `arks` is valid: a removal-only delta creates the parent ingest
+    // job (so the app can track + finalize it) with zero child doc-jobs. The
+    // deletions are handled separately by the /ingest handler.
     // De-dup within this single submission. Cross-submission de-dup is a
     // known limitation (see README of Track 2 work).
     const arks = Array.from(new Set(input.arks));
@@ -67,12 +67,20 @@ export class IngestOrchestrator {
         { projectId: input.projectId, totalDocs: arks.length },
         client,
       );
-      const children: DocumentIngestJobRow[] = await this.repo.createDocJobs(
-        { ingestJobId: parent.id, projectId: input.projectId, arks },
-        client,
-      );
+      const children: DocumentIngestJobRow[] =
+        arks.length > 0
+          ? await this.repo.createDocJobs(
+              { ingestJobId: parent.id, projectId: input.projectId, arks },
+              client,
+            )
+          : [];
       return { parent, children };
     });
+
+    // No child jobs (removal-only) → nothing to enqueue.
+    if (children.length === 0) {
+      return { ingestJobId: parent.id, documentIngestJobIds: [] };
+    }
 
     await this.boss.createQueue(DOC_QUEUE_NAME).catch(() => {
       // pg-boss v10 requires queues to exist; createQueue is idempotent in

@@ -278,6 +278,13 @@ export function CardIngestStagePipeline({ job, onCancel }: Props) {
       label: tOutcomes("excluded", { count: excludedCount }),
       tone: "text-muted-foreground",
     })
+  const removedCount = job.removedCount ?? 0
+  if (removedCount > 0)
+    outcomes.push({
+      key: "removed",
+      label: tOutcomes("removed", { count: removedCount }),
+      tone: "text-muted-foreground",
+    })
 
   // ETA: a number once enough is done, "estimating…" early in a running job.
   const etaMs = ingestEtaMs(job)

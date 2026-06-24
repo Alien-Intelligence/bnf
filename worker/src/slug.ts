@@ -24,11 +24,15 @@ export function docKeys(projectId: string, ark: string): {
   docMd: string;
   docJson: string;
   chunksJsonl: string;
+  vectors: string;
 } {
   const prefix = docPrefix(projectId, ark);
   return {
     docMd: `${prefix}/doc.md`,
     docJson: `${prefix}/doc.json`,
     chunksJsonl: `${prefix}/chunks.jsonl`,
+    // Cached embedding vectors ({contentHash, vectors[]}) so a re-ingest of
+    // unchanged content skips the (expensive) RunPod embed call. See upsert.ts.
+    vectors: `${prefix}/vectors.json`,
   };
 }

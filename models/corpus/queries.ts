@@ -40,11 +40,159 @@ function ingestClassWhere(cls: string): Prisma.DocumentWhereInput | null {
 import {
   corpusVersionWithArks,
   documentRow,
+  type CorpusCrossFacets,
   type CorpusDiff,
+  type CorpusFacetDimension,
+  type CorpusListPage,
   type CorpusSnapshot,
   type CorpusVersionStatus,
   type CorpusVersionWithArks,
 } from "./schema"
+
+/**
+ * The structured filter set shared by every corpus read path (snapshot, list,
+ * crossFacets) and by remove-by-filter. Mirrors the query params of
+ * `GET /api/projects/:id/corpus` and the agent-tool filter schema. Multi-select
+ * dimensions arrive pre-split into arrays (the route splits the CSV form).
+ */
+export type CorpusFilterSet = {
+  type?: string[]
+  lang?: string[]
+  source?: string[]
+  /** AppSession ids — keep only docs contributed by one of these sessions. */
+  session?: string[]
+  /** Ingestion classes: ocr | vision | sans_texte | non_numerise. */
+  ingest?: string[]
+  yearFrom?: number
+  yearTo?: number
+  undated?: boolean
+  q?: string
+}
+
+/**
+ * Translate a CorpusFilterSet into the two Prisma WHERE predicates every corpus
+ * read shares:
+ *   - `sharedWhere`   — version membership AND all active filter clauses. Spans
+ *                       all members (including pending/failed stubs) except
+ *                       where a type/lang/year/q filter naturally excludes them.
+ *   - `resolvedWhere` — `sharedWhere` further constrained to RESOLVED documents.
+ *                       Used for the type/lang/period facets and the period
+ *                       histogram, which are meaningless for unresolved stubs.
+ *
+ * Extracted from `snapshot()` so `list()`, `crossFacets()`, and
+ * `removeByFilter()` resolve membership identically — there is exactly one
+ * filter→SQL translation in the codebase. Pure: no I/O, deterministic in its
+ * inputs.
+ *
+ * Year semantics: a yearFrom/yearTo range wins over `undated`; with neither,
+ * `undated === true` matches `year IS NULL`. Full-text and ingest each carry
+ * their own `OR`, so they are AND-ed via an explicit `AND` array rather than
+ * spread (two `OR` keys at one object level would collide).
+ */
+function buildCorpusWhere(
+  versionId: string,
+  filters?: CorpusFilterSet,
+): {
+  sharedWhere: Prisma.DocumentWhereInput
+  resolvedWhere: Prisma.DocumentWhereInput
+  /**
+   * The individual filter clauses, exposed for the few snapshot counts that
+   * apply a deliberately different subset (e.g. `undatedCount` ignores the year
+   * range; `pendingCount`/`failedCount` honour only `source`). Keeping these
+   * here means the filter→SQL translation lives in exactly one place.
+   */
+  parts: {
+    typeWhere: Prisma.DocumentWhereInput
+    langWhere: Prisma.DocumentWhereInput
+    sourceWhere: Prisma.DocumentWhereInput
+    fullTextWhere: Prisma.DocumentWhereInput
+  }
+} {
+  const hasYearRange =
+    filters?.yearFrom !== undefined || filters?.yearTo !== undefined
+  const yearWhere: Prisma.DocumentWhereInput = hasYearRange
+    ? {
+        year: {
+          ...(filters?.yearFrom !== undefined ? { gte: filters.yearFrom } : {}),
+          ...(filters?.yearTo !== undefined ? { lte: filters.yearTo } : {}),
+        },
+      }
+    : filters?.undated === true
+      ? { year: null }
+      : {}
+
+  const typeWhere: Prisma.DocumentWhereInput =
+    filters?.type && filters.type.length > 0
+      ? { docType: { in: filters.type } }
+      : {}
+
+  const langWhere: Prisma.DocumentWhereInput =
+    filters?.lang && filters.lang.length > 0 ? { lang: { in: filters.lang } } : {}
+
+  const sourceWhere: Prisma.DocumentWhereInput =
+    filters?.source && filters.source.length > 0
+      ? { source: { in: filters.source } }
+      : {}
+
+  // Session filter: keep only documents at least one of the selected sessions
+  // contributed. `some` over the CorpusContribution relation gives exactly that.
+  const sessionWhere: Prisma.DocumentWhereInput =
+    filters?.session && filters.session.length > 0
+      ? { contributions: { some: { sessionId: { in: filters.session } } } }
+      : {}
+
+  // Full-text: Prisma OR over contains (ILIKE on Postgres, mode-insensitive),
+  // matching title, author, and excerpt (null columns are skipped automatically).
+  const fullTextWhere: Prisma.DocumentWhereInput =
+    filters?.q && filters.q.trim().length > 0
+      ? {
+          OR: [
+            { title: { contains: filters.q, mode: "insensitive" as const } },
+            { author: { contains: filters.q, mode: "insensitive" as const } },
+            { excerpt: { contains: filters.q, mode: "insensitive" as const } },
+          ],
+        }
+      : {}
+
+  // Ingestion-class filter: an OR over the selected classes, each a SQL mirror
+  // of classifyIngestion(). Constrained to resolved rows (the class is unknown
+  // for stubs). null when no class is selected.
+  const ingestPredicates =
+    filters?.ingest && filters.ingest.length > 0
+      ? filters.ingest
+          .map(ingestClassWhere)
+          .filter((w): w is Prisma.DocumentWhereInput => w !== null)
+      : []
+  const ingestWhere: Prisma.DocumentWhereInput | null =
+    ingestPredicates.length > 0
+      ? { resolveStatus: DOCUMENT_RESOLVE_STATUS.RESOLVED, OR: ingestPredicates }
+      : null
+
+  const andClauses: Prisma.DocumentWhereInput[] = []
+  if (filters?.q && filters.q.trim().length > 0) andClauses.push(fullTextWhere)
+  if (ingestWhere) andClauses.push(ingestWhere)
+
+  const sharedWhere: Prisma.DocumentWhereInput = {
+    membership: { some: { versionId } },
+    ...typeWhere,
+    ...langWhere,
+    ...sourceWhere,
+    ...sessionWhere,
+    ...yearWhere,
+    ...(andClauses.length > 0 ? { AND: andClauses } : {}),
+  }
+
+  const resolvedWhere: Prisma.DocumentWhereInput = {
+    ...sharedWhere,
+    resolveStatus: DOCUMENT_RESOLVE_STATUS.RESOLVED,
+  }
+
+  return {
+    sharedWhere,
+    resolvedWhere,
+    parts: { typeWhere, langWhere, sourceWhere, fullTextWhere },
+  }
+}
 
 export class CorpusQueries {
   /**
@@ -153,41 +301,13 @@ export class CorpusQueries {
     projectId: string,
     ref: "head" | "ingested" | { seq: number },
     opts?: {
-      filters?: {
-        type?: string[]
-        lang?: string[]
-        source?: string[]
-        /** AppSession ids — keep only docs contributed by one of these sessions. */
-        session?: string[]
-        /** Ingestion classes: ocr | vision | sans_texte | non_numerise. */
-        ingest?: string[]
-        yearFrom?: number
-        yearTo?: number
-        undated?: boolean
-        q?: string
-      }
+      filters?: CorpusFilterSet
       cursor?: string
       limit?: number
     },
   ): Promise<CorpusSnapshot> {
     // --- Resolve the version --------------------------------------------------
-    let version: CorpusVersionWithArks
-
-    if (ref === "head") {
-      version = await CorpusQueries.headVersion(projectId)
-    } else if (ref === "ingested") {
-      const v = await CorpusQueries.ingestedVersion(projectId)
-      if (!v) {
-        throw new Error(`Project ${projectId} has never been ingested`)
-      }
-      version = v
-    } else {
-      version = await prisma.corpusVersion.findUniqueOrThrow({
-        where: { projectId_seq: { projectId, seq: ref.seq } },
-        ...corpusVersionWithArks,
-      })
-    }
-
+    const version = await CorpusQueries.resolveVersion(projectId, ref)
     const versionId = version.id
     const filters = opts?.filters
     const limit = opts?.limit ?? CORPUS_SAMPLE_SIZE
@@ -195,123 +315,14 @@ export class CorpusQueries {
     // --- Build the shared filter WHERE clause --------------------------------
     // All facet queries and the sample query share this exact WHERE predicate
     // so that facets always reflect counts within the active filtered set.
-
-    // Year filter: if both yearFrom/yearTo are present, use the range.
-    // If only undated=true, use year IS NULL.
-    // If yearFrom/yearTo AND undated both arrive, the range wins (per plan §6).
-    const hasYearRange =
-      filters?.yearFrom !== undefined || filters?.yearTo !== undefined
-    const yearWhere: Parameters<typeof prisma.document.groupBy>[0]["where"] =
-      hasYearRange
-        ? {
-            year: {
-              ...(filters?.yearFrom !== undefined
-                ? { gte: filters.yearFrom }
-                : {}),
-              ...(filters?.yearTo !== undefined ? { lte: filters.yearTo } : {}),
-            },
-          }
-        : filters?.undated === true
-          ? { year: null }
-          : {}
-
-    // Multi-select filters: arrays come in pre-split from the route.
-    const typeWhere =
-      filters?.type && filters.type.length > 0
-        ? { docType: { in: filters.type } }
-        : {}
-
-    const langWhere =
-      filters?.lang && filters.lang.length > 0
-        ? { lang: { in: filters.lang } }
-        : {}
-
-    const sourceWhere =
-      filters?.source && filters.source.length > 0
-        ? { source: { in: filters.source } }
-        : {}
-
-    // Session filter: keep only documents at least one of the selected sessions
-    // contributed. A multi-session document (added in several sessions) matches
-    // whenever any of its contributing sessions is selected — `some` over the
-    // CorpusContribution relation gives exactly that.
-    const sessionWhere: Prisma.DocumentWhereInput =
-      filters?.session && filters.session.length > 0
-        ? { contributions: { some: { sessionId: { in: filters.session } } } }
-        : {}
-
-    // Full-text: Prisma OR over contains (ILIKE on Postgres, mode-insensitive).
-    // We match title, author, and excerpt. excerpt may be null — Prisma skips
-    // null columns in LIKE comparisons automatically.
-    const fullTextWhere =
-      filters?.q && filters.q.trim().length > 0
-        ? {
-            OR: [
-              {
-                title: {
-                  contains: filters.q,
-                  mode: "insensitive" as const,
-                },
-              },
-              {
-                author: {
-                  contains: filters.q,
-                  mode: "insensitive" as const,
-                },
-              },
-              {
-                excerpt: {
-                  contains: filters.q,
-                  mode: "insensitive" as const,
-                },
-              },
-            ],
-          }
-        : {}
-
-    // Ingestion-class filter: an OR over the selected classes, each a SQL
-    // mirror of classifyIngestion(). Constrained to resolved rows (the class is
-    // unknown for stubs). null when no class is selected.
-    const ingestPredicates =
-      filters?.ingest && filters.ingest.length > 0
-        ? filters.ingest
-            .map(ingestClassWhere)
-            .filter((w): w is Prisma.DocumentWhereInput => w !== null)
-        : []
-    const ingestWhere: Prisma.DocumentWhereInput | null =
-      ingestPredicates.length > 0
-        ? {
-            resolveStatus: DOCUMENT_RESOLVE_STATUS.RESOLVED,
-            OR: ingestPredicates,
-          }
-        : null
-
-    // Combine all filter clauses. Every doc must be in this version's
-    // membership AND satisfy the active filter predicates. fullText and ingest
-    // each carry their own `OR`, so they are AND-ed via an explicit `AND` array
-    // rather than spread (two `OR` keys at one level would collide).
-    const andClauses: Prisma.DocumentWhereInput[] = []
-    if (filters?.q && filters.q.trim().length > 0) andClauses.push(fullTextWhere)
-    if (ingestWhere) andClauses.push(ingestWhere)
-
-    const sharedWhere = {
-      membership: { some: { versionId } },
-      ...typeWhere,
-      ...langWhere,
-      ...sourceWhere,
-      ...sessionWhere,
-      ...yearWhere,
-      ...(andClauses.length > 0 ? { AND: andClauses } : {}),
-    }
-
-    // Resolved-only predicate for the type/lang/period facets and undatedCount:
-    // pending/failed stubs have no type/lang/year yet, so they must not pollute
-    // the real buckets. They surface separately via pendingCount/failedCount and
-    // the synthetic PENDING_FACET_KEY bucket below.
-    const resolvedWhere = {
-      ...sharedWhere,
-      resolveStatus: DOCUMENT_RESOLVE_STATUS.RESOLVED,
-    }
+    // `parts` exposes the individual clauses for the few counts below that apply
+    // a deliberately different subset (undatedCount ignores the year range;
+    // pending/failed honour only source).
+    const { sharedWhere, resolvedWhere, parts } = buildCorpusWhere(
+      versionId,
+      filters,
+    )
+    const { typeWhere, langWhere, sourceWhere, fullTextWhere } = parts
 
     // --- Decode cursor -------------------------------------------------------
     // Cursor format: "<versionSeq>:<lastArk>" — we only use lastArk here.
@@ -570,6 +581,179 @@ export class CorpusQueries {
       sample,
       ...(nextCursor !== undefined ? { nextCursor } : {}),
     }
+  }
+
+  /**
+   * Resolve a version ref ("head" | "ingested" | { seq }) to its concrete
+   * CorpusVersion row. Shared by snapshot/list/crossFacets so they agree on
+   * what "head" means. Throws if an "ingested" ref is requested before any
+   * ingestion, or if a seq does not exist.
+   */
+  private static async resolveVersion(
+    projectId: string,
+    ref: "head" | "ingested" | { seq: number },
+  ): Promise<CorpusVersionWithArks> {
+    if (ref === "head") {
+      return CorpusQueries.headVersion(projectId)
+    }
+    if (ref === "ingested") {
+      const v = await CorpusQueries.ingestedVersion(projectId)
+      if (!v) {
+        throw new Error(`Project ${projectId} has never been ingested`)
+      }
+      return v
+    }
+    return prisma.corpusVersion.findUniqueOrThrow({
+      where: { projectId_seq: { projectId, seq: ref.seq } },
+      ...corpusVersionWithArks,
+    })
+  }
+
+  /**
+   * Returns a flat, cursor-paginated page of corpus documents matching the
+   * active filters — the exhaustive-listing counterpart to `snapshot()`, which
+   * computes facets. `list()` deliberately computes NO facets: it is the cheap
+   * path the agent walks page-by-page to enumerate (and then act on) the corpus.
+   *
+   * Pagination is keyset (the same scheme as `snapshot()`'s sample): ORDER BY
+   * ark ASC, cursor = `<versionSeq>:<lastArk>`, decoded as `WHERE ark > lastArk`.
+   * Stable for a fixed version + filters; O(log n) per page. `nextCursor` is
+   * returned iff a further page exists.
+   *
+   * `documents` is the full `documentRow` projection; the agent tool trims it to
+   * a requested field subset (token economy) at the tool boundary, so this stays
+   * fully typed.
+   */
+  static async list(
+    projectId: string,
+    ref: "head" | "ingested" | { seq: number },
+    opts?: { filters?: CorpusFilterSet; cursor?: string; limit?: number },
+  ): Promise<CorpusListPage> {
+    const version = await CorpusQueries.resolveVersion(projectId, ref)
+    const versionId = version.id
+    const limit = opts?.limit ?? CORPUS_SAMPLE_SIZE
+    const { sharedWhere } = buildCorpusWhere(versionId, opts?.filters)
+
+    // Decode cursor: "<versionSeq>:<lastArk>" — only lastArk is used here.
+    let cursorArk: string | undefined
+    if (opts?.cursor) {
+      const colonIdx = opts.cursor.indexOf(":")
+      if (colonIdx !== -1) cursorArk = opts.cursor.slice(colonIdx + 1)
+    }
+
+    const [total, rows] = await Promise.all([
+      prisma.document.count({ where: sharedWhere }),
+      prisma.document.findMany({
+        where: cursorArk
+          ? { ...sharedWhere, ark: { gt: cursorArk } }
+          : sharedWhere,
+        orderBy: { ark: "asc" },
+        // One extra row to detect whether a further page exists.
+        take: limit + 1,
+        ...documentRow,
+      }),
+    ])
+
+    let nextCursor: string | undefined
+    if (rows.length > limit) {
+      nextCursor = `${version.seq}:${rows[limit - 1].ark}`
+    }
+
+    return {
+      versionSeq: version.seq,
+      total,
+      documents: rows.slice(0, limit),
+      nextCursor,
+    }
+  }
+
+  /**
+   * Cross-tabulate two facet dimensions over the filtered, RESOLVED corpus.
+   *
+   * The independent facets in `snapshot()` answer "how many books?" and "how
+   * many from the 1970s?" separately; this answers "how many 1970s books?" in
+   * one call — the insight the corpus agent needs to isolate a sub-population
+   * (e.g. recent catalogue notices) without probing ARKs individually.
+   *
+   * Implemented as a single resolved-set pass binned in JS (uniform across the
+   * column dims and the derived `period` decade bucket, which is not a column).
+   * Cheap for typical corpus sizes; raw SQL deferred until benchmarks justify
+   * it — same trade-off as the period histogram in `snapshot()`. Rows where
+   * either dimension is null (e.g. undated for `period`) are skipped. `cells` is
+   * sparse and sorted by count descending.
+   */
+  static async crossFacets(
+    projectId: string,
+    ref: "head" | "ingested" | { seq: number },
+    dims: [CorpusFacetDimension, CorpusFacetDimension],
+    filters?: CorpusFilterSet,
+  ): Promise<CorpusCrossFacets> {
+    const version = await CorpusQueries.resolveVersion(projectId, ref)
+    const { resolvedWhere } = buildCorpusWhere(version.id, filters)
+
+    const rows = await prisma.document.findMany({
+      where: resolvedWhere,
+      select: { year: true, docType: true, lang: true, source: true },
+    })
+
+    // Map a row to its value on a given dimension (null → row excluded).
+    const valueOf = (
+      dim: CorpusFacetDimension,
+      row: { year: number | null; docType: string | null; lang: string | null; source: string | null },
+    ): string | null => {
+      switch (dim) {
+        case "period":
+          return row.year !== null ? `${Math.floor(row.year / 10) * 10}s` : null
+        case "type":
+          return row.docType
+        case "lang":
+          return row.lang
+        case "source":
+          return row.source
+      }
+    }
+
+    // Tally combinations in a nested map (dim-A value → dim-B value → count) so
+    // no separator-encoded composite key is needed — facet values may contain
+    // any character, including spaces.
+    const counts = new Map<string, Map<string, number>>()
+    for (const row of rows) {
+      const a = valueOf(dims[0], row)
+      const b = valueOf(dims[1], row)
+      if (a === null || b === null) continue
+      const inner = counts.get(a) ?? new Map<string, number>()
+      inner.set(b, (inner.get(b) ?? 0) + 1)
+      counts.set(a, inner)
+    }
+
+    const cells = [...counts.entries()]
+      .flatMap(([a, inner]) =>
+        [...inner.entries()].map(([b, count]) => ({ a, b, count })),
+      )
+      .sort((x, y) => y.count - x.count)
+
+    return { dims, cells }
+  }
+
+  /**
+   * Resolve the ARKs in a version matching the given filters. Powers
+   * remove-by-filter: the service resolves the target ARKs here, then either
+   * previews them (dry run) or hands them to `removeArks()`. Returns the ARKs in
+   * stable ascending order so a preview is reproducible.
+   */
+  static async arksMatchingFilters(
+    projectId: string,
+    ref: "head" | "ingested" | { seq: number },
+    filters?: CorpusFilterSet,
+  ): Promise<string[]> {
+    const version = await CorpusQueries.resolveVersion(projectId, ref)
+    const { sharedWhere } = buildCorpusWhere(version.id, filters)
+    const rows = await prisma.document.findMany({
+      where: sharedWhere,
+      select: { ark: true },
+      orderBy: { ark: "asc" },
+    })
+    return rows.map((r) => r.ark)
   }
 
   /**

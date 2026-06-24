@@ -48,6 +48,20 @@
     "userMenu": "User menu",
     "language": "Language"
   },
+  "health": {
+    "aria": "Service health",
+    "app": "App",
+    "alien": "Alien",
+    "bnf": "BnF",
+    "status": {
+      "green": "operational",
+      "orange": "degraded",
+      "red": "unavailable"
+    },
+    "tooltip": "{lane} · {status} — {ok} calls OK, {errors} errors (last 5 min)",
+    "tooltipIdle": "{lane} · no recent activity",
+    "tooltipUnreachable": "{lane} · unavailable — MCP server unreachable"
+  },
   "askUser": {
     "pending": "Awaiting reply",
     "answered": "Answered",
@@ -378,8 +392,10 @@
   "tools": {
     "corpus": {
       "get_state": "Corpus state",
+      "list": "List corpus",
       "add": "Add to corpus",
       "remove": "Remove from corpus",
+      "remove_by_filter": "Remove by filter",
       "stats": "Stats",
       "diff": "Corpus diff"
     },
@@ -405,7 +421,20 @@
       "search_catalogue": "BnF Catalogue search",
       "search_gallica": "Gallica search",
       "get_catalogue_record": "Resolve BnF record",
-      "get_document_info": "Resolve Gallica document"
+      "get_document_info": "Resolve Gallica document",
+      "sparql_query": "data.bnf.fr SPARQL query",
+      "find_person": "Find a person",
+      "find_work": "Find a work",
+      "resolve_entity": "Resolve data.bnf.fr entity",
+      "get_periodical_issues": "Periodical issues",
+      "get_document_pages": "Document pages",
+      "get_document_toc": "Table of contents",
+      "get_page_text": "Page text",
+      "get_document_text": "Document text",
+      "get_manifest": "IIIF manifest",
+      "get_image_url": "IIIF image URL",
+      "get_image_info": "Image dimensions",
+      "get_page_ocr_boxes": "OCR with coordinates"
     },
     "parts": {
       "viaMcp": "via MCP",
@@ -418,7 +447,11 @@
       "addedUnknown": "Documents added to the corpus",
       "removedUnknown": "Documents removed",
       "adding": "Adding to corpus…",
-      "removing": "Removing from corpus…"
+      "removing": "Removing from corpus…",
+      "removingByFilter": "Scanning the corpus…",
+      "previewMatched": "{count} documents match · preview",
+      "emptyFilter": "Empty filter — nothing removed",
+      "noMatch": "No document matched"
     }
   },
   "research": {
@@ -564,7 +597,8 @@
         "retrying": "{count} retrying",
         "skipped": "{count} skipped",
         "failed": "{count} failed",
-        "excluded": "{count} not ingestable"
+        "excluded": "{count} not ingestable",
+        "removed": "{count} removed"
       }
     },
     "status": {
@@ -577,7 +611,8 @@
     },
     "history": {
       "title": "Ingestion history",
-      "empty": "No ingestions"
+      "empty": "No ingestions",
+      "ranFor": "ran for {duration}"
     },
     "cancel": {
       "button": "Cancel ingestion",
@@ -610,5 +645,23 @@
     "mistralMedium35": "Mistral Medium 3.5",
     "qwen37Max": "Qwen3.7 Max",
     "deepseekV4Pro": "DeepSeek V4 Pro"
+  },
+  "feedback": {
+    "button": "Feedback",
+    "dialogTitle": "Your feedback",
+    "editTitle": "Edit your feedback",
+    "ratingLabel": "Quality",
+    "rating": {
+      "bad": "Poor",
+      "ok": "Okay",
+      "great": "Great"
+    },
+    "commentLabel": "Comment (optional)",
+    "commentPlaceholder": "What worked well, or didn't?",
+    "submit": "Send",
+    "submitting": "Sending…",
+    "success": "Thanks for your feedback",
+    "error": "Failed to send feedback",
+    "cancel": "Cancel"
   }
 }

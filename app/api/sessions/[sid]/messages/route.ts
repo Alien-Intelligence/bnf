@@ -22,7 +22,12 @@ import { withAuth } from "@/app/api/_middleware"
 import { ok, notFound } from "@/lib/api-response"
 import { auth } from "@/lib/auth"
 import { env } from "@/lib/env"
-import { AGENT_MODEL, AGENT_MAX_ITERATIONS, OPENROUTER_APP_NAME } from "@/lib/constants"
+import {
+  AGENT_MODEL,
+  AGENT_DEFAULT_MODEL,
+  AGENT_MAX_ITERATIONS,
+  OPENROUTER_APP_NAME,
+} from "@/lib/constants"
 import { AgentQueries } from "@/models/agents/queries"
 import { AgentPolicy } from "@/models/agents/policy"
 import { AgentService } from "@/models/agents/service"
@@ -78,7 +83,11 @@ const handler = createChatHandler<TurnScopedCtx>({
     // Ignored under the anthropic provider.
     siteUrl: env.APP_URL,
     appName: OPENROUTER_APP_NAME,
-    model: AGENT_MODEL,
+    // Server-side fallback when a request omits `body.model`. Must be valid for
+    // the active gateway: a vendor-namespaced OpenRouter slug (GLM 5.2, the
+    // default) under openrouter, the bare Anthropic id under the direct path.
+    // The UI always sends `body.model`, so this is the floor, not the norm.
+    model: env.AGENT_PROVIDER === "openrouter" ? AGENT_DEFAULT_MODEL : AGENT_MODEL,
     maxToolTurns: AGENT_MAX_ITERATIONS,
     system: async (req) => {
       const session = await AgentQueries.getAppSessionOrThrow(sidFromUrl(req))

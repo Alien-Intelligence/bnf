@@ -379,4 +379,21 @@ export class Repo {
       ],
     );
   }
+
+  /**
+   * Delete a doc's ingest state (corpus-delta removal). After the cluster entry
+   * is deleted, the state row MUST go too — otherwise a later re-add would
+   * content-hash short-circuit against a `status='ingested'` row pointing at a
+   * now-deleted entry, and the doc would silently never re-index.
+   */
+  async clearDocState(
+    projectId: string,
+    ark: string,
+    q: Queryer = this.pool,
+  ): Promise<void> {
+    await q.query(
+      `DELETE FROM document_ingest_state WHERE project_id = $1 AND ark = $2`,
+      [projectId, ark],
+    );
+  }
 }

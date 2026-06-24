@@ -3,7 +3,11 @@ import "server-only"
 // Business logic for the ingestion lifecycle.
 //
 // INVARIANTS (enforced here, never elsewhere):
-//   • project.ingestedVersionId is moved ONLY by IngestService.commit().
+//   • project.ingestedVersionId is moved ONLY within this service — by
+//     IngestService.commit() (full success) AND commitPartialFailure() (partial
+//     run). The per-doc Document.indexedAt is the real delta truth; this pointer
+//     is the "Dernière ingestion vN" label. Only a WHOLE-job failure leaves it
+//     behind.
 //   • The no-op short-circuit (added=[] && removed=[]) creates a done job and
 //     advances bookkeeping in a single atomic transaction without calling the cluster.
 //   • Deduplication: if a (projectId, targetVersionId) job is already queued/running,
@@ -241,11 +245,12 @@ export class IngestService {
     event: ClusterProgressEvent,
   ): Promise<void> {
     if (event.stage === "done") {
-      // Commit gating: the target version becomes the ingested baseline ONLY
-      // when every queued doc succeeded. If any failed, the version is only
-      // partially in the index — advancing the pointer would silently mark the
-      // failed docs as ingested and orphan them. Record the outcome + errors
-      // (so retryFailed can re-queue them) but leave the pointer where it is.
+      // The job reached "done": commit (all succeeded) or commitPartialFailure
+      // (some failed). BOTH advance the baseline pointer — the per-doc
+      // Document.indexedAt carries which docs actually made it, so a partial run
+      // can move the pointer without orphaning the failures (they stay in the
+      // delta via indexedAt=null + indexError). Only the 'failed' stage below
+      // (the whole job died) leaves the pointer untouched.
       const failedCount = Number(
         (event.stats as Record<string, unknown>)?.failed ?? 0,
       )
@@ -293,9 +298,11 @@ export class IngestService {
    *   • Mark job done with chunksWritten + stats.
    *   • Mark targetVersion status = "ingested".
    *   • Advance project.ingestedVersionId.
+   *   • Stamp Document.indexedAt for every added ARK; clear it for removed ARKs.
    *
-   * THIS IS THE ONLY PLACE THAT MOVES project.ingestedVersionId.
-   * See playbook/corpus-versioning.md invariant 4 and ingestion-jobs.md.
+   * The pointer is also advanced by commitPartialFailure() (a partial run still
+   * moves the baseline); only a whole-job failure leaves it. See
+   * playbook/corpus-versioning.md invariant 4 and ingestion-jobs.md.
    */
   static async commit(job: IngestJob, results: IngestResults): Promise<void> {
     const now = new Date()
@@ -336,11 +343,15 @@ export class IngestService {
    * Stamps Document.indexedAt for the ARKs that DID succeed (added ∖ failed), so
    * they drop out of the next delta, and records each failed ARK's reason in
    * Document.indexError (indexedAt left null → it stays in the delta as the one
-   * to retry). Persists `stats.errors[]` for retryFailed. Deliberately does NOT
-   * advance project.ingestedVersionId or mark the target version "ingested" —
-   * only IngestService.commit() does that, on a fully-successful job (corpus-
-   * versioning.md invariant 4). Status is PARTIAL, not FAILED, so the UI reads it
-   * as "N indexed / M failed", not a blanket "Échec".
+   * to retry). Persists `stats.errors[]` for retryFailed. Status is PARTIAL, not
+   * FAILED, so the UI reads it as "N indexed / M failed", not a blanket "Échec".
+   *
+   * ADVANCES project.ingestedVersionId to the target (and marks the version
+   * "ingested"), same as commit(): a partial run still moved the baseline
+   * forward — the per-doc delta (Document.indexedAt) carries the truth of which
+   * docs remain, so the pointer is just the "Dernière ingestion vN" label. ONLY
+   * a whole-job failure (applyProgress 'failed' stage) leaves the pointer where
+   * it was. See corpus-versioning.md invariant 4.
    */
   static async commitPartialFailure(
     job: IngestJob,
@@ -364,6 +375,17 @@ export class IngestService {
           stats: results.stats as never,
           error: `${failed}/${total} document(s) en échec — réessayez les documents échoués`,
         },
+      }),
+      // A partial run still advances the baseline (same as commit) — the per-doc
+      // Document.indexedAt above is the real delta truth; this pointer is just the
+      // "Dernière ingestion vN" label. Only a whole-job failure leaves it behind.
+      prisma.corpusVersion.update({
+        where: { id: job.targetVersionId },
+        data: { status: "ingested" },
+      }),
+      prisma.project.update({
+        where: { id: job.projectId },
+        data: { ingestedVersionId: job.targetVersionId },
       }),
     ]
     if (succeededAdded.length > 0) {

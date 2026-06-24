@@ -5,23 +5,27 @@
 // addArks() adds ARKs INSTANTLY: ARKs without a Document row are inserted as
 // "stub" rows (resolveStatus="pending") carrying only what's derivable from the
 // ARK itself; their BnF metadata is resolved out-of-band by the background
-// resolver (lib/documents/resolver.ts). The corpus is therefore never coupled
-// to MCP availability/latency. The caller (tool/route) kicks the drainer after
-// the response is sent.
+// resolver (lib/documents/resolver.ts). Catalogue notices (`cb…`) are likewise
+// added as-is and marked canonicalStatus="pending"; the background canonicalizer
+// (lib/documents/canonicalizer.ts) later swaps each digitized notice for its
+// Gallica doc in a new version. The corpus is therefore never coupled to BnF
+// availability/latency — neither metadata resolution nor cb→Gallica upgrade
+// blocks the add. The caller (tool/route) kicks both drainers after the
+// response is sent.
 import "server-only"
 
 import { BnfDirectClient } from "@/lib/bnf/direct"
-import { BNF_CANONICALIZE_BUDGET_MS } from "@/lib/constants"
+import {
+  BNF_CANONICALIZE_BUDGET_MS,
+  CORPUS_REMOVE_PREVIEW_LIMIT,
+} from "@/lib/constants"
 import { prisma } from "@/lib/db"
 import { sourceFromArk } from "@/lib/mcp/vocab"
-import {
-  DOCUMENT_CANONICAL_STATUS,
-  type DocumentCanonicalStatus,
-} from "@/models/documents/schema"
+import { DOCUMENT_CANONICAL_STATUS } from "@/models/documents/schema"
 import { DocumentService } from "@/models/documents/service"
 import type { Project } from "@/models/projects/schema"
 import type { User } from "@/models/users/schema"
-import { CorpusQueries } from "./queries"
+import { CorpusQueries, type CorpusFilterSet } from "./queries"
 import { type CorpusSnapshot } from "./schema"
 import { advanceVersion } from "./versioning"
 import type { AddToCorpusInput, RemoveFromCorpusInput } from "./types"
@@ -82,6 +86,29 @@ export type CorpusPromoteResult =
     }
   | { promoted: false; status: "not_digitized" | "api_error" | "not_catalogue" }
 
+/**
+ * Result of removeByFilter().
+ *   - "empty_filter" — the filter set was empty (would match the whole corpus).
+ *                      Refused without mutating; the agent must narrow it.
+ *   - "dry_run"      — preview only: `matched` documents would be removed;
+ *                      `arks` is a capped illustrative sample (see
+ *                      CORPUS_REMOVE_PREVIEW_LIMIT), `matched` is the true count.
+ *   - "removed"      — the removal committed: a new version was sealed.
+ *                      `removed` is how many were actually dropped from head
+ *                      (== matched, modulo a concurrent change), `total` is the
+ *                      new corpus size.
+ */
+export type CorpusRemoveByFilterResult =
+  | { status: "empty_filter" }
+  | { status: "dry_run"; matched: number; arks: string[] }
+  | {
+      status: "removed"
+      matched: number
+      removed: number
+      versionSeq: number
+      total: number
+    }
+
 export class CorpusService {
   /**
    * Adds ARKs to the project's corpus INSTANTLY — no MCP round-trip.
@@ -125,39 +152,11 @@ export class CorpusService {
     // canonicalization or dedup, so the agent's "you added N" matches its input.
     const requested = input.arks.length
 
-    // === Phase 0: canonicalize catalogue notices to their digitized doc =======
-    // A `cb…` notice that the BnF has digitized is replaced by its Gallica ARK
-    // (bpt6k…/btv1b…) — the consultable, citable, ingestable form — so THAT is
-    // what becomes the corpus member. Notices without a digitization, and every
-    // non-catalogue ARK, pass through untouched. This must run here (not in the
-    // background resolver) because it changes the membership key, and corpus
-    // versions are immutable once sealed. Strictly best-effort and time-boxed:
-    // a slow/down data.bnf.fr just leaves notices as-is rather than stalling the
-    // add (only `cb…` ARKs incur any network — Gallica adds skip it entirely).
-    let arks = input.arks
-    // Notices that stayed notices, and WHY — so we can later offer a manual
-    // "promote" only when a retry might help (api_error) vs state the notice
-    // simply isn't on Gallica (not_digitized). Persisted after stubs exist.
-    const canonicalStatusByArk = new Map<string, DocumentCanonicalStatus>()
-    if (opts?.canonicalize) {
-      const client = new BnfDirectClient({
-        signal: AbortSignal.timeout(BNF_CANONICALIZE_BUDGET_MS),
-      })
-      const outcomes = await client.canonicalizeArks(input.arks)
-      const upgrade = new Map<string, string>()
-      for (const o of outcomes) {
-        if (o.status === "upgraded") upgrade.set(o.ark, o.canonical)
-        else canonicalStatusByArk.set(o.ark, o.status)
-      }
-      if (upgrade.size > 0) arks = input.arks.map((a) => upgrade.get(a) ?? a)
-    }
-
-    // Dedupe the (canonicalized) ARKs up front: the caller is encouraged to fire
-    // every ARK it found without cross-referencing the corpus itself, so the
-    // same ARK may appear twice — and a notice plus its own digitization now
-    // collapse to one. Deduping here also prevents a duplicate (versionId, ark)
+    // Dedupe the supplied ARKs up front: the caller is encouraged to fire every
+    // ARK it found without cross-referencing the corpus itself, so the same ARK
+    // may appear twice. Deduping here also prevents a duplicate (versionId, ark)
     // PK violation in advanceVersion's createMany.
-    const uniqueArks = [...new Set(arks)]
+    const uniqueArks = [...new Set(input.arks)]
 
     // === Phase 1: create stub rows for unknown ARKs (no lock, no network) =====
     // Idempotent: ARKs that already have a row (stub or resolved) are untouched.
@@ -165,20 +164,29 @@ export class CorpusService {
     const newStubArks = await DocumentService.createStubs(projectId, uniqueArks)
     const newStubSet = new Set(newStubArks)
 
-    // Record the canonicalization outcome on the notices that stayed notices
-    // (every one now has a Document row from createStubs). Grouped per status so
-    // it is at most two updateMany calls regardless of batch size.
-    if (canonicalStatusByArk.size > 0) {
-      const arksByStatus = new Map<DocumentCanonicalStatus, string[]>()
-      for (const [ark, status] of canonicalStatusByArk) {
-        const list = arksByStatus.get(status) ?? []
-        list.push(ark)
-        arksByStatus.set(status, list)
-      }
-      for (const [status, statusArks] of arksByStatus) {
+    // === Phase 1.5: queue catalogue notices for background canonicalization ===
+    // A `cb…` notice the BnF has digitized should be replaced by its Gallica doc
+    // (bpt6k…/btv1b… — the consultable/citable/ingestable form). That upgrade
+    // changes the membership key, so it CANNOT ride along in the metadata
+    // resolver; it needs its own version advance. Rather than block this add on
+    // BnF (a `cb…`-heavy batch otherwise stalls the agent on rate-limited
+    // data.bnf.fr/SRU lookups), we add the notice AS-IS now and mark it
+    // "pending" — the background canonicalizer (lib/documents/canonicalizer.ts,
+    // kicked by the caller) classifies it and swaps the membership in a new
+    // version out-of-band. Only notices with no terminal status yet are queued
+    // (canonicalStatus IS NULL): a notice already classified not_digitized /
+    // api_error is left alone (its manual "promote" affordance stands). If a
+    // notice is ingested before it upgrades, it is simply skipped as
+    // non-ingestable and its Gallica doc is picked up as a later delta — the
+    // delta model absorbs the ordering (see playbook/corpus-versioning.md).
+    if (opts?.canonicalize) {
+      const noticeArks = uniqueArks.filter(
+        (a) => sourceFromArk(a) === "catalogue",
+      )
+      if (noticeArks.length > 0) {
         await prisma.document.updateMany({
-          where: { projectId, ark: { in: statusArks } },
-          data: { canonicalStatus: status },
+          where: { projectId, ark: { in: noticeArks }, canonicalStatus: null },
+          data: { canonicalStatus: DOCUMENT_CANONICAL_STATUS.PENDING },
         })
       }
     }
@@ -408,5 +416,90 @@ export class CorpusService {
       lastDeltaAdded: 0,
       lastDeltaRemoved: advance.removed,
     }
+  }
+
+  /**
+   * Remove every document in the current head matching a metadata filter — the
+   * bulk counterpart to removeArks(), which needs explicit ARKs. Resolves the
+   * matching ARKs from the head, then:
+   *   - dryRun → returns the count + a capped sample, NO mutation (preview).
+   *   - commit → delegates to removeArks(), which advances the version inside
+   *              the per-project advisory lock and re-filters to current head
+   *              members (so a concurrent change between resolution and removal
+   *              is handled safely — TOCTOU-safe).
+   *
+   * SAFETY: an empty filter set (every field absent) would match the entire
+   * corpus. That is almost certainly a mistake, so it is refused outright
+   * ("empty_filter") rather than silently wiping the corpus. Callers that truly
+   * want to clear everything must do so explicitly via removeArks().
+   *
+   * Returns a discriminated result the agent tool can react to without throwing.
+   */
+  static async removeByFilter(
+    project: Project,
+    user: User,
+    input: { filters: CorpusFilterSet; reason: string; dryRun: boolean },
+  ): Promise<CorpusRemoveByFilterResult> {
+    if (CorpusService.isEmptyFilterSet(input.filters)) {
+      return { status: "empty_filter" }
+    }
+
+    const arks = await CorpusQueries.arksMatchingFilters(
+      project.id,
+      "head",
+      input.filters,
+    )
+
+    if (input.dryRun) {
+      return {
+        status: "dry_run",
+        matched: arks.length,
+        arks: arks.slice(0, CORPUS_REMOVE_PREVIEW_LIMIT),
+      }
+    }
+
+    // Nothing matched — no version to advance. Report a no-op removal.
+    if (arks.length === 0) {
+      const head = await CorpusQueries.headVersion(project.id)
+      const total = await prisma.corpusMembership.count({
+        where: { versionId: head.id },
+      })
+      return {
+        status: "removed",
+        matched: 0,
+        removed: 0,
+        versionSeq: head.seq,
+        total,
+      }
+    }
+
+    const result = await CorpusService.removeArks(project, user, {
+      arks,
+      reason: input.reason,
+    })
+
+    return {
+      status: "removed",
+      matched: arks.length,
+      removed: result.lastDeltaRemoved,
+      versionSeq: result.versionSeq,
+      total: result.total,
+    }
+  }
+
+  /** True when no filter field carries a constraint (would match everything). */
+  private static isEmptyFilterSet(filters: CorpusFilterSet): boolean {
+    const hasArray = (a?: string[]) => Array.isArray(a) && a.length > 0
+    return !(
+      hasArray(filters.type) ||
+      hasArray(filters.lang) ||
+      hasArray(filters.source) ||
+      hasArray(filters.session) ||
+      hasArray(filters.ingest) ||
+      filters.yearFrom !== undefined ||
+      filters.yearTo !== undefined ||
+      filters.undated === true ||
+      (typeof filters.q === "string" && filters.q.trim().length > 0)
+    )
   }
 }

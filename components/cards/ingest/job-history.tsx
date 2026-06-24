@@ -45,6 +45,32 @@ function relativeDate(date: Date): string {
   })
 }
 
+/** Total run time of a job (finishedAt − startedAt), compact French units. */
+function formatDuration(
+  startedAt: Date | string | null,
+  finishedAt: Date | string | null,
+): string | null {
+  if (!startedAt || !finishedAt) return null
+  const ms = new Date(finishedAt).getTime() - new Date(startedAt).getTime()
+  if (!Number.isFinite(ms) || ms < 0) return null
+  const s = Math.round(ms / 1_000)
+  if (s < 60) return `${s} s`
+  const m = Math.floor(s / 60)
+  const rs = s % 60
+  if (m < 60) return rs ? `${m} min ${rs} s` : `${m} min`
+  const h = Math.floor(m / 60)
+  const rm = m % 60
+  return rm ? `${h} h ${rm} min` : `${h} h`
+}
+
+/** "v10 → v15", or "v15" on a first ingest with no base version. */
+function versionLabel(job: IngestJobView): string | null {
+  if (job.targetVersionSeq == null) return null
+  return job.baseVersionSeq != null
+    ? `v${job.baseVersionSeq} → v${job.targetVersionSeq}`
+    : `v${job.targetVersionSeq}`
+}
+
 export function CardIngestJobHistory({ jobs }: Props) {
   const t = useTranslations("ingest.history")
 
@@ -66,7 +92,14 @@ export function CardIngestJobHistory({ jobs }: Props) {
                 className="flex items-start justify-between gap-3 py-2.5"
               >
                 <div className="flex flex-col gap-1">
-                  <BadgeIngestStatus status={job.status} />
+                  <div className="flex items-center gap-2">
+                    {versionLabel(job) ? (
+                      <span className="text-sm font-medium tabular-nums">
+                        {versionLabel(job)}
+                      </span>
+                    ) : null}
+                    <BadgeIngestStatus status={job.status} />
+                  </div>
                   {(job.status === INGEST_STATUS.PARTIAL ||
                     job.status === INGEST_STATUS.FAILED) &&
                   job.error ? (
@@ -75,9 +108,12 @@ export function CardIngestJobHistory({ jobs }: Props) {
                     </span>
                   ) : null}
                 </div>
-                <span className="ml-auto shrink-0 text-xs tabular-nums text-muted-foreground">
-                  {relativeDate(new Date(job.createdAt))}
-                </span>
+                <div className="ml-auto flex shrink-0 flex-col items-end gap-0.5 text-xs tabular-nums text-muted-foreground">
+                  <span>{relativeDate(new Date(job.createdAt))}</span>
+                  {formatDuration(job.startedAt, job.finishedAt) ? (
+                    <span>{t("ranFor", { duration: formatDuration(job.startedAt, job.finishedAt) as string })}</span>
+                  ) : null}
+                </div>
               </li>
             ))}
           </ul>

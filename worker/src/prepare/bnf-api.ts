@@ -35,11 +35,14 @@ const GALLICA = "https://gallica.bnf.fr";
 
 // Partner-API migration endpoints (used when the broker is configured):
 //   - metadata:  ungated OAI-PMH (oai.bnf.fr) — no auth, no Cloudflare, no quota.
-//   - IIIF v3:   openapi.bnf.fr via the broker (OAuth + shared rate caps).
+//   - IIIF v3:   openapiproext.bnf.fr via the broker (OAuth + shared rate caps).
+// IIIF MUST go to openapiproext.bnf.fr (the token'd host), NOT openapi.bnf.fr —
+// that public host serves IIIF from a no-token, anonymous-per-IP pool that does
+// not count against our 300/min quota and throttles behind the shared egress IP.
 // When BNF_BROKER_URL is unset the worker stays on the legacy gallica.bnf.fr
 // endpoints (OAIRecord/Pagination/RequestDigitalElement, viewer scrape, v2 IIIF).
 const OAI_PMH = "http://oai.bnf.fr/oai2/OAIHandler";
-const OPENAPI = (process.env.BNF_API_BASE_URL ?? "https://openapi.bnf.fr").replace(/\/$/, "");
+const OPENAPI = (process.env.BNF_API_BASE_URL ?? "https://openapiproext.bnf.fr").replace(/\/$/, "");
 
 /** True when the broker is configured → use the partner API + OAI metadata. */
 function partnerMode(): boolean {
@@ -137,6 +140,41 @@ interface FetchTextResult {
   body: string;
 }
 
+/**
+ * Decode BnF response bytes using the DECLARED charset, not a blind UTF-8.
+ *
+ * BnF's XML (ALTO OCR, TOC TEI.2, OAIRecord, Pagination, SRU) is served as
+ * `encoding="iso-8859-1"` — decoding those bytes as UTF-8 turns every accented
+ * French character into U+FFFD (`THÉÂTRE` → `TH<EFBFBD><EFBFBD>TRE`), silently
+ * corrupting the OCR text that becomes chunks and folio citations. We resolve
+ * the charset in priority order: HTTP `Content-Type; charset=`, then the XML
+ * prolog `encoding="…"`, else UTF-8 (so JSON manifests — which carry no prolog
+ * and are UTF-8 by spec — stay correct). Unknown/unsupported labels fall back to
+ * UTF-8 rather than throwing.
+ */
+function decodeBnfBytes(bytes: Buffer, contentType?: string): string {
+  let charset: string | undefined;
+  const ctMatch = contentType?.match(/charset=([^;]+)/i);
+  if (ctMatch) charset = ctMatch[1]!.trim().toLowerCase();
+  if (!charset) {
+    // Sniff the XML prolog from the ASCII-safe head (the declaration is itself
+    // ASCII regardless of the document body's encoding).
+    const head = bytes.subarray(0, 256).toString("latin1");
+    const m = head.match(/<\?xml[^>]*encoding=["']([^"']+)["']/i);
+    if (m) charset = m[1]!.trim().toLowerCase();
+  }
+  if (!charset || charset === "utf-8" || charset === "utf8") {
+    return bytes.toString("utf8");
+  }
+  try {
+    // TextDecoder handles iso-8859-1 / latin1 / windows-1252 and many others.
+    return new TextDecoder(charset).decode(bytes);
+  } catch {
+    // Unknown label — UTF-8 is the least-surprising fallback.
+    return bytes.toString("utf8");
+  }
+}
+
 async function fetchText(
   url: string,
   opts: { timeoutMs?: number; accept?: string; rateLimiter?: TokenBucket } = {},
@@ -148,12 +186,12 @@ async function fetchText(
   // identical. Takes precedence over the legacy relay/direct path.
   if (brokerUrl()) {
     try {
-      const { status, bytes } = await brokerGet(
+      const { status, bytes, contentType } = await brokerGet(
         url,
         opts.accept ?? "application/xml, text/xml, */*",
         timeoutMs,
       );
-      return { status, body: bytes.toString("utf8") };
+      return { status, body: decodeBnfBytes(bytes, contentType) };
     } catch (err) {
       throw new TransientBnfError("network", {
         hint: `${url}: broker ${err instanceof Error ? err.message : String(err)}`,
@@ -170,12 +208,12 @@ async function fetchText(
   // relay mirrors the upstream status, so classification downstream is identical.
   if (gallicaRelayUrl()) {
     try {
-      const { status, bytes } = await relayGet(
+      const { status, bytes, contentType } = await relayGet(
         url,
         opts.accept ?? "application/xml, text/xml, */*",
         timeoutMs,
       );
-      return { status, body: bytes.toString("utf8") };
+      return { status, body: decodeBnfBytes(bytes, contentType) };
     } catch (err) {
       throw new TransientBnfError("network", {
         hint: `${url}: relay ${err instanceof Error ? err.message : String(err)}`,
@@ -193,8 +231,9 @@ async function fetchText(
       },
       signal: controller.signal,
     });
-    const body = await res.body.text();
-    return { status: res.statusCode, body };
+    const bytes = Buffer.from(await res.body.arrayBuffer());
+    const contentType = res.headers["content-type"] as string | undefined;
+    return { status: res.statusCode, body: decodeBnfBytes(bytes, contentType) };
   } catch (err) {
     // Normalize abort + network errors into TransientBnfError so callers
     // get a consistent classification.

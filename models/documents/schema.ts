@@ -44,15 +44,21 @@ export type DocumentResolveStatus =
   (typeof DOCUMENT_RESOLVE_STATUS)[keyof typeof DOCUMENT_RESOLVE_STATUS]
 
 // ---------------------------------------------------------------------------
-// cb→Gallica canonicalization outcome (Document.canonicalStatus)
-// Recorded on a catalogue notice that stayed a notice after the add-time
-// canonicalization pass. Drives the detail panel's "promote" affordance:
-// "api_error" → offer a manual retry; "not_digitized" → state it isn't on
-// Gallica. A notice that WAS upgraded leaves no cb row, so it carries neither.
+// cb→Gallica canonicalization status (Document.canonicalStatus)
+// Set on a catalogue notice (`cb…`) and driven by the BACKGROUND canonicalizer
+// (lib/documents/canonicalizer.ts): `corpus_add` marks every newly-added notice
+// "pending" and kicks a drain, which classifies each against its digitized
+// Gallica reproduction and either swaps it (membership → Gallica doc, status
+// cleared) or records why it stayed a notice. The detail panel keys its
+// "promote" affordance off the terminal states: "api_error" → offer a manual
+// retry; "not_digitized" → state it isn't on Gallica. A notice that WAS
+// upgraded leaves no cb member, so it carries no status.
 // See lib/bnf/direct.ts (classifyCanonical) and CorpusService.promoteNotice().
 // ---------------------------------------------------------------------------
 
 export const DOCUMENT_CANONICAL_STATUS = {
+  /** Queued for (or mid-) background canonicalization — not yet classified. */
+  PENDING: "pending",
   /** Last pass failed transiently (BnF API flakiness) — a retry may succeed. */
   API_ERROR: "api_error",
   /** Pass ran cleanly; no Gallica reproduction exists — catalogue-only notice. */

@@ -27,6 +27,11 @@ import { Pool } from "pg";
 import { db, ingest } from "../src/env.js";
 import { bnfDatasetSlug, getClusterSink } from "../src/cluster/index.js";
 import { createPreparePipeline } from "../src/prepare/index.js";
+import { arkToSlug } from "../src/slug.js";
+import type { ClusterSink } from "../src/types.js";
+
+/** Resolves (and caches) a project's dataset id — defined in main(). */
+type ResolveDatasetId = (projectId: string) => Promise<number>;
 import {
   DOC_QUEUE_NAME,
   DocumentIngestRunner,
@@ -233,7 +238,15 @@ async function main(): Promise<void> {
 
   // ---- HTTP server ----
   const server = createServer((req, res) => {
-    void handleRequest(req, res, orchestrator, pool).catch((err) => {
+    void handleRequest(
+      req,
+      res,
+      orchestrator,
+      pool,
+      clusterSink,
+      resolveDatasetId,
+      repo,
+    ).catch((err) => {
       console.error("[worker-api] request handler crashed:", err);
       send(res, 500, { error: "internal" });
     });
@@ -263,11 +276,50 @@ async function main(): Promise<void> {
   process.once("SIGTERM", () => void shutdown("SIGTERM"));
 }
 
+/**
+ * Delete each removed ARK's entry from the project's dataset. Idempotent +
+ * best-effort: an already-absent entry is a no-op; a failed delete is logged and
+ * counted but does not abort the rest. Returns the done/failed tally.
+ */
+async function runRemovals(
+  clusterSink: ClusterSink,
+  resolveDatasetId: ResolveDatasetId,
+  repo: Repo,
+  projectId: string,
+  removedArks: string[],
+): Promise<{ removedDone: number; removedFailed: number }> {
+  const datasetId = await resolveDatasetId(projectId);
+  let removedDone = 0;
+  let removedFailed = 0;
+  for (const ark of removedArks) {
+    try {
+      await clusterSink.removeEntry({ datasetId, arkSlug: arkToSlug(ark) });
+      // Clear the doc's ingest state so a future re-add doesn't short-circuit
+      // against a deleted entry. The BLOB cache (doc.json/chunks/vectors) is
+      // intentionally LEFT in place — that's what makes the re-add cheap.
+      await repo.clearDocState(projectId, ark);
+      removedDone++;
+    } catch (err) {
+      removedFailed++;
+      console.warn(
+        `[worker-api] removal failed for ${ark}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+  console.log(
+    `[worker-api] removals for project=${projectId}: ${removedDone} removed, ${removedFailed} failed`,
+  );
+  return { removedDone, removedFailed };
+}
+
 async function handleRequest(
   req: IncomingMessage,
   res: ServerResponse,
   orchestrator: IngestOrchestrator,
   pool: Pool,
+  clusterSink: ClusterSink,
+  resolveDatasetId: ResolveDatasetId,
+  repo: Repo,
 ): Promise<void> {
   const url = req.url ?? "/";
   const method = req.method ?? "GET";
@@ -306,13 +358,13 @@ async function handleRequest(
       return;
     }
     const arks = valid.added.map((d) => d.ark);
-    // The app may submit added=[]; for sandbox runner we only ingest ARKs in `added`.
-    // `removed` is a delete signal we don't yet honor (see playbook/ingestion-jobs).
+    // added → child doc-jobs (may be empty for a removal-only delta).
+    // removed → handled below as a discrete delete pass (no doc-jobs needed).
     let submitted;
     try {
       submitted = await orchestrator.submit({
         projectId: valid.projectId,
-        arks: arks.length > 0 ? arks : ["__noop__"],
+        arks,
       });
     } catch (err) {
       console.error("[worker-api] orchestrator.submit failed:", err);
@@ -347,9 +399,33 @@ async function handleRequest(
       return;
     }
     console.log(
-      `[worker-api] ingest accepted: cluster=${clusterJobId} app=${valid.appJobId} ingest=${submitted.ingestJobId} docs=${arks.length}`,
+      `[worker-api] ingest accepted: cluster=${clusterJobId} app=${valid.appJobId} ingest=${submitted.ingestJobId} docs=${arks.length} removed=${valid.removed.length}`,
     );
     send(res, 200, { clusterJobId });
+
+    // Corpus-delta removals: delete each removed ARK's entry from the dataset.
+    // Run AFTER responding (the deletes are independent of the added doc-jobs).
+    // For a removal-ONLY delta there are no child jobs to drive the terminal
+    // callback, so we emit it here once the deletes finish — otherwise the app
+    // job would never leave "running".
+    if (valid.removed.length > 0) {
+      const removalOnly = arks.length === 0
+      void runRemovals(clusterSink, resolveDatasetId, repo, valid.projectId, valid.removed)
+        .then(async () => {
+          if (removalOnly) await emitProgressForIngestJob(pool, submitted.ingestJobId)
+        })
+        .catch((err: unknown) => {
+          console.error("[worker-api] removal pass failed:", err)
+          // Best-effort: still try to finalize a removal-only job so it doesn't hang.
+          if (removalOnly) {
+            void emitProgressForIngestJob(pool, submitted.ingestJobId).catch(() => {})
+          }
+        })
+    } else if (arks.length === 0) {
+      // Defensive: empty added + empty removed shouldn't reach here (rejected
+      // above), but if it did, finalize so the job can't hang.
+      void emitProgressForIngestJob(pool, submitted.ingestJobId).catch(() => {})
+    }
     return;
   }
 

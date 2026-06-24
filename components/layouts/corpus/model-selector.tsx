@@ -9,16 +9,22 @@
 // allow-list (no free text → no arbitrary spend / bad ids); labels are i18n keys
 // under the `models` namespace (the raw vendor/model ids carry dots & slashes
 // that collide with next-intl's key nesting, so they can't be keys themselves).
+//
+// Model switching is an ADVANCED affordance, so it is deliberately understated:
+// the trigger is a bare robot icon while the default model is in effect, and the
+// model name only appears once the user has switched AWAY from the default. The
+// dropdown's trailing chevron is suppressed (the icon is the whole control).
 
+import { Bot } from "lucide-react"
 import { useTranslations } from "next-intl"
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
-  SelectValue,
 } from "@/components/ui/select"
-import { AGENT_AVAILABLE_MODELS } from "@/lib/constants"
+import { AGENT_AVAILABLE_MODELS, AGENT_DEFAULT_MODEL } from "@/lib/constants"
+import { cn } from "@/lib/utils"
 
 interface ModelSelectorProps {
   /** Currently-selected OpenRouter model id (one of AGENT_AVAILABLE_MODELS). */
@@ -33,16 +39,15 @@ interface ModelSelectorProps {
 export function ModelSelector({ value, onChange, disabled }: ModelSelectorProps) {
   const t = useTranslations("models")
 
-  // base-ui's <Select.Value> renders the selected item's LABEL (not the raw id)
-  // when Root receives an `items` map. Build it from the allow-list so the
-  // trigger shows the translated name.
-  const items: Record<string, string> = Object.fromEntries(
-    AGENT_AVAILABLE_MODELS.map((m) => [m.id, t(m.labelKey)]),
-  )
+  const isDefault = value === AGENT_DEFAULT_MODEL
+  const selected = AGENT_AVAILABLE_MODELS.find((m) => m.id === value)
+  const selectedLabel = selected ? t(selected.labelKey) : value
+  // Title/aria always name the active model so the icon-only state stays legible
+  // to screen readers and on hover.
+  const triggerLabel = `${t("label")} — ${selectedLabel}`
 
   return (
     <Select
-      items={items}
       value={value}
       onValueChange={(next) => {
         if (typeof next === "string") onChange(next)
@@ -51,10 +56,18 @@ export function ModelSelector({ value, onChange, disabled }: ModelSelectorProps)
     >
       <SelectTrigger
         size="sm"
-        aria-label={t("label")}
-        className="max-w-[11.5rem] font-mono text-[11px]"
+        aria-label={triggerLabel}
+        title={triggerLabel}
+        // Suppress the trailing chevron (the trigger's last <svg> child) — the
+        // robot icon is the entire control. Collapse to a square icon button
+        // when the default model is active; widen to show the name otherwise.
+        className={cn(
+          "gap-1.5 font-mono text-[11px] text-muted-foreground [&>svg:last-child]:hidden",
+          isDefault && "w-7 justify-center px-0",
+        )}
       >
-        <SelectValue />
+        <Bot className="size-4 shrink-0" aria-hidden />
+        {!isDefault && <span className="max-w-40 truncate">{selectedLabel}</span>}
       </SelectTrigger>
       <SelectContent align="end">
         {AGENT_AVAILABLE_MODELS.map((m) => (

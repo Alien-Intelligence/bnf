@@ -12,11 +12,13 @@
  */
 export const AGENT_TOOLS = {
   // --- Corpus tools -----------------------------------------------------------
-  corpusGetState: "corpus_get_state",
-  corpusAdd:      "corpus_add",
-  corpusRemove:   "corpus_remove",
-  corpusStats:    "corpus_stats",
-  corpusDiff:     "corpus_diff",
+  corpusGetState:       "corpus_get_state",
+  corpusList:           "corpus_list",
+  corpusAdd:            "corpus_add",
+  corpusRemove:         "corpus_remove",
+  corpusRemoveByFilter: "corpus_remove_by_filter",
+  corpusStats:          "corpus_stats",
+  corpusDiff:           "corpus_diff",
 
   // --- Memory tools -----------------------------------------------------------
   memoryRead:  "memory_read",
