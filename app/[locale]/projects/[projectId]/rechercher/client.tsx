@@ -230,6 +230,7 @@ export function RechercherClient({
             locale={locale}
             projectName={projectName}
             stream={stream}
+            appSessionId={activeSessionId}
             notes={notes ?? []}
             openNoteIds={openNoteIds}
             activeNoteId={activeNoteId}

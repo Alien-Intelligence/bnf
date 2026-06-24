@@ -14,6 +14,7 @@ import { Download, FileText, HelpCircle, NotebookText, PenLine, X } from "lucide
 import { useTranslations } from "next-intl"
 import { LayoutCorpusChat } from "@/components/layouts/corpus/chat"
 import { NoteBody } from "@/components/cards/notes/note-body"
+import { FeedbackButton } from "@/components/cards/feedback/feedback-button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Button } from "@/components/ui/button"
 import { useNote, useNoteDetails } from "@/hooks/api/notes"
@@ -37,6 +38,9 @@ interface LayoutResearchEspaceProps {
   locale: string
   projectName: string
   stream: UseTurnStreamResult
+  /** Active durable session id — anchors the session-level feedback button in
+   *  the research chat header. */
+  appSessionId?: string | null
   notes: NoteListItem[]
   openNoteIds: string[]
   activeNoteId: string | null
@@ -61,6 +65,7 @@ export function LayoutResearchEspace({
   locale,
   projectName,
   stream,
+  appSessionId,
   notes,
   openNoteIds,
   activeNoteId,
@@ -126,6 +131,7 @@ export function LayoutResearchEspace({
             stream={stream}
             projectId={projectId}
             locale={locale}
+            appSessionId={appSessionId}
             headerTitle={t("openSource")}
             headerSubtitle={t("openSubtitle")}
             introText={tChat("intro")}
@@ -145,6 +151,7 @@ export function LayoutResearchEspace({
             />
           ) : (
             <ReaderAtelier
+              projectId={projectId}
               notes={notes}
               openNoteIds={openNoteIds}
               activeNoteId={activeNoteId}
@@ -190,6 +197,7 @@ function DispositionButton({
 // ── Atelier reader — open notes as closable tabs + active note ──────────────
 
 interface ReaderAtelierProps {
+  projectId: string
   notes: NoteListItem[]
   openNoteIds: string[]
   activeNoteId: string | null
@@ -200,6 +208,7 @@ interface ReaderAtelierProps {
 }
 
 function ReaderAtelier({
+  projectId,
   notes,
   openNoteIds,
   activeNoteId,
@@ -270,7 +279,11 @@ function ReaderAtelier({
       {/* Active note */}
       <div className="min-h-0 flex-1 overflow-y-auto">
         {activeNoteId ? (
-          <NoteReader noteId={activeNoteId} onCitationClick={onCitationClick} />
+          <NoteReader
+            projectId={projectId}
+            noteId={activeNoteId}
+            onCitationClick={onCitationClick}
+          />
         ) : null}
       </div>
     </div>
@@ -280,9 +293,11 @@ function ReaderAtelier({
 // ── Single artefact reader (artefact eyebrow + title + meta + body) ─────────
 
 function NoteReader({
+  projectId,
   noteId,
   onCitationClick,
 }: {
+  projectId: string
   noteId: string
   onCitationClick: (c: ParsedCitation) => void
 }) {
@@ -325,6 +340,7 @@ function NoteReader({
             <span className="font-mono text-[10.5px] text-neutral-600">
               {t("cites", { count: citeCount })}
             </span>
+            <FeedbackButton projectId={projectId} target="note" targetId={note.id} />
             <Button
               variant="outline"
               size="sm"

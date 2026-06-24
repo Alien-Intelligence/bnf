@@ -28,18 +28,23 @@ import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
 import { BadgeToolCall } from "@/components/badges/tools/call"
 import { BadgeToolMutation } from "@/components/badges/tools/mutation-pill"
+import { BadgeToolRemoveFilter } from "@/components/badges/tools/remove-filter-pill"
 import { BadgeNoteProgress } from "@/components/badges/tools/note-progress"
 import { CardToolAskUser } from "@/components/cards/tools/ask-user"
 import {
+  corpusRemoveByFilterView,
   isCorpusMutationTool,
+  isCorpusRemoveByFilterTool,
   isNoteWriteTool,
   mutationCount,
   mutationDuplicates,
+  toolCallErrored,
 } from "@/lib/tools/display"
 import { StreamingMarkdown } from "./streaming-markdown"
 import { ModelSelector } from "./model-selector"
 import { EventMemoryRow } from "@/components/events/agent/memory-event"
 import { EventIngestRow } from "@/components/events/agent/ingest-event"
+import { FeedbackButton } from "@/components/cards/feedback/feedback-button"
 import type { AgentProvider } from "@/lib/constants"
 
 interface LayoutCorpusChatProps {
@@ -48,6 +53,9 @@ interface LayoutCorpusChatProps {
   stream: UseTurnStreamResult
   projectId: string
   locale: string
+  /** Active durable session id — anchors the session-level feedback button in
+   *  the header. Null while no session is selected (button hidden). */
+  appSessionId?: string | null
   /** Optional agent-copy overrides so the research atelier reuses this panel. */
   headerTitle?: string
   headerSubtitle?: string
@@ -168,6 +176,10 @@ function ToolPartView({
       />
     )
   }
+  // A BnF-MCP soft failure (Gallica 403/429/…) comes back as a transport
+  // success with `isError` unset — so derive the error state from the result
+  // envelope too, not the SDK flag alone. See lib/tools/display.toolCallErrored.
+  const errored = toolCallErrored(tool.isError, tool.result)
   const mutation = isCorpusMutationTool(tool.toolName)
   if (mutation) {
     return (
@@ -176,7 +188,19 @@ function ToolPartView({
         count={mutationCount(tool.result)}
         duplicates={mutationDuplicates(tool.result)}
         running={tool.running}
-        isError={tool.isError}
+        isError={errored}
+      />
+    )
+  }
+  // Bulk remove-by-filter has its own pill: a dry-run is a preview (nothing
+  // removed), a commit is the amber −N pill — distinct states, so it can't reuse
+  // the add/remove mutation pill.
+  if (isCorpusRemoveByFilterTool(tool.toolName)) {
+    return (
+      <BadgeToolRemoveFilter
+        view={corpusRemoveByFilterView(tool.result)}
+        running={tool.running}
+        isError={errored}
       />
     )
   }
@@ -191,7 +215,7 @@ function ToolPartView({
       toolName={tool.toolName}
       input={tool.input}
       running={tool.running}
-      isError={tool.isError}
+      isError={errored}
     />
   )
 }
@@ -270,6 +294,7 @@ function AssistantTurnView({
   locale,
   thinkingLabel,
   activeAskUserId,
+  isLast,
 }: {
   turn: AssistantTurn
   chat: UseChatReturn
@@ -277,12 +302,14 @@ function AssistantTurnView({
   locale: string
   thinkingLabel: string
   activeAskUserId: string | null
+  isLast: boolean
 }) {
   const lastIndex = turn.parts.length - 1
   const hasText = turn.parts.some((p) => p.kind === "text" && p.text.trim().length > 0)
+  const showFeedback = !turn.streaming && !turn.error && hasText
 
   return (
-    <div className="animate-bnf-up relative pl-9">
+    <div className="group animate-bnf-up relative pl-9">
       <span className="absolute top-0.5 left-0">
         <AgentAvatar />
       </span>
@@ -306,6 +333,21 @@ function AssistantTurnView({
         )}
         {turn.error && (
           <div className="text-[12px] text-destructive">{turn.error}</div>
+        )}
+        {/* Feedback on a completed assistant turn — a hover-revealed action row
+            (always shown on the latest turn). turn.id is the durable Message.id
+            the feedback row anchors to. */}
+        {showFeedback && (
+          <div
+            className={cn(
+              "-ml-1.5 transition-opacity",
+              isLast
+                ? "opacity-100"
+                : "opacity-0 focus-within:opacity-100 group-hover:opacity-100",
+            )}
+          >
+            <FeedbackButton projectId={projectId} target="turn" targetId={turn.id} />
+          </div>
         )}
       </div>
     </div>
@@ -332,6 +374,7 @@ export function LayoutCorpusChat({
   stream,
   projectId,
   locale,
+  appSessionId,
   headerTitle,
   headerSubtitle,
   introText,
@@ -397,9 +440,19 @@ export function LayoutCorpusChat({
     <div className="flex h-full flex-col overflow-hidden rounded-xl border bg-card">
       {/* Header */}
       <div className="flex shrink-0 items-center justify-between gap-2 border-b px-4 py-3">
-        <div className="space-y-0.5">
-          <div className="text-sm font-semibold">{headerTitle ?? t("headerTitle")}</div>
-          <div className="text-xs text-muted-foreground">{headerSubtitle ?? t("headerSubtitle")}</div>
+        <div className="flex min-w-0 items-center gap-2.5">
+          <div className="space-y-0.5">
+            <div className="text-sm font-semibold">{headerTitle ?? t("headerTitle")}</div>
+            <div className="text-xs text-muted-foreground">{headerSubtitle ?? t("headerSubtitle")}</div>
+          </div>
+          {/* Session-level feedback sits right after the title. */}
+          {appSessionId && (
+            <FeedbackButton
+              projectId={projectId}
+              target="session"
+              targetId={appSessionId}
+            />
+          )}
         </div>
         <div className="flex shrink-0 items-center gap-2">
           {/* Selector shows ONLY under openrouter, and only when the parent
@@ -424,7 +477,7 @@ export function LayoutCorpusChat({
         {chat.turns.length === 0 ? (
           <div className="text-sm text-muted-foreground">{introText ?? t("systemPromptIntro")}</div>
         ) : (
-          chat.turns.map((turn: ChatTurn) => {
+          chat.turns.map((turn: ChatTurn, turnIdx: number) => {
             if (turn.role === "user") {
               return (
                 <div key={turn.id} className="flex justify-end">
@@ -446,6 +499,7 @@ export function LayoutCorpusChat({
                 locale={locale}
                 thinkingLabel={t("thinking")}
                 activeAskUserId={activeAskUserId}
+                isLast={turnIdx === chat.turns.length - 1}
               />
             )
           })

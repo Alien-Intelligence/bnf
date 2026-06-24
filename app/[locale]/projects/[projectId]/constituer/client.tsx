@@ -238,6 +238,7 @@ export function ConstituerClient({
             stream={stream}
             projectId={projectId}
             locale={locale}
+            appSessionId={activeSessionId}
             agentProvider={agentProvider}
             selectedModel={selectedModel}
             onModelChange={setSelectedModel}

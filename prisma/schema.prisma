@@ -51,6 +51,7 @@ model User {
   accounts        Account[]
   projects        Project[]
   onboardingSeen  UserOnboardingSeen[]
+  feedback        Feedback[]
 
   @@map("user")
 }
@@ -152,6 +153,7 @@ model Project {
   memoryItems    MemoryItem[]
   notes          Note[]
   ingestJobs     IngestJob[]
+  feedback       Feedback[]
 
   @@map("project")
 }
@@ -509,4 +511,33 @@ model IngestJob {
   baseVersion   CorpusVersion? @relation("BaseVersion", fields: [baseVersionId], references: [id])
 
   @@map("ingest_job")
+}
+
+// -----------------------------------------------------------------------------
+// Feedback — librarian rating on a session, note, or turn. Source of truth in
+// our DB; never written to Langfuse at runtime. `id` doubles as the future
+// (idempotent) Langfuse score id. `langfuseSessionId` (= AppSession.id) is the
+// deferred offline join key — Langfuse groups traces by that same session id.
+// Polymorphic target: `target` + always-set `targetId` (Prisma has no
+// polymorphic FK; nullable-FK uniques can't enforce one-per-target because PG
+// NULLs are distinct). Target↔project integrity enforced in FeedbackService.
+// -----------------------------------------------------------------------------
+model Feedback {
+  id                String   @id @default(uuid())
+  projectId         String   @map("project_id")
+  userId            String   @map("user_id")
+  target            String   // FEEDBACK_TARGET: "session" | "note" | "turn"
+  targetId          String   @map("target_id")          // AppSession.id | Note.id | Message.id
+  langfuseSessionId String?  @map("langfuse_session_id") // AppSession.id when derivable
+  rating            String   // FEEDBACK_RATING: "bad" | "ok" | "great"
+  comment           String?
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  project Project @relation(fields: [projectId], references: [id])
+  user    User    @relation(fields: [userId], references: [id])
+
+  @@unique([userId, target, targetId]) // one-per-target → enables revise/upsert
+  @@index([projectId, target])
+  @@map("feedback")
 }
