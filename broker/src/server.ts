@@ -26,8 +26,8 @@ import {
   isManifest,
   isPartnerApi,
 } from "./config.js";
-import { retryAfterToEpochMs, TokenBucket } from "./rate.js";
-import { getAuthHeader } from "./token.js";
+import { RateWaitTimeoutError, retryAfterToEpochMs, TokenBucket } from "./rate.js";
+import { getAuthHeader, invalidateToken } from "./token.js";
 
 const buckets = {
   global: new TokenBucket({ rpm: config.globalRpm, burst: config.globalBurst }),
@@ -63,19 +63,72 @@ function send(res: ServerResponse, status: number, contentType: string, body: Bu
   res.end(buf);
 }
 
-async function readJsonBody(req: IncomingMessage): Promise<{ url?: string; accept?: string }> {
-  const chunks: Buffer[] = [];
-  for await (const c of req) chunks.push(c as Buffer);
-  const raw = Buffer.concat(chunks).toString("utf8") || "{}";
-  return JSON.parse(raw) as { url?: string; accept?: string };
+/** Request body exceeded `maxBodyBytes` → mapped to HTTP 413. */
+class BodyTooLargeError extends Error {}
+/** Request body read exceeded `bodyReadTimeoutMs` → mapped to HTTP 408. */
+class BodyTimeoutError extends Error {}
+
+/**
+ * Read + parse the JSON body with a hard byte cap and a read timeout. The
+ * broker's own clients POST a tiny `{url, accept}`; bounding both size and time
+ * stops a malformed/slow-loris request from growing memory or pinning the
+ * connection open on this single-replica service (§14 unbounded await).
+ */
+function readJsonBody(
+  req: IncomingMessage,
+  maxBytes: number,
+  timeoutMs: number,
+): Promise<{ url?: string; accept?: string }> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    const timer = setTimeout(() => {
+      cleanup();
+      req.destroy();
+      reject(new BodyTimeoutError(`body read exceeded ${timeoutMs}ms`));
+    }, timeoutMs);
+    const onData = (c: Buffer): void => {
+      size += c.length;
+      if (size > maxBytes) {
+        cleanup();
+        req.destroy();
+        reject(new BodyTooLargeError(`body exceeds ${maxBytes} bytes`));
+        return;
+      }
+      chunks.push(c);
+    };
+    const onEnd = (): void => {
+      cleanup();
+      const raw = Buffer.concat(chunks).toString("utf8") || "{}";
+      try {
+        resolve(JSON.parse(raw) as { url?: string; accept?: string });
+      } catch (e) {
+        reject(e instanceof Error ? e : new Error(String(e)));
+      }
+    };
+    const onErr = (e: Error): void => {
+      cleanup();
+      reject(e);
+    };
+    function cleanup(): void {
+      clearTimeout(timer);
+      req.off("data", onData);
+      req.off("end", onEnd);
+      req.off("error", onErr);
+    }
+    req.on("data", onData);
+    req.on("end", onEnd);
+    req.on("error", onErr);
+  });
 }
 
 async function handleFetch(req: IncomingMessage, res: ServerResponse): Promise<void> {
   let payload: { url?: string; accept?: string };
   try {
-    payload = await readJsonBody(req);
+    payload = await readJsonBody(req, config.maxBodyBytes, config.bodyReadTimeoutMs);
   } catch (e) {
-    return send(res, 400, "text/plain", `bad request: ${e instanceof Error ? e.message : String(e)}`);
+    const status = e instanceof BodyTooLargeError ? 413 : e instanceof BodyTimeoutError ? 408 : 400;
+    return send(res, status, "text/plain", `bad request: ${e instanceof Error ? e.message : String(e)}`);
   }
   if (!payload.url) return send(res, 400, "text/plain", "missing 'url'");
 
@@ -90,35 +143,66 @@ async function handleFetch(req: IncomingMessage, res: ServerResponse): Promise<v
   }
 
   const plan = planFor(target);
-  for (const b of plan.acquire) await b.acquire();
-
-  const headers: Record<string, string> = {
-    accept: payload.accept ?? "application/json, application/xml, */*",
-  };
-  if (plan.auth) {
-    try {
-      headers.authorization = await getAuthHeader();
-    } catch (e) {
-      // Token mint failed — surface as 502 so the caller treats it as transient.
-      return send(res, 502, "text/plain", `token error: ${e instanceof Error ? e.message : String(e)}`);
+  try {
+    for (const b of plan.acquire) await b.acquire(config.acquireMaxWaitMs);
+  } catch (e) {
+    if (e instanceof RateWaitTimeoutError) {
+      // Bucket contended/frozen beyond the wait budget — shed with 429 so the
+      // caller backs off (its retry policy treats 429 as transient) instead of
+      // us queueing it behind a multi-minute freeze.
+      return send(res, 429, "text/plain", `broker rate budget exhausted: ${e.message}`);
     }
+    throw e;
   }
 
-  let upstream: Awaited<ReturnType<typeof undiciFetch>>;
-  try {
-    upstream = await undiciFetch(target, {
+  // Send the request, attaching auth for the partner API. On a partner-API 401
+  // (our bearer was rejected though our clock thought it fresh — early
+  // revocation, gateway restart, or a TTL shorter than `expires_in`) drop the
+  // cached token and retry ONCE with a freshly minted one. A second 401 is a
+  // real auth/scope failure and is mirrored to the caller untouched.
+  const attemptFetch = async (
+    forceFreshToken: boolean,
+  ): Promise<Awaited<ReturnType<typeof undiciFetch>>> => {
+    const headers: Record<string, string> = {
+      accept: payload.accept ?? "application/json, application/xml, */*",
+    };
+    if (plan.auth) {
+      if (forceFreshToken) invalidateToken();
+      headers.authorization = await getAuthHeader();
+    }
+    return undiciFetch(target, {
       method: "GET",
       headers,
       signal: AbortSignal.timeout(config.upstreamTimeoutMs),
     });
+  };
+
+  let upstream: Awaited<ReturnType<typeof undiciFetch>>;
+  try {
+    upstream = await attemptFetch(false);
+    if (upstream.status === 401 && plan.auth) {
+      console.warn(`[broker] 401 from ${target.host}${target.pathname} — re-minting token and retrying once`);
+      upstream = await attemptFetch(true);
+    }
   } catch (e) {
-    return send(res, 502, "text/plain", `upstream fetch error: ${e instanceof Error ? e.message : String(e)}`);
+    // Token-mint failure or upstream transport failure — surface as 502 so the
+    // caller treats it as transient and backs off.
+    return send(res, 502, "text/plain", `upstream/token error: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   if (upstream.status === 429) {
     const until = retryAfterToEpochMs(upstream.headers.get("retry-after") ?? undefined, 60_000);
     for (const b of plan.penalize) b.penalizeUntil(until);
     console.warn(`[broker] 429 from ${target.host}${target.pathname} — bucket frozen until ${new Date(until).toISOString()}`);
+  } else if (upstream.status === 403 && !isPartnerApi(target)) {
+    // An ungated host (gallica/oai/catalogue/data) 403 is a Cloudflare/captcha
+    // IP throttle (no Retry-After), NOT an auth failure — freeze the politeness
+    // bucket a fixed window so we stop hammering the blocked egress IP.
+    // (A 403 from the partner API IS an auth/scope failure; freezing wouldn't
+    // help, so it's mirrored through untouched.) See bnf-gallica-ip-throttle.
+    const until = Date.now() + config.forbiddenBackoffMs;
+    for (const b of plan.penalize) b.penalizeUntil(until);
+    console.warn(`[broker] 403 (IP throttle) from ${target.host}${target.pathname} — bucket frozen ${config.forbiddenBackoffMs}ms`);
   }
 
   const bytes = Buffer.from(await upstream.arrayBuffer());

@@ -45,18 +45,24 @@ export const config = {
   tokenSkewSec: num("BNF_TOKEN_SKEW_SEC", 60),
 
   // Upstream hosts. Authenticated partner API vs the ungated OAI host.
-  apiBaseUrl: url("BNF_API_BASE_URL", "https://openapi.bnf.fr"),
+  // The AUTHENTICATED partner gateway is openapiproext.bnf.fr — NOT openapi.bnf.fr.
+  // openapi.bnf.fr serves IIIF on a public, no-token, anonymous-per-IP pool (our
+  // calls there wouldn't count against the 300/min app quota and get throttled
+  // behind the shared egress IP). openapiproext.bnf.fr requires the Bearer (401
+  // without) and attributes usage to our credential. Verified live 2026-06-24.
+  apiBaseUrl: url("BNF_API_BASE_URL", "https://openapiproext.bnf.fr"),
 
   // Rate buckets (requests/min). The caps WILL rise — bump these, no redeploy.
   // Defaults set from LIVE MEASUREMENT (2026-06-24, sandbox credential), NOT the
   // onboarding brief: the brief says 300/min global, but the enforced ceiling
   // measured ~150–185/min (5 clean clock-minute windows) — so the default is a
-  // safe 150, below the observed floor. Manifest verified at exactly 12/min/IP.
-  // Both are fixed clock-minute windows. Raise via env once BnF confirms the
-  // provisioned prod tier. See ai-memories bnf-partner-api-design.
+  // safe 150, below the observed floor. Manifest was 12/min/IP; BnF raised it to
+  // 40/min/IP on 2026-06-24 (Ludovic). Both are fixed clock-minute windows.
+  // Raise via env once BnF confirms the provisioned prod tier. See ai-memories
+  // bnf-partner-api-design.
   globalRpm: num("BNF_GLOBAL_RPM", 150), //   partner API, all endpoints combined
   globalBurst: num("BNF_GLOBAL_BURST", 20),
-  manifestRpm: num("BNF_MANIFEST_RPM", 12), // IIIF manifest, per IP (verified exact)
+  manifestRpm: num("BNF_MANIFEST_RPM", 40), // IIIF manifest, per IP (BnF raised 12→40 on 2026-06-24)
   manifestBurst: num("BNF_MANIFEST_BURST", 4),
   externalRpm: num("BNF_EXTERNAL_RPM", 120), // ungated hosts (oai/catalogue/data) — politeness only
   externalBurst: num("BNF_EXTERNAL_BURST", 20),
@@ -65,7 +71,40 @@ export const config = {
   upstreamTimeoutMs: num("BNF_UPSTREAM_TIMEOUT_MS", 30_000),
   /** Token-mint timeout (ms). */
   tokenTimeoutMs: num("BNF_TOKEN_TIMEOUT_MS", 10_000),
+
+  /**
+   * Max wall-clock a single `/fetch` may wait for rate-bucket capacity before
+   * the broker SHEDS it with a 429 (callers' retry policy treats 429 as
+   * transient and backs off). Without this, a far-future 429-freeze would
+   * serialize every queued request behind the whole freeze window — the §14
+   * unbounded-await anti-pattern. Kept below the clients' 30s per-call timeout.
+   */
+  acquireMaxWaitMs: num("BNF_ACQUIRE_MAX_WAIT_MS", 10_000),
+  /**
+   * Fixed back-off applied when an UNGATED host (gallica/oai/catalogue/data)
+   * returns a captcha 403 — a Cloudflare/IP throttle with no Retry-After, NOT
+   * an auth failure. Freezes the politeness bucket so we stop hammering the
+   * blocked egress IP. See ai-memories bnf-gallica-ip-throttle.
+   */
+  forbiddenBackoffMs: num("BNF_FORBIDDEN_BACKOFF_MS", 60_000),
+  /**
+   * After a failed OAuth mint, refuse new mints for this long (negative cache)
+   * so a token-endpoint outage/429 isn't answered with a re-mint storm (mints
+   * count against the partner quota too).
+   */
+  tokenFailCooldownMs: num("BNF_TOKEN_FAIL_COOLDOWN_MS", 5_000),
+  /**
+   * Max request body the broker will buffer (bytes). Its own clients POST a
+   * tiny JSON `{url, accept}`; anything larger is rejected (413) so a malformed
+   * or hostile request can't grow memory without bound on this single replica.
+   */
+  maxBodyBytes: num("BNF_MAX_BODY_BYTES", 64 * 1024),
+  /** Max wall-clock to read a request body before 408 (slow-loris guard). */
+  bodyReadTimeoutMs: num("BNF_BODY_READ_TIMEOUT_MS", 10_000),
 } as const;
+
+/** The authenticated partner-API host, parsed once (used per request). */
+export const partnerApiHost: string = new URL(config.apiBaseUrl).host;
 
 /** Only *.bnf.fr upstreams are allowed — SSRF guard (the relay was an open proxy). */
 export function isAllowedUpstream(target: URL): boolean {
@@ -74,7 +113,7 @@ export function isAllowedUpstream(target: URL): boolean {
 
 /** The authenticated partner API host (gets a Bearer token + the global cap). */
 export function isPartnerApi(target: URL): boolean {
-  return target.host === new URL(config.apiBaseUrl).host;
+  return target.host === partnerApiHost;
 }
 
 /** A IIIF Presentation manifest — the 12/min-per-IP bucket. */

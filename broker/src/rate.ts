@@ -15,6 +15,19 @@ export interface TokenBucketOptions {
   burst: number;
 }
 
+/**
+ * Thrown by `acquire()` when capacity won't be available within the caller's
+ * wait budget. The broker maps this to an HTTP 429 so the caller backs off
+ * (its retry policy treats 429 as transient) rather than queueing behind a
+ * multi-minute 429-freeze — the §14 unbounded-await anti-pattern.
+ */
+export class RateWaitTimeoutError extends Error {
+  constructor(public readonly neededMs: number) {
+    super(`rate budget exhausted: capacity needs ~${Math.round(neededMs)}ms, over wait limit`);
+    this.name = "RateWaitTimeoutError";
+  }
+}
+
 export class TokenBucket {
   private readonly rps: number;
   private readonly burst: number;
@@ -38,31 +51,54 @@ export class TokenBucket {
     this.lastRefill = performance.now();
   }
 
-  /** Block until one token is available (and any 429 penalty has elapsed). */
-  acquire(): Promise<void> {
-    const next = this.chain.then(() => this.consumeOne());
+  /**
+   * Block until one token is available (and any 429 penalty has elapsed), but
+   * no longer than `maxWaitMs` — beyond that the bucket is too contended or
+   * frozen, and the caller is SHED (`RateWaitTimeoutError`) so it backs off
+   * instead of queueing behind the freeze window. The FIFO chain is preserved
+   * (a shed acquirer still advances the chain), so a freeze drains fast as a
+   * burst of fast rejections rather than a pile of multi-minute sleeps.
+   */
+  acquire(maxWaitMs: number): Promise<void> {
+    const next = this.chain.then(() => this.consumeOne(maxWaitMs));
     this.chain = next.catch(() => undefined); // never poison the queue
     return next;
   }
 
-  /** Freeze the bucket until `epochMs` (absolute) — called on upstream 429. */
+  /** Freeze the bucket until `epochMs` (absolute) — called on upstream 429/403. */
   penalizeUntil(epochMs: number): void {
     if (epochMs > this.pausedUntilEpochMs) this.pausedUntilEpochMs = epochMs;
   }
 
-  private async consumeOne(): Promise<void> {
-    const penaltyMs = this.pausedUntilEpochMs - Date.now();
-    if (penaltyMs > 0) await sleep(penaltyMs);
+  private async consumeOne(maxWaitMs: number): Promise<void> {
+    const start = performance.now();
 
-    this.refill();
-    if (this.tokens >= 1) {
-      this.tokens -= 1;
-      return;
+    // Honour a 429/403 freeze first (absolute wall-clock). If the freeze alone
+    // outlasts the wait budget, shed immediately so the queued callers behind
+    // us in the chain also re-evaluate and shed fast.
+    const penaltyMs = this.pausedUntilEpochMs - Date.now();
+    if (penaltyMs > 0) {
+      if (penaltyMs > maxWaitMs) throw new RateWaitTimeoutError(penaltyMs);
+      await sleep(penaltyMs);
     }
-    const deficit = 1 - this.tokens;
-    await sleep((deficit / this.rps) * 1000);
-    this.refill();
-    this.tokens = Math.max(0, this.tokens - 1);
+
+    // Spin until a whole token is actually available — re-checking after each
+    // sleep, because a single blind decrement could over-issue past the cap
+    // (the bucket must err LOW to stay under the BnF ceiling) — or until the
+    // wait budget is exhausted.
+    for (;;) {
+      this.refill();
+      if (this.tokens >= 1) {
+        this.tokens -= 1;
+        return;
+      }
+      const deficit = 1 - this.tokens;
+      const waitMs = (deficit / this.rps) * 1000;
+      if (performance.now() - start + waitMs > maxWaitMs) {
+        throw new RateWaitTimeoutError(waitMs);
+      }
+      await sleep(waitMs);
+    }
   }
 
   private refill(): void {
