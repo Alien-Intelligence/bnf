@@ -15,13 +15,13 @@ import {
 import { Button } from "@/components/ui/button"
 import { BadgeIngestStatus } from "@/components/badges/ingest/status"
 import { INGEST_STATUS } from "@/models/ingest/schema"
-import type { IngestJob } from "@/models/ingest/schema"
+import type { IngestJobView } from "@/models/ingest/types"
 
 interface Props {
   headSeq: number
   ingestedSeq: number | null
-  delta: { added: number; removed: number }
-  activeJob: IngestJob | null
+  delta: { added: number; removed: number; excluded: number }
+  activeJob: IngestJobView | null
   onSubmit: () => void
   isSubmitting: boolean
 }
@@ -92,6 +92,11 @@ export function CardIngestSummary({
               >
                 -{t("removed", { count: delta.removed })}
               </span>
+              {delta.excluded > 0 && (
+                <span className="text-xs font-normal text-muted-foreground">
+                  {t("excluded", { count: delta.excluded })}
+                </span>
+              )}
             </div>
           </div>
         </div>

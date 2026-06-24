@@ -20,7 +20,7 @@ import { ProjectQueries } from "@/models/projects/queries"
 import { IngestPolicy } from "@/models/ingest/policy"
 import { IngestQueries } from "@/models/ingest/queries"
 import { IngestService } from "@/models/ingest/service"
-import type { IngestJob } from "@/models/ingest/schema"
+import { serializeIngestJob, type IngestJobView } from "@/models/ingest/types"
 
 type RouteCtx = { params: Promise<{ job_id: string }> }
 
@@ -36,5 +36,5 @@ export const POST = withAuth(async (_req, user, bouncer, ctx: RouteCtx) => {
   await bouncer.with(IngestPolicy).authorize("cancel", project)
 
   const updated = await IngestService.cancel(job, user)
-  return ok<IngestJob>(updated)
+  return ok<IngestJobView>(serializeIngestJob(updated))
 })

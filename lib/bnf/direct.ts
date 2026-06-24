@@ -9,9 +9,20 @@
 // (here) rejects the IPv6 TLS handshake. So this client pins IPv4 and sends a
 // browser UA. catalogue.bnf.fr is not Cloudflare-gated.
 //
+// When Cloudflare bot-fight-mode also rejects our TLS/HTTP2 fingerprint (a
+// browser UA is not enough; the cf_clearance cookie is IP-bound so a captured
+// cookie does NOT pass from the server), setting GALLICA_RELAY_URL routes the
+// gallica.bnf.fr calls through the same curl_cffi sidecar the ingest worker
+// uses. See lib/bnf/gallica-relay.ts. Only gallica.bnf.fr is relayed.
+//
 // Endpoints (confirmed by reading MCPs/mcp-bnf and curling the live APIs):
-//   Gallica:   GET https://gallica.bnf.fr/services/OAIRecord?ark=ark:/12148/<id>
-//              → Dublin Core (oai_dc) + <nqamoyen> OCR score.
+//   Gallica:   GET http://oai.bnf.fr/oai2/OAIHandler?verb=GetRecord
+//                  &metadataPrefix=oai_dc&identifier=oai:bnf.fr:gallica/<ark>
+//              → Dublin Core (oai_dc). UNGATED (no auth, no Cloudflare, no
+//                partner quota). OCR availability = the "Avec mode texte"
+//                description flag (replaces the old <nqamoyen> score); page
+//                count = the "Nombre total de vues" format note. The new BnF
+//                IIIF v3 manifest itself points here via seeAlso.
 //   Catalogue: GET http://catalogue.bnf.fr/api/SRU ... bib.persistentId all "<ark>"
 //              recordSchema=dublincore → Dublin Core.
 //
@@ -31,6 +42,8 @@ import {
   BNF_MCP_RETRY_CAP_MS,
   BNF_USER_AGENT,
 } from "@/lib/constants"
+import { brokerGetText, brokerUrl } from "@/lib/bnf/broker-client"
+import { relayGetText, shouldRelay } from "@/lib/bnf/gallica-relay"
 import { withTimeout } from "@/lib/mcp/abort"
 import type {
   BnfMcpDocumentDetail,
@@ -56,7 +69,9 @@ export type CanonicalizeOutcome =
   | { ark: string; status: "not_digitized" }
   | { ark: string; status: "api_error" }
 
-const GALLICA_OAI_URL = "https://gallica.bnf.fr/services/OAIRecord"
+// Ungated OAI-PMH metadata endpoint (oai.bnf.fr) — NOT gallica.bnf.fr, which is
+// Cloudflare-403'd from the server. No auth, no partner quota, no Cloudflare.
+const GALLICA_OAI_PMH_URL = "http://oai.bnf.fr/oai2/OAIHandler"
 const CATALOGUE_SRU_URL = "http://catalogue.bnf.fr/api/SRU"
 const DATABNF_SPARQL_URL = "https://data.bnf.fr/sparql"
 
@@ -161,6 +176,28 @@ function pickDocType(root: XmlNode): string | undefined {
   if (types.length === 0) return undefined
   const fr = types.find((t) => langAttr(t) === "fre")
   return nodeText(fr) ?? nodeText(types[0]) ?? undefined
+}
+
+/**
+ * True if any <dc:description> announces a text layer ("Avec mode texte").
+ * BnF's OAI marks OCR'd documents this way; it is the migration replacement for
+ * the old <nqamoyen> score as the OCR-availability signal (verified live: present
+ * on text docs, absent on image-only docs). See ai-memories partner-api-migration.
+ */
+function hasTextMode(root: XmlNode): boolean {
+  return findAll(root, "description").some((n) => {
+    const t = nodeText(n)
+    return t !== null && /mode\s+texte/i.test(t)
+  })
+}
+
+/** Total view (page/folio) count from <dc:format>"Nombre total de vues : N". */
+function totalViews(root: XmlNode): number | undefined {
+  for (const n of findAll(root, "format")) {
+    const m = nodeText(n)?.match(/Nombre total de vues\s*:\s*(\d+)/i)
+    if (m) return Number(m[1])
+  }
+  return undefined
 }
 
 /** Read a string attribute (e.g. "tag", "code") off a parsed element. */
@@ -341,23 +378,29 @@ export class BnfDirectClient {
     return url ? extractGallicaArk(url) : null
   }
 
-  // ---- Gallica: OAIRecord ---------------------------------------------------
+  // ---- Gallica: OAI-PMH (oai.bnf.fr) ----------------------------------------
   private async resolveGallica(ark: string): Promise<BnfMcpDocumentDetail> {
-    const xml = await this.httpGetText(GALLICA_OAI_URL, {
-      ark: fullArk(ark),
+    // Metadata from the UNGATED OAI-PMH endpoint (oai.bnf.fr) — no auth, no
+    // Cloudflare, no partner quota — NOT gallica.bnf.fr/services/OAIRecord
+    // (Cloudflare-403 from the server). OCR availability is the "Avec mode
+    // texte" flag (replaces the old <nqamoyen> score); page count is the
+    // "Nombre total de vues" note. See ai-memories partner-api-migration.
+    const xml = await this.httpGetText(GALLICA_OAI_PMH_URL, {
+      verb: "GetRecord",
+      metadataPrefix: "oai_dc",
+      identifier: `oai:bnf.fr:gallica/${fullArk(ark)}`,
     })
     const root = parser.parse(xml)
 
     const title = firstText(root, "title")
     if (!title) {
-      // A valid OAIRecord always carries a title; its absence means the ARK is
-      // unknown / not digitized. Terminal — do not retry.
-      throw new BnfMcpNotFoundError(`Gallica OAIRecord has no title for ${ark}`)
+      // A live OAI record always carries a title; its absence (or an
+      // <error code="idDoesNotExist">) means the ARK is unknown / not
+      // digitized. Terminal — do not retry.
+      throw new BnfMcpNotFoundError(`Gallica OAI record has no title for ${ark}`)
     }
 
-    const nqaRaw = firstText(root, "nqamoyen")
-    const nqa = nqaRaw !== undefined ? Number(nqaRaw) : NaN
-    const nqaScore = Number.isFinite(nqa) ? nqa : undefined
+    const pages = totalViews(root)
 
     return {
       ark: localArk(ark),
@@ -367,8 +410,8 @@ export class BnfDirectClient {
       doc_type: pickDocType(root),
       language: firstText(root, "language"),
       publisher: firstText(root, "publisher"),
-      nqa_score: nqaScore,
-      ocr_available: nqaScore !== undefined ? nqaScore > 0 : undefined,
+      ocr_available: hasTextMode(root),
+      ...(pages !== undefined ? { pages } : {}),
       gallica_url: `https://gallica.bnf.fr/${fullArk(ark)}`,
     }
   }
@@ -402,34 +445,32 @@ export class BnfDirectClient {
   }
 
   // ---- transport ------------------------------------------------------------
+  // Three transports, in priority order:
+  //   1. broker (BNF_BROKER_URL) — the single egress chokepoint that owns the
+  //      OAuth token + shared rate caps (broker/ service). Preferred whenever
+  //      configured; supersedes the relay.
+  //   2. relay (GALLICA_RELAY_URL) — curl_cffi browser-handshake sidecar for
+  //      Cloudflare-gated gallica.bnf.fr (legacy demo stopgap; post-OAI-cutover
+  //      the resolver no longer hits gallica.bnf.fr, so this rarely applies).
+  //   3. direct undici — browser UA + IPv4-pinned dispatcher.
+  // All three feed the same status classification (each transport mirrors the
+  // upstream status verbatim), so retry/terminal behaviour is identical.
   private async httpGetText(
     baseUrl: string,
     query: Record<string, string>,
     accept = "application/xml",
   ): Promise<string> {
     const url = `${baseUrl}?${new URLSearchParams(query).toString()}`
+    const viaBroker = brokerUrl() !== undefined
+    const viaRelay = !viaBroker && shouldRelay(url)
     return withRetry(
       async () => {
-        const res = await undiciFetch(url, {
-          method: "GET",
-          headers: { "User-Agent": BNF_USER_AGENT, Accept: accept },
-          dispatcher: this.dispatcher,
-          signal: withTimeout(this.signal, BNF_HTTP_TIMEOUT_MS),
-        })
-        if (res.status === 401 || res.status === 403) {
-          // 403 from Cloudflare (UA/fingerprint). Terminal — retrying won't help.
-          throw new BnfMcpAuthError(`BnF direct HTTP ${res.status} for ${url}`)
-        }
-        if (res.status === 404) {
-          throw new BnfMcpNotFoundError(`BnF direct HTTP 404 for ${url}`)
-        }
-        if (res.status === 429) {
-          throw new BnfMcpRateLimitError("BnF direct rate limited")
-        }
-        if (!res.ok) {
-          throw new BnfMcpError(`BnF direct HTTP ${res.status} for ${url}`)
-        }
-        return res.text()
+        const { status, body } = viaBroker
+          ? await brokerGetText(url, accept, this.signal, BNF_HTTP_TIMEOUT_MS)
+          : viaRelay
+            ? await relayGetText(url, accept, this.signal, BNF_HTTP_TIMEOUT_MS)
+            : await this.directGetText(url, accept)
+        return this.classifyResponse(url, status, body)
       },
       {
         attempts: BNF_MCP_RETRY_ATTEMPTS,
@@ -437,5 +478,39 @@ export class BnfDirectClient {
         capMs: BNF_MCP_RETRY_CAP_MS,
       },
     )
+  }
+
+  /** Direct undici GET: browser UA + the shared IPv4-pinned dispatcher. */
+  private async directGetText(
+    url: string,
+    accept: string,
+  ): Promise<{ status: number; body: string }> {
+    const res = await undiciFetch(url, {
+      method: "GET",
+      headers: { "User-Agent": BNF_USER_AGENT, Accept: accept },
+      dispatcher: this.dispatcher,
+      signal: withTimeout(this.signal, BNF_HTTP_TIMEOUT_MS),
+    })
+    return { status: res.status, body: await res.text() }
+  }
+
+  /** Map an HTTP status to the shared BnF error taxonomy, or return the body on
+   *  2xx. Applied identically to direct and relayed responses. */
+  private classifyResponse(url: string, status: number, body: string): string {
+    if (status === 401 || status === 403) {
+      // 403 from Cloudflare (UA/fingerprint, or a rejected relay handshake).
+      // Terminal — retrying the same call won't help.
+      throw new BnfMcpAuthError(`BnF HTTP ${status} for ${url}`)
+    }
+    if (status === 404) {
+      throw new BnfMcpNotFoundError(`BnF HTTP 404 for ${url}`)
+    }
+    if (status === 429) {
+      throw new BnfMcpRateLimitError("BnF direct rate limited")
+    }
+    if (status < 200 || status >= 300) {
+      throw new BnfMcpError(`BnF HTTP ${status} for ${url}`)
+    }
+    return body
   }
 }

@@ -18,7 +18,7 @@ import { ProjectQueries } from "@/models/projects/queries"
 import { IngestPolicy } from "@/models/ingest/policy"
 import { IngestQueries } from "@/models/ingest/queries"
 import { IngestService } from "@/models/ingest/service"
-import type { IngestJob } from "@/models/ingest/schema"
+import { serializeIngestJob, type IngestJobView } from "@/models/ingest/types"
 
 type RouteCtx = { params: Promise<{ job_id: string }> }
 
@@ -39,5 +39,5 @@ export const POST = withAuth(async (_req, user, bouncer, ctx: RouteCtx) => {
     return conflict("Aucun document en échec à réessayer")
   }
 
-  return ok<IngestJob>(result)
+  return ok<IngestJobView>(serializeIngestJob(result))
 })

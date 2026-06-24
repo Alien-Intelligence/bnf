@@ -105,6 +105,21 @@ export class CorpusQueries {
   }
 
   /**
+   * Returns the ARKs currently IN THE INDEX for a project (Document.indexedAt is
+   * set). This is the per-document ground truth the ingestion delta is computed
+   * against — NOT the coarse ingestedVersionId pointer, which can't express a
+   * partial ingest (most docs indexed, one failed). Stamped by
+   * IngestService.commit()/commitPartialFailure(). See ingestion-jobs / corpus-versioning.
+   */
+  static async indexedArks(projectId: string): Promise<string[]> {
+    const rows = await prisma.document.findMany({
+      where: { projectId, indexedAt: { not: null } },
+      select: { ark: true },
+    })
+    return rows.map((r) => r.ark)
+  }
+
+  /**
    * Returns the full corpus comprehension snapshot for a given version ref.
    *
    * `ref`:

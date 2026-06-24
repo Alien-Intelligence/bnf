@@ -21,6 +21,7 @@ import { XMLParser } from "fast-xml-parser";
 import type { BnfDocInfo } from "../types.js";
 import { arkToSlug } from "../slug.js";
 
+import { brokerGet, brokerUrl } from "./broker-client.js";
 import { PermanentBnfError, TransientBnfError } from "./errors.js";
 import { gallicaRelayUrl, relayGet } from "./gallica-relay.js";
 import { altoRateLimit, gallicaRateLimit, type TokenBucket } from "./rate-limiter.js";
@@ -31,6 +32,27 @@ const USER_AGENT = "bnf-ingest/0.1 (leo@alien.club)";
 const DEFAULT_TIMEOUT_MS = 30_000;
 const PAGE_TIMEOUT_MS = 15_000;
 const GALLICA = "https://gallica.bnf.fr";
+
+// Partner-API migration endpoints (used when the broker is configured):
+//   - metadata:  ungated OAI-PMH (oai.bnf.fr) — no auth, no Cloudflare, no quota.
+//   - IIIF v3:   openapi.bnf.fr via the broker (OAuth + shared rate caps).
+// When BNF_BROKER_URL is unset the worker stays on the legacy gallica.bnf.fr
+// endpoints (OAIRecord/Pagination/RequestDigitalElement, viewer scrape, v2 IIIF).
+const OAI_PMH = "http://oai.bnf.fr/oai2/OAIHandler";
+const OPENAPI = (process.env.BNF_API_BASE_URL ?? "https://openapi.bnf.fr").replace(/\/$/, "");
+
+/** True when the broker is configured → use the partner API + OAI metadata. */
+function partnerMode(): boolean {
+  return brokerUrl() !== undefined;
+}
+
+/** ALTO-fetch concurrency on the partner path — the broker governs the actual
+ *  rate, so this is just the in-flight window. Default 6; tune via env. */
+function altoConcurrency(): number {
+  const raw = process.env.BNF_ALTO_CONCURRENCY;
+  const n = raw == null || raw.trim() === "" ? 6 : Number(raw);
+  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 6;
+}
 
 /** Same shape extract.ts expects from `getDocumentText`. */
 export interface RawDocText {
@@ -120,6 +142,24 @@ async function fetchText(
   opts: { timeoutMs?: number; accept?: string; rateLimiter?: TokenBucket } = {},
 ): Promise<FetchTextResult> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  // Broker path: the broker owns the OAuth token AND the shared rate budget, so
+  // we do NOT acquire a local token bucket here (that would double-throttle).
+  // It mirrors the upstream status + bytes verbatim, so classification is
+  // identical. Takes precedence over the legacy relay/direct path.
+  if (brokerUrl()) {
+    try {
+      const { status, bytes } = await brokerGet(
+        url,
+        opts.accept ?? "application/xml, text/xml, */*",
+        timeoutMs,
+      );
+      return { status, body: bytes.toString("utf8") };
+    } catch (err) {
+      throw new TransientBnfError("network", {
+        hint: `${url}: broker ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  }
   // Acquire BEFORE arming the timeout — waiting on the budget must not count
   // against the per-request timeout, otherwise a queued request would always
   // abort before sending. Defaults to the GENERAL limiter; the ALTO path
@@ -297,6 +337,25 @@ function extractPageCountFromFormat(formats: unknown): number | null {
   return null;
 }
 
+/**
+ * OCR-availability signal: true if ANY <dc:description> announces a text layer
+ * ("Avec mode texte"). Must scan all descriptions — Gallica emits several
+ * (e.g. "Contient une table des matières" THEN "Avec mode texte"), so checking
+ * only the first would miss it.
+ */
+function descriptionsHaveModeTexte(descriptions: unknown): boolean {
+  const list = Array.isArray(descriptions)
+    ? descriptions
+    : descriptions != null
+      ? [descriptions]
+      : [];
+  for (const d of list) {
+    const s = textOf(d);
+    if (s != null && /mode\s+texte/i.test(s)) return true;
+  }
+  return false;
+}
+
 function parseIntOrNull(v: unknown): number | null {
   if (typeof v === "number" && Number.isFinite(v)) return v;
   if (typeof v === "string") {
@@ -335,7 +394,9 @@ export class BnfApi {
       });
     }
     try {
-      return await this.getDocumentInfoFromOAIRecord(canonicalArk);
+      return partnerMode()
+        ? await this.getDocumentInfoViaOaiPmh(canonicalArk)
+        : await this.getDocumentInfoFromOAIRecord(canonicalArk);
     } catch (e) {
       // OAIRecord is incomplete: many ARKs that are perfectly viewable on
       // Gallica IIIF (Cartes & Plans, Estampes, specialist series) return a
@@ -457,6 +518,98 @@ export class BnfApi {
   }
 
   /**
+   * Partner-API metadata path: the ungated OAI-PMH endpoint (oai.bnf.fr) via the
+   * broker. Same Dublin Core fields as /services/OAIRecord, but a different
+   * envelope (<OAI-PMH><GetRecord><record><metadata><oai_dc:dc>) and NO
+   * results-level <mode_indexation>/<nqamoyen>/<nbPages>. OCR availability is the
+   * "Avec mode texte" <dc:description> flag (scanning ALL descriptions, not just
+   * the first); page count is the "Nombre total de vues" <dc:format> note.
+   */
+  private async getDocumentInfoViaOaiPmh(
+    canonicalArk: string,
+  ): Promise<BnfDocInfo> {
+    const identifier = `oai:bnf.fr:gallica/${canonicalArk}`;
+    const url = `${OAI_PMH}?verb=GetRecord&metadataPrefix=oai_dc&identifier=${encodeURIComponent(identifier)}`;
+
+    const xml = await withBnfRetry(
+      async () => {
+        const { status, body } = await fetchText(url);
+        const err = classifyStatus(status, body, url);
+        if (err) throw err;
+        return body;
+      },
+      { label: "OAI" },
+    );
+
+    let parsed: unknown;
+    try {
+      parsed = oaiParser.parse(xml);
+    } catch (e) {
+      throw new TransientBnfError("xml_parse_failed", {
+        hint: `OAI: ${e instanceof Error ? e.message : String(e)}`,
+      });
+    }
+
+    const pmh = (parsed as Record<string, unknown>)["OAI-PMH"] as
+      | Record<string, unknown>
+      | undefined;
+    if (!pmh || typeof pmh !== "object") {
+      throw new PermanentBnfError("not_found", {
+        hint: `OAI returned no <OAI-PMH> for ${canonicalArk}`,
+      });
+    }
+    // <error code="idDoesNotExist"|...> → the ARK is unknown / not on Gallica.
+    if (pmh.error != null) {
+      throw new PermanentBnfError("not_found", {
+        hint: `OAI error for ${canonicalArk}: ${textOf(pmh.error) ?? "error"}`,
+      });
+    }
+    const getRecord = pmh.GetRecord as Record<string, unknown> | undefined;
+    const record = getRecord?.record as Record<string, unknown> | undefined;
+    const metadata = record?.metadata as Record<string, unknown> | undefined;
+    const dc =
+      (metadata?.["oai_dc:dc"] as Record<string, unknown> | undefined) ?? undefined;
+    if (!dc || typeof dc !== "object") {
+      throw new PermanentBnfError("not_found", {
+        hint: `OAI dc envelope missing for ${canonicalArk}`,
+      });
+    }
+
+    const title = textOf(firstOrNull(dc["dc:title"]));
+    if (!title) {
+      throw new PermanentBnfError("not_found", {
+        hint: `OAI record has no title for ${canonicalArk}`,
+      });
+    }
+    const creator = textOf(firstOrNull(dc["dc:creator"]));
+    const date = textOf(dc["dc:date"]);
+    const docType = pickDcType(dc["dc:type"]);
+    const lang = pickFirstLanguage(dc["dc:language"]);
+    const ocrAvailable = descriptionsHaveModeTexte(dc["dc:description"]);
+    const pageCount = extractPageCountFromFormat(dc["dc:format"]);
+
+    const slug = arkToSlug(canonicalArk);
+    const iiifManifestUrl = `${OPENAPI}/iiif/presentation/v3/ark:/12148/${slug}/manifest.json`;
+
+    return {
+      ark: canonicalArk,
+      title,
+      creator,
+      date,
+      docType,
+      ocrAvailable,
+      pageCount,
+      iiifManifestUrl,
+      raw: {
+        ...(dc as Record<string, unknown>),
+        language: lang,
+        source: "oai_pmh",
+        pageNumber: pageCount,
+      },
+    };
+  }
+
+  /**
    * Fallback metadata path for ARKs with no usable OAIRecord. Fetches the IIIF
    * manifest and derives a BnfDocInfo from `manifest.metadata[]`. Forces the
    * image (Holo) pipeline: `ocrAvailable: false` and an image `docType`, since
@@ -531,9 +684,14 @@ export class BnfApi {
    */
   async getDocumentText(
     ark: string,
-    opts: { maxPages?: number; startPage?: number } = {},
+    opts: { maxPages?: number; startPage?: number; pageCount?: number | null } = {},
   ): Promise<RawDocText> {
     const canonicalArk = ensureCanonicalArk(ark);
+    // Partner mode: IIIF v3 per-page ALTO via the broker. No viewer scrape, no
+    // Pagination call — page count comes from OAI (passed in) or the manifest.
+    if (partnerMode()) {
+      return this.getDocumentTextViaIiifAlto(canonicalArk, opts);
+    }
     try {
       const viaViewer = await this.getDocumentTextViaViewer(canonicalArk, opts);
       // A successful harvest (even of a partially-restricted doc) is the
@@ -566,6 +724,85 @@ export class BnfApi {
       .filter((p) => p.ocrText && p.ocrText.trim().length > 0)
       .map((p) => ({ ordre: p.view, text: p.ocrText as string }));
     return { pages, page_count: result.totalViews };
+  }
+
+  /**
+   * Partner OCR path: IIIF v3 per-page ALTO via the broker. Page count comes
+   * from OAI (`opts.pageCount`) — no Pagination call; if absent we fetch the
+   * manifest once for the canvas count. Folio numbering is contiguous f1…fP
+   * (verified), so we iterate by ordinal. Each page is global-pool (NOT the
+   * 12/min manifest bucket); the broker governs the actual rate.
+   */
+  private async getDocumentTextViaIiifAlto(
+    canonicalArk: string,
+    opts: { maxPages?: number; startPage?: number; pageCount?: number | null },
+  ): Promise<RawDocText> {
+    const slug = arkToSlug(canonicalArk);
+    const maxPages = opts.maxPages ?? 200;
+    const startPage = Math.max(1, opts.startPage ?? 1);
+
+    let total = opts.pageCount ?? null;
+    if (total == null || total <= 0) {
+      // Page count unknown — one manifest call (12/min bucket) to learn it.
+      total = (await this.getManifest(canonicalArk)).totalPages;
+    }
+    if (!total || total <= 0) return { pages: [], page_count: 0 };
+
+    const last = Math.min(total, startPage - 1 + maxPages);
+    const ordres: number[] = [];
+    for (let n = startPage; n <= last; n++) ordres.push(n);
+
+    const failRatio = readPageFailRatio();
+    const results: Array<{ ordre: number; text: string }> = new Array(ordres.length);
+    let pageFailures = 0;
+    let pagesAttempted = 0;
+    let cursor = 0;
+    const worker = async (): Promise<void> => {
+      while (true) {
+        const i = cursor++;
+        if (i >= ordres.length) return;
+        const ordre = ordres[i]!;
+        pagesAttempted++;
+        const outcome = await this.fetchIiifAltoPage(slug, ordre);
+        if (outcome.exhausted) pageFailures++;
+        results[i] = { ordre, text: outcome.text };
+        if (pagesAttempted > 4 && pageFailures / pagesAttempted > failRatio) {
+          throw new TransientBnfError("rate_limited_doc", {
+            hint: `${canonicalArk}: ${pageFailures}/${pagesAttempted} ALTO pages exhausted retries (>${(failRatio * 100).toFixed(0)}%)`,
+          });
+        }
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(altoConcurrency(), ordres.length) }, () => worker()),
+    );
+
+    const pages = results.filter((p) => p.text.trim().length > 0);
+    return { pages, page_count: total };
+  }
+
+  /** Fetch + parse one IIIF v3 ALTO page. 404 = no OCR for this folio → ("",false). */
+  private async fetchIiifAltoPage(slug: string, ordre: number): Promise<AltoOutcome> {
+    const url = `${OPENAPI}/iiif/presentation/v3/ark:/12148/${slug}/f${ordre}/alto.xml`;
+    try {
+      const text = await withBnfRetry(
+        async () => {
+          const { status, body } = await fetchText(url, { timeoutMs: PAGE_TIMEOUT_MS });
+          if (status === 404) return "";
+          const err = classifyStatus(status, body, url);
+          if (err) throw err;
+          if (!body || body.trim().length === 0) return "";
+          return parseAltoText(body);
+        },
+        { label: `ALTOv3[${ordre}]`, attempts: 3, baseMs: 400, totalBudgetMs: 30_000 },
+      );
+      return { text, exhausted: false };
+    } catch (e) {
+      console.warn(
+        `[bnf-api] IIIF ALTO page ${ordre} of ${slug} failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
+      return { text: "", exhausted: true };
+    }
   }
 
   private async getDocumentTextViaAlto(
@@ -669,7 +906,10 @@ export class BnfApi {
     const canonicalArk = ensureCanonicalArk(ark);
     const maxCanvases = opts.maxCanvases ?? 200;
     const slug = arkToSlug(canonicalArk);
-    const url = `${GALLICA}/iiif/ark:/12148/${slug}/manifest.json`;
+    const v3 = partnerMode();
+    const url = v3
+      ? `${OPENAPI}/iiif/presentation/v3/ark:/12148/${slug}/manifest.json`
+      : `${GALLICA}/iiif/ark:/12148/${slug}/manifest.json`;
 
     const json = await withBnfRetry(
       async () => {
@@ -688,6 +928,8 @@ export class BnfApi {
       },
       { label: "manifest" },
     );
+
+    if (v3) return parseV3Manifest(json, maxCanvases);
 
     const title =
       typeof json.label === "string"
@@ -753,8 +995,75 @@ export class BnfApi {
     const slug = arkToSlug(canonicalArk);
     const ordre = opts.ordre ?? 1;
     const size = opts.size ?? "!1280,1280";
+    if (partnerMode()) {
+      // IIIF v3 grammar: quality native→default, and the partner host. The size
+      // request form (!w,h) is unchanged between v2 and v3.
+      return `${OPENAPI}/iiif/image/v3/ark:/12148/${slug}/f${ordre}/full/${size}/0/default.jpg`;
+    }
     return `${GALLICA}/iiif/ark:/12148/${slug}/f${ordre}/full/${size}/0/native.jpg`;
   }
+}
+
+// ---------------------------------------------------------------------------
+// IIIF Presentation v3 manifest parsing (partner API)
+// ---------------------------------------------------------------------------
+
+/** Parse an IIIF Presentation v3 manifest into the same `Manifest` shape. */
+function parseV3Manifest(json: Record<string, unknown>, maxCanvases: number): Manifest {
+  const title = iiifV3Label(json.label);
+  const items = Array.isArray(json.items) ? json.items : [];
+  const canvases: ManifestCanvas[] = [];
+  for (let i = 0; i < items.length; i++) {
+    const c = items[i];
+    if (!c || typeof c !== "object") continue;
+    const obj = c as Record<string, unknown>;
+    const id = typeof obj.id === "string" ? obj.id : null;
+    // v3 canvas id is ".../f<N>/canvas" — derive ordre, else 1-based position.
+    const m = id ? /\/f(\d+)(?:\/|$)/.exec(id) : null;
+    const ordre = m ? parseInt(m[1]!, 10) : i + 1;
+    const label = iiifV3Label(obj.label);
+    const width = typeof obj.width === "number" ? obj.width : null;
+    const height = typeof obj.height === "number" ? obj.height : null;
+    // Image service URL is not needed (getImageUrl builds the URL from ark+ordre).
+    canvases.push({ ordre, label, width, height, imageServiceUrl: null });
+  }
+  return {
+    title,
+    metadata: parseV3ManifestMetadata(json.metadata),
+    totalPages: canvases.length,
+    canvases: canvases.slice(0, maxCanvases),
+  };
+}
+
+/** Coerce a v3 language map ({"fr":["…"],"none":["…"]}) to one string (fr preferred). */
+function iiifV3Label(v: unknown): string | null {
+  if (v == null) return null;
+  if (typeof v === "string") return v.trim() || null;
+  if (typeof v === "object") {
+    const o = v as Record<string, unknown>;
+    const langs = Object.keys(o);
+    const pick = langs.find((l) => /^fr/i.test(l)) ?? langs.find((l) => l === "none") ?? langs[0];
+    if (pick) {
+      const arr = o[pick];
+      if (Array.isArray(arr) && typeof arr[0] === "string") return arr[0].trim() || null;
+      if (typeof arr === "string") return arr.trim() || null;
+    }
+  }
+  return null;
+}
+
+/** Flatten a v3 manifest `metadata[]` (label/value are language maps) to pairs. */
+function parseV3ManifestMetadata(raw: unknown): Array<{ label: string; value: string }> {
+  if (!Array.isArray(raw)) return [];
+  const out: Array<{ label: string; value: string }> = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue;
+    const e = entry as Record<string, unknown>;
+    const label = iiifV3Label(e.label);
+    const value = iiifV3Label(e.value);
+    if (label && value) out.push({ label, value });
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------

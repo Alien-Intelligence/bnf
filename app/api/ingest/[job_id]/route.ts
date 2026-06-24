@@ -15,7 +15,7 @@ import { notFound, ok } from "@/lib/api-response"
 import { ProjectQueries } from "@/models/projects/queries"
 import { IngestPolicy } from "@/models/ingest/policy"
 import { IngestQueries } from "@/models/ingest/queries"
-import type { IngestJob } from "@/models/ingest/schema"
+import { serializeIngestJob, type IngestJobView } from "@/models/ingest/types"
 
 type RouteCtx = { params: Promise<{ job_id: string }> }
 
@@ -31,5 +31,5 @@ export const GET = withAuth(async (_req, _user, bouncer, ctx: RouteCtx) => {
 
   await bouncer.with(IngestPolicy).authorize("view", project)
 
-  return ok<IngestJob>(job)
+  return ok<IngestJobView>(serializeIngestJob(job))
 })

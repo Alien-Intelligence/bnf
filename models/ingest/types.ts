@@ -3,7 +3,39 @@
 // No `import "server-only"` — the schema is shared by client-side form
 // validation and server-side request parsing.
 import { z } from "zod"
-import type { IngestStage, IngestStatus } from "./schema"
+import type { IngestJob, IngestStage, IngestStatus } from "./schema"
+
+/**
+ * Client-safe shape of an IngestJob — the only ingest-job type that may cross
+ * the server→client boundary (server-component props or API JSON).
+ *
+ * Two reasons the raw Prisma row can't cross as-is:
+ *   1. `progress` is a Prisma `Decimal`, which React Server Components refuse
+ *      to serialize ("Only plain objects can be passed to Client Components").
+ *      We coerce it to a plain `number | null`.
+ *   2. `callbackSecret` is the per-job HMAC secret the cluster uses to sign
+ *      progress webhooks. It must NEVER reach the browser — it is dropped here.
+ */
+export type IngestJobView = Omit<
+  IngestJob,
+  "progress" | "callbackSecret"
+> & {
+  progress: number | null
+}
+
+/**
+ * Convert a Prisma `IngestJob` row into its client-safe {@link IngestJobView}.
+ * Call this at every boundary that hands a job to the client (page props, API
+ * responses). Strips `callbackSecret` and flattens the `Decimal` progress.
+ */
+export function serializeIngestJob(job: IngestJob): IngestJobView {
+  // Destructure the secret out so it cannot leak; `progress` is rebuilt below.
+  const { callbackSecret: _callbackSecret, progress, ...rest } = job
+  return {
+    ...rest,
+    progress: progress === null ? null : Number(progress),
+  }
+}
 
 /**
  * Body accepted by POST /api/projects/[id]/ingest.

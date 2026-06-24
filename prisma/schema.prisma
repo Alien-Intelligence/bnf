@@ -202,6 +202,16 @@ model Document {
   // Values live in models/documents/schema.ts (DOCUMENT_CANONICAL_STATUS).
   canonicalStatus String? @map("canonical_status")
 
+  // Per-document index state — the ground truth for the ingestion delta, which
+  // is per-DOCUMENT, not per-version (a partial ingest indexes most docs while
+  // one fails; the coarse ingestedVersionId pointer can't express that). Set by
+  // IngestService.commit()/commitPartialFailure() for each ARK actually written
+  // to the index; cleared when an ARK is successfully removed. Null = not in the
+  // index → it's in the "to ingest" delta. See models/corpus/queries.ts
+  // indexedArks() and playbook/corpus-versioning.md.
+  indexedAt       DateTime? @map("indexed_at")
+  indexError      String?   @map("index_error") // last ingest failure reason, for the UI mark
+
   project       Project              @relation(fields: [projectId], references: [id])
   membership    CorpusMembership[]
   contributions CorpusContribution[]

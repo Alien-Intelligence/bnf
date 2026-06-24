@@ -16,8 +16,11 @@ import { ok, notFound } from "@/lib/api-response"
 import { ProjectQueries } from "@/models/projects/queries"
 import { IngestPolicy } from "@/models/ingest/policy"
 import { IngestService } from "@/models/ingest/service"
-import { ingestSubmitSchema } from "@/models/ingest/types"
-import type { IngestJob } from "@/models/ingest/schema"
+import {
+  ingestSubmitSchema,
+  serializeIngestJob,
+  type IngestJobView,
+} from "@/models/ingest/types"
 
 type RouteCtx = { params: Promise<{ id: string }> }
 
@@ -33,5 +36,5 @@ export const POST = withAuth(async (req, user, bouncer, ctx: RouteCtx) => {
   await bouncer.with(IngestPolicy).authorize("submit", project)
 
   const job = await IngestService.submit(project, user, parsed)
-  return ok<IngestJob>(job)
+  return ok<IngestJobView>(serializeIngestJob(job))
 })

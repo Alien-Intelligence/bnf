@@ -24,6 +24,9 @@ function variantForStatus(
       return "secondary"
     case INGEST_STATUS.DONE:
       return "secondary"
+    // PARTIAL = mostly succeeded, some failed → amber (styled below), not red.
+    case INGEST_STATUS.PARTIAL:
+      return "outline"
     case INGEST_STATUS.FAILED:
       return "destructive"
     case INGEST_STATUS.CANCELED:
@@ -33,12 +36,13 @@ function variantForStatus(
   }
 }
 
-type KnownStatus = "queued" | "running" | "done" | "failed" | "canceled"
+type KnownStatus = "queued" | "running" | "done" | "partial" | "failed" | "canceled"
 
 const KNOWN_STATUSES: ReadonlyArray<KnownStatus> = [
   INGEST_STATUS.QUEUED,
   INGEST_STATUS.RUNNING,
   INGEST_STATUS.DONE,
+  INGEST_STATUS.PARTIAL,
   INGEST_STATUS.FAILED,
   INGEST_STATUS.CANCELED,
 ]
@@ -53,6 +57,7 @@ export function BadgeIngestStatus({ status }: Props) {
 
   const variant = variantForStatus(status)
   const isDone = status === INGEST_STATUS.DONE
+  const isPartial = status === INGEST_STATUS.PARTIAL
 
   return (
     <Badge
@@ -60,7 +65,9 @@ export function BadgeIngestStatus({ status }: Props) {
       className={
         isDone
           ? "border-green-500/30 bg-green-500/10 text-green-700 dark:text-green-400"
-          : undefined
+          : isPartial
+            ? "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400"
+            : undefined
       }
     >
       {label}

@@ -13,11 +13,12 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { BadgeIngestStatus } from "@/components/badges/ingest/status"
-import type { IngestJob } from "@/models/ingest/schema"
+import { INGEST_STATUS } from "@/models/ingest/schema"
+import type { IngestJobView } from "@/models/ingest/types"
 
 interface Props {
   projectId: string
-  jobs: IngestJob[]
+  jobs: IngestJobView[]
 }
 
 /** Format a Date as a relative string (e.g. "2 days ago") if the Intl
@@ -62,10 +63,19 @@ export function CardIngestJobHistory({ jobs }: Props) {
             {jobs.map((job) => (
               <li
                 key={job.id}
-                className="flex items-center justify-between gap-3 py-2.5"
+                className="flex items-start justify-between gap-3 py-2.5"
               >
-                <BadgeIngestStatus status={job.status} />
-                <span className="ml-auto text-xs tabular-nums text-muted-foreground">
+                <div className="flex flex-col gap-1">
+                  <BadgeIngestStatus status={job.status} />
+                  {(job.status === INGEST_STATUS.PARTIAL ||
+                    job.status === INGEST_STATUS.FAILED) &&
+                  job.error ? (
+                    <span className="text-xs text-muted-foreground">
+                      {job.error}
+                    </span>
+                  ) : null}
+                </div>
+                <span className="ml-auto shrink-0 text-xs tabular-nums text-muted-foreground">
                   {relativeDate(new Date(job.createdAt))}
                 </span>
               </li>

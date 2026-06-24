@@ -97,6 +97,9 @@ async function extractOcr(
   try {
     const raw = await bnf.getDocumentText(info.ark, {
       maxPages: opts.maxOcrPages ?? 200,
+      // Page count from metadata (OAI "Nombre total de vues") lets the partner
+      // OCR path iterate folios without a manifest call (off the 12/min cap).
+      pageCount: info.pageCount,
     });
 
     // Prefer the structured `pages` array (preserves per-page boundaries we

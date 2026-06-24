@@ -19,6 +19,7 @@ import { GoogleGenAI } from "@google/genai";
 import { Agent, request } from "undici";
 
 import { genai, google, vision } from "../env.js";
+import { brokerGet, brokerUrl } from "./broker-client.js";
 import { gallicaRelayUrl, relayGet } from "./gallica-relay.js";
 import { gallicaRateLimit } from "./rate-limiter.js";
 
@@ -161,17 +162,27 @@ interface FetchedImage {
 }
 
 async function fetchImage(url: string): Promise<FetchedImage> {
+  const isBnf = /(^|\.)bnf\.fr$/i.test(new URL(url).hostname);
+  let mimeType: string;
+  let buffer: Buffer;
+  // Broker path (partner API): the broker owns auth + the shared rate budget,
+  // so we do NOT acquire a local bucket. Takes precedence over the relay.
+  if (isBnf && brokerUrl()) {
+    const r = await brokerGet(url, "image/jpeg,image/png,image/*;q=0.9", 60_000);
+    if (r.status < 200 || r.status >= 300) {
+      throw new Error(`Image fetch failed: ${r.status} (broker) for ${url}`);
+    }
+    return finalizeImage(r.bytes, r.contentType || "image/jpeg");
+  }
   // IIIF image fetches go through the GENERAL Gallica limiter (generous, not
   // the strict 5/min ALTO bucket) — a politeness cap, not a serializer, so
   // many image docs can be described in parallel.
-  const isGallica = /(^|\.)bnf\.fr$/i.test(new URL(url).hostname);
-  if (isGallica) {
+  if (isBnf) {
     await gallicaRateLimit.acquire();
   }
   // Demo stopgap: route Gallica image fetches through the browser-handshake
   // relay when configured (see gallica-relay.ts). Non-Gallica URLs never relay.
-  let mimeType: string;
-  let buffer: Buffer;
+  const isGallica = isBnf;
   if (isGallica && gallicaRelayUrl()) {
     const r = await relayGet(url, "image/jpeg,image/png,image/*;q=0.9", 60_000);
     if (r.status < 200 || r.status >= 300) {
@@ -192,6 +203,11 @@ async function fetchImage(url: string): Promise<FetchedImage> {
     mimeType = res.headers.get("content-type") ?? "image/jpeg";
     buffer = Buffer.from(await res.arrayBuffer());
   }
+  return finalizeImage(buffer, mimeType);
+}
+
+/** Pack fetched image bytes into the base64 data-URL shape the vision call needs. */
+function finalizeImage(buffer: Buffer, mimeType: string): FetchedImage {
   const base64 = buffer.toString("base64");
   return {
     dataUrl: `data:${mimeType};base64,${base64}`,

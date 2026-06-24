@@ -7,6 +7,11 @@ export const INGEST_STATUS = {
   QUEUED: "queued",
   RUNNING: "running",
   DONE: "done",
+  // PARTIAL — most docs indexed, at least one failed. The successes ARE in the
+  // index (their Document.indexedAt is stamped, so they drop out of the delta);
+  // only the failed docs remain to ingest. Distinct from FAILED (nothing usable
+  // committed) so the UI can show "N indexed / M failed" instead of "Échec".
+  PARTIAL: "partial",
   FAILED: "failed",
   CANCELED: "canceled",
 } as const

@@ -9,6 +9,8 @@ import { requireSessionUser } from "@/lib/auth-helpers"
 import { ProjectQueries } from "@/models/projects/queries"
 import { CorpusQueries } from "@/models/corpus/queries"
 import { IngestQueries } from "@/models/ingest/queries"
+import { IngestService } from "@/models/ingest/service"
+import { serializeIngestJob } from "@/models/ingest/types"
 import { prisma } from "@/lib/db"
 import { IngererClient } from "./client"
 
@@ -27,17 +29,19 @@ export default async function IngererPage({
   if (!project) notFound()
   if (project.ownerId !== user.id && !project.isPublic) notFound()
 
-  const [head, ingested, activeJob, recentJobs] = await Promise.all([
-    CorpusQueries.snapshot(projectId, "head"),
-    project.ingestedVersionId
-      ? prisma.corpusVersion.findUnique({
-          where: { id: project.ingestedVersionId },
-          select: { seq: true },
-        })
-      : Promise.resolve(null),
-    IngestQueries.activeForProject(projectId),
-    IngestQueries.listForProject(projectId, 20),
-  ])
+  const [head, ingested, deltaPreview, activeJob, recentJobs] =
+    await Promise.all([
+      CorpusQueries.snapshot(projectId, "head"),
+      project.ingestedVersionId
+        ? prisma.corpusVersion.findUnique({
+            where: { id: project.ingestedVersionId },
+            select: { seq: true },
+          })
+        : Promise.resolve(null),
+      IngestService.previewDelta(project),
+      IngestQueries.activeForProject(projectId),
+      IngestQueries.listForProject(projectId, 20),
+    ])
 
   return (
     <IngererClient
@@ -45,9 +49,13 @@ export default async function IngererPage({
       initialUser={{ name: user.name ?? undefined, email: user.email }}
       headVersionSeq={head.versionSeq}
       ingestedVersionSeq={ingested?.seq ?? null}
-      deltaPreview={{ added: head.total, removed: 0 }}
+      deltaPreview={{
+        added: deltaPreview.added,
+        removed: deltaPreview.removed,
+        excluded: deltaPreview.excluded,
+      }}
       activeJobId={activeJob?.id ?? null}
-      initialRecentJobs={recentJobs}
+      initialRecentJobs={recentJobs.map(serializeIngestJob)}
     />
   )
 }

@@ -10,6 +10,7 @@ import "server-only"
 //     IngestService.submit() returns the existing job — no new row.
 import crypto from "node:crypto"
 import { prisma } from "@/lib/db"
+import { Prisma } from "@/lib/generated/prisma/client"
 import type { IngestJob, Project, User } from "@/lib/generated/prisma/client"
 import { CorpusQueries } from "@/models/corpus/queries"
 import {
@@ -59,20 +60,23 @@ export class IngestService {
       targetVersion = await CorpusQueries.headVersion(project.id)
     }
 
-    // 2. Resolve base version
+    // 2. Resolve base version — kept for the job's baseVersionId provenance and
+    // the "Dernière ingestion vN" label. The DELTA itself is computed per-doc
+    // (below) against the indexed set, not this pointer, so a partial ingest's
+    // successes drop out of the next delta.
     const baseVersion = await CorpusQueries.ingestedVersion(project.id)
 
-    // 3. Compute delta
+    // 3. Compute delta — per DOCUMENT, against what's actually in the index
+    // (Document.indexedAt), NOT version-membership against the pointer. This is
+    // what lets a partial ingest leave only the failed doc in the delta.
     const targetArks = await CorpusQueries.membershipArks(targetVersion.id)
-    const baseArks = baseVersion
-      ? await CorpusQueries.membershipArks(baseVersion.id)
-      : []
+    const indexedArks = await CorpusQueries.indexedArks(project.id)
 
-    const baseSet = new Set(baseArks)
+    const indexedSet = new Set(indexedArks)
     const targetSet = new Set(targetArks)
 
-    const deltaAddedArks = targetArks.filter((a) => !baseSet.has(a))
-    const removedArks = baseArks.filter((a) => !targetSet.has(a))
+    const deltaAddedArks = targetArks.filter((a) => !indexedSet.has(a))
+    const removedArks = indexedArks.filter((a) => !targetSet.has(a))
 
     // 3b. Drop non-ingestable docs from the added delta. Catalogue notices
     // (cb*), non-digitized records, and digitized-but-text-less docs have no
@@ -158,6 +162,51 @@ export class IngestService {
         startedAt: new Date(),
       },
     })
+  }
+
+  /**
+   * Compute the delta that the next ingestion would carry — WITHOUT creating a
+   * job. Used to render the Ingérer overview (head vs. ingested versions and
+   * the +added / -removed counts).
+   *
+   * This mirrors {@link submit} steps 1–3b exactly so the preview can never
+   * drift from what an actual submit produces:
+   *   • target  = head version
+   *   • base    = last ingested version (null on first ingest)
+   *   • added   = (target ∖ base), then minus non-ingestable docs
+   *   • removed = base ∖ target
+   *   • excluded = non-ingestable docs dropped from the added delta
+   *
+   * `added` counts only ingestable docs because those are the only ones a
+   * submit would actually send — surfacing the raw corpus size here is the bug
+   * this method replaces (it showed the whole head corpus as "to ingest" even
+   * when most of it was already ingested).
+   */
+  static async previewDelta(
+    project: Project,
+  ): Promise<{ added: number; removed: number; excluded: number }> {
+    const targetVersion = await CorpusQueries.headVersion(project.id)
+
+    // Per-doc delta against the index (same source as submit()), so the preview
+    // can never drift from an actual submit. added = head docs not indexed;
+    // removed = indexed docs gone from head.
+    const targetArks = await CorpusQueries.membershipArks(targetVersion.id)
+    const indexedArks = await CorpusQueries.indexedArks(project.id)
+
+    const indexedSet = new Set(indexedArks)
+    const targetSet = new Set(targetArks)
+
+    const deltaAddedArks = targetArks.filter((a) => !indexedSet.has(a))
+    const removedArks = indexedArks.filter((a) => !targetSet.has(a))
+
+    const { ingestable, excluded } =
+      await IngestService._partitionByIngestability(project.id, deltaAddedArks)
+
+    return {
+      added: ingestable.length,
+      removed: removedArks.length,
+      excluded: excluded.length,
+    }
   }
 
   /**
@@ -249,12 +298,13 @@ export class IngestService {
    * See playbook/corpus-versioning.md invariant 4 and ingestion-jobs.md.
    */
   static async commit(job: IngestJob, results: IngestResults): Promise<void> {
+    const now = new Date()
     await prisma.$transaction([
       prisma.ingestJob.update({
         where: { id: job.id },
         data: {
           status: INGEST_STATUS.DONE,
-          finishedAt: new Date(),
+          finishedAt: now,
           chunksWritten: results.chunksWritten,
           stats: results.stats as never,
         },
@@ -267,18 +317,30 @@ export class IngestService {
         where: { id: job.projectId },
         data: { ingestedVersionId: job.targetVersionId },
       }),
+      // Per-doc index state: every added ARK is now in the index; every removed
+      // ARK is out. Keeps the delta truthful independent of the version pointer.
+      prisma.document.updateMany({
+        where: { projectId: job.projectId, ark: { in: job.addedArks } },
+        data: { indexedAt: now, indexError: null },
+      }),
+      prisma.document.updateMany({
+        where: { projectId: job.projectId, ark: { in: job.removedArks } },
+        data: { indexedAt: null },
+      }),
     ])
   }
 
   /**
-   * Terminal state for a job that finished but had per-doc failures.
+   * Terminal state for a job that finished but had per-doc failures (PARTIAL).
    *
-   * Marks the job FAILED and persists `stats` (which carries the per-doc
-   * `errors[]` the worker emitted) so retryFailed can re-queue exactly the
-   * failed ARKs. Deliberately does NOT advance project.ingestedVersionId or
-   * mark the target version ingested — only IngestService.commit() does that,
-   * and only on a fully-successful job. Counterpart to commit(); see the
-   * commit-gating note in applyProgress and corpus-versioning.md invariant 4.
+   * Stamps Document.indexedAt for the ARKs that DID succeed (added ∖ failed), so
+   * they drop out of the next delta, and records each failed ARK's reason in
+   * Document.indexError (indexedAt left null → it stays in the delta as the one
+   * to retry). Persists `stats.errors[]` for retryFailed. Deliberately does NOT
+   * advance project.ingestedVersionId or mark the target version "ingested" —
+   * only IngestService.commit() does that, on a fully-successful job (corpus-
+   * versioning.md invariant 4). Status is PARTIAL, not FAILED, so the UI reads it
+   * as "N indexed / M failed", not a blanket "Échec".
    */
   static async commitPartialFailure(
     job: IngestJob,
@@ -287,16 +349,73 @@ export class IngestService {
     const stats = results.stats as Record<string, unknown>
     const failed = Number(stats?.failed ?? 0)
     const total = Number(stats?.total ?? 0)
-    await prisma.ingestJob.update({
-      where: { id: job.id },
-      data: {
-        status: INGEST_STATUS.FAILED,
-        finishedAt: new Date(),
-        chunksWritten: results.chunksWritten,
-        stats: results.stats as never,
-        error: `${failed}/${total} document(s) en échec — réessayez les documents échoués`,
-      },
-    })
+    const errorByArk = IngestService._errorsByArk(stats)
+    const failedSet = new Set(errorByArk.keys())
+    const succeededAdded = job.addedArks.filter((a) => !failedSet.has(a))
+    const now = new Date()
+
+    const ops: Prisma.PrismaPromise<unknown>[] = [
+      prisma.ingestJob.update({
+        where: { id: job.id },
+        data: {
+          status: INGEST_STATUS.PARTIAL,
+          finishedAt: now,
+          chunksWritten: results.chunksWritten,
+          stats: results.stats as never,
+          error: `${failed}/${total} document(s) en échec — réessayez les documents échoués`,
+        },
+      }),
+    ]
+    if (succeededAdded.length > 0) {
+      ops.push(
+        prisma.document.updateMany({
+          where: { projectId: job.projectId, ark: { in: succeededAdded } },
+          data: { indexedAt: now, indexError: null },
+        }),
+      )
+    }
+    // Mark each failed doc with its reason; indexedAt stays null so it remains
+    // the outstanding delta. updateMany (not update) so a missing row can't throw.
+    for (const [ark, reason] of errorByArk) {
+      ops.push(
+        prisma.document.updateMany({
+          where: { projectId: job.projectId, ark },
+          data: { indexError: reason },
+        }),
+      )
+    }
+    if (job.removedArks.length > 0) {
+      ops.push(
+        prisma.document.updateMany({
+          where: { projectId: job.projectId, ark: { in: job.removedArks } },
+          data: { indexedAt: null },
+        }),
+      )
+    }
+    await prisma.$transaction(ops)
+  }
+
+  /** Map of failed ARK → reason, read from the worker's `stats.errors[]`. */
+  private static _errorsByArk(
+    stats: Record<string, unknown> | null | undefined,
+  ): Map<string, string> {
+    const raw = stats?.errors
+    const out = new Map<string, string>()
+    if (!Array.isArray(raw)) return out
+    for (const e of raw) {
+      if (e && typeof e === "object" && typeof (e as { ark?: unknown }).ark === "string") {
+        const r = e as { ark: string; stage?: unknown; reason?: unknown }
+        out.set(
+          r.ark,
+          typeof r.reason === "string"
+            ? r.reason
+            : typeof r.stage === "string"
+              ? r.stage
+              : "échec",
+        )
+      }
+    }
+    return out
   }
 
   /**

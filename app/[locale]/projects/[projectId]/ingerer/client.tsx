@@ -21,16 +21,16 @@ import { CardIngestJobHistory } from "@/components/cards/ingest/job-history"
 import { INGEST_STATUS } from "@/models/ingest/schema"
 import { WorkspaceHeader } from "@/components/layouts/workspace/header"
 import { DialogIngestConfirmCancel } from "@/components/dialogs/ingest/confirm-cancel"
-import type { IngestJob } from "@/models/ingest/schema"
+import type { IngestJobView } from "@/models/ingest/types"
 
 interface Props {
   projectId: string
   initialUser: { name?: string; email: string }
   headVersionSeq: number
   ingestedVersionSeq: number | null
-  deltaPreview: { added: number; removed: number }
+  deltaPreview: { added: number; removed: number; excluded: number }
   activeJobId: string | null
-  initialRecentJobs: IngestJob[]
+  initialRecentJobs: IngestJobView[]
 }
 
 export function IngererClient({

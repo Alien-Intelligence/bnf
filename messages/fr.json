@@ -571,6 +571,7 @@
       "queued": "En attente",
       "running": "En cours",
       "done": "Terminé",
+      "partial": "Partiel",
       "failed": "Échec",
       "canceled": "Annulé"
     },

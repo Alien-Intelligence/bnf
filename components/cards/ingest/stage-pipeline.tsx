@@ -18,7 +18,7 @@ import { Button } from "@/components/ui/button"
 import { Check, Loader2, Minus, X } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { INGEST_STATUS, INGEST_STAGE } from "@/models/ingest/schema"
-import type { IngestJob } from "@/models/ingest/schema"
+import type { IngestJobView } from "@/models/ingest/types"
 
 // The canonical stage order. The index determines the ordinal comparison.
 const STAGE_ORDER = [
@@ -86,7 +86,7 @@ function readCounters(stats: unknown): StageCounters | null {
  * "~" and only shown once at least one document is terminal. Returns null when
  * not computable (no counters, nothing done yet, or already finished).
  */
-function ingestEtaMs(job: IngestJob): number | null {
+function ingestEtaMs(job: IngestJobView): number | null {
   const c = readCounters(job.stats)
   if (!c) return null
   const completed = c.done + c.skipped + c.failed
@@ -115,7 +115,7 @@ function formatEtaShort(ms: number): string {
  * the legacy single-stage model when counters are absent (e.g. fake mode or an
  * old job row). Pure function — deterministic, no side-effects.
  */
-function deriveStageInfos(job: IngestJob): StageInfo[] {
+function deriveStageInfos(job: IngestJobView): StageInfo[] {
   const counters = readCounters(job.stats)
 
   // --- Counter-based model (preferred): one fraction per stage. ---
@@ -218,7 +218,7 @@ function StageBadge({ state, ordinal }: { state: StageState; ordinal: number }) 
 }
 
 interface Props {
-  job: IngestJob
+  job: IngestJobView
   onCancel: () => void
 }
 

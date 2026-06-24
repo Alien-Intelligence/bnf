@@ -14,6 +14,7 @@ import Image from "next/image"
 import { useTranslations } from "next-intl"
 import { LayoutWorkspaceStepNav } from "./step-nav"
 import { LayoutWorkspaceProjectSwitcher } from "./project-switcher"
+import { LayoutWorkspaceLangToggle } from "./lang-toggle"
 import { SignOutButton } from "./sign-out-button"
 
 interface WorkspaceHeaderProps {
@@ -89,6 +90,7 @@ export function WorkspaceHeader({
       {/* Version + MCP status + user menu */}
       <div className="flex items-center gap-3">
         <AppVersion />
+        <LayoutWorkspaceLangToggle />
         <span className="inline-flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
           <span
             className="size-1.75 rounded-full bg-info shadow-[0_0_8px_var(--info)]"

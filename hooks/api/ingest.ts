@@ -12,7 +12,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import { apiFetch } from "@/lib/api-fetch"
 import { INGEST_POLL_INTERVAL_MS } from "@/lib/constants"
-import type { IngestJob } from "@/models/ingest/schema"
+import type { IngestJobView } from "@/models/ingest/types"
 
 // ---------------------------------------------------------------------------
 // Query keys
@@ -42,16 +42,16 @@ export const ingestKeys = {
  * fallback for clients that cannot sustain a long-lived connection.
  */
 export function useIngestStatus(jobId: string | null) {
-  return useQuery<IngestJob>({
+  return useQuery<IngestJobView>({
     queryKey: jobId ? ingestKeys.job(jobId) : ["ingest", "noop"],
     enabled: !!jobId,
     queryFn: async () => {
       const res = await apiFetch(`/api/ingest/${jobId}`)
       if (!res.ok) throw new Error("Failed to fetch ingest job")
-      return res.json() as Promise<IngestJob>
+      return res.json() as Promise<IngestJobView>
     },
     refetchInterval: (query) => {
-      const status = (query.state.data as IngestJob | undefined)?.status
+      const status = (query.state.data as IngestJobView | undefined)?.status
       return status === "running" || status === "queued"
         ? INGEST_POLL_INTERVAL_MS
         : false
@@ -73,7 +73,7 @@ export function useIngestStatus(jobId: string | null) {
  */
 export function useSubmitIngest(projectId: string) {
   const qc = useQueryClient()
-  return useMutation<IngestJob, Error, { targetVersionSeq?: number }>({
+  return useMutation<IngestJobView, Error, { targetVersionSeq?: number }>({
     mutationFn: async (body) => {
       const res = await apiFetch(`/api/projects/${projectId}/ingest`, {
         method: "POST",
@@ -81,7 +81,7 @@ export function useSubmitIngest(projectId: string) {
         body: JSON.stringify(body),
       })
       if (!res.ok) throw new Error("Failed to submit ingest")
-      return res.json() as Promise<IngestJob>
+      return res.json() as Promise<IngestJobView>
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ingestKeys.all(projectId) }),
   })
@@ -113,17 +113,17 @@ export function useCancelIngest(projectId: string) {
  * Takes `jobId` as the mutation variable. On success, invalidates all ingest
  * queries for the project so the new job appears immediately in the UI.
  *
- * Returns the new IngestJob row created by IngestService.retryFailed().
+ * Returns the new IngestJobView row created by IngestService.retryFailed().
  */
 export function useRetryFailedIngest(projectId: string) {
   const qc = useQueryClient()
-  return useMutation<IngestJob, Error, string>({
+  return useMutation<IngestJobView, Error, string>({
     mutationFn: async (jobId) => {
       const res = await apiFetch(`/api/ingest/${jobId}/retry-failed`, {
         method: "POST",
       })
       if (!res.ok) throw new Error("Failed to retry failed documents")
-      return res.json() as Promise<IngestJob>
+      return res.json() as Promise<IngestJobView>
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ingestKeys.all(projectId) }),
   })

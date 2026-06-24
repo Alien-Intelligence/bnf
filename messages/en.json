@@ -571,6 +571,7 @@
       "queued": "Queued",
       "running": "Running",
       "done": "Done",
+      "partial": "Partial",
       "failed": "Failed",
       "canceled": "Canceled"
     },
