@@ -1,0 +1,25 @@
+{{- if .Values.broker.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "bnf-demo.fullname" . }}-broker-config
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "bnf-demo.labels" . | nindent 4 }}
+    app.kubernetes.io/component: broker
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+data:
+  PORT: {{ .Values.broker.service.port | quote }}
+
+  # --- Upstream BnF endpoints (non-secret) ---
+  BNF_OAUTH_TOKEN_URL: {{ .Values.broker.config.oauthTokenUrl | quote }}
+  BNF_API_BASE_URL: {{ .Values.broker.config.apiBaseUrl | quote }}
+
+  # --- Rate caps (requests/min) — these WILL rise; bump here, no code change.
+  # Defaults are live-measured (2026-06-24 sandbox key): global ~150 enforced,
+  # manifest verified EXACTLY 12/min/IP. See ai-memories bnf-partner-api-design.
+  BNF_GLOBAL_RPM: {{ .Values.broker.config.globalRpm | quote }}
+  BNF_MANIFEST_RPM: {{ .Values.broker.config.manifestRpm | quote }}
+  BNF_EXTERNAL_RPM: {{ .Values.broker.config.externalRpm | quote }}
+{{- end }}

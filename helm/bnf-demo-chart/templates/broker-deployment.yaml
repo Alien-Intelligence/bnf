@@ -1,0 +1,91 @@
+{{- if .Values.broker.enabled }}
+# BnF broker — the single egress chokepoint for ALL BnF traffic (app metadata
+# resolver + ingest worker). It owns the OAuth token and enforces the shared
+# rate caps (global per-credential + 12/min-per-IP manifest + politeness).
+#
+# ⚠️ replicas is HARD-PINNED to 1 and intentionally NOT exposed in values.yaml.
+# The rate buckets and the OAuth token are in-memory PER POD. A second replica
+# would get its own buckets AND its own egress IP, silently multiplying the
+# per-credential cap and breaking the per-IP manifest cap → 429 storms. If this
+# ever needs HA, the buckets must move to shared state (Redis) first.
+#
+# Recreate (not RollingUpdate): a rolling deploy would briefly run two pods =
+# two egress IPs = two bucket sets. Recreate guarantees exactly one broker at a
+# time; the seconds of unavailability during a deploy are absorbed by the
+# clients (a broker-transport error is transient → retried with backoff).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "bnf-demo.fullname" . }}-broker
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "bnf-demo.labels" . | nindent 4 }}
+    app.kubernetes.io/component: broker
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "bnf-demo.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: broker
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/broker-configmap.yaml") . | sha256sum }}
+      labels:
+        {{- include "bnf-demo.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: broker
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.securityContext | nindent 8 }}
+      containers:
+        - name: broker
+          image: "{{ .Values.broker.image.repository }}:{{ .Values.broker.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.broker.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.broker.service.port }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "bnf-demo.fullname" . }}-broker-config
+            # BNF_CLIENT_KEY / BNF_CLIENT_SECRET — the ONLY place BnF credentials
+            # live in the whole stack. The app and worker hold none.
+            - secretRef:
+                name: {{ include "bnf-demo.fullname" . }}-broker-creds
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.broker.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

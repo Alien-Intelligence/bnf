@@ -21,6 +21,7 @@ upgrade`s the chart onto `platform-prod` (namespace `bnf`, host
 | release | `bnf-demo-prod` |
 | app image | `rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo` |
 | worker image | `rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo-worker` |
+| broker image | `rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo-broker` (BnF egress chokepoint, single replica) |
 | Scaleway secret | `bnf-demo-prod` (project `77c152cc-4d27-4d9b-a449-143df07bcaad`) |
 | chart | `helm/bnf-demo-chart` |
 
@@ -43,7 +44,7 @@ grep -q 'npm:@alien_intelligence/chat-sdk' package.json && grep -q 'registry.npm
 Ask the user for the new version if they didn't say. Then bump in lock-step:
 
 - `package.json` → `version`
-- `helm/bnf-demo-chart/values.yaml` → `image.tag` **and** `worker.image.tag`
+- `helm/bnf-demo-chart/values.yaml` → `image.tag`, `worker.image.tag` **and** `broker.image.tag`
 - `helm/bnf-demo-chart/Chart.yaml` → `version` (chart) and `appVersion` (app)
 
 Set `TAG` to that value for the commands below. Image tags are immutable —
@@ -61,7 +62,25 @@ scw secret secret list name=bnf-demo-prod -o json | jq -r '.[0].id'
 
 Required properties: `ANTHROPIC_API_KEY`, `BNF_MCP_TOKEN`, `CLUSTER_BEARER_TOKEN`,
 `LANGFUSE_SECRET_KEY`, `SCW_S3_ACCESS_KEY`, `SCW_S3_SECRET_KEY`, `SCW_API_KEY`,
-`GOOGLE_AI_API_KEY`, `RUNPOD_API_KEY`. To create/rotate, build the JSON from the
+`GOOGLE_AI_API_KEY`, `RUNPOD_API_KEY`, `BNF_CLIENT_KEY`, `BNF_CLIENT_SECRET`
+(the last two are the BnF OAuth client_credentials — they live ONLY behind the
+broker; the app and worker hold no BnF credentials). Plus `OPENROUTER_API_KEY`
+**when `config.agentProvider: openrouter`** (the current prod default — the
+default model GLM 5.2 routes through OpenRouter, so the app refuses to boot
+without it). To ADD/rotate one property
+without clobbering the rest, merge into the live version rather than rebuilding
+the whole JSON (never echo secret values):
+
+```bash
+SECRET_ID=$(scw secret secret list name=bnf-demo-prod -o json | jq -r '.[0].id')
+scw secret version access secret-id=$SECRET_ID revision=latest -o json | jq -r '.data' | base64 -d \
+  | jq --arg k "$BNF_CLIENT_KEY" --arg s "$BNF_CLIENT_SECRET" '. + {BNF_CLIENT_KEY:$k, BNF_CLIENT_SECRET:$s}' > secret.json
+jq -r 'keys[]' secret.json   # verify names only, never values
+scw secret version create secret-id=$SECRET_ID data=@secret.json
+shred -u secret.json
+```
+
+To create the secret from scratch instead (first deploy), build the JSON from the
 local env files (never echo secret values) and push a new version:
 
 ```bash
@@ -73,18 +92,25 @@ scw secret version create secret-id=$SECRET_ID data=@secret.json
 rm -f secret.json
 ```
 
-### 4. Build + push BOTH images
+### 4. Build + push ALL THREE images
 
-There are two images — the app, and the worker (the BnF-specific piece). No
-basePath build-arg; the app is served at root.
+There are three images — the app, the worker (ingest), and the broker (the BnF
+egress chokepoint). No basePath build-arg; the app is served at root. The broker
+and worker are tiny Node images (seconds); the app is the slow one.
 
 ```bash
+# app (slow — run in background, poll the log)
 docker build -t rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo:$TAG .
 docker push     rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo:$TAG
 
+# worker
 docker build -f worker/Dockerfile.worker \
   -t rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo-worker:$TAG worker
 docker push rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo-worker:$TAG
+
+# broker (context = broker/; its own Dockerfile)
+docker build -t rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo-broker:$TAG broker
+docker push rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo-broker:$TAG
 ```
 
 The app build runs ~5–7 min — launch with `run_in_background: true` and poll the
@@ -109,9 +135,18 @@ helm --kube-context platform-prod -n bnf history bnf-demo-prod | tail -2
 ### 6. Verify
 
 ```bash
-kubectl --context platform-prod -n bnf get pods                                          # all 1/1, worker restarts=0
+kubectl --context platform-prod -n bnf get pods                                          # all 1/1, worker+broker restarts=0
 curl -sS -o /dev/null -w "app %{http_code}\n"  https://bnf.demo.alien.club/              # 307 → /sign-in
 curl -sS -o /dev/null -w "auth %{http_code}\n" https://bnf.demo.alien.club/api/auth/get-session  # 200
+
+# Broker smoke (in-cluster). Startup banner must show the caps; one /fetch on the
+# ungated OAI host proves the proxy; one partner manifest proves OAuth mint
+# (200/404 = creds valid; 401/403 = creds rejected; 502 "token error" = bad KEY/SECRET).
+kubectl --context platform-prod -n bnf logs deploy/bnf-demo-prod-broker --tail=3
+kubectl --context platform-prod -n bnf exec deploy/bnf-demo-prod-broker -- node -e '
+  fetch("http://localhost:8792/fetch",{method:"POST",headers:{"content-type":"application/json"},
+  body:JSON.stringify({url:"https://openapi.bnf.fr/iiif/presentation/v3/ark:/12148/btv1b8451637r/manifest.json",accept:"application/json"})})
+  .then(r=>console.log("partner status",r.status))'
 ```
 
 Report: live version, pod status, site codes. If a pod isn't Ready, pull its
@@ -132,3 +167,12 @@ logs before declaring success — never report "deployed" on unverified pods.
 - The generated Secrets (`bnf-demo-prod-postgres`, `bnf-demo-prod-app`) are
   `resource-policy: keep` — never delete them; they hold the Postgres password,
   `BETTER_AUTH_SECRET`, and `JOB_CALLBACK_SECRET`.
+- **Broker is hard-pinned to ONE replica** (`replicas: 1` + `strategy: Recreate`
+  in `broker-deployment.yaml`, intentionally NOT in values). Its rate buckets +
+  OAuth token are in-memory per pod, and the 12/min manifest cap is per egress
+  IP — a 2nd replica silently multiplies the caps → 429 storms. Never scale it;
+  if HA is ever needed, move the buckets to shared state (Redis) first.
+- **Broker cutover.** `BNF_BROKER_URL` is wired into both the app and worker
+  configmaps; both fall back to their direct/relay path if `broker.enabled=false`.
+  A broker outage during a deploy (Recreate → seconds of downtime) is absorbed by
+  the clients (broker-transport errors are transient → retried with backoff).

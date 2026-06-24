@@ -1,0 +1,22 @@
+{{- if .Values.broker.enabled }}
+# ClusterIP only — the broker is internal (app resolver + worker → broker).
+# Never exposed through Istio; the BnF OAuth credentials live only behind it.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "bnf-demo.fullname" . }}-broker
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "bnf-demo.labels" . | nindent 4 }}
+    app.kubernetes.io/component: broker
+spec:
+  type: {{ .Values.broker.service.type }}
+  ports:
+    - port: {{ .Values.broker.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "bnf-demo.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: broker
+{{- end }}

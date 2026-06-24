@@ -14,6 +14,18 @@ data:
   BNF_MCP_URL: {{ .Values.config.bnfMcpUrl | quote }}
   DATACLUSTER_MCP_URL: {{ .Values.config.dataclusterMcpUrl | quote }}
   OTEL_SERVICE_NAME: {{ .Values.config.otelServiceName | quote }}
+  {{- with .Values.config.agentProvider }}
+  # Agent gateway toggle. OPENROUTER_API_KEY (required when "openrouter") arrives
+  # via the -app-creds ExternalSecret.
+  AGENT_PROVIDER: {{ . | quote }}
+  {{- end }}
+  {{- if .Values.broker.enabled }}
+  # Single egress chokepoint for BnF metadata resolution (lib/bnf/direct.ts).
+  # When set, the resolver routes ALL its BnF calls through the broker instead of
+  # the IPv4-direct/relay path. Corpus building is always real BnF, so this is
+  # wired independently of CLUSTER_MODE.
+  BNF_BROKER_URL: {{ include "bnf-demo.brokerInternalUrl" . | quote }}
+  {{- end }}
   {{- if eq .Values.config.clusterMode "real" }}
   # App → worker job submit (lib/cluster/client.ts).
   WORKER_RUNNER_URL: {{ include "bnf-demo.workerInternalUrl" . | quote }}

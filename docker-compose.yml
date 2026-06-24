@@ -25,6 +25,32 @@ services:
       retries: 5
       start_period: 10s
 
+  # BnF broker — single egress chokepoint for all BnF traffic. Owns the OAuth
+  # token + shared rate caps; the app and worker hold no BnF credentials. Creds
+  # live in ./broker/.env (gitignored). Reached by the worker in-network at
+  # http://broker:8792 and by the host-side Next.js app at http://localhost:8792.
+  broker:
+    build:
+      context: ./broker
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    networks:
+      bnf:
+        aliases:
+          - broker
+    env_file:
+      - ./broker/.env
+    ports:
+      - "8792:8792"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8792/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    profiles:
+      - worker
+
   # bnf-ingest worker — pulls jobs from pg-boss and runs the prepare→embed→
   # register pipeline. Scale horizontally with `docker compose up --scale
   # ingest-worker=N`; pg-boss row-locks prevent double processing.
@@ -43,6 +69,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      broker:
+        condition: service_healthy
     env_file:
       - ./worker/.env
     environment:
@@ -50,6 +78,9 @@ services:
       # We override DATABASE_URL here so the .env's localhost:5437 still works
       # for host-side scripts (prepare:one, register:one, etc.).
       DATABASE_URL: "postgresql://bnf_user:bnf_dev_password@postgres:5432/bnf_dev"
+      # Reach the broker in-network (overrides worker/.env's host.docker.internal
+      # form, which is for host-side scripts). All BnF egress flows through it.
+      BNF_BROKER_URL: "http://broker:8792"
       # The host-side app talks to the worker over loopback on port 7777 (see
       # WORKER_RUNNER_URL in bnf/.env.local). On Linux that means we bind the
       # container's port to the host.

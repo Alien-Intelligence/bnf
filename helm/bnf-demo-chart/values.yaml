@@ -8,7 +8,7 @@ replicaCount: 1
 image:
   repository: rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo
   pullPolicy: Always
-  tag: "0.3.0"
+  tag: "0.5.0"
 
 imagePullSecrets: []
 
@@ -79,6 +79,14 @@ config:
   # Service name reported to SigNoz. Keep stable across deploys.
   otelServiceName: "bnf-demo-prod"
 
+  # Agent provider — which gateway drives the `claude` agent mode.
+  # "anthropic" (default) calls Anthropic with ANTHROPIC_API_KEY; "openrouter"
+  # routes turns+tools+MCP through OpenRouter (one key, all vendors — incl. the
+  # default model GLM 5.2, which is NOT Anthropic so it ONLY works under
+  # openrouter). When openrouter, OPENROUTER_API_KEY MUST be set (pulled via the
+  # -app-creds ExternalSecret below) or the app refuses to boot.
+  agentProvider: openrouter
+
 # ===========================================================================
 # Ingest worker — the major difference from the other demos.
 #
@@ -97,7 +105,7 @@ worker:
   image:
     repository: rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo-worker
     pullPolicy: Always
-    tag: "0.3.0"
+    tag: "0.5.0"
 
   service:
     type: ClusterIP
@@ -158,6 +166,52 @@ worker:
   # mid-OCR). Must comfortably exceed a single doc's prepare time, not the full
   # job ceiling.
   terminationGracePeriodSeconds: 120
+
+# ===========================================================================
+# BnF broker — the single egress chokepoint for ALL BnF traffic (app metadata
+# resolver + ingest worker). Owns the OAuth token (BnF KEY/SECRET live ONLY
+# here) and enforces the shared rate caps. When enabled, BNF_BROKER_URL is wired
+# into both the app and the worker; both fall back to their direct/relay path if
+# it's ever disabled.
+#
+# ⚠️ The broker runs as EXACTLY ONE replica (hard-pinned in the Deployment, not
+# configurable here): its rate buckets + token are in-memory per pod, and the
+# per-IP manifest cap requires a single egress IP. Do not try to scale it.
+# ===========================================================================
+broker:
+  enabled: true
+
+  image:
+    repository: rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo-broker
+    pullPolicy: Always
+    tag: "0.5.0"
+
+  service:
+    type: ClusterIP
+    port: 8792
+
+  config:
+    # OAuth client_credentials token endpoint + authenticated partner-API base.
+    # apiBaseUrl MUST be openapiproext.bnf.fr (the token'd host). openapi.bnf.fr
+    # is the public no-token IIIF mirror (anonymous-per-IP pool, no quota).
+    oauthTokenUrl: https://apimauthproext.bnf.fr/oauth2/token
+    apiBaseUrl: https://openapiproext.bnf.fr
+
+    # Rate caps (requests/min) — these WILL rise; bump here, redeploy the broker
+    # only (no app/worker rebuild). Defaults live-measured 2026-06-24:
+    #   global ~150/min enforced (brief said 300); manifest raised 12→40/min/IP
+    #   by BnF on 2026-06-24 (Ludovic).
+    globalRpm: "150"
+    manifestRpm: "40"
+    externalRpm: "120"
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 96Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
 
 # ===========================================================================
 # Bundled Postgres — single replica, PVC-backed, no replication. Shared by the
@@ -241,6 +295,8 @@ secrets:
   clusterBearerTokenProperty: CLUSTER_BEARER_TOKEN
   # Optional — only consumed if config.langfusePublicKey is set.
   langfuseSecretKeyProperty: LANGFUSE_SECRET_KEY
+  # OpenRouter API key — only pulled when config.agentProvider == "openrouter".
+  openrouterApiKeyProperty: OPENROUTER_API_KEY
 
   # --- Alien Auth (Authentik) SSO credentials ---
   # AUTHENTIK_CLIENT_ID / AUTHENTIK_CLIENT_SECRET live in a SHARED Scaleway
@@ -256,6 +312,12 @@ secrets:
   scwApiKeyProperty: SCW_API_KEY
   googleAiApiKeyProperty: GOOGLE_AI_API_KEY
   runpodApiKeyProperty: RUNPOD_API_KEY
+
+  # --- BnF broker credentials (OAuth client_credentials) ---
+  # The BnF KEY/SECRET live ONLY behind the broker. Both properties must exist
+  # on the `bnf-demo-prod` Scaleway secret.
+  bnfClientKeyProperty: BNF_CLIENT_KEY
+  bnfClientSecretProperty: BNF_CLIENT_SECRET
 
 podAnnotations:
   # OTel Node.js auto-instrumentation sidecar (Instrumentation CR in signoz ns).

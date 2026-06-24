@@ -64,3 +64,12 @@ In-cluster DNS name of the worker HTTP API (app → worker job submit).
 {{- define "bnf-demo.workerInternalUrl" -}}
 {{- printf "http://%s-worker.%s.svc.cluster.local:%d" (include "bnf-demo.fullname" .) .Values.namespace (int .Values.worker.service.port) }}
 {{- end }}
+
+{{/*
+In-cluster DNS name of the BnF broker (app resolver + worker → broker /fetch).
+The broker is the SINGLE egress chokepoint for all BnF traffic; both the app
+and the worker point BNF_BROKER_URL here so the shared rate caps are honoured.
+*/}}
+{{- define "bnf-demo.brokerInternalUrl" -}}
+{{- printf "http://%s-broker.%s.svc.cluster.local:%d" (include "bnf-demo.fullname" .) .Values.namespace (int .Values.broker.service.port) }}
+{{- end }}

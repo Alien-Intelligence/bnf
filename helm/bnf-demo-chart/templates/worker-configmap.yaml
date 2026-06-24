@@ -31,6 +31,14 @@ data:
   # --- Data cluster (register) ---
   BACKEND_API_URL: {{ .Values.worker.config.backendApiUrl | quote }}
   CLUSTER_ID: {{ .Values.worker.config.clusterId | quote }}
+{{- if .Values.broker.enabled }}
+
+  # --- BnF broker ---
+  # When set, ALL BnF traffic (OCR/manifest/metadata) goes through the broker —
+  # it owns the OAuth token + shared rate caps. Supersedes the legacy
+  # gallica.bnf.fr relay/direct path. Unset → worker falls back to that path.
+  BNF_BROKER_URL: {{ include "bnf-demo.brokerInternalUrl" . | quote }}
+{{- end }}
 
   # --- Worker HTTP API ---
   WORKER_HTTP_PORT: {{ .Values.worker.service.port | quote }}
