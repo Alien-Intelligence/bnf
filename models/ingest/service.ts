@@ -22,6 +22,7 @@ import {
   DOCUMENT_RESOLVE_STATUS,
   INGESTION_CLASS,
   isIngestableClass,
+  isLatinScriptLang,
 } from "@/models/documents/schema"
 import { estimatePaidOcrCostUsd, INGEST_STATUS } from "./schema"
 import type { PaidOcrEstimate } from "./schema"
@@ -681,6 +682,7 @@ export class IngestService {
         ocrAvailable: true,
         iiifManifestUrl: true,
         resolveStatus: true,
+        lang: true,
       },
     })
     const byArk = new Map(rows.map((r) => [r.ark, r]))
@@ -703,9 +705,16 @@ export class IngestService {
       })
       const confident =
         !digitized || doc.resolveStatus === DOCUMENT_RESOLVE_STATUS.RESOLVED
-      if (opts.paidOcr && confident && cls === INGESTION_CLASS.SANS_TEXTE) {
-        // Digitized text with no OCR layer — transcribable via paid Mistral OCR
-        // once the spend is confirmed. Intercept before the generic drop below.
+      if (
+        opts.paidOcr &&
+        confident &&
+        cls === INGESTION_CLASS.SANS_TEXTE &&
+        isLatinScriptLang(doc.lang)
+      ) {
+        // Digitized text with no OCR layer, in a script Mistral can faithfully
+        // transcribe — eligible for paid OCR once the spend is confirmed.
+        // Non-Latin sans_texte falls through to `excluded`: we don't claim to
+        // OCR what we can't (see isLatinScriptLang).
         paidOcr.push(ark)
       } else if (!isIngestableClass(cls) && confident) {
         excluded.push(ark)

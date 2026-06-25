@@ -204,3 +204,47 @@ export function classifyIngestion(d: {
 export function isIngestableClass(c: IngestionClass): boolean {
   return c === INGESTION_CLASS.OCR || c === INGESTION_CLASS.VISION
 }
+
+// ---------------------------------------------------------------------------
+// Script eligibility for paid fallback OCR
+// ---------------------------------------------------------------------------
+// Mistral OCR transcribes Latin-script historical print well, but mangles
+// non-Latin scripts (verified: 16th-c. Greek came back as garbled Greek letters
+// — wrong words, broken accents). We don't offer (or charge for) paid OCR on
+// scripts we can't faithfully transcribe. The decision keys on Document.lang,
+// which BnF populates with ISO 639 codes; the non-Latin ones present in the
+// corpus are grc / ar / he, plus the broader set below for completeness.
+//
+// A null/unknown lang is treated as ELIGIBLE (presumed Latin): the BnF print
+// corpus is French/Latin-dominant and null means "not yet resolved", not
+// "non-Latin" — the genuinely non-Latin docs carry an explicit code. The
+// per-ingestion confirmation still gives the librarian the final say.
+
+/** ISO 639-1/2/3 codes whose primary script is NOT Latin. Lowercased. */
+const NON_LATIN_SCRIPT_LANGS = new Set<string>([
+  // Greek
+  "el", "ell", "gre", "grc",
+  // Hebrew / Yiddish
+  "he", "heb", "iw", "yi", "yid",
+  // Arabic / Persian / Urdu / Syriac
+  "ar", "ara", "fa", "fas", "per", "ur", "urd", "syr", "syc",
+  // CJK
+  "zh", "zho", "chi", "ja", "jpn", "ko", "kor",
+  // Cyrillic
+  "ru", "rus", "uk", "ukr", "be", "bel", "bg", "bul", "mk", "mkd",
+  "sr", "srp",
+  // Caucasian / South & SE Asian / others
+  "hy", "hye", "arm", "ka", "kat", "geo", "th", "tha",
+  "hi", "hin", "bn", "ben", "ta", "tam", "am", "amh",
+  "sa", "san", "cop",
+])
+
+/**
+ * Whether a document's language is written in Latin script — i.e. whether paid
+ * fallback OCR can faithfully transcribe it. Non-Latin codes return false;
+ * null/unknown returns true (presumed Latin — see the note above).
+ */
+export function isLatinScriptLang(lang: string | null | undefined): boolean {
+  if (!lang) return true
+  return !NON_LATIN_SCRIPT_LANGS.has(lang.trim().toLowerCase())
+}
