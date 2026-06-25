@@ -171,10 +171,15 @@ worker:
     #   3000/min flip = TWO values, no code change: broker.config.globalRpm: "3000"
     #   + bnfFetchConcurrency: "48", then helm upgrade and verify via /calls.csv.
     bnfFetchConcurrency: "12"
-    # workerConcurrency is now purely the memory/pipeline bound (docs in flight,
-    # each up to maxOcrPages in memory), NOT a fetch-throughput knob. Keep ≥2 so
-    # doc transitions overlap and the fetch gate never drains mid-handoff.
-    workerConcurrency: "4"
+    # In-flight doc-jobs. This is the knob that keeps the fetch gate FED: each job
+    # runs fetch→embed→index serially in its slot, so at 4 the docs moved as a
+    # synchronized cohort — fetch bursts to the 300 cap, then all 4 embed/index
+    # together (remote RunPod+cluster I/O, ~2-3 min) with fetch idle → sawtooth,
+    # ~108/min effective (~36% of cap). Raised to 16 to desynchronize the convoy:
+    # while some docs embed/index, others fetch, so the gate stays fed → sustained
+    # ~300/min. CANNOT over-fetch BnF — bnfFetchConcurrency still caps fetches at
+    # 12 regardless. Bound is worker RAM (docs × pages in memory); watch RSS.
+    workerConcurrency: "16"
     # bnfAltoConcurrency — deprecated/no-op on the gated path (fan-out follows the
     # gate). Left set to avoid breakage; remove in a later cleanup.
     bnfAltoConcurrency: "2"
