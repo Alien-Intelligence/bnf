@@ -127,6 +127,17 @@ worker:
     geminiVisionModel: gemma-4-31b-it
     visionPrimary: holo
 
+    # Mistral fallback OCR — transcribes `sans_texte` docs (digitized text, no BnF
+    # OCR layer) the librarian opts into. ON: the app already gates the spend
+    # (per-ingestion confirmation + the $50/project budget), so any sans_texte doc
+    # that reaches the worker is cleared to pay. Key is a secret (mistralApiKeyProperty).
+    mistralOcrEnabled: "true"
+    mistralOcrModel: mistral-ocr-latest
+    mistralOcrMaxPages: "300"
+    mistralOcrPollIntervalMs: "5000"
+    # Wall-clock ceiling on one batch — MUST stay under ingestJobExpireSeconds.
+    mistralOcrBatchTimeoutMs: "1800000"
+
     # RunPod bge-m3 embedder. Key is a secret.
     runpodEndpointId: pngrbp0y1aj28i
     runpodEmbeddingModel: BAAI/bge-m3
@@ -326,6 +337,8 @@ secrets:
   scwApiKeyProperty: SCW_API_KEY
   googleAiApiKeyProperty: GOOGLE_AI_API_KEY
   runpodApiKeyProperty: RUNPOD_API_KEY
+  # Mistral fallback OCR for `sans_texte` docs (worker only). Held by the worker.
+  mistralApiKeyProperty: MISTRAL_API_KEY
 
   # --- BnF broker credentials (OAuth client_credentials) ---
   # The BnF KEY/SECRET live ONLY behind the broker. Both properties must exist

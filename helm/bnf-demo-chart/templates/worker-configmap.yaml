@@ -23,6 +23,16 @@ data:
   # --- Google AI (vision provider) ---
   GEMINI_VISION_MODEL: {{ .Values.worker.config.geminiVisionModel | quote }}
   VISION_PRIMARY: {{ .Values.worker.config.visionPrimary | quote }}
+{{- if .Values.worker.config.mistralOcrEnabled }}
+
+  # --- Mistral fallback OCR (`sans_texte` docs) ---
+  # The API key is a secret (worker-creds: MISTRAL_API_KEY).
+  MISTRAL_OCR_ENABLED: {{ .Values.worker.config.mistralOcrEnabled | quote }}
+  MISTRAL_OCR_MODEL: {{ .Values.worker.config.mistralOcrModel | quote }}
+  MISTRAL_OCR_MAX_PAGES: {{ .Values.worker.config.mistralOcrMaxPages | quote }}
+  MISTRAL_OCR_POLL_INTERVAL_MS: {{ .Values.worker.config.mistralOcrPollIntervalMs | quote }}
+  MISTRAL_OCR_BATCH_TIMEOUT_MS: {{ .Values.worker.config.mistralOcrBatchTimeoutMs | quote }}
+{{- end }}
 
   # --- RunPod embedder ---
   RUNPOD_EMBEDDING_ENDPOINT_ID: {{ .Values.worker.config.runpodEndpointId | quote }}
