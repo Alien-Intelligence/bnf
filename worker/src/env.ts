@@ -94,6 +94,35 @@ export const google = {
   visionModel: () => optional("GEMINI_VISION_MODEL", "gemma-4-31b-it")!,
 };
 
+// --- Mistral fallback OCR (Track 1, `sans_texte` documents) ---
+//
+// Paid OCR (Mistral Batch API) for digitized text with no BnF OCR layer. OFF by
+// default. The APP is the spend gatekeeper — it only sends `sans_texte` ARKs to
+// the worker once a human has confirmed the cost — so the worker runs Mistral
+// for ANY such doc it receives when this flag is on. Keep MISTRAL_OCR_ENABLED
+// here in lock-step with the project's paid-OCR confirmation flow, or a
+// confirmed doc reaches a worker that can't transcribe it (it then skips).
+//
+//   - maxPages: hard per-doc folio ceiling (mirrors the app's
+//     PAID_OCR_MAX_PAGES_PER_DOC); bounds the worst-case spend + upload size.
+//   - batchTimeoutMs: wall-clock ceiling on the poll loop — MUST stay under the
+//     doc-job ceiling (INGEST_JOB_EXPIRE_SECONDS) so a stuck batch fails the doc
+//     (→ pg-boss retry) instead of wedging the worker (CLAUDE_ERROR_PATTERNS §14).
+export const mistralOcr = {
+  enabled: (): boolean => {
+    const v = optional("MISTRAL_OCR_ENABLED", "false")!;
+    if (v !== "true" && v !== "false") {
+      throw new Error(`MISTRAL_OCR_ENABLED must be "true" or "false", got: ${v}`);
+    }
+    return v === "true";
+  },
+  apiKey: () => required("MISTRAL_API_KEY"),
+  model: () => optional("MISTRAL_OCR_MODEL", "mistral-ocr-latest")!,
+  maxPages: () => optionalInt("MISTRAL_OCR_MAX_PAGES", 300),
+  pollIntervalMs: () => optionalInt("MISTRAL_OCR_POLL_INTERVAL_MS", 5_000),
+  batchTimeoutMs: () => optionalInt("MISTRAL_OCR_BATCH_TIMEOUT_MS", 30 * 60 * 1_000),
+};
+
 // --- Vision provider order ---
 // "holo" → Scaleway Holo2 primary, Gemini fallback (long-term default).
 // "gemini" → Gemini primary, Holo fallback (use while Holo/Scaleway is down,

@@ -154,14 +154,20 @@ Retourne UNIQUEMENT le JSON conforme au schéma. Pas de markdown.`;
   return lines.join("\n");
 }
 
-interface FetchedImage {
+export interface FetchedImage {
   dataUrl: string;
   base64: string;
   mimeType: string;
   imageBytes: number;
 }
 
-async function fetchImage(url: string): Promise<FetchedImage> {
+/**
+ * Fetch an image as a base64 data-URL, honouring the broker / relay / rate-limit
+ * path (see the body). Exported so the Mistral OCR path reuses the exact same
+ * politeness controls instead of hitting Gallica raw — never hand a Gallica URL
+ * to a third-party OCR service, it bypasses our throttle and gets IP-blocked.
+ */
+export async function fetchImage(url: string): Promise<FetchedImage> {
   const isBnf = /(^|\.)bnf\.fr$/i.test(new URL(url).hostname);
   let mimeType: string;
   let buffer: Buffer;

@@ -10,11 +10,17 @@
  *      (see `./vision.ts`) — return the descriptions + iiif urls.
  *   3. `skip`          — neither path applies, return the skip reason.
  */
+import { mistralOcr } from "../env.js";
 import type { BnfDocInfo, SkipReason } from "../types.js";
 import type { BnfApi } from "./bnf-api.js";
 import { PermanentBnfError } from "./errors.js";
+import { runMistralOcrBatch, type MistralOcrFolio } from "./mistral-ocr.js";
 import type { OcrPage } from "./render.js";
-import { describeImage, type ImageDescription } from "./vision.js";
+import { describeImage, fetchImage, type ImageDescription } from "./vision.js";
+
+/** IIIF size for OCR folio fetches — larger than the vision path (1280) so dense
+ *  historical type stays legible to the OCR model. `!w,h` returns a best fit. */
+const MISTRAL_OCR_IIIF_SIZE = "!2000,2000";
 
 /**
  * Substring patterns matched (case-insensitive) against `doc_type` to decide
@@ -57,6 +63,9 @@ export interface ImagePage {
 export type ExtractResult =
   | { kind: "text_with_ocr"; pages: OcrPage[] }
   | { kind: "image_pages"; pages: ImagePage[]; totalCanvases: number; cappedAt: number | null }
+  // Same OcrPage[] shape as `text_with_ocr` (renders + chunks identically), but
+  // the text came from paid Mistral OCR — index.ts stamps the provenance.
+  | { kind: "mistral_ocr"; pages: OcrPage[]; totalCanvases: number; cappedAt: number | null }
   | { kind: "skip"; reason: SkipReason };
 
 export interface ExtractOpts {
@@ -79,6 +88,13 @@ export async function extract(
   if (isImageDocType(info.docType)) {
     return extractImagePages(bnf, info, opts);
   }
+  // Digitized text with no OCR layer and not an image type (`sans_texte`). When
+  // paid fallback OCR is enabled, transcribe it via Mistral instead of skipping.
+  // The app only sends such docs once the spend is confirmed (see the ingest
+  // confirmation handshake), so reaching here means we are cleared to pay.
+  if (mistralOcr.enabled()) {
+    return extractMistralOcr(bnf, info, opts);
+  }
   return {
     kind: "skip",
     reason: {
@@ -86,6 +102,130 @@ export async function extract(
       reason: "no_ocr_and_not_single_image",
       arkInfo: info,
     },
+  };
+}
+
+/**
+ * Paid fallback OCR path. Fetch the IIIF manifest, pull each folio image through
+ * the same broker/relay/rate-limit path the vision path uses, base64 them, and
+ * run one Mistral OCR batch over the lot. Returns `text_with_ocr`-shaped pages
+ * (one per transcribed folio) so render/chunk/index are unchanged.
+ */
+async function extractMistralOcr(
+  bnf: BnfApi,
+  info: BnfDocInfo,
+  opts: ExtractOpts,
+): Promise<ExtractResult> {
+  const maxCanvases = mistralOcr.maxPages();
+  const concurrency = Math.max(1, opts.imageConcurrency ?? 4);
+
+  // 1. Manifest → canvas list (same permanent/transient split as the image path).
+  let manifest;
+  try {
+    manifest = await bnf.getManifest(info.ark, { maxCanvases });
+  } catch (e) {
+    if (e instanceof PermanentBnfError) {
+      return {
+        kind: "skip",
+        reason: {
+          skip: true,
+          reason: "metadata_unavailable",
+          ark: info.ark,
+          cause: `getManifest permanent: ${e.cause}`,
+        },
+      };
+    }
+    throw e;
+  }
+  if (manifest.canvases.length === 0) {
+    return {
+      kind: "skip",
+      reason: {
+        skip: true,
+        reason: "metadata_unavailable",
+        ark: info.ark,
+        cause: "getManifest returned no canvases",
+      },
+    };
+  }
+  const cappedAt = manifest.totalPages > maxCanvases ? maxCanvases : null;
+
+  // 2. Fetch each folio image as a base64 data-URL (politeness path reused from
+  //    vision.fetchImage). A folio whose image can't be fetched is dropped, not
+  //    fatal — the batch still runs over the folios we did get.
+  const fetchFolio = async (
+    canvas: typeof manifest.canvases[number],
+  ): Promise<MistralOcrFolio | null> => {
+    let url: string;
+    try {
+      url = await bnf.getImageUrl(info.ark, {
+        ordre: canvas.ordre,
+        size: MISTRAL_OCR_IIIF_SIZE,
+      });
+    } catch (e) {
+      console.warn(
+        `[extract] mistral: skipping canvas ordre=${canvas.ordre} of ${info.ark}: getImageUrl failed (${errorMessage(e)})`,
+      );
+      return null;
+    }
+    try {
+      const img = await fetchImage(url);
+      return { ordre: canvas.ordre, dataUrl: img.dataUrl };
+    } catch (e) {
+      console.warn(
+        `[extract] mistral: skipping canvas ordre=${canvas.ordre} of ${info.ark}: image fetch failed (${errorMessage(e)})`,
+      );
+      return null;
+    }
+  };
+
+  const fetched = (
+    await runWithConcurrency(manifest.canvases, concurrency, fetchFolio)
+  ).filter((f): f is MistralOcrFolio => f !== null);
+
+  if (fetched.length === 0) {
+    return {
+      kind: "skip",
+      reason: {
+        skip: true,
+        reason: "ocr_fetch_failed",
+        ark: info.ark,
+        cause: "could not fetch any folio image for Mistral OCR",
+      },
+    };
+  }
+
+  // 3. One batch over all fetched folios. Transient/timeout errors propagate so
+  //    pg-boss retries the whole doc-job; permanent failures surface as a skip.
+  const batch = await runMistralOcrBatch(fetched);
+  const pages: OcrPage[] = batch.pages.map((p) => ({
+    ordre: p.ordre,
+    text: p.markdown,
+  }));
+
+  if (pages.length === 0) {
+    return {
+      kind: "skip",
+      reason: {
+        skip: true,
+        reason: "ocr_fetch_failed",
+        ark: info.ark,
+        cause: `Mistral OCR returned no text (${batch.failed} folio(s) failed)`,
+      },
+    };
+  }
+
+  // Batch rate is $2/1000 pages — log the rough spend for observability.
+  const estUsd = (pages.length / 1000) * 2;
+  console.log(
+    `[extract] mistral OCR ${info.ark}: ${pages.length}/${fetched.length} folios transcribed (~$${estUsd.toFixed(2)})`,
+  );
+
+  return {
+    kind: "mistral_ocr",
+    pages,
+    totalCanvases: manifest.totalPages,
+    cappedAt,
   };
 }
 

@@ -33,6 +33,8 @@ export function bnfDatasetSchema(projectId: string): Record<string, unknown> {
           iiifManifestUrl: { type: ["string", "null"] },
           pageCount: { type: ["integer", "null"] },
           ocrAvailable: { type: "boolean" },
+          // "mistral" on the paid fallback OCR path; absent on native paths.
+          ocrProvider: { type: "string" },
           pipeline: { type: "string" },
           content_hash: { type: "string" },
         },

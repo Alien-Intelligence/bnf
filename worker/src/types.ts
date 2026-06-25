@@ -35,6 +35,13 @@ export interface DocMetadata {
   iiifManifestUrl: string | null;
   pageCount: number | null;
   ocrAvailable: boolean;
+  /**
+   * Which engine produced the text. Absent on the native BnF OCR / image paths
+   * (so unchanged docs keep their content hash); "mistral" when the text came
+   * from the paid fallback OCR path. Lets the cluster filter/audit transcribed
+   * documents.
+   */
+  ocrProvider?: "mistral";
 }
 
 /** One chunk ready to be embedded and registered. */

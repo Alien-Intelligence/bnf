@@ -129,12 +129,21 @@ class PreparePipeline implements DocPipeline {
     // ---- 3) Render ----
     let markdown: string;
     let pipeline: "text_with_ocr" | "single_image";
+    // "mistral" when the text came from the paid fallback OCR path; undefined on
+    // the native paths so their content hash (and cache) is unchanged.
+    let ocrProvider: "mistral" | undefined;
     // Per-folio metadata stamped onto each chunk by the chunker. The image
     // path needs this so each chunk carries its canvas's iiif_url for citation.
     const folioMetadata = new Map<number, Record<string, unknown>>();
     if (ext.kind === "text_with_ocr") {
       markdown = renderOcrMarkdown(info, ext.pages);
       pipeline = "text_with_ocr";
+    } else if (ext.kind === "mistral_ocr") {
+      // Same render + folio-aware chunking as the native OCR path; only the
+      // provenance differs (stamped below for audit / cluster filtering).
+      markdown = renderOcrMarkdown(info, ext.pages);
+      pipeline = "text_with_ocr";
+      ocrProvider = "mistral";
     } else {
       markdown = renderImagePagesMarkdown(info, ext.pages, {
         totalCanvases: ext.totalCanvases,
@@ -167,6 +176,7 @@ class PreparePipeline implements DocPipeline {
       iiifManifestUrl: info.iiifManifestUrl,
       pageCount: info.pageCount,
       ocrAvailable: info.ocrAvailable,
+      ...(ocrProvider ? { ocrProvider } : {}),
     };
 
     const chunks: ChunkRow[] = chunkMarkdown(markdown, {
@@ -175,6 +185,8 @@ class PreparePipeline implements DocPipeline {
         arkSlug,
         docType: info.docType ?? undefined,
         subtype: info.subtype ?? undefined,
+        // Stamped onto every chunk's cluster metadata for audit / filtering.
+        ...(ocrProvider ? { ocr_provider: ocrProvider } : {}),
       },
       folioMetadata: folioMetadata.size > 0 ? folioMetadata : undefined,
     });
