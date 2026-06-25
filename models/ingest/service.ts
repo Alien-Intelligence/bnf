@@ -365,6 +365,11 @@ export class IngestService {
    */
   static async commit(job: IngestJob, results: IngestResults): Promise<void> {
     const now = new Date()
+    // Charge the confirmed paid-OCR estimate to the project's running spend,
+    // set-once (paidOcrActualUsd null → not yet charged). The estimate (capped
+    // page counts) is conservative — it never under-counts spend, which is the
+    // safe direction for a budget ceiling. See _chargePaidOcr* helpers.
+    const paidOcrCharge = IngestService._paidOcrChargeFor(job)
     await prisma.$transaction([
       prisma.ingestJob.update({
         where: { id: job.id },
@@ -373,6 +378,9 @@ export class IngestService {
           finishedAt: now,
           chunksWritten: results.chunksWritten,
           stats: results.stats as never,
+          ...(paidOcrCharge !== null
+            ? { paidOcrActualUsd: paidOcrCharge }
+            : {}),
         },
       }),
       prisma.corpusVersion.update({
@@ -381,7 +389,12 @@ export class IngestService {
       }),
       prisma.project.update({
         where: { id: job.projectId },
-        data: { ingestedVersionId: job.targetVersionId },
+        data: {
+          ingestedVersionId: job.targetVersionId,
+          ...(paidOcrCharge !== null
+            ? { paidOcrSpentUsd: { increment: paidOcrCharge } }
+            : {}),
+        },
       }),
       // Per-doc index state: every added ARK is now in the index; every removed
       // ARK is out. Keeps the delta truthful independent of the version pointer.
@@ -424,6 +437,12 @@ export class IngestService {
     const succeededAdded = job.addedArks.filter((a) => !failedSet.has(a))
     const now = new Date()
 
+    // Charge the confirmed paid-OCR estimate even on a partial run: the worker
+    // already paid Mistral for the folios it transcribed, and the estimate is
+    // conservative. Set-once via paidOcrActualUsd. (A whole-job FAILED, which
+    // does not commit, is the one case that escapes accounting — acceptably rare.)
+    const paidOcrCharge = IngestService._paidOcrChargeFor(job)
+
     const ops: Prisma.PrismaPromise<unknown>[] = [
       prisma.ingestJob.update({
         where: { id: job.id },
@@ -433,6 +452,7 @@ export class IngestService {
           chunksWritten: results.chunksWritten,
           stats: results.stats as never,
           error: `${failed}/${total} document(s) en échec — réessayez les documents échoués`,
+          ...(paidOcrCharge !== null ? { paidOcrActualUsd: paidOcrCharge } : {}),
         },
       }),
       // A partial run still advances the baseline (same as commit) — the per-doc
@@ -444,7 +464,12 @@ export class IngestService {
       }),
       prisma.project.update({
         where: { id: job.projectId },
-        data: { ingestedVersionId: job.targetVersionId },
+        data: {
+          ingestedVersionId: job.targetVersionId,
+          ...(paidOcrCharge !== null
+            ? { paidOcrSpentUsd: { increment: paidOcrCharge } }
+            : {}),
+        },
       }),
     ]
     if (succeededAdded.length > 0) {
@@ -689,6 +714,19 @@ export class IngestService {
       }
     }
     return { ingestable, excluded, paidOcr }
+  }
+
+  /**
+   * The paid-OCR amount to charge a project when this job commits, or null if
+   * there is nothing to charge. Set-once: returns null once `paidOcrActualUsd`
+   * is already recorded (so a re-delivered commit can't double-charge) or when
+   * the job carried no paid-OCR estimate. The number is the confirmed estimate
+   * — conservative by design (capped page counts never under-count spend).
+   */
+  private static _paidOcrChargeFor(job: IngestJob): number | null {
+    if (job.paidOcrActualUsd !== null) return null
+    if (job.paidOcrEstimatedUsd === null) return null
+    return Number(job.paidOcrEstimatedUsd)
   }
 
   /**
