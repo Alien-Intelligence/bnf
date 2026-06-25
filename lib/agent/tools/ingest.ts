@@ -25,33 +25,17 @@ export const ingestSubmitTool = defineTool<typeof inputSchema, TurnScopedCtx>({
     const project = await ProjectQueries.get(ctx.projectId)
     if (!project) return { error: "project_not_found" }
     try {
-      // The agent never authorizes paid OCR on its own — confirming the spend is
-      // a human decision made in the Ingérer UI. We submit WITHOUT confirmPaidOcr,
-      // so a delta that needs paid OCR comes back as a non-`job` outcome we relay
-      // to the librarian instead of silently spending money.
+      // The agent ingests the REGULAR delta only — it never opts into paid OCR
+      // (confirmPaidOcr stays unset), so the `sans_texte` docs are left untouched
+      // and no money is spent on the agent's behalf. Paid OCR is a deliberate
+      // human action in the Ingérer UI. submit() therefore always returns a job.
       const outcome = await IngestService.submit(project, ctx.user, {
         targetVersionSeq: input.target_version,
       })
-      if (outcome.kind === "confirmation_required") {
-        return {
-          status: "paid_ocr_confirmation_required",
-          message:
-            `${outcome.paidOcr.docCount} document(s) numérisé(s) sans OCR ` +
-            `nécessitent une transcription payante (≈ ${outcome.paidOcr.usd.toFixed(2)} $). ` +
-            `Demandez à la·au bibliothécaire de confirmer dans l'étape Ingérer.`,
-          paid_ocr_docs: outcome.paidOcr.docCount,
-          estimated_usd: outcome.paidOcr.usd,
-        }
-      }
-      if (outcome.kind === "budget_exceeded") {
-        return {
-          status: "paid_ocr_budget_exceeded",
-          message:
-            `La transcription payante (≈ ${outcome.paidOcr.usd.toFixed(2)} $) dépasserait ` +
-            `le budget OCR du projet (dépensé ${outcome.spentUsd.toFixed(2)} $ / ` +
-            `plafond ${outcome.ceilingUsd.toFixed(2)} $).`,
-          estimated_usd: outcome.paidOcr.usd,
-        }
+      // Defensive: submit() only returns non-`job` when confirmPaidOcr was set,
+      // which we never do — but never silently swallow an unexpected outcome.
+      if (outcome.kind !== "job") {
+        return { error: `unexpected_submit_outcome: ${outcome.kind}` }
       }
       const job = outcome.job
       ctx.emit?.({

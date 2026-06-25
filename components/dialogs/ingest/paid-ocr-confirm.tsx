@@ -1,11 +1,13 @@
 "use client"
 
 // components/dialogs/ingest/paid-ocr-confirm.tsx
-// Per-ingestion confirmation before spending money on Mistral fallback OCR for
-// `sans_texte` documents (digitized text with no BnF OCR layer). Renders two
-// states off the submit outcome: the spend confirmation, and the budget-exceeded
-// notice (when the confirmed cost would breach the project's OCR budget).
-// Standard Dialog primitive (no AlertDialog in this codebase).
+// Final confirmation before spending platform money on Mistral fallback OCR
+// (the `sans_texte` opt-in on the Ingérer step), plus the budget-exceeded
+// backstop. Two modes:
+//   • "confirm" — client-driven, opened when the user has opted in and clicks
+//     "Lancer". Confirming runs the ingest WITH paid OCR.
+//   • "budget"  — server backstop: the opt-in slipped through over budget.
+//     Informational; the regular ingest can still run with the opt-in dropped.
 
 import { useTranslations } from "next-intl"
 import {
@@ -17,49 +19,51 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
-import type { IngestSubmitPaidOcrResponse } from "@/models/ingest/types"
+
+export type PaidOcrDialogState =
+  | { mode: "confirm"; docCount: number; usd: number }
+  | { mode: "budget"; usd: number; spentUsd: number; ceilingUsd: number }
+  | null
 
 interface Props {
-  /** The paid-OCR submit outcome, or null when the dialog is closed. */
-  outcome: IngestSubmitPaidOcrResponse | null
+  state: PaidOcrDialogState
   onOpenChange: (open: boolean) => void
   onConfirm: () => void
   isPending: boolean
 }
 
 export function DialogIngestPaidOcrConfirm({
-  outcome,
+  state,
   onOpenChange,
   onConfirm,
   isPending,
 }: Props) {
   const t = useTranslations("ingest.paidOcr")
 
-  const open = outcome !== null
-  const cost = outcome ? outcome.paidOcr.usd.toFixed(2) : "0.00"
-  const count = outcome?.paidOcr.docCount ?? 0
-
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={state !== null} onOpenChange={onOpenChange}>
       <DialogContent showCloseButton={false}>
         <DialogHeader>
           <DialogTitle>
-            {outcome?.kind === "budget_exceeded"
-              ? t("budgetTitle")
-              : t("confirmTitle")}
+            {state?.mode === "budget" ? t("budgetTitle") : t("confirmTitle")}
           </DialogTitle>
           <DialogDescription>
-            {outcome?.kind === "budget_exceeded"
+            {state?.mode === "budget"
               ? t("budgetBody", {
-                  cost,
-                  spent: outcome.spentUsd.toFixed(2),
-                  ceiling: outcome.ceilingUsd.toFixed(2),
+                  cost: state.usd.toFixed(2),
+                  spent: state.spentUsd.toFixed(2),
+                  ceiling: state.ceilingUsd.toFixed(2),
                 })
-              : t("confirmBody", { count, cost })}
+              : state?.mode === "confirm"
+                ? t("confirmBody", {
+                    count: state.docCount,
+                    cost: state.usd.toFixed(2),
+                  })
+                : ""}
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
-          {outcome?.kind === "budget_exceeded" ? (
+          {state?.mode === "budget" ? (
             <Button onClick={() => onOpenChange(false)}>{t("close")}</Button>
           ) : (
             <>

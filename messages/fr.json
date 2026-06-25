@@ -574,8 +574,14 @@
       "added": "{count} à ingérer",
       "removed": "{count} à retirer",
       "excluded": "{count, plural, =0 {} one {# document non ingérable exclu} other {# documents non ingérables exclus}}",
-      "paidOcr": "{count, plural, one {# document sans OCR · océrisation à la demande (≈ {cost} $ pour la plateforme)} other {# documents sans OCR · océrisation à la demande (≈ {cost} $ pour la plateforme)}}",
+      "paidOcr": "{count, plural, one {# document numérisé sans couche OCR} other {# documents numérisés sans couche OCR}}",
+      "paidOcrCost": "Océrisation à la demande · ≈ {cost} $ pour la plateforme",
+      "paidOcrBudget": "Budget plateforme : {spent} $ / {ceiling} $ utilisés",
+      "paidOcrInclude": "Inclure l'océrisation",
+      "paidOcrIncluded": "Océrisation incluse ✓",
+      "paidOcrOverBudget": "Coût supérieur au budget de la plateforme ({ceiling} $) : océrisation indisponible. Les autres documents seront ingérés normalement.",
       "submit": "Lancer une ingestion",
+      "submitWithOcr": "Lancer l'ingestion + océrisation",
       "submitting": "Envoi…"
     },
     "paidOcr": {

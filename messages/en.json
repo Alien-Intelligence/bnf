@@ -574,8 +574,14 @@
       "added": "{count} to add",
       "removed": "{count} to remove",
       "excluded": "{count, plural, =0 {} one {# non-ingestable document excluded} other {# non-ingestable documents excluded}}",
-      "paidOcr": "{count, plural, one {# document without OCR · on-demand OCR (≈ ${cost} to the platform)} other {# documents without OCR · on-demand OCR (≈ ${cost} to the platform)}}",
+      "paidOcr": "{count, plural, one {# digitized document with no OCR layer} other {# digitized documents with no OCR layer}}",
+      "paidOcrCost": "On-demand OCR · ≈ ${cost} to the platform",
+      "paidOcrBudget": "Platform budget: ${spent} / ${ceiling} used",
+      "paidOcrInclude": "Include OCR",
+      "paidOcrIncluded": "OCR included ✓",
+      "paidOcrOverBudget": "Cost exceeds the platform budget (${ceiling}): OCR unavailable. The other documents will be ingested normally.",
       "submit": "Start ingestion",
+      "submitWithOcr": "Start ingestion + OCR",
       "submitting": "Submitting…"
     },
     "paidOcr": {

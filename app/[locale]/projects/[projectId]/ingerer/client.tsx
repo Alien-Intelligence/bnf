@@ -22,11 +22,11 @@ import { CardIngestJobHistory } from "@/components/cards/ingest/job-history"
 import { INGEST_STATUS } from "@/models/ingest/schema"
 import { WorkspaceHeader } from "@/components/layouts/workspace/header"
 import { DialogIngestConfirmCancel } from "@/components/dialogs/ingest/confirm-cancel"
-import { DialogIngestPaidOcrConfirm } from "@/components/dialogs/ingest/paid-ocr-confirm"
-import type {
-  IngestJobView,
-  IngestSubmitPaidOcrResponse,
-} from "@/models/ingest/types"
+import {
+  DialogIngestPaidOcrConfirm,
+  type PaidOcrDialogState,
+} from "@/components/dialogs/ingest/paid-ocr-confirm"
+import type { IngestJobView } from "@/models/ingest/types"
 import type { PaidOcrEstimate } from "@/models/ingest/schema"
 
 interface Props {
@@ -39,6 +39,7 @@ interface Props {
     removed: number
     excluded: number
     paidOcr: PaidOcrEstimate
+    paidOcrBudget: { spentUsd: number; ceilingUsd: number; withinBudget: boolean }
   }
   activeJobId: string | null
   initialRecentJobs: IngestJobView[]
@@ -57,32 +58,51 @@ export function IngererClient({
     initialActiveJobId,
   )
   const [showCancel, setShowCancel] = useState(false)
-  // Non-null while the paid-OCR dialog is open (confirmation or budget notice).
-  const [paidOcrOutcome, setPaidOcrOutcome] =
-    useState<IngestSubmitPaidOcrResponse | null>(null)
+  // Whether the librarian has opted into paying for OCR of the sans_texte docs.
+  const [includePaidOcr, setIncludePaidOcr] = useState(false)
+  // Drives the paid-OCR dialog: client "confirm" before spending, or the
+  // server "budget" backstop. Null = closed.
+  const [paidOcrDialog, setPaidOcrDialog] = useState<PaidOcrDialogState>(null)
 
   const submitMutation = useSubmitIngest(projectId)
   const cancelMutation = useCancelIngest(projectId)
   const retryMutation = useRetryFailedIngest(projectId)
   const status = useIngestStatus(activeJobId)
 
-  // Submit, then route the outcome: a job starts polling; a paid-OCR outcome
-  // opens the confirmation/budget dialog instead. `confirmPaidOcr` re-submits
-  // with the spend authorized.
-  const submit = async (confirmPaidOcr: boolean) => {
+  const { paidOcr, paidOcrBudget } = deltaPreview
+  const canIncludePaidOcr = paidOcr.docCount > 0 && paidOcrBudget.withinBudget
+
+  // Dispatch the ingest. `confirmPaidOcr` is true only after the librarian opted
+  // in AND confirmed the spend; otherwise the regular delta runs alone and the
+  // sans_texte docs are left untouched (never sent silently). A budget_exceeded
+  // outcome (server backstop) opens the budget notice instead of starting a job.
+  const dispatch = async (confirmPaidOcr: boolean) => {
     const res = await submitMutation.mutateAsync(
       confirmPaidOcr ? { confirmPaidOcr: true } : {},
     )
     if (isPaidOcrOutcome(res)) {
-      setPaidOcrOutcome(res)
+      setPaidOcrDialog({
+        mode: "budget",
+        usd: res.paidOcr.usd,
+        spentUsd: res.spentUsd,
+        ceilingUsd: res.ceilingUsd,
+      })
       return
     }
-    setPaidOcrOutcome(null)
+    setPaidOcrDialog(null)
     setActiveJobId(res.id)
   }
 
-  const onSubmit = () => submit(false)
-  const onConfirmPaidOcr = () => submit(true)
+  // Main CTA: if paid OCR is opted in (and affordable), confirm the spend first;
+  // otherwise run the regular ingest immediately.
+  const onSubmit = () => {
+    if (canIncludePaidOcr && includePaidOcr) {
+      setPaidOcrDialog({ mode: "confirm", docCount: paidOcr.docCount, usd: paidOcr.usd })
+      return
+    }
+    void dispatch(false)
+  }
+  const onConfirmPaidOcr = () => void dispatch(true)
 
   const onRetryFailed = async () => {
     if (!activeJobId) return
@@ -106,17 +126,20 @@ export function IngererClient({
           headSeq={headVersionSeq}
           ingestedSeq={ingestedVersionSeq}
           delta={deltaPreview}
+          paidOcrBudget={paidOcrBudget}
+          includePaidOcr={includePaidOcr}
+          onTogglePaidOcr={() => setIncludePaidOcr((v) => !v)}
           activeJob={status.data ?? null}
-          onSubmit={() => void onSubmit()}
+          onSubmit={onSubmit}
           isSubmitting={submitMutation.isPending}
         />
 
         <DialogIngestPaidOcrConfirm
-          outcome={paidOcrOutcome}
+          state={paidOcrDialog}
           onOpenChange={(open) => {
-            if (!open) setPaidOcrOutcome(null)
+            if (!open) setPaidOcrDialog(null)
           }}
-          onConfirm={() => void onConfirmPaidOcr()}
+          onConfirm={onConfirmPaidOcr}
           isPending={submitMutation.isPending}
         />
 

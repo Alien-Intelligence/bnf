@@ -1,9 +1,11 @@
 "use client"
 
 // components/cards/ingest/summary.tsx
-// Overview card for the Ingérer step. Shows the current head version seq,
-// the last ingested version seq (or "never ingested"), the delta (added /
-// removed documents), the active-job badge, and the CTA to start ingestion.
+// Overview card for the Ingérer step. Shows the current head version seq, the
+// last ingested version seq, the delta (added / removed / excluded), and the
+// CTA to start ingestion. The `sans_texte` docs are a SEPARATE, opt-in block:
+// the main ingest never sends them; the librarian must deliberately include
+// paid OCR, and the opt-in is disabled when the cost exceeds the project budget.
 
 import { useTranslations } from "next-intl"
 import {
@@ -26,6 +28,10 @@ interface Props {
     excluded: number
     paidOcr: PaidOcrEstimate
   }
+  paidOcrBudget: { spentUsd: number; ceilingUsd: number; withinBudget: boolean }
+  /** Whether the librarian has opted into paid OCR for this ingestion. */
+  includePaidOcr: boolean
+  onTogglePaidOcr: () => void
   activeJob: IngestJobView | null
   onSubmit: () => void
   isSubmitting: boolean
@@ -35,6 +41,9 @@ export function CardIngestSummary({
   headSeq,
   ingestedSeq,
   delta,
+  paidOcrBudget,
+  includePaidOcr,
+  onTogglePaidOcr,
   activeJob,
   onSubmit,
   isSubmitting,
@@ -45,12 +54,14 @@ export function CardIngestSummary({
     activeJob?.status === INGEST_STATUS.QUEUED ||
     activeJob?.status === INGEST_STATUS.RUNNING
 
-  // Paid-OCR-only deltas (added/removed both 0) are still actionable — the
-  // submit triggers the confirmation dialog — so they don't count as "no delta".
-  const isNoDelta =
-    delta.added === 0 && delta.removed === 0 && delta.paidOcr.docCount === 0
+  const hasPaidOcr = delta.paidOcr.docCount > 0
+  const hasRegular = delta.added > 0 || delta.removed > 0
+  const paidOptedIn = includePaidOcr && hasPaidOcr && paidOcrBudget.withinBudget
 
-  const submitDisabled = isJobActive || isSubmitting || isNoDelta
+  // Something will actually be dispatched: a regular delta, or an in-budget
+  // paid-OCR opt-in. (Paid docs alone, not opted into, are NOT a delta.)
+  const submitDisabled =
+    isJobActive || isSubmitting || (!hasRegular && !paidOptedIn)
 
   return (
     <Card>
@@ -84,7 +95,7 @@ export function CardIngestSummary({
             </div>
           </div>
 
-          {/* Right column: delta */}
+          {/* Right column: delta (regular docs only) */}
           <div className="flex flex-col gap-3">
             <span className="mono-eyebrow">{t("delta")}</span>
             <div className="flex flex-col gap-1 text-sm font-medium tabular-nums">
@@ -100,14 +111,6 @@ export function CardIngestSummary({
               >
                 -{t("removed", { count: delta.removed })}
               </span>
-              {delta.paidOcr.docCount > 0 && (
-                <span className="text-xs font-normal text-amber-600 dark:text-amber-500">
-                  {t("paidOcr", {
-                    count: delta.paidOcr.docCount,
-                    cost: delta.paidOcr.usd.toFixed(2),
-                  })}
-                </span>
-              )}
               {delta.excluded > 0 && (
                 <span className="text-xs font-normal text-muted-foreground">
                   {t("excluded", { count: delta.excluded })}
@@ -117,9 +120,52 @@ export function CardIngestSummary({
           </div>
         </div>
 
+        {/* Paid-OCR opt-in — a deliberate, budget-gated choice, separate from
+            the regular delta above. Never part of a normal ingest. */}
+        {hasPaidOcr && (
+          <div className="mt-5 rounded-md border border-amber-500/30 bg-amber-500/5 p-3">
+            <div className="text-sm font-medium">
+              {t("paidOcr", { count: delta.paidOcr.docCount })}
+            </div>
+            <div className="mt-0.5 text-xs text-muted-foreground">
+              {t("paidOcrCost", { cost: delta.paidOcr.usd.toFixed(2) })}
+            </div>
+            <div className="mt-0.5 text-xs text-muted-foreground tabular-nums">
+              {t("paidOcrBudget", {
+                spent: paidOcrBudget.spentUsd.toFixed(2),
+                ceiling: paidOcrBudget.ceilingUsd.toFixed(2),
+              })}
+            </div>
+
+            {paidOcrBudget.withinBudget ? (
+              <Button
+                type="button"
+                variant={includePaidOcr ? "default" : "outline"}
+                size="sm"
+                className="mt-3"
+                disabled={isJobActive || isSubmitting}
+                aria-pressed={includePaidOcr}
+                onClick={onTogglePaidOcr}
+              >
+                {includePaidOcr ? t("paidOcrIncluded") : t("paidOcrInclude")}
+              </Button>
+            ) : (
+              <div className="mt-3 text-xs font-medium text-amber-700 dark:text-amber-500">
+                {t("paidOcrOverBudget", {
+                  ceiling: paidOcrBudget.ceilingUsd.toFixed(2),
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
         <div className="mt-4">
           <Button disabled={submitDisabled} onClick={onSubmit}>
-            {isSubmitting ? t("submitting") : t("submit")}
+            {isSubmitting
+              ? t("submitting")
+              : paidOptedIn
+                ? t("submitWithOcr")
+                : t("submit")}
           </Button>
         </div>
       </CardContent>

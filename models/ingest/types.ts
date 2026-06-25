@@ -50,9 +50,10 @@ export function serializeIngestJob(job: IngestJob): IngestJobView {
 /**
  * Body accepted by POST /api/projects/[id]/ingest.
  * `targetVersionSeq` is optional — omit to target the current head.
- * `confirmPaidOcr` authorizes the per-ingestion spend on paid fallback OCR
- * (Mistral) for `sans_texte` documents. Without it, a delta that contains such
- * documents comes back as `confirmation_required` instead of being dispatched.
+ * `confirmPaidOcr` opts into the paid fallback OCR (Mistral) of the delta's
+ * `sans_texte` documents. WITHOUT it, the ingest runs the regular delta only and
+ * those documents are left untouched — they are never sent silently. WITH it,
+ * they are folded in (subject to the project budget; over budget → rejected).
  */
 export const ingestSubmitSchema = z.object({
   targetVersionSeq: z.number().int().positive().optional(),
@@ -61,20 +62,19 @@ export const ingestSubmitSchema = z.object({
 export type IngestSubmitInput = z.infer<typeof ingestSubmitSchema>
 
 /**
- * Result of {@link IngestService.submit}. A submit does not always create a job:
- * when the delta contains `sans_texte` documents and the spend has not been
- * authorized (or would breach the budget), it returns a non-`job` outcome the
- * caller surfaces to the user instead of dispatching.
+ * Result of {@link IngestService.submit}.
  *
- *   • `job`                   — a job was created (or an in-flight one reused).
- *   • `confirmation_required` — paid OCR is needed; re-submit with
- *                               `confirmPaidOcr: true` to proceed.
- *   • `budget_exceeded`       — confirmed, but committed spend + this estimate
- *                               would exceed the project's budget ceiling.
+ *   • `job`             — a job was created (or an in-flight one reused). The
+ *                         regular delta always reaches here; paid-OCR docs are
+ *                         included only when `confirmPaidOcr` was set and fit.
+ *   • `budget_exceeded` — paid OCR was opted into, but committed spend + this
+ *                         estimate would exceed the project budget. NOTHING is
+ *                         dispatched; the user must drop the opt-in (the regular
+ *                         ingest can then run on its own). A server-side backstop
+ *                         — the UI disables the opt-in when it won't fit.
  */
 export type IngestSubmitOutcome =
   | { kind: "job"; job: IngestJob }
-  | { kind: "confirmation_required"; paidOcr: PaidOcrEstimate }
   | {
       kind: "budget_exceeded"
       paidOcr: PaidOcrEstimate

@@ -122,28 +122,27 @@ export class IngestService {
     })
     if (existing) return { kind: "job", job: existing }
 
-    // 4b. Paid-OCR gate. If the delta carries `sans_texte` docs, the user must
-    // authorize the spend (per-ingestion confirmation) and the project must have
-    // budget headroom. Only on success are these ARKs folded into the job.
+    // 4b. Paid-OCR opt-in. The `sans_texte` docs are NEVER part of a normal
+    // ingest — the regular delta always runs without them. They are folded in
+    // ONLY when the user explicitly opts into the spend (confirmPaidOcr) AND the
+    // project has budget headroom. Over budget → `budget_exceeded` (a backstop;
+    // the UI disables the opt-in when it won't fit). Not opted-in → the paid docs
+    // are simply left out and the regular ingest proceeds, never silently sent.
+    let paidOcrToInclude: string[] = []
     let paidOcrEstimatedUsd: number | null = null
-    if (paidOcrArks.length > 0) {
+    if (paidOcrArks.length > 0 && input.confirmPaidOcr) {
       const estimate = await IngestService._estimatePaidOcr(project.id, paidOcrArks)
-      if (!input.confirmPaidOcr) {
-        return { kind: "confirmation_required", paidOcr: estimate }
-      }
-      const ceilingUsd =
-        project.paidOcrBudgetUsd === null
-          ? PAID_OCR_DEFAULT_BUDGET_USD
-          : Number(project.paidOcrBudgetUsd)
+      const ceilingUsd = IngestService._paidOcrCeilingUsd(project)
       const spentUsd = Number(project.paidOcrSpentUsd)
       if (spentUsd + estimate.usd > ceilingUsd) {
         return { kind: "budget_exceeded", paidOcr: estimate, spentUsd, ceilingUsd }
       }
+      paidOcrToInclude = paidOcrArks
       paidOcrEstimatedUsd = estimate.usd
     }
 
-    // Confirmed paid-OCR docs join the added delta; the worker transcribes them.
-    const addedArks = [...ingestable, ...paidOcrArks]
+    // Regular delta always; paid-OCR docs only when opted-in within budget.
+    const addedArks = [...ingestable, ...paidOcrToInclude]
 
     // 5. No-op short-circuit. Nothing ingestable to add and nothing to remove
     // means the index content for the target version already matches what's
@@ -181,7 +180,7 @@ export class IngestService {
         removedArks,
         excludedArks,
         excludedCount: excludedArks.length,
-        paidOcrArks,
+        paidOcrArks: paidOcrToInclude,
         paidOcrEstimatedUsd,
         callbackSecret,
       },
@@ -243,6 +242,17 @@ export class IngestService {
     removed: number
     excluded: number
     paidOcr: PaidOcrEstimate
+    /**
+     * Budget context for the paid-OCR opt-in, so the UI can show the cost
+     * against the cap and disable the opt-in when it won't fit. `withinBudget`
+     * is the single source of truth the client gates the opt-in on; the server
+     * re-checks it on submit (the UI can't be trusted with spend).
+     */
+    paidOcrBudget: {
+      spentUsd: number
+      ceilingUsd: number
+      withinBudget: boolean
+    }
   }> {
     const targetVersion = await CorpusQueries.headVersion(project.id)
 
@@ -265,11 +275,22 @@ export class IngestService {
         paidOcr: project.paidOcrEnabled,
       })
 
+    const paidOcrEstimate = await IngestService._estimatePaidOcr(project.id, paidOcr)
+    const ceilingUsd = IngestService._paidOcrCeilingUsd(project)
+    const spentUsd = Number(project.paidOcrSpentUsd)
+
     return {
       added: ingestable.length,
       removed: removedArks.length,
       excluded: excluded.length,
-      paidOcr: await IngestService._estimatePaidOcr(project.id, paidOcr),
+      paidOcr: paidOcrEstimate,
+      paidOcrBudget: {
+        spentUsd,
+        ceilingUsd,
+        withinBudget:
+          paidOcrEstimate.docCount > 0 &&
+          spentUsd + paidOcrEstimate.usd <= ceilingUsd,
+      },
     }
   }
 
@@ -744,6 +765,13 @@ export class IngestService {
    * to the conservative default inside estimatePaidOcrCostUsd(). The worker
    * reports the real billed cost on completion.
    */
+  /** Effective paid-OCR budget ceiling: the project override, or the default. */
+  private static _paidOcrCeilingUsd(project: Project): number {
+    return project.paidOcrBudgetUsd === null
+      ? PAID_OCR_DEFAULT_BUDGET_USD
+      : Number(project.paidOcrBudgetUsd)
+  }
+
   private static async _estimatePaidOcr(
     projectId: string,
     arks: string[],
