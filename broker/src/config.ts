@@ -63,15 +63,13 @@ export const config = {
   // without) and attributes usage to our credential. Verified live 2026-06-24.
   apiBaseUrl: url("BNF_API_BASE_URL", "https://openapiproext.bnf.fr"),
 
-  // Rate buckets (requests/min), env-overridable (no rebuild). Global set to 180:
-  // just above BnF's MEASURED real enforced rate (~150-185/min, 5 windows), so we
-  // touch the ceiling (occasional 429 — useful evidence for the quota ask) but
-  // mostly serve smoothly. The documented 300 is fiction: BnF 429s past ~150 and
-  // the broker then freezes the bucket to the next clock-minute, so 300 serves
-  // only ~16s/min (frozen ~44s) → no MORE throughput than 180, just bursty +
-  // starves large docs. Manifest raised 12→40/min/IP (Ludovic 2026-06-24). Fixed
-  // clock-minute windows. See ai-memories bnf-partner-api-design.
-  globalRpm: num("BNF_GLOBAL_RPM", 180), //   partner API, all endpoints combined
+  // Rate buckets (requests/min), env-overridable (no rebuild). Global = 300, the
+  // REAL provisioned quota (Ludovic fixed it 2026-06-25 — the earlier "100" was a
+  // mis-clicked tier that 429'd us every minute, NOT BnF's true ceiling). Verified
+  // live via the broker call log: freeze (real BnF 429) dropped to ~0 once the
+  // quota was corrected. Manifest 40/min/IP. Fixed clock-minute windows. See
+  // ai-memories bnf-partner-api-design.
+  globalRpm: num("BNF_GLOBAL_RPM", 300), //   partner API, all endpoints combined
   globalBurst: num("BNF_GLOBAL_BURST", 20),
   manifestRpm: num("BNF_MANIFEST_RPM", 40), // IIIF manifest, per IP (BnF raised 12→40 on 2026-06-24)
   manifestBurst: num("BNF_MANIFEST_BURST", 4),

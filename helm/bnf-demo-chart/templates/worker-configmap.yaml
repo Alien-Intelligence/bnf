@@ -61,6 +61,10 @@ data:
   MAX_OCR_PAGES: {{ .Values.worker.config.maxOcrPages | quote }}
   MAX_IMAGE_CANVASES: {{ .Values.worker.config.maxImageCanvases | quote }}
   IMAGE_CONCURRENCY: {{ .Values.worker.config.imageConcurrency | quote }}
+  # Process-global broker-fetch concurrency — the worker's single in-flight cap,
+  # held below the doc loop so the broker's rate bucket stays continuously fed.
+  BNF_FETCH_CONCURRENCY: {{ .Values.worker.config.bnfFetchConcurrency | quote }}
   WORKER_CONCURRENCY: {{ .Values.worker.config.workerConcurrency | quote }}
+  # Deprecated/no-op on the gated path; kept for rollback safety.
   BNF_ALTO_CONCURRENCY: {{ .Values.worker.config.bnfAltoConcurrency | quote }}
 {{- end }}

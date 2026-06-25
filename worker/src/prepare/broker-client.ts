@@ -14,6 +14,8 @@
  */
 import { request } from "undici";
 
+import { withFetchPermit } from "./fetch-gate.js";
+
 /** The configured broker base URL, or undefined when not deployed. */
 export function brokerUrl(): string | undefined {
   const v = process.env.BNF_BROKER_URL;
@@ -39,21 +41,28 @@ export async function brokerGet(
   if (!broker) {
     throw new Error("brokerGet called but BNF_BROKER_URL is not set");
   }
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await request(`${broker}/fetch`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ url: targetUrl, accept }),
-      signal: controller.signal,
-    });
-    const bytes = Buffer.from(await res.body.arrayBuffer());
-    const contentType =
-      (res.headers["content-type"] as string | undefined) ??
-      "application/octet-stream";
-    return { status: res.statusCode, bytes, contentType };
-  } finally {
-    clearTimeout(timer);
-  }
+  // The fetch gate is the worker's single concurrency bound for ALL broker
+  // traffic (ALTO, OAI, manifest, SRU, images all flow through brokerGet). The
+  // broker still owns the RATE; the gate only keeps its bucket fed continuously.
+  // Acquire the permit BEFORE arming the timeout so queue time never counts
+  // against the per-request budget (same rule as fetchText's rate-limiter).
+  return withFetchPermit(async () => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await request(`${broker}/fetch`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ url: targetUrl, accept }),
+        signal: controller.signal,
+      });
+      const bytes = Buffer.from(await res.body.arrayBuffer());
+      const contentType =
+        (res.headers["content-type"] as string | undefined) ??
+        "application/octet-stream";
+      return { status: res.statusCode, bytes, contentType };
+    } finally {
+      clearTimeout(timer);
+    }
+  });
 }

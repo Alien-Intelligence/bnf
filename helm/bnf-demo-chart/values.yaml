@@ -153,10 +153,19 @@ worker:
     maxOcrPages: "300"
     maxImageCanvases: "40"
     imageConcurrency: "3"
-    # In-flight ALTO = workerConcurrency × bnfAltoConcurrency. Keep the product
-    # small (≈4) so the fleet doesn't overshoot the broker's shared 300/min cap →
-    # mass 429-shed → docs trip the 25% page-fail ratio and retry forever.
-    workerConcurrency: "2"
+    # bnfFetchConcurrency: the worker's single in-flight cap for ALL broker traffic
+    # (ALTO/OAI/manifest/images), held below the doc loop so it stays full during
+    # embed/index — keeping the broker's 300/min bucket continuously fed. The broker
+    # remains the RATE authority; 12 holds sustained 300/min with freeze≈0/shed≈0.
+    #   3000/min flip = TWO values, no code change: broker.config.globalRpm: "3000"
+    #   + bnfFetchConcurrency: "48", then helm upgrade and verify via /calls.csv.
+    bnfFetchConcurrency: "12"
+    # workerConcurrency is now purely the memory/pipeline bound (docs in flight,
+    # each up to maxOcrPages in memory), NOT a fetch-throughput knob. Keep ≥2 so
+    # doc transitions overlap and the fetch gate never drains mid-handoff.
+    workerConcurrency: "4"
+    # bnfAltoConcurrency — deprecated/no-op on the gated path (fan-out follows the
+    # gate). Left set to avoid breakage; remove in a later cleanup.
     bnfAltoConcurrency: "2"
 
   resources:
@@ -203,11 +212,10 @@ broker:
     apiBaseUrl: https://openapiproext.bnf.fr
 
     # Rate caps (requests/min) — bump here, redeploy the broker only (no
-    # app/worker rebuild). global=180: just above BnF's measured real rate
-    # (~150-185/min), so we touch the ceiling (occasional 429) but serve smoothly.
-    # 300 (the documented quota) just grinds — BnF 429s past ~150 and the broker
-    # freezes to the next clock-minute. manifest raised 12→40/min/IP by BnF.
-    globalRpm: "180"
+    # app/worker rebuild). global=300: the REAL provisioned quota (Ludovic fixed
+    # it 2026-06-25; the earlier "100" was a mis-clicked tier that 429'd us every
+    # minute). manifest raised 12→40/min/IP by BnF.
+    globalRpm: "300"
     manifestRpm: "40"
     externalRpm: "120"
 

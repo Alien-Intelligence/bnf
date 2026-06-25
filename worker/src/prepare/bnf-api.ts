@@ -23,6 +23,7 @@ import { arkToSlug } from "../slug.js";
 
 import { brokerGet, brokerUrl } from "./broker-client.js";
 import { PermanentBnfError, TransientBnfError } from "./errors.js";
+import { fetchGatePermits } from "./fetch-gate.js";
 import { gallicaRelayUrl, relayGet } from "./gallica-relay.js";
 import { altoRateLimit, gallicaRateLimit, type TokenBucket } from "./rate-limiter.js";
 import { withBnfRetry } from "./retry.js";
@@ -47,14 +48,6 @@ const OPENAPI = (process.env.BNF_API_BASE_URL ?? "https://openapiproext.bnf.fr")
 /** True when the broker is configured → use the partner API + OAI metadata. */
 function partnerMode(): boolean {
   return brokerUrl() !== undefined;
-}
-
-/** ALTO-fetch concurrency on the partner path — the broker governs the actual
- *  rate, so this is just the in-flight window. Default 6; tune via env. */
-function altoConcurrency(): number {
-  const raw = process.env.BNF_ALTO_CONCURRENCY;
-  const n = raw == null || raw.trim() === "" ? 6 : Number(raw);
-  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 6;
 }
 
 /** Same shape extract.ts expects from `getDocumentText`. */
@@ -861,8 +854,13 @@ export class BnfApi {
         }
       }
     };
+    // Page fan-out is widened to the process-global fetch-gate size so a single
+    // fetching doc can fill every permit. The real concurrency cap is the gate
+    // (shared across all doc-jobs in brokerGet), not this per-doc width — so a
+    // doc in embed/index frees permits for other docs' pages and the broker
+    // stays saturated. The per-doc fail-ratio accounting below stays per-doc.
     await Promise.all(
-      Array.from({ length: Math.min(altoConcurrency(), ordres.length) }, () => worker()),
+      Array.from({ length: Math.min(fetchGatePermits(), ordres.length) }, () => worker()),
     );
 
     const pages = results.filter((p) => p.text.trim().length > 0);
