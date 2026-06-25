@@ -278,6 +278,18 @@ function classifyStatus(
       hint: `${url}: ${body.slice(0, 200)}`,
     });
   }
+  if (status === 403) {
+    // BnF returns 403 {"reason":"Forbidden"} for access-restricted documents
+    // (rights-restricted, on-site-consultation-only, embargoed). This is a
+    // PERMANENT per-document decision: no amount of retrying changes it. It is
+    // NOT rate limiting (that is 429) and NOT an expired token (the broker owns
+    // and re-mints OAuth before the worker ever sees the response). Retrying
+    // only burns the shared quota and loops the doc-job, so fail it immediately.
+    return new PermanentBnfError("forbidden", {
+      status,
+      hint: `${url}: ${body.slice(0, 200)}`,
+    });
+  }
   if (status === 429) {
     return new TransientBnfError("rate_limited", {
       status,
