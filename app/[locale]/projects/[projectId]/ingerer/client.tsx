@@ -121,7 +121,11 @@ export function IngererClient({
     <div className="flex flex-col h-screen">
       <WorkspaceHeader user={initialUser} projectId={projectId} />
 
-      <div className="flex flex-col gap-6 p-6 max-w-4xl mx-auto w-full overflow-auto">
+      {/* *:shrink-0 — in a flex-col scroll container, items default to shrink:1
+          and get squeezed below their content height when the column overflows;
+          combined with the cards' overflow-hidden that clips their footers (e.g.
+          the submit button). Keep natural heights → the container scrolls. */}
+      <div className="flex flex-col gap-6 p-6 max-w-4xl mx-auto w-full overflow-auto *:shrink-0">
         <CardIngestSummary
           headSeq={headVersionSeq}
           ingestedSeq={ingestedVersionSeq}
