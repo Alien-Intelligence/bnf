@@ -144,10 +144,13 @@ model Project {
   // Populated lazily on the first real RAG query — see lib/cluster/real-rag.ts.
   clusterDatasetId  Int?     @map("cluster_dataset_id")
   // Paid fallback OCR (Mistral) for `sans_texte` documents — digitized text
-  // with no BnF OCR layer. Off by default: a project only runs paid OCR after
-  // an explicit per-ingestion confirmation. See models/documents/schema.ts
-  // classifyIngestion() and the ingestion handshake in models/ingest/service.ts.
-  paidOcrEnabled    Boolean  @default(false) @map("paid_ocr_enabled")
+  // with no BnF OCR layer. ON by default: paid OCR is offered to every project,
+  // and the actual spend is still gated per-ingestion by an explicit user
+  // confirmation (the « Océrisation payante » dialog). This flag stays as a
+  // per-project kill-switch. See models/documents/schema.ts classifyIngestion()
+  // and the ingestion handshake in models/ingest/service.ts. (The worker must
+  // also have MISTRAL_OCR_ENABLED=true + MISTRAL_API_KEY for it to run.)
+  paidOcrEnabled    Boolean  @default(true) @map("paid_ocr_enabled")
   // Per-project spend ceiling in USD (null = fall back to the global default).
   // Submission is refused once paidOcrSpentUsd + estimate would exceed it.
   paidOcrBudgetUsd  Decimal? @map("paid_ocr_budget_usd")
