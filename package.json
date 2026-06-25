@@ -1,6 +1,6 @@
 {
   "name": "bnf",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -11,7 +11,7 @@
     "fix:doc-types": "tsx --env-file-if-exists .env.local --conditions react-server scripts/fix-doc-types.ts"
   },
   "dependencies": {
-    "@alien/chat-sdk": "npm:@alien_intelligence/chat-sdk@^0.8.0",
+    "@alien/chat-sdk": "npm:@alien_intelligence/chat-sdk@^0.8.2",
     "@anthropic-ai/sdk": "^0.104.1",
     "@base-ui/react": "^1.6.0",
     "@hookform/resolvers": "^3.10.0",
