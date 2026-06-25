@@ -24,7 +24,7 @@ import type {
   ToolPartEntry,
 } from "@alien/chat-sdk"
 import type { UseTurnStreamResult, StreamDomainEvent } from "@/hooks/api/turn-stream"
-import { Input } from "@/components/ui/input"
+import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
 import { BadgeToolCall } from "@/components/badges/tools/call"
 import { BadgeToolMutation } from "@/components/badges/tools/mutation-pill"
@@ -565,11 +565,24 @@ function CorpusComposer({
   const hydrated = useHydrated()
   const streaming = hydrated && chat.isStreaming
   const canSend = hydrated && chat.input.trim().length > 0 && !chat.isStreaming
-  const onSubmit = (e: React.FormEvent) => {
-    e.preventDefault()
+  const submit = () => {
     if (!canSend) return
     void chat.sendMessage()
     onSent()
+  }
+  const onSubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+    submit()
+  }
+
+  // Enter sends; Shift+Enter inserts a newline (the textarea auto-grows to fit).
+  // Ignore Enter while an IME composition is in flight so picking a candidate
+  // doesn't submit a half-typed message.
+  const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+      e.preventDefault()
+      submit()
+    }
   }
 
   // Esc stops an in-flight turn (like Claude Code). Bound to the window — the
@@ -593,12 +606,14 @@ function CorpusComposer({
         className="flex items-end gap-2 rounded-lg border border-input bg-card py-1.5 pr-1.5 pl-3"
       >
         <Search className="mb-2 size-4 shrink-0 text-muted-foreground" aria-hidden />
-        <Input
+        <Textarea
           value={chat.input}
           onChange={(e) => chat.setInput(e.target.value)}
+          onKeyDown={onKeyDown}
           placeholder={placeholder}
           disabled={streaming}
-          className="flex-1 border-0 bg-transparent px-0 shadow-none focus-visible:ring-0 dark:bg-transparent"
+          rows={1}
+          className="max-h-40 min-h-0 flex-1 resize-none border-0 bg-transparent px-0 py-1.5 shadow-none focus-visible:ring-0 dark:bg-transparent"
         />
         {streaming ? (
           <button
