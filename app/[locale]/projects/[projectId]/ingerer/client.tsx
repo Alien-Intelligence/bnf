@@ -11,6 +11,7 @@ import {
   useSubmitIngest,
   useCancelIngest,
   useRetryFailedIngest,
+  isPaidOcrOutcome,
 } from "@/hooks/api/ingest"
 import { CardIngestSummary } from "@/components/cards/ingest/summary"
 import { CardIngestStagePipeline } from "@/components/cards/ingest/stage-pipeline"
@@ -21,14 +22,24 @@ import { CardIngestJobHistory } from "@/components/cards/ingest/job-history"
 import { INGEST_STATUS } from "@/models/ingest/schema"
 import { WorkspaceHeader } from "@/components/layouts/workspace/header"
 import { DialogIngestConfirmCancel } from "@/components/dialogs/ingest/confirm-cancel"
-import type { IngestJobView } from "@/models/ingest/types"
+import { DialogIngestPaidOcrConfirm } from "@/components/dialogs/ingest/paid-ocr-confirm"
+import type {
+  IngestJobView,
+  IngestSubmitPaidOcrResponse,
+} from "@/models/ingest/types"
+import type { PaidOcrEstimate } from "@/models/ingest/schema"
 
 interface Props {
   projectId: string
   initialUser: { name?: string; email: string }
   headVersionSeq: number
   ingestedVersionSeq: number | null
-  deltaPreview: { added: number; removed: number; excluded: number }
+  deltaPreview: {
+    added: number
+    removed: number
+    excluded: number
+    paidOcr: PaidOcrEstimate
+  }
   activeJobId: string | null
   initialRecentJobs: IngestJobView[]
 }
@@ -46,16 +57,32 @@ export function IngererClient({
     initialActiveJobId,
   )
   const [showCancel, setShowCancel] = useState(false)
+  // Non-null while the paid-OCR dialog is open (confirmation or budget notice).
+  const [paidOcrOutcome, setPaidOcrOutcome] =
+    useState<IngestSubmitPaidOcrResponse | null>(null)
 
   const submitMutation = useSubmitIngest(projectId)
   const cancelMutation = useCancelIngest(projectId)
   const retryMutation = useRetryFailedIngest(projectId)
   const status = useIngestStatus(activeJobId)
 
-  const onSubmit = async () => {
-    const job = await submitMutation.mutateAsync({})
-    setActiveJobId(job.id)
+  // Submit, then route the outcome: a job starts polling; a paid-OCR outcome
+  // opens the confirmation/budget dialog instead. `confirmPaidOcr` re-submits
+  // with the spend authorized.
+  const submit = async (confirmPaidOcr: boolean) => {
+    const res = await submitMutation.mutateAsync(
+      confirmPaidOcr ? { confirmPaidOcr: true } : {},
+    )
+    if (isPaidOcrOutcome(res)) {
+      setPaidOcrOutcome(res)
+      return
+    }
+    setPaidOcrOutcome(null)
+    setActiveJobId(res.id)
   }
+
+  const onSubmit = () => submit(false)
+  const onConfirmPaidOcr = () => submit(true)
 
   const onRetryFailed = async () => {
     if (!activeJobId) return
@@ -82,6 +109,15 @@ export function IngererClient({
           activeJob={status.data ?? null}
           onSubmit={() => void onSubmit()}
           isSubmitting={submitMutation.isPending}
+        />
+
+        <DialogIngestPaidOcrConfirm
+          outcome={paidOcrOutcome}
+          onOpenChange={(open) => {
+            if (!open) setPaidOcrOutcome(null)
+          }}
+          onConfirm={() => void onConfirmPaidOcr()}
+          isPending={submitMutation.isPending}
         />
 
         {activeJobId && status.data && (

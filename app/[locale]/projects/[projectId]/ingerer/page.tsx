@@ -53,6 +53,7 @@ export default async function IngererPage({
         added: deltaPreview.added,
         removed: deltaPreview.removed,
         excluded: deltaPreview.excluded,
+        paidOcr: deltaPreview.paidOcr,
       }}
       activeJobId={activeJob?.id ?? null}
       initialRecentJobs={recentJobs.map(({ targetVersion, baseVersion, ...job }) => ({

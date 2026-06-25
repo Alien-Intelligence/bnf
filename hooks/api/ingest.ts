@@ -12,7 +12,30 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import { apiFetch } from "@/lib/api-fetch"
 import { INGEST_POLL_INTERVAL_MS } from "@/lib/constants"
-import type { IngestJobView } from "@/models/ingest/types"
+import type {
+  IngestJobView,
+  IngestSubmitPaidOcrResponse,
+} from "@/models/ingest/types"
+
+/**
+ * The submit endpoint returns either a bare job view (happy path) or a typed
+ * paid-OCR outcome ({ kind, … }) the caller must surface to the user.
+ * Discriminate on the presence of `kind`.
+ */
+export type SubmitIngestResult = IngestJobView | IngestSubmitPaidOcrResponse
+
+/** Body accepted by the submit mutation. */
+export type SubmitIngestVars = {
+  targetVersionSeq?: number
+  confirmPaidOcr?: boolean
+}
+
+/** Type guard: the submit returned a paid-OCR outcome, not a job. */
+export function isPaidOcrOutcome(
+  res: SubmitIngestResult,
+): res is IngestSubmitPaidOcrResponse {
+  return "kind" in res
+}
 
 // ---------------------------------------------------------------------------
 // Query keys
@@ -66,14 +89,16 @@ export function useIngestStatus(jobId: string | null) {
 /**
  * Submit an ingest job for a project.
  *
- * The server returns the job row immediately — submission is asynchronous;
- * use useIngestStatus to track progress. The server deduplicates: if a job
- * for the same (projectId, targetVersionId) is already queued or running,
- * the same job row is returned.
+ * Submission is asynchronous — on the happy path the server returns the job row
+ * immediately (track it with useIngestStatus) and deduplicates an in-flight job.
+ * When the delta carries `sans_texte` documents, it instead returns a paid-OCR
+ * outcome ({ kind: "confirmation_required" | "budget_exceeded" }); pass
+ * `confirmPaidOcr: true` to authorize the spend and proceed. Use
+ * {@link isPaidOcrOutcome} to discriminate.
  */
 export function useSubmitIngest(projectId: string) {
   const qc = useQueryClient()
-  return useMutation<IngestJobView, Error, { targetVersionSeq?: number }>({
+  return useMutation<SubmitIngestResult, Error, SubmitIngestVars>({
     mutationFn: async (body) => {
       const res = await apiFetch(`/api/projects/${projectId}/ingest`, {
         method: "POST",
@@ -81,7 +106,7 @@ export function useSubmitIngest(projectId: string) {
         body: JSON.stringify(body),
       })
       if (!res.ok) throw new Error("Failed to submit ingest")
-      return res.json() as Promise<IngestJobView>
+      return res.json() as Promise<SubmitIngestResult>
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ingestKeys.all(projectId) }),
   })

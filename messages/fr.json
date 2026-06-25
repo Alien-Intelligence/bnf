@@ -574,8 +574,19 @@
       "added": "{count} à ingérer",
       "removed": "{count} à retirer",
       "excluded": "{count, plural, =0 {} one {# document non ingérable exclu} other {# documents non ingérables exclus}}",
+      "paidOcr": "{count, plural, one {# document sans OCR · ~{cost} $ (océrisation payante)} other {# documents sans OCR · ~{cost} $ (océrisation payante)}}",
       "submit": "Lancer une ingestion",
       "submitting": "Envoi…"
+    },
+    "paidOcr": {
+      "confirmTitle": "Océrisation payante",
+      "confirmBody": "{count, plural, one {# document numérisé n'a pas de couche OCR} other {# documents numérisés n'ont pas de couche OCR}} et sera transcrit via Mistral OCR (~{cost} $ US, facturation à l'usage). Confirmer la dépense et lancer l'ingestion ?",
+      "confirm": "Confirmer et lancer",
+      "confirming": "Lancement…",
+      "dismiss": "Annuler",
+      "budgetTitle": "Budget OCR dépassé",
+      "budgetBody": "Cette transcription (~{cost} $) dépasserait le budget OCR du projet (déjà dépensé {spent} $ sur un plafond de {ceiling} $).",
+      "close": "Fermer"
     },
     "stages": {
       "extract": "Extraction OCR",

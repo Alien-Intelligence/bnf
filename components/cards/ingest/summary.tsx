@@ -14,13 +14,18 @@ import {
 } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { BadgeIngestStatus } from "@/components/badges/ingest/status"
-import { INGEST_STATUS } from "@/models/ingest/schema"
+import { INGEST_STATUS, type PaidOcrEstimate } from "@/models/ingest/schema"
 import type { IngestJobView } from "@/models/ingest/types"
 
 interface Props {
   headSeq: number
   ingestedSeq: number | null
-  delta: { added: number; removed: number; excluded: number }
+  delta: {
+    added: number
+    removed: number
+    excluded: number
+    paidOcr: PaidOcrEstimate
+  }
   activeJob: IngestJobView | null
   onSubmit: () => void
   isSubmitting: boolean
@@ -40,7 +45,10 @@ export function CardIngestSummary({
     activeJob?.status === INGEST_STATUS.QUEUED ||
     activeJob?.status === INGEST_STATUS.RUNNING
 
-  const isNoDelta = delta.added === 0 && delta.removed === 0
+  // Paid-OCR-only deltas (added/removed both 0) are still actionable — the
+  // submit triggers the confirmation dialog — so they don't count as "no delta".
+  const isNoDelta =
+    delta.added === 0 && delta.removed === 0 && delta.paidOcr.docCount === 0
 
   const submitDisabled = isJobActive || isSubmitting || isNoDelta
 
@@ -92,6 +100,14 @@ export function CardIngestSummary({
               >
                 -{t("removed", { count: delta.removed })}
               </span>
+              {delta.paidOcr.docCount > 0 && (
+                <span className="text-xs font-normal text-amber-600 dark:text-amber-500">
+                  {t("paidOcr", {
+                    count: delta.paidOcr.docCount,
+                    cost: delta.paidOcr.usd.toFixed(2),
+                  })}
+                </span>
+              )}
               {delta.excluded > 0 && (
                 <span className="text-xs font-normal text-muted-foreground">
                   {t("excluded", { count: delta.excluded })}

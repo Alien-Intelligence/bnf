@@ -574,8 +574,19 @@
       "added": "{count} to add",
       "removed": "{count} to remove",
       "excluded": "{count, plural, =0 {} one {# non-ingestable document excluded} other {# non-ingestable documents excluded}}",
+      "paidOcr": "{count, plural, one {# document without OCR · ~${cost} (paid OCR)} other {# documents without OCR · ~${cost} (paid OCR)}}",
       "submit": "Start ingestion",
       "submitting": "Submitting…"
+    },
+    "paidOcr": {
+      "confirmTitle": "Paid OCR",
+      "confirmBody": "{count, plural, one {# digitized document has no OCR layer} other {# digitized documents have no OCR layer}} and will be transcribed via Mistral OCR (~${cost}, billed per use). Confirm the spend and start ingestion?",
+      "confirm": "Confirm & start",
+      "confirming": "Starting…",
+      "dismiss": "Cancel",
+      "budgetTitle": "OCR budget exceeded",
+      "budgetBody": "This transcription (~${cost}) would exceed the project's OCR budget (already spent ${spent} of a ${ceiling} cap).",
+      "close": "Close"
     },
     "stages": {
       "extract": "OCR extraction",
