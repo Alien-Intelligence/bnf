@@ -84,6 +84,7 @@ export class AgentQueries {
               source: true,
               serverName: true,
               latencyMs: true,
+              contentOffset: true,
               error: true,
               createdAt: true,
               finishedAt: true,

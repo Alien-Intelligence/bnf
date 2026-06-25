@@ -71,6 +71,7 @@ export type TurnSnapshot = {
     source: string
     serverName: string | null
     latencyMs: number | null
+    contentOffset: number | null
     error: string | null
     createdAt: Date
     finishedAt: Date | null

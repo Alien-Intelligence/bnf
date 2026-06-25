@@ -126,6 +126,9 @@ export function createPrismaChatAdapter(): ChatPersistenceAdapter {
           source: call.source,
           serverName: call.serverName ?? null,
           input: call.input as Prisma.InputJsonValue,
+          // Offset into the turn's content at which this call began — drives the
+          // interleaved text/tool order on reattach (see loadSnapshot below).
+          contentOffset: call.contentOffset ?? null,
           status: "running",
         },
       })
@@ -238,6 +241,9 @@ export function createPrismaChatAdapter(): ChatPersistenceAdapter {
             output: tc.output,
             isError: tc.status === "error",
             elapsedMs: tc.latencyMs ?? undefined,
+            // Drives the interleaved text/tool rebuild on reattach; undefined for
+            // legacy rows, which keep the grouped order.
+            contentOffset: tc.contentOffset ?? undefined,
             status: toToolStatus(tc.status),
           }))
         return {
