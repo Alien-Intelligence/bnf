@@ -162,6 +162,22 @@ export interface FetchedImage {
 }
 
 /**
+ * Image fetch failed with a non-2xx upstream status. Carries the status so
+ * callers can distinguish a permanent, doc-wide condition (a 4xx — e.g. a size
+ * the server rejects, or an access-restricted image) from a transient blip and
+ * fail fast instead of attempting every folio.
+ */
+export class ImageFetchError extends Error {
+  constructor(
+    public readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "ImageFetchError";
+  }
+}
+
+/**
  * Fetch an image as a base64 data-URL, honouring the broker / relay / rate-limit
  * path (see the body). Exported so the Mistral OCR path reuses the exact same
  * politeness controls instead of hitting Gallica raw — never hand a Gallica URL
@@ -176,7 +192,7 @@ export async function fetchImage(url: string): Promise<FetchedImage> {
   if (isBnf && brokerUrl()) {
     const r = await brokerGet(url, "image/jpeg,image/png,image/*;q=0.9", 60_000);
     if (r.status < 200 || r.status >= 300) {
-      throw new Error(`Image fetch failed: ${r.status} (broker) for ${url}`);
+      throw new ImageFetchError(r.status, `Image fetch failed: ${r.status} (broker) for ${url}`);
     }
     return finalizeImage(r.bytes, r.contentType || "image/jpeg");
   }
@@ -192,7 +208,7 @@ export async function fetchImage(url: string): Promise<FetchedImage> {
   if (isGallica && gallicaRelayUrl()) {
     const r = await relayGet(url, "image/jpeg,image/png,image/*;q=0.9", 60_000);
     if (r.status < 200 || r.status >= 300) {
-      throw new Error(`Image fetch failed: ${r.status} (relay) for ${url}`);
+      throw new ImageFetchError(r.status, `Image fetch failed: ${r.status} (relay) for ${url}`);
     }
     mimeType = r.contentType || "image/jpeg";
     buffer = r.bytes;
@@ -204,7 +220,7 @@ export async function fetchImage(url: string): Promise<FetchedImage> {
       },
     });
     if (!res.ok) {
-      throw new Error(`Image fetch failed: ${res.status} ${res.statusText} for ${url}`);
+      throw new ImageFetchError(res.status, `Image fetch failed: ${res.status} ${res.statusText} for ${url}`);
     }
     mimeType = res.headers.get("content-type") ?? "image/jpeg";
     buffer = Buffer.from(await res.arrayBuffer());

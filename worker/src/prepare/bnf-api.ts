@@ -1094,11 +1094,14 @@ export class BnfApi {
     const ordre = opts.ordre ?? 1;
     const size = opts.size ?? "!1280,1280";
     if (partnerMode()) {
-      // IIIF v3 grammar: quality native→default, and the partner host. The size
-      // request form (!w,h) is unchanged between v2 and v3.
+      // IIIF v3 grammar: quality native→default, and the partner host. The `!w,h`
+      // and `max` size forms are both valid in v3.
       return `${OPENAPI}/iiif/image/v3/ark:/12148/${slug}/f${ordre}/full/${size}/0/default.jpg`;
     }
-    return `${GALLICA}/iiif/ark:/12148/${slug}/f${ordre}/full/${size}/0/native.jpg`;
+    // IIIF v2 has no `max` keyword; its native-size token is `full`. Map the v3
+    // sentinel so callers can pass "max" uniformly across both modes.
+    const v2Size = size === "max" ? "full" : size;
+    return `${GALLICA}/iiif/ark:/12148/${slug}/f${ordre}/full/${v2Size}/0/native.jpg`;
   }
 }
 

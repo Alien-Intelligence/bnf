@@ -20,11 +20,22 @@ import {
   type MistralOcrFolio,
 } from "./mistral-ocr.js";
 import type { OcrPage } from "./render.js";
-import { describeImage, fetchImage, type ImageDescription } from "./vision.js";
+import { describeImage, fetchImage, ImageFetchError, type ImageDescription } from "./vision.js";
 
-/** IIIF size for OCR folio fetches — larger than the vision path (1280) so dense
- *  historical type stays legible to the OCR model. `!w,h` returns a best fit. */
-const MISTRAL_OCR_IIIF_SIZE = "!2000,2000";
+/**
+ * IIIF size for OCR folio fetches. Use the v3 `max` keyword — "the largest size
+ * the server will serve" — which BnF clamps to each image's own
+ * `maxWidth`/`maxHeight`. This hands Mistral OCR the full native resolution the
+ * doc has (better than the vision path's 1280 for dense historical type) while
+ * NEVER 400-ing.
+ *
+ * Do NOT use an explicit `!w,h`: BnF's IIIF v3 server REJECTS (HTTP 400, not
+ * clamp) any request whose w/h exceeds the image's maxWidth/maxHeight, so a fixed
+ * size storms every doc whose native resolution is below it — e.g. `!2000,2000`
+ * failed all 300 folios of bpt6k91000284 (native 1524×2048). `full/full` is also
+ * out: it 406s (deprecated in v3). See ai-memories bnf-mistral-ocr-fallback.
+ */
+const MISTRAL_OCR_IIIF_SIZE = "max";
 
 /**
  * Substring patterns matched (case-insensitive) against `doc_type` to decide
@@ -183,9 +194,41 @@ async function extractMistralOcr(
     }
   };
 
-  const fetched = (
-    await runWithConcurrency(manifest.canvases, concurrency, fetchFolio)
-  ).filter((f): f is MistralOcrFolio => f !== null);
+  // Probe the first canvas before fanning out. An image 4xx is a doc-wide
+  // permanent condition (a size the server rejects, or access-restricted images),
+  // not a one-off folio blip — so fail fast on ONE token instead of hammering all
+  // N folios with guaranteed-failing fetches (bpt6k91000284 burned 300 tokens this
+  // way). Transient/other errors fall through and are tolerated per-folio below.
+  const [firstCanvas, ...restCanvases] = manifest.canvases;
+  let firstFolio: MistralOcrFolio | null = null;
+  try {
+    const img = await fetchImage(
+      await bnf.getImageUrl(info.ark, { ordre: firstCanvas!.ordre, size: MISTRAL_OCR_IIIF_SIZE }),
+    );
+    firstFolio = { ordre: firstCanvas!.ordre, dataUrl: img.dataUrl };
+  } catch (e) {
+    if (e instanceof ImageFetchError && e.status >= 400 && e.status < 500) {
+      return {
+        kind: "skip",
+        reason: {
+          skip: true,
+          reason: "ocr_fetch_failed",
+          ark: info.ark,
+          cause: `image fetch ${e.status} on first folio — doc-wide condition, not attempting ${manifest.canvases.length} folios`,
+        },
+      };
+    }
+    console.warn(
+      `[extract] mistral: first-folio probe failed for ${info.ark} (${errorMessage(e)}); continuing`,
+    );
+  }
+
+  const restFetched = restCanvases.length
+    ? (await runWithConcurrency(restCanvases, concurrency, fetchFolio)).filter(
+        (f): f is MistralOcrFolio => f !== null,
+      )
+    : [];
+  const fetched = firstFolio ? [firstFolio, ...restFetched] : restFetched;
 
   if (fetched.length === 0) {
     return {
