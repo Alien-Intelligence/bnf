@@ -73,7 +73,7 @@ npm run typecheck
 
 ## Reference shapes (for Track agents)
 
-- **BnF MCP tools** — see `bnf/lib/mcp/bnf-client.ts` and `bnf/lib/mcp/vocab.ts`. Tools we call: `bnf_get_document_info`, `bnf_get_document_text`, `bnf_get_image_url`, `bnf_get_manifest`.
+- **BnF API** — the worker fetches via `worker/src/prepare/bnf-api.ts` (OAI metadata + IIIF v3 manifest/ALTO/image), routed through the BnF broker. See `bnf/lib/mcp/vocab.ts` for ARK source classification.
 - **Holo2 prompt + parser** — already prototyped in `bnf/sandbox/bnf-images/src/gemma.ts` (model-agnostic, reuse the `describeImage` function + `ImageDescription` type).
 - **Cluster API shape** — see `DataStreaming/sandbox/e2e-test/registration_e2e.py` lines 468-557 for the full create-entry → upload → save-processed → index-chunks flow.
 - **RunPod request shape** — see `DataStreaming/data-pipelines/alienargo/services/embeddings/runpod.py`. Note: body is `{ input: { model, input: chunks[], encoding_format: "float" } }` (`input` not `inputs`).

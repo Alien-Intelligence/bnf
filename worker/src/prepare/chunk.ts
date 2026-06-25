@@ -32,6 +32,7 @@ export interface ChunkOptions {
     ark: string;
     arkSlug: string;
     docType?: string;
+    subtype?: string;
   } & Record<string, unknown>;
   /**
    * Per-folio metadata merged into the chunk metadata when the chunk falls
@@ -269,6 +270,9 @@ function chunkSegment(
       };
       if (opts.baseMetadata.docType !== undefined) {
         metadata.docType = opts.baseMetadata.docType;
+      }
+      if (opts.baseMetadata.subtype !== undefined) {
+        metadata.subtype = opts.baseMetadata.subtype;
       }
       if (seg.folio !== undefined) {
         metadata.folio = seg.folio;

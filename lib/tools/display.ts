@@ -129,10 +129,10 @@ function extractEnvelope(
 /**
  * Detect a BnF-MCP "soft failure": the MCP relays an upstream HTTP failure
  * (Gallica 403/429/500…) as a SUCCESSFUL MCP call — transport 200, the
- * CallToolResult `isError` flag unset — whose body is the documented failure
- * envelope `{ success: false, status_code, error }` (see lib/mcp/bnf-client.ts
- * §"success envelope"). Without this, such a call records as "ok": the chip
- * shows ✓ and the health indicator stays green despite a real failure.
+ * CallToolResult `isError` flag unset — whose body is the BnF MCP's documented
+ * failure envelope `{ success: false, status_code, error }`. Without this, such
+ * a call records as "ok": the chip shows ✓ and the health indicator stays green
+ * despite a real failure.
  *
  * Returns true ONLY on an explicit `success === false`; it never guesses from
  * free text, so a legitimate result that merely mentions an error is unaffected.

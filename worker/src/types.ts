@@ -29,6 +29,7 @@ export interface DocMetadata {
   creator: string | null;
   date: string | null; // raw BnF date string (may be a range like "1852-1855")
   docType: string | null; // BnF doc_type (carte, image, monographie, ...)
+  subtype: string | null; // Gallica typedoc subcategory (fascicules, plan, ...)
   lang: string | null; // normalized ISO code (fr, en, la, ...)
   source: string; // "gallica" | "data-bnf" | ...
   iiifManifestUrl: string | null;
@@ -58,6 +59,7 @@ export interface ChunkRow {
     arkSlug: string;
     folio?: number;
     docType?: string;
+    subtype?: string;
   };
 }
 
@@ -111,6 +113,9 @@ export interface BnfDocInfo {
   creator: string | null;
   date: string | null;
   docType: string | null;
+  /** Gallica typedoc subcategory ("fascicules", "titres", "plan", …); null when
+   *  absent. Finer facet than docType — see bnf-api.ts typedocSubtype. */
+  subtype: string | null;
   ocrAvailable: boolean;
   pageCount: number | null;
   iiifManifestUrl: string | null;

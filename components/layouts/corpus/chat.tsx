@@ -10,7 +10,7 @@
 // Streaming still lives entirely in the chat handle (stream.chat); this is a
 // pure view over it.
 
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react"
 import Image from "next/image"
 import { useTranslations } from "next-intl"
 import { ArrowUp, ChevronDown, Loader2, Search, Sparkles, Square } from "lucide-react"
@@ -170,6 +170,7 @@ function ToolPartView({
     return (
       <CardToolAskUser
         input={tool.input}
+        running={tool.running}
         disabled={chat.isStreaming}
         superseded={tool.toolUseId !== activeAskUserId}
         onSubmit={(text) => void chat.sendMessage(text)}
@@ -519,6 +520,21 @@ export function LayoutCorpusChat({
   )
 }
 
+/** False during SSR and the first client (hydration) render, true thereafter.
+ *  Lets a component hold a deterministic server-matching shape on the initial
+ *  render, then reflect live client state — the React-blessed escape for
+ *  "external changing data without a snapshot" (see the hydration note in
+ *  CorpusComposer). useSyncExternalStore gives us the server/client snapshot
+ *  split directly, with no setState-in-effect. */
+const subscribeNoop = () => () => {}
+function useHydrated() {
+  return useSyncExternalStore(
+    subscribeNoop,
+    () => true,
+    () => false,
+  )
+}
+
 /** BnF's search-style composer, driven by the SDK chat handle. */
 function CorpusComposer({
   chat,
@@ -537,7 +553,18 @@ function CorpusComposer({
   sendLabel: string
   stopLabel: string
 }) {
-  const canSend = chat.input.trim().length > 0 && !chat.isStreaming
+  // The composer reflects live durable-stream state (the input draft and the
+  // in-flight turn). That state can advance *during* React's concurrent
+  // hydration — the SDK's resume effect flips `isStreaming`, or a just-sent
+  // message clears `input` — so deriving `disabled`/the stop-vs-send branch
+  // straight from it makes the committed client tree disagree with the static
+  // server HTML, and React reports a hydration mismatch. Nothing submits during
+  // SSR, so we hold the deterministic idle shape (empty input, not streaming)
+  // until mounted, then reflect live state. Server HTML and the first client
+  // render are now identical by construction.
+  const hydrated = useHydrated()
+  const streaming = hydrated && chat.isStreaming
+  const canSend = hydrated && chat.input.trim().length > 0 && !chat.isStreaming
   const onSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     if (!canSend) return
@@ -549,7 +576,7 @@ function CorpusComposer({
   // composer input is disabled while streaming, so it can't receive the key —
   // and only while streaming, so Esc stays free for dialogs/sheets otherwise.
   useEffect(() => {
-    if (!chat.isStreaming) return
+    if (!streaming) return
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault()
@@ -558,7 +585,7 @@ function CorpusComposer({
     }
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
-  }, [chat.isStreaming, onCancel])
+  }, [streaming, onCancel])
   return (
     <div className="border-t p-3">
       <form
@@ -570,10 +597,10 @@ function CorpusComposer({
           value={chat.input}
           onChange={(e) => chat.setInput(e.target.value)}
           placeholder={placeholder}
-          disabled={chat.isStreaming}
+          disabled={streaming}
           className="flex-1 border-0 bg-transparent px-0 shadow-none focus-visible:ring-0 dark:bg-transparent"
         />
-        {chat.isStreaming ? (
+        {streaming ? (
           <button
             type="button"
             onClick={onCancel}

@@ -348,6 +348,37 @@ function pickDcType(types: unknown): string | null {
   return textOf(types[0]);
 }
 
+/**
+ * The Gallica typedoc subcategory token ("fascicules", "titres", "plan",
+ * "estampes", …) from a typedoc tail ("periodiques:fascicules"), or null when
+ * there is no second segment. Stored as the document `subtype` — a finer,
+ * Gallica-native facet than docType, indexed into the datacluster for filtering.
+ * Mirrors the app's lib/mcp/vocab.ts gallicaSubtype (the worker is self-contained).
+ */
+function typedocSubtype(typedoc: string | null): string | null {
+  if (!typedoc) return null;
+  const parts = typedoc.toLowerCase().split(":");
+  return parts.length > 1 && parts[1] !== "" ? parts[1] : null;
+}
+
+/**
+ * The Gallica typedoc tail ("periodiques:fascicules") from the OAI record
+ * header <setSpec> values, or null. The OAI <dc:type> values are generic
+ * physical-form labels ("texte") that don't discriminate a periodical from a
+ * monograph; the typedoc setSpec is the authoritative signal. Verified live
+ * 2026-06-24 on bd6t511758012.
+ */
+function pickTypedocFromHeader(header: unknown): string | null {
+  if (!header || typeof header !== "object") return null;
+  const specs = (header as Record<string, unknown>)["setSpec"];
+  const arr = Array.isArray(specs) ? specs : specs != null ? [specs] : [];
+  for (const s of arr) {
+    const m = textOf(s)?.match(/^gallica:typedoc:(.+)$/);
+    if (m) return m[1];
+  }
+  return null;
+}
+
 function pickFirstLanguage(langs: unknown): string | null {
   if (!Array.isArray(langs)) return textOf(langs);
   for (const l of langs) {
@@ -511,6 +542,13 @@ export class BnfApi {
     const creator = textOf(firstOrNull(dc["dc:creator"]));
     const date = textOf(dc["dc:date"]);
     const docType = pickDcType(dc["dc:type"]);
+    // Prefer the typedoc set (header <setSpec>) for the subtype; fall back to the
+    // results-level <typedoc> element. docType itself stays the raw dc:type for
+    // extract.ts image-path routing.
+    const typedoc =
+      pickTypedocFromHeader((record as Record<string, unknown>)["header"]) ??
+      textOf(r.typedoc);
+    const subtype = typedocSubtype(typedoc);
     const lang = pickFirstLanguage(dc["dc:language"]);
 
     // Gallica doesn't emit a dedicated <ocr> element. OCR availability is
@@ -540,6 +578,7 @@ export class BnfApi {
       creator,
       date,
       docType,
+      subtype,
       ocrAvailable,
       pageCount,
       iiifManifestUrl,
@@ -552,6 +591,7 @@ export class BnfApi {
         nqamoyen: textOf(r.nqamoyen),
         pageNumber: pageCount,
         typedoc: textOf(r.typedoc),
+        gallica_typedoc: typedoc,
       },
     };
   }
@@ -622,7 +662,13 @@ export class BnfApi {
     }
     const creator = textOf(firstOrNull(dc["dc:creator"]));
     const date = textOf(dc["dc:date"]);
+    // docType stays the RAW Gallica dc:type — extract.ts isImageDocType() routes
+    // the image/Holo pipeline by substring-matching it. The typedoc gives us the
+    // finer `subtype` facet (and the authoritative top category) without
+    // disturbing that routing.
     const docType = pickDcType(dc["dc:type"]);
+    const typedoc = pickTypedocFromHeader(record?.header);
+    const subtype = typedocSubtype(typedoc);
     const lang = pickFirstLanguage(dc["dc:language"]);
     const ocrAvailable = descriptionsHaveModeTexte(dc["dc:description"]);
     const pageCount = extractPageCountFromFormat(dc["dc:format"]);
@@ -636,6 +682,7 @@ export class BnfApi {
       creator,
       date,
       docType,
+      subtype,
       ocrAvailable,
       pageCount,
       iiifManifestUrl,
@@ -643,6 +690,7 @@ export class BnfApi {
         ...(dc as Record<string, unknown>),
         language: lang,
         source: "oai_pmh",
+        gallica_typedoc: typedoc,
         pageNumber: pageCount,
       },
     };
@@ -702,6 +750,7 @@ export class BnfApi {
       creator,
       date,
       docType: "image",
+      subtype: null,
       ocrAvailable: false,
       pageCount: manifest.totalPages || null,
       iiifManifestUrl,

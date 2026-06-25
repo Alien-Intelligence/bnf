@@ -62,4 +62,5 @@ data:
   MAX_IMAGE_CANVASES: {{ .Values.worker.config.maxImageCanvases | quote }}
   IMAGE_CONCURRENCY: {{ .Values.worker.config.imageConcurrency | quote }}
   WORKER_CONCURRENCY: {{ .Values.worker.config.workerConcurrency | quote }}
+  BNF_ALTO_CONCURRENCY: {{ .Values.worker.config.bnfAltoConcurrency | quote }}
 {{- end }}

@@ -27,6 +27,7 @@ export function bnfDatasetSchema(projectId: string): Record<string, unknown> {
           creator: { type: ["string", "null"] },
           date: { type: ["string", "null"] },
           docType: { type: ["string", "null"] },
+          subtype: { type: ["string", "null"] },
           lang: { type: ["string", "null"] },
           source: { type: "string" },
           iiifManifestUrl: { type: ["string", "null"] },

@@ -16,9 +16,9 @@ import "server-only"
 // Auth: opaque service Bearer token (CLUSTER_BEARER_TOKEN). The mcp-base layer
 // relays it upstream as the OAuth access token.
 //
-// This is a sibling of lib/mcp/bnf-client.ts; it reuses the *generic* transport
-// helpers (withTimeout, withRetry) but keeps its own error taxonomy so the BnF
-// and data-cluster boundaries stay crisp. See ai_docs/plans/datacluster-mcp-rag.md.
+// It reuses the *generic* MCP transport helpers (withTimeout, withRetry) but
+// keeps its own error taxonomy so the BnF and data-cluster boundaries stay
+// crisp. See ai_docs/plans/datacluster-mcp-rag.md.
 
 import {
   DATACLUSTER_MCP_RETRY_ATTEMPTS,
@@ -130,6 +130,7 @@ export interface DataclusterChunk {
     dataset_id?: number
     chunk_index?: number
     docType?: string
+    subtype?: string
     [key: string]: unknown
   }
 }
@@ -165,6 +166,7 @@ export interface DataclusterKeywordHit {
     title?: string
     date?: string
     docType?: string
+    subtype?: string
     lang?: string
     source?: string
     [key: string]: unknown

@@ -14,12 +14,14 @@
 //      ai-memories/…/persistence-architecture/research/bnf-mcp-contract.md
 //      ai-memories/…/mcp-and-filters/plan/implementation-plan.md §4
 
-import type { BnfMcpDocumentDetail } from "@/lib/mcp/bnf-client"
+import type { BnfMcpDocumentDetail } from "@/lib/bnf/types"
 import {
   GALLICA_DOC_TYPE,
   MARC_TO_ISO_LANG,
+  gallicaSubtype,
   iiifManifestUrl,
   mapCatalogueDocType,
+  mapGallicaTypedoc,
   sourceFromArk,
 } from "@/lib/mcp/vocab"
 
@@ -44,6 +46,12 @@ export interface NormalizedDocument {
   year?: number | null
   dateLabel?: string | null
   docType: string
+  /**
+   * Gallica typedoc subcategory token ("fascicules", "titres", "plan", …) — a
+   * finer facet than docType for RAG/UI filtering. Null for non-Gallica docs or
+   * when the typedoc has no subcategory. See gallicaSubtype.
+   */
+  subtype?: string | null
   lang?: string | null
   source: string
   pages?: number | null
@@ -259,7 +267,20 @@ export function normalizeDocument(
       ? (MARC_TO_ISO_LANG[rawLang] ?? rawLang) // preserve unknown codes verbatim
       : null
 
-  // ── 7. docType ────────────────────────────────────────────────────────────
+  // ── 7. docType + subtype ──────────────────────────────────────────────────
+  // The Gallica typedoc set (OAI-PMH record header) is the AUTHORITATIVE
+  // discriminator and takes precedence: the <dc:type> physical-form labels
+  // ("texte", "publication en série imprimée") collapse periodicals and
+  // monographs alike to "book". See mapGallicaTypedoc / gallicaSubtype + the
+  // direct.ts pickTypedoc that extracts it. The typedoc tail also yields the
+  // finer `subtype` facet (fascicules / titres / plan / …).
+  const rawTypedoc =
+    typeof mcp.gallica_typedoc === "string" && mcp.gallica_typedoc.trim() !== ""
+      ? mcp.gallica_typedoc.trim()
+      : null
+  const typedocType = mapGallicaTypedoc(rawTypedoc)
+  const subtype = gallicaSubtype(rawTypedoc)
+
   const rawDocType =
     typeof mcp.doc_type === "string" && mcp.doc_type.trim() !== ""
       ? mcp.doc_type.trim()
@@ -267,7 +288,10 @@ export function normalizeDocument(
 
   let docType: string
 
-  if (rawDocType !== null) {
+  if (typedocType !== null) {
+    // Authoritative Gallica typedoc.
+    docType = typedocType
+  } else if (rawDocType !== null) {
     if (rawDocType in GALLICA_DOC_TYPE) {
       // Gallica enum value
       docType = GALLICA_DOC_TYPE[rawDocType]
@@ -282,7 +306,7 @@ export function normalizeDocument(
       }
     }
   } else {
-    // No doc_type field at all:
+    // No typedoc and no doc_type field at all:
     //   Catalogue records are predominantly books → "book"
     //   Everything else → "other"
     docType = source === "catalogue" ? "book" : "other"
@@ -318,6 +342,7 @@ export function normalizeDocument(
     year,
     dateLabel,
     docType,
+    subtype,
     lang,
     source,
     pages,

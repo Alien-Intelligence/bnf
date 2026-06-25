@@ -175,6 +175,11 @@ model Document {
   year      Int?
   dateLabel String? @map("date_label")
   docType   String? @map("doc_type")
+  // Gallica typedoc subcategory ("fascicules", "titres", "plan", "estampes", …),
+  // a finer facet than docType for RAG/UI filtering. Null for non-Gallica docs
+  // or typedocs with no subcategory. Derived from the OAI setSpec — see
+  // lib/mcp/vocab.ts gallicaSubtype.
+  subtype   String? @map("subtype")
   lang      String?
   // source + iiifManifestUrl are derived from the ARK at stub time (no MCP).
   source          String?

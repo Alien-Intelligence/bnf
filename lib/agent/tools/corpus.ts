@@ -20,6 +20,7 @@ import "server-only"
 
 import { z } from "zod"
 import { defineTool } from "@alien/chat-sdk/claude"
+import { CORPUS_REASON_MAX_LEN } from "@/lib/constants"
 import { prisma } from "@/lib/db"
 import { kickCanonicalize } from "@/lib/documents/canonicalizer"
 import { kickResolve } from "@/lib/documents/resolver"
@@ -306,9 +307,12 @@ export const corpusAddTool = defineTool<
       .string()
       .trim()
       .min(1)
-      .max(300)
+      .max(CORPUS_REASON_MAX_LEN)
       .describe(
-        "Human-readable reason for adding these documents (stored as a version note).",
+        "Short reason for adding these documents — ONE sentence, stored as the " +
+          "version note. Keep it brief (the librarian's intent, e.g. « presse " +
+          "parisienne 1871 sur la Commune »); do not restate every ARK or paste a " +
+          "paragraph.",
       ),
   }),
   handler: async (input, ctx) => {
@@ -396,8 +400,11 @@ export const corpusRemoveTool = defineTool<
       .string()
       .trim()
       .min(1)
-      .max(300)
-      .describe("Human-readable reason for removing these documents."),
+      .max(CORPUS_REASON_MAX_LEN)
+      .describe(
+        "Short reason for removing these documents — ONE sentence, stored as the " +
+          "version note. Keep it brief; do not restate every ARK.",
+      ),
   }),
   handler: async (input, ctx) => {
     const projectId = await projectIdFromSession(ctx.appSessionId)
@@ -460,9 +467,11 @@ export const corpusRemoveByFilterTool = defineTool<
       .string()
       .trim()
       .min(1)
-      .max(300)
+      .max(CORPUS_REASON_MAX_LEN)
       .describe(
-        "Human-readable reason for the removal (stored as the version note).",
+        "Short reason for the removal — ONE sentence, stored as the version note. " +
+          "Keep it brief (the criterion, e.g. « notices catalogue postérieures à " +
+          "1970 »); do not paste a paragraph.",
       ),
     dry_run: z
       .boolean()

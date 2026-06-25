@@ -633,6 +633,7 @@ export class IngestService {
       title: string
       year: number | null
       docType: string
+      subtype: string | null
       lang: string | null
       source: string
       iiifManifestUrl: string | null
@@ -646,6 +647,7 @@ export class IngestService {
         title: true,
         year: true,
         docType: true,
+        subtype: true,
         lang: true,
         source: true,
         iiifManifestUrl: true,
@@ -660,6 +662,7 @@ export class IngestService {
       title: doc.title ?? doc.ark,
       year: doc.year,
       docType: doc.docType ?? "other",
+      subtype: doc.subtype,
       lang: doc.lang,
       source: doc.source ?? "unknown",
       iiifManifestUrl: doc.iiifManifestUrl,

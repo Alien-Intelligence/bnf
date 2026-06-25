@@ -1,296 +1,242 @@
-# BnF MCP Client Rule
+# BnF Client Rule
 
 ## Rule
 
-The BnF MCP server is provided by Alien and is the **only** way the app
-discovers BnF catalogue holdings or resolves ARKs to metadata. The MCP is
-accessed through a single client in `lib/mcp/bnf-client.ts`. Everything else
-in the codebase calls that client — never the MCP transport directly.
+The app reaches BnF through **two** runtime paths, and **all direct egress goes
+through the BnF broker** (the single chokepoint that owns the OAuth credential
+and the shared rate caps):
 
-See [doc 06](../design/docs/06-bnf-mcp.md) for the contract overview. The
-MCP's concrete tool surface is ⛔ owned by Alien; this file describes the
-*contract* the app needs and the boundary the app enforces.
+1. **Resolution & canonicalization** — the app's own code. `BnfDirectClient`
+   (`lib/bnf/direct.ts`) resolves ARKs to metadata and upgrades catalogue
+   notices to their digitized Gallica ARK. It talks to the **broker**
+   (`lib/bnf/broker-client.ts`), which fronts the ungated BnF hosts
+   (`oai.bnf.fr`, `catalogue.bnf.fr`, `data.bnf.fr`).
+2. **Agent search & browse** — the corpus agent's `bnf__*` tools (search
+   Gallica/Catalogue, find person/work, read document text). These are **not**
+   app code: the chat-sdk wires the BnF MCP server in-band as an `mcpServers`
+   entry (`lib/agent/tools/registry-factory.ts`), and that server makes its own
+   BnF calls. This is the one path that does **not** go through the broker.
 
-## What the client exposes
+The ingest worker is a third egress (IIIF manifest/ALTO/image via
+`worker/src/prepare/bnf-api.ts`), also broker-routed — see
+[ingestion-jobs.md](ingestion-jobs.md).
+
+> ⚠️ There is **no** `BnfMcpClient` and no `getBnfClient()` singleton anymore.
+> Resolution moved off the MCP onto the broker-routed `BnfDirectClient`. The MCP
+> server is reached only in-band by the agent. See [doc 06](../design/docs/06-bnf-mcp.md)
+> for the MCP contract; its tool surface is ⛔ owned by Alien.
+
+## Egress map — know which path you're on
+
+| Need | Path | Through the broker? |
+|---|---|---|
+| Resolve ARK → metadata (corpus add) | `BnfDirectClient.resolveArks` → broker → `oai.bnf.fr` / `catalogue.bnf.fr` | ✅ |
+| `cb…` notice → digitized `bpt6k…` ARK | `BnfDirectClient.canonicalizeArks` → broker → `data.bnf.fr` SPARQL + catalogue SRU | ✅ |
+| Worker ingest (manifest/ALTO/image) | `worker/src/prepare/bnf-api.ts` → broker → `openapiproext.bnf.fr` | ✅ |
+| Agent search / browse / read | chat-sdk `mcpServers` → **BnF MCP server** | ❌ (separate egress) |
+| User-facing Gallica links / `<img>` | derived URLs (`lib/constants.ts`) → public `gallica.bnf.fr`, in the browser | ❌ (by design) |
+
+The broker holds the BnF KEY/SECRET and enforces the shared 300/min global +
+40/min manifest caps. The app and worker hold **no** BnF credentials. See
+[ingestion-jobs.md](ingestion-jobs.md) and the broker service (`broker/`).
+
+## Resolution: `BnfDirectClient` + the broker
 
 ```ts
-// lib/mcp/bnf-client.ts
-import "server-only"
-
-export interface BnfSearchFilters {
-  dateFrom?: string       // ISO month/year, e.g. "1889-05"
-  dateTo?:   string
-  docType?:  string       // "press" | "book" | "image" | "manuscript" | ...
-  lang?:     string       // normalized 2-letter, e.g. "fr"
-  source?:   string       // "gallica" | "retronews" | ...
+// lib/bnf/direct.ts — import "server-only" is the first line.
+export class BnfDirectClient {
+  resolveArk(ark: string): Promise<BnfMcpDocumentDetail>
+  resolveArks(arks: string[]): Promise<Array<BnfMcpResolveResult | BnfMcpResolveError>>
+  classifyCanonical(ark: string): Promise<CanonicalizeOutcome>
+  canonicalizeArks(arks: string[]): Promise<CanonicalizeOutcome[]>
 }
-
-export interface BnfHit {
-  ark:    string
-  title:  string
-  author: string | null
-  year:   number | null
-  type:   string
-  lang:   string
-  source: string
-  raw:    unknown         // untouched MCP payload, persisted in raw_metadata
-}
-
-export interface BnfResolved {
-  ark:               string
-  title:             string
-  author:            string | null
-  year:              number | null
-  docType:           string
-  lang:              string
-  source:            string
-  pages:             number | null
-  excerpt:           string | null
-  iiifManifestUrl:   string | null
-  raw:               unknown
-}
-
-export class BnfMcpClient {
-  search(query: string, filters: BnfSearchFilters, limit: number): Promise<{ total: number; hits: BnfHit[] }>
-  resolve(arks: string[]): Promise<BnfResolved[]>
-}
-
-export function getBnfClient(): BnfMcpClient
 ```
 
 Rules:
-- `import "server-only"` is the first line. The MCP credentials live
-  server-side and must never reach the browser bundle.
-- The client exposes **two** methods: `search` and `resolve`. Everything else
-  the app needs (the IIIF link templates) is computed from an ARK + folio
-  via `lib/constants.ts` (see [constants.md](constants.md) and
-  [citations.md](citations.md)).
-- The client is a singleton per process — `getBnfClient()` returns the same
-  instance. The transport, auth, and rate-limit state are encapsulated inside.
+- `import "server-only"` first. BnF egress is server-side; nothing here may
+  reach the browser bundle.
+- The result types (`BnfMcpDocumentDetail`, `BnfMcpResolveResult`,
+  `BnfMcpResolveError`) live in `lib/bnf/types.ts`. The `BnfMcp` name prefix is
+  legacy — the shapes are MCP-agnostic now.
+- Every fetch goes through `broker-client.ts` when `BNF_BROKER_URL` is set
+  (prod + local). Absent → it falls back to the legacy relay / direct path. The
+  per-host transport and retry are encapsulated; callers see only the methods
+  above.
+- The Service / resolver layer calls it — **never a route handler directly**.
+  `kickResolve` (`lib/documents/resolver.ts`) is the entry point, invoked by the
+  corpus `add` / `promote` / `retry` routes and the agent's `corpus` tool.
 
-## Normalization is the client's job
+## Agent search: in-band MCP, not a client object
 
-The MCP returns BnF/Dublin-Core types and MARC/ISO codes. The app uses a
-small, fixed vocabulary for facets (`type`, `lang`, `source`). The client
-normalizes on the way in; **callers always see normalized values**.
+The agent's BnF tools (`bnf__bnf_search_gallica`, `bnf__bnf_search_catalogue`,
+`bnf__bnf_get_document_info`, …) are registered on the chat-sdk tool registry as
+an `mcpServers` entry:
+
+```ts
+// lib/agent/tools/registry-factory.ts (sketch)
+const sessionId = await openMcpSession(BNF_MCP_URL, BNF_MCP_TOKEN, signal) // may be null (stateless server)
+mcpServers = [{ name: "bnf", url: BNF_MCP_URL, headers: { Authorization: `Bearer ${BNF_MCP_TOKEN}`, ...(sessionId && { "Mcp-Session-Id": sessionId }) } }]
+```
+
+Rules:
+- The MCP server is **optional**: if `BNF_MCP_URL` / `BNF_MCP_TOKEN` are absent
+  or the handshake fails, the app's corpus/memory/ingest tools still work — the
+  agent just has no BnF search for that turn. Never crash the dev server.
+- The BnF MCP runs **stateless** (multi-replica); the `initialize` handshake may
+  return no session id and one must not be required — see `lib/mcp/session.ts`.
+- These calls do **not** flow through the broker. If the MCP server shares the
+  BnF credential with the broker, the two contend for the same quota with no
+  coordination — a known seam. Don't add new BnF egress here; if you need a new
+  BnF capability in app code, add it to `BnfDirectClient` (broker-routed).
+
+## Normalization is a boundary funnel
+
+Resolved payloads carry BnF/Dublin-Core types and MARC/ISO codes. The app uses a
+small fixed vocabulary for facets (`docType`, `lang`, `source`). `normalizeMany`
+is the single funnel between a resolved document and a `Document` row:
 
 ```ts
 // lib/mcp/normalize.ts
-export const LANG_MAP: Record<string, string> = {
-  fre: "fr", fra: "fr", fr: "fr",
-  eng: "en", en: "en",
-  lat: "la", la: "la",
-  ita: "it", it: "it",
-  ger: "de", deu: "de", de: "de",
-  // ...
-}
-
-export const DOC_TYPE_MAP: Record<string, string> = {
-  "periodical":      "press",
-  "press":           "press",
-  "monograph":       "book",
-  "book":            "book",
-  "manuscript":      "manuscript",
-  "still image":     "image",
-  "engraving":       "estampe",
-  "map":             "map",
-  "illuminated manuscript": "enlum",
-  "charter":         "charte",
-  // ...
-}
-
-export const SOURCE_MAP: Record<string, string> = {
-  "gallica.bnf.fr": "gallica",
-  "retronews":      "retronews",
-  "data.bnf.fr":    "databnf",
-  // ...
-}
-
-export function normalizeLang(raw: string): string { return LANG_MAP[raw.toLowerCase()] ?? raw.toLowerCase() }
-export function normalizeDocType(raw: string): string { return DOC_TYPE_MAP[raw.toLowerCase()] ?? "other" }
-export function normalizeSource(raw: string): string { return SOURCE_MAP[raw.toLowerCase()] ?? raw.toLowerCase() }
+export function normalizeMany(
+  docs: BnfMcpDocumentDetail[],
+  opts?: { unknownDocTypeHook?: (raw: string, source: string) => void },
+): NormalizedDocument[]
 ```
 
 Rules:
-- The maps live in `lib/mcp/normalize.ts`. They are **not** in
-  `lib/constants.ts` — they are the MCP boundary, not app-wide config.
-- Unknown values fall back to a generic bucket (`"other"` for type, the raw
-  lowercase string otherwise) — never to `null` or empty string (see the
-  empty-defaults anti-pattern in CLAUDE_ERROR_PATTERNS).
-- `raw_metadata` always carries the untouched MCP payload (`raw` field) for
-  traceability. If the MCP changes how it labels a type tomorrow, the
-  evidence is in the database.
+- The vocab maps live in `lib/mcp/vocab.ts` (`GALLICA_DOC_TYPE`,
+  `MARC_TO_ISO_LANG`, `mapCatalogueDocType`, `sourceFromArk`) — **not** in
+  `lib/constants.ts`. They are the BnF boundary, not app-wide config.
+- Unknown values fall back to a generic bucket (`"other"` for docType, the raw
+  lowercase string otherwise) — never `null`/empty (CLAUDE_ERROR_PATTERNS
+  empty-defaults).
+- `rawMetadata` always carries the untouched payload for traceability. If BnF
+  relabels a type tomorrow, the evidence is in the database.
+- `normalizeDocument` returns `null` for an unusable record (e.g. no title);
+  the resolver treats that as a resolve failure, not a silent empty row.
+- The resolver inserts with `(projectId, ark)` de-dup. Re-adding an existing ARK
+  is a no-op at the document level; only `corpus_membership` advances.
 
 ## ARK is an opaque string — never construct one
 
 ```ts
-// ✅ ARKs come from the MCP; we pass them around as opaque tokens
-const hits = await client.search("Exposition 1889", { docType: "press" }, 50)
+// ✅ ARKs come from search results / the corpus; pass them as opaque tokens
 const arks = hits.map(h => h.ark)
 
 // ❌ Never invent an ARK
 const ark = `ark:/12148/${id}`   // forbidden
 ```
 
-Validation happens via `arkSchema` in `models/corpus/types.ts`:
+Validation is `arkSchema` in `models/corpus/types.ts`:
 
 ```ts
 export const arkSchema = z.string().regex(/^ark:\/\d+\/[A-Za-z0-9]+$/, "invalid ARK")
 ```
 
-This regex protects route handlers from junk ARKs sent by a malicious or
-buggy caller. It is **not** the canonical format spec — the BnF uses
-extensions like `ark:/12148/btv1b8470216w`, and the regex matches them.
-Extend the regex when you hit a real ARK it rejects, not preemptively.
+This protects route handlers from junk ARKs; it is **not** the canonical format
+spec. The BnF uses extensions like `ark:/12148/btv1b8470216w` (the regex matches
+them). Extend the regex when you hit a real ARK it rejects, not preemptively.
 
-## IIIF links — derived, not stored
+## IIIF & Gallica links — derived, not stored
 
-The citation side panel and document detail panel link to the BnF via three
-URL templates (see [constants.md](constants.md)):
+User-facing links to BnF are computed from `ark + folio` via the helpers in
+`lib/constants.ts` (see [constants.md](constants.md) and
+[citations.md](citations.md)): `IIIF_IMAGE_URL(ark, folio)`,
+`GALLICA_ITEM_URL(ark, folio)`, `IIIF_MANIFEST_URL(ark)`.
 
-- **IIIF image** (a single folio): `IIIF_IMAGE_URL(ark, folio)`
-- **Gallica item page**: `GALLICA_ITEM_URL(ark, folio)`
-- **IIIF manifest**: `IIIF_MANIFEST_URL(ark)`
+- These point at **public** `gallica.bnf.fr` and render in the librarian's
+  browser — they must **not** use the broker or the authenticated
+  `openapiproext.bnf.fr` host (the browser has no Bearer token).
+- When a resolved record carries an `iiifManifestUrl`, prefer it; otherwise fall
+  back to the template. `Document.iiifManifestUrl` may be null; the template is
+  the always-available fallback.
 
-When `bnf.resolve` returns an `iiifManifestUrl`, prefer it. Otherwise fall
-back to the template. The `Document.iiifManifestUrl` column stores whichever
-the MCP returned (may be null); the template is the always-available
-fallback.
+## Rate limits & backoff — the broker owns them ✅
 
-## Operational concerns
+For the broker-routed paths, the broker is the rate authority: OAuth
+single-flight token, global + manifest token buckets, and 429/`Retry-After`
+handling (freezes the bucket to the next clock-minute boundary). Clients treat a
+broker 429 / transport error as **transient** and retry with backoff; they never
+manage BnF rate state themselves. Running at the provisioned ceiling means
+occasional 429s — that's expected and absorbed. See the broker service and
+[ingestion-jobs.md](ingestion-jobs.md).
 
-### Caching 🔶
+For the agent's MCP path, the MCP server fronts BnF with its own limits; the
+chat-sdk's tool retry handles transient failures.
 
-- `bnf.search` results: cache by `(query, filters_hash, limit)` for 15
-  minutes 🔶. The search results don't change minute to minute; cached
-  results dramatically cut MCP load when an agent iterates queries.
-- `bnf.resolve` results: cache by ARK indefinitely (until manual purge or
-  a re-resolve job runs). MCP metadata is stable; if it changes, the next
-  ingest's re-resolve picks it up (see [doc 07 edge cases](../design/docs/07-ingestion-jobs-and-corpus-delta.md#edge-cases-to-handle)).
-- Implementation 🔶: Redis with `mcp:search:<hash>` / `mcp:resolve:<ark>`
-  keys, gzipped JSON values.
-
-### Rate limits and backoff ✅
-
-The MCP fronts BnF services with their own rate limits. The client must:
-
-- Use exponential backoff on 429/503 (`baseDelayMs = 200`, max 3 retries).
-- Surface partial results on a query that hit a transient cap. The client
-  returns `{ total, hits, partial: true }` 🔶 so the agent can decide whether
-  to widen the query or retry.
-- Never retry on 4xx other than 429.
-
-### Pagination
-
-Searches return thousands of hits. The client pages with `limit + offset`
-(or a cursor if the MCP provides one ⛔). The agent's `bnf.search` tool
-exposes only `limit` and lets the curation step do the work; the UI never
-shows a paged catalogue browser — only the curated corpus.
-
-### Auth
-
-MCP credentials are environment-only:
+## Auth
 
 ```bash
-BNF_MCP_URL=https://...
-BNF_MCP_TOKEN=...
+# Agent's in-band MCP path (lib/agent/tools/registry-factory.ts, lib/mcp/session.ts)
+BNF_MCP_URL=https://…
+BNF_MCP_TOKEN=…           # long-lived service Bearer for the BnF MCP server
+
+# Broker-routed path: the BnF OAuth client_credentials live ONLY in the broker
+# (broker/.env / the bnf-demo-prod secret). App + worker hold no BnF creds.
+BNF_BROKER_URL=http://…   # where app/worker POST their fetches
 ```
 
-Loaded in `lib/mcp/bnf-client.ts` at module init. Throws at startup if
-missing (no default — see the empty-defaults anti-pattern). Never logged,
-never exposed to the client bundle.
+Each required var throws at startup if missing (no default — empty-defaults
+anti-pattern). Never logged, never exposed to the client bundle.
 
-## Adapting MCP results to app shapes
+## The BnF boundary
 
-The transformation `resolveAndNormalize` is the single funnel between MCP
-payloads and `Document` rows:
-
-```ts
-// lib/mcp/normalize.ts
-export async function resolveAndNormalize(
-  client: BnfMcpClient,
-  projectId: string,
-  arks: string[],
-): Promise<DocumentInsert[]> {
-  const resolved = await client.resolve(arks)
-  return resolved.map(r => ({
-    projectId,
-    ark:      r.ark,
-    title:    r.title,
-    author:   r.author,
-    year:     r.year,
-    docType:  r.docType,    // already normalized inside resolve()
-    lang:     r.lang,
-    source:   r.source,
-    pages:    r.pages,
-    excerpt:  r.excerpt,
-    iiifManifestUrl: r.iiifManifestUrl,
-    rawMetadata: r.raw,
-    resolvedAt: new Date(),
-  }))
-}
-```
-
-Rules:
-- The MCP client's `resolve()` already returns normalized values; the funnel
-  only maps to the DB shape. The maps live in **one** place
-  (`lib/mcp/normalize.ts`).
-- The Service layer (`CorpusService.addArks`) calls `resolveAndNormalize` and
-  inserts the rows. The MCP client is never called from a route handler
-  directly.
-- Documents are inserted with `skipDuplicates: true` keyed on
-  `(projectId, ark)`. Re-adding an ARK that already has a row is a no-op at
-  the document level; only `corpus_membership` advances.
-
-## The MCP boundary
-
-The MCP is **read-only discovery and resolution**. It does **not**:
+BnF (whether via the broker or the MCP) is **read-only discovery, resolution,
+and content**. It does **not**:
 
 - Store any user state (corpus, sessions, notes, memory).
-- Ingest, OCR, chunk, or embed anything (that's the job runner — see
+- Ingest, OCR, chunk, or embed (that's the worker — see
   [ingestion-jobs.md](ingestion-jobs.md)).
 - Know about projects, sessions, or users.
 
-If you find yourself wanting to "save something on the MCP side" or "query
-the MCP for what I've added before", you are using the wrong tool — that
-state belongs to the app's Corpus service. Keep the boundary crisp.
+If you want to "save something on the BnF side" or "ask BnF what I added
+before", you are using the wrong tool — that state belongs to the app's Corpus
+service. Keep the boundary crisp.
 
 ## Forbidden patterns
 
 ```ts
-// ❌ Direct MCP call from a route handler
+// ❌ Calling BnF from a route handler
 export const POST = withAuth(async (req, user, bouncer, ctx) => {
-  const client = getBnfClient()
-  const hits = await client.search(query, {}, 50)   // ← MCP from a route
+  const client = new BnfDirectClient()
+  await client.resolveArks(arks)        // ← BnF egress from a route
 })
-// → MCP is only called from services or tool handlers
+// → resolution runs in the service/resolver layer (kickResolve); search is the agent's MCP tool
 
-// ❌ Storing raw MCP fields without normalization
-await prisma.document.create({ data: { lang: hit.raw.dc_language } })
-// → use the normalized `lang` from the BnfHit
+// ❌ New app-side BnF egress that bypasses the broker
+await fetch("https://gallica.bnf.fr/…")  // → go through BnfDirectClient / broker-client
+
+// ❌ Pointing a server fetch at the authenticated host without the broker
+await fetch("https://openapiproext.bnf.fr/…")  // 401 — the broker owns the token
+
+// ❌ Storing raw fields without normalization
+await prisma.document.create({ data: { lang: raw.dc_language } })
+// → use normalizeMany / the vocab maps
 
 // ❌ Inventing an ARK
 const ark = `ark:/12148/${slug(title)}`
 
-// ❌ Constructing an IIIF URL outside the template helpers
+// ❌ Constructing an IIIF URL by hand
 const url = `https://gallica.bnf.fr/${ark}/f1/full/full/0/native.jpg`
-// Use: IIIF_IMAGE_URL(ark, folio)
+// → IIIF_IMAGE_URL(ark, folio)
 
-// ❌ Reading BNF_MCP_TOKEN inside a React component
+// ❌ Reading a BnF token in a React component
 process.env.BNF_MCP_TOKEN   // would leak into the client bundle
 ```
 
 ## Relation to other rules
 
-- [models.md](models.md): `lib/mcp/` is imported by `models/corpus/service.ts`
-  and `models/ingest/service.ts`; never by `queries.ts`, `policy.ts`,
-  `schema.ts`, or `types.ts`.
-- [constants.md](constants.md): IIIF templates and the BnF tool name
-  constants live in `lib/constants.ts` and `lib/agent/tools.ts`.
-- [agent-streaming.md](agent-streaming.md): the agent's `bnf.search` and
-  `bnf.resolve` tools are thin wrappers over `BnfMcpClient` methods; the
-  tool handler is the only place that emits the corresponding
-  `tool_call`/`tool_result` SSE events.
-- [ingestion-jobs.md](ingestion-jobs.md): the ingest job may re-resolve ARKs
-  through the MCP to pick up upstream metadata changes; treat the result as
-  remove+add of that ARK in the next delta.
+- [models.md](models.md): `lib/bnf/` + `lib/mcp/normalize.ts` are imported by
+  `models/corpus/service.ts` / the resolver, never by `queries.ts`,
+  `policy.ts`, `schema.ts`, or `types.ts`.
+- [constants.md](constants.md): IIIF templates + the BnF tool-name constants
+  live in `lib/constants.ts` and `lib/agent/tools/constants.ts`.
+- [agent-streaming.md](agent-streaming.md): the agent's `bnf__*` tools are the
+  in-band MCP server's tools (registered via `mcpServers`); the tool runtime
+  emits the `tool_call`/`tool_result` SSE events.
+- [ingestion-jobs.md](ingestion-jobs.md): the worker re-resolves + fetches IIIF
+  through the broker; the ingest may re-resolve an ARK to pick up upstream
+  metadata changes (treat as remove+add in the next delta).
+- [corpus-versioning.md](corpus-versioning.md): resolved documents feed
+  `CorpusService`; membership/versioning is app state, never BnF state.
+```

@@ -2,7 +2,7 @@
 // Combine a caller-supplied AbortSignal with a wall-clock timeout so every MCP
 // HTTP await is bounded (CLAUDE_ERROR_PATTERNS §14 — no unbounded awaits).
 // Pure utility — no secrets, no transport. Used by lib/mcp/session.ts and
-// lib/mcp/bnf-client.ts.
+// lib/bnf/direct.ts.
 
 /**
  * Return an AbortSignal that fires when EITHER `signal` aborts (turn cancelled)

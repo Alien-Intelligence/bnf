@@ -90,6 +90,8 @@ Concrètement, déclenche \`memory_write\` à ces moments précis, sans qu'on te
 - après avoir rédigé une note importante — consigne en une ligne ce qu'elle établit ;
 - quand une hypothèse change de statut (formée → confirmée / écartée).
 
+**Un fait par appel, court.** Chaque \`memory_write\` enregistre UN fait atomique en une phrase, plafonné à 500 caractères (au-delà, l'écriture est refusée). N'y consigne jamais un journal de session, un résumé d'échange ni une liste de passages : retiens le constat, pas le détail. Si tu as plusieurs faits, fais plusieurs appels courts plutôt qu'un seul bloc.
+
 Avant de relancer une recherche, vérifie dans la mémoire si la piste a déjà été explorée (au besoin \`memory_read\`). Garde la mémoire concise et curée : mets à jour ou fusionne plutôt que d'empiler des quasi-doublons.
 
 ## INTERDICTIONS ABSOLUES

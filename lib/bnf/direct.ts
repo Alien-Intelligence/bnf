@@ -26,9 +26,9 @@
 //   Catalogue: GET http://catalogue.bnf.fr/api/SRU ... bib.persistentId all "<ark>"
 //              recordSchema=dublincore → Dublin Core.
 //
-// Returns the SAME shape as BnfMcpClient.resolveArks so the resolver and the
+// Returns BnfMcpResolveResult/Error (lib/bnf/types.ts) so the resolver and the
 // normalize layer (lib/mcp/normalize.ts) are unchanged. Search stays on the MCP
-// (in-band, agent-driven); only resolution moved here.
+// (in-band, agent-driven); only resolution lives here.
 import "server-only"
 
 import { XMLParser } from "fast-xml-parser"
@@ -49,7 +49,7 @@ import type {
   BnfMcpDocumentDetail,
   BnfMcpResolveError,
   BnfMcpResolveResult,
-} from "@/lib/mcp/bnf-client"
+} from "@/lib/bnf/types"
 import {
   BnfMcpAuthError,
   BnfMcpError,
@@ -57,7 +57,7 @@ import {
   BnfMcpRateLimitError,
 } from "@/lib/mcp/errors"
 import { type Settled, withConcurrency, withRetry } from "@/lib/mcp/retry"
-import { sourceFromArk } from "@/lib/mcp/vocab"
+import { GALLICA_DOC_TYPE, sourceFromArk } from "@/lib/mcp/vocab"
 
 /**
  * Outcome of classifying a catalogue (`cb…`) ARK against its digitized Gallica
@@ -168,14 +168,42 @@ function langAttr(node: XmlNode): string | undefined {
 
 /**
  * Choose a doc_type from the (often multi-valued, multi-lingual) <dc:type>
- * elements. Prefer the French label ("monographie imprimée", "texte imprimé"),
- * which normalize.ts maps to a real type; the English "text" maps to "other".
+ * elements.
+ *
+ * Safety net (does not override the authoritative typedoc — see pickTypedoc):
+ * first prefer any value that is itself a known Gallica enum key ("fascicule",
+ * "monographie", …) — the discriminating token — over the generic French
+ * physical-form label ("texte", "publication en série imprimée") the OAI lists
+ * first, which normalize.ts collapses to "book". This catches catalogue-SRU
+ * records (and any OAI record) that carry a clean enum dc:type; the OAI-PMH
+ * Gallica record usually does NOT, so the typedoc setSpec is the real fix.
+ * Falls back to the French label, then the first value.
  */
 function pickDocType(root: XmlNode): string | undefined {
   const types = findAll(root, "type")
   if (types.length === 0) return undefined
+  for (const t of types) {
+    const v = nodeText(t)?.trim().toLowerCase()
+    if (v && v in GALLICA_DOC_TYPE) return v
+  }
   const fr = types.find((t) => langAttr(t) === "fre")
   return nodeText(fr) ?? nodeText(types[0]) ?? undefined
+}
+
+/**
+ * The Gallica typedoc tail from the OAI-PMH record header <setSpec> values
+ * ("gallica:typedoc:periodiques:fascicules" → "periodiques:fascicules"), or
+ * undefined when absent. This is the authoritative docType discriminator: the
+ * <dc:type> values are generic physical-form labels that collapse periodicals
+ * to "book" (verified live 2026-06-24). Drives both docType and Document.subtype
+ * via mapGallicaTypedoc / gallicaSubtype in normalize.ts.
+ */
+function pickTypedoc(root: XmlNode): string | undefined {
+  for (const s of findAll(root, "setSpec")) {
+    const m = nodeText(s)?.match(/^gallica:typedoc:(.+)$/)
+    if (m) return m[1]
+  }
+  return undefined
 }
 
 /**
@@ -256,8 +284,8 @@ export class BnfDirectClient {
     this.dispatcher = new Agent({ connect: { family: 4 } })
   }
 
-  /** Resolve many ARKs with bounded concurrency. Same contract & ordering as
-   *  BnfMcpClient.resolveArks: one entry per input ARK, in input order. */
+  /** Resolve many ARKs with bounded concurrency: one entry per input ARK, in
+   *  input order. */
   async resolveArks(
     arks: string[],
   ): Promise<Array<BnfMcpResolveResult | BnfMcpResolveError>> {
@@ -408,6 +436,7 @@ export class BnfDirectClient {
       creator: firstText(root, "creator"),
       date: firstText(root, "date"),
       doc_type: pickDocType(root),
+      gallica_typedoc: pickTypedoc(root),
       language: firstText(root, "language"),
       publisher: firstText(root, "publisher"),
       ocr_available: hasTextMode(root),

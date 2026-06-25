@@ -43,6 +43,58 @@ export const GALLICA_DOC_TYPE: Record<string, string> = {
 }
 
 /**
+ * Gallica OAI-PMH typedoc set → our canonical docType.
+ *
+ * The OAI-PMH `oai_dc` record's <dc:type> values are generic physical-form
+ * labels ("texte", "publication en série imprimée") that do NOT discriminate a
+ * periodical from a monograph — both collapse to "book" via mapCatalogueDocType.
+ * The authoritative discriminator is the header <setSpec> "gallica:typedoc:<cat>"
+ * (verified live 2026-06-24 on bd6t511758012, a Figaro littéraire fascicule:
+ * dc:type="texte" but setSpec="gallica:typedoc:periodiques:fascicules"). Keyed
+ * on the FIRST segment after "gallica:typedoc:"; subcategories roll up. The full
+ * top-level vocabulary is the live ListSets output (same date).
+ */
+export const GALLICA_TYPEDOC: Record<string, string> = {
+  periodiques: "press",
+  monographies: "book",
+  cartes: "map",
+  manuscrits: "manuscript",
+  images: "image",
+  objets: "image",
+  partitions: "score",
+  videos: "video",
+  audio: "audio",
+}
+
+/**
+ * Map a Gallica typedoc tail (e.g. "periodiques:fascicules" or "monographies")
+ * to our canonical docType, or null when the category is unknown/absent. Only
+ * the top-level (first ":"-segment) category is significant for docType.
+ */
+export function mapGallicaTypedoc(
+  typedoc: string | null | undefined,
+): string | null {
+  if (typeof typedoc !== "string" || typedoc.trim() === "") return null
+  const top = typedoc.trim().toLowerCase().split(":")[0]
+  return GALLICA_TYPEDOC[top] ?? null
+}
+
+/**
+ * The Gallica typedoc SUBcategory token (e.g. "fascicules", "titres", "plan",
+ * "estampes"), or null when the typedoc has no second segment. Stored as
+ * Document.subtype — a finer, Gallica-native facet than docType, used for RAG
+ * and UI filtering. Kept verbatim (lowercased) rather than mapped: the subtype
+ * vocabulary is Gallica's, not ours.
+ */
+export function gallicaSubtype(
+  typedoc: string | null | undefined,
+): string | null {
+  if (typeof typedoc !== "string" || typedoc.trim() === "") return null
+  const parts = typedoc.trim().toLowerCase().split(":")
+  return parts.length > 1 && parts[1] !== "" ? parts[1] : null
+}
+
+/**
  * Map a Catalogue free-text doc_type string to our canonical docType.
  * Best-effort regex; returns null when nothing matches — caller falls back to
  * "other" AND must emit a structured WARN log so we can grow the map.

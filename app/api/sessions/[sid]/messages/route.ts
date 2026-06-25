@@ -11,8 +11,8 @@
 // This replaces the bespoke /turn (POST/DELETE) + /stream (GET) routes and the
 // hand-rolled runtime in lib/agent/runtime/*. The SDK handler owns the turn
 // lifecycle; this file supplies BnF's auth, per-session system prompt, and the
-// per-turn BnF-MCP session (a fresh stateful Mcp-Session-Id each turn) via the
-// SDK's `buildTools` seam.
+// BnF-MCP attachment (the MCP runs stateless — no Mcp-Session-Id needed) via
+// the SDK's `buildTools` seam.
 //
 // Compliance with agent-streaming.md: the route still parses + authorizes
 // before delegating to the SDK handler, which returns the SSE stream.

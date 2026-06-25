@@ -9,7 +9,7 @@
 // Client component: owns selection state and submits via the chat handle.
 
 import { useMemo, useState } from "react"
-import { ArrowRight, CircleHelp } from "lucide-react"
+import { ArrowRight, CircleHelp, Loader2 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { cn } from "@/lib/utils"
 
@@ -34,6 +34,11 @@ interface Props {
   /** A newer ask_user exists (or this one was already answered) — render inert.
    *  Only the most recent unanswered chooser is interactive. */
   superseded?: boolean
+  /** The tool call is still streaming its input. While true and the questions
+   *  haven't parsed yet, show a skeleton instead of nothing — the model emits
+   *  `tool-call-start` (toolName known) well before `tool-call-end` (input
+   *  parsed), and that gap is the visible "hang" before the chooser appears. */
+  running?: boolean
 }
 
 // Tolerant parse of the tool input into a typed question list.
@@ -76,6 +81,7 @@ export function CardToolAskUser({
   onSubmit,
   disabled = false,
   superseded = false,
+  running = false,
 }: Props) {
   const t = useTranslations("askUser")
   const { intro, questions } = useMemo(() => parseInput(input), [input])
@@ -88,7 +94,34 @@ export function CardToolAskUser({
   // Escape hatch: the user dismissed the chooser to reply in their own words.
   const [skipped, setSkipped] = useState(false)
 
-  if (questions.length === 0) return null
+  // No questions yet. While the tool input is still streaming, show a skeleton
+  // so the chooser doesn't blink into existence after a silent gap; otherwise
+  // (genuinely empty / malformed input) render nothing.
+  if (questions.length === 0) {
+    if (!running) return null
+    return (
+      <div className="animate-bnf-up rounded-md border bg-card px-4 py-3.5">
+        <div className="flex items-start justify-between gap-2">
+          <div className="flex items-center gap-2 font-mono text-[11.5px] text-brand-teal">
+            <CircleHelp className="size-3.5 shrink-0" aria-hidden />
+            <span className="font-semibold">ask_user</span>
+          </div>
+          <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-info/30 bg-info/10 px-2 py-0.5 font-mono text-[10px] tracking-wide text-info uppercase">
+            <Loader2 className="size-2.5 animate-spin" aria-hidden />
+            {t("preparing")}
+          </span>
+        </div>
+        <div className="mt-3 flex flex-col gap-2" aria-hidden>
+          <div className="h-3 w-2/3 animate-pulse rounded bg-muted" />
+          <div className="flex flex-wrap gap-1.5">
+            <div className="h-6 w-20 animate-pulse rounded-full bg-muted" />
+            <div className="h-6 w-24 animate-pulse rounded-full bg-muted" />
+            <div className="h-6 w-16 animate-pulse rounded-full bg-muted" />
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   const answeredCount = questions.filter(
     (_, i) => (selected[i]?.length ?? 0) > 0,

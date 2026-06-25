@@ -66,6 +66,7 @@ export class AgentQueries {
           seq: true,
           role: true,
           content: true,
+          thinking: true,
           status: true,
           error: true,
           model: true,

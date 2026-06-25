@@ -64,6 +64,7 @@
   },
   "askUser": {
     "pending": "En attente",
+    "preparing": "Préparation…",
     "answered": "Répondu",
     "superseded": "Remplacée",
     "validate": "Valider",

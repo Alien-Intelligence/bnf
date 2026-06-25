@@ -181,6 +181,7 @@ export class BnfClusterSink implements ClusterSink {
         ark: c.metadata.ark,
         ark_slug: c.metadata.arkSlug,
         doc_type: c.metadata.docType ?? prepared.metadata.docType ?? null,
+        sub_type: c.metadata.subtype ?? prepared.metadata.subtype ?? null,
         char_start: c.charStart,
         char_end: c.charEnd,
       };

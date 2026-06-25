@@ -94,24 +94,21 @@ export async function buildTurnScopedRegistry(signal?: AbortSignal) {
   let mcpServers: { name: string; url: string; headers: Record<string, string> }[] = []
   try {
     const mcpEnv = requireMcpEnv()
-    // The BnF MCP is a stateful Streamable-HTTP server: open a session and
-    // thread its id back as a header so the chat-sdk's (stateless) client
-    // includes it on every tools/list + tools/call. See lib/mcp/session.ts.
+    // The BnF MCP runs stateless (no session). We still run the `initialize`
+    // handshake for forward-compat with a stateful server: if it returns a
+    // session id we thread it back as a header so the chat-sdk's (session-blind)
+    // client echoes it on every tools/list + tools/call; if it returns null we
+    // omit the header entirely. See lib/mcp/session.ts.
     const sessionId = await openMcpSession(
       mcpEnv.BNF_MCP_URL,
       mcpEnv.BNF_MCP_TOKEN,
       signal,
     )
-    mcpServers = [
-      {
-        name: "bnf",
-        url: mcpEnv.BNF_MCP_URL,
-        headers: {
-          Authorization: `Bearer ${mcpEnv.BNF_MCP_TOKEN}`,
-          "Mcp-Session-Id": sessionId,
-        },
-      },
-    ]
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${mcpEnv.BNF_MCP_TOKEN}`,
+    }
+    if (sessionId) headers["Mcp-Session-Id"] = sessionId
+    mcpServers = [{ name: "bnf", url: mcpEnv.BNF_MCP_URL, headers }]
   } catch (err) {
     console.warn(
       "[registry-factory] BnF MCP unavailable — agent has no BnF search " +

@@ -136,8 +136,12 @@ bnf/
 │   │   ├── dispatch.ts           # tool_name → handler
 │   │   └── prompts/{shared,corpus,research}.ts
 │   ├── mcp/
-│   │   ├── bnf-client.ts         # the only thing that talks MCP
-│   │   └── normalize.ts          # MCP → app shape maps
+│   │   ├── session.ts            # BnF MCP session handshake (agent in-band path)
+│   │   └── normalize.ts          # resolved-doc → app shape maps
+│   ├── bnf/
+│   │   ├── direct.ts             # resolution via the broker (the real BnF client)
+│   │   ├── broker-client.ts      # POST to the BnF broker chokepoint
+│   │   └── types.ts              # resolved-document shapes
 │   ├── citations/
 │   │   ├── syntax.ts             # [[ark|label|folio]] parser/renderer
 │   │   └── external.ts           # derive IIIF / Gallica URLs

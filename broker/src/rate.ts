@@ -116,16 +116,29 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * Parse a BnF `Retry-After` header into an absolute epoch-ms deadline. BnF sends
- * an absolute HTTP-date in GMT (NOT delta-seconds), e.g.
- * "Wed, 26 Apr 2026 15:31:00 GMT". Falls back to delta-seconds if a bare integer
- * is sent, and to `fallbackMs` from now when unparseable.
+ * Parse a BnF `Retry-After` into an absolute epoch-ms freeze deadline.
+ *
+ * BnF *documents* an absolute GMT HTTP-date, but in practice the 429 carries a
+ * **French-localized** date ("mar.", "juin"…) that `Date.parse` returns NaN for.
+ * A flat `fallbackMs` (60s) freeze on every such 429 is catastrophic when we run
+ * AT the provisioned ceiling (global=300): BnF 429s roughly once a minute, so a
+ * 60s freeze of the whole bucket stalls ~all traffic continuously (observed:
+ * frozen 60s out of every ~67s → near-total stall).
+ *
+ * BnF enforces FIXED CLOCK-MINUTE windows that reset on :00 — capacity returns
+ * at the next minute boundary, not 60s after the 429. So when the header is
+ * absent or unparseable we freeze only until the **next :00 boundary** (≤60s,
+ * usually far less), capped by `fallbackMs`. A bare integer (delta-seconds) or a
+ * parseable GMT date is still honored verbatim.
  */
 export function retryAfterToEpochMs(header: string | undefined, fallbackMs: number): number {
   const now = Date.now();
-  if (!header) return now + fallbackMs;
+  const nextClockMinute = (Math.floor(now / 60_000) + 1) * 60_000;
+  // Align-to-boundary fallback, never longer than the configured cap.
+  const boundaryFallback = Math.min(nextClockMinute, now + fallbackMs);
+  if (!header) return boundaryFallback;
   const trimmed = header.trim();
   if (/^\d+$/.test(trimmed)) return now + Number(trimmed) * 1000; // delta-seconds
   const t = Date.parse(trimmed); // HTTP-date (GMT) → epoch-ms
-  return Number.isFinite(t) && t > now ? t : now + fallbackMs;
+  return Number.isFinite(t) && t > now ? t : boundaryFallback;
 }

@@ -8,8 +8,10 @@
  * they just POST a fetch request and get the upstream status + bytes verbatim.
  *
  * Contract (mirrors the relay so clients stay trivial):
- *   POST /fetch   {"url": "...", "accept": "..."}  -> upstream status + body verbatim
- *   GET  /health  -> {"ok": true}
+ *   POST /fetch       {"url": "...", "accept": "..."}  -> upstream status + body verbatim
+ *   GET  /health      -> {"ok": true}
+ *   GET  /calls.csv   -> CSV of every /fetch outcome (rate-limit analysis);
+ *                        `?reset=1` clears the buffer after returning it.
  *
  * The upstream status is mirrored unchanged so the caller's classification is
  * identical whether or not the broker is in the path. On 429 the broker BOTH
@@ -26,6 +28,7 @@ import {
   isManifest,
   isPartnerApi,
 } from "./config.js";
+import { callCount, recordCall, resetCalls, toCsv } from "./calls.js";
 import { RateWaitTimeoutError, retryAfterToEpochMs, TokenBucket } from "./rate.js";
 import { getAuthHeader, invalidateToken } from "./token.js";
 
@@ -143,6 +146,13 @@ async function handleFetch(req: IncomingMessage, res: ServerResponse): Promise<v
   }
 
   const plan = planFor(target);
+  // The rate bucket that governs this call (for the call log + analysis).
+  const bucketLabel = isManifest(target) ? "manifest" : isPartnerApi(target) ? "global" : "external";
+  const log = (status: number, note: string, waitMs: number, fetchMs: number, retryAfter: string | null): void => {
+    recordCall({ ts: Date.now(), host: target.host, path: target.pathname, status, bucket: bucketLabel, authed: plan.auth, waitMs: Math.round(waitMs), fetchMs: Math.round(fetchMs), retryAfter, note });
+  };
+
+  const tAcquireStart = Date.now();
   try {
     for (const b of plan.acquire) await b.acquire(config.acquireMaxWaitMs);
   } catch (e) {
@@ -150,10 +160,12 @@ async function handleFetch(req: IncomingMessage, res: ServerResponse): Promise<v
       // Bucket contended/frozen beyond the wait budget — shed with 429 so the
       // caller backs off (its retry policy treats 429 as transient) instead of
       // us queueing it behind a multi-minute freeze.
+      log(429, "shed", Date.now() - tAcquireStart, 0, null);
       return send(res, 429, "text/plain", `broker rate budget exhausted: ${e.message}`);
     }
     throw e;
   }
+  const waitMs = Date.now() - tAcquireStart;
 
   // Send the request, attaching auth for the partner API. On a partner-API 401
   // (our bearer was rejected though our clock thought it fresh — early
@@ -178,22 +190,30 @@ async function handleFetch(req: IncomingMessage, res: ServerResponse): Promise<v
   };
 
   let upstream: Awaited<ReturnType<typeof undiciFetch>>;
+  let reminted = false;
+  const tFetchStart = Date.now();
   try {
     upstream = await attemptFetch(false);
     if (upstream.status === 401 && plan.auth) {
       console.warn(`[broker] 401 from ${target.host}${target.pathname} — re-minting token and retrying once`);
+      reminted = true;
       upstream = await attemptFetch(true);
     }
   } catch (e) {
     // Token-mint failure or upstream transport failure — surface as 502 so the
     // caller treats it as transient and backs off.
+    log(502, "upstream_error", waitMs, Date.now() - tFetchStart, null);
     return send(res, 502, "text/plain", `upstream/token error: ${e instanceof Error ? e.message : String(e)}`);
   }
+  const fetchMs = Date.now() - tFetchStart;
 
+  const retryAfter = upstream.headers.get("retry-after");
+  let note = reminted ? "remint" : "ok";
   if (upstream.status === 429) {
-    const until = retryAfterToEpochMs(upstream.headers.get("retry-after") ?? undefined, 60_000);
+    const until = retryAfterToEpochMs(retryAfter ?? undefined, 60_000);
     for (const b of plan.penalize) b.penalizeUntil(until);
     console.warn(`[broker] 429 from ${target.host}${target.pathname} — bucket frozen until ${new Date(until).toISOString()}`);
+    note = "freeze";
   } else if (upstream.status === 403 && !isPartnerApi(target)) {
     // An ungated host (gallica/oai/catalogue/data) 403 is a Cloudflare/captcha
     // IP throttle (no Retry-After), NOT an auth failure — freeze the politeness
@@ -203,7 +223,9 @@ async function handleFetch(req: IncomingMessage, res: ServerResponse): Promise<v
     const until = Date.now() + config.forbiddenBackoffMs;
     for (const b of plan.penalize) b.penalizeUntil(until);
     console.warn(`[broker] 403 (IP throttle) from ${target.host}${target.pathname} — bucket frozen ${config.forbiddenBackoffMs}ms`);
+    note = "freeze_403";
   }
+  log(upstream.status, note, waitMs, fetchMs, retryAfter);
 
   const bytes = Buffer.from(await upstream.arrayBuffer());
   const ct = upstream.headers.get("content-type") ?? "application/octet-stream";
@@ -213,6 +235,20 @@ async function handleFetch(req: IncomingMessage, res: ServerResponse): Promise<v
 const server = createServer((req, res) => {
   if (req.method === "GET" && req.url === "/health") {
     return send(res, 200, "application/json", '{"ok":true}');
+  }
+  // CSV of every /fetch outcome (timestamp, host, path, status, bucket, wait,
+  // fetch, retry-after, note) for rate-limit analysis. `?reset=1` clears the
+  // buffer AFTER returning the current snapshot, to start a fresh capture.
+  if (req.method === "GET" && req.url?.startsWith("/calls.csv")) {
+    const csv = toCsv();
+    res.writeHead(200, {
+      "content-type": "text/csv; charset=utf-8",
+      "content-disposition": 'attachment; filename="broker-calls.csv"',
+      "x-call-count": String(callCount()),
+    });
+    res.end(csv);
+    if (req.url.includes("reset=1")) resetCalls();
+    return;
   }
   if (req.method === "POST" && req.url === "/fetch") {
     handleFetch(req, res).catch((e: unknown) => {

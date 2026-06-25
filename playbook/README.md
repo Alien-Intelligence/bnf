@@ -30,7 +30,7 @@ debuggable as it grows.
 | **BnF-specific** | | |
 | 14 | [Corpus versioning](corpus-versioning.md) | Versions, deltas, head vs. ingested pointers |
 | 15 | [Agent streaming](agent-streaming.md) | Claude loops, SSE event protocol, tool-call logging |
-| 16 | [MCP client](mcp-client.md) | BnF MCP integration, ARK normalization, IIIF links |
+| 16 | [BnF client](mcp-client.md) | BnF egress map: broker-routed resolution (`BnfDirectClient`) + in-band MCP search; ARK normalization; IIIF links |
 | 17 | [Ingestion jobs](ingestion-jobs.md) | Async job runner contract, stage progress |
 | 18 | [Citations](citations.md) | `[[ark\|label\|folio]]` parsing, rendering, deep-links |
 | 19 | [Memory](memory.md) | Project memory vs. session context — they are not the same thing |

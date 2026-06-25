@@ -51,7 +51,6 @@ Visit http://localhost:3000 — redirects to `/fr/sign-in`. Sign in with `leo@al
 | `npm run lint` | ESLint |
 | `npm run smoke` | tsx scripts/smoke-test.ts — exercises advisory lock, no-op delta, better-auth |
 | `npx prisma db seed` | Fake-data seed (offline, fast) — default |
-| `npm run seed:from-mcp` | Real-data seed via BnF MCP — requires BNF_MCP_TOKEN + network |
 
 ## Architecture in 60 seconds
 
@@ -60,7 +59,7 @@ Visit http://localhost:3000 — redirects to `/fr/sign-in`. Sign in with `leo@al
 - **Data**: Prisma 7 + Postgres (via `@prisma/adapter-pg`).
 - **Auth**: better-auth (email+password in slice 1; Alien SSO in a later slice).
 - **Agent runtime**: `@alien/chat-sdk` as the base streaming layer; BnF domain layer (tools, prompts, persistence) on top.
-- **BnF integration**: direct HTTP client for the BnF MCP (`lib/mcp/bnf-client.ts`). chat-sdk also wires it via `mcpServers` in slice 3.
+- **BnF integration**: resolution via the broker-routed direct client (`lib/bnf/direct.ts`); the agent's BnF search/browse is wired in-band via chat-sdk `mcpServers` (`lib/agent/tools/registry-factory.ts`).
 
 ## Deploy target
 

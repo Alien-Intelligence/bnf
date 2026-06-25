@@ -163,7 +163,7 @@ across models.
 ```ts
 // models/corpus/service.ts
 import { prisma } from "@/lib/db"
-import { McpClient } from "@/lib/mcp/bnf-client"
+import { BnfDirectClient } from "@/lib/bnf/direct"
 import { resolveAndNormalize } from "@/lib/mcp/normalize"
 import { CorpusQueries } from "./queries"
 import { advanceVersion } from "./versioning"

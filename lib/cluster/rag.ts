@@ -83,6 +83,8 @@ export interface RagKeywordRequest {
   /** Exact-match facet filters on the corpus metadata. */
   filters?: {
     type?: string
+    /** Gallica typedoc subcategory ("fascicules", "titres", "plan", …). */
+    subtype?: string
     lang?: string
     source?: string
   }

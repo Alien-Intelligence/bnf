@@ -43,8 +43,9 @@ export type { AppSession, Message, ToolCall } from "@/lib/generated/prisma/clien
  * SSE stream (activeMessageId non-null) or just render the history.
  *
  * Field selection is intentional: only fields needed by the UI are included.
- * Full message bodies (usage, thinking) are excluded from the snapshot — the
- * streaming route emits those as typed SSE events.
+ * `usage` is excluded (emitted live as a typed SSE event); `thinking` IS
+ * included so a reattaching client can re-render the reasoning block of a
+ * completed turn — the live stream only carries reasoning for the active turn.
  */
 export type TurnSnapshot = {
   messages: {
@@ -52,6 +53,7 @@ export type TurnSnapshot = {
     seq: number
     role: string
     content: string | null
+    thinking: string | null
     status: string
     error: string | null
     model: string | null

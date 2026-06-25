@@ -161,6 +161,7 @@ class PreparePipeline implements DocPipeline {
       creator: info.creator,
       date: info.date,
       docType: info.docType,
+      subtype: info.subtype,
       lang: rawLang,
       source: "gallica",
       iiifManifestUrl: info.iiifManifestUrl,
@@ -173,6 +174,7 @@ class PreparePipeline implements DocPipeline {
         ark: info.ark,
         arkSlug,
         docType: info.docType ?? undefined,
+        subtype: info.subtype ?? undefined,
       },
       folioMetadata: folioMetadata.size > 0 ? folioMetadata : undefined,
     });

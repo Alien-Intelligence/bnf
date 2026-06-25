@@ -112,10 +112,14 @@ export const memoryWriteTool = defineTool<
 >({
   name: AGENT_TOOLS.memoryWrite,
   description:
-    "Write (upsert) a curated fact into the project's persistent memory. " +
+    "Write (upsert) ONE curated, atomic fact into the project's persistent memory. " +
+    "`text` is hard-capped at 500 characters — this is a small fact list, NOT a " +
+    "session log. Never paste a list of search results, a session recap, or an " +
+    "enumeration here: record the takeaway in one sentence (e.g. \"Turing & Shannon " +
+    "absents de Gallica — uniquement des notices catalogue\"). If you have several " +
+    "distinct facts, make several short memory_write calls — do not concatenate them. " +
     "Near-duplicate facts (same normalised text) are merged rather than duplicated. " +
-    "Prefer short, factual sentences. Group related facts under the same section " +
-    "(e.g. \"Périmètre temporel\", \"Thèmes\", \"Sources\"). " +
+    "Group related facts under the same section (e.g. \"Périmètre temporel\", \"Thèmes\", \"Sources\"). " +
     "After writing, a memory_event is emitted so the memory dialog updates in real time.",
   inputSchema: z.object({
     section: z
@@ -131,7 +135,11 @@ export const memoryWriteTool = defineTool<
       .trim()
       .min(1)
       .max(500)
-      .describe("The fact to remember. One concise sentence."),
+      .describe(
+        "The fact to remember — ONE atomic fact, one concise sentence, max 500 " +
+          "characters (longer text is rejected). Not a session log or a list of " +
+          "results: if you have several facts, call memory_write once per fact.",
+      ),
     origin: z
       .string()
       .trim()

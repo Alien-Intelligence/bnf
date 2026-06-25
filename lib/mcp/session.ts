@@ -1,21 +1,25 @@
 // lib/mcp/session.ts
-// Streamable-HTTP MCP session handshake.
+// Streamable-HTTP MCP session handshake (session is OPTIONAL).
 //
-// The BnF MCP (mcp-base, https://bnf.mcp.alien.club/mcp) is a *stateful*
-// server: a bare `tools/list` or `tools/call` is rejected with
-// `400 Bad Request: Missing session ID`. The MCP spec's session flow is:
+// The MCP spec's session flow is:
 //
-//   1. POST an `initialize` request → server responds 200 with an
+//   1. POST an `initialize` request → server responds 200, optionally with an
 //      `Mcp-Session-Id` response header.
-//   2. Every subsequent request echoes that id in the `Mcp-Session-Id`
-//      *request* header until the session expires.
+//   2. If a session id is returned, every subsequent request echoes it in the
+//      `Mcp-Session-Id` *request* header until the session expires.
 //
-// This contrasts with the alien MCP used by publisher-demo, which accepts
-// header-only Bearer auth with no session — that is why the chat-sdk's naive
-// stateless MCP client works there but not against the BnF MCP. We bridge the
-// gap by performing the handshake ourselves and threading the session id back
-// in as a header (the chat-sdk forwards `headers` on every request, and the
-// direct BnfMcpClient adds it explicitly).
+// The BnF MCP (mcp-base) runs **stateless**: `initialize` returns no
+// `mcp-session-id` header and each request is self-contained — so no session
+// header is needed, and one must NOT be required. It previously ran stateful,
+// but per-pod in-memory sessions broke once the HPA scaled it past one replica
+// (no shared store / no session affinity → `400 No valid session ID provided`
+// on every request that missed the owning pod). See the project memory
+// `bnf-mcp-stateless-multireplica`.
+//
+// We keep performing the handshake so the app stays forward-compatible with a
+// stateful server: if a session id IS returned we thread it back as a header
+// (the chat-sdk forwards `headers` on every request); if it is not, callers
+// proceed without one.
 
 import "server-only"
 
@@ -29,17 +33,21 @@ import { withTimeout } from "./abort"
 import { BnfMcpAuthError, BnfMcpError } from "./errors"
 
 /**
- * Perform the MCP `initialize` handshake and return the server-assigned
- * session id (the `mcp-session-id` response header).
+ * Perform the MCP `initialize` handshake.
+ *
+ * Returns the server-assigned session id (`mcp-session-id` response header)
+ * when the server runs *stateful*, or `null` when it runs *stateless* (no
+ * session header — each request is self-contained). Callers must treat the
+ * session as optional and only echo `Mcp-Session-Id` when it is non-null.
  *
  * Throws BnfMcpAuthError on 401/403 (bad token — not retryable) and
- * BnfMcpError on any other transport failure or a missing session-id header.
+ * BnfMcpError on any other transport failure.
  */
 export async function openMcpSession(
   url: string,
   token: string,
   signal?: AbortSignal,
-): Promise<string> {
+): Promise<string | null> {
   const res = await fetch(url, {
     method: "POST",
     headers: {
@@ -71,12 +79,6 @@ export async function openMcpSession(
     )
   }
 
-  const sessionId = res.headers.get("mcp-session-id")
-  if (!sessionId) {
-    throw new BnfMcpError(
-      "MCP initialize succeeded but returned no mcp-session-id header",
-    )
-  }
-
-  return sessionId
+  // Stateless server → no header. Return null; callers omit `Mcp-Session-Id`.
+  return res.headers.get("mcp-session-id")
 }

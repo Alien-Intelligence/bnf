@@ -8,7 +8,7 @@ replicaCount: 1
 image:
   repository: rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo
   pullPolicy: Always
-  tag: "0.5.0"
+  tag: "0.5.2"
 
 imagePullSecrets: []
 
@@ -57,7 +57,8 @@ config:
   clusterMode: real
 
   # BnF MCP — corpus building (Constituer). URL is public; token is a secret.
-  bnfMcpUrl: https://bnf.mcp.alien.club/mcp
+  # Pointed at the ALPHA MCP for now (2026-06-24).
+  bnfMcpUrl: https://bnf.mcp.alpha.alien.club/mcp
 
   # Data-cluster MCP — research RAG (Rechercher), required when clusterMode=real.
   # The research agent's rag_query tool queries this over dataset `bnf-<projectId>`.
@@ -105,7 +106,7 @@ worker:
   image:
     repository: rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo-worker
     pullPolicy: Always
-    tag: "0.5.0"
+    tag: "0.5.2"
 
   service:
     type: ClusterIP
@@ -152,7 +153,11 @@ worker:
     maxOcrPages: "300"
     maxImageCanvases: "40"
     imageConcurrency: "3"
-    workerConcurrency: "4"
+    # In-flight ALTO = workerConcurrency × bnfAltoConcurrency. Keep the product
+    # small (≈4) so the fleet doesn't overshoot the broker's shared 300/min cap →
+    # mass 429-shed → docs trip the 25% page-fail ratio and retry forever.
+    workerConcurrency: "2"
+    bnfAltoConcurrency: "2"
 
   resources:
     requests:
@@ -184,7 +189,7 @@ broker:
   image:
     repository: rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo-broker
     pullPolicy: Always
-    tag: "0.5.0"
+    tag: "0.5.2"
 
   service:
     type: ClusterIP
@@ -197,11 +202,12 @@ broker:
     oauthTokenUrl: https://apimauthproext.bnf.fr/oauth2/token
     apiBaseUrl: https://openapiproext.bnf.fr
 
-    # Rate caps (requests/min) — these WILL rise; bump here, redeploy the broker
-    # only (no app/worker rebuild). Defaults live-measured 2026-06-24:
-    #   global ~150/min enforced (brief said 300); manifest raised 12→40/min/IP
-    #   by BnF on 2026-06-24 (Ludovic).
-    globalRpm: "150"
+    # Rate caps (requests/min) — bump here, redeploy the broker only (no
+    # app/worker rebuild). global=180: just above BnF's measured real rate
+    # (~150-185/min), so we touch the ceiling (occasional 429) but serve smoothly.
+    # 300 (the documented quota) just grinds — BnF 429s past ~150 and the broker
+    # freezes to the next clock-minute. manifest raised 12→40/min/IP by BnF.
+    globalRpm: "180"
     manifestRpm: "40"
     externalRpm: "120"
 

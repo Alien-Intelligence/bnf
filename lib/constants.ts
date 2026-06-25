@@ -109,14 +109,23 @@ export const CORPUS_SAMPLE_SIZE = 25
 export const CORPUS_REMOVE_PREVIEW_LIMIT = 50
 
 /**
+ * Max length of the `reason` note on a corpus mutation (add / remove /
+ * remove-by-filter). Stored verbatim as the CorpusVersion `note` (an unbounded
+ * text column), so this bound exists only to keep the note a note — not to
+ * gate the operation. The previous 300 was too tight: the agent's natural
+ * one-to-three-sentence justification routinely overran it, and a Zod
+ * `max` violation surfaces to the model as a tool error ("too long") that it
+ * burns a turn retrying. Generous headroom over the brief note the prompt asks
+ * for, while still rejecting a pasted essay. See lib/agent/tools/corpus.ts and
+ * the corpus system prompt.
+ */
+export const CORPUS_REASON_MAX_LEN = 1_000
+
+/**
  * The seq assigned to the first (empty) CorpusVersion created by
  * ProjectService.create(). Invariant 1: every project always has a head.
  */
 export const PROJECTS_INITIAL_VERSION_SEQ = 1
-
-// ---------------------------------------------------------------------------
-// BnF MCP concurrency + retry tuning
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // Chat streaming presentation
@@ -131,9 +140,11 @@ export const CHAT_STREAM_REVEAL_MS = 25
 
 /**
  * MCP protocol version sent in the `initialize` handshake. The BnF MCP
- * (mcp-base) is a *stateful* Streamable-HTTP server: it issues an
- * `Mcp-Session-Id` on initialize that every subsequent request must echo, or
- * it replies `400 Missing session ID`. See lib/mcp/session.ts.
+ * (mcp-base) runs *stateless*: `initialize` returns no `Mcp-Session-Id` and
+ * each request is self-contained, so the session header is optional and must
+ * not be required. The handshake is still performed for forward-compat with a
+ * stateful server (it echoes a session id if one is returned). See
+ * lib/mcp/session.ts.
  */
 export const MCP_PROTOCOL_VERSION = "2025-06-18"
 
@@ -141,13 +152,9 @@ export const MCP_PROTOCOL_VERSION = "2025-06-18"
 export const MCP_CLIENT_NAME = "bnf-corpus-research"
 export const MCP_CLIENT_VERSION = "0.1.0"
 
-/** Maximum number of in-flight MCP calls when resolving a batch of ARKs. */
-export const BNF_MCP_CONCURRENCY = 8
-
-/** Max in-flight DIRECT HTTP calls when resolving a batch of ARKs.
- * Lower than BNF_MCP_CONCURRENCY: the direct path hits the public
- * gallica.bnf.fr / catalogue.bnf.fr endpoints, and catalogue.bnf.fr's SRU
- * rate-limits (HTTP 429) aggressive bursts. Keep it gentle. */
+/** Max in-flight DIRECT HTTP calls when resolving a batch of ARKs. Kept gentle:
+ * the direct/broker path hits oai.bnf.fr / catalogue.bnf.fr, and catalogue.bnf.fr's
+ * SRU rate-limits (HTTP 429) aggressive bursts. */
 export const BNF_DIRECT_CONCURRENCY = 4
 
 /** Total call attempts (1 initial + N-1 retries) per MCP request. */
@@ -162,8 +169,8 @@ export const BNF_MCP_RETRY_CAP_MS = 8_000
 /**
  * Per-attempt wall-clock ceiling for a single MCP HTTP call (handshake or
  * tools/call). Bounds every MCP `await` so a stalled transport cannot hang the
- * agent turn or the seed indefinitely (CLAUDE_ERROR_PATTERNS §14). Applied per
- * retry attempt, combined with the caller's turn AbortSignal.
+ * agent turn indefinitely (CLAUDE_ERROR_PATTERNS §14). Applied per retry
+ * attempt, combined with the caller's turn AbortSignal.
  */
 export const BNF_MCP_TIMEOUT_MS = 30_000
 

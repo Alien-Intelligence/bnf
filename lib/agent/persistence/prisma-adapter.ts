@@ -162,6 +162,9 @@ export function createPrismaChatAdapter(): ChatPersistenceAdapter {
             content: final.content,
             status: "done",
             finishedAt: new Date(),
+            // Reasoning text is display-only: persisted so a reattaching client
+            // re-renders the thinking block; never replayed to the model.
+            ...(final.thinking ? { thinking: final.thinking } : {}),
             ...(final.usage
               ? { usage: final.usage as unknown as Prisma.InputJsonValue }
               : {}),
@@ -242,6 +245,9 @@ export function createPrismaChatAdapter(): ChatPersistenceAdapter {
           seq: m.seq,
           role: toSnapshotRole(m.role),
           content: m.content ?? "",
+          // Re-render the reasoning block on reattach (assistant turns only;
+          // null for user turns and turns recorded before this was persisted).
+          thinking: m.thinking ?? undefined,
           status: toSnapshotStatus(m.status),
           toolCalls,
         }

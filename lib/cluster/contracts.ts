@@ -7,6 +7,9 @@ export interface ClusterDoc {
   title: string
   year: number | null
   docType: string
+  /** Gallica typedoc subcategory ("fascicules", "titres", "plan", …); null when
+   *  absent. Indexed into the datacluster as a filterable metadata field. */
+  subtype: string | null
   lang: string | null
   source: string
   iiifManifestUrl: string | null

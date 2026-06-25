@@ -24,6 +24,17 @@ function num(name: string, fallback: number): number {
   return n;
 }
 
+/** Like `num`, but allows 0 (used for opt-out toggles like the call log). */
+function numAllowingZero(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw == null || raw.trim() === "") return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) {
+    throw new Error(`Invalid ${name}=${raw}: must be >= 0 (0 disables).`);
+  }
+  return n;
+}
+
 function url(name: string, fallback: string): string {
   const raw = process.env[name]?.trim() || fallback;
   try {
@@ -52,15 +63,15 @@ export const config = {
   // without) and attributes usage to our credential. Verified live 2026-06-24.
   apiBaseUrl: url("BNF_API_BASE_URL", "https://openapiproext.bnf.fr"),
 
-  // Rate buckets (requests/min). The caps WILL rise — bump these, no redeploy.
-  // Defaults set from LIVE MEASUREMENT (2026-06-24, sandbox credential), NOT the
-  // onboarding brief: the brief says 300/min global, but the enforced ceiling
-  // measured ~150–185/min (5 clean clock-minute windows) — so the default is a
-  // safe 150, below the observed floor. Manifest was 12/min/IP; BnF raised it to
-  // 40/min/IP on 2026-06-24 (Ludovic). Both are fixed clock-minute windows.
-  // Raise via env once BnF confirms the provisioned prod tier. See ai-memories
-  // bnf-partner-api-design.
-  globalRpm: num("BNF_GLOBAL_RPM", 150), //   partner API, all endpoints combined
+  // Rate buckets (requests/min), env-overridable (no rebuild). Global set to 180:
+  // just above BnF's MEASURED real enforced rate (~150-185/min, 5 windows), so we
+  // touch the ceiling (occasional 429 — useful evidence for the quota ask) but
+  // mostly serve smoothly. The documented 300 is fiction: BnF 429s past ~150 and
+  // the broker then freezes the bucket to the next clock-minute, so 300 serves
+  // only ~16s/min (frozen ~44s) → no MORE throughput than 180, just bursty +
+  // starves large docs. Manifest raised 12→40/min/IP (Ludovic 2026-06-24). Fixed
+  // clock-minute windows. See ai-memories bnf-partner-api-design.
+  globalRpm: num("BNF_GLOBAL_RPM", 180), //   partner API, all endpoints combined
   globalBurst: num("BNF_GLOBAL_BURST", 20),
   manifestRpm: num("BNF_MANIFEST_RPM", 40), // IIIF manifest, per IP (BnF raised 12→40 on 2026-06-24)
   manifestBurst: num("BNF_MANIFEST_BURST", 4),
@@ -101,6 +112,12 @@ export const config = {
   maxBodyBytes: num("BNF_MAX_BODY_BYTES", 64 * 1024),
   /** Max wall-clock to read a request body before 408 (slow-loris guard). */
   bodyReadTimeoutMs: num("BNF_BODY_READ_TIMEOUT_MS", 10_000),
+  /**
+   * Rows kept in the in-memory call log exported at `GET /calls.csv` (every
+   * /fetch outcome — for analysing rate-limiting behaviour). 0 disables it.
+   * 200k ≈ a full multi-hour ingest; ~24MB on this single replica.
+   */
+  callsLogSize: numAllowingZero("BNF_CALLS_LOG_SIZE", 200_000),
 } as const;
 
 /** The authenticated partner-API host, parsed once (used per request). */

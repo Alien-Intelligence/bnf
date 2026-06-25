@@ -122,6 +122,7 @@ async function drainOnce(projectId: string, signal?: AbortSignal): Promise<void>
             year: doc.year ?? null,
             dateLabel: doc.dateLabel ?? null,
             docType: doc.docType,
+            subtype: doc.subtype ?? null,
             lang: doc.lang ?? null,
             source: doc.source,
             pages: doc.pages ?? null,

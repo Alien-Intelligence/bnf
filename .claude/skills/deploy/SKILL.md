@@ -139,14 +139,23 @@ kubectl --context platform-prod -n bnf get pods                                 
 curl -sS -o /dev/null -w "app %{http_code}\n"  https://bnf.demo.alien.club/              # 307 → /sign-in
 curl -sS -o /dev/null -w "auth %{http_code}\n" https://bnf.demo.alien.club/api/auth/get-session  # 200
 
-# Broker smoke (in-cluster). Startup banner must show the caps; one /fetch on the
-# ungated OAI host proves the proxy; one partner manifest proves OAuth mint
-# (200/404 = creds valid; 401/403 = creds rejected; 502 "token error" = bad KEY/SECRET).
+# Broker smoke (in-cluster). Startup banner must show the caps AND
+# `api=https://openapiproext.bnf.fr` (the token'd host — NOT openapi.bnf.fr, which
+# is the public no-token anonymous-IP mirror that 200s WITHOUT valid creds and so
+# can't detect an OAuth failure). One /fetch on the ungated OAI host proves the
+# proxy; one partner manifest on openapiproext proves OAuth mint
+# (200 = creds valid; 401/403 = creds rejected; 502 "token error" = bad KEY/SECRET).
+# Use the right Accept per resource: manifest/info.json → application/json,
+# alto.xml → application/xml (asking for json on an XML resource returns 406).
 kubectl --context platform-prod -n bnf logs deploy/bnf-demo-prod-broker --tail=3
 kubectl --context platform-prod -n bnf exec deploy/bnf-demo-prod-broker -- node -e '
-  fetch("http://localhost:8792/fetch",{method:"POST",headers:{"content-type":"application/json"},
-  body:JSON.stringify({url:"https://openapi.bnf.fr/iiif/presentation/v3/ark:/12148/btv1b8451637r/manifest.json",accept:"application/json"})})
-  .then(r=>console.log("partner status",r.status))'
+  const post=(u,a)=>fetch("http://localhost:8792/fetch",{method:"POST",headers:{"content-type":"application/json"},
+    body:JSON.stringify({url:u,accept:a})}).then(r=>r.status);
+  (async()=>{
+    console.log("partner manifest (openapiproext, OAuth):", await post("https://openapiproext.bnf.fr/iiif/presentation/v3/ark:/12148/bpt6k1264641j/manifest.json","application/json"));
+    console.log("partner ALTO (openapiproext, OAuth):", await post("https://openapiproext.bnf.fr/iiif/presentation/v3/ark:/12148/bpt6k1264641j/f10/alto.xml","application/xml"));
+    console.log("ungated OAI (no auth):", await post("http://oai.bnf.fr/oai2/OAIHandler?verb=Identify","application/xml"));
+  })();'
 ```
 
 Report: live version, pod status, site codes. If a pod isn't Ready, pull its
