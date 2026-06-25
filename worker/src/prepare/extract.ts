@@ -14,7 +14,11 @@ import { mistralOcr } from "../env.js";
 import type { BnfDocInfo, SkipReason } from "../types.js";
 import type { BnfApi } from "./bnf-api.js";
 import { PermanentBnfError } from "./errors.js";
-import { runMistralOcrBatch, type MistralOcrFolio } from "./mistral-ocr.js";
+import {
+  looksLikeHallucinatedOcr,
+  runMistralOcrBatch,
+  type MistralOcrFolio,
+} from "./mistral-ocr.js";
 import type { OcrPage } from "./render.js";
 import { describeImage, fetchImage, type ImageDescription } from "./vision.js";
 
@@ -198,10 +202,19 @@ async function extractMistralOcr(
   // 3. One batch over all fetched folios. Transient/timeout errors propagate so
   //    pg-boss retries the whole doc-job; permanent failures surface as a skip.
   const batch = await runMistralOcrBatch(fetched);
-  const pages: OcrPage[] = batch.pages.map((p) => ({
-    ordre: p.ordre,
-    text: p.markdown,
-  }));
+
+  // Drop hallucinated folios (Mistral fabricates content on blank pages — see
+  // looksLikeHallucinatedOcr). A dropped folio becomes a blank page: no citation,
+  // never fabricated text in the RAG store. Count the drops, never silently.
+  let dropped = 0;
+  const pages: OcrPage[] = [];
+  for (const p of batch.pages) {
+    if (looksLikeHallucinatedOcr(p.markdown)) {
+      dropped++;
+      continue;
+    }
+    pages.push({ ordre: p.ordre, text: p.markdown });
+  }
 
   if (pages.length === 0) {
     return {
@@ -210,15 +223,16 @@ async function extractMistralOcr(
         skip: true,
         reason: "ocr_fetch_failed",
         ark: info.ark,
-        cause: `Mistral OCR returned no text (${batch.failed} folio(s) failed)`,
+        cause: `Mistral OCR produced no usable text (${batch.failed} failed, ${dropped} hallucinated of ${fetched.length})`,
       },
     };
   }
 
   // Batch rate is $2/1000 pages — log the rough spend for observability.
-  const estUsd = (pages.length / 1000) * 2;
+  const estUsd = (fetched.length / 1000) * 2;
   console.log(
-    `[extract] mistral OCR ${info.ark}: ${pages.length}/${fetched.length} folios transcribed (~$${estUsd.toFixed(2)})`,
+    `[extract] mistral OCR ${info.ark}: ${pages.length}/${fetched.length} folios kept` +
+      `${dropped > 0 ? ` (${dropped} hallucinated, dropped)` : ""} (~$${estUsd.toFixed(2)})`,
   );
 
   return {

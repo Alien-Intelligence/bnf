@@ -9,7 +9,8 @@
     "register:one": "tsx scripts/03-register-one.ts",
     "worker": "tsx scripts/04-worker.ts",
     "queue:submit": "tsx scripts/05-submit.ts",
-    "worker-api": "tsx scripts/06-worker-api.ts"
+    "worker-api": "tsx scripts/06-worker-api.ts",
+    "dbg:mistral": "tsx scripts/dbg-mistral-ocr.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.677.0",
