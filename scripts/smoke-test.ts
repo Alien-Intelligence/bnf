@@ -646,7 +646,12 @@ async function testIngestNoOpShortCircuit(owner: User): Promise<void> {
   })
 
   // Submit — delta is empty (head == ingested) → no-op short-circuit
-  const job = await IngestService.submit(freshProject, owner, {})
+  const outcome = await IngestService.submit(freshProject, owner, {})
+  assert.ok(
+    outcome.kind === "job",
+    `submit must return a job outcome (no paid OCR here), got "${outcome.kind}"`,
+  )
+  const job = outcome.job
 
   // Assertions
   assert.equal(job.status, INGEST_STATUS.DONE, `job.status must be "done", got "${job.status}"`)

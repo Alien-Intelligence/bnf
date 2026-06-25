@@ -23,10 +23,16 @@ import {
   INGESTION_CLASS,
   isIngestableClass,
 } from "@/models/documents/schema"
-import { INGEST_STATUS } from "./schema"
-import type { IngestResults, IngestSubmitInput } from "./types"
+import { estimatePaidOcrCostUsd, INGEST_STATUS } from "./schema"
+import type { PaidOcrEstimate } from "./schema"
+import type {
+  IngestResults,
+  IngestSubmitInput,
+  IngestSubmitOutcome,
+} from "./types"
 import type { ClusterProgressEvent } from "@/lib/cluster/contracts"
 import { ClusterRunner } from "@/lib/cluster/runner"
+import { PAID_OCR_DEFAULT_BUDGET_USD } from "@/lib/constants"
 import { env } from "@/lib/env"
 
 export class IngestService {
@@ -39,6 +45,10 @@ export class IngestService {
    *   3. Compute the delta: added = target ∖ base, removed = base ∖ target.
    *   4. Deduplication: if a queued/running job already exists for
    *      (projectId, targetVersionId), return it unchanged.
+   *   4b. Paid-OCR gate (only when project.paidOcrEnabled): if the delta carries
+   *      `sans_texte` docs, require `input.confirmPaidOcr` and a budget headroom
+   *      check before folding them into the job. Returns a non-`job` outcome
+   *      otherwise.
    *   5. No-op short-circuit: if delta is empty, create a done job + advance
    *      ingestedVersionId atomically. No cluster call.
    *   6. Insert job row, enqueue to cluster runner.
@@ -47,7 +57,7 @@ export class IngestService {
     project: Project,
     user: User,
     input: IngestSubmitInput,
-  ): Promise<IngestJob> {
+  ): Promise<IngestSubmitOutcome> {
     // 1. Resolve target version
     let targetVersion: Awaited<ReturnType<typeof CorpusQueries.headVersion>>
 
@@ -89,10 +99,19 @@ export class IngestService {
     // retry-loops on ARKs that can never succeed. They are already flagged
     // non-ingestable in the corpus view; honor that here. The excluded set is
     // recorded on the job for an honest count (the worker never sees them).
-    const { ingestable: addedArks, excluded: excludedArks } =
-      await IngestService._partitionByIngestability(project.id, deltaAddedArks)
+    //
+    // When paid OCR is enabled for the project, `sans_texte` docs are NOT
+    // excluded — they split into a third `paidOcr` bucket handled at step 4b.
+    const {
+      ingestable,
+      excluded: excludedArks,
+      paidOcr: paidOcrArks,
+    } = await IngestService._partitionByIngestability(project.id, deltaAddedArks, {
+      paidOcr: project.paidOcrEnabled,
+    })
 
-    // 4. Deduplication guard
+    // 4. Deduplication guard. Runs BEFORE the paid-OCR gate so re-submitting
+    // while a job is already in flight reuses it without re-prompting for spend.
     const existing = await prisma.ingestJob.findFirst({
       where: {
         projectId: project.id,
@@ -100,20 +119,46 @@ export class IngestService {
         status: { in: [INGEST_STATUS.QUEUED, INGEST_STATUS.RUNNING] },
       },
     })
-    if (existing) return existing
+    if (existing) return { kind: "job", job: existing }
+
+    // 4b. Paid-OCR gate. If the delta carries `sans_texte` docs, the user must
+    // authorize the spend (per-ingestion confirmation) and the project must have
+    // budget headroom. Only on success are these ARKs folded into the job.
+    let paidOcrEstimatedUsd: number | null = null
+    if (paidOcrArks.length > 0) {
+      const estimate = await IngestService._estimatePaidOcr(project.id, paidOcrArks)
+      if (!input.confirmPaidOcr) {
+        return { kind: "confirmation_required", paidOcr: estimate }
+      }
+      const ceilingUsd =
+        project.paidOcrBudgetUsd === null
+          ? PAID_OCR_DEFAULT_BUDGET_USD
+          : Number(project.paidOcrBudgetUsd)
+      const spentUsd = Number(project.paidOcrSpentUsd)
+      if (spentUsd + estimate.usd > ceilingUsd) {
+        return { kind: "budget_exceeded", paidOcr: estimate, spentUsd, ceilingUsd }
+      }
+      paidOcrEstimatedUsd = estimate.usd
+    }
+
+    // Confirmed paid-OCR docs join the added delta; the worker transcribes them.
+    const addedArks = [...ingestable, ...paidOcrArks]
 
     // 5. No-op short-circuit. Nothing ingestable to add and nothing to remove
     // means the index content for the target version already matches what's
     // there — advance the pointer without a cluster round-trip. Excluded docs
     // don't change index content, so an all-excluded added delta is a no-op.
     if (addedArks.length === 0 && removedArks.length === 0) {
-      return IngestService._commitNoOp(
-        project,
-        user,
-        targetVersion.id,
-        baseVersion?.id ?? null,
-        excludedArks,
-      )
+      return {
+        kind: "job",
+        job: await IngestService._commitNoOp(
+          project,
+          user,
+          targetVersion.id,
+          baseVersion?.id ?? null,
+          excludedArks,
+        ),
+      }
     }
 
     // 6. Fetch document metadata for the cluster
@@ -135,6 +180,8 @@ export class IngestService {
         removedArks,
         excludedArks,
         excludedCount: excludedArks.length,
+        paidOcrArks,
+        paidOcrEstimatedUsd,
         callbackSecret,
       },
     })
@@ -159,7 +206,7 @@ export class IngestService {
     })
 
     // 10. Persist clusterJobId and transition to running
-    return prisma.ingestJob.update({
+    const running = await prisma.ingestJob.update({
       where: { id: job.id },
       data: {
         clusterJobId,
@@ -167,6 +214,7 @@ export class IngestService {
         startedAt: new Date(),
       },
     })
+    return { kind: "job", job: running }
   }
 
   /**
@@ -189,7 +237,12 @@ export class IngestService {
    */
   static async previewDelta(
     project: Project,
-  ): Promise<{ added: number; removed: number; excluded: number }> {
+  ): Promise<{
+    added: number
+    removed: number
+    excluded: number
+    paidOcr: PaidOcrEstimate
+  }> {
     const targetVersion = await CorpusQueries.headVersion(project.id)
 
     // Per-doc delta against the index (same source as submit()), so the preview
@@ -204,13 +257,18 @@ export class IngestService {
     const deltaAddedArks = targetArks.filter((a) => !indexedSet.has(a))
     const removedArks = indexedArks.filter((a) => !targetSet.has(a))
 
-    const { ingestable, excluded } =
-      await IngestService._partitionByIngestability(project.id, deltaAddedArks)
+    // Same partition (and same paidOcr gate) as submit(), so the preview's
+    // counts and cost estimate can never drift from what a submit would carry.
+    const { ingestable, excluded, paidOcr } =
+      await IngestService._partitionByIngestability(project.id, deltaAddedArks, {
+        paidOcr: project.paidOcrEnabled,
+      })
 
     return {
       added: ingestable.length,
       removed: removedArks.length,
       excluded: excluded.length,
+      paidOcr: await IngestService._estimatePaidOcr(project.id, paidOcr),
     }
   }
 
@@ -631,6 +689,25 @@ export class IngestService {
       }
     }
     return { ingestable, excluded, paidOcr }
+  }
+
+  /**
+   * Estimate the paid-OCR cost for a set of `sans_texte` ARKs from their stored
+   * page counts (`Document.pages`). A missing row or null page count falls back
+   * to the conservative default inside estimatePaidOcrCostUsd(). The worker
+   * reports the real billed cost on completion.
+   */
+  private static async _estimatePaidOcr(
+    projectId: string,
+    arks: string[],
+  ): Promise<PaidOcrEstimate> {
+    if (arks.length === 0) return { docCount: 0, pages: 0, usd: 0 }
+    const rows = await prisma.document.findMany({
+      where: { projectId, ark: { in: arks } },
+      select: { ark: true, pages: true },
+    })
+    const pagesByArk = new Map(rows.map((r) => [r.ark, r.pages]))
+    return estimatePaidOcrCostUsd(arks.map((ark) => pagesByArk.get(ark) ?? null))
   }
 
   /**

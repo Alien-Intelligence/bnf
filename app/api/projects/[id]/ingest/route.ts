@@ -20,6 +20,7 @@ import {
   ingestSubmitSchema,
   serializeIngestJob,
   type IngestJobView,
+  type IngestSubmitPaidOcrResponse,
 } from "@/models/ingest/types"
 
 type RouteCtx = { params: Promise<{ id: string }> }
@@ -35,6 +36,12 @@ export const POST = withAuth(async (req, user, bouncer, ctx: RouteCtx) => {
 
   await bouncer.with(IngestPolicy).authorize("submit", project)
 
-  const job = await IngestService.submit(project, user, parsed)
-  return ok<IngestJobView>(serializeIngestJob(job))
+  const outcome = await IngestService.submit(project, user, parsed)
+  // The happy path response is unchanged (a bare IngestJobView). The paid-OCR
+  // outcomes are returned as a typed `{ kind, … }` body the Ingérer client
+  // switches on to show the confirmation / budget dialog.
+  if (outcome.kind === "job") {
+    return ok<IngestJobView>(serializeIngestJob(outcome.job))
+  }
+  return ok<IngestSubmitPaidOcrResponse>(outcome)
 })

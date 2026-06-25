@@ -3,7 +3,12 @@
 // No `import "server-only"` — the schema is shared by client-side form
 // validation and server-side request parsing.
 import { z } from "zod"
-import type { IngestJob, IngestStage, IngestStatus } from "./schema"
+import type {
+  IngestJob,
+  IngestStage,
+  IngestStatus,
+  PaidOcrEstimate,
+} from "./schema"
 
 /**
  * Client-safe shape of an IngestJob — the only ingest-job type that may cross
@@ -45,11 +50,48 @@ export function serializeIngestJob(job: IngestJob): IngestJobView {
 /**
  * Body accepted by POST /api/projects/[id]/ingest.
  * `targetVersionSeq` is optional — omit to target the current head.
+ * `confirmPaidOcr` authorizes the per-ingestion spend on paid fallback OCR
+ * (Mistral) for `sans_texte` documents. Without it, a delta that contains such
+ * documents comes back as `confirmation_required` instead of being dispatched.
  */
 export const ingestSubmitSchema = z.object({
   targetVersionSeq: z.number().int().positive().optional(),
+  confirmPaidOcr: z.boolean().optional(),
 })
 export type IngestSubmitInput = z.infer<typeof ingestSubmitSchema>
+
+/**
+ * Result of {@link IngestService.submit}. A submit does not always create a job:
+ * when the delta contains `sans_texte` documents and the spend has not been
+ * authorized (or would breach the budget), it returns a non-`job` outcome the
+ * caller surfaces to the user instead of dispatching.
+ *
+ *   • `job`                   — a job was created (or an in-flight one reused).
+ *   • `confirmation_required` — paid OCR is needed; re-submit with
+ *                               `confirmPaidOcr: true` to proceed.
+ *   • `budget_exceeded`       — confirmed, but committed spend + this estimate
+ *                               would exceed the project's budget ceiling.
+ */
+export type IngestSubmitOutcome =
+  | { kind: "job"; job: IngestJob }
+  | { kind: "confirmation_required"; paidOcr: PaidOcrEstimate }
+  | {
+      kind: "budget_exceeded"
+      paidOcr: PaidOcrEstimate
+      spentUsd: number
+      ceilingUsd: number
+    }
+
+/**
+ * Client-safe shape of a non-`job` submit outcome (the `job` case is serialized
+ * as a bare {@link IngestJobView}, unchanged, so the existing happy path is
+ * byte-for-byte identical). The route returns this body verbatim for the
+ * paid-OCR cases; the Ingérer client switches on `kind`.
+ */
+export type IngestSubmitPaidOcrResponse = Exclude<
+  IngestSubmitOutcome,
+  { kind: "job" }
+>
 
 /**
  * Poll response returned by GET /api/ingest/[job_id].

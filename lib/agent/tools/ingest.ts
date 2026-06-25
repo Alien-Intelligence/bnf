@@ -25,9 +25,35 @@ export const ingestSubmitTool = defineTool<typeof inputSchema, TurnScopedCtx>({
     const project = await ProjectQueries.get(ctx.projectId)
     if (!project) return { error: "project_not_found" }
     try {
-      const job = await IngestService.submit(project, ctx.user, {
+      // The agent never authorizes paid OCR on its own — confirming the spend is
+      // a human decision made in the Ingérer UI. We submit WITHOUT confirmPaidOcr,
+      // so a delta that needs paid OCR comes back as a non-`job` outcome we relay
+      // to the librarian instead of silently spending money.
+      const outcome = await IngestService.submit(project, ctx.user, {
         targetVersionSeq: input.target_version,
       })
+      if (outcome.kind === "confirmation_required") {
+        return {
+          status: "paid_ocr_confirmation_required",
+          message:
+            `${outcome.paidOcr.docCount} document(s) numérisé(s) sans OCR ` +
+            `nécessitent une transcription payante (≈ ${outcome.paidOcr.usd.toFixed(2)} $). ` +
+            `Demandez à la·au bibliothécaire de confirmer dans l'étape Ingérer.`,
+          paid_ocr_docs: outcome.paidOcr.docCount,
+          estimated_usd: outcome.paidOcr.usd,
+        }
+      }
+      if (outcome.kind === "budget_exceeded") {
+        return {
+          status: "paid_ocr_budget_exceeded",
+          message:
+            `La transcription payante (≈ ${outcome.paidOcr.usd.toFixed(2)} $) dépasserait ` +
+            `le budget OCR du projet (dépensé ${outcome.spentUsd.toFixed(2)} $ / ` +
+            `plafond ${outcome.ceilingUsd.toFixed(2)} $).`,
+          estimated_usd: outcome.paidOcr.usd,
+        }
+      }
+      const job = outcome.job
       ctx.emit?.({
         type: "ingest_event",
         data: { kind: "submitted", jobId: job.id, status: job.status },
