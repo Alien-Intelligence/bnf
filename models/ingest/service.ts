@@ -20,6 +20,7 @@ import { CorpusQueries } from "@/models/corpus/queries"
 import {
   classifyIngestion,
   DOCUMENT_RESOLVE_STATUS,
+  INGESTION_CLASS,
   isIngestableClass,
 } from "@/models/documents/schema"
 import { INGEST_STATUS } from "./schema"
@@ -575,12 +576,20 @@ export class IngestService {
    *
    * A corpus member always has a Document row; an ARK with no row is treated as
    * ingestable (the worker resolves it from scratch) rather than silently lost.
+   *
+   * `opts.paidOcr` opts into the paid fallback OCR (Mistral) path: a CONFIDENT
+   * `sans_texte` doc (digitized text, no OCR layer, not an image type) is then
+   * routed to a third `paidOcr` bucket instead of being excluded — these become
+   * ingestable, but only after the user confirms the spend. With the flag off
+   * (the default), `sans_texte` stays excluded exactly as before, so the
+   * behaviour of every existing caller is unchanged.
    */
   private static async _partitionByIngestability(
     projectId: string,
     arks: string[],
-  ): Promise<{ ingestable: string[]; excluded: string[] }> {
-    if (arks.length === 0) return { ingestable: [], excluded: [] }
+    opts: { paidOcr?: boolean } = {},
+  ): Promise<{ ingestable: string[]; excluded: string[]; paidOcr: string[] }> {
+    if (arks.length === 0) return { ingestable: [], excluded: [], paidOcr: [] }
     const rows = await prisma.document.findMany({
       where: { projectId, ark: { in: arks } },
       select: {
@@ -595,6 +604,7 @@ export class IngestService {
 
     const ingestable: string[] = []
     const excluded: string[] = []
+    const paidOcr: string[] = []
     for (const ark of arks) {
       const doc = byArk.get(ark)
       if (!doc) {
@@ -610,13 +620,17 @@ export class IngestService {
       })
       const confident =
         !digitized || doc.resolveStatus === DOCUMENT_RESOLVE_STATUS.RESOLVED
-      if (!isIngestableClass(cls) && confident) {
+      if (opts.paidOcr && confident && cls === INGESTION_CLASS.SANS_TEXTE) {
+        // Digitized text with no OCR layer — transcribable via paid Mistral OCR
+        // once the spend is confirmed. Intercept before the generic drop below.
+        paidOcr.push(ark)
+      } else if (!isIngestableClass(cls) && confident) {
         excluded.push(ark)
       } else {
         ingestable.push(ark)
       }
     }
-    return { ingestable, excluded }
+    return { ingestable, excluded, paidOcr }
   }
 
   /**

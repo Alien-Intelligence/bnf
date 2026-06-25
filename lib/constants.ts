@@ -470,6 +470,43 @@ export const INGEST_POLL_INTERVAL_MS = 2_000
 export const INGEST_RECENT_JOBS_LIMIT = 20
 
 // ---------------------------------------------------------------------------
+// Paid fallback OCR (Mistral) — `sans_texte` documents
+// ---------------------------------------------------------------------------
+// Cost model for transcribing digitized text that has no BnF OCR layer, via
+// the Mistral OCR Batch API (one batch job per document, one entry per folio).
+// Used to estimate the spend shown at the per-ingestion confirmation prompt and
+// to enforce the per-project budget ceiling. The worker reports the actual cost
+// back on completion. See models/ingest/schema.ts estimatePaidOcrCostUsd() and
+// ai-memories/tech/repos/bnf/mistral-ocr-fallback/.
+
+/**
+ * Mistral OCR Batch API price, USD per 1000 pages (50% off the $4 sync rate).
+ * One folio image = one page. Source: https://mistral.ai/news/ocr-4/.
+ */
+export const PAID_OCR_USD_PER_1K_PAGES = 2
+
+/**
+ * Page count assumed for a `sans_texte` document whose `Document.pages` is null
+ * (metadata not yet resolved) when estimating cost. Deliberately conservative —
+ * the estimate is labelled as such in the UI and the worker bills the real count.
+ */
+export const PAID_OCR_FALLBACK_PAGES = 50
+
+/**
+ * Hard ceiling on folios transcribed per document. Caps the blast radius of a
+ * single oversized scan; the worker drops (and logs) folios beyond this. Kept in
+ * sync with the worker's MISTRAL_OCR_MAX_PAGES default.
+ */
+export const PAID_OCR_MAX_PAGES_PER_DOC = 300
+
+/**
+ * Fallback per-project paid-OCR budget ceiling in USD when a project does not
+ * set its own `paidOcrBudgetUsd`. Submission is refused once committed spend
+ * plus the new estimate would exceed the effective ceiling.
+ */
+export const PAID_OCR_DEFAULT_BUDGET_USD = 50
+
+// ---------------------------------------------------------------------------
 // BnF IIIF / Gallica URL templates
 // ---------------------------------------------------------------------------
 // These are the single source of truth for all external BnF links.

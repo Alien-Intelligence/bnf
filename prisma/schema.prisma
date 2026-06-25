@@ -143,6 +143,17 @@ model Project {
   // Numeric id of this project's dataset in the data cluster (slug `bnf-<id>`).
   // Populated lazily on the first real RAG query — see lib/cluster/real-rag.ts.
   clusterDatasetId  Int?     @map("cluster_dataset_id")
+  // Paid fallback OCR (Mistral) for `sans_texte` documents — digitized text
+  // with no BnF OCR layer. Off by default: a project only runs paid OCR after
+  // an explicit per-ingestion confirmation. See models/documents/schema.ts
+  // classifyIngestion() and the ingestion handshake in models/ingest/service.ts.
+  paidOcrEnabled    Boolean  @default(false) @map("paid_ocr_enabled")
+  // Per-project spend ceiling in USD (null = fall back to the global default).
+  // Submission is refused once paidOcrSpentUsd + estimate would exceed it.
+  paidOcrBudgetUsd  Decimal? @map("paid_ocr_budget_usd")
+  // Running paid-OCR spend in USD, incremented set-once-per-job from the
+  // worker's reported actual cost on commit. Never decremented.
+  paidOcrSpentUsd   Decimal  @default(0) @map("paid_ocr_spent_usd")
   createdAt         DateTime @default(now()) @map("created_at")
   updatedAt         DateTime @updatedAt @map("updated_at")
 
@@ -381,6 +392,11 @@ model ToolCall {
   output     Json?
   status     String    // "running" | "ok" | "error"
   latencyMs  Int?      @map("latency_ms")
+  // Chars of the turn's answer text already emitted when this call began — its
+  // offset into Message.content. Lets a reopened session rebuild the true
+  // text/tool chronology instead of grouping all tools ahead of the text. Null
+  // for calls persisted before this column existed (legacy grouped order).
+  contentOffset Int?   @map("content_offset")
   error      String?
   createdAt  DateTime  @default(now()) @map("created_at")
   finishedAt DateTime? @map("finished_at")
@@ -511,6 +527,16 @@ model IngestJob {
   // per-doc terminal status. See IngestService.submit() / classifyIngestion().
   excludedArks    String[]  @default([]) @map("excluded_arks")
   excludedCount   Int?      @map("excluded_count")
+  // Subset of addedArks that the worker will transcribe via paid Mistral OCR
+  // (the `sans_texte` docs the user confirmed paying for). Recorded for audit
+  // and to scope the spend accounting. See models/ingest/service.ts.
+  paidOcrArks         String[]  @default([]) @map("paid_ocr_arks")
+  // USD cost shown to and confirmed by the user at submit time (page-count
+  // estimate × the per-1k-page rate). Null when no paid OCR was involved.
+  paidOcrEstimatedUsd Decimal?  @map("paid_ocr_estimated_usd")
+  // USD cost actually billed, reported by the worker on completion. Set once;
+  // commit() adds it to Project.paidOcrSpentUsd. Null until the job finishes.
+  paidOcrActualUsd    Decimal?  @map("paid_ocr_actual_usd")
   createdAt       DateTime  @default(now()) @map("created_at")
   startedAt       DateTime? @map("started_at")
   finishedAt      DateTime? @map("finished_at")
