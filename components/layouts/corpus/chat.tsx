@@ -30,7 +30,7 @@ import { BadgeToolCall } from "@/components/badges/tools/call"
 import { BadgeToolMutation } from "@/components/badges/tools/mutation-pill"
 import { BadgeToolRemoveFilter } from "@/components/badges/tools/remove-filter-pill"
 import { BadgeNoteProgress } from "@/components/badges/tools/note-progress"
-import { CardToolAskUser } from "@/components/cards/tools/ask-user"
+import { AskUserComposer } from "./ask-user-composer"
 import {
   corpusRemoveByFilterView,
   isCorpusMutationTool,
@@ -157,26 +157,11 @@ function ThinkingBox({ text, active }: { text: string; active: boolean }) {
 // Tool part dispatch — ask_user chooser / mutation pill / uniform block.
 // ---------------------------------------------------------------------------
 
-function ToolPartView({
-  tool,
-  chat,
-  activeAskUserId,
-}: {
-  tool: ToolPartEntry
-  chat: UseChatReturn
-  activeAskUserId: string | null
-}) {
-  if (tool.toolName === "ask_user") {
-    return (
-      <CardToolAskUser
-        input={tool.input}
-        running={tool.running}
-        disabled={chat.isStreaming}
-        superseded={tool.toolUseId !== activeAskUserId}
-        onSubmit={(text) => void chat.sendMessage(text)}
-      />
-    )
-  }
+function ToolPartView({ tool }: { tool: ToolPartEntry }) {
+  // ask_user is not rendered inline — it takes over the composer slot (see
+  // AskUserComposer in LayoutCorpusChat). The user's selections come back as a
+  // normal user message bubble, so there's nothing to show here.
+  if (tool.toolName === "ask_user") return null
   // A BnF-MCP soft failure (Gallica 403/429/…) comes back as a transport
   // success with `isError` unset — so derive the error state from the result
   // envelope too, not the SDK flag alone. See lib/tools/display.toolCallErrored.
@@ -253,17 +238,13 @@ function DomainPartView({
 function PartView({
   part,
   active,
-  chat,
   projectId,
   locale,
-  activeAskUserId,
 }: {
   part: AgentPart
   active: boolean
-  chat: UseChatReturn
   projectId: string
   locale: string
-  activeAskUserId: string | null
 }) {
   if (part.kind === "text") {
     if (!part.text) return null
@@ -274,7 +255,7 @@ function PartView({
     return <ThinkingBox text={part.text} active={active} />
   }
   if (part.kind === "tool") {
-    return <ToolPartView tool={part.tool} chat={chat} activeAskUserId={activeAskUserId} />
+    return <ToolPartView tool={part.tool} />
   }
   if (part.kind === "domain") {
     return (
@@ -290,19 +271,15 @@ function PartView({
 
 function AssistantTurnView({
   turn,
-  chat,
   projectId,
   locale,
   thinkingLabel,
-  activeAskUserId,
   isLast,
 }: {
   turn: AssistantTurn
-  chat: UseChatReturn
   projectId: string
   locale: string
   thinkingLabel: string
-  activeAskUserId: string | null
   isLast: boolean
 }) {
   const lastIndex = turn.parts.length - 1
@@ -320,10 +297,8 @@ function AssistantTurnView({
             key={i}
             part={part}
             active={turn.streaming && i === lastIndex && part.kind === "thinking"}
-            chat={chat}
             projectId={projectId}
             locale={locale}
-            activeAskUserId={activeAskUserId}
           />
         ))}
         {turn.streaming && !hasText && (
@@ -387,26 +362,33 @@ export function LayoutCorpusChat({
   const t = useTranslations("corpus.chat")
   const chat = stream.chat
 
-  // Only ONE ask_user is interactive at a time: the most recent one with no
-  // user reply after it. Every earlier ask_user renders as superseded (inert),
-  // so answering the latest can't "kill" a still-active older chooser.
-  const activeAskUserId = useMemo(() => {
-    let lastId: string | null = null
+  // The single open question, if any: the most recent ask_user with no user
+  // reply after it. Once answered (a user turn follows), it's null and the
+  // composer returns. This tool part drives the AskUserComposer that takes over
+  // the input slot — the ask_user is never rendered inline in the stream.
+  const activeAskUser = useMemo(() => {
+    let last: ToolPartEntry | null = null
     let answered = false
     for (const turn of chat.turns) {
       if (turn.role === "assistant") {
         for (const p of turn.parts) {
           if (p.kind === "tool" && p.tool.toolName === "ask_user") {
-            lastId = p.tool.toolUseId
+            last = p.tool
             answered = false
           }
         }
-      } else if (turn.role === "user" && lastId) {
+      } else if (turn.role === "user" && last) {
         answered = true
       }
     }
-    return answered ? null : lastId
+    return answered ? null : last
   }, [chat.turns])
+
+  // The user dismissed this question's panel to reply in their own words — show
+  // the free-text composer instead. Keyed by tool-use id so a brand-new question
+  // re-opens the panel.
+  const [skippedAskUserId, setSkippedAskUserId] = useState<string | null>(null)
+  const showAskUser = activeAskUser != null && activeAskUser.toolUseId !== skippedAskUserId
 
   const scrollRef = useRef<HTMLDivElement>(null)
   // Pinned to the bottom? Updated on user scroll; drives whether new content
@@ -495,11 +477,9 @@ export function LayoutCorpusChat({
               <AssistantTurnView
                 key={turn.id}
                 turn={turn}
-                chat={chat}
                 projectId={projectId}
                 locale={locale}
                 thinkingLabel={t("thinking")}
-                activeAskUserId={activeAskUserId}
                 isLast={turnIdx === chat.turns.length - 1}
               />
             )
@@ -507,15 +487,30 @@ export function LayoutCorpusChat({
         )}
       </div>
 
-      {/* Composer */}
-      <CorpusComposer
-        chat={chat}
-        onSent={pinToBottom}
-        onCancel={stream.cancel}
-        placeholder={placeholder ?? t("placeholder")}
-        sendLabel={t("send")}
-        stopLabel={t("stop")}
-      />
+      {/* Composer slot — an open ask_user takes it over (Claude Code style);
+          otherwise the free-text composer. */}
+      {showAskUser && activeAskUser ? (
+        <AskUserComposer
+          key={activeAskUser.toolUseId}
+          input={activeAskUser.input}
+          running={activeAskUser.running}
+          disabled={chat.isStreaming}
+          onSubmit={(text) => {
+            void chat.sendMessage(text)
+            pinToBottom()
+          }}
+          onSkip={() => setSkippedAskUserId(activeAskUser.toolUseId)}
+        />
+      ) : (
+        <CorpusComposer
+          chat={chat}
+          onSent={pinToBottom}
+          onCancel={stream.cancel}
+          placeholder={placeholder ?? t("placeholder")}
+          sendLabel={t("send")}
+          stopLabel={t("stop")}
+        />
+      )}
     </div>
   )
 }

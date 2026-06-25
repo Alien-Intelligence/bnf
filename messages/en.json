@@ -72,7 +72,12 @@
     "freeHint": "Reply to the agent in the message box below.",
     "supersededHint": "A newer question was asked — answer that one instead.",
     "progress": "{count}/{total} answered",
-    "answersHeading": "Here are my answers:"
+    "answersHeading": "Here are my answers:",
+    "questionTab": "Question {index}",
+    "multiHint": "Select all that apply",
+    "cancelHint": "Esc to answer freely",
+    "other": "Other",
+    "otherPlaceholder": "Type your answer…"
   },
   "auth": {
     "brand": {

@@ -72,7 +72,12 @@
     "freeHint": "Répondez à l'agent dans la zone de message ci-dessous.",
     "supersededHint": "Une question plus récente a été posée — répondez à celle-ci.",
     "progress": "{count}/{total} répondu",
-    "answersHeading": "Voici mes réponses :"
+    "answersHeading": "Voici mes réponses :",
+    "questionTab": "Question {index}",
+    "multiHint": "Plusieurs réponses possibles",
+    "cancelHint": "Échap pour répondre librement",
+    "other": "Autre",
+    "otherPlaceholder": "Saisissez votre réponse…"
   },
   "auth": {
     "brand": {
