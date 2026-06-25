@@ -5,4 +5,4 @@ description: BnF Corpus Research — Alien Intelligence × BnF demo (Next.js app
 type: application
 # App/worker code is unchanged from 0.7.0 (images stay :0.7.0); 0.7.1 is a
 # chart-only change that wires + enables Mistral fallback OCR on the worker.
-appVersion: "0.7.0"
+appVersion: "0.7.1"
