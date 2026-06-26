@@ -39,8 +39,27 @@ import {
   typedocSubtype,
 } from "./parse.js";
 
-const DEFAULT_TIMEOUT_MS = 30_000;
-const PAGE_TIMEOUT_MS = 15_000;
+// Per-request timeouts. The BnF-facing budget is owned by the BROKER
+// (BNF_UPSTREAM_TIMEOUT_MS, 120s) — under load BnF can take a long time to serve a
+// folio image. The worker's broker-call timeout is set a touch HIGHER (135s) so the
+// broker's own clean upstream-timeout (a 5xx/abort it can classify) wins, instead of
+// the worker aborting the broker mid-flight and logging an opaque "operation was
+// aborted". Page fetches (ALTO/image) were 15s — far too tight for a saturated BnF,
+// which produced the bulk of the transient fetch aborts. Metadata (OAI) is fast, so
+// it keeps a shorter budget.
+const DEFAULT_TIMEOUT_MS = optionalIntEnv("BNF_META_TIMEOUT_MS", 45_000);
+const PAGE_TIMEOUT_MS = optionalIntEnv("BNF_PAGE_TIMEOUT_MS", 135_000);
+
+/** Read a positive-int env var, or fall back. Throws on a present-but-junk value. */
+function optionalIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw == null || raw.trim() === "") return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new Error(`${name} must be a positive number, got ${raw}`);
+  }
+  return Math.floor(n);
+}
 
 // Partner-API endpoints (V2 is always partner mode — see file header):
 //   - metadata:  ungated OAI-PMH (oai.bnf.fr) — no auth, no Cloudflare, no quota.

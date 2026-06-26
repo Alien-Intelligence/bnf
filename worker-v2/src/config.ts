@@ -82,7 +82,10 @@ export function loadConfig(): WorkerConfig {
     manifestRatePerMin: optionalInt("BNF_MANIFEST_RPM", 42),
     visionImageSize: process.env.VISION_IMAGE_SIZE?.trim() || "pct:33",
     describeConcurrency: optionalInt("DESCRIBE_CONCURRENCY", 16),
-    describeCallConcurrency: optionalInt("DESCRIBE_CALL_CONCURRENCY", 24),
+    // 64: the vision lane is the bottleneck and the paid OpenRouter key has no
+    // per-key RPM cap — push concurrency hard and let the in-call 429/timeout
+    // backoff (vision.ts) ride the provider's capacity edge. See hardening-pass-2.
+    describeCallConcurrency: optionalInt("DESCRIBE_CALL_CONCURRENCY", 64),
     embedConcurrency: optionalInt("EMBED_CONCURRENCY", 8),
     ocrSubmitConcurrency: optionalInt("OCR_SUBMIT_CONCURRENCY", 12),
     ocrPollConcurrency: optionalInt("OCR_POLL_CONCURRENCY", 16),

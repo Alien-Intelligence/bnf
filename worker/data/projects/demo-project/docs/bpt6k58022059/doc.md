@@ -1,0 +1,14 @@
+# 23e anniversaire de la Révolution polonaise (29 novembre 1853), à Jersey : discours de Victor Hugo
+
+**Auteur·rice :** Hugo, Victor (1802-1885). Auteur du texte  
+**Date :** 1853  
+**Type :** text  
+**ARK :** ark:/12148/bpt6k58022059
+
+## Folio 4
+
+^^NlVERSAirtE ÉV^fllJ^jr POLONAISE, (29 NOVEMBRE 1853) A JERSEY. DISCOURS DE VICTOR HUGO. IMPRIMERIE UNIVERSELLE, tT.HUU», DOMIT IT»UT, 1*.
+
+## Folio 5
+
+25e ANNIVERSAIRE Bt 11 HEVOLUTION POLONAISE, (tt KOVEHME 1WÂ») A JEftSÃÃ. Discours de VICTOR HUGO. ClTOVSM, MOJCMTI, MU mtkul Tout marche, tout avance, tout approche, ei Je vous te dis avec une JoÃ¯e profonde, dÃ©jÃ  te font Jour et deviennent visible* tea Â«jmptome* prÃ©curseurs du gran'd avÃ¨nement. Oui, rÃ©jouisses-vous, proscrits, de touteÂ» le* natiom, ou, pour mieux dire, proscrits de la grande nation unique, de cette nation qui tera le genre humain et qui a'appellera RÃ©publique universelle I — RÃ©joulsset-vous ; l'an dernier, nouÂ» ne pouvions qu'invoquer l'espÃ©rance : cette annÃ©e, nous pouvons presque attester la rÃ©alitÃ©. L'an dernier, a pareille Ã©poque, a pareil Jour, Mus nouÂ» bornions a dire : l'IdÃ©e ressusciter*. Celte sur^e, nous poÃ¹fons dire : l'idÃ©e ressuscite I , Et comment ressuscite-t-ellet de quelle faÃ§onT par qult c'est la ce qu'il faut admirer. Citoyens, il y a eu Europe un homme qui pÃ¨se sur l'Europe; qui est tout ensemble prince spirituel, seigneur temporel, despote, autocrate, obÃ©i dans la caserne, adore dan* le monastÃ¨re, chef de la consigne et dÂ« dogme, et qui met en mouvement, pool l'Ã©crasement de* libertÃ©s du Â«m-

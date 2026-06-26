@@ -45,23 +45,59 @@ export async function brokerGet(
   if (!broker) {
     throw new Error("brokerGet called but BNF_BROKER_URL is not set");
   }
-  // Arm the timeout around the request itself. Queue time is owned upstream by
-  // the fetch stage's RateGate, so it never counts against this budget.
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await request(`${broker}/fetch`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ url: targetUrl, accept }),
-      signal: controller.signal,
-    });
-    const bytes = Buffer.from(await res.body.arrayBuffer());
-    const contentType =
-      (res.headers["content-type"] as string | undefined) ??
-      "application/octet-stream";
-    return { status: res.statusCode, bytes, contentType };
-  } finally {
-    clearTimeout(timer);
+  // One quick reconnect on a connection-level error. The broker is a SINGLE
+  // replica with strategy:Recreate, so a deploy (even an app-only one) blips it
+  // offline for a few seconds — every in-flight fetch sees ECONNREFUSED. A single
+  // short retry absorbs that window instead of failing the folio and burning the
+  // pg-boss retry budget. Only connection errors retry here; a timeout (the abort)
+  // is left to the stage, since retrying it immediately would just re-hit it.
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    // Arm the timeout around the request itself. Queue time is owned upstream by
+    // the fetch stage's RateGate, so it never counts against this budget.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await request(`${broker}/fetch`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ url: targetUrl, accept }),
+        signal: controller.signal,
+      });
+      const bytes = Buffer.from(await res.body.arrayBuffer());
+      const contentType =
+        (res.headers["content-type"] as string | undefined) ??
+        "application/octet-stream";
+      return { status: res.statusCode, bytes, contentType };
+    } catch (err) {
+      lastErr = err;
+      if (attempt < 2 && isConnectionError(err)) {
+        await new Promise((r) => setTimeout(r, 1_000));
+        continue;
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
   }
+  throw lastErr;
+}
+
+/** A connection-level transport failure (broker down/restarting), not a timeout. */
+function isConnectionError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const code = (err as { code?: unknown }).code;
+  const causeCode = (err as { cause?: { code?: unknown } }).cause?.code;
+  const codes = new Set([
+    "ECONNREFUSED",
+    "ECONNRESET",
+    "EAI_AGAIN",
+    "ENOTFOUND",
+    "UND_ERR_SOCKET",
+    "UND_ERR_CONNECT_TIMEOUT",
+  ]);
+  return (
+    (typeof code === "string" && codes.has(code)) ||
+    (typeof causeCode === "string" && codes.has(causeCode))
+  );
 }

@@ -10,6 +10,7 @@ import {
 import { Separator } from "@/components/ui/separator"
 import { ArrowUpRight, BookOpen, Eye } from "lucide-react"
 import { iiifImageUrl, gallicaItemUrl, gallicaViewerUrl } from "@/lib/citations/external"
+// gallicaViewerUrl → IIIF (view3if) viewer; gallicaItemUrl → classic Gallica item page.
 import { useCitationsForArk, type CitationUsage } from "@/hooks/api/citations"
 import { cn } from "@/lib/utils"
 import { useTranslations } from "next-intl"
@@ -38,7 +39,8 @@ export function SheetCitationSource({
   // narrows `folio` to a number. Folio is mandatory on a citation, but the
   // guard lets a malformed one degrade to the document-level Gallica viewer.
   const hasFolio = ark != null && folio != null
-  const gallicaUrl = ark ? gallicaViewerUrl(ark) : null
+  // Document-level Gallica item page — used when the folio is missing/malformed.
+  const gallicaUrl = ark ? gallicaItemUrl(ark, 1) : null
 
   // Dedupe by note — a note citing the same ARK on several folios returns one
   // usage row per citation, which previously rendered as N identical lines.
@@ -98,14 +100,21 @@ export function SheetCitationSource({
             <div className="flex flex-col gap-2">
               {hasFolio ? (
                 <CiteAction
-                  href={gallicaItemUrl(ark, folio)}
+                  href={gallicaViewerUrl(ark, folio)}
                   icon={<Eye className="size-4" strokeWidth={1.8} />}
                   title={t("iiifViewer", { folio })}
                   subtitle={t("iiifViewerSub")}
                   primary
                 />
               ) : null}
-              {gallicaUrl ? (
+              {hasFolio ? (
+                <CiteAction
+                  href={gallicaItemUrl(ark, folio)}
+                  icon={<BookOpen className="size-4" strokeWidth={1.8} />}
+                  title={t("gallicaViewer")}
+                  subtitle={t("gallicaViewerSub")}
+                />
+              ) : gallicaUrl ? (
                 <CiteAction
                   href={gallicaUrl}
                   icon={<BookOpen className="size-4" strokeWidth={1.8} />}

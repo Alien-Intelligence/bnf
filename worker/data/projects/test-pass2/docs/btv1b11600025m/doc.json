@@ -1,0 +1,24 @@
+{
+  "projectId": "test-pass2",
+  "pipeline": "single_image",
+  "metadata": {
+    "ark": "ark:/12148/btv1b11600025m",
+    "arkSlug": "btv1b11600025m",
+    "title": "[Recueil. Exposition universelle, 1889. Paris, Champ de Mars. Galerie des machines, dôme central, expositions des industries diverses : construction, vues d'ensemble]",
+    "creator": "Tilly, Auguste (18..-1898). Illustrateur",
+    "date": "1889",
+    "docType": "image fixe",
+    "lang": "fre",
+    "source": "gallica",
+    "iiifManifestUrl": "https://gallica.bnf.fr/iiif/ark:/12148/btv1b11600025m/manifest.json",
+    "pageCount": 55,
+    "ocrAvailable": false
+  },
+  "contentHash": "869b9357c4c116df5696d99eee2f4115ffaf13b429c4e3848a96a6acd0d80161",
+  "blobKeys": {
+    "docMd": "projects/test-pass2/docs/btv1b11600025m/doc.md",
+    "docJson": "projects/test-pass2/docs/btv1b11600025m/doc.json",
+    "chunksJsonl": "projects/test-pass2/docs/btv1b11600025m/chunks.jsonl"
+  },
+  "chunkCount": 6
+}

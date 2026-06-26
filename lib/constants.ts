@@ -521,9 +521,11 @@ export const PAID_OCR_DEFAULT_BUDGET_USD = 50
 // stable. The `.r=<q>?rk=<rank>` form you see in the address bar carries a
 // search-result rank cursor that cannot be reconstructed, so don't build it.
 
-/** Gallica IIIF (Universal) viewer for a document. */
-export function GALLICA_IIIF_VIEWER_URL(ark: string): string {
-  return `https://gallica.bnf.fr/view3if/ga/${ark}`
+/** Gallica IIIF (Universal) viewer for a document, optionally deep-linked to a
+ *  folio (vue). The viewer opens on that page when `/f<N>` is appended. */
+export function GALLICA_IIIF_VIEWER_URL(ark: string, folio?: number): string {
+  const base = `https://gallica.bnf.fr/view3if/ga/${ark}`
+  return folio != null ? `${base}/f${folio}` : base
 }
 
 /** OAI-PMH Dublin Core record for a Gallica document. */

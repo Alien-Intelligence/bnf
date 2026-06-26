@@ -23,6 +23,12 @@ data:
   # --- Google AI (vision provider) ---
   GEMINI_VISION_MODEL: {{ .Values.worker.config.geminiVisionModel | quote }}
   VISION_PRIMARY: {{ .Values.worker.config.visionPrimary | quote }}
+
+  # --- OpenRouter (primary vision provider) ---
+  # The API key is a secret (worker-creds: OPENROUTER_API_KEY).
+  OPENROUTER_VISION_MODEL: {{ .Values.worker.config.openrouterVisionModel | quote }}
+  # Shared in-flight cap on vision API calls across all docs (the describe lane).
+  DESCRIBE_CALL_CONCURRENCY: {{ .Values.worker.config.describeCallConcurrency | quote }}
 {{- if .Values.worker.config.mistralOcrEnabled }}
 
   # --- Mistral fallback OCR (`sans_texte` docs) ---
@@ -63,6 +69,12 @@ data:
   GALLICA_GENERAL_BURST: {{ .Values.worker.config.gallicaGeneralBurst | quote }}
   VIEWER_OCR_CONCURRENCY: {{ .Values.worker.config.viewerOcrConcurrency | quote }}
   VIEWER_OCR_DELAY_MS: {{ .Values.worker.config.viewerOcrDelayMs | quote }}
+
+  # --- BnF fetch timeouts ---
+  # Per-folio fetch budget. 135s sits just ABOVE the broker's 120s upstream timeout
+  # so the broker's classifiable timeout fires first (not an opaque worker abort).
+  BNF_PAGE_TIMEOUT_MS: {{ .Values.worker.config.bnfPageTimeoutMs | quote }}
+  BNF_META_TIMEOUT_MS: {{ .Values.worker.config.bnfMetaTimeoutMs | quote }}
 
   # --- Ingest reliability ---
   INGEST_JOB_EXPIRE_SECONDS: {{ .Values.worker.config.ingestJobExpireSeconds | quote }}

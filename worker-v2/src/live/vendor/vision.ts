@@ -301,11 +301,73 @@ export async function describeImage(
     : new Error("[vision] all providers failed after retries");
 }
 
+/** How long to wait before retrying a rate-limited / transient OpenRouter call. */
+function openrouterTimeoutMs(): number {
+  const raw = process.env.OPENROUTER_TIMEOUT_MS;
+  const n = raw ? Number(raw) : NaN;
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 90_000;
+}
+function openrouterMaxAttempts(): number {
+  const raw = process.env.OPENROUTER_MAX_ATTEMPTS;
+  const n = raw ? Number(raw) : NaN;
+  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 3;
+}
+
+/** Header value → first string (undici headers are string | string[] | undefined). */
+function headerStr(v: string | string[] | undefined): string | undefined {
+  if (Array.isArray(v)) return v[0];
+  return v;
+}
+
 /**
- * PRIMARY provider: OpenRouter (OpenAI-compatible /chat/completions). Raw undici,
- * single attempt (describeImage owns retry/fallback). gemma-4-31b-it by default;
- * OPENROUTER_VISION_MODEL overrides. The optional X-Title header is for OpenRouter
- * dashboard attribution only.
+ * How long to back off after a 429, derived from the provider's own signal so we
+ * ride the rate edge instead of guessing: `Retry-After` (delta-seconds or HTTP
+ * date) first, then `X-RateLimit-Reset` (epoch ms, OpenRouter's convention). Falls
+ * back to the caller's jittered exponential backoff when neither is present.
+ * Capped so a far-future reset can't park a worker slot indefinitely.
+ */
+function retryAfterMs(headers: Record<string, string | string[] | undefined>): number | null {
+  const cap = 30_000;
+  const ra = headerStr(headers["retry-after"]);
+  if (ra) {
+    const secs = Number(ra);
+    if (Number.isFinite(secs)) return Math.min(cap, Math.max(0, secs * 1000));
+    const when = Date.parse(ra);
+    if (Number.isFinite(when)) return Math.min(cap, Math.max(0, when - Date.now()));
+  }
+  const reset = headerStr(headers["x-ratelimit-reset"]);
+  if (reset) {
+    const epochMs = Number(reset);
+    if (Number.isFinite(epochMs)) {
+      // Heuristic: a 10-digit value is epoch SECONDS, 13-digit is ms.
+      const ms = epochMs < 1e12 ? epochMs * 1000 : epochMs;
+      return Math.min(cap, Math.max(0, ms - Date.now()));
+    }
+  }
+  return null;
+}
+
+/** Jittered exponential backoff for transient OpenRouter retries (no header hint). */
+function backoffMs(attempt: number): number {
+  const base = Math.min(8_000, 500 * 2 ** (attempt - 1));
+  return base + Math.floor(base * 0.25 * (attempt % 3)); // small deterministic jitter
+}
+
+/**
+ * PRIMARY provider: OpenRouter (OpenAI-compatible /chat/completions). Raw undici.
+ * gemini-2.5-flash by default (OPENROUTER_VISION_MODEL overrides).
+ *
+ * Hardened (pass 2): OpenRouter is the bottleneck lane and the paid key has NO
+ * per-key RPM cap — the only ceiling is upstream provider capacity, surfaced as
+ * 429s/timeouts. So this owns a short IN-PROVIDER retry loop for *banal* errors
+ * before giving up to the chain's Holo/Gemini fallback:
+ *   - 429        → honor Retry-After / X-RateLimit-Reset (else jittered backoff), retry
+ *   - 5xx        → backoff, retry
+ *   - abort/timeout → backoff, retry (don't abandon a slow-but-alive call)
+ *   - 200 w/ {error} envelope or empty content → backoff, retry (a banal blank)
+ *   - other 4xx  → throw immediately (real client error; chain falls to Holo/Gemini)
+ * After the attempts are spent it throws, and describeImage's chain takes over.
+ * Errors always carry status + a body slice so no failure logs an empty reason.
  */
 async function describeViaOpenRouter(
   img: FetchedImage,
@@ -335,36 +397,103 @@ async function describeViaOpenRouter(
     "x-title": "BnF Corpus Research",
   };
 
-  const start = Date.now();
-  const res = await request(url, {
-    method: "POST",
-    headers,
-    body,
-    // 90s: gemma is a reasoning model; a full-detail image describe can run
-    // 30s+, and concurrency pushes it higher. The downscaled vision image keeps
-    // this comfortable, but the headroom avoids spurious timeouts under load.
-    signal: AbortSignal.timeout(90_000),
-  });
-  const text = await res.body.text();
-  if (res.statusCode < 200 || res.statusCode >= 300) {
-    throw new Error(`OpenRouter HTTP ${res.statusCode}: ${text.slice(0, 150)}`);
+  const maxAttempts = openrouterMaxAttempts();
+  const timeoutMs = openrouterTimeoutMs();
+  let lastErr: Error | null = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const start = Date.now();
+    let res: Awaited<ReturnType<typeof request>>;
+    try {
+      res = await request(url, {
+        method: "POST",
+        headers,
+        body,
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch (e) {
+      // Transport-level failure (abort/timeout, ECONNRESET, …). Banal — retry.
+      lastErr = new Error(
+        `OpenRouter transport: ${e instanceof Error ? `${e.name}: ${e.message}` : String(e)}`,
+      );
+      if (attempt < maxAttempts) {
+        await sleep(backoffMs(attempt));
+        continue;
+      }
+      throw lastErr;
+    }
+
+    const text = await res.body.text();
+    const status = res.statusCode;
+
+    if (status === 429 || status >= 500) {
+      lastErr = new Error(`OpenRouter HTTP ${status}: ${text.slice(0, 200)}`);
+      if (attempt < maxAttempts) {
+        const hinted = status === 429 ? retryAfterMs(res.headers) : null;
+        await sleep(hinted ?? backoffMs(attempt));
+        continue;
+      }
+      throw lastErr;
+    }
+    if (status < 200 || status >= 300) {
+      // A real client error (auth, bad request, model unavailable) — retrying
+      // won't help. Throw so the chain falls straight to Holo/Gemini.
+      throw new Error(`OpenRouter HTTP ${status}: ${text.slice(0, 200)}`);
+    }
+
+    let data: HoloChatResponse & { error?: { message?: string; code?: unknown } };
+    try {
+      data = JSON.parse(text);
+    } catch {
+      // 200 but unparseable body — banal, retry; if exhausted let the chain try others.
+      lastErr = new Error(`OpenRouter 200 non-JSON body: ${text.slice(0, 200)}`);
+      if (attempt < maxAttempts) {
+        await sleep(backoffMs(attempt));
+        continue;
+      }
+      throw lastErr;
+    }
+
+    // OpenRouter can return 200 with an {error} envelope (upstream hiccup). Banal — retry.
+    if (data.error) {
+      lastErr = new Error(
+        `OpenRouter 200 error envelope: ${String(data.error.message ?? JSON.stringify(data.error)).slice(0, 200)}`,
+      );
+      if (attempt < maxAttempts) {
+        await sleep(backoffMs(attempt));
+        continue;
+      }
+      throw lastErr;
+    }
+
+    const latencyMs = Date.now() - start;
+    const msg = data.choices?.[0]?.message;
+    const raw = msg?.content || msg?.reasoning_content || msg?.reasoning || "";
+    if (!raw.trim()) {
+      // Empty completion — banal; retry, then defer to the chain rather than emit a blank page.
+      lastErr = new Error(`OpenRouter returned empty content (model ${model})`);
+      if (attempt < maxAttempts) {
+        await sleep(backoffMs(attempt));
+        continue;
+      }
+      throw lastErr;
+    }
+
+    return {
+      parsed: tryParseJson(raw),
+      raw,
+      usage: {
+        promptTokens: data.usage?.prompt_tokens ?? 0,
+        completionTokens: data.usage?.completion_tokens ?? 0,
+      },
+      latencyMs,
+      imageBytes: img.imageBytes,
+      model,
+      provider: "openrouter",
+    };
   }
-  const data = JSON.parse(text) as HoloChatResponse; // OpenAI response shape
-  const latencyMs = Date.now() - start;
-  const msg = data.choices?.[0]?.message;
-  const raw = msg?.content || msg?.reasoning_content || msg?.reasoning || "";
-  return {
-    parsed: tryParseJson(raw),
-    raw,
-    usage: {
-      promptTokens: data.usage?.prompt_tokens ?? 0,
-      completionTokens: data.usage?.completion_tokens ?? 0,
-    },
-    latencyMs,
-    imageBytes: img.imageBytes,
-    model,
-    provider: "openrouter",
-  };
+
+  throw lastErr ?? new Error("OpenRouter: exhausted attempts");
 }
 
 /** FALLBACK 1: Scaleway Holo2 via the OpenAI-compatible API. */

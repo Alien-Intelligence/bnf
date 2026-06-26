@@ -1,0 +1,24 @@
+{
+  "projectId": "demo-project",
+  "pipeline": "text_with_ocr",
+  "metadata": {
+    "ark": "ark:/12148/bpt6k58022059",
+    "arkSlug": "bpt6k58022059",
+    "title": "23e anniversaire de la Révolution polonaise (29 novembre 1853), à Jersey : discours de Victor Hugo",
+    "creator": "Hugo, Victor (1802-1885). Auteur du texte",
+    "date": "1853",
+    "docType": "text",
+    "lang": "fre",
+    "source": "gallica",
+    "iiifManifestUrl": null,
+    "pageCount": null,
+    "ocrAvailable": true
+  },
+  "contentHash": "3d6d40044d688f18c996907423836627d08cfac4b75e0f480d7d88ffd635c813",
+  "blobKeys": {
+    "docMd": "projects/demo-project/docs/bpt6k58022059/doc.md",
+    "docJson": "projects/demo-project/docs/bpt6k58022059/doc.json",
+    "chunksJsonl": "projects/demo-project/docs/bpt6k58022059/chunks.jsonl"
+  },
+  "chunkCount": 2
+}

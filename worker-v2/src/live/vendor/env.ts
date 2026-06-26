@@ -98,10 +98,16 @@ export const google = {
 // OpenAI-compatible gateway — the reliable primary (Scaleway Holo flakes). Called
 // via raw undici against /chat/completions (same reason as Holo: keep the OpenAI
 // SDK out). Key shared with the app's agent (OPENROUTER_API_KEY).
+// google/gemini-2.5-flash: a FAST multimodal model, not a reasoning model. The
+// previous default (gemma-4-31b-it) burns hidden "thoughts" tokens on every image —
+// 30s+ per describe — which made the vision lane the pipeline bottleneck. For image
+// DESCRIPTION (not deep reasoning) flash is sub-5s typical, strong French + clean
+// JSON, and OpenRouter has no per-key RPM cap on this paid key, so the only ceiling
+// is upstream provider capacity (handled by the in-call 429/timeout backoff).
 export const openrouter = {
   apiKey: () => required("OPENROUTER_API_KEY"),
   baseUrl: () => optional("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")!,
-  model: () => optional("OPENROUTER_VISION_MODEL", "google/gemma-4-31b-it")!,
+  model: () => optional("OPENROUTER_VISION_MODEL", "google/gemini-2.5-flash")!,
 };
 
 // --- Mistral fallback OCR (Track 1, `sans_texte` documents) ---

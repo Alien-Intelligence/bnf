@@ -97,6 +97,56 @@ export function parseOcrOutput(jsonl: string): PreparedPage[] {
   return pages;
 }
 
+/**
+ * Safe ceiling on the assembled batch-input size (bytes). Buffers can hold ~2GiB,
+ * but we fail well before that with a CLEAR, attributable error rather than risk an
+ * allocation crash — a doc this large is better split or skipped than OOMing the
+ * worker. ~1.5GiB of base64 ≈ many hundreds of full-res folios.
+ */
+const MAX_BATCH_INPUT_BYTES = 1_500 * 1_024 * 1_024;
+
+/**
+ * Assemble the Mistral Batch input JSONL as a Buffer (one line per folio).
+ *
+ * Built line-by-line into a Buffer — never one joined JS string — so a doc with
+ * many full-res base64 images can't trip V8's ~512MB max string length (the live
+ * `Invalid string length` crash on the OCR-submit stage). Throws a clear,
+ * doc-attributable error if the total would exceed MAX_BATCH_INPUT_BYTES (the stage
+ * turns that into a clean doc-fail instead of a cryptic allocation failure).
+ *
+ * Exported for unit testing — pure, deterministic, no SDK/HTTP.
+ */
+export function buildBatchJsonl(
+  ark: string,
+  folios: Array<{ ordre: number; image: Buffer }>,
+): Buffer {
+  const newline = Buffer.from("\n", "utf8");
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for (const f of folios) {
+    const line = JSON.stringify({
+      custom_id: `f${f.ordre}`,
+      body: {
+        document: {
+          type: "image_url",
+          image_url: `data:image/jpeg;base64,${f.image.toString("base64")}`,
+        },
+        include_image_base64: false,
+      },
+    });
+    const lineBuf = Buffer.from(line, "utf8");
+    total += lineBuf.length + newline.length;
+    if (total > MAX_BATCH_INPUT_BYTES) {
+      throw new Error(
+        `ocr submitBatch: ${ark} batch input exceeds ${MAX_BATCH_INPUT_BYTES} bytes ` +
+          `at folio ${f.ordre} (${folios.length} folios) — doc too large for a single batch`,
+      );
+    }
+    chunks.push(lineBuf, newline);
+  }
+  return Buffer.concat(chunks);
+}
+
 async function streamToString(stream: ReadableStream<Uint8Array>): Promise<string> {
   const reader = stream.getReader();
   const decoder = new TextDecoder("utf-8");
@@ -122,28 +172,17 @@ export class LiveOcrEngine implements OcrEngine {
 
     // 1. Build the JSONL — one OCR request per folio. custom_id carries the
     //    folio ordre so the result maps back regardless of batch ordering.
-    const jsonl =
-      input.folios
-        .map((f) =>
-          JSON.stringify({
-            custom_id: `f${f.ordre}`,
-            body: {
-              document: {
-                type: "image_url",
-                image_url: `data:image/jpeg;base64,${f.image.toString("base64")}`,
-              },
-              include_image_base64: false,
-            },
-          }),
-        )
-        .join("\n") + "\n";
+    //
+    //    Assembled as a Buffer, NOT a single joined string. Mistral OCR keeps
+    //    full-res images, so each folio's base64 data-URL is multi-MB; a doc with
+    //    hundreds of folios overflows V8's ~512MB max STRING length on
+    //    `.map().join("\n")` (the live `Invalid string length` crash). A Buffer has
+    //    no such ceiling, so we encode each line independently and concat.
+    const content = buildBatchJsonl(input.ark, input.folios);
 
     // 2. Upload as a batch input file.
     const inputFile = await mistral.files.upload({
-      file: {
-        fileName: "bnf-ocr-batch.jsonl",
-        content: new TextEncoder().encode(jsonl),
-      },
+      file: { fileName: "bnf-ocr-batch.jsonl", content },
       purpose: "batch",
     });
 

@@ -9,7 +9,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { looksLikeHallucinatedOcr, parseOcrOutput } from "./ocr.js";
+import { buildBatchJsonl, looksLikeHallucinatedOcr, parseOcrOutput } from "./ocr.js";
 
 function line(customId: string, markdown: string): string {
   return JSON.stringify({
@@ -74,4 +74,35 @@ test("looksLikeHallucinatedOcr: genuine prose is not flagged", () => {
     "Les annotations marginales sont nombreuses et précises.",
   ].join("\n");
   assert.equal(looksLikeHallucinatedOcr(md), false);
+});
+
+test("buildBatchJsonl: one valid JSONL line per folio, custom_id carries ordre", () => {
+  const folios = [
+    { ordre: 1, image: Buffer.from("img-one") },
+    { ordre: 7, image: Buffer.from("img-seven") },
+  ];
+  const out = buildBatchJsonl("ark:/12148/btv1b000", folios);
+  const lines = out.toString("utf8").trimEnd().split("\n");
+  assert.equal(lines.length, 2);
+  const first = JSON.parse(lines[0]!);
+  assert.equal(first.custom_id, "f1");
+  assert.equal(
+    first.body.document.image_url,
+    `data:image/jpeg;base64,${Buffer.from("img-one").toString("base64")}`,
+  );
+  assert.equal(JSON.parse(lines[1]!).custom_id, "f7");
+});
+
+test("buildBatchJsonl: empty folio list yields an empty buffer", () => {
+  assert.equal(buildBatchJsonl("ark:/12148/x", []).length, 0);
+});
+
+test("buildBatchJsonl: oversized batch throws an attributable error (no V8 crash)", () => {
+  // A single ~6MB image; 300 of them (~1.8GB base64) exceeds the safe ceiling.
+  const big = Buffer.alloc(6 * 1024 * 1024, 0x41);
+  const folios = Array.from({ length: 300 }, (_, i) => ({ ordre: i + 1, image: big }));
+  assert.throws(
+    () => buildBatchJsonl("ark:/12148/huge", folios),
+    /ark:\/12148\/huge batch input exceeds .* bytes/,
+  );
 });

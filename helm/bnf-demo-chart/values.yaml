@@ -127,6 +127,17 @@ worker:
     geminiVisionModel: gemma-4-31b-it
     visionPrimary: holo
 
+    # OpenRouter — the PRIMARY vision provider (Holo/Gemini are fallbacks). The paid
+    # key has no per-key RPM cap, so throughput is bounded only by upstream provider
+    # capacity → push concurrency and let the in-call 429/timeout backoff ride the
+    # edge. gemini-2.5-flash is FAST (not a reasoning model) — the previous
+    # gemma-4-31b-it made describe the pipeline bottleneck (30s+/image). Key is a
+    # secret (openrouterApiKeyProperty).
+    openrouterVisionModel: google/gemini-2.5-flash
+    # Shared cap on in-flight vision API calls across all docs (a doc fans its folios
+    # out up to this). Raised 24→64 in hardening-pass-2.
+    describeCallConcurrency: "64"
+
     # Mistral fallback OCR — transcribes `sans_texte` docs (digitized text, no BnF
     # OCR layer) the librarian opts into. ON: the app already gates the spend
     # (per-ingestion confirmation + the $50/project budget), so any sans_texte doc
@@ -161,6 +172,13 @@ worker:
     ingestJobExpireSeconds: "14400"
     ingestRetryLimit: "5"
     ingestRetryDelaySeconds: "120"
+    # Per-folio fetch timeout (ms). 135s sits just ABOVE the broker's 120s upstream
+    # timeout so the broker's own classifiable timeout fires first, instead of the
+    # worker aborting the broker mid-flight (which logged opaque "operation was
+    # aborted"). Under load BnF is slow to serve images; 15s was far too tight.
+    bnfPageTimeoutMs: "135000"
+    # Metadata (OAI) is fast; a shorter budget is fine.
+    bnfMetaTimeoutMs: "45000"
     maxOcrPages: "1000"
     maxImageCanvases: "40"
     imageConcurrency: "3"
@@ -244,6 +262,13 @@ broker:
     globalRpm: "1000"
     manifestRpm: "40"
     externalRpm: "120"
+
+    # Per-attempt upstream timeout to BnF (ms). 120s, not 30s: under ingest load
+    # BnF is slow to serve folio images, and a tight abort was the bulk of the
+    # transient fetch failures (each abort re-burns the shared quota on retry). The
+    # worker's broker-call timeout (BNF_PAGE_TIMEOUT_MS=135s) sits just above this
+    # so the broker's own classifiable timeout wins over an opaque worker abort.
+    upstreamTimeoutMs: "120000"
 
   resources:
     requests:

@@ -1,0 +1,24 @@
+{
+  "projectId": "demo-project",
+  "pipeline": "single_image",
+  "metadata": {
+    "ark": "ark:/12148/btv1b11600025m",
+    "arkSlug": "btv1b11600025m",
+    "title": "[Recueil. Exposition universelle, 1889. Paris, Champ de Mars. Galerie des machines, dôme central, expositions des industries diverses : construction, vues d'ensemble]",
+    "creator": "Tilly, Auguste (18..-1898). Illustrateur",
+    "date": "1889",
+    "docType": "image fixe",
+    "lang": "fre",
+    "source": "gallica",
+    "iiifManifestUrl": null,
+    "pageCount": null,
+    "ocrAvailable": false
+  },
+  "contentHash": "da08b2f65a845fb8d9f301f270bdd24330f225248cba21d1b84685956cbf9669",
+  "blobKeys": {
+    "docMd": "projects/demo-project/docs/btv1b11600025m/doc.md",
+    "docJson": "projects/demo-project/docs/btv1b11600025m/doc.json",
+    "chunksJsonl": "projects/demo-project/docs/btv1b11600025m/chunks.jsonl"
+  },
+  "chunkCount": 12
+}

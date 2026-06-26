@@ -22,4 +22,10 @@ data:
   BNF_GLOBAL_RPM: {{ .Values.broker.config.globalRpm | quote }}
   BNF_MANIFEST_RPM: {{ .Values.broker.config.manifestRpm | quote }}
   BNF_EXTERNAL_RPM: {{ .Values.broker.config.externalRpm | quote }}
+
+  # --- Timeouts ---
+  # Per-attempt upstream timeout to BnF. 120s: under ingest load BnF is slow to
+  # serve folio images; a tight timeout just churns the shared quota with retries.
+  # The worker waits a touch longer (BNF_PAGE_TIMEOUT_MS, 135s) so this fires first.
+  BNF_UPSTREAM_TIMEOUT_MS: {{ .Values.broker.config.upstreamTimeoutMs | quote }}
 {{- end }}

@@ -119,7 +119,7 @@ export abstract class PipelineStage<In, Out> {
     try {
       outcome = await this.process(msg.payload, ctx);
     } catch (e) {
-      outcome = { kind: "fail", reason: errMsg(e) };
+      outcome = { kind: "fail", reason: describeError(e) };
     }
 
     // Last-delivery safety net: a non-terminal fail on the FINAL attempt means
@@ -174,4 +174,29 @@ export abstract class PipelineStage<In, Out> {
 
 function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
+}
+
+/**
+ * Build a NON-EMPTY, attributable failure reason from any thrown value.
+ *
+ * The old `errMsg` returned `e.message`, which is empty for several common
+ * failures — undici aborts (`AbortError` with no message), `new Error()`, errors
+ * whose detail lives on `.cause.code` (ECONNREFUSED/ECONNRESET/UND_ERR_*). Those
+ * surfaced as `stage_fail reason:""` — the single largest, completely
+ * unattributable failure bucket in the prod run. This captures the error NAME, the
+ * message, and the transport cause code so every failure carries a usable reason.
+ */
+function describeError(e: unknown): string {
+  if (!(e instanceof Error)) return String(e) || "non-error throw";
+  const parts: string[] = [];
+  if (e.name && e.name !== "Error") parts.push(e.name);
+  if (e.message) parts.push(e.message);
+  // undici/node transport detail rides on .cause.code (ECONNREFUSED, UND_ERR_…).
+  const cause = (e as { cause?: unknown }).cause;
+  if (cause && typeof cause === "object") {
+    const code = (cause as { code?: unknown }).code;
+    if (typeof code === "string") parts.push(`cause=${code}`);
+  }
+  const reason = parts.join(": ");
+  return reason || e.constructor?.name || "unknown error";
 }

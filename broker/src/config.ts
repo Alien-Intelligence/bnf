@@ -76,8 +76,14 @@ export const config = {
   externalRpm: num("BNF_EXTERNAL_RPM", 120), // ungated hosts (oai/catalogue/data) — politeness only
   externalBurst: num("BNF_EXTERNAL_BURST", 20),
 
-  /** Per-attempt upstream timeout (ms). */
-  upstreamTimeoutMs: num("BNF_UPSTREAM_TIMEOUT_MS", 30_000),
+  /**
+   * Per-attempt upstream timeout (ms). 120s, not 30s: under ingest load BnF can
+   * take a long time to serve a folio image, and a 30s abort was the bulk of the
+   * transient fetch failures (the worker then retries, burning the shared quota).
+   * The worker's broker-call timeout (BNF_PAGE_TIMEOUT_MS, 135s) sits just ABOVE
+   * this so the broker's own timeout fires first and returns a classifiable status.
+   */
+  upstreamTimeoutMs: num("BNF_UPSTREAM_TIMEOUT_MS", 120_000),
   /** Token-mint timeout (ms). */
   tokenTimeoutMs: num("BNF_TOKEN_TIMEOUT_MS", 10_000),
 
