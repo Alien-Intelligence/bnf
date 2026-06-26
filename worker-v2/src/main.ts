@@ -69,6 +69,7 @@ async function main(): Promise<void> {
       visionImageSize: cfg.visionImageSize,
       fetchConcurrency: cfg.fetchConcurrency,
       describeConcurrency: cfg.describeConcurrency,
+      describeCallConcurrency: cfg.describeCallConcurrency,
       embedConcurrency: cfg.embedConcurrency,
       ocrSubmitConcurrency: cfg.ocrSubmitConcurrency,
       ocrPollConcurrency: cfg.ocrPollConcurrency,

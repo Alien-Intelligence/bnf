@@ -9,6 +9,7 @@
  */
 import { PipelineStage, type StageDeps } from "../core/stage.js";
 import type { RateGate, StageContext, StageOutcome } from "../core/types.js";
+import { Semaphore } from "../core/semaphore.js";
 import type { Describer } from "../ports.js";
 import type { DocStateStore } from "../domain/doc-state.js";
 import { keys } from "../domain/keys.js";
@@ -23,16 +24,22 @@ export class DescribeStage extends PipelineStage<DocReady, PreparedDoc> {
   override readonly concurrency: number;
   override readonly rate?: RateGate;
 
+  /** Shared across all concurrently-processing docs: the total number of in-flight
+   *  vision calls is capped here, so a single big doc fans its folios out wide
+   *  while many docs still share one safe ceiling (OpenRouter rate/DDoS guard). */
+  private readonly callGate: Semaphore;
+
   constructor(
     deps: StageDeps,
     private readonly describer: Describer,
     private readonly docState: DocStateStore,
     rate: RateGate | undefined,
-    opts: { concurrency?: number } = {},
+    opts: { concurrency?: number; callConcurrency?: number } = {},
   ) {
     super(deps);
     this.rate = rate;
     this.concurrency = opts.concurrency ?? 4;
+    this.callGate = new Semaphore(opts.callConcurrency ?? 24);
   }
 
   protected override async onExhausted(doc: DocReady, reason: string): Promise<void> {
@@ -52,21 +59,33 @@ export class DescribeStage extends PipelineStage<DocReady, PreparedDoc> {
       return { kind: "emit", items: [this.prepared(doc, cachedPages)] };
     }
 
-    const pages: PreparedPage[] = [];
-    for (const ordre of doc.folios) {
-      const image = await this.blob.getBytes(keys.image(doc.ark, ordre));
-      if (!image) continue;
-      try {
-        const text = await this.describer.describe({ ark: doc.ark, ordre, image, meta: doc.meta });
-        if (text.trim().length > 0) pages.push({ ordre, text });
-      } catch (e) {
-        ctx.log.warn("describe_folio_failed", {
-          ark: doc.ark,
-          ordre,
-          error: e instanceof Error ? e.message : String(e),
-        });
-      }
-    }
+    // Describe folios CONCURRENTLY, bounded by the shared callGate (so a 30-folio
+    // doc fans out instead of crawling 1-at-a-time, without exceeding the vision
+    // provider's safe concurrency). A failed folio is dropped (null), not fatal.
+    const results = await Promise.all(
+      doc.folios.map((ordre) =>
+        this.callGate.run(async (): Promise<PreparedPage | null> => {
+          const image = await this.blob.getBytes(keys.image(doc.ark, ordre));
+          if (!image) return null;
+          try {
+            const text = await this.describer.describe({ ark: doc.ark, ordre, image, meta: doc.meta });
+            return text.trim().length > 0 ? { ordre, text } : null;
+          } catch (e) {
+            ctx.log.warn("describe_folio_failed", {
+              ark: doc.ark,
+              ordre,
+              error: e instanceof Error ? e.message : String(e),
+            });
+            return null;
+          }
+        }),
+      ),
+    );
+    // Folios may finish out of order; restore folio order for citation accuracy.
+    const pages: PreparedPage[] = results
+      .filter((p): p is PreparedPage => p !== null)
+      .sort((a, b) => a.ordre - b.ordre);
+
     if (pages.length === 0) {
       return failDoc(this.docState, doc.docJobId, "describe_no_pages");
     }

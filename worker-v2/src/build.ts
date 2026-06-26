@@ -50,6 +50,7 @@ export interface PipelineDeps {
     visionImageSize?: string;
     fetchConcurrency?: number;
     describeConcurrency?: number;
+    describeCallConcurrency?: number;
     embedConcurrency?: number;
     ocrSubmitConcurrency?: number;
     ocrPollConcurrency?: number;
@@ -84,6 +85,7 @@ export function buildPipeline(deps: PipelineDeps): Pipeline {
     new AssembleStage(base, deps.docState),
     new DescribeStage(base, deps.describer, deps.docState, rates.describe, {
       ...(cfg.describeConcurrency !== undefined ? { concurrency: cfg.describeConcurrency } : {}),
+      ...(cfg.describeCallConcurrency !== undefined ? { callConcurrency: cfg.describeCallConcurrency } : {}),
     }),
     new OcrSubmitStage(base, deps.ocr, deps.docState, {
       ...(cfg.ocrSubmitConcurrency !== undefined ? { concurrency: cfg.ocrSubmitConcurrency } : {}),

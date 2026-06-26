@@ -46,9 +46,13 @@ export interface WorkerConfig {
    *  ("max") images time out the vision API under concurrency; vision only needs
    *  a description. Mistral OCR keeps full res. */
   visionImageSize: string;
-  /** Vision-lane (image description) concurrency — bounded by the vision provider
-   *  quota (Holo/Gemini), NOT BnF, so it can run far wider than the fetch lane. */
+  /** Vision-lane DOC concurrency — how many docs the describe stage processes at
+   *  once. */
   describeConcurrency: number;
+  /** Vision-lane CALL concurrency — the shared cap on total in-flight vision API
+   *  calls across all docs (a doc fans its folios out up to this). The real
+   *  OpenRouter/Holo ceiling; keep under the provider's rate/DDoS limit. */
+  describeCallConcurrency: number;
   /** Embed (RunPod) concurrency. */
   embedConcurrency: number;
   /** Mistral OCR batch-submit concurrency (how many docs OCR in parallel). */
@@ -78,6 +82,7 @@ export function loadConfig(): WorkerConfig {
     manifestRatePerMin: optionalInt("BNF_MANIFEST_RPM", 42),
     visionImageSize: process.env.VISION_IMAGE_SIZE?.trim() || "pct:33",
     describeConcurrency: optionalInt("DESCRIBE_CONCURRENCY", 16),
+    describeCallConcurrency: optionalInt("DESCRIBE_CALL_CONCURRENCY", 24),
     embedConcurrency: optionalInt("EMBED_CONCURRENCY", 8),
     ocrSubmitConcurrency: optionalInt("OCR_SUBMIT_CONCURRENCY", 12),
     ocrPollConcurrency: optionalInt("OCR_POLL_CONCURRENCY", 16),
