@@ -5,7 +5,8 @@
 // poll, cancel. Renders the pipeline card only while a job is active.
 // No corpus mutation — ingest reads the corpus state set by Constituer.
 
-import { useState } from "react"
+import { useEffect, useRef, useState } from "react"
+import { useRouter } from "next/navigation"
 import {
   useIngestStatus,
   useSubmitIngest,
@@ -64,10 +65,40 @@ export function IngererClient({
   // server "budget" backstop. Null = closed.
   const [paidOcrDialog, setPaidOcrDialog] = useState<PaidOcrDialogState>(null)
 
+  const router = useRouter()
   const submitMutation = useSubmitIngest(projectId)
   const cancelMutation = useCancelIngest(projectId)
   const retryMutation = useRetryFailedIngest(projectId)
   const status = useIngestStatus(activeJobId)
+
+  // The delta panel (deltaPreview), ingested-version label, and job history are
+  // server-rendered props computed at page load — they are NOT live queries.
+  // While a job runs, useIngestStatus polls, but the moment it goes terminal
+  // those props are stale: the job committed (Document.indexedAt advanced, the
+  // delta shrank) yet the panel still shows the pre-ingest counts until a manual
+  // reload. Re-run the server component once on the live→terminal transition so
+  // the counts and history reflect the committed result. router.refresh()
+  // preserves client state (activeJobId, dialogs, scroll) — see Next.js
+  // useRouter docs. Guarded by a ref so it fires exactly once per job (a page
+  // loaded onto an already-terminal job never saw a live status, so no refresh).
+  //
+  // Seeded from initialActiveJobId: IngestQueries.activeForProject only returns
+  // queued/running jobs, so a non-null initial id means the server rendered
+  // while the job was live (delta is pre-completion). Seeding true covers the
+  // race where the job finishes between server render and the first poll — the
+  // first observed status is already terminal, but the panel still needs a
+  // refresh.
+  const wasLiveRef = useRef(Boolean(initialActiveJobId))
+  useEffect(() => {
+    const s = status.data?.status
+    if (!s) return
+    if (s === INGEST_STATUS.QUEUED || s === INGEST_STATUS.RUNNING) {
+      wasLiveRef.current = true
+    } else if (wasLiveRef.current) {
+      wasLiveRef.current = false
+      router.refresh()
+    }
+  }, [status.data?.status, router])
 
   const { paidOcr, paidOcrBudget } = deltaPreview
   const canIncludePaidOcr = paidOcr.docCount > 0 && paidOcrBudget.withinBudget
