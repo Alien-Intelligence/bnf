@@ -376,32 +376,31 @@ async function describeViaOpenRouter(
 ): Promise<DescribeResult> {
   const model = options.model ?? openrouter.model();
   const url = `${openrouter.baseUrl().replace(/\/+$/, "")}/chat/completions`;
-  const body = JSON.stringify({
-    model,
-    messages: [
-      { role: "system", content: SYSTEM_PROMPT },
-      {
-        role: "user",
-        content: [
-          { type: "text", text: buildUserPrompt(options.context) },
-          { type: "image_url", image_url: { url: img.dataUrl } },
-        ],
-      },
-    ],
-    // 16384, not 8192: a dense BnF estampe (long descriptionLongue + verbatim
-    // legendes/cartouches) plus any model "thinking" can run long; a finish_reason
-    // of "length" truncates the JSON mid-string → unparseable. Generous headroom
-    // avoids that for this small schema.
-    max_tokens: options.maxTokens ?? 16384,
-    temperature: 0.3,
-    top_p: 0.95,
-    // Constrain the decoder to syntactically-valid JSON. Without this, gemini-2.5
-    // -flash packs long verbatim transcriptions into string fields and frequently
-    // emits JSON that fails to parse (prose wrap, unescaped chars) → every describe
-    // fell back to raw text, losing the keyword-rich structured render. Verified:
-    // json_object returns clean parseable JSON, finish_reason "stop".
-    response_format: { type: "json_object" },
-  });
+  const messages = [
+    { role: "system", content: SYSTEM_PROMPT },
+    {
+      role: "user",
+      content: [
+        { type: "text", text: buildUserPrompt(options.context) },
+        { type: "image_url", image_url: { url: img.dataUrl } },
+      ],
+    },
+  ];
+  // 8192 bounds a runaway: the legitimate structured description is ~500-1500
+  // tokens, so 8192 is generous headroom AND caps the cost/latency of a degenerate
+  // generation (gemini-2.5-flash occasionally loops on a dense folio and runs to the
+  // ceiling → finish_reason "length" → unparseable). response_format constrains the
+  // decoder to syntactically-valid JSON (kills the prose-wrap failure mode).
+  const maxTokens = options.maxTokens ?? 8192;
+  const bodyFor = (temperature: number): string =>
+    JSON.stringify({
+      model,
+      messages,
+      max_tokens: maxTokens,
+      temperature,
+      top_p: 0.95,
+      response_format: { type: "json_object" },
+    });
   const headers = {
     authorization: `Bearer ${openrouter.apiKey()}`,
     "content-type": "application/json",
@@ -413,6 +412,12 @@ async function describeViaOpenRouter(
   let lastErr: Error | null = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    // First attempt is low-temperature (faithful, deterministic). A retry RAISES
+    // the temperature: the common cause of a finish_reason=length truncation is a
+    // degenerate repetition loop, and bumping temperature is the standard way to
+    // break out of it (a lower temperature would re-enter the same loop).
+    const temperature = attempt === 1 ? 0.3 : 0.8;
+    const body = bodyFor(temperature);
     const start = Date.now();
     let res: Awaited<ReturnType<typeof request>>;
     try {
