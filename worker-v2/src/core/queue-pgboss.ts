@@ -25,6 +25,10 @@ export class PgBossQueue implements QueueClient {
   private pool: Pool | null = null;
   private readonly policies = new Map<string, QueuePolicy>();
   private readonly created = new Set<string>();
+  /** Set on stop() so the sliding-window pumps stop fetching new work. */
+  private stopped = false;
+  /** The per-queue safety-poll timers, cleared on stop(). */
+  private readonly workTimers: NodeJS.Timeout[] = [];
 
   constructor(private readonly connectionString: string) {}
 
@@ -81,6 +85,24 @@ export class PgBossQueue implements QueueClient {
     );
   }
 
+  /**
+   * Consume `queue` with a SLIDING-WINDOW worker pool of up to `concurrency`
+   * in-flight jobs — NOT pg-boss's batch handler.
+   *
+   * The batch handler (`boss.work({batchSize})`) is a BARRIER: it fetches a batch,
+   * marks them all `active`, and does not fetch the next batch until the handler
+   * resolves for the WHOLE batch (a `Promise.all`). So a batch drains at the speed
+   * of its slowest member; during the tail, slots sit idle and no new work is
+   * pulled — and a single straggler (a slow BnF fetch, worse with the 135s timeout)
+   * freezes every other slot. Measured effect: the fetch stage held ~128 jobs in
+   * `active` (the whole checked-out batch) while only ~20 were truly in flight at
+   * BnF, capping throughput at ~600/min against a 1000/min quota.
+   *
+   * Instead we `fetch` exactly the free capacity, start each job independently, and
+   * `complete`/`fail` it the instant it finishes — refilling that one slot at once.
+   * A straggler holds only its own slot; the rate gate stays continuously fed; the
+   * `active` count becomes the TRUE in-flight number, not a checked-out batch.
+   */
   async work<T>(
     queue: string,
     handler: (msg: QueueMessage<T>) => Promise<void>,
@@ -91,25 +113,59 @@ export class PgBossQueue implements QueueClient {
       retryDelaySec: Math.max(1, Math.round((opts.retryDelayMs ?? 5_000) / 1000)),
       retryBackoff: opts.retryBackoff ?? true,
     });
-    await this.b().work<T>(
-      queue,
-      { batchSize: opts.concurrency, pollingIntervalSeconds: 1, includeMetadata: true },
-      async (jobs) => {
-        await Promise.all(
-          jobs.map(async (job) => {
-            const attempts = ((job as { retryCount?: number }).retryCount ?? 0) + 1;
-            try {
-              await handler({ id: job.id, payload: job.data as T, attempts });
-            } catch (err) {
-              const error = err instanceof Error ? err.message : String(err);
-              await this.b()
-                .fail(queue, job.id, { error })
-                .catch((e) => console.error("[pg-boss] fail() failed:", e));
-            }
-          }),
-        );
-      },
-    );
+
+    const cap = Math.max(1, Math.floor(opts.concurrency));
+    let inFlight = 0;
+    let pumping = false; // guards against overlapping fetch loops
+
+    const runJob = (job: PgBoss.JobWithMetadata<T>): void => {
+      inFlight++;
+      void (async () => {
+        const attempts = (job.retryCount ?? 0) + 1;
+        try {
+          await handler({ id: job.id, payload: job.data, attempts });
+          await this.b()
+            .complete(queue, job.id)
+            .catch((e) => console.error("[pg-boss] complete() failed:", e));
+        } catch (err) {
+          const error = err instanceof Error ? err.message : String(err);
+          await this.b()
+            .fail(queue, job.id, { error })
+            .catch((e) => console.error("[pg-boss] fail() failed:", e));
+        } finally {
+          inFlight--;
+          void pump(); // a slot freed → refill immediately
+        }
+      })();
+    };
+
+    const pump = async (): Promise<void> => {
+      if (this.stopped || pumping) return;
+      pumping = true;
+      try {
+        while (!this.stopped) {
+          const free = cap - inFlight;
+          if (free <= 0) break; // pool full → completions will re-pump
+          const jobs = await this.b().fetch<T>(queue, {
+            batchSize: free,
+            includeMetadata: true,
+          });
+          if (!jobs || jobs.length === 0) break; // queue drained → the poll timer retries
+          for (const job of jobs) runJob(job);
+          if (jobs.length < free) break; // fewer than asked → nothing left to pull now
+        }
+      } catch (e) {
+        console.error(`[pg-boss] fetch() failed for ${queue}:`, e);
+      } finally {
+        pumping = false;
+      }
+    };
+
+    // Safety poll: catches jobs that arrive while the pool is idle (the
+    // completion-driven re-pump only fires while jobs are draining).
+    const timer = setInterval(() => void pump(), 1_000);
+    this.workTimers.push(timer);
+    void pump();
   }
 
   async counts(queue: string): Promise<QueueCounts> {
@@ -129,6 +185,11 @@ export class PgBossQueue implements QueueClient {
   }
 
   async stop(): Promise<void> {
+    // Stop the sliding-window pumps from fetching new work, then let pg-boss drain
+    // the in-flight handlers gracefully.
+    this.stopped = true;
+    for (const t of this.workTimers) clearInterval(t);
+    this.workTimers.length = 0;
     await this.boss?.stop({ graceful: true }).catch(() => undefined);
     await this.pool?.end().catch(() => undefined);
     this.boss = null;

@@ -39,6 +39,7 @@ const holoDispatcher = new Agent({
 
 interface HoloChatResponse {
   choices?: Array<{
+    finish_reason?: string | null;
     message?: {
       content?: string | null;
       reasoning_content?: string | null;
@@ -387,9 +388,19 @@ async function describeViaOpenRouter(
         ],
       },
     ],
-    max_tokens: options.maxTokens ?? 8192,
+    // 16384, not 8192: a dense BnF estampe (long descriptionLongue + verbatim
+    // legendes/cartouches) plus any model "thinking" can run long; a finish_reason
+    // of "length" truncates the JSON mid-string → unparseable. Generous headroom
+    // avoids that for this small schema.
+    max_tokens: options.maxTokens ?? 16384,
     temperature: 0.3,
     top_p: 0.95,
+    // Constrain the decoder to syntactically-valid JSON. Without this, gemini-2.5
+    // -flash packs long verbatim transcriptions into string fields and frequently
+    // emits JSON that fails to parse (prose wrap, unescaped chars) → every describe
+    // fell back to raw text, losing the keyword-rich structured render. Verified:
+    // json_object returns clean parseable JSON, finish_reason "stop".
+    response_format: { type: "json_object" },
   });
   const headers = {
     authorization: `Bearer ${openrouter.apiKey()}`,
@@ -467,8 +478,18 @@ async function describeViaOpenRouter(
     }
 
     const latencyMs = Date.now() - start;
-    const msg = data.choices?.[0]?.message;
+    const choice = data.choices?.[0];
+    const msg = choice?.message;
     const raw = msg?.content || msg?.reasoning_content || msg?.reasoning || "";
+    // Truncated mid-JSON (hit max_tokens) → unparseable; banal, retry.
+    if (choice?.finish_reason === "length" && !tryParseJson(raw)) {
+      lastErr = new Error(`OpenRouter truncated (finish_reason=length, ${raw.length} chars)`);
+      if (attempt < maxAttempts) {
+        await sleep(backoffMs(attempt));
+        continue;
+      }
+      throw lastErr;
+    }
     if (!raw.trim()) {
       // Empty completion — banal; retry, then defer to the chain rather than emit a blank page.
       lastErr = new Error(`OpenRouter returned empty content (model ${model})`);
@@ -624,6 +645,42 @@ function tryParseJson(text: string): ImageDescription | null {
   try {
     return JSON.parse(stripped) as ImageDescription;
   } catch {
+    // Fallback: a provider may wrap the JSON in prose ("Voici la description : {…}").
+    // Extract the outermost balanced {…} object and try that. Cheap insurance for
+    // the Holo/Gemini paths (OpenRouter is constrained by response_format).
+    const obj = extractFirstJsonObject(stripped);
+    if (obj) {
+      try {
+        return JSON.parse(obj) as ImageDescription;
+      } catch {
+        return null;
+      }
+    }
     return null;
   }
+}
+
+/** Extract the first balanced top-level {…} from text, honoring strings/escapes. */
+function extractFirstJsonObject(text: string): string | null {
+  const start = text.indexOf("{");
+  if (start === -1) return null;
+  let depth = 0;
+  let inStr = false;
+  let escaped = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i]!;
+    if (inStr) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') inStr = true;
+    else if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+  return null;
 }
