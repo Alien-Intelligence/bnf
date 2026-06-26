@@ -91,8 +91,16 @@ export interface QueueClient {
       retryBackoff?: boolean;
     },
   ): Promise<void>;
-  /** Count items by state for the progress read-model. */
+  /** Count items by state for the progress read-model (GLOBAL — all runs). */
   counts(queue: string): Promise<QueueCounts>;
+  /**
+   * Run-scoped counts: only jobs whose payload `docJobId` is in the given set.
+   * The buckets are shared across concurrently-running ingests, so the progress
+   * read-model uses this (not `counts`) to keep one run's card from showing
+   * another run's bucket activity. Only `running`/`queued` are meaningful (the
+   * card uses them); `completed`/`failed` come from the run-scoped doc-state.
+   */
+  countsForDocs(queue: string, docJobIds: readonly string[]): Promise<QueueCounts>;
   stop(): Promise<void>;
 }
 

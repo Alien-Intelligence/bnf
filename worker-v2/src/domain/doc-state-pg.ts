@@ -258,4 +258,12 @@ export class PgDocState implements DocStateStore {
       failed: Number(landedRes.rows[0]?.failed ?? 0),
     };
   }
+
+  async docJobIdsForRun(runId: string): Promise<string[]> {
+    const { rows } = await this.pool.query<{ doc_job_id: string }>(
+      `SELECT doc_job_id FROM ${JOBS} WHERE run_id = $1`,
+      [runId],
+    );
+    return rows.map((r) => r.doc_job_id);
+  }
 }

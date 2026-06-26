@@ -33,6 +33,11 @@ export interface ProgressReport {
   /** Run-scoped BnF-fetch folio tally — the honest récupérés/total for the fetch
    *  headline (NOT the shared pg-boss bucket counts, which accumulate across runs). */
   folios: { expected: number; done: number; failed: number };
+  /** Folios from OTHER concurrent runs still pending in the shared BnF-fetch queue
+   *  (active + queued, run-excluded). The 300/1000-per-min cap is shared, so this is
+   *  the work "ahead of you" — surfaced so a contended run reads as "N en attente
+   *  devant vous", not as a stall. 0 when this run has the queue to itself. */
+  foliosAhead: number;
   /** The binding BnF fetch rate (folios/min) the ETA assumes — surfaced so the UI
    *  can headline the constraint ("≈ 300/min"). */
   fetchRatePerMin: number;
@@ -91,16 +96,36 @@ export async function buildProgress(
   );
   const docsTotal = (Object.values(docs) as number[]).reduce((a, b) => a + b, 0);
 
+  // RUN-SCOPE the per-stage bucket counts. The pg-boss buckets are SHARED across
+  // concurrently-running ingests, so the global counts would show one run's
+  // describe/OCR activity on another run's card (the live "job 2 shows job 1's
+  // numbers" bug). Every job payload carries its docJobId, so we count only the
+  // jobs belonging to THIS run's docs. Without a runId (the status CLI) we fall
+  // back to the global counts.
+  const docJobIds = opts.runId ? await docState.docJobIdsForRun(opts.runId) : null;
   const stages: Record<string, StageProgress> = {};
   for (const { key, queue: name } of STAGE_QUEUES) {
-    const c = await queue.counts(name);
+    const c = docJobIds ? await queue.countsForDocs(name, docJobIds) : await queue.counts(name);
     stages[key] = { done: c.completed, running: c.running, queued: c.queued, failed: c.failed };
   }
 
-  // ETA: the binding stage is BnF fetch (queued + running folios ÷ rate). Add the
-  // one-time Mistral tail only while OCR work is still in flight.
+  // Folios from OTHER runs still pending in the shared fetch queue = global pending
+  // − this run's pending. The fetch rate cap is shared, so this is the work ahead of
+  // you. Only meaningful when run-scoped.
+  let foliosAhead = 0;
+  if (docJobIds) {
+    const globalFetch = await queue.counts(Q.fetch);
+    const globalPending = globalFetch.running + globalFetch.queued;
+    const runPending = (stages.fetch?.running ?? 0) + (stages.fetch?.queued ?? 0);
+    foliosAhead = Math.max(0, globalPending - runPending);
+  }
+
+  // ETA: the binding stage is BnF fetch (your backlog + the folios queued AHEAD of
+  // you, since the rate cap is shared) ÷ rate. Add the one-time Mistral tail only
+  // while OCR work is still in flight.
   const rate = opts.fetchRatePerMin ?? 300;
-  const fetchBacklog = (stages.fetch?.queued ?? 0) + (stages.fetch?.running ?? 0);
+  const fetchBacklog =
+    (stages.fetch?.queued ?? 0) + (stages.fetch?.running ?? 0) + foliosAhead;
   let etaSeconds: number | null = rate > 0 ? Math.ceil((fetchBacklog / rate) * 60) : null;
   const ocrInFlight =
     (stages.ocrSubmit?.queued ?? 0) +
@@ -125,6 +150,7 @@ export async function buildProgress(
     docsFinished: docs.done,
     stages,
     folios,
+    foliosAhead,
     fetchRatePerMin: rate,
     manifestRatePerMin: opts.manifestRatePerMin ?? 42,
     etaSeconds,

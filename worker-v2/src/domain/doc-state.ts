@@ -110,4 +110,7 @@ export interface DocStateStore {
    * counts, this is scoped to the run, so a fresh run never inherits stale numbers.
    */
   folioCounts(runId: string): Promise<{ expected: number; done: number; failed: number }>;
+  /** The doc_job_ids belonging to a run — used to run-scope the shared pg-boss
+   *  bucket counts (every job payload carries its docJobId). */
+  docJobIdsForRun(runId: string): Promise<string[]>;
 }

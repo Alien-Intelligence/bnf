@@ -81,4 +81,31 @@ test("paid-OCR spend is surfaced when a budget is configured", async () => {
   assert.deepEqual(report.paidOcr, { spentUsd: 1.5, budgetUsd: 10 });
 });
 
+test("stages are run-scoped: one run's card excludes another concurrent run's jobs", async () => {
+  const ds = new MemoryDocState();
+  const q = new MemoryQueue();
+  // Two concurrent runs sharing the pg-boss buckets: A (2 docs), B (1 doc).
+  await ds.upsertDoc({ docJobId: "a1", runId: "runA", projectId: "p", ark: "ark:/12148/a1" });
+  await ds.upsertDoc({ docJobId: "a2", runId: "runA", projectId: "p", ark: "ark:/12148/a2" });
+  await ds.upsertDoc({ docJobId: "b1", runId: "runB", projectId: "p", ark: "ark:/12148/b1" });
+  // describe bucket: 2 jobs belong to A, 5 to B.
+  await q.sendMany(Q.describe, [{ docJobId: "a1" }, { docJobId: "a2" }]);
+  await q.sendMany(Q.describe, Array.from({ length: 5 }, () => ({ docJobId: "b1" })));
+  // fetch bucket: 3 folios for A, 30 for B.
+  await q.sendMany(Q.fetch, Array.from({ length: 3 }, (_, i) => ({ docJobId: "a1", ordre: i })));
+  await q.sendMany(Q.fetch, Array.from({ length: 30 }, (_, i) => ({ docJobId: "b1", ordre: i })));
+
+  const a = await buildProgress(ds, q, { runId: "runA", fetchRatePerMin: 300 });
+  // Run A's card sees ONLY run A's bucket jobs — not B's (the live conflation bug).
+  assert.equal(a.stages.describe?.queued, 2, "run A sees only its 2 describe jobs");
+  assert.equal(a.stages.fetch?.queued, 3, "run A sees only its 3 fetch folios");
+  // B's 30 pending fetch folios are "ahead of you" in the shared queue.
+  assert.equal(a.foliosAhead, 30);
+
+  const b = await buildProgress(ds, q, { runId: "runB", fetchRatePerMin: 300 });
+  assert.equal(b.stages.describe?.queued, 5);
+  assert.equal(b.stages.fetch?.queued, 30);
+  assert.equal(b.foliosAhead, 3);
+});
+
 void META;

@@ -121,6 +121,9 @@ export function CardIngestQueueStatus({ job, onCancel }: Props) {
     0,
     folios.expected - folios.done - folios.failed,
   )
+  // Folios from OTHER concurrent runs ahead of this one in the shared BnF queue —
+  // the rate cap is shared, so this explains a slow start ("N devant vous").
+  const foliosAhead = queue.foliosAhead ?? 0
 
   // Run totals — always reconcile to docsTotal (done + running + queued + failed
   // + skipped). Surfaced verbatim so the view can never hide failures/skips.
@@ -189,6 +192,11 @@ export function CardIngestQueueStatus({ job, onCancel }: Props) {
               </span>
             )}
             <span>{t("waiting", { count: foliosRemaining })}</span>
+            {foliosAhead > 0 && (
+              <span className="text-amber-500/80">
+                {t("ahead", { count: foliosAhead })}
+              </span>
+            )}
           </div>
         </div>
 

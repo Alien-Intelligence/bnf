@@ -640,6 +640,7 @@
       },
       "inProgress": "{count} en cours",
       "waiting": "{count} en file",
+      "ahead": "{count} devant vous (autre traitement)",
       "idle": "—",
       "totals": {
         "done": "{count} terminés",

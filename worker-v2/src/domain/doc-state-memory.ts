@@ -159,4 +159,12 @@ export class MemoryDocState implements DocStateStore {
     }
     return { expected, done, failed };
   }
+
+  async docJobIdsForRun(runId: string): Promise<string[]> {
+    const ids: string[] = [];
+    for (const e of this.docs.values()) {
+      if (e.runId === runId) ids.push(e.docJobId);
+    }
+    return ids;
+  }
 }

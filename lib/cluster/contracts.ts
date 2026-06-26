@@ -55,6 +55,10 @@ export interface ClusterQueueProgress {
   /** Run-scoped BnF-fetch folio tally (récupérés/total) — honest, not the shared
    *  pg-boss bucket counts. `expected` grows as metadata resolves more docs. */
   folios: { expected: number; done: number; failed: number }
+  /** Folios from OTHER concurrent runs still pending in the shared BnF-fetch queue.
+   *  The rate cap is shared, so this is the work "ahead of you". 0 when alone.
+   *  Optional: older workers don't send it. */
+  foliosAhead?: number
   /** The binding BnF fetch rate (folios/min) the ETA assumes. */
   fetchRatePerMin: number
   /** The IIIF manifest rate (manifests/min) — the metadata lane's binding cap. */

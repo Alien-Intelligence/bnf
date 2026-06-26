@@ -184,6 +184,30 @@ export class PgBossQueue implements QueueClient {
     };
   }
 
+  async countsForDocs(queue: string, docJobIds: readonly string[]): Promise<QueueCounts> {
+    const pool = this.pool;
+    if (!pool) throw new Error("PgBossQueue not started");
+    if (docJobIds.length === 0) return { queued: 0, running: 0, completed: 0, failed: 0 };
+    // Only the IN-FLIGHT states (active/created/retry) — these are what the card
+    // shows per stage, and pg-boss's (name,state) index keeps this cheap even when
+    // the queue holds tens of thousands of COMPLETED jobs (which we never scan).
+    // completed/failed come from the run-scoped doc-state, not from here.
+    const { rows } = await pool.query<{ state: string; n: string }>(
+      `SELECT state, count(*)::text n FROM pgboss.job
+        WHERE name = $1 AND state IN ('active','created','retry')
+          AND data->>'docJobId' = ANY($2)
+        GROUP BY state`,
+      [queue, docJobIds as string[]],
+    );
+    const by = new Map(rows.map((r) => [r.state, Number(r.n)]));
+    return {
+      queued: (by.get("created") ?? 0) + (by.get("retry") ?? 0),
+      running: by.get("active") ?? 0,
+      completed: 0,
+      failed: 0,
+    };
+  }
+
   async stop(): Promise<void> {
     // Stop the sliding-window pumps from fetching new work, then let pg-boss drain
     // the in-flight handlers gracefully.

@@ -640,6 +640,7 @@
       },
       "inProgress": "{count} in progress",
       "waiting": "{count} queued",
+      "ahead": "{count} ahead of you (another job)",
       "idle": "—",
       "totals": {
         "done": "{count} done",

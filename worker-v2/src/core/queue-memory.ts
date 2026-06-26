@@ -125,6 +125,21 @@ export class MemoryQueue implements QueueClient {
     };
   }
 
+  async countsForDocs(queue: string, docJobIds: readonly string[]): Promise<QueueCounts> {
+    if (docJobIds.length === 0) return { queued: 0, running: 0, completed: 0, failed: 0 };
+    const ids = new Set(docJobIds);
+    const mine = (this.queues.get(queue) ?? []).filter((m) => {
+      const id = (m.payload as { docJobId?: unknown } | null)?.docJobId;
+      return typeof id === "string" && ids.has(id);
+    });
+    return {
+      queued: mine.filter((m) => m.state === "queued").length,
+      running: mine.filter((m) => m.state === "active").length,
+      completed: 0,
+      failed: 0,
+    };
+  }
+
   async stop(): Promise<void> {
     this.workers.clear();
   }
