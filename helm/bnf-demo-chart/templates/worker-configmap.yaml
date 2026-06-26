@@ -71,6 +71,9 @@ data:
   MAX_OCR_PAGES: {{ .Values.worker.config.maxOcrPages | quote }}
   MAX_IMAGE_CANVASES: {{ .Values.worker.config.maxImageCanvases | quote }}
   IMAGE_CONCURRENCY: {{ .Values.worker.config.imageConcurrency | quote }}
+  # The worker's OWN fetch rate gate — must equal the broker's globalRpm or the
+  # worker self-throttles below the provisioned quota (worker-v2 reads BNF_GLOBAL_RPM).
+  BNF_GLOBAL_RPM: {{ .Values.worker.config.bnfGlobalRpm | quote }}
   # Process-global broker-fetch concurrency — the worker's single in-flight cap,
   # held below the doc loop so the broker's rate bucket stays continuously fed.
   BNF_FETCH_CONCURRENCY: {{ .Values.worker.config.bnfFetchConcurrency | quote }}

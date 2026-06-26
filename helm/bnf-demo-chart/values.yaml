@@ -106,7 +106,7 @@ worker:
   image:
     repository: rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo-worker
     pullPolicy: Always
-    tag: "0.8.0"
+    tag: "0.8.1"
 
   service:
     type: ClusterIP
@@ -161,7 +161,7 @@ worker:
     ingestJobExpireSeconds: "14400"
     ingestRetryLimit: "5"
     ingestRetryDelaySeconds: "120"
-    maxOcrPages: "300"
+    maxOcrPages: "1000"
     maxImageCanvases: "40"
     imageConcurrency: "3"
     # bnfFetchConcurrency: the worker's single in-flight cap for ALL broker traffic
@@ -170,7 +170,12 @@ worker:
     # remains the RATE authority; 12 holds sustained 300/min with freeze≈0/shed≈0.
     #   3000/min flip = TWO values, no code change: broker.config.globalRpm: "3000"
     #   + bnfFetchConcurrency: "48", then helm upgrade and verify via /calls.csv.
-    bnfFetchConcurrency: "32"
+    # 2026-06-26: BnF raised the partner quota to 1000/min (Ludovic) — broker
+    # globalRpm + this both at the new ceiling; concurrency sized to feed it
+    # (~latency × rate/60). The worker's own rate gate must match (bnfGlobalRpm)
+    # or it self-throttles below the broker.
+    bnfGlobalRpm: "1000"
+    bnfFetchConcurrency: "128"
     # In-flight doc-jobs. This is the knob that keeps the fetch gate FED: each job
     # runs fetch→embed→index serially in its slot, so at 4 the docs moved as a
     # synchronized cohort — fetch bursts to the 300 cap, then all 4 embed/index
@@ -228,10 +233,10 @@ broker:
     apiBaseUrl: https://openapiproext.bnf.fr
 
     # Rate caps (requests/min) — bump here, redeploy the broker only (no
-    # app/worker rebuild). global=300: the REAL provisioned quota (Ludovic fixed
-    # it 2026-06-25; the earlier "100" was a mis-clicked tier that 429'd us every
-    # minute). manifest raised 12→40/min/IP by BnF.
-    globalRpm: "300"
+    # app/worker rebuild). global=1000: the REAL provisioned quota (Ludovic raised
+    # it 300→1000 on 2026-06-26). The worker's own gate (worker.config.bnfGlobalRpm)
+    # must match or it self-throttles below this. manifest raised 12→40/min/IP by BnF.
+    globalRpm: "1000"
     manifestRpm: "40"
     externalRpm: "120"
 
