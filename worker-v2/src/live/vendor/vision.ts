@@ -18,7 +18,7 @@
 import { GoogleGenAI } from "@google/genai";
 import { Agent, request } from "undici";
 
-import { genai, google, vision } from "./env.js";
+import { genai, google, openrouter } from "./env.js";
 import { brokerGet, brokerUrl } from "./broker-client.js";
 import { gallicaRelayUrl, relayGet } from "./gallica-relay.js";
 import { gallicaRateLimit } from "./rate-limiter.js";
@@ -55,27 +55,6 @@ function geminiClient(): GoogleGenAI {
   if (cachedGemini) return cachedGemini;
   cachedGemini = new GoogleGenAI({ apiKey: google.apiKey() });
   return cachedGemini;
-}
-
-function isTransientVisionError(err: unknown): boolean {
-  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
-  return (
-    msg.includes("premature close") ||
-    msg.includes("econnreset") ||
-    msg.includes("other side closed") ||
-    msg.includes("socket") ||
-    msg.includes("timeout") ||
-    msg.includes("network") ||
-    msg.includes("fetch failed") ||
-    msg.includes("terminated") ||
-    // Provider rate-limit / overload (Gemini & Scaleway): worth a backoff retry.
-    msg.includes("429") ||
-    msg.includes("resource_exhausted") ||
-    msg.includes("quota") ||
-    msg.includes("rate limit") ||
-    msg.includes("unavailable") ||
-    msg.includes("overloaded")
-  );
 }
 
 function sleep(ms: number): Promise<void> {
@@ -253,14 +232,24 @@ export interface DescribeResult {
   imageBytes: number;
   model: string;
   /** Which provider produced this result. */
-  provider: "holo" | "gemini";
+  provider: "openrouter" | "holo" | "gemini";
 }
 
 /**
- * Describe an image. Runs the two providers in the order set by VISION_PRIMARY
- * (holo|gemini): the primary first, and on a thrown error OR an unparseable
- * response, the secondary. Throws only if BOTH fail — the caller (extract.ts)
- * then skips the canvas.
+ * Describe an image across the two providers (order set by VISION_PRIMARY).
+ *
+ * Retry shape (worker-v2 divergence from V1): the retry loop is at the PAIR
+ * level, not per-provider. Each ROUND tries the primary ONCE; on ANY error it
+ * falls straight to the secondary ONCE. So a dead primary costs one failed call,
+ * not three, before the fallback runs:
+ *
+ *   round: primary → err → secondary → ok?  return        (the happy fallback)
+ *                                    → err? → wait & loop  (both down → retry)
+ *
+ * A provider that RESPONDS but returns unparseable JSON is "good enough" (the
+ * caller falls back to the raw text), so it returns without looping. Only a round
+ * where BOTH providers THROW backs off and retries, up to MAX_ROUNDS; after that
+ * it throws and the caller skips the canvas.
  */
 export async function describeImage(
   imageUrl: string,
@@ -268,40 +257,114 @@ export async function describeImage(
 ): Promise<DescribeResult> {
   const img = await fetchImage(imageUrl);
 
-  const providers: Array<{ name: string; run: () => Promise<DescribeResult> }> =
-    vision.primary() === "gemini"
-      ? [
-          { name: "Gemini", run: () => describeViaGemini(img, options) },
-          { name: "Holo", run: () => describeViaHolo(img, options) },
-        ]
-      : [
-          { name: "Holo", run: () => describeViaHolo(img, options) },
-          { name: "Gemini", run: () => describeViaGemini(img, options) },
-        ];
+  // Fixed fallback chain: OpenRouter (reliable primary) → Scaleway Holo →
+  // Google Gemma. First provider to RESPOND wins; a round backs off + retries
+  // only if ALL THREE throw (see the loop below).
+  const providers: Array<{ name: string; run: () => Promise<DescribeResult> }> = [
+    { name: "OpenRouter", run: () => describeViaOpenRouter(img, options) },
+    { name: "Holo", run: () => describeViaHolo(img, options) },
+    { name: "Gemini", run: () => describeViaGemini(img, options) },
+  ];
 
-  for (let i = 0; i < providers.length; i++) {
-    const p = providers[i]!;
-    const isLast = i === providers.length - 1;
-    try {
-      const result = await p.run();
-      if (result.parsed || isLast) return result;
+  const MAX_ROUNDS = 3;
+  let lastErr: unknown;
+  for (let round = 1; round <= MAX_ROUNDS; round++) {
+    let unparseable: DescribeResult | null = null;
+    for (const p of providers) {
+      try {
+        const result = await p.run();
+        if (result.parsed) return result; // got JSON → done
+        unparseable = result; // responded but no JSON → try the other provider
+        console.warn(`[vision] ${p.name} returned unparseable JSON`);
+      } catch (err) {
+        lastErr = err;
+        console.warn(
+          `[vision] ${p.name} failed (${
+            err instanceof Error ? err.message : String(err)
+          }); falling through`,
+        );
+      }
+    }
+    // At least one provider responded (just not as JSON) → use it (raw fallback).
+    if (unparseable) return unparseable;
+    // Both providers threw this round → back off and retry the pair.
+    if (round < MAX_ROUNDS) {
+      const backoffMs = 1000 * Math.pow(2, round - 1);
       console.warn(
-        `[vision] ${p.name} returned unparseable JSON; trying ${providers[i + 1]!.name}`,
+        `[vision] both providers failed (round ${round}/${MAX_ROUNDS}); retrying in ${backoffMs}ms`,
       );
-    } catch (err) {
-      if (isLast) throw err;
-      console.warn(
-        `[vision] ${p.name} failed (${
-          err instanceof Error ? err.message : String(err)
-        }); trying ${providers[i + 1]!.name}`,
-      );
+      await sleep(backoffMs);
     }
   }
-  // Unreachable (last provider always returns or throws), but satisfies types.
-  throw new Error("[vision] no provider produced a result");
+  throw lastErr instanceof Error
+    ? lastErr
+    : new Error("[vision] all providers failed after retries");
 }
 
-/** PRIMARY provider: Scaleway Holo2 via the OpenAI-compatible API. */
+/**
+ * PRIMARY provider: OpenRouter (OpenAI-compatible /chat/completions). Raw undici,
+ * single attempt (describeImage owns retry/fallback). gemma-4-31b-it by default;
+ * OPENROUTER_VISION_MODEL overrides. The optional X-Title header is for OpenRouter
+ * dashboard attribution only.
+ */
+async function describeViaOpenRouter(
+  img: FetchedImage,
+  options: DescribeOptions,
+): Promise<DescribeResult> {
+  const model = options.model ?? openrouter.model();
+  const url = `${openrouter.baseUrl().replace(/\/+$/, "")}/chat/completions`;
+  const body = JSON.stringify({
+    model,
+    messages: [
+      { role: "system", content: SYSTEM_PROMPT },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: buildUserPrompt(options.context) },
+          { type: "image_url", image_url: { url: img.dataUrl } },
+        ],
+      },
+    ],
+    max_tokens: options.maxTokens ?? 8192,
+    temperature: 0.3,
+    top_p: 0.95,
+  });
+  const headers = {
+    authorization: `Bearer ${openrouter.apiKey()}`,
+    "content-type": "application/json",
+    "x-title": "BnF Corpus Research",
+  };
+
+  const start = Date.now();
+  const res = await request(url, {
+    method: "POST",
+    headers,
+    body,
+    signal: AbortSignal.timeout(60_000),
+  });
+  const text = await res.body.text();
+  if (res.statusCode < 200 || res.statusCode >= 300) {
+    throw new Error(`OpenRouter HTTP ${res.statusCode}: ${text.slice(0, 150)}`);
+  }
+  const data = JSON.parse(text) as HoloChatResponse; // OpenAI response shape
+  const latencyMs = Date.now() - start;
+  const msg = data.choices?.[0]?.message;
+  const raw = msg?.content || msg?.reasoning_content || msg?.reasoning || "";
+  return {
+    parsed: tryParseJson(raw),
+    raw,
+    usage: {
+      promptTokens: data.usage?.prompt_tokens ?? 0,
+      completionTokens: data.usage?.completion_tokens ?? 0,
+    },
+    latencyMs,
+    imageBytes: img.imageBytes,
+    model,
+    provider: "openrouter",
+  };
+}
+
+/** FALLBACK 1: Scaleway Holo2 via the OpenAI-compatible API. */
 async function describeViaHolo(
   img: FetchedImage,
   options: DescribeOptions,
@@ -329,35 +392,24 @@ async function describeViaHolo(
     "content-type": "application/json",
   };
 
+  // Single attempt — describeImage owns the retry loop and the Gemini fallback,
+  // so a Holo error throws straight out to it (no in-provider re-tries).
   const start = Date.now();
-  const MAX_ATTEMPTS = 3;
-  let data: HoloChatResponse;
-  for (let attempt = 1; ; attempt++) {
-    try {
-      const res = await request(url, {
-        method: "POST",
-        headers,
-        body,
-        dispatcher: holoDispatcher,
-        signal: AbortSignal.timeout(120_000),
-      });
-      const text = await res.body.text();
-      if (res.statusCode < 200 || res.statusCode >= 300) {
-        throw new Error(`Holo HTTP ${res.statusCode}: ${text.slice(0, 150)}`);
-      }
-      data = JSON.parse(text) as HoloChatResponse;
-      break;
-    } catch (err) {
-      if (attempt >= MAX_ATTEMPTS || !isTransientVisionError(err)) throw err;
-      const backoffMs = 1000 * attempt;
-      console.warn(
-        `[vision] Holo attempt ${attempt}/${MAX_ATTEMPTS} failed (${
-          err instanceof Error ? err.message : String(err)
-        }), retrying in ${backoffMs}ms`,
-      );
-      await sleep(backoffMs);
-    }
+  const res = await request(url, {
+    method: "POST",
+    headers,
+    body,
+    dispatcher: holoDispatcher,
+    // 30s, not 120s: when Holo is slow/down we want to fail fast and fall to
+    // Gemini (a healthy Holo answers well under this). describeImage retries the
+    // pair, so this is the per-call cost of a dead Holo — kept short on purpose.
+    signal: AbortSignal.timeout(30_000),
+  });
+  const text = await res.body.text();
+  if (res.statusCode < 200 || res.statusCode >= 300) {
+    throw new Error(`Holo HTTP ${res.statusCode}: ${text.slice(0, 150)}`);
   }
+  const data = JSON.parse(text) as HoloChatResponse;
 
   const latencyMs = Date.now() - start;
   // Holo2 (a reasoning model) sometimes emits the JSON into `reasoning_content`
@@ -390,56 +442,35 @@ async function describeViaGemini(
   const model = google.visionModel();
   const prompt = `${SYSTEM_PROMPT}\n\n${buildUserPrompt(options.context)}`;
 
+  // Single attempt — describeImage owns the retry loop and provider fallback.
   const start = Date.now();
-  const MAX_ATTEMPTS = 3;
-  let raw = "";
-  let usage: { promptTokens: number; completionTokens: number } = {
-    promptTokens: 0,
-    completionTokens: 0,
-  };
-  for (let attempt = 1; ; attempt++) {
-    try {
-      const resp = await geminiClient().models.generateContent({
-        model,
-        contents: [
-          {
-            role: "user",
-            parts: [
-              { text: prompt },
-              { inlineData: { mimeType: img.mimeType, data: img.base64 } },
-            ],
-          },
+  const resp = await geminiClient().models.generateContent({
+    model,
+    contents: [
+      {
+        role: "user",
+        parts: [
+          { text: prompt },
+          { inlineData: { mimeType: img.mimeType, data: img.base64 } },
         ],
-        config: {
-          // gemma-4-31b-it spends a large share of tokens on hidden reasoning,
-          // so the budget must cover thoughts + the JSON answer.
-          maxOutputTokens: options.maxTokens ?? 8192,
-          temperature: 0.3,
-          topP: 0.95,
-        },
-      });
-      raw =
-        resp.text ??
-        resp.candidates?.[0]?.content?.parts
-          ?.map((p) => p.text ?? "")
-          .join("") ??
-        "";
-      usage = {
-        promptTokens: resp.usageMetadata?.promptTokenCount ?? 0,
-        completionTokens: resp.usageMetadata?.candidatesTokenCount ?? 0,
-      };
-      break;
-    } catch (err) {
-      if (attempt >= MAX_ATTEMPTS || !isTransientVisionError(err)) throw err;
-      const backoffMs = 1000 * Math.pow(2, attempt - 1);
-      console.warn(
-        `[vision] Gemini attempt ${attempt}/${MAX_ATTEMPTS} failed (${
-          err instanceof Error ? err.message : String(err)
-        }), retrying in ${backoffMs}ms`,
-      );
-      await sleep(backoffMs);
-    }
-  }
+      },
+    ],
+    config: {
+      // gemma-4-31b-it spends a large share of tokens on hidden reasoning,
+      // so the budget must cover thoughts + the JSON answer.
+      maxOutputTokens: options.maxTokens ?? 8192,
+      temperature: 0.3,
+      topP: 0.95,
+    },
+  });
+  const raw =
+    resp.text ??
+    resp.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("") ??
+    "";
+  const usage = {
+    promptTokens: resp.usageMetadata?.promptTokenCount ?? 0,
+    completionTokens: resp.usageMetadata?.candidatesTokenCount ?? 0,
+  };
 
   return {
     parsed: tryParseJson(raw),

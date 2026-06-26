@@ -94,6 +94,16 @@ export const google = {
   visionModel: () => optional("GEMINI_VISION_MODEL", "gemma-4-31b-it")!,
 };
 
+// --- OpenRouter (Track 1, PRIMARY vision provider) ---
+// OpenAI-compatible gateway — the reliable primary (Scaleway Holo flakes). Called
+// via raw undici against /chat/completions (same reason as Holo: keep the OpenAI
+// SDK out). Key shared with the app's agent (OPENROUTER_API_KEY).
+export const openrouter = {
+  apiKey: () => required("OPENROUTER_API_KEY"),
+  baseUrl: () => optional("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")!,
+  model: () => optional("OPENROUTER_VISION_MODEL", "google/gemma-4-31b-it")!,
+};
+
 // --- Mistral fallback OCR (Track 1, `sans_texte` documents) ---
 //
 // Paid OCR (Mistral Batch API) for digitized text with no BnF OCR layer. OFF by
