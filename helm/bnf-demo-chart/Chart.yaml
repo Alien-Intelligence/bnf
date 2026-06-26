@@ -1,6 +1,6 @@
 apiVersion: v2
 name: bnf-demo
-version: 0.8.2
+version: 0.8.3
 description: BnF Corpus Research — Alien Intelligence × BnF demo (Next.js app + ingest worker + BnF broker + Postgres)
 type: application
 # App/worker code is unchanged from 0.7.0 (images stay :0.7.0); 0.7.1 is a

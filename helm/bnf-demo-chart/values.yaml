@@ -192,13 +192,15 @@ worker:
   resources:
     requests:
       cpu: 250m
-      # At bnfFetchConcurrency=128, the fetch stage holds up to 128 image Buffers
-      # at once (full-res "max" cartes can be ~10MB) + describe's base64 lane —
-      # 2Gi OOMKilled. Headroom for 128-wide fetch + the vision base64 lane.
-      memory: 1Gi
+      # At bnfFetchConcurrency=128 the fetch stage holds up to 128 image Buffers at
+      # once (full-res "max" cartes ~10MB) + the vision base64 describe lane. 2Gi
+      # OOMKilled. RAM is cheap and the nodes have ~30Gi — provision generously so
+      # a full 255-doc run at 128-wide never approaches the ceiling, rather than
+      # trimming concurrency to save memory.
+      memory: 2Gi
     limits:
       cpu: "2"
-      memory: 6Gi
+      memory: 10Gi
 
   # The worker drains in-flight jobs on SIGTERM; give it room (a doc can be
   # mid-OCR). Must comfortably exceed a single doc's prepare time, not the full
