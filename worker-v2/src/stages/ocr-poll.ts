@@ -49,6 +49,12 @@ export class OcrPollStage extends PipelineStage<OcrBatchRef, PreparedDoc> {
     this.concurrency = opts.concurrency ?? 8;
   }
 
+  protected override async onExhausted(ref: OcrBatchRef, reason: string): Promise<void> {
+    await this.docState.setStatus(ref.docJobId, "failed", {
+      error: `ocr_poll_failed_after_retries: ${reason}`,
+    });
+  }
+
   async process(ref: OcrBatchRef, ctx: StageContext): Promise<StageOutcome<PreparedDoc>> {
     const status = await this.ocr.pollBatch(ref.batchId);
 

@@ -70,6 +70,16 @@ export abstract class PipelineStage<In, Out> {
     return null;
   }
 
+  /**
+   * Safety net for run completion: called when process() THROWS on the LAST
+   * allowed delivery (retries exhausted). A lane stage that owns a doc overrides
+   * this to mark the doc terminally failed — otherwise an unhandled throw (S3
+   * blip, a worker restart mid-call, a provider outage) would leave the doc in a
+   * non-terminal status forever and the run could never complete. Default no-op
+   * (stages whose payload isn't a doc, or that already self-fail, need nothing).
+   */
+  protected async onExhausted(_payload: In, _reason: string): Promise<void> {}
+
   async start(): Promise<void> {
     this.log = this.log.child({ stage: this.name });
     await this.queue.work<In>(this.inputQueue, (m) => this.handle(m), {
@@ -110,6 +120,23 @@ export abstract class PipelineStage<In, Out> {
       outcome = await this.process(msg.payload, ctx);
     } catch (e) {
       outcome = { kind: "fail", reason: errMsg(e) };
+    }
+
+    // Last-delivery safety net: a non-terminal fail on the FINAL attempt means
+    // retries are exhausted. Without this, the doc would stay in a non-terminal
+    // status forever (the queue marks the message failed, but nothing marks the
+    // DOC) and the run could never complete. Give the stage a chance to mark its
+    // doc failed (onExhausted). The outcome is left non-terminal so the queue
+    // still records the message failure exactly as before.
+    if (
+      outcome.kind === "fail" &&
+      outcome.terminal !== true &&
+      msg.attempts >= this.retry.attempts
+    ) {
+      await this.onExhausted(msg.payload, outcome.reason).catch((err) =>
+        this.log.error("on_exhausted_failed", { error: errMsg(err) }),
+      );
+      this.log.warn("stage_exhausted", { reason: outcome.reason, attempts: msg.attempts });
     }
 
     if (key && (outcome.kind === "emit" || outcome.kind === "done")) {

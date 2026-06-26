@@ -35,6 +35,12 @@ export class DescribeStage extends PipelineStage<DocReady, PreparedDoc> {
     this.concurrency = opts.concurrency ?? 4;
   }
 
+  protected override async onExhausted(doc: DocReady, reason: string): Promise<void> {
+    await this.docState.setStatus(doc.docJobId, "failed", {
+      error: `describe_failed_after_retries: ${reason}`,
+    });
+  }
+
   async process(doc: DocReady, ctx: StageContext): Promise<StageOutcome<PreparedDoc>> {
     // Resume from the heavy artifact (the descriptions), NOT the base outcome
     // cache — the latter would replay a prior job's identity on a re-ingest. If

@@ -39,6 +39,12 @@ export class EmbedStage extends PipelineStage<PreparedDoc, EmbeddedDoc> {
     this.concurrency = opts.concurrency ?? 4;
   }
 
+  protected override async onExhausted(doc: PreparedDoc, reason: string): Promise<void> {
+    await this.docState.setStatus(doc.docJobId, "failed", {
+      error: `embed_failed_after_retries: ${reason}`,
+    });
+  }
+
   async process(doc: PreparedDoc, ctx: StageContext): Promise<StageOutcome<EmbeddedDoc>> {
     if (doc.pages.length === 0) {
       return failDoc(this.docState, doc.docJobId, "embed_no_pages");

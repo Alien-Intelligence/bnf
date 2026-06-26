@@ -40,6 +40,12 @@ export class OcrSubmitStage extends PipelineStage<DocReady, OcrBatchRef> {
     this.concurrency = opts.concurrency ?? 4;
   }
 
+  protected override async onExhausted(doc: DocReady, reason: string): Promise<void> {
+    await this.docState.setStatus(doc.docJobId, "failed", {
+      error: `ocr_submit_failed_after_retries: ${reason}`,
+    });
+  }
+
   async process(doc: DocReady, ctx: StageContext): Promise<StageOutcome<OcrBatchRef>> {
     let handle = await this.blob.getJson<BatchHandle>(keys.ocrBatch(doc.ark));
     if (!handle) {

@@ -42,6 +42,10 @@ export interface WorkerConfig {
   fetchConcurrency: number;
   /** IIIF manifest rate (per egress IP). */
   manifestRatePerMin: number;
+  /** IIIF size for VISION-lane images (pct:N — BnF-safe downscale). Full-res
+   *  ("max") images time out the vision API under concurrency; vision only needs
+   *  a description. Mistral OCR keeps full res. */
+  visionImageSize: string;
   /** Vision-lane (image description) concurrency — bounded by the vision provider
    *  quota (Holo/Gemini), NOT BnF, so it can run far wider than the fetch lane. */
   describeConcurrency: number;
@@ -72,6 +76,7 @@ export function loadConfig(): WorkerConfig {
     fetchRatePerMin: optionalInt("BNF_GLOBAL_RPM", 300),
     fetchConcurrency: optionalInt("BNF_FETCH_CONCURRENCY", 32),
     manifestRatePerMin: optionalInt("BNF_MANIFEST_RPM", 42),
+    visionImageSize: process.env.VISION_IMAGE_SIZE?.trim() || "pct:33",
     describeConcurrency: optionalInt("DESCRIBE_CONCURRENCY", 16),
     embedConcurrency: optionalInt("EMBED_CONCURRENCY", 8),
     ocrSubmitConcurrency: optionalInt("OCR_SUBMIT_CONCURRENCY", 12),

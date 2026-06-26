@@ -66,6 +66,7 @@ async function main(): Promise<void> {
       mistralEnabled: cfg.mistralEnabled,
       maxPages: cfg.maxPages,
       maxCanvases: cfg.maxCanvases,
+      visionImageSize: cfg.visionImageSize,
       fetchConcurrency: cfg.fetchConcurrency,
       describeConcurrency: cfg.describeConcurrency,
       embedConcurrency: cfg.embedConcurrency,

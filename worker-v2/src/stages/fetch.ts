@@ -31,6 +31,12 @@ import type { FolioItem, FolioResult } from "../domain/types.js";
 export interface FetchOpts {
   /** IIIF size token for image folios (V1: "max" — never "!2000,2000", which 400s). */
   imageSize?: string;
+  /** IIIF size for the VISION lane specifically. Full-res ("max") images are
+   *  multi-MB; sending 16 of them concurrently to the vision API blows the
+   *  per-call timeout. Vision only needs a description, so downscale (pct:N is the
+   *  only BnF-safe downscale — fixed w,h above native 400s). Mistral OCR keeps
+   *  `imageSize` (max) for dense text. */
+  visionImageSize?: string;
 }
 
 export class FetchStage extends PipelineStage<FolioItem, FolioResult> {
@@ -41,6 +47,7 @@ export class FetchStage extends PipelineStage<FolioItem, FolioResult> {
   override readonly rate?: RateGate;
 
   private readonly imageSize: string;
+  private readonly visionImageSize: string;
 
   constructor(
     deps: StageDeps,
@@ -52,6 +59,7 @@ export class FetchStage extends PipelineStage<FolioItem, FolioResult> {
     this.rate = rate;
     this.concurrency = opts.concurrency ?? 12;
     this.imageSize = opts.imageSize ?? "max";
+    this.visionImageSize = opts.visionImageSize ?? "pct:33";
   }
 
   async process(item: FolioItem, ctx: StageContext): Promise<StageOutcome<FolioResult>> {
@@ -92,7 +100,9 @@ export class FetchStage extends PipelineStage<FolioItem, FolioResult> {
     const key = keys.image(item.ark, item.ordre);
     const cached = await this.blob.getBytes(key);
     if (!cached) {
-      const bytes = await this.bnf.fetchImageFolio(item.ark, item.ordre, this.imageSize);
+      // Vision lane downscales (description, not OCR); Mistral keeps full res.
+      const size = item.lane === "vision" ? this.visionImageSize : this.imageSize;
+      const bytes = await this.bnf.fetchImageFolio(item.ark, item.ordre, size);
       await this.blob.putBytes(key, bytes, "image/jpeg");
     }
     return this.ok(item, false);

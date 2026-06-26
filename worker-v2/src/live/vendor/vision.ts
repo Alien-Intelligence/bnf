@@ -340,7 +340,10 @@ async function describeViaOpenRouter(
     method: "POST",
     headers,
     body,
-    signal: AbortSignal.timeout(60_000),
+    // 90s: gemma is a reasoning model; a full-detail image describe can run
+    // 30s+, and concurrency pushes it higher. The downscaled vision image keeps
+    // this comfortable, but the headroom avoids spurious timeouts under load.
+    signal: AbortSignal.timeout(90_000),
   });
   const text = await res.body.text();
   if (res.statusCode < 200 || res.statusCode >= 300) {

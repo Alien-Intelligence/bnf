@@ -45,6 +45,8 @@ class TestStage extends PipelineStage<Item, Item> {
 
   /** Records the payload of every process() invocation. */
   readonly processed: Item[] = [];
+  /** Records onExhausted calls (payload + reason) — the run-completion safety net. */
+  readonly exhausted: Array<{ payload: Item; reason: string }> = [];
 
   private readonly outcomeFor: (payload: Item) => StageOutcome<Item>;
   private readonly keyFor: (payload: Item) => string | null;
@@ -78,6 +80,10 @@ class TestStage extends PipelineStage<Item, Item> {
   override async process(payload: Item, _ctx: StageContext): Promise<StageOutcome<Item>> {
     this.processed.push(payload);
     return this.outcomeFor(payload);
+  }
+
+  protected override async onExhausted(payload: Item, reason: string): Promise<void> {
+    this.exhausted.push({ payload, reason });
   }
 }
 
@@ -248,6 +254,46 @@ test("process that throws is coerced to a non-terminal fail (→ retried)", asyn
   const failLog = d.lines.find((l) => l.event === "stage_fail");
   assert.ok(failLog, "a stage_fail was logged for the coerced failure");
   assert.match(String(failLog?.reason), /boom/, "the thrown message is the fail reason");
+});
+
+test("onExhausted fires once on the final failed attempt (run-completion safety net)", async () => {
+  const d = deps();
+  const queue = d.deps.queue as MemoryQueue;
+
+  const stage = new TestStage({
+    deps: d.deps,
+    retryAttempts: 3,
+    outcome: { kind: "fail", reason: "transient" }, // non-terminal, every attempt
+  });
+  await stage.start();
+  await queue.send(IN_Q, { ark: "ark:/strand" });
+  await queue.idle();
+
+  assert.equal(stage.processed.length, 3, "retried up to retry.attempts");
+  assert.equal(stage.exhausted.length, 1, "onExhausted called exactly once — on the last attempt");
+  assert.equal(stage.exhausted[0]?.payload.ark, "ark:/strand");
+  assert.match(String(stage.exhausted[0]?.reason), /transient/);
+  assert.ok(
+    d.lines.find((l) => l.event === "stage_exhausted"),
+    "a stage_exhausted warning is logged",
+  );
+});
+
+test("onExhausted does NOT fire when an attempt eventually succeeds", async () => {
+  const d = deps();
+  const queue = d.deps.queue as MemoryQueue;
+
+  let n = 0;
+  const stage = new TestStage({
+    deps: d.deps,
+    retryAttempts: 3,
+    outcome: () => (++n < 2 ? { kind: "fail", reason: "blip" } : { kind: "done" }),
+  });
+  await stage.start();
+  await queue.send(IN_Q, { ark: "ark:/ok" });
+  await queue.idle();
+
+  assert.equal(stage.exhausted.length, 0, "a recovered item never strands");
 });
 
 test("resume / idempotency: cache hit skips process() yet re-dispatches the cached emit", async () => {

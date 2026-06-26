@@ -47,6 +47,7 @@ export interface PipelineDeps {
     maxPages?: number;
     maxCanvases?: number;
     imageSize?: string;
+    visionImageSize?: string;
     fetchConcurrency?: number;
     describeConcurrency?: number;
     embedConcurrency?: number;
@@ -74,6 +75,7 @@ export function buildPipeline(deps: PipelineDeps): Pipeline {
     }),
     new FetchStage(base, deps.bnf, rates.fetch, {
       ...(cfg.imageSize !== undefined ? { imageSize: cfg.imageSize } : {}),
+      ...(cfg.visionImageSize !== undefined ? { visionImageSize: cfg.visionImageSize } : {}),
       ...(cfg.fetchConcurrency !== undefined ? { concurrency: cfg.fetchConcurrency } : {}),
     }),
     new MonitorStage(base, deps.docState, {

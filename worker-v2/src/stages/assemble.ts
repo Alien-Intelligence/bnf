@@ -31,6 +31,12 @@ export class AssembleStage extends PipelineStage<DocReady, PreparedDoc> {
     super(deps);
   }
 
+  protected override async onExhausted(doc: DocReady, reason: string): Promise<void> {
+    await this.docState.setStatus(doc.docJobId, "failed", {
+      error: `assemble_failed_after_retries: ${reason}`,
+    });
+  }
+
   async process(doc: DocReady, ctx: StageContext): Promise<StageOutcome<PreparedDoc>> {
     const pages: PreparedPage[] = [];
     for (const ordre of doc.folios) {
