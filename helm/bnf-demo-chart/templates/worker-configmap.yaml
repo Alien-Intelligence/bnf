@@ -29,6 +29,8 @@ data:
   OPENROUTER_VISION_MODEL: {{ .Values.worker.config.openrouterVisionModel | quote }}
   # Shared in-flight cap on vision API calls across all docs (the describe lane).
   DESCRIBE_CALL_CONCURRENCY: {{ .Values.worker.config.describeCallConcurrency | quote }}
+  # Doc-level describe concurrency — how many image docs describe at once.
+  DESCRIBE_CONCURRENCY: {{ .Values.worker.config.describeConcurrency | quote }}
 {{- if .Values.worker.config.mistralOcrEnabled }}
 
   # --- Mistral fallback OCR (`sans_texte` docs) ---

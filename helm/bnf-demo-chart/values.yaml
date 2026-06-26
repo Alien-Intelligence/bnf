@@ -137,6 +137,11 @@ worker:
     # Shared cap on in-flight vision API calls across all docs (a doc fans its folios
     # out up to this). Raised 24→64 in hardening-pass-2.
     describeCallConcurrency: "64"
+    # DOC-level describe concurrency — how many image docs the describe stage runs at
+    # once. Raised 16→32: once fetch hit the 1000/min quota, describe became the slow
+    # lane; OpenRouter has no per-key RPM cap so more parallel docs is safe (bounded
+    # by describeCallConcurrency across all of them).
+    describeConcurrency: "32"
 
     # Mistral fallback OCR — transcribes `sans_texte` docs (digitized text, no BnF
     # OCR layer) the librarian opts into. ON: the app already gates the spend
