@@ -101,8 +101,17 @@ export function gallicaSubtype(
  */
 export function mapCatalogueDocType(raw: string): string | null {
   const s = raw.toLowerCase()
-  if (/p[ée]riodique|presse|journal/.test(s)) return "press"
+  // "publication en série imprimée" is the IIIF manifest's press marker — it has no
+  // typedoc setSpec, so without this the periodical falls through to "texte" →
+  // "book" (the press misclassification bug). Order matters: press is tested before
+  // the "texte"→book rule. See ai-memories bnf-metadata-via-manifest.
+  if (/p[ée]riodique|presse|journal|publication en s[ée]rie|s[ée]rie imprim/.test(s))
+    return "press"
   if (/carte|plan/.test(s)) return "map"
+  // Scores: the manifest labels them "Musique notée" / "musique manuscrite" — no
+  // "partition" token. Tested BEFORE manuscript: "musique manuscrite" contains the
+  // "manuscrit" substring, but a notated-music document is a score, not a codex.
+  if (/musique|partition/.test(s)) return "score"
   if (/manuscrit/.test(s)) return "manuscript"
   if (/image|photo|estampe/.test(s)) return "image"
   if (/livre|imprim[eé]|texte|monographie/.test(s)) return "book"

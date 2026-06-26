@@ -42,6 +42,13 @@ const nextConfig: NextConfig = {
       },
     ],
   },
+  // The health endpoint is polled constantly (liveness/readiness probes); its
+  // per-request log line drowns out everything useful in the dev terminal.
+  logging: {
+    incomingRequests: {
+      ignore: [/\/api\/health$/],
+    },
+  },
 }
 
 export default withNextIntl(nextConfig)

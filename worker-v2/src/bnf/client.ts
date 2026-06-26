@@ -200,20 +200,102 @@ export class LiveBnfClient implements BnfClient {
         hint: `${canonicalArk}: catalogue notice (cb*), not a digitized document`,
       });
     }
+    // PRIMARY: the IIIF v3 manifest (openapiproext.bnf.fr — the partner gateway,
+    // on the broker's authenticated quota). It carries everything OAI did and
+    // more: title/creator/date/lang, the `Taux OCR` text-layer signal, the doc
+    // type (`Type document` + the "publication en série" press marker), and the
+    // AUTHORITATIVE page count — the canvas count, which matches the real
+    // fetchable folios (f1..fN). OAI's "Nombre total de vues" is collection-level
+    // and wildly wrong for periodical issues (e.g. bpt6k268418n: 4 real folios,
+    // OAI claims 3197), which the old OAI text lane over-fetched. See
+    // ai-memories bnf-metadata-via-manifest.
     try {
-      return await this.getDocumentInfoViaOaiPmh(canonicalArk);
+      return await this.getDocumentInfoViaManifest(canonicalArk);
     } catch (e) {
-      // OAI is incomplete: many ARKs that are perfectly viewable on Gallica IIIF
-      // (Cartes & Plans, Estampes, specialist series) return an error / empty
-      // envelope from OAI. The IIIF manifest is the universal metadata fallback
-      // — derive title/creator/date from manifest.metadata[] and route through
-      // the image lane. Only a *permanent* OAI failure triggers it; transient
-      // errors propagate so the stage retries the metadata fetch.
+      // FALLBACK: a permanently-unavailable manifest is rare (every digitized doc
+      // has one) but possible for a few legacy/edge ARKs. Fall back to the OAI-PMH
+      // record (ungated oai.bnf.fr via the broker) so those still resolve rather
+      // than being dropped. Transient errors propagate so the stage retries.
       if (e instanceof PermanentBnfError) {
-        return await this.getDocumentInfoFromManifest(canonicalArk, e);
+        return await this.getDocumentInfoViaOaiPmh(canonicalArk);
       }
       throw e;
     }
+  }
+
+  /**
+   * PRIMARY metadata path — derive a full BnfDocInfo from the IIIF v3 manifest.
+   *
+   *   • title    — `Titre` metadata pair, else the manifest label (BnF's label is
+   *                often the shelfmark; the Titre pair carries the real title).
+   *   • ocr      — presence of the `Taux OCR` pair (absent on manuscripts/maps/
+   *                scores/image-serials → image lane; present → text lane). The
+   *                manifest-native equivalent of OAI's "Avec mode texte" flag.
+   *   • docType  — `Type document` (Livre/Carte/Manuscrit/Musique notée…) joined
+   *                with the generic `Type` ("publication en série imprimée" =
+   *                press). Kept raw+lowercased: classifyLane substring-matches it.
+   *   • pageCount— the canvas count (manifest.totalPages), authoritative.
+   *   • subtype  — null: the fine Gallica typedoc sub-category (fascicules/titres)
+   *                lives only in OAI's setSpec, which the manifest does not carry.
+   */
+  private async getDocumentInfoViaManifest(canonicalArk: string): Promise<BnfDocInfo> {
+    // maxCanvases=1: we need only totalPages here (the true canvas count, computed
+    // before the slice), not the canvas list — the fetch stage re-fetches it.
+    const manifest = await this.getManifest(canonicalArk, 1);
+
+    const title =
+      metadataValue(manifest.metadata, ["titre", "title"]) ?? manifest.title;
+    if (!title) {
+      throw new PermanentBnfError("not_found", {
+        hint: `manifest has no title for ${canonicalArk}`,
+      });
+    }
+    const creator = metadataValue(manifest.metadata, [
+      "créateur",
+      "createur",
+      "creator",
+      "auteur",
+      "author",
+      "contributeur",
+    ]);
+    const date = metadataValue(manifest.metadata, [
+      "date",
+      "date d'édition",
+      "date d'edition",
+      "publication date",
+    ]);
+    const lang = metadataValue(manifest.metadata, ["langue", "language"]);
+    const typeDocument = metadataValue(manifest.metadata, ["type document"]);
+    const typeGeneric = metadataValue(manifest.metadata, ["type", "nature"]);
+    const docType =
+      [typeDocument, typeGeneric].filter(Boolean).join(" | ").toLowerCase() || null;
+    const ocrAvailable =
+      metadataValue(manifest.metadata, ["taux ocr", "taux d'ocr"]) !== null;
+    const pageCount = manifest.totalPages || null;
+
+    const slug = arkToSlug(canonicalArk);
+    const iiifManifestUrl = `${OPENAPI}/iiif/presentation/v3/ark:/12148/${slug}/manifest.json`;
+
+    return {
+      ark: canonicalArk,
+      title,
+      creator,
+      date,
+      docType,
+      subtype: null,
+      ocrAvailable,
+      pageCount,
+      iiifManifestUrl,
+      lang,
+      raw: {
+        source: "iiif_manifest",
+        type_document: typeDocument,
+        type: typeGeneric,
+        language: lang,
+        pageNumber: pageCount,
+        metadata: manifest.metadata,
+      },
+    };
   }
 
   /**
@@ -307,74 +389,6 @@ export class LiveBnfClient implements BnfClient {
         source: "oai_pmh",
         gallica_typedoc: typedoc,
         pageNumber: pageCount,
-      },
-    };
-  }
-
-  /**
-   * Fallback metadata path for ARKs with no usable OAI record. Fetches the IIIF
-   * manifest and derives a BnfDocInfo from `manifest.metadata[]`. Forces the
-   * image lane: `ocrAvailable: false` and `docType: "image"`, since these are
-   * iconographic documents that carry no machine OCR.
-   *
-   * If the manifest itself is permanently unavailable, the document genuinely
-   * does not exist for us — rethrow the *original* OAI error so the skip reason
-   * reflects the primary cause.
-   */
-  private async getDocumentInfoFromManifest(
-    canonicalArk: string,
-    oaiError: PermanentBnfError,
-  ): Promise<BnfDocInfo> {
-    let manifest: Manifest;
-    try {
-      manifest = await this.getManifest(canonicalArk, 200);
-    } catch (e) {
-      if (e instanceof PermanentBnfError) throw oaiError;
-      throw e; // transient: let the stage retry the metadata fetch
-    }
-
-    // Prefer the `Title` metadata pair over the manifest's top-level label: for
-    // BnF the label is often the shelfmark while the metadata Title carries the
-    // real title. Fall back to the label when no Title pair exists.
-    const title =
-      metadataValue(manifest.metadata, ["title", "titre"]) ?? manifest.title;
-    const creator = metadataValue(manifest.metadata, [
-      "creator",
-      "auteur",
-      "author",
-      "créateur",
-      "createur",
-    ]);
-    const date = metadataValue(manifest.metadata, [
-      "date",
-      "date d'édition",
-      "date d'edition",
-      "publication date",
-    ]);
-    // Kept for richness, but docType is forced to "image" so the doc routes
-    // through the image lane.
-    const declaredType = metadataValue(manifest.metadata, ["type", "nature"]);
-    const lang = metadataValue(manifest.metadata, ["language", "langue"]);
-
-    const slug = arkToSlug(canonicalArk);
-    const iiifManifestUrl = `${OPENAPI}/iiif/presentation/v3/ark:/12148/${slug}/manifest.json`;
-
-    return {
-      ark: canonicalArk,
-      title,
-      creator,
-      date,
-      docType: "image",
-      subtype: null,
-      ocrAvailable: false,
-      pageCount: manifest.totalPages || null,
-      iiifManifestUrl,
-      lang,
-      raw: {
-        source: "iiif_manifest_fallback",
-        oaiRecordError: oaiError.cause,
-        manifestType: declaredType,
-        metadata: manifest.metadata,
       },
     };
   }

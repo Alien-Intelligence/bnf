@@ -22,6 +22,9 @@ const IMAGE_DOC_TYPE_PATTERNS = [
   "estampe",
   "photograph",
   "partition",
+  // The IIIF manifest labels scores "Musique notée" / "musique manuscrite" — no
+  // "partition" token — so an OCR-less score would miss the visual lane and skip.
+  "musique",
   "affiche",
   "manuscrit",
   "dessin",

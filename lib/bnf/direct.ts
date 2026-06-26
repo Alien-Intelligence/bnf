@@ -44,6 +44,7 @@ import {
 } from "@/lib/constants"
 import { brokerGetText, brokerUrl } from "@/lib/bnf/broker-client"
 import { relayGetText, shouldRelay } from "@/lib/bnf/gallica-relay"
+import { env } from "@/lib/env"
 import { withTimeout } from "@/lib/mcp/abort"
 import type {
   BnfMcpDocumentDetail,
@@ -69,11 +70,48 @@ export type CanonicalizeOutcome =
   | { ark: string; status: "not_digitized" }
   | { ark: string; status: "api_error" }
 
+// Two transports per endpoint (dual-path):
+//   • proext  — the authenticated partner gateway (openapiproext.bnf.fr). Used
+//     whenever the broker is configured: the broker mints the OAuth bearer and
+//     counts the call against the shared quota (it only tokenises the proext
+//     host — see broker isPartnerApi). This is the prod path.
+//   • ungated — the legacy tokenless hosts (oai/catalogue/data.bnf.fr). The
+//     no-broker dev fallback: proext needs creds the broker holds, so without a
+//     broker we keep hitting the ungated hosts directly.
+// `viaPartner()` picks per call; it mirrors httpGetText's own broker check so the
+// URL and the transport always agree. All proext endpoints + their quirks were
+// verified live through the broker on platform-prod (2026-06-26).
+const PROEXT_BASE = env.BNF_API_BASE_URL.replace(/\/$/, "")
+
+// data.bnf.fr SPARQL — a pure host swap on proext (same query, same params, same
+// JSON result shape; verified: cb30055832f → bpt6k104247x identical both ways).
+const DATABNF_SPARQL = {
+  proext: `${PROEXT_BASE}/graphe/data/1.0.0/sparql`,
+  ungated: "https://data.bnf.fr/sparql",
+}
+// Catalogue SRU. proext's `catalogueservice-cons` uses DIFFERENT recordSchema
+// identifiers than legacy catalogue.bnf.fr — `DublinCore`/`UnimarcXML`, not
+// `dublincore`/`unimarcxchange` (the legacy names return SRW diagnostic 1/66
+// "unknown schema" on proext). The schema names travel with the endpoint, so
+// they're bundled here. The parsed record shape is identical (removeNSPrefix
+// flattens the `mxc:` UNIMARC prefix), so the callers' extraction is unchanged.
+const CATALOGUE_SRU = {
+  proext: {
+    url: `${PROEXT_BASE}/catalogueservice-cons/1.0/SRU`,
+    dc: "DublinCore",
+    unimarc: "UnimarcXML",
+  },
+  ungated: {
+    url: "http://catalogue.bnf.fr/api/SRU",
+    dc: "dublincore",
+    unimarc: "unimarcxchange",
+  },
+}
 // Ungated OAI-PMH metadata endpoint (oai.bnf.fr) — NOT gallica.bnf.fr, which is
 // Cloudflare-403'd from the server. No auth, no partner quota, no Cloudflare.
+// NOTE: OAI-PMH has no partner-API (proext) equivalent; Gallica metadata is the
+// one path still bound to an ungated host even through the broker.
 const GALLICA_OAI_PMH_URL = "http://oai.bnf.fr/oai2/OAIHandler"
-const CATALOGUE_SRU_URL = "http://catalogue.bnf.fr/api/SRU"
-const DATABNF_SPARQL_URL = "https://data.bnf.fr/sparql"
 
 // The RDA predicate data.bnf.fr puts on a manifestation node to link it to its
 // digitized Gallica reproduction. The subject is the `#about` node of the
@@ -88,6 +126,17 @@ const ELECTRONIC_REPRODUCTION =
 // IIIF manifest + consultable pages) — as opposed to a `cb…` notice echo or a
 // `…/date` periodical-collection URL, which we must NOT treat as canonical.
 const GALLICA_ARK_FAMILY = /^(bpt6k|btv1b|bd6t)/
+
+/**
+ * Whether to target the authenticated partner gateway (proext) for this call.
+ * True exactly when the broker is configured — the broker is the only holder of
+ * the OAuth credential, so proext is reachable only through it. Mirrors the
+ * broker check in `httpGetText` so the chosen URL and the chosen transport never
+ * disagree (proext URL ⇒ broker transport ⇒ bearer attached).
+ */
+function viaPartner(): boolean {
+  return brokerUrl() !== undefined
+}
 
 /** ARK short form: strip the `ark:/<naan>/` prefix. */
 function localArk(ark: string): string {
@@ -267,6 +316,92 @@ function extractGallicaArk(url: string): string | null {
 }
 
 // ---------------------------------------------------------------------------
+// IIIF v3 manifest helpers (JSON) — for the brokered/proext Gallica metadata path
+// ---------------------------------------------------------------------------
+
+/** Every string in a v3 language map ({"fr":["a","b"]} → ["a","b"]); fr preferred. */
+function iiifValues(v: unknown): string[] {
+  if (v === null || v === undefined) return []
+  if (typeof v === "string") return v.trim() ? [v.trim()] : []
+  if (Array.isArray(v)) return v.flatMap(iiifValues)
+  if (typeof v === "object") {
+    const o = v as Record<string, unknown>
+    const langs = Object.keys(o)
+    const pick =
+      langs.find((l) => /^fr/i.test(l)) ?? langs.find((l) => l === "none") ?? langs[0]
+    return pick ? iiifValues(o[pick]) : []
+  }
+  return []
+}
+
+/** The manifest's top-level `label` as one string (fr preferred), or null. */
+function iiifLabel(manifest: unknown): string | null {
+  if (manifest === null || typeof manifest !== "object") return null
+  return iiifValues((manifest as Record<string, unknown>).label)[0] ?? null
+}
+
+/**
+ * Flatten a manifest `metadata[]` to label/value pairs. The value keeps EVERY
+ * element of a multi-valued field (joined " | "): BnF puts the discriminating
+ * token in the tail — `Type = [texte, publication en série imprimée]` (press) —
+ * which a first-element-only read would drop.
+ */
+function parseManifestMetadata(
+  manifest: unknown,
+): Array<{ label: string; value: string }> {
+  if (manifest === null || typeof manifest !== "object") return []
+  const raw = (manifest as Record<string, unknown>).metadata
+  if (!Array.isArray(raw)) return []
+  const out: Array<{ label: string; value: string }> = []
+  for (const entry of raw) {
+    if (entry === null || typeof entry !== "object") continue
+    const e = entry as Record<string, unknown>
+    const label = iiifValues(e.label)[0]
+    const value = iiifValues(e.value).join(" | ")
+    if (label && value) out.push({ label, value })
+  }
+  return out
+}
+
+/** First metadata value whose (case-insensitive) label matches any candidate. */
+function metaValue(
+  metadata: Array<{ label: string; value: string }>,
+  labels: string[],
+): string | null {
+  const wanted = new Set(labels.map((l) => l.toLowerCase().trim()))
+  for (const { label, value } of metadata) {
+    if (wanted.has(label.toLowerCase().trim())) return value.trim() || null
+  }
+  return null
+}
+
+/**
+ * Page count = the number of distinct folio canvases (deduped by the `f<N>` ordre
+ * in each canvas id), or undefined when the manifest has no canvas array. This is
+ * the AUTHORITATIVE count — it matches the real fetchable folios (f1..fN). BnF's
+ * "Nombre total de vues" note is collection-level and wildly wrong for periodical
+ * issues (e.g. bpt6k268418n: 4 real folios, note says 3197).
+ */
+function manifestPageCount(manifest: unknown): number | undefined {
+  if (manifest === null || typeof manifest !== "object") return undefined
+  const items = (manifest as Record<string, unknown>).items
+  if (!Array.isArray(items)) return undefined
+  const hasFolioIds = items.some((c) => {
+    const id = c && typeof c === "object" ? (c as Record<string, unknown>).id : null
+    return typeof id === "string" && /\/f(\d+)(?:\/|$)/.test(id)
+  })
+  const seen = new Set<number>()
+  items.forEach((c, i) => {
+    const id = c && typeof c === "object" ? (c as Record<string, unknown>).id : null
+    const m = typeof id === "string" ? /\/f(\d+)(?:\/|$)/.exec(id) : null
+    if (hasFolioIds && !m) return // non-paginated media canvas (audio/video)
+    const ordre = m ? parseInt(m[1]!, 10) : i + 1
+    seen.add(ordre)
+  })
+  return seen.size
+}
+
+// ---------------------------------------------------------------------------
 // Client
 // ---------------------------------------------------------------------------
 
@@ -380,7 +515,7 @@ export class BnfDirectClient {
       `<http://data.bnf.fr/${fullArk(ark)}#about> ` +
       `<${ELECTRONIC_REPRODUCTION}> ?gallica } LIMIT 1`
     const body = await this.httpGetText(
-      DATABNF_SPARQL_URL,
+      viaPartner() ? DATABNF_SPARQL.proext : DATABNF_SPARQL.ungated,
       { query, format: "json" },
       "application/sparql-results+json",
     )
@@ -393,11 +528,12 @@ export class BnfDirectClient {
 
   /** Route 2: Catalogue SRU (UNIMARC) — field 856 $u, then 325 $u. */
   private async canonicalViaUnimarc(ark: string): Promise<string | null> {
-    const xml = await this.httpGetText(CATALOGUE_SRU_URL, {
+    const cat = viaPartner() ? CATALOGUE_SRU.proext : CATALOGUE_SRU.ungated
+    const xml = await this.httpGetText(cat.url, {
       version: "1.2",
       operation: "searchRetrieve",
       query: `bib.persistentId all "${fullArk(ark)}"`,
-      recordSchema: "unimarcxchange",
+      recordSchema: cat.unimarc,
       maximumRecords: "1",
     })
     const root = parser.parse(xml)
@@ -406,8 +542,81 @@ export class BnfDirectClient {
     return url ? extractGallicaArk(url) : null
   }
 
-  // ---- Gallica: OAI-PMH (oai.bnf.fr) ----------------------------------------
+  // ---- Gallica metadata (dual-path) -----------------------------------------
+  // PRIMARY (brokered/proext): the IIIF v3 manifest — the partner gateway, on the
+  // authenticated quota. It carries title/creator/date/lang, the `Taux OCR`
+  // text-layer signal, the doc type (`Type document` + the "publication en série"
+  // press marker) and the authoritative page count (canvas count). FALLBACK
+  // (no broker / dev): the ungated OAI-PMH record on oai.bnf.fr, which needs no
+  // credential. See ai-memories bnf-metadata-via-manifest.
   private async resolveGallica(ark: string): Promise<BnfMcpDocumentDetail> {
+    return viaPartner()
+      ? this.resolveGallicaViaManifest(ark)
+      : this.resolveGallicaViaOai(ark)
+  }
+
+  /** PRIMARY: derive Gallica metadata from the IIIF v3 manifest (proext). */
+  private async resolveGallicaViaManifest(
+    ark: string,
+  ): Promise<BnfMcpDocumentDetail> {
+    const body = await this.httpGetText(
+      `${PROEXT_BASE}/iiif/presentation/v3/${fullArk(ark)}/manifest.json`,
+      {},
+      "application/json, application/ld+json",
+    )
+    let manifest: unknown
+    try {
+      manifest = JSON.parse(body)
+    } catch (e) {
+      // A live manifest is valid JSON; a parse failure is a transient upstream
+      // glitch (truncated body / error page), not a terminal per-doc condition.
+      throw new BnfMcpError(
+        `Gallica manifest is not valid JSON for ${ark}: ${e instanceof Error ? e.message : String(e)}`,
+      )
+    }
+    const meta = parseManifestMetadata(manifest)
+    const title = metaValue(meta, ["titre", "title"]) ?? iiifLabel(manifest)
+    if (!title) {
+      // A live manifest always carries a label or Titre; its absence means the
+      // ARK is unknown / not digitized. Terminal — do not retry.
+      throw new BnfMcpNotFoundError(`Gallica manifest has no title for ${ark}`)
+    }
+    const typeDocument = metaValue(meta, ["type document"])
+    const typeGeneric = metaValue(meta, ["type", "nature"])
+    const docType =
+      [typeDocument, typeGeneric].filter(Boolean).join(" | ").toLowerCase() ||
+      undefined
+    const pages = manifestPageCount(manifest)
+
+    return {
+      ark: localArk(ark),
+      title,
+      creator:
+        metaValue(meta, [
+          "créateur",
+          "createur",
+          "creator",
+          "auteur",
+          "author",
+          "contributeur",
+        ]) ?? undefined,
+      date: metaValue(meta, ["date", "date d'édition", "date d'edition"]) ?? undefined,
+      // No typedoc setSpec in the manifest, so `gallica_typedoc` is absent and
+      // normalize.ts maps `doc_type` via mapCatalogueDocType (which now knows the
+      // "publication en série" press marker). `subtype` is consequently null —
+      // the fine fascicules/titres facet lives only in OAI's setSpec.
+      doc_type: docType,
+      gallica_typedoc: undefined,
+      language: metaValue(meta, ["langue", "language"]) ?? undefined,
+      publisher: metaValue(meta, ["editeur", "éditeur", "publisher"]) ?? undefined,
+      ocr_available: metaValue(meta, ["taux ocr", "taux d'ocr"]) !== null,
+      ...(pages !== undefined ? { pages } : {}),
+      gallica_url: `https://gallica.bnf.fr/${fullArk(ark)}`,
+    }
+  }
+
+  // ---- Gallica: OAI-PMH (oai.bnf.fr) — no-broker dev fallback ---------------
+  private async resolveGallicaViaOai(ark: string): Promise<BnfMcpDocumentDetail> {
     // Metadata from the UNGATED OAI-PMH endpoint (oai.bnf.fr) — no auth, no
     // Cloudflare, no partner quota — NOT gallica.bnf.fr/services/OAIRecord
     // (Cloudflare-403 from the server). OCR availability is the "Avec mode
@@ -447,11 +656,12 @@ export class BnfDirectClient {
 
   // ---- Catalogue: SRU -------------------------------------------------------
   private async resolveCatalogue(ark: string): Promise<BnfMcpDocumentDetail> {
-    const xml = await this.httpGetText(CATALOGUE_SRU_URL, {
+    const cat = viaPartner() ? CATALOGUE_SRU.proext : CATALOGUE_SRU.ungated
+    const xml = await this.httpGetText(cat.url, {
       version: "1.2",
       operation: "searchRetrieve",
       query: `bib.persistentId all "${fullArk(ark)}"`,
-      recordSchema: "dublincore",
+      recordSchema: cat.dc,
       maximumRecords: "1",
     })
     const root = parser.parse(xml)

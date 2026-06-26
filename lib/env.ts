@@ -48,6 +48,13 @@ const bootEnvSchema = z.object({
   // resolver falls back to its direct/relay transport. The BnF KEY/SECRET live
   // in the broker, NOT here — this is just the broker's URL.
   BNF_BROKER_URL: z.string().url().optional(),
+  // BnF authenticated partner gateway (proext). Base URL for the OAuth-gated
+  // partner API — catalogue SRU, Gallica SRU, SPARQL, IIIF. The metadata resolver
+  // (lib/bnf/direct.ts) targets it whenever the broker is configured (the broker
+  // mints the bearer + counts quota for this host; see broker isPartnerApi). A
+  // safe-default base, NOT a secret — same pattern as AUTHENTIK_APP_SLUG. The KEY/
+  // SECRET live in the broker, never here.
+  BNF_API_BASE_URL: z.string().url().default("https://openapiproext.bnf.fr"),
   // Agent provider — which gateway drives the `claude` agent mode (@alien/chat-sdk
   // v0.7+). `anthropic` (default) calls Anthropic directly with ANTHROPIC_API_KEY;
   // `openrouter` routes the same turns + tools + MCP through the OpenRouter gateway

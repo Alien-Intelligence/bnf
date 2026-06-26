@@ -303,7 +303,13 @@ export function iiifV3Label(v: unknown): string | null {
   return null;
 }
 
-/** Flatten a v3 manifest `metadata[]` (label/value are language maps) to pairs. */
+/**
+ * Flatten a v3 manifest `metadata[]` (label/value are language maps) to pairs.
+ * The VALUE keeps every element of a multi-valued field, joined " | " — BnF puts
+ * the discriminating tokens in the tail: `Type = [texte, publication en série
+ * imprimée]` (the press signal) and `Format = […, Nombre total de vues : N]`.
+ * `iiifV3Label` would drop everything after the first element, losing them.
+ */
 export function parseV3ManifestMetadata(
   raw: unknown,
 ): Array<{ label: string; value: string }> {
@@ -313,10 +319,25 @@ export function parseV3ManifestMetadata(
     if (!entry || typeof entry !== "object") continue;
     const e = entry as Record<string, unknown>;
     const label = iiifV3Label(e.label);
-    const value = iiifV3Label(e.value);
+    const value = iiifV3Values(e.value).join(" | ");
     if (label && value) out.push({ label, value });
   }
   return out;
+}
+
+/** Every string in a v3 language map ({"fr":["a","b"]} → ["a","b"]); fr preferred. */
+export function iiifV3Values(v: unknown): string[] {
+  if (v == null) return [];
+  if (typeof v === "string") return v.trim() ? [v.trim()] : [];
+  if (Array.isArray(v)) return v.flatMap(iiifV3Values);
+  if (typeof v === "object") {
+    const o = v as Record<string, unknown>;
+    const langs = Object.keys(o);
+    const pick =
+      langs.find((l) => /^fr/i.test(l)) ?? langs.find((l) => l === "none") ?? langs[0];
+    return pick ? iiifV3Values(o[pick]) : [];
+  }
+  return [];
 }
 
 /** First metadata value whose (case-insensitive) label matches any candidate. */
