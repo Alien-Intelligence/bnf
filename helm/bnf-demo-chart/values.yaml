@@ -8,7 +8,7 @@ replicaCount: 1
 image:
   repository: rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo
   pullPolicy: Always
-  tag: "0.7.1"
+  tag: "0.8.0"
 
 imagePullSecrets: []
 
@@ -106,7 +106,7 @@ worker:
   image:
     repository: rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo-worker
     pullPolicy: Always
-    tag: "0.7.1"
+    tag: "0.8.0"
 
   service:
     type: ClusterIP
@@ -170,7 +170,7 @@ worker:
     # remains the RATE authority; 12 holds sustained 300/min with freeze≈0/shed≈0.
     #   3000/min flip = TWO values, no code change: broker.config.globalRpm: "3000"
     #   + bnfFetchConcurrency: "48", then helm upgrade and verify via /calls.csv.
-    bnfFetchConcurrency: "12"
+    bnfFetchConcurrency: "32"
     # In-flight doc-jobs. This is the knob that keeps the fetch gate FED: each job
     # runs fetch→embed→index serially in its slot, so at 4 the docs moved as a
     # synchronized cohort — fetch bursts to the 300 cap, then all 4 embed/index
@@ -214,7 +214,7 @@ broker:
   image:
     repository: rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo-broker
     pullPolicy: Always
-    tag: "0.7.1"
+    tag: "0.8.0"
 
   service:
     type: ClusterIP
