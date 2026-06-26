@@ -29,14 +29,18 @@ interface Receipt {
 export class RegisterStage extends PipelineStage<EmbeddedDoc, never> {
   readonly name = "register";
   readonly inputQueue = Q.register;
-  override readonly concurrency = 4;
+  override readonly concurrency: number;
 
   constructor(
     deps: StageDeps,
     private readonly cluster: ClusterSink,
     private readonly docState: DocStateStore,
+    opts: { concurrency?: number } = {},
   ) {
     super(deps);
+    // Indexing into the data cluster (which autoscales). Default 4; raise to drain
+    // the register backlog when the cluster can take the load.
+    this.concurrency = opts.concurrency ?? 4;
   }
 
   async process(doc: EmbeddedDoc, ctx: StageContext): Promise<StageOutcome<never>> {

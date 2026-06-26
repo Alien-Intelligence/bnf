@@ -49,6 +49,8 @@ export interface PipelineDeps {
     imageSize?: string;
     visionImageSize?: string;
     fetchConcurrency?: number;
+    metadataConcurrency?: number;
+    registerConcurrency?: number;
     describeConcurrency?: number;
     describeCallConcurrency?: number;
     embedConcurrency?: number;
@@ -70,6 +72,7 @@ export function buildPipeline(deps: PipelineDeps): Pipeline {
     new MetadataStage(base, deps.bnf, deps.docState, {
       mistralEnabled: cfg.mistralEnabled ?? false,
       ...(cfg.maxPages !== undefined ? { maxPages: cfg.maxPages } : {}),
+      ...(cfg.metadataConcurrency !== undefined ? { concurrency: cfg.metadataConcurrency } : {}),
     }),
     new ManifestStage(base, deps.bnf, deps.docState, rates.manifest, {
       ...(cfg.maxCanvases !== undefined ? { maxCanvases: cfg.maxCanvases } : {}),
@@ -98,7 +101,9 @@ export function buildPipeline(deps: PipelineDeps): Pipeline {
     new EmbedStage(base, deps.embedder, deps.docState, rates.embed, {
       ...(cfg.embedConcurrency !== undefined ? { concurrency: cfg.embedConcurrency } : {}),
     }),
-    new RegisterStage(base, deps.cluster, deps.docState),
+    new RegisterStage(base, deps.cluster, deps.docState, {
+      ...(cfg.registerConcurrency !== undefined ? { concurrency: cfg.registerConcurrency } : {}),
+    }),
   ];
 
   return new Pipeline(queue, stages, log);

@@ -106,7 +106,7 @@ worker:
   image:
     repository: rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo-worker
     pullPolicy: Always
-    tag: "0.10.0"
+    tag: "0.10.1"
 
   service:
     type: ClusterIP
@@ -142,6 +142,12 @@ worker:
     # lane; OpenRouter has no per-key RPM cap so more parallel docs is safe (bounded
     # by describeCallConcurrency across all of them).
     describeConcurrency: "32"
+    # Doc-resolution (metadata/OAI) concurrency. Bounded downstream by the broker's
+    # external rate (~120/min); 16 keeps that rate fed (was 6).
+    metadataConcurrency: "16"
+    # Data-cluster register (indexing) concurrency. The cluster autoscales, so push
+    # it to drain the register backlog (was 4).
+    registerConcurrency: "24"
 
     # Mistral fallback OCR — transcribes `sans_texte` docs (digitized text, no BnF
     # OCR layer) the librarian opts into. ON: the app already gates the spend

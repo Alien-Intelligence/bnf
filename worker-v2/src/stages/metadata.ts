@@ -30,6 +30,10 @@ export interface MetadataOpts {
   mistralEnabled: boolean;
   /** Cap on folios per doc (matches V1 maxOcrPages, default 200). */
   maxPages?: number;
+  /** Doc-resolution concurrency. The OAI metadata fetch is bounded by the broker's
+   *  external rate (~120/min), not this — so this just needs to be high enough to
+   *  keep that rate fed. Default 6. */
+  concurrency?: number;
 }
 
 function toMeta(info: BnfDocInfo): DocMeta {
@@ -48,7 +52,7 @@ function toMeta(info: BnfDocInfo): DocMeta {
 export class MetadataStage extends PipelineStage<DocRef, never> {
   readonly name = "metadata";
   readonly inputQueue = Q.metadata;
-  override readonly concurrency = 6;
+  override readonly concurrency: number;
 
   private readonly mistralEnabled: boolean;
   private readonly maxPages: number;
@@ -62,6 +66,7 @@ export class MetadataStage extends PipelineStage<DocRef, never> {
     super(deps);
     this.mistralEnabled = opts.mistralEnabled;
     this.maxPages = opts.maxPages ?? 200;
+    this.concurrency = opts.concurrency ?? 6;
   }
 
   async process(doc: DocRef, ctx: StageContext): Promise<StageOutcome<never>> {

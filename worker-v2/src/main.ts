@@ -68,6 +68,8 @@ async function main(): Promise<void> {
       maxCanvases: cfg.maxCanvases,
       visionImageSize: cfg.visionImageSize,
       fetchConcurrency: cfg.fetchConcurrency,
+      metadataConcurrency: cfg.metadataConcurrency,
+      registerConcurrency: cfg.registerConcurrency,
       describeConcurrency: cfg.describeConcurrency,
       describeCallConcurrency: cfg.describeCallConcurrency,
       embedConcurrency: cfg.embedConcurrency,

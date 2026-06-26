@@ -31,6 +31,10 @@ data:
   DESCRIBE_CALL_CONCURRENCY: {{ .Values.worker.config.describeCallConcurrency | quote }}
   # Doc-level describe concurrency — how many image docs describe at once.
   DESCRIBE_CONCURRENCY: {{ .Values.worker.config.describeConcurrency | quote }}
+  # Doc-resolution (metadata/OAI) concurrency — fed by the broker's external rate.
+  METADATA_CONCURRENCY: {{ .Values.worker.config.metadataConcurrency | quote }}
+  # Data-cluster register (indexing) concurrency — the cluster autoscales.
+  REGISTER_CONCURRENCY: {{ .Values.worker.config.registerConcurrency | quote }}
 {{- if .Values.worker.config.mistralOcrEnabled }}
 
   # --- Mistral fallback OCR (`sans_texte` docs) ---

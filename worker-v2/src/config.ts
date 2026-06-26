@@ -53,6 +53,12 @@ export interface WorkerConfig {
    *  calls across all docs (a doc fans its folios out up to this). The real
    *  OpenRouter/Holo ceiling; keep under the provider's rate/DDoS limit. */
   describeCallConcurrency: number;
+  /** Doc-resolution (metadata/OAI) concurrency — bounded downstream by the broker's
+   *  external rate (~120/min); this just keeps that rate fed. */
+  metadataConcurrency: number;
+  /** Data-cluster register (indexing) concurrency — the cluster autoscales, so this
+   *  can be pushed to drain the register backlog. */
+  registerConcurrency: number;
   /** Embed (RunPod) concurrency. */
   embedConcurrency: number;
   /** Mistral OCR batch-submit concurrency (how many docs OCR in parallel). */
@@ -86,6 +92,8 @@ export function loadConfig(): WorkerConfig {
     // per-key RPM cap — push concurrency hard and let the in-call 429/timeout
     // backoff (vision.ts) ride the provider's capacity edge. See hardening-pass-2.
     describeCallConcurrency: optionalInt("DESCRIBE_CALL_CONCURRENCY", 64),
+    metadataConcurrency: optionalInt("METADATA_CONCURRENCY", 16),
+    registerConcurrency: optionalInt("REGISTER_CONCURRENCY", 24),
     embedConcurrency: optionalInt("EMBED_CONCURRENCY", 8),
     ocrSubmitConcurrency: optionalInt("OCR_SUBMIT_CONCURRENCY", 12),
     ocrPollConcurrency: optionalInt("OCR_POLL_CONCURRENCY", 16),
