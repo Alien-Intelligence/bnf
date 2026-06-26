@@ -624,6 +624,35 @@
         "removed": "{count} removed"
       }
     },
+    "queue": {
+      "title": "Processing",
+      "finalized": "Documents finalized",
+      "fetchTitle": "BnF fetch",
+      "rate": "≈ {rate}/min",
+      "foliosInFlight": "{count, plural, =0 {No folios queued} one {# folio to fetch} other {# folios to fetch}}",
+      "etaLabel": "Time left",
+      "etaComputing": "estimating…",
+      "groups": {
+        "metadata": "Metadata",
+        "images": "Image descriptions",
+        "prep": "AI preparation",
+        "ocr": "Mistral OCR",
+        "index": "Indexing"
+      },
+      "inProgress": "{count} in progress",
+      "waiting": "{count} queued",
+      "failedShort": "{count} failed",
+      "idle": "—",
+      "totals": {
+        "done": "{count} done",
+        "running": "{count} in progress",
+        "queued": "{count} queued",
+        "failed": "{count} failed",
+        "skipped": "{count} skipped"
+      },
+      "reconcileWarning": "totals do not reconcile",
+      "noLiveState": "Processing on the server…"
+    },
     "status": {
       "queued": "Queued",
       "running": "Running",

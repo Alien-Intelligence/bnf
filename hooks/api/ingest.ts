@@ -13,6 +13,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import { apiFetch } from "@/lib/api-fetch"
 import { INGEST_POLL_INTERVAL_MS } from "@/lib/constants"
 import type {
+  IngestJobStatusView,
   IngestJobView,
   IngestSubmitPaidOcrResponse,
 } from "@/models/ingest/types"
@@ -65,16 +66,16 @@ export const ingestKeys = {
  * fallback for clients that cannot sustain a long-lived connection.
  */
 export function useIngestStatus(jobId: string | null) {
-  return useQuery<IngestJobView>({
+  return useQuery<IngestJobStatusView>({
     queryKey: jobId ? ingestKeys.job(jobId) : ["ingest", "noop"],
     enabled: !!jobId,
     queryFn: async () => {
       const res = await apiFetch(`/api/ingest/${jobId}`)
       if (!res.ok) throw new Error("Failed to fetch ingest job")
-      return res.json() as Promise<IngestJobView>
+      return res.json() as Promise<IngestJobStatusView>
     },
     refetchInterval: (query) => {
-      const status = (query.state.data as IngestJobView | undefined)?.status
+      const status = (query.state.data as IngestJobStatusView | undefined)?.status
       return status === "running" || status === "queued"
         ? INGEST_POLL_INTERVAL_MS
         : false

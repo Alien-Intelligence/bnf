@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { RateLimiter } from "./rate.js";
 
 test("starts full at burst capacity; tryAcquire consumes one; false when empty", () => {
-  let t = 0;
+  const t = 0; // clock never advances in this test
   const limiter = new RateLimiter({ ratePerMin: 60, burst: 3, now: () => t });
 
   assert.equal(limiter.available(), 3, "bucket starts at burst capacity");

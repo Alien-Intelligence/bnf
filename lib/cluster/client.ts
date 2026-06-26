@@ -9,7 +9,7 @@ import "server-only"
 //
 // On any non-2xx response or transport error, throws an Error with enough
 // context for IngestService.submit to mark the parent job failed.
-import type { ClusterIngestRequest } from "./contracts"
+import type { ClusterIngestRequest, ClusterQueueProgress } from "./contracts"
 
 const DEFAULT_TIMEOUT_MS = 30_000
 
@@ -78,6 +78,33 @@ export class ClusterClient {
       )
     }
     return { clusterJobId: json.clusterJobId }
+  }
+
+  /**
+   * Fetch the worker's live queue-status read-model for a run. Best-effort: this
+   * drives the Ingérer live view, NOT the version commit (that rides the terminal
+   * callback). A 404 (run unknown / already pruned) or any transport error
+   * resolves to null so the page degrades to the reassurance banner rather than
+   * erroring — the commit path is unaffected.
+   */
+  static async progress(
+    clusterJobId: string,
+  ): Promise<ClusterQueueProgress | null> {
+    const base = workerUrl()
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), timeoutMs())
+    try {
+      const res = await fetch(
+        `${base}/progress/${encodeURIComponent(clusterJobId)}`,
+        { signal: controller.signal },
+      )
+      if (!res.ok) return null
+      return (await res.json()) as ClusterQueueProgress
+    } catch {
+      return null
+    } finally {
+      clearTimeout(timer)
+    }
   }
 
   static async cancel(clusterJobId: string): Promise<void> {

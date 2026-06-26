@@ -14,7 +14,7 @@ import {
   isPaidOcrOutcome,
 } from "@/hooks/api/ingest"
 import { CardIngestSummary } from "@/components/cards/ingest/summary"
-import { CardIngestStagePipeline } from "@/components/cards/ingest/stage-pipeline"
+import { CardIngestQueueStatus } from "@/components/cards/ingest/queue-status"
 import { CardComeBackLater } from "@/components/cards/ingest/come-back-later"
 import { CardIngestCompletion } from "@/components/cards/ingest/completion"
 import { CardIngestRetryFailed } from "@/components/cards/ingest/retry-failed"
@@ -148,27 +148,35 @@ export function IngererClient({
         />
 
         {activeJobId && status.data && (
-          status.data.status === INGEST_STATUS.DONE ? (
-            <CardIngestCompletion projectId={projectId} />
-          ) : (
-            <>
-              {/* "Traitement en cours / vous pouvez fermer la page" sits ABOVE
-                  the stage progress bars — the reassurance banner first, the
-                  detailed per-stage progress under it. */}
-              {(status.data.status === INGEST_STATUS.QUEUED ||
-                status.data.status === INGEST_STATUS.RUNNING) && (
+          <>
+            {/* Done: hand off to Rechercher. Partial: the successes ARE indexed,
+                so also offer the success CTA, plus a retry for the failed docs. */}
+            {(status.data.status === INGEST_STATUS.DONE ||
+              status.data.status === INGEST_STATUS.PARTIAL) && (
+              <CardIngestCompletion projectId={projectId} />
+            )}
+
+            {/* Live: the reassurance banner first, then the queue-status view
+                (buckets draining, BnF fetch as the headline bottleneck). */}
+            {(status.data.status === INGEST_STATUS.QUEUED ||
+              status.data.status === INGEST_STATUS.RUNNING) && (
+              <>
                 <CardComeBackLater />
-              )}
-              <CardIngestStagePipeline job={status.data} onCancel={onCancel} />
-              {status.data.status === INGEST_STATUS.FAILED && (
-                <CardIngestRetryFailed
-                  error={status.data.error}
-                  onRetry={() => void onRetryFailed()}
-                  isRetrying={retryMutation.isPending}
-                />
-              )}
-            </>
-          )
+                <CardIngestQueueStatus job={status.data} onCancel={onCancel} />
+              </>
+            )}
+
+            {/* Failed (whole job) or partial (some docs) → offer to retry the
+                failed documents only. */}
+            {(status.data.status === INGEST_STATUS.FAILED ||
+              status.data.status === INGEST_STATUS.PARTIAL) && (
+              <CardIngestRetryFailed
+                error={status.data.error}
+                onRetry={() => void onRetryFailed()}
+                isRetrying={retryMutation.isPending}
+              />
+            )}
+          </>
         )}
 
         <CardIngestJobHistory projectId={projectId} jobs={initialRecentJobs} />

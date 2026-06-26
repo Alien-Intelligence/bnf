@@ -8,7 +8,7 @@ import "server-only"
 //
 // All app code submits and cancels jobs through this facade; it never imports
 // ClusterClient or FakeClusterRunner directly.
-import type { ClusterIngestRequest } from "./contracts"
+import type { ClusterIngestRequest, ClusterQueueProgress } from "./contracts"
 import { ClusterClient } from "./client"
 import { FakeClusterRunner } from "./fake"
 
@@ -20,6 +20,18 @@ export const ClusterRunner = {
     return mode === "real"
       ? ClusterClient.submit(req)
       : FakeClusterRunner.submit(req)
+  },
+
+  /**
+   * Live queue-status read-model for a run. Fake mode has no real pipeline to
+   * report on (the FakeClusterRunner drives terminal progress directly), so it
+   * returns null and the UI falls back to the reassurance banner.
+   */
+  async progress(
+    clusterJobId: string,
+  ): Promise<ClusterQueueProgress | null> {
+    const mode = process.env.CLUSTER_MODE ?? "fake"
+    return mode === "real" ? ClusterClient.progress(clusterJobId) : null
   },
 
   async cancel(clusterJobId: string): Promise<void> {

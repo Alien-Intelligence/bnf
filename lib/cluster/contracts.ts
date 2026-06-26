@@ -30,6 +30,36 @@ export interface ClusterIngestRequest {
   callbackSecret: string
 }
 
+/**
+ * Live queue-status read-model returned by the worker's `GET /progress/:runId`
+ * (worker-v2 `buildProgress`). Polled by the Ingérer page to render the staged
+ * pipeline as it drains — the BnF fetch bucket is the headline bottleneck. This
+ * is a LIVE-UX payload only; it is NOT the commit signal (that is the terminal
+ * ClusterProgressEvent below). Mirror of the worker's ProgressReport.
+ */
+export interface ClusterQueueStage {
+  done: number
+  running: number
+  queued: number
+  failed: number
+}
+
+export interface ClusterQueueProgress {
+  /** Per-doc status counts (the headline reconciliation), keyed by worker DocStatus. */
+  docs: Record<string, number>
+  docsTotal: number
+  /** Docs fully registered into the index. */
+  docsFinished: number
+  /** Per-stage bucket counts, keyed by worker stage name (fetch, metadata, …). */
+  stages: Record<string, ClusterQueueStage>
+  /** The binding BnF fetch rate (folios/min) the ETA assumes. */
+  fetchRatePerMin: number
+  /** Estimated seconds remaining, or null when not computable. */
+  etaSeconds: number | null
+  /** True iff the doc totals reconcile (a UI guard against under-reporting). */
+  reconciles: boolean
+}
+
 export type ClusterProgressEvent =
   | {
       stage: "extract" | "chunk" | "embed" | "index"

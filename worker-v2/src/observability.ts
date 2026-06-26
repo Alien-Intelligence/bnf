@@ -30,6 +30,9 @@ export interface ProgressReport {
   docsFinished: number;
   /** Per-stage bucket counts, keyed by stage name. */
   stages: Record<string, StageProgress>;
+  /** The binding BnF fetch rate (folios/min) the ETA assumes — surfaced so the UI
+   *  can headline the constraint ("≈ 300/min"). */
+  fetchRatePerMin: number;
   /** Estimated seconds remaining (fetch backlog ÷ rate + Mistral tail), or null. */
   etaSeconds: number | null;
   /** Paid Mistral OCR spend so far / budget (USD), when a budget is configured. */
@@ -106,6 +109,7 @@ export async function buildProgress(
     docsTotal,
     docsFinished: docs.done,
     stages,
+    fetchRatePerMin: rate,
     etaSeconds,
     reconciles,
   };

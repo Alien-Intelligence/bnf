@@ -624,6 +624,35 @@
         "removed": "{count} retiré·s"
       }
     },
+    "queue": {
+      "title": "Traitement en cours",
+      "finalized": "Documents finalisés",
+      "fetchTitle": "Récupération BnF",
+      "rate": "≈ {rate}/min",
+      "foliosInFlight": "{count, plural, =0 {Aucun folio en attente} one {# folio à récupérer} other {# folios à récupérer}}",
+      "etaLabel": "Temps restant",
+      "etaComputing": "estimation…",
+      "groups": {
+        "metadata": "Métadonnées",
+        "images": "Descriptions d'images",
+        "prep": "Préparation IA",
+        "ocr": "OCR Mistral",
+        "index": "Indexation"
+      },
+      "inProgress": "{count} en cours",
+      "waiting": "{count} en file",
+      "failedShort": "{count} en échec",
+      "idle": "—",
+      "totals": {
+        "done": "{count} terminés",
+        "running": "{count} en cours",
+        "queued": "{count} en file",
+        "failed": "{count} échoués",
+        "skipped": "{count} ignorés"
+      },
+      "reconcileWarning": "totaux incohérents",
+      "noLiveState": "Traitement en cours côté serveur…"
+    },
     "status": {
       "queued": "En attente",
       "running": "En cours",

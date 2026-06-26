@@ -1,11 +1,16 @@
 /**
  * GET /api/ingest/[job_id]
  *
- * Returns the current snapshot of an IngestJob. Used for polling while the
- * job is in a non-terminal state (queued | running). The client's
- * useIngestStatus hook stops refetching once status reaches done/failed/canceled.
+ * Returns the current snapshot of an IngestJob PLUS the worker's live
+ * queue-status read-model (`queue`) so the Ingérer page can render the staged
+ * pipeline as it drains. Polled while the job is non-terminal; the client's
+ * useIngestStatus hook stops refetching once status reaches a terminal state.
  *
- * Layer order: withAuth → load job + project → authorize → respond.
+ * The `queue` payload is best-effort live UX, proxied from the worker via
+ * IngestService.queueProgress (null in fake mode / terminal / worker down). The
+ * version commit never depends on it — that rides the HMAC terminal callback.
+ *
+ * Layer order: withAuth → load job + project → authorize → service → respond.
  * No body parsing — GET has no body.
  *
  * See playbook/ingestion-jobs.md §"Progress reporting".
@@ -15,7 +20,11 @@ import { notFound, ok } from "@/lib/api-response"
 import { ProjectQueries } from "@/models/projects/queries"
 import { IngestPolicy } from "@/models/ingest/policy"
 import { IngestQueries } from "@/models/ingest/queries"
-import { serializeIngestJob, type IngestJobView } from "@/models/ingest/types"
+import { IngestService } from "@/models/ingest/service"
+import {
+  serializeIngestJob,
+  type IngestJobStatusView,
+} from "@/models/ingest/types"
 
 type RouteCtx = { params: Promise<{ job_id: string }> }
 
@@ -31,5 +40,6 @@ export const GET = withAuth(async (_req, _user, bouncer, ctx: RouteCtx) => {
 
   await bouncer.with(IngestPolicy).authorize("view", project)
 
-  return ok<IngestJobView>(serializeIngestJob(job))
+  const queue = await IngestService.queueProgress(job)
+  return ok<IngestJobStatusView>({ ...serializeIngestJob(job), queue })
 })

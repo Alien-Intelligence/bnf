@@ -31,7 +31,10 @@ import type {
   IngestSubmitInput,
   IngestSubmitOutcome,
 } from "./types"
-import type { ClusterProgressEvent } from "@/lib/cluster/contracts"
+import type {
+  ClusterProgressEvent,
+  ClusterQueueProgress,
+} from "@/lib/cluster/contracts"
 import { ClusterRunner } from "@/lib/cluster/runner"
 import { PAID_OCR_DEFAULT_BUDGET_USD } from "@/lib/constants"
 import { env } from "@/lib/env"
@@ -309,6 +312,21 @@ export class IngestService {
       await ClusterRunner.cancel(job.clusterJobId)
     }
     return updated
+  }
+
+  /**
+   * Fetch the worker's live queue-status read-model for a job, for the Ingérer
+   * live view. Returns null when there is nothing to poll — no clusterJobId yet,
+   * a terminal job (its live view is moot; the persisted stats tell the story), or
+   * the worker is unreachable (best-effort: the page degrades to the banner). The
+   * version commit never depends on this — it rides the terminal callback.
+   */
+  static async queueProgress(job: IngestJob): Promise<ClusterQueueProgress | null> {
+    if (!job.clusterJobId) return null
+    if (job.status !== INGEST_STATUS.RUNNING && job.status !== INGEST_STATUS.QUEUED) {
+      return null
+    }
+    return ClusterRunner.progress(job.clusterJobId)
   }
 
   /**

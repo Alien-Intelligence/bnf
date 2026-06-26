@@ -66,7 +66,10 @@ export class MemoryDocState implements DocStateStore {
     if (!e.folios.has(ordre)) e.folios.set(ordre, ok); // idempotent: first write wins
     let done = 0;
     let failed = 0;
-    for (const v of e.folios.values()) v ? done++ : failed++;
+    for (const v of e.folios.values()) {
+      if (v) done++;
+      else failed++;
+    }
     e.pagesDone = done;
     e.pagesFailed = failed;
     const expected = e.pagesExpected ?? 0;

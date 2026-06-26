@@ -3,6 +3,7 @@
 // No `import "server-only"` — the schema is shared by client-side form
 // validation and server-side request parsing.
 import { z } from "zod"
+import type { ClusterQueueProgress } from "@/lib/cluster/contracts"
 import type {
   IngestJob,
   IngestStage,
@@ -31,6 +32,17 @@ export type IngestJobView = Omit<
   // single-job API serializers leave them undefined.
   baseVersionSeq?: number | null
   targetVersionSeq?: number
+}
+
+/**
+ * The single-job poll response: the client-safe job view PLUS the worker's live
+ * queue-status read-model (`queue`), or null when there is nothing live to show
+ * (terminal job, no clusterJobId, fake mode, or the worker is unreachable). The
+ * Ingérer page renders the queue-status card from `queue` while the job runs, and
+ * reads `status` for the terminal transition. Returned by GET /api/ingest/[job_id].
+ */
+export type IngestJobStatusView = IngestJobView & {
+  queue: ClusterQueueProgress | null
 }
 
 /**

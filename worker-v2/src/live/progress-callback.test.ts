@@ -15,7 +15,6 @@ import {
   buildTerminalEvent,
   signBody,
   TerminalEmitter,
-  type TerminalEvent,
 } from "./progress-callback.js";
 
 const zeroCounts = () => ({
