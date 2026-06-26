@@ -95,6 +95,43 @@ test("parseV3Manifest derives canvases, ordre, totalPages and the fr title", () 
   assert.equal(m.canvases[1]!.ordre, 2);
 });
 
+test("parseV3Manifest drops folio-less media canvases that would collide on ordre", () => {
+  // A "document sonore": two audio playback canvases (no /f<N>/ in the id) followed
+  // by four real image folios. The old position-fallback gave the audio canvases
+  // ordres 1,2 — colliding with f1,f2 — so pagesExpected (6) outran the distinct
+  // folios reachable (4) and the fan-in hung forever. ark:/12148/bpt6k88175778.
+  const json = {
+    label: { none: ["L'ODYSSEE / Homère"] },
+    items: [
+      { id: "https://openapi.bnf.fr/iiif/.../bpt6k88175778/canvas/4-4-6-2-4", label: { none: ["Face A"] } },
+      { id: "https://openapi.bnf.fr/iiif/.../bpt6k88175778/canvas/4-6-6-2-4", label: { none: ["Face B"] } },
+      { id: "https://openapi.bnf.fr/iiif/.../bpt6k88175778/f1/canvas", label: { fr: ["3"] } },
+      { id: "https://openapi.bnf.fr/iiif/.../bpt6k88175778/f2/canvas", label: { fr: ["4"] } },
+      { id: "https://openapi.bnf.fr/iiif/.../bpt6k88175778/f3/canvas", label: { fr: ["recto"] } },
+      { id: "https://openapi.bnf.fr/iiif/.../bpt6k88175778/f4/canvas", label: { fr: ["verso"] } },
+    ],
+  };
+  const m = parseV3Manifest(json, 200);
+  assert.equal(m.totalPages, 4, "only the four real image folios remain");
+  assert.deepEqual(
+    m.canvases.map((c) => c.ordre),
+    [1, 2, 3, 4],
+    "ordres are unique so the fan-in can complete",
+  );
+});
+
+test("parseV3Manifest falls back to 1-based position only when no canvas has a folio id", () => {
+  const json = {
+    label: "Recueil sans folios",
+    items: [{ id: "a/canvas/x" }, { id: "a/canvas/y" }, { label: { fr: ["sans id"] } }],
+  };
+  const m = parseV3Manifest(json, 200);
+  assert.deepEqual(
+    m.canvases.map((c) => c.ordre),
+    [1, 2, 3],
+  );
+});
+
 test("parseV3Manifest honours maxCanvases (totalPages stays full count)", () => {
   const json = {
     label: "Recueil",

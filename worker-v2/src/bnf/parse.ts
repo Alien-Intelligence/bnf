@@ -238,21 +238,45 @@ export function parseV3Manifest(
 ): Manifest {
   const title = iiifV3Label(json.label);
   const items = Array.isArray(json.items) ? json.items : [];
-  const canvases: ManifestCanvas[] = [];
-  for (let i = 0; i < items.length; i++) {
-    const c = items[i];
+
+  // Parse each canvas, deriving its folio ordre strictly from the IIIF canvas id
+  // (".../f<N>/canvas"). A canvas whose id carries no folio number is not a
+  // paginated image: for BnF audio/video docs these are media playback surfaces
+  // (e.g. ".../canvas/4-4-6-2-4") with no fetchable image at all.
+  type ParsedCanvas = Omit<ManifestCanvas, "ordre"> & { fOrdre: number | null };
+  const parsed: ParsedCanvas[] = [];
+  for (const c of items) {
     if (!c || typeof c !== "object") continue;
     const obj = c as Record<string, unknown>;
     const id = typeof obj.id === "string" ? obj.id : null;
-    // v3 canvas id is ".../f<N>/canvas" — derive ordre, else 1-based position.
     const m = id ? /\/f(\d+)(?:\/|$)/.exec(id) : null;
-    const ordre = m ? parseInt(m[1]!, 10) : i + 1;
-    const label = iiifV3Label(obj.label);
-    const width = typeof obj.width === "number" ? obj.width : null;
-    const height = typeof obj.height === "number" ? obj.height : null;
-    // V2 drops imageServiceUrl: the client builds the image URL from ark+ordre.
-    canvases.push({ ordre, label, width, height });
+    parsed.push({
+      fOrdre: m ? parseInt(m[1]!, 10) : null,
+      label: iiifV3Label(obj.label),
+      width: typeof obj.width === "number" ? obj.width : null,
+      height: typeof obj.height === "number" ? obj.height : null,
+    });
   }
+
+  // The fan-in counts distinct (docJobId, ordre) folios, so `ordre` MUST be unique
+  // across canvases or the doc hangs forever (live bug, 2026-06-26: a "document
+  // sonore" whose two audio canvases fell back to positions 1,2 and collided with
+  // its image folios f1,f2 → pagesExpected 6 but only 4 distinct folios reachable).
+  // When the manifest carries any real folio id, drop the folio-less media canvases
+  // (the image fetch URL is folio-numbered — a folio-less canvas is unfetchable
+  // regardless). Only a uniformly id-less legacy manifest falls back to 1-based
+  // position (unique by construction). Dedupe by ordre as a final guard.
+  const hasFolioIds = parsed.some((p) => p.fOrdre !== null);
+  const canvases: ManifestCanvas[] = [];
+  const seen = new Set<number>();
+  parsed.forEach((p, i) => {
+    if (hasFolioIds && p.fOrdre === null) return; // non-paginated media (audio/video)
+    const ordre = p.fOrdre ?? i + 1;
+    if (seen.has(ordre)) return; // duplicate folio id — keep the first
+    seen.add(ordre);
+    // V2 drops imageServiceUrl: the client builds the image URL from ark+ordre.
+    canvases.push({ ordre, label: p.label, width: p.width, height: p.height });
+  });
   return {
     title,
     metadata: parseV3ManifestMetadata(json.metadata),
