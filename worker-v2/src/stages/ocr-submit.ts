@@ -28,14 +28,16 @@ export class OcrSubmitStage extends PipelineStage<DocReady, OcrBatchRef> {
   readonly name = "ocr-submit";
   readonly inputQueue = Q.ocrSubmit;
   override readonly outputQueue = Q.ocrPoll;
-  override readonly concurrency = 4;
+  override readonly concurrency: number;
 
   constructor(
     deps: StageDeps,
     private readonly ocr: OcrEngine,
     private readonly docState: DocStateStore,
+    opts: { concurrency?: number } = {},
   ) {
     super(deps);
+    this.concurrency = opts.concurrency ?? 4;
   }
 
   async process(doc: DocReady, ctx: StageContext): Promise<StageOutcome<OcrBatchRef>> {

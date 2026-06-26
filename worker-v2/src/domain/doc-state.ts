@@ -103,4 +103,11 @@ export interface DocStateStore {
   /** Total ok folios (registered pages) across the `done` docs of a run — the
    *  terminal callback's display-only `chunksWritten`. */
   donePageCount(runId: string): Promise<number>;
+  /**
+   * Run-scoped folio tally for the BnF-fetch read-model: `expected` is the sum of
+   * pages_expected over the run's planned docs (grows as metadata resolves more
+   * docs); `done`/`failed` are landed folios. Unlike the shared pg-boss bucket
+   * counts, this is scoped to the run, so a fresh run never inherits stale numbers.
+   */
+  folioCounts(runId: string): Promise<{ expected: number; done: number; failed: number }>;
 }

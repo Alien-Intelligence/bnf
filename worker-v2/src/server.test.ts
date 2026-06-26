@@ -31,7 +31,10 @@ async function bootServer(): Promise<{
     fetchFn: (async () => new Response("{}", { status: 200 })) as typeof fetch,
   });
   const completion = new CompletionMonitor(docState, runStore, emitter, logger);
-  const deps: ServerDeps = { runStore, docState, queue, completion, log: logger, fetchRatePerMin: 300 };
+  const deps: ServerDeps = {
+    runStore, docState, queue, completion, log: logger,
+    fetchRatePerMin: 300, manifestRatePerMin: 42,
+  };
   const server = await startServer(deps, 0);
   const { port } = server.address() as AddressInfo;
   return {

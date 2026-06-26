@@ -24,9 +24,13 @@ import type {
  */
 export type IngestJobView = Omit<
   IngestJob,
-  "progress" | "callbackSecret"
+  "progress" | "callbackSecret" | "paidOcrEstimatedUsd" | "paidOcrActualUsd"
 > & {
   progress: number | null
+  // Prisma `Decimal` fields, like `progress`, can't cross the RSC boundary —
+  // flatten to plain numbers (null when unset).
+  paidOcrEstimatedUsd: number | null
+  paidOcrActualUsd: number | null
   // Base/target version seqs for the history "v{base} → v{target}" label. Only
   // populated where the loader joined the versions (the Ingérer history); the
   // single-job API serializers leave them undefined.
@@ -51,11 +55,22 @@ export type IngestJobStatusView = IngestJobView & {
  * responses). Strips `callbackSecret` and flattens the `Decimal` progress.
  */
 export function serializeIngestJob(job: IngestJob): IngestJobView {
-  // Destructure the secret out so it cannot leak; `progress` is rebuilt below.
-  const { callbackSecret: _callbackSecret, progress, ...rest } = job
+  // Destructure the secret out so it cannot leak; the Decimal fields are rebuilt
+  // below as plain numbers (RSC can't serialize Prisma Decimal).
+  const {
+    callbackSecret: _callbackSecret,
+    progress,
+    paidOcrEstimatedUsd,
+    paidOcrActualUsd,
+    ...rest
+  } = job
   return {
     ...rest,
     progress: progress === null ? null : Number(progress),
+    paidOcrEstimatedUsd:
+      paidOcrEstimatedUsd === null ? null : Number(paidOcrEstimatedUsd),
+    paidOcrActualUsd:
+      paidOcrActualUsd === null ? null : Number(paidOcrActualUsd),
   }
 }
 

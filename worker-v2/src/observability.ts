@@ -30,9 +30,16 @@ export interface ProgressReport {
   docsFinished: number;
   /** Per-stage bucket counts, keyed by stage name. */
   stages: Record<string, StageProgress>;
+  /** Run-scoped BnF-fetch folio tally — the honest récupérés/total for the fetch
+   *  headline (NOT the shared pg-boss bucket counts, which accumulate across runs). */
+  folios: { expected: number; done: number; failed: number };
   /** The binding BnF fetch rate (folios/min) the ETA assumes — surfaced so the UI
    *  can headline the constraint ("≈ 300/min"). */
   fetchRatePerMin: number;
+  /** The IIIF manifest rate (manifests/min) — the binding cap on the metadata
+   *  lane's image-doc sub-stage. Surfaced so the UI shows the rate, not just the
+   *  in-flight concurrency. */
+  manifestRatePerMin: number;
   /** Estimated seconds remaining (fetch backlog ÷ rate + Mistral tail), or null. */
   etaSeconds: number | null;
   /** Paid Mistral OCR spend so far / budget (USD), when a budget is configured. */
@@ -50,6 +57,8 @@ export interface ProgressOpts {
   runId?: string;
   /** BnF fetch rate (folios/min) for the ETA — 300 today, 1000 if the raise lands. */
   fetchRatePerMin?: number;
+  /** IIIF manifest rate (manifests/min) — surfaced on the metadata row (default 42). */
+  manifestRatePerMin?: number;
   /** One-time Mistral batch tail (seconds) added to the ETA when OCR work is queued. */
   mistralTailSeconds?: number;
   paidOcr?: { spentUsd: number; budgetUsd: number | null };
@@ -104,12 +113,20 @@ export async function buildProgress(
 
   const reconciles = docsTotal === sumStatuses(docs);
 
+  // Run-scoped folio tally for the fetch headline. Only meaningful with a runId
+  // (the /progress/:runId path always sets it); the unscoped status CLI gets zeros.
+  const folios = opts.runId
+    ? await docState.folioCounts(opts.runId)
+    : { expected: 0, done: 0, failed: 0 };
+
   const report: ProgressReport = {
     docs,
     docsTotal,
     docsFinished: docs.done,
     stages,
+    folios,
     fetchRatePerMin: rate,
+    manifestRatePerMin: opts.manifestRatePerMin ?? 42,
     etaSeconds,
     reconciles,
   };

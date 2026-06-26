@@ -30,6 +30,8 @@ export interface ServerDeps {
   log: Logger;
   /** BnF fetch rate (folios/min) for the read-model ETA. */
   fetchRatePerMin: number;
+  /** IIIF manifest rate (manifests/min) for the read-model's metadata-row rate. */
+  manifestRatePerMin: number;
 }
 
 /** Read a request body to a string, capped to guard against unbounded uploads. */
@@ -169,6 +171,7 @@ async function handleProgress(
   const report = await buildProgress(deps.docState, deps.queue, {
     runId,
     fetchRatePerMin: deps.fetchRatePerMin,
+    manifestRatePerMin: deps.manifestRatePerMin,
   });
   sendJson(res, 200, report);
 }

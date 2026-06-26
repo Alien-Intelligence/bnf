@@ -114,7 +114,13 @@ export function CardIngestQueueStatus({ job, onCancel }: Props) {
       : 0
 
   const fetch = queue.stages.fetch ?? EMPTY_STAGE
-  const foliosInFlight = fetch.queued + fetch.running
+  // Run-scoped folio tally (honest, not the shared pg-boss bucket). `expected`
+  // grows as metadata resolves more docs; remaining = expected − landed.
+  const folios = queue.folios
+  const foliosRemaining = Math.max(
+    0,
+    folios.expected - folios.done - folios.failed,
+  )
 
   // Run totals — always reconcile to docsTotal (done + running + queued + failed
   // + skipped). Surfaced verbatim so the view can never hide failures/skips.
@@ -154,29 +160,35 @@ export function CardIngestQueueStatus({ job, onCancel }: Props) {
           </span>
         </div>
 
-        {/* Bottleneck — the 300/min BnF fetch gate, the binding constraint. */}
+        {/* Bottleneck — the BnF fetch gate, the binding constraint. */}
         <div className="rounded-lg border bg-secondary/30 p-3">
-          <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
             <span className="flex items-center gap-2 text-[13px] font-semibold">
               {(fetch.running > 0 || fetch.queued > 0) && (
                 <Loader2 className="size-3.5 animate-spin text-brand-teal" />
               )}
               {t("fetchTitle")}
             </span>
-            <span className="font-mono text-[11px] tabular-nums text-muted-foreground">
-              {t("rate", { rate: queue.fetchRatePerMin })}
-            </span>
           </div>
-          <div className="mt-1.5 flex items-center justify-between gap-2 text-xs text-muted-foreground">
-            <span className="tabular-nums">
-              {t("foliosInFlight", { count: foliosInFlight })}
+          <div className="mt-1.5 flex items-center justify-between gap-2 text-xs">
+            <span className="tabular-nums text-foreground">
+              {t("foliosFetched", { done: folios.done, total: folios.expected })}
             </span>
             {etaText && (
-              <span>
+              <span className="text-muted-foreground">
                 {t("etaLabel")} :{" "}
                 <span className="font-mono text-neutral-200">{etaText}</span>
               </span>
             )}
+          </div>
+          {/* Same running / queued breakdown as the stage rows, folio-level. */}
+          <div className="mt-1 flex items-center gap-3 font-mono text-[11px] tabular-nums text-muted-foreground">
+            {fetch.running > 0 && (
+              <span className="text-brand-teal">
+                {t("inProgress", { count: fetch.running })}
+              </span>
+            )}
+            <span>{t("waiting", { count: foliosRemaining })}</span>
           </div>
         </div>
 
@@ -184,6 +196,11 @@ export function CardIngestQueueStatus({ job, onCancel }: Props) {
         <ul className="flex flex-col">
           {GROUPS.map((g) => {
             const s = sumStages(queue.stages, g.stages)
+            // ONLY running/queued — these are current pg-boss state. done/failed
+            // accumulate across ALL runs (the buckets are shared, not run-scoped),
+            // so showing them would inherit stale counts from earlier runs and
+            // contradict the run-scoped totals below. Real doc failures surface in
+            // the reconciling run totals (échoués) + the retry card, never here.
             const active = s.running + s.queued
             return (
               <li
@@ -193,7 +210,7 @@ export function CardIngestQueueStatus({ job, onCancel }: Props) {
                 <span
                   className={cn(
                     "font-medium",
-                    active === 0 && s.failed === 0 && "text-muted-foreground",
+                    active === 0 && "text-muted-foreground",
                   )}
                 >
                   {t(`groups.${g.key}` as "groups.metadata")}
@@ -209,12 +226,7 @@ export function CardIngestQueueStatus({ job, onCancel }: Props) {
                       {t("waiting", { count: s.queued })}
                     </span>
                   )}
-                  {s.failed > 0 && (
-                    <span className="text-destructive">
-                      {t("failedShort", { count: s.failed })}
-                    </span>
-                  )}
-                  {active === 0 && s.failed === 0 && (
+                  {active === 0 && (
                     <span className="text-muted-foreground">{t("idle")}</span>
                   )}
                 </span>

@@ -48,6 +48,10 @@ export interface PipelineDeps {
     maxCanvases?: number;
     imageSize?: string;
     fetchConcurrency?: number;
+    describeConcurrency?: number;
+    embedConcurrency?: number;
+    ocrSubmitConcurrency?: number;
+    ocrPollConcurrency?: number;
     failRatio?: number;
     ocrMaxPolls?: number;
     ocrPollDelayMs?: number;
@@ -76,13 +80,20 @@ export function buildPipeline(deps: PipelineDeps): Pipeline {
       ...(cfg.failRatio !== undefined ? { failRatio: cfg.failRatio } : {}),
     }),
     new AssembleStage(base, deps.docState),
-    new DescribeStage(base, deps.describer, deps.docState, rates.describe),
-    new OcrSubmitStage(base, deps.ocr, deps.docState),
+    new DescribeStage(base, deps.describer, deps.docState, rates.describe, {
+      ...(cfg.describeConcurrency !== undefined ? { concurrency: cfg.describeConcurrency } : {}),
+    }),
+    new OcrSubmitStage(base, deps.ocr, deps.docState, {
+      ...(cfg.ocrSubmitConcurrency !== undefined ? { concurrency: cfg.ocrSubmitConcurrency } : {}),
+    }),
     new OcrPollStage(base, deps.ocr, deps.docState, {
       ...(cfg.ocrMaxPolls !== undefined ? { maxPolls: cfg.ocrMaxPolls } : {}),
       ...(cfg.ocrPollDelayMs !== undefined ? { pollDelayMs: cfg.ocrPollDelayMs } : {}),
+      ...(cfg.ocrPollConcurrency !== undefined ? { concurrency: cfg.ocrPollConcurrency } : {}),
     }),
-    new EmbedStage(base, deps.embedder, deps.docState, rates.embed),
+    new EmbedStage(base, deps.embedder, deps.docState, rates.embed, {
+      ...(cfg.embedConcurrency !== undefined ? { concurrency: cfg.embedConcurrency } : {}),
+    }),
     new RegisterStage(base, deps.cluster, deps.docState),
   ];
 

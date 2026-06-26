@@ -628,8 +628,7 @@
       "title": "Traitement en cours",
       "finalized": "Documents finalisés",
       "fetchTitle": "Récupération BnF",
-      "rate": "≈ {rate}/min",
-      "foliosInFlight": "{count, plural, =0 {Aucun folio en attente} one {# folio à récupérer} other {# folios à récupérer}}",
+      "foliosFetched": "{done} / {total} folios récupérés",
       "etaLabel": "Temps restant",
       "etaComputing": "estimation…",
       "groups": {
@@ -641,7 +640,6 @@
       },
       "inProgress": "{count} en cours",
       "waiting": "{count} en file",
-      "failedShort": "{count} en échec",
       "idle": "—",
       "totals": {
         "done": "{count} terminés",

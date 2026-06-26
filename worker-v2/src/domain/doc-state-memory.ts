@@ -142,4 +142,21 @@ export class MemoryDocState implements DocStateStore {
     }
     return pages;
   }
+
+  async folioCounts(
+    runId: string,
+  ): Promise<{ expected: number; done: number; failed: number }> {
+    let expected = 0;
+    let done = 0;
+    let failed = 0;
+    for (const e of this.docs.values()) {
+      if (e.runId !== runId) continue;
+      expected += e.pagesExpected ?? 0;
+      for (const ok of e.folios.values()) {
+        if (ok) done += 1;
+        else failed += 1;
+      }
+    }
+    return { expected, done, failed };
+  }
 }

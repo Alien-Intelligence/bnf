@@ -36,9 +36,21 @@ export interface WorkerConfig {
   maxCanvases: number;
   /** BnF fetch rate (folios/min) — 300 today; 1000 if the per-IP raise lands. */
   fetchRatePerMin: number;
+  /** In-flight folio fetches. Must be high enough that fetches-in-progress keep
+   *  the 300/min token bucket drained (≈ rate/60 × per-fetch latency). 12 measured
+   *  ~178/min (latency ~4s); 24 is the floor to approach the cap. */
   fetchConcurrency: number;
   /** IIIF manifest rate (per egress IP). */
   manifestRatePerMin: number;
+  /** Vision-lane (image description) concurrency — bounded by the vision provider
+   *  quota (Holo/Gemini), NOT BnF, so it can run far wider than the fetch lane. */
+  describeConcurrency: number;
+  /** Embed (RunPod) concurrency. */
+  embedConcurrency: number;
+  /** Mistral OCR batch-submit concurrency (how many docs OCR in parallel). */
+  ocrSubmitConcurrency: number;
+  /** Mistral OCR batch-poll concurrency (cheap GETs). */
+  ocrPollConcurrency: number;
   failRatio: number;
 }
 
@@ -58,8 +70,12 @@ export function loadConfig(): WorkerConfig {
     maxPages: optionalInt("MAX_OCR_PAGES", 300),
     maxCanvases: optionalInt("MISTRAL_OCR_MAX_PAGES", 300),
     fetchRatePerMin: optionalInt("BNF_GLOBAL_RPM", 300),
-    fetchConcurrency: optionalInt("BNF_FETCH_CONCURRENCY", 12),
+    fetchConcurrency: optionalInt("BNF_FETCH_CONCURRENCY", 32),
     manifestRatePerMin: optionalInt("BNF_MANIFEST_RPM", 42),
+    describeConcurrency: optionalInt("DESCRIBE_CONCURRENCY", 16),
+    embedConcurrency: optionalInt("EMBED_CONCURRENCY", 8),
+    ocrSubmitConcurrency: optionalInt("OCR_SUBMIT_CONCURRENCY", 12),
+    ocrPollConcurrency: optionalInt("OCR_POLL_CONCURRENCY", 16),
     failRatio: Number(process.env.DOC_FAIL_RATIO ?? "0.25"),
   };
 }

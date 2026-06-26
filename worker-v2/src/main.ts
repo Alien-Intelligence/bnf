@@ -67,6 +67,10 @@ async function main(): Promise<void> {
       maxPages: cfg.maxPages,
       maxCanvases: cfg.maxCanvases,
       fetchConcurrency: cfg.fetchConcurrency,
+      describeConcurrency: cfg.describeConcurrency,
+      embedConcurrency: cfg.embedConcurrency,
+      ocrSubmitConcurrency: cfg.ocrSubmitConcurrency,
+      ocrPollConcurrency: cfg.ocrPollConcurrency,
       failRatio: cfg.failRatio,
     },
   });
@@ -76,7 +80,15 @@ async function main(): Promise<void> {
   // The app↔worker HTTP ingress: POST /ingest (open a run + seed) + GET
   // /progress/:runId (the Ingérer poll read-model) + cancel + health.
   const server = await startServer(
-    { runStore, docState, queue, completion, log, fetchRatePerMin: cfg.fetchRatePerMin },
+    {
+      runStore,
+      docState,
+      queue,
+      completion,
+      log,
+      fetchRatePerMin: cfg.fetchRatePerMin,
+      manifestRatePerMin: cfg.manifestRatePerMin,
+    },
     cfg.httpPort,
   );
 

@@ -52,8 +52,13 @@ export interface ClusterQueueProgress {
   docsFinished: number
   /** Per-stage bucket counts, keyed by worker stage name (fetch, metadata, …). */
   stages: Record<string, ClusterQueueStage>
+  /** Run-scoped BnF-fetch folio tally (récupérés/total) — honest, not the shared
+   *  pg-boss bucket counts. `expected` grows as metadata resolves more docs. */
+  folios: { expected: number; done: number; failed: number }
   /** The binding BnF fetch rate (folios/min) the ETA assumes. */
   fetchRatePerMin: number
+  /** The IIIF manifest rate (manifests/min) — the metadata lane's binding cap. */
+  manifestRatePerMin: number
   /** Estimated seconds remaining, or null when not computable. */
   etaSeconds: number | null
   /** True iff the doc totals reconcile (a UI guard against under-reporting). */

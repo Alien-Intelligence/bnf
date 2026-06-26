@@ -235,4 +235,27 @@ export class PgDocState implements DocStateStore {
     );
     return rows[0]?.pages ? Number(rows[0].pages) : 0;
   }
+
+  async folioCounts(
+    runId: string,
+  ): Promise<{ expected: number; done: number; failed: number }> {
+    const expectedRes = await this.pool.query<{ expected: string | null }>(
+      `SELECT COALESCE(sum(pages_expected), 0) AS expected
+       FROM ${JOBS} WHERE run_id = $1`,
+      [runId],
+    );
+    const landedRes = await this.pool.query<{ done: string; failed: string }>(
+      `SELECT count(*) FILTER (WHERE f.ok)     AS done,
+              count(*) FILTER (WHERE NOT f.ok) AS failed
+       FROM ${FOLIOS} f
+       JOIN ${JOBS} j ON j.doc_job_id = f.doc_job_id
+       WHERE j.run_id = $1`,
+      [runId],
+    );
+    return {
+      expected: Number(expectedRes.rows[0]?.expected ?? 0),
+      done: Number(landedRes.rows[0]?.done ?? 0),
+      failed: Number(landedRes.rows[0]?.failed ?? 0),
+    };
+  }
 }

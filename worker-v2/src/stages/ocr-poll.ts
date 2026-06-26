@@ -24,13 +24,15 @@ export interface OcrPollOpts {
   maxPolls?: number;
   /** Delay between polls (ms) — pg-boss startAfter; memory queue ignores it. */
   pollDelayMs?: number;
+  /** In-flight poll concurrency (cheap GETs). */
+  concurrency?: number;
 }
 
 export class OcrPollStage extends PipelineStage<OcrBatchRef, PreparedDoc> {
   readonly name = "ocr-poll";
   readonly inputQueue = Q.ocrPoll;
   override readonly outputQueue = Q.embed;
-  override readonly concurrency = 8;
+  override readonly concurrency: number;
 
   private readonly maxPolls: number;
   private readonly pollDelayMs: number;
@@ -44,6 +46,7 @@ export class OcrPollStage extends PipelineStage<OcrBatchRef, PreparedDoc> {
     super(deps);
     this.maxPolls = opts.maxPolls ?? 240; // ~ default poll cap (tune per pollDelayMs)
     this.pollDelayMs = opts.pollDelayMs ?? 15_000;
+    this.concurrency = opts.concurrency ?? 8;
   }
 
   async process(ref: OcrBatchRef, ctx: StageContext): Promise<StageOutcome<PreparedDoc>> {
