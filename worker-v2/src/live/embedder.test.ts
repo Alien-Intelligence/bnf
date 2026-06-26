@@ -9,7 +9,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import type { RunpodBgeM3 } from "../../../worker/src/embed/runpod.js";
+import type { RunpodBgeM3 } from "./vendor/runpod.js";
 import { BGE_M3_DIM, LiveEmbedder } from "./embedder.js";
 
 /** Minimal stub typed as RunpodBgeM3 — only `embed` is reached. */

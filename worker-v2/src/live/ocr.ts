@@ -21,8 +21,8 @@
  */
 import { Mistral } from "@mistralai/mistralai";
 
-import { mistralOcr } from "../../../worker/src/env.js";
-import { looksLikeHallucinatedOcr } from "../../../worker/src/prepare/mistral-ocr.js";
+import { mistralOcr } from "./vendor/env.js";
+import { looksLikeHallucinatedOcr } from "./vendor/mistral-ocr.js";
 import type { PreparedPage } from "../domain/types.js";
 import type { OcrBatchStatus, OcrEngine } from "../ports.js";
 

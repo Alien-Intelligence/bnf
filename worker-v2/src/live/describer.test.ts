@@ -9,7 +9,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import type { ImageDescription } from "../../../worker/src/prepare/vision.js";
+import type { ImageDescription } from "./vendor/vision.js";
 import type { DocMeta } from "../domain/types.js";
 import {
   imageBufferToDataUrl,

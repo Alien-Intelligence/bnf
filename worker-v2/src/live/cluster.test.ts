@@ -8,7 +8,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { bnfDatasetSlug } from "../../../worker/src/cluster/dataset.js";
+import { bnfDatasetSlug } from "./vendor/dataset.js";
 import type { DocMeta, PreparedPage } from "../domain/types.js";
 import { assembleMarkdown, buildIndexChunks } from "./cluster.js";
 

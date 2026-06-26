@@ -18,7 +18,7 @@
 import { GoogleGenAI } from "@google/genai";
 import { Agent, request } from "undici";
 
-import { genai, google, vision } from "../env.js";
+import { genai, google, vision } from "./env.js";
 import { brokerGet, brokerUrl } from "./broker-client.js";
 import { gallicaRelayUrl, relayGet } from "./gallica-relay.js";
 import { gallicaRateLimit } from "./rate-limiter.js";

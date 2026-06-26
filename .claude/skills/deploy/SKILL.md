@@ -103,9 +103,10 @@ and worker are tiny Node images (seconds); the app is the slow one.
 docker build -t rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo:$TAG .
 docker push     rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo:$TAG
 
-# worker
-docker build -f worker/Dockerfile.worker \
-  -t rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo-worker:$TAG worker
+# worker (V2 — the staged-bucket pipeline; replaced V1 ./worker, clean break.
+# Same image repo name, now built from worker-v2/ — no values.yaml change.)
+docker build -f worker-v2/Dockerfile \
+  -t rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo-worker:$TAG worker-v2
 docker push rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo-worker:$TAG
 
 # broker (context = broker/; its own Dockerfile)

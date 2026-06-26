@@ -12,7 +12,7 @@
  * dim on first embed so a model swap that changes the width can't silently ship
  * mislabelled vectors.
  */
-import { RunpodBgeM3 } from "../../../worker/src/embed/runpod.js";
+import { RunpodBgeM3 } from "./vendor/runpod.js";
 import type { Embedder } from "../ports.js";
 
 /** bge-m3 embedding width. */

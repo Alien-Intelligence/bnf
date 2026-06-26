@@ -10,7 +10,7 @@
  * the order of the input list.
  */
 import { request } from "undici";
-import { runpod } from "../env.js";
+import { runpod } from "./env.js";
 
 export interface RunpodBgeM3Options {
   endpointId?: string;

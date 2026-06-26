@@ -21,7 +21,7 @@ import {
   describeImage,
   type DocumentContext,
   type ImageDescription,
-} from "../../../worker/src/prepare/vision.js";
+} from "./vendor/vision.js";
 import type { DocMeta } from "../domain/types.js";
 import type { Describer } from "../ports.js";
 

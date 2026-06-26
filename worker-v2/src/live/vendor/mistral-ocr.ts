@@ -13,7 +13,7 @@
  */
 import { Mistral } from "@mistralai/mistralai";
 
-import { mistralOcr } from "../env.js";
+import { mistralOcr } from "./env.js";
 
 /** One folio image to transcribe — `dataUrl` is a base64 `data:image/…` URL. */
 export interface MistralOcrFolio {

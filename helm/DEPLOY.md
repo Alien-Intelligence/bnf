@@ -175,9 +175,9 @@ cd datastreaming-demos/bnf
 docker build -t rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo:<tag> .
 docker push     rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo:<tag>
 
-# Worker image (context = ./worker, its own Dockerfile)
-docker build -f worker/Dockerfile.worker \
-  -t rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo-worker:<tag> worker
+# Worker image (V2 — context = ./worker-v2, its own Dockerfile; replaced V1)
+docker build -f worker-v2/Dockerfile \
+  -t rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo-worker:<tag> worker-v2
 docker push rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo-worker:<tag>
 ```
 

@@ -34,7 +34,7 @@ import { FormData } from "undici";
 import {
   bnfDatasetSchema,
   bnfDatasetSlug,
-} from "../../../worker/src/cluster/dataset.js";
+} from "./vendor/dataset.js";
 // Local (vendored) transport — MUST share worker-v2's undici with the FormData
 // built below; see cluster-http.ts for why importing worker/'s ClusterHttp hangs.
 import { ClusterHttp } from "./cluster-http.js";
