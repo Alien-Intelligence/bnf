@@ -189,28 +189,24 @@ worker:
     imageConcurrency: "3"
     # bnfFetchConcurrency: the worker's single in-flight cap for ALL broker traffic
     # (ALTO/OAI/manifest/images), held below the doc loop so it stays full during
-    # embed/index — keeping the broker's 300/min bucket continuously fed. The broker
-    # remains the RATE authority; 12 holds sustained 300/min with freeze≈0/shed≈0.
-    #   3000/min flip = TWO values, no code change: broker.config.globalRpm: "3000"
-    #   + bnfFetchConcurrency: "48", then helm upgrade and verify via /calls.csv.
-    # 2026-06-26: BnF raised the partner quota to 1000/min (Ludovic) — broker
-    # globalRpm + this both at the new ceiling; concurrency sized to feed it
-    # (~latency × rate/60). The worker's own rate gate must match (bnfGlobalRpm)
-    # or it self-throttles below the broker.
+    # embed/index — keeping the broker's rate bucket continuously fed. The broker
+    # remains the RATE authority; concurrency is sized ~latency × rate/60 to feed
+    # the bucket without over-fetching. BnF's provisioned partner quota is 1000/min
+    # (Ludovic, 2026-06-26); broker.config.globalRpm, bnfFetchConcurrency, and
+    # bnfGlobalRpm all track that ceiling. To change the quota, bump those together
+    # and verify via the broker's /calls.csv (freeze≈0/shed≈0). The worker's own
+    # rate gate (bnfGlobalRpm) MUST equal broker globalRpm or it self-throttles.
     bnfGlobalRpm: "1000"
     bnfFetchConcurrency: "128"
     # In-flight doc-jobs. This is the knob that keeps the fetch gate FED: each job
-    # runs fetch→embed→index serially in its slot, so at 4 the docs moved as a
-    # synchronized cohort — fetch bursts to the 300 cap, then all 4 embed/index
-    # together (remote RunPod+cluster I/O, ~2-3 min) with fetch idle → sawtooth,
-    # ~108/min effective (~36% of cap). Raised to 16 to desynchronize the convoy:
-    # while some docs embed/index, others fetch, so the gate stays fed → sustained
-    # ~300/min. CANNOT over-fetch BnF — bnfFetchConcurrency still caps fetches at
-    # 12 regardless. Bound is worker RAM (docs × pages in memory); watch RSS.
+    # runs fetch→embed→index serially in its slot, so at a low value the docs move
+    # as a synchronized cohort — fetch bursts to the rate cap, then every job
+    # embeds/indexes together (remote RunPod+cluster I/O, ~2-3 min) with fetch idle
+    # → sawtooth throughput. 16 desynchronizes the convoy: while some docs
+    # embed/index others fetch, so the gate stays fed and throughput holds near the
+    # cap. CANNOT over-fetch BnF — bnfFetchConcurrency still caps in-flight fetches
+    # regardless. Bound is worker RAM (docs × pages in memory); watch RSS.
     workerConcurrency: "16"
-    # bnfAltoConcurrency — deprecated/no-op on the gated path (fan-out follows the
-    # gate). Left set to avoid breakage; remove in a later cleanup.
-    bnfAltoConcurrency: "2"
 
   resources:
     requests:
@@ -278,10 +274,17 @@ broker:
   resources:
     requests:
       cpu: 50m
-      memory: 96Mi
+      memory: 512Mi
     limits:
       cpu: 500m
-      memory: 256Mi
+      # The broker buffers each upstream response WHOLE in memory (server.ts:
+      # `Buffer.from(await upstream.arrayBuffer())`) before mirroring it. At
+      # worker bnfFetchConcurrency=128 × full-res "max" folio images (~10MB) that
+      # is >1GB of concurrent buffers, so 256Mi OOMKilled under ingest load and
+      # took the single-replica broker down → every in-flight fetch got
+      # ECONNREFUSED. Sized to hold a full 128-wide burst with headroom; drop it
+      # only alongside streaming the proxy body instead of buffering it.
+      memory: 2Gi
 
 # ===========================================================================
 # Bundled Postgres — single replica, PVC-backed, no replication. Shared by the

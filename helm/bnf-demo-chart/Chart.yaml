@@ -1,6 +1,6 @@
 apiVersion: v2
 name: bnf-demo
-version: 0.10.0
+version: 0.12.0
 description: BnF Corpus Research — Alien Intelligence × BnF demo (Next.js app + ingest worker + BnF broker + Postgres)
 type: application
 # 0.9.0 — worker+broker hardening pass 2: pg-boss sliding-window fetch (the ~600/min
@@ -18,4 +18,11 @@ type: application
 # filtered to the run's own docs (concurrent jobs no longer show each other's stage
 # activity), + a "folios ahead of you" counter for the shared fetch queue. Worker +
 # app (card display + contract). Broker unchanged.
+# 0.11.0 — skipped: deployed out-of-band to prod, never landed on main (version drift).
+# 0.12.0 — chart-only: broker memory 256Mi→2Gi. It buffers each upstream response body
+# whole before mirroring (server.ts arrayBuffer), so at worker bnfFetchConcurrency=128 ×
+# ~10MB folio images it held >1GB and OOMKilled — the single-replica broker going down
+# was the root cause of the mass "all ingestions failed" incident. Also drops the dead
+# BNF_ALTO_CONCURRENCY (set by the chart, read by nothing in worker-v2) and de-stales the
+# fetch/doc-job rate comments (still described the pre-1000/min regime). No image change.
 appVersion: "0.10.0"

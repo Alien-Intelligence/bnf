@@ -92,6 +92,4 @@ data:
   # held below the doc loop so the broker's rate bucket stays continuously fed.
   BNF_FETCH_CONCURRENCY: {{ .Values.worker.config.bnfFetchConcurrency | quote }}
   WORKER_CONCURRENCY: {{ .Values.worker.config.workerConcurrency | quote }}
-  # Deprecated/no-op on the gated path; kept for rollback safety.
-  BNF_ALTO_CONCURRENCY: {{ .Values.worker.config.bnfAltoConcurrency | quote }}
 {{- end }}
