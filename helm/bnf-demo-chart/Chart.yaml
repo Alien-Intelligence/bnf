@@ -24,5 +24,8 @@ type: application
 # ~10MB folio images it held >1GB and OOMKilled — the single-replica broker going down
 # was the root cause of the mass "all ingestions failed" incident. Also drops the dead
 # BNF_ALTO_CONCURRENCY (set by the chart, read by nothing in worker-v2) and de-stales the
-# fetch/doc-job rate comments (still described the pre-1000/min regime). No image change.
-appVersion: "0.10.0"
+# fetch/doc-job rate comments (still described the pre-1000/min regime). Also reconciles
+# the recorded image tags up to live (app 0.11.0, worker 0.10.1) — they had drifted below
+# prod, so a plain helm upgrade would have downgraded them; deploying now is a no-op on
+# the app/worker images and only rolls the broker (2Gi) + worker configmap.
+appVersion: "0.11.0"
