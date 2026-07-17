@@ -8,7 +8,7 @@ replicaCount: 1
 image:
   repository: rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo
   pullPolicy: Always
-  tag: "0.13.0"
+  tag: "0.13.1"
 
 imagePullSecrets: []
 
@@ -68,6 +68,9 @@ config:
   # ExternalSecret to enable per-turn tracing. Leave blank → tracing off.
   langfusePublicKey: "pk-lf-014385ed-18f6-4fa1-84eb-4a7fdc7c7adf"
   langfuseBaseUrl: https://langfuse.alien.club
+  # Langfuse project id (the cuid in dashboard URLs). Enables "view in Langfuse"
+  # deep-links (admin feedback tab). 1:1 with the public key above.
+  langfuseProjectId: "cmqoadeo80003vf07cwn7dfpr"
 
   # Alien Auth (Authentik) SSO. Base URL + app slug are non-secret (here); the
   # client id/secret are pulled from Scaleway via the ExternalSecret below.

@@ -24,7 +24,9 @@ export default async function AdminLayout({
         isAdmin
       />
       <LayoutAdminTabs />
-      <main className="mx-auto w-full max-w-5xl px-6 py-12">{children}</main>
+      {/* Wider than the workspace pages: admin tables (Accounts has 11 columns)
+          are data-dense and would otherwise overflow a max-w-5xl column. */}
+      <main className="mx-auto w-full max-w-7xl px-6 py-12">{children}</main>
     </div>
   )
 }

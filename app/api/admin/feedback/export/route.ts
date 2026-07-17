@@ -28,6 +28,7 @@ export const GET = withAuth(async (_req, user) => {
       "user_name",
       "user_email",
       "comment",
+      "langfuse_url",
     ],
     feedback.map((f) => [
       f.id,
@@ -41,6 +42,7 @@ export const GET = withAuth(async (_req, user) => {
       f.userName,
       f.userEmail,
       f.comment ?? "",
+      f.langfuseUrl ?? "",
     ]),
   )
 

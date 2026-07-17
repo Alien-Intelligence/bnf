@@ -38,6 +38,9 @@ data:
   {{- with .Values.config.langfusePublicKey }}
   LANGFUSE_PUBLIC_KEY: {{ . | quote }}
   LANGFUSE_BASE_URL: {{ $.Values.config.langfuseBaseUrl | quote }}
+  {{- with $.Values.config.langfuseProjectId }}
+  LANGFUSE_PROJECT_ID: {{ . | quote }}
+  {{- end }}
   {{- end }}
   {{- with .Values.config.authentikBaseUrl }}
   # Alien Auth (Authentik) SSO — non-secret half. The client id/secret arrive

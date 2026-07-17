@@ -20,7 +20,8 @@
       "tools": "Tools",
       "toolName": "Tool",
       "count": "Count",
-      "empty": "No data for this period."
+      "empty": "No data for this period.",
+      "subtitle": "Tokens, messages and tools per project"
     },
     "nav": {
       "title": "Admin console",
@@ -87,7 +88,8 @@
       "deleted": "Target deleted",
       "open": "Open",
       "noComment": "—",
-      "empty": "No feedback."
+      "empty": "No feedback.",
+      "langfuse": "Langfuse"
     },
     "rating": {
       "bad": "Needs work",

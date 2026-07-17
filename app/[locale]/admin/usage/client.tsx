@@ -22,11 +22,13 @@ export function AdminUsageClient() {
   const fr = (n: number) => n.toLocaleString(locale)
   const { data, isLoading, isError, refetch } = useAdminUsage()
 
+  // Tokens + messages are all-time (they line up with the per-project rows);
+  // tool calls are the last-7-day window the route aggregates.
   const totals = useMemo(() => {
     if (!data) return null
     return {
-      tokensIn: data.projects.reduce((s, p) => s + p.lastWeekTokens.in, 0),
-      tokensOut: data.projects.reduce((s, p) => s + p.lastWeekTokens.out, 0),
+      tokensIn: data.projects.reduce((s, p) => s + p.tokens.in, 0),
+      tokensOut: data.projects.reduce((s, p) => s + p.tokens.out, 0),
       messages: data.projects.reduce((s, p) => s + p.messageCount, 0),
       toolCalls: data.toolFrequency.reduce((s, e) => s + e.count, 0),
     }
@@ -38,12 +40,7 @@ export function AdminUsageClient() {
         <div className="space-y-1">
           <span className="mono-eyebrow">{t("eyebrow")}</span>
           <h1 className="text-2xl font-semibold">{t("title")}</h1>
-          {data && (
-            <p className="text-sm text-muted-foreground">
-              {t("lastWeek")} —{" "}
-              {new Date(data.since).toLocaleDateString(locale)}
-            </p>
-          )}
+          <p className="text-sm text-muted-foreground">{t("subtitle")}</p>
         </div>
         <Button
           variant="outline"
@@ -102,14 +99,17 @@ export function AdminUsageClient() {
                         {data.projects.map((p) => (
                           <tr key={p.id} className="border-b last:border-0">
                             <td className="px-4 py-2 font-medium">{p.name}</td>
-                            <td className="px-4 py-2 font-mono text-xs text-muted-foreground">
-                              {p.ownerId}
+                            <td
+                              className="px-4 py-2 text-xs text-muted-foreground"
+                              title={p.ownerName}
+                            >
+                              {p.ownerEmail}
                             </td>
                             <td className="px-4 py-2 text-right font-mono tabular-nums">
-                              {fr(p.lastWeekTokens.in)}
+                              {fr(p.tokens.in)}
                             </td>
                             <td className="px-4 py-2 text-right font-mono tabular-nums">
-                              {fr(p.lastWeekTokens.out)}
+                              {fr(p.tokens.out)}
                             </td>
                             <td className="px-4 py-2 text-right font-mono tabular-nums">
                               {fr(p.messageCount)}
@@ -124,7 +124,12 @@ export function AdminUsageClient() {
             </section>
 
             <section className="space-y-3">
-              <h2 className="text-base font-semibold">{t("tools")}</h2>
+              <h2 className="text-base font-semibold">
+                {t("tools")}{" "}
+                <span className="text-xs font-normal text-muted-foreground">
+                  ({t("lastWeek")})
+                </span>
+              </h2>
               {data.toolFrequency.length === 0 ? (
                 <p className="text-sm text-muted-foreground">{t("empty")}</p>
               ) : (

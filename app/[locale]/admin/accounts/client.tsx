@@ -19,6 +19,10 @@ export function AdminAccountsClient() {
   const tCommon = useTranslations("common")
   const locale = useLocale()
   const fmt = (n: number) => n.toLocaleString(locale)
+  // Token totals reach 7-8 digits; compact them ("9,0 M") so the row stays
+  // narrow, with the exact value on hover.
+  const fmtTokens = (n: number) =>
+    n.toLocaleString(locale, { notation: "compact", maximumFractionDigits: 1 })
   const fmtDate = (iso: string) => new Date(iso).toLocaleDateString(locale)
 
   const { data, isLoading, isError, refetch } = useAdminAccounts()
@@ -93,8 +97,18 @@ export function AdminAccountsClient() {
                     <td className="px-4 py-2 text-right font-mono tabular-nums">{fmt(a.messageCount)}</td>
                     <td className="px-4 py-2 text-right font-mono tabular-nums">{fmt(a.noteCount)}</td>
                     <td className="px-4 py-2 text-right font-mono tabular-nums">{fmt(a.feedbackGiven)}</td>
-                    <td className="px-4 py-2 text-right font-mono tabular-nums">{fmt(a.tokensIn)}</td>
-                    <td className="px-4 py-2 text-right font-mono tabular-nums">{fmt(a.tokensOut)}</td>
+                    <td
+                      className="px-4 py-2 text-right font-mono tabular-nums"
+                      title={fmt(a.tokensIn)}
+                    >
+                      {fmtTokens(a.tokensIn)}
+                    </td>
+                    <td
+                      className="px-4 py-2 text-right font-mono tabular-nums"
+                      title={fmt(a.tokensOut)}
+                    >
+                      {fmtTokens(a.tokensOut)}
+                    </td>
                     <td className="px-4 py-2 whitespace-nowrap text-muted-foreground">
                       {a.lastActiveAt ? fmtDate(a.lastActiveAt) : t("never")}
                     </td>

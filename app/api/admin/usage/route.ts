@@ -16,6 +16,8 @@ export type ProjectUsageStat = {
   id: string
   name: string
   ownerId: string
+  ownerName: string
+  ownerEmail: string
   tokens: { in: number; out: number }
   messageCount: number
   lastWeekTokens: { in: number; out: number }
@@ -46,6 +48,7 @@ export const GET = withAuth(async (_req, user) => {
         id: true,
         name: true,
         ownerId: true,
+        owner: { select: { name: true, email: true } },
         appSessions: {
           select: {
             messages: {
@@ -94,6 +97,8 @@ export const GET = withAuth(async (_req, user) => {
       id: p.id,
       name: p.name,
       ownerId: p.ownerId,
+      ownerName: p.owner.name,
+      ownerEmail: p.owner.email,
       tokens: { in: allIn, out: allOut },
       messageCount,
       lastWeekTokens: { in: weekIn, out: weekOut },

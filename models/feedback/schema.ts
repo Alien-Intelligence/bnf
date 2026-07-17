@@ -46,4 +46,7 @@ export type AdminFeedbackRow = {
   userName: string
   userEmail: string
   resolved: AdminFeedbackResolved | null
+  /** Langfuse session-view deep-link, or null if Langfuse isn't configured or
+   *  the feedback has no owning session (e.g. a session-less note). */
+  langfuseUrl: string | null
 }

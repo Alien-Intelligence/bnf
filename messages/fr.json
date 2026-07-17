@@ -20,7 +20,8 @@
       "tools": "Outils",
       "toolName": "Outil",
       "count": "Nombre",
-      "empty": "Aucune donnée pour cette période."
+      "empty": "Aucune donnée pour cette période.",
+      "subtitle": "Jetons, messages et outils par projet"
     },
     "nav": {
       "title": "Console d'administration",
@@ -87,7 +88,8 @@
       "deleted": "Cible supprimée",
       "open": "Ouvrir",
       "noComment": "—",
-      "empty": "Aucun retour."
+      "empty": "Aucun retour.",
+      "langfuse": "Langfuse"
     },
     "rating": {
       "bad": "À améliorer",

@@ -1,5 +1,6 @@
 import "server-only"
 import { prisma } from "@/lib/db"
+import { langfuseSessionUrl } from "@/lib/langfuse"
 import { FEEDBACK_TARGET, type AdminFeedbackRow, type Feedback } from "./schema"
 
 /** Trim a rated turn's answer text to a compact one-line excerpt. */
@@ -132,6 +133,7 @@ export class FeedbackQueries {
         userName: r.user.name,
         userEmail: r.user.email,
         resolved,
+        langfuseUrl: langfuseSessionUrl(r.langfuseSessionId),
       }
     })
   }

@@ -20,6 +20,7 @@ export const GET = withAuth(async (_req, user) => {
       id: true,
       name: true,
       ownerId: true,
+      owner: { select: { email: true } },
       appSessions: {
         select: {
           messages: {
@@ -35,6 +36,7 @@ export const GET = withAuth(async (_req, user) => {
       "project_id",
       "project_name",
       "owner_id",
+      "owner_email",
       "tokens_in",
       "tokens_out",
       "message_count",
@@ -66,7 +68,19 @@ export const GET = withAuth(async (_req, user) => {
       }
     }
 
-    rows.push(csvRow([p.id, p.name, p.ownerId, allIn, allOut, messageCount, weekIn, weekOut]))
+    rows.push(
+      csvRow([
+        p.id,
+        p.name,
+        p.ownerId,
+        p.owner.email,
+        allIn,
+        allOut,
+        messageCount,
+        weekIn,
+        weekOut,
+      ]),
+    )
   }
 
   const csv = rows.join("\r\n") + "\r\n"

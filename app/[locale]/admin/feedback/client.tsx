@@ -6,7 +6,7 @@
 // and deep-linked into the app, plus a CSV export. Header/tabs/main wrapper
 // come from the admin layout. Loading / error / empty / data are distinct.
 
-import { Download, ExternalLink } from "lucide-react"
+import { Download, ExternalLink, LineChart } from "lucide-react"
 import { useLocale, useTranslations } from "next-intl"
 import { useAdminFeedback } from "@/hooks/api/admin"
 import { Link } from "@/i18n/navigation"
@@ -99,9 +99,22 @@ export function AdminFeedbackClient() {
                   <span className="text-xs text-muted-foreground">
                     {f.userName} · {f.userEmail}
                   </span>
-                  <span className="ml-auto text-xs text-muted-foreground">
-                    {fmtDate(f.createdAt)}
-                  </span>
+                  <div className="ml-auto flex items-center gap-3">
+                    {f.langfuseUrl && (
+                      <a
+                        href={f.langfuseUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                      >
+                        <LineChart className="size-3" />
+                        {t("langfuse")}
+                      </a>
+                    )}
+                    <span className="text-xs text-muted-foreground">
+                      {fmtDate(f.createdAt)}
+                    </span>
+                  </div>
                 </div>
 
                 <div className="flex items-center gap-2 text-sm text-muted-foreground">
