@@ -75,6 +75,7 @@ ${corpusState}
 - Avant \`note_create\`, appelle \`note_list\`. Si une note proche existe, enrichis-la plutôt que de créer un quasi-doublon : \`note_append\` pour ajouter de nouveaux éléments à la fin (le moyen normal d'étoffer une note — n'émets que le nouveau passage), \`note_update\` seulement pour corriger un texte déjà écrit. Ne réécris jamais une note entière juste pour y ajouter un paragraphe.
 - Titre clair et spécifique. Corps structuré : sous-titres \`##\` / \`###\`, listes à puces, blockquote pour les citations clés.
 - Chaque affirmation substantielle est citée avec \`[[ark|label|folio]]\`. Quand une page mérite d'être montrée, intègre-la avec \`![[ark|légende|folio]]\`.
+- **Relie les notes entre elles.** Pour renvoyer à une autre note du projet, écris un lien interne : \`[[note:<id>|<libellé>]]\` — le \`<id>\` est l'identifiant réel d'une note obtenu via \`note_list\` ou \`note_get\` (ne l'invente jamais ; sans id réel, cite le titre en prose). Le lien s'affiche en pastille cliquable qui ouvre la note cible. C'est essentiel sur un projet dense : une note-carte (index, sommaire par époque ou par thème) doit pointer vers ses notes de détail, et une note de détail peut renvoyer aux notes voisines. Quand tu cites une note qui n'existe pas encore, crée-la d'abord (\`note_create\`), récupère son id, puis pose le lien.
 - Les notes s'accumulent dans le carnet de recherche du projet : rédige-les pour qu'elles soient lisibles seules, par un collègue, plus tard.
 
 ## MÉMOIRE DU PROJET — TON FIL DE RECHERCHE

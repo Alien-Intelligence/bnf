@@ -146,6 +146,11 @@
   "corpus": {
     "panelTitle": "Your corpus",
     "help": "How does this work?",
+    "export": {
+      "label": "Export (CSV)",
+      "pending": "Exporting…",
+      "hint": "Export the displayed corpus as CSV"
+    },
     "intro": {
       "tag": "Step 1 · Build",
       "title": "Build your corpus",
@@ -512,6 +517,10 @@
       "noMatch": "No results.",
       "count": "{count, plural, =0 {No artifacts} one {# artifact} other {# artifacts}}",
       "meta": "{count, plural, =0 {no refs} one {# ref} other {# refs}} · {time}"
+    },
+    "noteLink": {
+      "open": "Open note “{label}”",
+      "missing": "Note not found (deleted or outside this project)"
     },
     "atelier": {
       "chatTab": "Conversation",

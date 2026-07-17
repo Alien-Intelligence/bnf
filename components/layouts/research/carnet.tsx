@@ -1,5 +1,6 @@
 "use client"
 
+import { useMemo } from "react"
 import { CarnetEntry } from "@/components/cards/notes/carnet-entry"
 import { Separator } from "@/components/ui/separator"
 import { Button } from "@/components/ui/button"
@@ -22,6 +23,13 @@ interface LayoutCarnetProps {
 
 export function LayoutCarnet({ notes, onCitationClick }: LayoutCarnetProps) {
   const t = useTranslations("research.carnet")
+
+  // Ids present in this carnet — a note-link pill greys out when its target is
+  // absent, and scrolls to the entry's anchor when present (no view switch).
+  const knownNoteIds = useMemo(() => new Set(notes.map((n) => n.id)), [notes])
+  const scrollToEntry = (noteId: string) => {
+    document.getElementById(noteId)?.scrollIntoView({ behavior: "smooth", block: "start" })
+  }
 
   return (
     <div className="flex h-full">
@@ -61,7 +69,12 @@ export function LayoutCarnet({ notes, onCitationClick }: LayoutCarnetProps) {
             <div className="space-y-8">
               {notes.map((note, i) => (
                 <div key={note.id}>
-                  <CarnetEntry note={note} onCitationClick={onCitationClick} />
+                  <CarnetEntry
+                    note={note}
+                    onCitationClick={onCitationClick}
+                    onNoteLinkClick={scrollToEntry}
+                    knownNoteIds={knownNoteIds}
+                  />
                   {i < notes.length - 1 && <Separator className="mt-8" />}
                 </div>
               ))}

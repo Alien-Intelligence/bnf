@@ -109,6 +109,39 @@ export function useCorpusFlattened(
   }
 }
 
+/**
+ * Download the corpus as a CSV file, honouring the active filters. This is not a
+ * cache read — it triggers a browser download — so it is modelled as a mutation
+ * whose pending/error state the export button reflects. The CSV is fetched as a
+ * blob through apiFetch (so auth + basePath are handled like every other call)
+ * and saved via a transient anchor element.
+ */
+export function useExportCorpus(projectId: string) {
+  return useMutation<void, Error, CorpusFilters>({
+    mutationFn: async (filters) => {
+      const params = corpusFiltersToParams(filters)
+      const qs = params.toString()
+      const res = await apiFetch(
+        `/api/projects/${projectId}/corpus/export${qs ? `?${qs}` : ""}`,
+      )
+      if (!res.ok) throw new Error(`Failed to export corpus: ${res.status}`)
+
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      try {
+        const a = document.createElement("a")
+        a.href = url
+        a.download = `corpus-${projectId}.csv`
+        document.body.appendChild(a)
+        a.click()
+        a.remove()
+      } finally {
+        URL.revokeObjectURL(url)
+      }
+    },
+  })
+}
+
 export function useCorpusDiff(projectId: string, from: number, to: number) {
   return useQuery<CorpusDiff>({
     queryKey: corpusKeys.diff(projectId, from, to),

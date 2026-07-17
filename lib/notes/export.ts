@@ -4,6 +4,7 @@
 // renderer understands:
 //   [[ark|label|folio]]   inline text citation
 //   ![[ark|caption|folio]] folio image embed
+//   [[note:<id>|label]]   internal note-to-note cross-reference (no external URL)
 // Both are rewritten here into standard Markdown links/images, with the IIIF /
 // Gallica URLs derived from (ark, folio) — exactly as the reader derives them.
 //
@@ -13,6 +14,7 @@
 import {
   CITATION_REGEX,
   IMAGE_CITATION_REGEX,
+  NOTELINK_REGEX,
   unescapeCitationText,
 } from "@/lib/citations/syntax"
 import { gallicaItemUrl, iiifImageUrl } from "@/lib/citations/external"
@@ -28,8 +30,11 @@ function escapeLinkText(label: string): string {
  * Rewrite our internal citation/image syntax into standard Markdown:
  *   ![[ark|caption|folio]] → [![caption](IIIF image)](Gallica page)
  *   [[ark|label|folio]]    → [label](Gallica page)
+ *   [[note:<id>|label]]    → **label**   (internal ref; no portable URL)
  * Images are replaced first; CITATION_REGEX's negative lookbehind keeps it from
  * matching the `[[…]]` inside an image embed, so the order isn't load-bearing.
+ * The note-link replace runs last and is independent (its `note:` prefix never
+ * matches the citation/image regexes).
  */
 export function toPortableMarkdown(body: string): string {
   return body
@@ -41,6 +46,9 @@ export function toPortableMarkdown(body: string): string {
     .replace(CITATION_REGEX, (_m, ark: string, label: string, folio: string) => {
       const caption = escapeLinkText(unescapeCitationText(label))
       return `[${caption}](${gallicaItemUrl(ark, Number(folio))})`
+    })
+    .replace(NOTELINK_REGEX, (_m, _id: string, label: string) => {
+      return `**${escapeLinkText(unescapeCitationText(label))}**`
     })
 }
 

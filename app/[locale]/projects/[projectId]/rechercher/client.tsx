@@ -242,6 +242,7 @@ export function RechercherClient({
             docCount={docCount}
             onOpenNewNote={() => setNewNoteOpen(true)}
             onCitationClick={onCitationClick}
+            onNoteLinkClick={openNote}
             onOpenHelp={() => setIntroOpen(true)}
             agentProvider={agentProvider}
             selectedModel={selectedModel}

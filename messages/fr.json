@@ -146,6 +146,11 @@
   "corpus": {
     "panelTitle": "Votre corpus",
     "help": "Comment ça marche ?",
+    "export": {
+      "label": "Exporter (CSV)",
+      "pending": "Export…",
+      "hint": "Exporter le corpus affiché au format CSV"
+    },
     "intro": {
       "tag": "Étape 1 · Constituer",
       "title": "Constituez votre corpus",
@@ -512,6 +517,10 @@
       "noMatch": "Aucun résultat.",
       "count": "{count, plural, =0 {Aucun artefact} one {# artefact} other {# artefacts}}",
       "meta": "{count, plural, =0 {aucune réf.} one {# réf.} other {# réf.}} · {time}"
+    },
+    "noteLink": {
+      "open": "Ouvrir la note « {label} »",
+      "missing": "Note introuvable (supprimée ou hors de ce projet)"
     },
     "atelier": {
       "chatTab": "Conversation",

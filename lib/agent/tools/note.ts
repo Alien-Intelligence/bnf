@@ -14,6 +14,12 @@
  *
  * Citation syntax: [[<ark>|<short label>|<folio>]] — the folio is mandatory
  * for deep-linking into the BnF IIIF viewer. The agent must not fabricate one.
+ *
+ * Note-link syntax: [[note:<note_id>|<label>]] — an INTERNAL cross-reference to
+ * another note in this project. Renders as a clickable pill that opens the
+ * target note. The <note_id> is a real note UUID from note_list / note_get; the
+ * agent must not invent one. Use it to weave a complex project's notes together
+ * (e.g. a master/index note linking its per-topic notes).
  */
 import "server-only"
 
@@ -33,7 +39,8 @@ export const noteListTool = defineTool<z.ZodObject<Record<never, never>>, TurnSc
   description:
     "List all research notes for this project, ordered most-recently-updated first. " +
     "Call this before note_create to check whether a closely related note already exists — " +
-    "prefer note_update over creating a near-duplicate.",
+    "prefer note_update over creating a near-duplicate. " +
+    "Each note's id is the value to use when linking to it with [[note:<id>|<label>]].",
   inputSchema: z.object({}),
   handler: async (_input, ctx) => {
     const notes = await NoteQueries.listForProject(ctx.projectId)
@@ -82,6 +89,8 @@ export const noteCreateTool = defineTool<
     "if you do not have a folio from rag_query, cite in prose only. " +
     "Embed a folio image with ![[<ark>|<caption>|<folio>]] (the same syntax with a leading !) " +
     "to show a page — the image is fetched from Gallica by ark+folio, no link needed. " +
+    "Link to another note with [[note:<note_id>|<label>]] (ids from note_list/note_get) — " +
+    "the pill opens that note. " +
     "Call note_list first to avoid near-duplicates.",
   inputSchema: z.object({
     title: z
@@ -95,8 +104,9 @@ export const noteCreateTool = defineTool<
       .min(1)
       .max(200_000)
       .describe(
-        "The note body in Markdown. Use [[ark|label|folio]] for inline citations and " +
-          "![[ark|caption|folio]] to embed a folio image.",
+        "The note body in Markdown. Use [[ark|label|folio]] for inline citations, " +
+          "![[ark|caption|folio]] to embed a folio image, and [[note:<id>|<label>]] to link " +
+          "another note.",
       ),
   }),
   handler: async (input, ctx) => {
@@ -134,7 +144,8 @@ export const noteUpdateTool = defineTool<
     "The previous body is automatically snapshotted to NoteVersion before mutation. " +
     "Omit a field to leave it unchanged. " +
     "Use this to extend a note with new findings rather than creating a near-duplicate. " +
-    "Body supports [[ark|label|folio]] citations and ![[ark|caption|folio]] image embeds.",
+    "Body supports [[ark|label|folio]] citations, ![[ark|caption|folio]] image embeds, and " +
+    "[[note:<id>|<label>]] links to other notes.",
   inputSchema: z.object({
     id: z.string().uuid().describe("The note's UUID."),
     title: z
@@ -186,7 +197,8 @@ export const noteAppendTool = defineTool<
     "passage, so it is much faster and far cheaper than rewriting the entire note. " +
     "The new text is placed after a blank line; the prior body is snapshotted to " +
     "NoteVersion and citations are re-parsed over the whole note. " +
-    "Use [[<ark>|<short label>|<folio>]] citations and ![[<ark>|<caption>|<folio>]] image embeds. " +
+    "Use [[<ark>|<short label>|<folio>]] citations, ![[<ark>|<caption>|<folio>]] image embeds, " +
+    "and [[note:<id>|<label>]] links to other notes. " +
     "Use note_update only for surgical edits to existing text (fixing or removing).",
   inputSchema: z.object({
     id: z.string().uuid().describe("The note's UUID."),
@@ -197,8 +209,8 @@ export const noteAppendTool = defineTool<
       .max(200_000)
       .describe(
         "Markdown to append at the end of the note. Include your own ## / ### headings; " +
-          "it is added after a blank line. Use [[ark|label|folio]] citations and " +
-          "![[ark|caption|folio]] image embeds.",
+          "it is added after a blank line. Use [[ark|label|folio]] citations, " +
+          "![[ark|caption|folio]] image embeds, and [[note:<id>|<label>]] note links.",
       ),
   }),
   handler: async (input, ctx) => {

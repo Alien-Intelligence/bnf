@@ -10,6 +10,7 @@
 // The artefacts LIST lives in the rail (CardNotesPicker); here the reader only
 // shows notes the user has OPENED, as closable tabs — the design's tab model.
 
+import { useMemo } from "react"
 import { Download, FileText, HelpCircle, NotebookText, PenLine, X } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { LayoutCorpusChat } from "@/components/layouts/corpus/chat"
@@ -52,6 +53,8 @@ interface LayoutResearchEspaceProps {
   docCount: number
   onOpenNewNote: () => void
   onCitationClick: (c: ParsedCitation) => void
+  /** Open another note from a `[[note:<id>|<label>]]` cross-reference. */
+  onNoteLinkClick: (noteId: string) => void
   onOpenHelp: () => void
   /** Model selector wiring, forwarded to the research chat panel (openrouter
    *  only). See LayoutCorpusChat. */
@@ -77,6 +80,7 @@ export function LayoutResearchEspace({
   docCount,
   onOpenNewNote,
   onCitationClick,
+  onNoteLinkClick,
   onOpenHelp,
   agentProvider,
   selectedModel,
@@ -86,6 +90,11 @@ export function LayoutResearchEspace({
   const tChat = useTranslations("research.chat")
 
   const ragLabel = `${clusterId} · ${t("docs", { count: docCount })}`
+
+  // Live set of note ids in this project — lets a note-link pill grey out when
+  // its target was deleted. Derived from the same list that feeds the reader, so
+  // it stays in sync as the agent writes notes.
+  const knownNoteIds = useMemo(() => new Set(notes.map((n) => n.id)), [notes])
 
   return (
     <div className="flex h-full flex-col">
@@ -148,6 +157,7 @@ export function LayoutResearchEspace({
               notes={notes}
               projectName={projectName}
               onCitationClick={onCitationClick}
+              knownNoteIds={knownNoteIds}
             />
           ) : (
             <ReaderAtelier
@@ -159,6 +169,8 @@ export function LayoutResearchEspace({
               onCloseNote={onCloseNote}
               onOpenNewNote={onOpenNewNote}
               onCitationClick={onCitationClick}
+              onNoteLinkClick={onNoteLinkClick}
+              knownNoteIds={knownNoteIds}
             />
           )}
         </div>
@@ -205,6 +217,8 @@ interface ReaderAtelierProps {
   onCloseNote: (id: string) => void
   onOpenNewNote: () => void
   onCitationClick: (c: ParsedCitation) => void
+  onNoteLinkClick: (noteId: string) => void
+  knownNoteIds: ReadonlySet<string>
 }
 
 function ReaderAtelier({
@@ -216,6 +230,8 @@ function ReaderAtelier({
   onCloseNote,
   onOpenNewNote,
   onCitationClick,
+  onNoteLinkClick,
+  knownNoteIds,
 }: ReaderAtelierProps) {
   const t = useTranslations("research")
   const tAtelier = useTranslations("research.atelier")
@@ -283,6 +299,8 @@ function ReaderAtelier({
             projectId={projectId}
             noteId={activeNoteId}
             onCitationClick={onCitationClick}
+            onNoteLinkClick={onNoteLinkClick}
+            knownNoteIds={knownNoteIds}
           />
         ) : null}
       </div>
@@ -296,10 +314,14 @@ function NoteReader({
   projectId,
   noteId,
   onCitationClick,
+  onNoteLinkClick,
+  knownNoteIds,
 }: {
   projectId: string
   noteId: string
   onCitationClick: (c: ParsedCitation) => void
+  onNoteLinkClick: (noteId: string) => void
+  knownNoteIds: ReadonlySet<string>
 }) {
   const t = useTranslations("research.atelier")
   const { data: note, isLoading, isError, refetch } = useNote(noteId)
@@ -361,7 +383,12 @@ function NoteReader({
         <div className="mb-5 font-mono text-[11.5px] text-muted-foreground">
           {formatRelativeFr(note.updatedAt)}
         </div>
-        <NoteBody body={note.body_md ?? ""} onCitationClick={onCitationClick} />
+        <NoteBody
+          body={note.body_md ?? ""}
+          onCitationClick={onCitationClick}
+          onNoteLinkClick={onNoteLinkClick}
+          knownNoteIds={knownNoteIds}
+        />
       </div>
     </div>
   )
@@ -373,10 +400,12 @@ function ReaderCarnet({
   notes,
   projectName,
   onCitationClick,
+  knownNoteIds,
 }: {
   notes: NoteListItem[]
   projectName: string
   onCitationClick: (c: ParsedCitation) => void
+  knownNoteIds: ReadonlySet<string>
 }) {
   const t = useTranslations("research.carnet")
   const results = useNoteDetails(notes.map((n) => n.id))
@@ -389,8 +418,9 @@ function ReaderCarnet({
     downloadMarkdown("carnet-de-recherche.md", notesToMarkdown(loaded))
   }
 
-  // Clicking a TOC row scrolls its stitched section into view (smoothly) within
-  // the carnet's own scroll area — no URL hash mutation.
+  // Clicking a TOC row OR an inline note-link pill scrolls its stitched section
+  // into view (smoothly) within the carnet's own scroll area — no URL hash
+  // mutation, no jump to the Atelier tab view.
   const scrollToSection = (noteId: string) => {
     document
       .getElementById(carnetSectionId(noteId))
@@ -461,6 +491,8 @@ function ReaderCarnet({
                 note={r.data}
                 isLoading={r.isLoading}
                 onCitationClick={onCitationClick}
+                onNoteLinkClick={scrollToSection}
+                knownNoteIds={knownNoteIds}
               />
             ))}
           </div>
@@ -483,6 +515,8 @@ function CarnetSection({
   note,
   isLoading,
   onCitationClick,
+  onNoteLinkClick,
+  knownNoteIds,
 }: {
   sectionId: string
   index: number
@@ -490,6 +524,8 @@ function CarnetSection({
   note: { title: string; body_md: string | null; updatedAt: Date | string } | undefined
   isLoading: boolean
   onCitationClick: (c: ParsedCitation) => void
+  onNoteLinkClick: (noteId: string) => void
+  knownNoteIds: ReadonlySet<string>
 }) {
   return (
     <section id={sectionId} className={cn("scroll-mt-6", index > 0 && "mt-9 border-t pt-7")}>
@@ -506,7 +542,12 @@ function CarnetSection({
           <Skeleton className="h-4 w-4/5" />
         </div>
       ) : (
-        <NoteBody body={note?.body_md ?? ""} onCitationClick={onCitationClick} />
+        <NoteBody
+          body={note?.body_md ?? ""}
+          onCitationClick={onCitationClick}
+          onNoteLinkClick={onNoteLinkClick}
+          knownNoteIds={knownNoteIds}
+        />
       )}
     </section>
   )
