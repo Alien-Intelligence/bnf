@@ -28,7 +28,8 @@
       "overview": "Vue d'ensemble",
       "accounts": "Comptes",
       "feedback": "Retours",
-      "usage": "Utilisation"
+      "usage": "Utilisation",
+      "ocr": "OCR"
     },
     "overview": {
       "eyebrow": "Administration",
@@ -105,6 +106,36 @@
       "admin": "Admin",
       "member": "Membre",
       "guest": "Invité"
+    },
+    "ocr": {
+      "eyebrow": "Administration",
+      "title": "Usage OCR",
+      "subtitle": "Coût de l'OCR payant (Mistral) et volume d'ingestion. Les étapes vision et embedding ne sont pas facturées à l'appel — non suivies ici.",
+      "exportCsv": "Exporter en CSV",
+      "stat": {
+        "spend": "Dépense OCR",
+        "pages": "Pages (approx.)",
+        "docs": "Documents OCR",
+        "jobs": "Ingestions payantes"
+      },
+      "projects": "Par projet",
+      "recentJobs": "Ingestions récentes",
+      "col": {
+        "project": "Projet",
+        "owner": "Propriétaire",
+        "spent": "Dépensé",
+        "budget": "Budget",
+        "jobs": "Ingestions",
+        "docs": "Documents",
+        "status": "Statut",
+        "estimated": "Estimé",
+        "actual": "Réel",
+        "chunks": "Fragments",
+        "date": "Date"
+      },
+      "noBudget": "—",
+      "emptyProjects": "Aucune dépense OCR pour l'instant.",
+      "emptyJobs": "Aucune ingestion payante pour l'instant."
     }
   },
   "common": {

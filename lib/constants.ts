@@ -19,6 +19,7 @@ export const ROUTES = {
   adminAccounts: "/admin/accounts",
   adminFeedback: "/admin/feedback",
   adminUsage: "/admin/usage",
+  adminOcr: "/admin/ocr",
   signIn: "/sign-in",
   signUp: "/sign-up",
 } as const
@@ -32,6 +33,7 @@ export const ADMIN_TABS = [
   "accounts",
   "feedback",
   "usage",
+  "ocr",
 ] as const
 export type AdminTab = (typeof ADMIN_TABS)[number]
 
@@ -41,6 +43,7 @@ export const ADMIN_TAB_HREF: Record<AdminTab, string> = {
   accounts: ROUTES.adminAccounts,
   feedback: ROUTES.adminFeedback,
   usage: ROUTES.adminUsage,
+  ocr: ROUTES.adminOcr,
 }
 
 /**

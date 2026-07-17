@@ -28,7 +28,8 @@
       "overview": "Overview",
       "accounts": "Accounts",
       "feedback": "Feedback",
-      "usage": "Usage"
+      "usage": "Usage",
+      "ocr": "OCR"
     },
     "overview": {
       "eyebrow": "Administration",
@@ -105,6 +106,36 @@
       "admin": "Admin",
       "member": "Member",
       "guest": "Guest"
+    },
+    "ocr": {
+      "eyebrow": "Administration",
+      "title": "OCR usage",
+      "subtitle": "Paid OCR (Mistral) cost and ingestion volume. The vision and embedding steps aren't billed per call — not tracked here.",
+      "exportCsv": "Export CSV",
+      "stat": {
+        "spend": "OCR spend",
+        "pages": "Pages (approx.)",
+        "docs": "OCR documents",
+        "jobs": "Paid ingests"
+      },
+      "projects": "By project",
+      "recentJobs": "Recent ingests",
+      "col": {
+        "project": "Project",
+        "owner": "Owner",
+        "spent": "Spent",
+        "budget": "Budget",
+        "jobs": "Ingests",
+        "docs": "Documents",
+        "status": "Status",
+        "estimated": "Estimated",
+        "actual": "Actual",
+        "chunks": "Chunks",
+        "date": "Date"
+      },
+      "noBudget": "—",
+      "emptyProjects": "No OCR spend yet.",
+      "emptyJobs": "No paid ingests yet."
     }
   },
   "common": {

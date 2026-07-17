@@ -64,3 +64,49 @@ export function estimatePaidOcrCostUsd(
 }
 
 export type { IngestJob }
+
+// ---------------------------------------------------------------------------
+// Admin console — OCR / ingestion usage.
+// Read-only DTOs for the admin "OCR" tab. Only PAID OCR (Mistral) carries a
+// tracked USD cost; the vision/describe (OpenRouter) and embed (RunPod) steps
+// record no per-call cost, so this view is scoped to paid-OCR spend + ingest
+// volume. Dates are ISO strings (JSON transport); Decimals become numbers.
+// ---------------------------------------------------------------------------
+
+/** Cumulative paid-OCR spend for one project. */
+export type AdminOcrProjectStat = {
+  projectId: string
+  projectName: string
+  ownerEmail: string
+  spentUsd: number
+  budgetUsd: number | null
+  paidJobCount: number
+  paidOcrDocs: number
+}
+
+/** One ingest job that involved paid OCR. */
+export type AdminOcrJobStat = {
+  id: string
+  projectId: string
+  projectName: string
+  status: string
+  createdAt: string
+  finishedAt: string | null
+  paidOcrDocs: number
+  estimatedUsd: number | null
+  actualUsd: number | null
+  chunksWritten: number | null
+}
+
+/** Full admin OCR-usage report. */
+export type AdminOcrUsage = {
+  totals: {
+    spentUsd: number
+    paidJobs: number
+    paidOcrDocs: number
+    /** Pages transcribed, derived from spend at the fixed per-1k-page rate. */
+    pagesApprox: number
+  }
+  projects: AdminOcrProjectStat[]
+  recentJobs: AdminOcrJobStat[]
+}

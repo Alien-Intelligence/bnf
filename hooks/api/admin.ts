@@ -10,6 +10,7 @@ import type { AdminUsageResponse } from "@/app/api/admin/usage/route"
 import type { AdminOverviewResponse } from "@/app/api/admin/overview/route"
 import type { AdminAccountsResponse } from "@/app/api/admin/accounts/route"
 import type { AdminFeedbackResponse } from "@/app/api/admin/feedback/route"
+import type { AdminOcrResponse } from "@/app/api/admin/ocr/route"
 
 // ── Query keys ────────────────────────────────────────────────────────────────
 
@@ -18,6 +19,7 @@ export const adminKeys = {
   overview: () => ["admin", "overview"] as const,
   accounts: () => ["admin", "accounts"] as const,
   feedback: () => ["admin", "feedback"] as const,
+  ocr: () => ["admin", "ocr"] as const,
 }
 
 // ── Read hooks ────────────────────────────────────────────────────────────────
@@ -72,6 +74,19 @@ export function useAdminFeedback() {
       const res = await apiFetch("/api/admin/feedback")
       if (!res.ok) throw new Error(`Failed to fetch feedback: ${res.status}`)
       return res.json() as Promise<AdminFeedbackResponse>
+    },
+    staleTime: 60_000,
+  })
+}
+
+/** Paid-OCR spend + ingest volume for the admin console OCR tab. */
+export function useAdminOcr() {
+  return useQuery<AdminOcrResponse>({
+    queryKey: adminKeys.ocr(),
+    queryFn: async () => {
+      const res = await apiFetch("/api/admin/ocr")
+      if (!res.ok) throw new Error(`Failed to fetch OCR usage: ${res.status}`)
+      return res.json() as Promise<AdminOcrResponse>
     },
     staleTime: 60_000,
   })
