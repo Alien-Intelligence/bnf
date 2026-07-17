@@ -1,6 +1,6 @@
 apiVersion: v2
 name: bnf-demo
-version: 0.10.1
+version: 0.11.0
 description: BnF Corpus Research — Alien Intelligence × BnF demo (Next.js app + ingest worker + BnF broker + Postgres)
 type: application
 # 0.9.0 — worker+broker hardening pass 2: pg-boss sliding-window fetch (the ~600/min
@@ -21,4 +21,10 @@ type: application
 # 0.10.1 — worker-only: make metadata (6→16) + register/indexing (4→24) concurrency
 # configurable + raised (those became the bottleneck after fetch/describe; the data
 # cluster autoscales). App image stays 0.10.0; worker → 0.10.1.
-appVersion: "0.10.0"
+# 0.11.0 — app-only: corpus CSV export button on the Constituer panel (new
+# GET /corpus/export route + shared lib/csv), note-to-note [[note:id|label]]
+# links in research notes, and locale-aware agent prompts (working language
+# follows the UI locale FR ⇄ EN via the x-app-locale header; new
+# AppSession.prompt_locale column, migration applied by the entrypoint).
+# Worker stays 0.10.1, broker 0.9.0.
+appVersion: "0.11.0"
