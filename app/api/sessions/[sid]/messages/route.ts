@@ -32,6 +32,7 @@ import { AgentQueries } from "@/models/agents/queries"
 import { AgentPolicy } from "@/models/agents/policy"
 import { AgentService } from "@/models/agents/service"
 import { UserQueries } from "@/models/users/queries"
+import { resolveRequestLocale } from "@/lib/locale"
 import { createPrismaChatAdapter } from "@/lib/agent/persistence/prisma-adapter"
 import {
   buildTurnScopedCtx,
@@ -91,7 +92,11 @@ const handler = createChatHandler<TurnScopedCtx>({
     maxToolTurns: AGENT_MAX_ITERATIONS,
     system: async (req) => {
       const session = await AgentQueries.getAppSessionOrThrow(sidFromUrl(req))
-      return AgentService.buildSystemPrompt(session)
+      // The UI locale rides the LOCALE_HEADER (the SDK has already consumed
+      // the POST body by the time this callback runs) and picks the working
+      // language of the prompt — FR and EN turns rebuild the cached prompt
+      // when they alternate.
+      return AgentService.buildSystemPrompt(session, resolveRequestLocale(req))
     },
     // Per-request registry: opens a fresh BnF-MCP session for this turn.
     buildTools: (_req, signal) => buildTurnScopedRegistry(signal),

@@ -311,6 +311,7 @@ model AppSession {
   status          String?   // "active" | "draft" | "archived"
   activeMessageId String?   @unique @map("active_message_id")
   systemPrompt    String?   @map("system_prompt") // Cached rendered prompt (corpus or research); re-generated on memory change
+  promptLocale    String?   @map("prompt_locale") // Locale the cached systemPrompt was rendered in; a turn in another locale rebuilds it
   createdAt       DateTime  @default(now()) @map("created_at")
   updatedAt       DateTime  @updatedAt @map("updated_at")
 

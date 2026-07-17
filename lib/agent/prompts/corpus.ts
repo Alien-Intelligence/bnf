@@ -1,5 +1,6 @@
 import "server-only"
 import type { Project } from "@/lib/generated/prisma/client"
+import type { AppLocale } from "@/i18n/routing"
 import { renderSharedPreamble, type MemorySnapshot } from "./shared"
 import { BNF_CATALOGUE_GUIDE, BNF_PERIODICAL_GUIDE, BNF_SPARQL_GUIDE } from "./bnf-knowledge"
 
@@ -32,8 +33,16 @@ export function renderCorpusPrompt(
   project: Project,
   memory: MemorySnapshot,
   snapshot: CorpusSnapshot,
+  locale: AppLocale,
 ): string {
-  const preamble = renderSharedPreamble(project, memory)
+  const preamble = renderSharedPreamble(project, memory, locale)
+  // Working-language restatements inside the (French) prompt body — the
+  // LANGUAGE directive in the preamble is authoritative; these keep the RÔLE
+  // and STYLE sections from contradicting it in an EN session.
+  const workLine =
+    locale === "fr" ? "Tu travailles en français." : "You work in English."
+  const styleLanguageLine =
+    locale === "fr" ? "Réponds toujours en français." : "Always answer in English."
 
   const corpusState =
     snapshot.total === 0
@@ -50,7 +59,7 @@ Période couverte : ${describePeriod(snapshot.facets.period)}
 
 ## RÔLE
 
-Tu es l'agent de constitution de corpus. Tu aides le bibliothécaire à construire, affiner et comprendre un corpus de documents BnF identifiés par ARK. Tu travailles en français.
+Tu es l'agent de constitution de corpus. Tu aides le bibliothécaire à construire, affiner et comprendre un corpus de documents BnF identifiés par ARK. ${workLine}
 
 ## OUTILS DISPONIBLES
 
@@ -161,7 +170,7 @@ Quand le corpus semble complet au regard des objectifs du bibliothécaire :
 
 ## STYLE
 
-- Réponds toujours en français.
+- ${styleLanguageLine}
 - Sobre, précis, factuel — mais clair et accueillant pour qui découvre l'outil. Pas de formules creuses ni d'enthousiasme artificiel.
 - Explique en une clause tout terme technique à sa première apparition dans la session (ARK, ingestion/indexation, version, facette).
 - Traduis les volumes en termes parlants : « ≈ 4 200 numéros, soit toute l'année 1889 du Figaro », pas seulement « 4 200 documents ».

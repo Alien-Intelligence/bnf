@@ -55,17 +55,24 @@ export const askUserTool = defineTool<
     "arrives as your next message. Each question needs a " +
     "short question text and 2–6 concise options; set multiSelect=true when more " +
     "than one option may be chosen. Provide an optional `intro` framing the set " +
-    "(e.g. 'Cadrons le corpus avant de chercher'). Write all text in French.",
+    "(e.g. 'Cadrons le corpus avant de chercher'). Write all text in the working " +
+    "language mandated by your system instructions.",
   inputSchema: z.object({
     intro: z
       .string()
       .max(200)
       .optional()
-      .describe("Optional one-line framing shown above the questions (French)."),
+      .describe(
+        "Optional one-line framing shown above the questions (session's working language).",
+      ),
     questions: z
       .array(
         z.object({
-          question: z.string().min(1).max(200).describe("The question (French)."),
+          question: z
+            .string()
+            .min(1)
+            .max(200)
+            .describe("The question (session's working language)."),
           header: z
             .string()
             .max(40)
@@ -78,7 +85,11 @@ export const askUserTool = defineTool<
           options: z
             .array(
               z.object({
-                label: z.string().min(1).max(120).describe("Option text (French)."),
+                label: z
+                  .string()
+                  .min(1)
+                  .max(120)
+                  .describe("Option text (session's working language)."),
                 description: z
                   .string()
                   .max(160)
@@ -102,10 +113,9 @@ export const askUserTool = defineTool<
       status: "awaiting_user_selection",
       asked: input.questions.length,
       note:
-        "Questions posées à l'utilisateur via une interface à choix. Termine ton " +
-        "tour maintenant : n'ajoute aucun texte et n'appelle aucun autre outil. " +
-        "L'utilisateur répondra en sélectionnant des options ; ses réponses " +
-        "arriveront dans le prochain message.",
+        "The questions were shown to the user as an interactive chooser. End " +
+        "your turn now: add no text and call no other tool. The user will " +
+        "answer by selecting options; their answers arrive in the next message.",
     }
   },
 })

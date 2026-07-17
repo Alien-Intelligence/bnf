@@ -15,10 +15,11 @@
 // so the SDK smoother is disabled here to avoid double animation.
 
 import { useCallback, useMemo, useState } from "react"
+import { useLocale } from "next-intl"
 import { useChat, type UseChatReturn } from "@alien/chat-sdk/react"
 import type { AgentPart, ChatTurn } from "@alien/chat-sdk"
 import { apiFetch } from "@/lib/api-fetch"
-import { CHAT_STREAM_REVEAL_MS } from "@/lib/constants"
+import { CHAT_STREAM_REVEAL_MS, LOCALE_HEADER } from "@/lib/constants"
 import { toolCallErrored } from "@/lib/tools/display"
 
 // ---------------------------------------------------------------------------
@@ -180,6 +181,7 @@ export function useTurnStream(
   model?: string,
 ): UseTurnStreamResult {
   const endpoint = `${BASE_PATH}/api/sessions/${appSessionId ?? "_none_"}/messages`
+  const locale = useLocale()
   const [domainEvents, setDomainEvents] = useState<StreamDomainEvent[]>([])
 
   // Reset the live domain-event log when the session changes — the
@@ -193,6 +195,10 @@ export function useTurnStream(
   const chat = useChat({
     endpoint,
     resume: appSessionId ? { sessionId: appSessionId } : undefined,
+    // The UI locale drives the agent's working language (system prompt +
+    // auto-title). A locale switch navigates to the other locale tree and
+    // remounts this hook, so a static header stays correct for its lifetime.
+    headers: { [LOCALE_HEADER]: locale },
     // Per-request model override (openrouter only). Only attach `body.model`
     // when a model is set — an absent key lets the handler use its configured
     // default, and never sends a namespaced id down the direct-Anthropic path.

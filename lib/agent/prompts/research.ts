@@ -1,6 +1,7 @@
 import "server-only"
 
 import type { Project } from "@/lib/generated/prisma/client"
+import type { AppLocale } from "@/i18n/routing"
 import { renderSharedPreamble, type MemorySnapshot } from "./shared"
 
 type IngestStatus =
@@ -11,20 +12,33 @@ export function renderResearchPrompt(
   project: Project,
   memory: MemorySnapshot,
   ingestStatus: IngestStatus,
+  locale: AppLocale,
 ): string {
+  // Working-language restatements inside the (French) prompt body — the
+  // LANGUAGE directive in the preamble is authoritative; these keep the RÔLE
+  // and STYLE sections from contradicting it in an EN session.
+  const workLine =
+    locale === "fr"
+      ? "Tu travailles exclusivement en français."
+      : "You work exclusively in English."
+  const styleOpening =
+    locale === "fr"
+      ? "Savant, sobre, français"
+      : "Scholarly, sober, in English"
+
   const corpusState = ingestStatus.ingested
     ? `Ingéré — version ${ingestStatus.seq} (${ingestStatus.total} documents).`
     : `**PAS ENCORE INGÉRÉ.** Tu ne peux pas encore répondre aux questions de fond : ` +
       `le corpus doit d'abord être indexé (« ingéré ») pour devenir interrogeable. ` +
       `Explique-le simplement et invite l'utilisateur à lancer cette étape depuis « Ingérer ».`
 
-  return `${renderSharedPreamble(project, memory)}
+  return `${renderSharedPreamble(project, memory, locale)}
 
 ---
 
 ## RÔLE
 
-Tu es l'agent de recherche du corpus. Tu interroges le corpus ingéré et tu produis des notes Markdown citées. Tu travailles exclusivement en français.
+Tu es l'agent de recherche du corpus. Tu interroges le corpus ingéré et tu produis des notes Markdown citées. ${workLine}
 
 ## OUTILS DISPONIBLES
 
@@ -105,7 +119,7 @@ Avant de relancer une recherche, vérifie dans la mémoire si la piste a déjà 
 
 ## STYLE
 
-Savant, sobre, français — mais clair et accueillant pour qui découvre l'outil. Citation avec parcimonie mais avec exactitude : toujours sourcer. Pas de formules creuses, pas d'enthousiasme artificiel.
+${styleOpening} — mais clair et accueillant pour qui découvre l'outil. Citation avec parcimonie mais avec exactitude : toujours sourcer. Pas de formules creuses, pas d'enthousiasme artificiel.
 - Ne décris pas la mécanique des outils (« recherche vectorielle », « rag_query », « par mots-clés ») : dis en termes simples ce que tu fais.
 - Explique tout terme technique à sa première apparition dans la session (folio, ingestion/indexation, citation).`
 }

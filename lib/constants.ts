@@ -139,6 +139,15 @@ export const PROJECTS_INITIAL_VERSION_SEQ = 1
 export const CHAT_STREAM_REVEAL_MS = 25
 
 /**
+ * Request header carrying the UI locale on every chat request. The chat-sdk
+ * handler consumes the POST body before calling the `system(req)` callback,
+ * so the locale must ride a header, not the body. Sent by
+ * hooks/api/turn-stream.ts; read by lib/locale.ts (resolveRequestLocale) —
+ * it drives the working language of the agent's system prompt.
+ */
+export const LOCALE_HEADER = "x-app-locale"
+
+/**
  * MCP protocol version sent in the `initialize` handshake. The BnF MCP
  * (mcp-base) runs *stateless*: `initialize` returns no `Mcp-Session-Id` and
  * each request is self-contained, so the session header is optional and must
