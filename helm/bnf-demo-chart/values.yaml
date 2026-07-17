@@ -8,7 +8,7 @@ replicaCount: 1
 image:
   repository: rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo
   pullPolicy: Always
-  tag: "0.11.0"
+  tag: "0.12.2"
 
 imagePullSecrets: []
 
@@ -281,13 +281,17 @@ broker:
     # so the broker's own classifiable timeout wins over an opaque worker abort.
     upstreamTimeoutMs: "120000"
 
+  # Adopted from the live deployment (was bumped via `kubectl set resources`
+  # during the Gallica ingest load work — provision generously, RAM is cheap;
+  # keeping the chart at the old 96Mi/256Mi made every `helm upgrade` fail on
+  # an SSA field-ownership conflict with that kubectl-set).
   resources:
     requests:
       cpu: 50m
-      memory: 96Mi
+      memory: 512Mi
     limits:
       cpu: 500m
-      memory: 256Mi
+      memory: 2Gi
 
 # ===========================================================================
 # Bundled Postgres — single replica, PVC-backed, no replication. Shared by the

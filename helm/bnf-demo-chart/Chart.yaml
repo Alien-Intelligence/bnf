@@ -1,6 +1,6 @@
 apiVersion: v2
 name: bnf-demo
-version: 0.11.0
+version: 0.12.2
 description: BnF Corpus Research — Alien Intelligence × BnF demo (Next.js app + ingest worker + BnF broker + Postgres)
 type: application
 # 0.9.0 — worker+broker hardening pass 2: pg-boss sliding-window fetch (the ~600/min
@@ -22,9 +22,13 @@ type: application
 # configurable + raised (those became the bottleneck after fetch/describe; the data
 # cluster autoscales). App image stays 0.10.0; worker → 0.10.1.
 # 0.11.0 — app-only: corpus CSV export button on the Constituer panel (new
-# GET /corpus/export route + shared lib/csv), note-to-note [[note:id|label]]
-# links in research notes, and locale-aware agent prompts (working language
-# follows the UI locale FR ⇄ EN via the x-app-locale header; new
-# AppSession.prompt_locale column, migration applied by the entrypoint).
-# Worker stays 0.10.1, broker 0.9.0.
-appVersion: "0.11.0"
+# GET /corpus/export route + shared lib/csv) + note-to-note [[note:id|label]]
+# links in research notes. Deployed to prod 2026-07-03 as chart 0.12.x from an
+# uncommitted checkout (0.12.0/0.12.1 chart bumps were never committed — this
+# file's history has a gap there); code committed 2026-07-17.
+# 0.12.2 — app-only: locale-aware agent prompts (working language follows the
+# UI locale FR ⇄ EN via the x-app-locale header; new AppSession.prompt_locale
+# column, migration applied by the entrypoint). Also adopts the live broker
+# memory (512Mi/2Gi) into values so helm upgrades stop conflicting with the
+# manual kubectl-set. Worker stays 0.10.1, broker 0.9.0.
+appVersion: "0.12.2"
