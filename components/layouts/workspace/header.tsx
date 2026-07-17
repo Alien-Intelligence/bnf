@@ -11,7 +11,10 @@
 // useTranslations is used, provided by NextIntlClientProvider in the layout).
 
 import Image from "next/image"
+import { ShieldUser } from "lucide-react"
 import { useTranslations } from "next-intl"
+import { Link } from "@/i18n/navigation"
+import { ROUTES } from "@/lib/constants"
 import { LayoutWorkspaceStepNav } from "./step-nav"
 import { LayoutWorkspaceProjectSwitcher } from "./project-switcher"
 import { LayoutWorkspaceLangToggle } from "./lang-toggle"
@@ -22,6 +25,8 @@ interface WorkspaceHeaderProps {
   user: { name?: string; email: string }
   /** When present, the step-nav and project switcher render. */
   projectId?: string
+  /** When true, reveal the discreet link to the admin console. */
+  isAdmin?: boolean
 }
 
 function initials(user: { name?: string; email: string }): string {
@@ -52,6 +57,7 @@ function AppVersion() {
 export function WorkspaceHeader({
   user,
   projectId,
+  isAdmin = false,
 }: WorkspaceHeaderProps) {
   const t = useTranslations("nav")
 
@@ -91,6 +97,16 @@ export function WorkspaceHeader({
       {/* Version + MCP status + user menu */}
       <div className="flex items-center gap-3">
         <AppVersion />
+        {isAdmin && (
+          <Link
+            href={ROUTES.admin}
+            title={t("admin")}
+            aria-label={t("admin")}
+            className="flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+          >
+            <ShieldUser className="size-4" />
+          </Link>
+        )}
         <LayoutWorkspaceLangToggle />
         <WorkspaceHealthStatus />
         <span

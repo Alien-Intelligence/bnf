@@ -21,6 +21,88 @@
       "toolName": "Tool",
       "count": "Count",
       "empty": "No data for this period."
+    },
+    "nav": {
+      "title": "Admin console",
+      "overview": "Overview",
+      "accounts": "Accounts",
+      "feedback": "Feedback",
+      "usage": "Usage"
+    },
+    "overview": {
+      "eyebrow": "Administration",
+      "title": "Overview",
+      "subtitle": "Platform-wide statistics",
+      "stat": {
+        "users": "Accounts",
+        "projects": "Projects",
+        "sessions": "Sessions",
+        "messages": "Messages",
+        "notes": "Notes",
+        "feedback": "Feedback",
+        "tokensIn": "Tokens in",
+        "tokensOut": "Tokens out",
+        "newUsers": "New accounts (30d)"
+      },
+      "signups": "Sign-ups — last 30 days",
+      "feedbackByRating": "Feedback by rating",
+      "feedbackByTarget": "Feedback by target",
+      "empty": "No data."
+    },
+    "accounts": {
+      "eyebrow": "Administration",
+      "title": "Accounts",
+      "subtitle": "All accounts and their activity",
+      "exportCsv": "Export CSV",
+      "col": {
+        "name": "Name",
+        "email": "Email",
+        "role": "Role",
+        "createdAt": "Created",
+        "projects": "Projects",
+        "sessions": "Sessions",
+        "messages": "Messages",
+        "notes": "Notes",
+        "feedback": "Feedback",
+        "tokensIn": "In",
+        "tokensOut": "Out",
+        "lastActive": "Last active"
+      },
+      "never": "—",
+      "empty": "No accounts."
+    },
+    "feedback": {
+      "eyebrow": "Administration",
+      "title": "Feedback",
+      "subtitle": "All user feedback",
+      "exportCsv": "Export CSV",
+      "col": {
+        "rating": "Rating",
+        "user": "User",
+        "project": "Project",
+        "target": "Target",
+        "comment": "Comment",
+        "date": "Date"
+      },
+      "deleted": "Target deleted",
+      "open": "Open",
+      "noComment": "—",
+      "empty": "No feedback."
+    },
+    "rating": {
+      "bad": "Needs work",
+      "ok": "OK",
+      "great": "Great"
+    },
+    "target": {
+      "session": "Session",
+      "note": "Note",
+      "turn": "Answer"
+    },
+    "role": {
+      "admin": "Admin",
+      "member": "Member",
+      "guest": "Guest"
     }
   },
   "common": {
@@ -46,7 +128,8 @@
     "newProject": "New project",
     "switchProject": "Switch project",
     "userMenu": "User menu",
-    "language": "Language"
+    "language": "Language",
+    "admin": "Administration"
   },
   "health": {
     "aria": "Service health",

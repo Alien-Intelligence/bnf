@@ -21,6 +21,88 @@
       "toolName": "Outil",
       "count": "Nombre",
       "empty": "Aucune donnée pour cette période."
+    },
+    "nav": {
+      "title": "Console d'administration",
+      "overview": "Vue d'ensemble",
+      "accounts": "Comptes",
+      "feedback": "Retours",
+      "usage": "Utilisation"
+    },
+    "overview": {
+      "eyebrow": "Administration",
+      "title": "Vue d'ensemble",
+      "subtitle": "Statistiques globales de la plateforme",
+      "stat": {
+        "users": "Comptes",
+        "projects": "Projets",
+        "sessions": "Sessions",
+        "messages": "Messages",
+        "notes": "Notes",
+        "feedback": "Retours",
+        "tokensIn": "Jetons entrants",
+        "tokensOut": "Jetons sortants",
+        "newUsers": "Nouveaux comptes (30 j)"
+      },
+      "signups": "Inscriptions — 30 derniers jours",
+      "feedbackByRating": "Retours par note",
+      "feedbackByTarget": "Retours par cible",
+      "empty": "Aucune donnée."
+    },
+    "accounts": {
+      "eyebrow": "Administration",
+      "title": "Comptes",
+      "subtitle": "Tous les comptes et leur activité",
+      "exportCsv": "Exporter en CSV",
+      "col": {
+        "name": "Nom",
+        "email": "Courriel",
+        "role": "Rôle",
+        "createdAt": "Créé le",
+        "projects": "Projets",
+        "sessions": "Sessions",
+        "messages": "Messages",
+        "notes": "Notes",
+        "feedback": "Retours",
+        "tokensIn": "Entrants",
+        "tokensOut": "Sortants",
+        "lastActive": "Dernière activité"
+      },
+      "never": "—",
+      "empty": "Aucun compte."
+    },
+    "feedback": {
+      "eyebrow": "Administration",
+      "title": "Retours",
+      "subtitle": "Tous les retours des utilisateurs",
+      "exportCsv": "Exporter en CSV",
+      "col": {
+        "rating": "Note",
+        "user": "Utilisateur",
+        "project": "Projet",
+        "target": "Cible",
+        "comment": "Commentaire",
+        "date": "Date"
+      },
+      "deleted": "Cible supprimée",
+      "open": "Ouvrir",
+      "noComment": "—",
+      "empty": "Aucun retour."
+    },
+    "rating": {
+      "bad": "À améliorer",
+      "ok": "Correct",
+      "great": "Excellent"
+    },
+    "target": {
+      "session": "Session",
+      "note": "Note",
+      "turn": "Réponse"
+    },
+    "role": {
+      "admin": "Admin",
+      "member": "Membre",
+      "guest": "Invité"
     }
   },
   "common": {
@@ -46,7 +128,8 @@
     "newProject": "Nouveau projet",
     "switchProject": "Changer de projet",
     "userMenu": "Menu utilisateur",
-    "language": "Langue"
+    "language": "Langue",
+    "admin": "Administration"
   },
   "health": {
     "aria": "État des services",

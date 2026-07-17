@@ -1,26 +1,25 @@
 "use client"
 
 // app/[locale]/admin/usage/client.tsx
-// Admin usage dashboard — token and tool-call statistics, re-skinned to the
+// Admin console — Usage tab. Token and tool-call statistics, re-skinned to the
 // Alien × BnF DS: a row of stat tiles over the projects and tools tables.
-// No initial data prop: the server page only asserts the admin role; the report
-// is fetched client-side (not needed for SSR). States are distinct branches.
+// Header, tab-nav, and the centred main column come from the admin layout;
+// this renders only the tab's own content. States are distinct branches.
 
 import { useMemo } from "react"
 import { Download } from "lucide-react"
-import { useTranslations } from "next-intl"
+import { useLocale, useTranslations } from "next-intl"
 import { useAdminUsage } from "@/hooks/api/admin"
-import { WorkspaceHeader } from "@/components/layouts/workspace/header"
 import { CardSharedStat } from "@/components/cards/shared/stat"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 
-const fr = (n: number) => n.toLocaleString("fr-FR")
-
 export function AdminUsageClient() {
   const t = useTranslations("admin.usage")
   const tCommon = useTranslations("common")
+  const locale = useLocale()
+  const fr = (n: number) => n.toLocaleString(locale)
   const { data, isLoading, isError, refetch } = useAdminUsage()
 
   const totals = useMemo(() => {
@@ -34,32 +33,30 @@ export function AdminUsageClient() {
   }, [data])
 
   return (
-    <div className="flex min-h-screen flex-col">
-      <WorkspaceHeader user={{ email: "admin" }} />
-      <main className="mx-auto w-full max-w-5xl px-6 py-12">
-        <div className="mb-8 flex items-end justify-between gap-4">
-          <div className="space-y-1">
-            <span className="mono-eyebrow">{t("eyebrow")}</span>
-            <h1 className="text-2xl font-semibold">{t("title")}</h1>
-            {data && (
-              <p className="text-sm text-muted-foreground">
-                {t("lastWeek")} —{" "}
-                {new Date(data.since).toLocaleDateString("fr-FR")}
-              </p>
-            )}
-          </div>
-          <Button
-            variant="outline"
-            onClick={() => {
-              window.location.href = "/api/admin/usage/export"
-            }}
-          >
-            <Download className="size-4" />
-            {t("exportCsv")}
-          </Button>
+    <div className="flex flex-col gap-8">
+      <div className="flex items-end justify-between gap-4">
+        <div className="space-y-1">
+          <span className="mono-eyebrow">{t("eyebrow")}</span>
+          <h1 className="text-2xl font-semibold">{t("title")}</h1>
+          {data && (
+            <p className="text-sm text-muted-foreground">
+              {t("lastWeek")} —{" "}
+              {new Date(data.since).toLocaleDateString(locale)}
+            </p>
+          )}
         </div>
+        <Button
+          variant="outline"
+          onClick={() => {
+            window.location.href = "/api/admin/usage/export"
+          }}
+        >
+          <Download className="size-4" />
+          {t("exportCsv")}
+        </Button>
+      </div>
 
-        {isLoading ? (
+      {isLoading ? (
           <div className="flex flex-col gap-8">
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               {Array.from({ length: 4 }).map((_, i) => (
@@ -156,8 +153,7 @@ export function AdminUsageClient() {
               )}
             </section>
           </div>
-        ) : null}
-      </main>
+      ) : null}
     </div>
   )
 }
