@@ -57,12 +57,13 @@ config:
   clusterMode: real
 
   # BnF MCP — corpus building (Constituer). URL is public; token is a secret.
-  # Pointed at the ALPHA MCP for now (2026-06-24).
-  bnfMcpUrl: https://bnf.mcp.alpha.alien.club/mcp
+  # Prod BnF gateway MCP (repointed from alpha at the 2026-07-22 data migration).
+  bnfMcpUrl: https://bnf.mcp.alien.club/mcp
 
   # Data-cluster MCP — research RAG (Rechercher), required when clusterMode=real.
   # The research agent's rag_query tool queries this over dataset `bnf-<projectId>`.
-  dataclusterMcpUrl: https://mcp-test-bnf-corpus-1781899491112.mcp.alpha.alien.club/mcp
+  # Prod tenant bnf-corpus-demo-1784645041754 (cluster 113), migrated 2026-07-22.
+  dataclusterMcpUrl: https://mcp-bnf-corpus-demo-1784645041754.mcp.alien.club/mcp
 
   # Langfuse observability — OPTIONAL. Set publicKey here + secretKey in the
   # ExternalSecret to enable per-turn tracing. Leave blank → tracing off.
@@ -161,8 +162,8 @@ worker:
     # Data cluster (register/upsert). Proxy base = backendApiUrl + /clusters/<id>/proxy.
     # bearer token is a secret. clusterId MUST match the dataset region the app's
     # DATACLUSTER_MCP_URL points at.
-    backendApiUrl: https://api.alpha.alien.club
-    clusterId: "158"
+    backendApiUrl: https://api.alien.club
+    clusterId: "113"
 
     # Gallica politeness / rate-limit knobs (see worker/.env.example).
     gallicaRps: "0.083"
