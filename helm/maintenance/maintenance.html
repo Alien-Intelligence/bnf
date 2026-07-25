@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <!-- Auto-refresh every 30s so users land back on the app as soon as the
+         cutover completes and the VirtualService is pointed back. -->
+    <meta http-equiv="refresh" content="30" />
+    <title>Maintenance — BnF Corpus Research × Alien Intelligence</title>
+    <style>
+      :root { color-scheme: light dark; }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        background: #0f1115;
+        color: #e8e8ea;
+        padding: 24px;
+      }
+      .card {
+        max-width: 560px;
+        width: 100%;
+        background: #171a21;
+        border: 1px solid #262b36;
+        border-radius: 16px;
+        padding: 40px 36px;
+        text-align: center;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+      }
+      .brand { font-size: 13px; letter-spacing: 0.14em; text-transform: uppercase; color: #8a94a6; margin-bottom: 24px; }
+      .spinner {
+        width: 40px; height: 40px; margin: 0 auto 28px;
+        border: 3px solid #2a3040; border-top-color: #6ea8fe;
+        border-radius: 50%; animation: spin 1s linear infinite;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      h1 { font-size: 22px; margin: 0 0 12px; font-weight: 600; }
+      p { font-size: 15px; line-height: 1.6; color: #b9c0cc; margin: 0 0 8px; }
+      .sep { height: 1px; background: #262b36; margin: 28px 0; border: 0; }
+      .en { color: #8a94a6; font-size: 13.5px; }
+      .foot { margin-top: 28px; font-size: 12px; color: #6b7382; }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <div class="brand">Alien Intelligence × BnF</div>
+      <div class="spinner" aria-hidden="true"></div>
+      <h1>Maintenance en cours</h1>
+      <p>
+        Nous effectuons une opération de maintenance planifiée sur la plateforme
+        de recherche documentaire. Le service sera rétabli sous peu.
+      </p>
+      <p>Cette page se rafraîchit automatiquement.</p>
+      <hr class="sep" />
+      <p class="en">
+        <strong>Scheduled maintenance.</strong> We are performing planned
+        maintenance on the corpus research platform. The service will be back
+        shortly — this page refreshes automatically.
+      </p>
+      <div class="foot">BnF Corpus Research</div>
+    </main>
+  </body>
+</html>
