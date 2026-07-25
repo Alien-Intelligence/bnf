@@ -1,0 +1,60 @@
+# Maintenance page for the BnF demo cutover.
+#
+# A tiny unprivileged-nginx Deployment + Service that serves a bilingual
+# "maintenance en cours" page (503 + Retry-After) for every path. During the
+# cutover window the VirtualService `bnf-demo-prod-vs` is pointed at this
+# Service; afterwards it is pointed back at `bnf-demo-prod`. See README.md.
+#
+# The two configmaps (html + nginx.conf) are created from the sibling files by
+# the toggle script — this manifest only defines the workload.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bnf-maintenance
+  namespace: bnf
+  labels: { app: bnf-maintenance }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: bnf-maintenance }
+  template:
+    metadata:
+      labels: { app: bnf-maintenance }
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        fsGroup: 101
+      containers:
+        - name: nginx
+          image: nginxinc/nginx-unprivileged:1.27-alpine
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - { name: html, mountPath: /usr/share/nginx/html }
+            - { name: conf, mountPath: /etc/nginx/conf.d }
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { cpu: 100m, memory: 64Mi }
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 2
+            periodSeconds: 5
+      volumes:
+        - name: html
+          configMap: { name: bnf-maintenance-html }
+        - name: conf
+          configMap: { name: bnf-maintenance-conf }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bnf-maintenance
+  namespace: bnf
+  labels: { app: bnf-maintenance }
+spec:
+  selector: { app: bnf-maintenance }
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
