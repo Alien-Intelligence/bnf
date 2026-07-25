@@ -20,3 +20,33 @@ export const FEEDBACK_RATING = {
   GREAT: "great",
 } as const
 export type FeedbackRating = (typeof FEEDBACK_RATING)[keyof typeof FEEDBACK_RATING]
+
+/**
+ * What a feedback row's target resolved to. `label` is the note title, session
+ * title, or a short excerpt of the rated turn. `sessionScope` (corpus|research)
+ * lets the client pick the right step route for session/turn deep-links; it is
+ * null for notes (which always live in the Carnet). `null` for the whole
+ * object means the target was deleted since the feedback was left.
+ */
+export type AdminFeedbackResolved = {
+  label: string
+  sessionScope: string | null
+}
+
+/** One feedback row enriched for the admin console. Dates are ISO strings. */
+export type AdminFeedbackRow = {
+  id: string
+  createdAt: string
+  rating: string
+  comment: string | null
+  target: string
+  targetId: string
+  projectId: string
+  projectName: string
+  userName: string
+  userEmail: string
+  resolved: AdminFeedbackResolved | null
+  /** Langfuse session-view deep-link, or null if Langfuse isn't configured or
+   *  the feedback has no owning session (e.g. a session-less note). */
+  langfuseUrl: string | null
+}

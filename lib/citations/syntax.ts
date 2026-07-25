@@ -6,12 +6,20 @@
  *
  * Citation syntax:  [[<ark>|<label>|<folio>]]   (inline text citation → pill)
  * Image syntax:     ![[<ark>|<label>|<folio>]]  (embed the folio image → figure)
+ * Note-link syntax: [[note:<id>|<label>]]       (inline link to another note → pill)
  *
  * The image form is the markdown-image flavour of a citation: same fields, a
  * leading `!`. The label is the figure caption. Both resolve to the same
  * (ark, folio) and the IIIF image URL is DERIVED at render time (see
  * lib/citations/external.iiifImageUrl) — never stored — exactly like the
  * citation source panel.
+ *
+ * The note-link form is the INTERNAL cross-reference: the research agent (and
+ * the librarian) links one note to another so a complex project's notes
+ * interconnect. It carries the target note's UUID and a free-text label; the
+ * renderer turns it into a clickable pill that opens the target note. Unlike a
+ * citation it is NOT projected to a DB table (render-only) and the `note:`
+ * prefix keeps it fully disjoint from the `ark:/…` citation forms.
  *
  * Rules (from playbook/citations.md):
  *   - <ark>   must match `ark:/\d+/[A-Za-z0-9]+`
@@ -37,6 +45,13 @@ export const CITATION_REGEX =
 export const IMAGE_CITATION_REGEX =
   /!\[\[(ark:\/\d+\/[A-Za-z0-9]+)\|((?:[^|\]]|\\\||\\\])+)\|f?(\d+)\]\]/g
 
+// A note-to-note link: `[[note:<uuid>|<label>]]`. The `note:` prefix and the
+// canonical UUID shape make it disjoint from CITATION_REGEX (which requires
+// `ark:/…`). The `(?<!!)` lookbehind keeps a stray `![[note:…]]` from matching,
+// mirroring CITATION_REGEX. <label> escapes `|` and `]]` exactly like a citation.
+export const NOTELINK_REGEX =
+  /(?<!!)\[\[note:([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\|((?:[^|\]]|\\\||\\\])+)\]\]/g
+
 export type ParsedCitation = {
   /** The full ARK identifier, e.g. `ark:/12148/bpt6k2839841`. */
   ark: string
@@ -44,6 +59,19 @@ export type ParsedCitation = {
   label: string
   /** IIIF vue index (page number, integer ≥ 1). */
   folio: number
+  /** Raw matched string as it appears in the note body. */
+  raw: string
+  /** Character offset of this match in the source string. */
+  index: number
+  /** Byte-length of the raw match (convenience for slicing). */
+  length: number
+}
+
+export type ParsedNoteLink = {
+  /** The target note's UUID. */
+  noteId: string
+  /** Human-readable link label (pipes/brackets already unescaped). */
+  label: string
   /** Raw matched string as it appears in the note body. */
   raw: string
   /** Character offset of this match in the source string. */
@@ -100,9 +128,35 @@ export function parseImageCitations(md: string): ParsedCitation[] {
 }
 
 /**
+ * Extract all note-to-note links (`[[note:<id>|<label>]]`) from a Markdown
+ * body, in source order; label is already unescaped.
+ */
+export function parseNoteLinks(md: string): ParsedNoteLink[] {
+  const out: ParsedNoteLink[] = []
+  for (const m of md.matchAll(NOTELINK_REGEX)) {
+    out.push({
+      noteId: m[1],
+      label: unescapeCitationText(m[2]),
+      raw: m[0],
+      index: m.index ?? 0,
+      length: m[0].length,
+    })
+  }
+  return out
+}
+
+/**
  * Serialize a citation back to the `[[ark|label|folio]]` wire format.
  * Escapes pipes and closing brackets in the label.
  */
 export function renderCitation(c: { ark: string; label: string; folio: number }): string {
   return `[[${c.ark}|${escapeCitationText(c.label)}|${c.folio}]]`
+}
+
+/**
+ * Serialize a note link back to the `[[note:<id>|<label>]]` wire format.
+ * Escapes pipes and closing brackets in the label.
+ */
+export function renderNoteLink(l: { noteId: string; label: string }): string {
+  return `[[note:${l.noteId}|${escapeCitationText(l.label)}]]`
 }

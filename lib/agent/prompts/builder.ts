@@ -1,17 +1,28 @@
 import "server-only"
 import { prisma } from "@/lib/db"
+import type { AppLocale } from "@/i18n/routing"
 import { renderCorpusPrompt } from "./corpus"
 import { renderResearchPrompt } from "./research"
 import type { AppSession } from "@/lib/generated/prisma/client"
 import type { MemorySnapshot } from "./shared"
 
 export class PromptBuilder {
-  static async buildForSession(session: AppSession): Promise<string> {
-    if (session.systemPrompt) return session.systemPrompt
-    const built = await this.render(session)
+  /**
+   * The cached prompt is only valid for the locale it was rendered in
+   * (`promptLocale`): a turn made under the other UI locale rebuilds it, so a
+   * session follows the user when they switch FR ⇄ EN mid-project.
+   */
+  static async buildForSession(
+    session: AppSession,
+    locale: AppLocale,
+  ): Promise<string> {
+    if (session.systemPrompt && session.promptLocale === locale) {
+      return session.systemPrompt
+    }
+    const built = await this.render(session, locale)
     await prisma.appSession.update({
       where: { id: session.id },
-      data: { systemPrompt: built },
+      data: { systemPrompt: built, promptLocale: locale },
     })
     return built
   }
@@ -33,17 +44,20 @@ export class PromptBuilder {
     })
   }
 
-  private static async render(session: AppSession): Promise<string> {
+  private static async render(
+    session: AppSession,
+    locale: AppLocale,
+  ): Promise<string> {
     const project = await prisma.project.findUniqueOrThrow({
       where: { id: session.projectId },
     })
     const memory = await this.loadMemory(session.projectId, session.scope)
     if (session.scope === "corpus") {
       const snapshot = await this.loadCorpusSnapshot(session.projectId)
-      return renderCorpusPrompt(project, memory, snapshot)
+      return renderCorpusPrompt(project, memory, snapshot, locale)
     }
     const ingestStatus = await this.loadIngestStatus(session.projectId)
-    return renderResearchPrompt(project, memory, ingestStatus)
+    return renderResearchPrompt(project, memory, ingestStatus, locale)
   }
 
   private static async loadMemory(

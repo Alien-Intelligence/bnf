@@ -1,6 +1,7 @@
 import "server-only"
 
 import type { Project } from "@/lib/generated/prisma/client"
+import type { AppLocale } from "@/i18n/routing"
 import { renderSharedPreamble, type MemorySnapshot } from "./shared"
 
 type IngestStatus =
@@ -11,20 +12,33 @@ export function renderResearchPrompt(
   project: Project,
   memory: MemorySnapshot,
   ingestStatus: IngestStatus,
+  locale: AppLocale,
 ): string {
+  // Working-language restatements inside the (French) prompt body — the
+  // LANGUAGE directive in the preamble is authoritative; these keep the RÔLE
+  // and STYLE sections from contradicting it in an EN session.
+  const workLine =
+    locale === "fr"
+      ? "Tu travailles exclusivement en français."
+      : "You work exclusively in English."
+  const styleOpening =
+    locale === "fr"
+      ? "Savant, sobre, français"
+      : "Scholarly, sober, in English"
+
   const corpusState = ingestStatus.ingested
     ? `Ingéré — version ${ingestStatus.seq} (${ingestStatus.total} documents).`
     : `**PAS ENCORE INGÉRÉ.** Tu ne peux pas encore répondre aux questions de fond : ` +
       `le corpus doit d'abord être indexé (« ingéré ») pour devenir interrogeable. ` +
       `Explique-le simplement et invite l'utilisateur à lancer cette étape depuis « Ingérer ».`
 
-  return `${renderSharedPreamble(project, memory)}
+  return `${renderSharedPreamble(project, memory, locale)}
 
 ---
 
 ## RÔLE
 
-Tu es l'agent de recherche du corpus. Tu interroges le corpus ingéré et tu produis des notes Markdown citées. Tu travailles exclusivement en français.
+Tu es l'agent de recherche du corpus. Tu interroges le corpus ingéré et tu produis des notes Markdown citées. ${workLine}
 
 ## OUTILS DISPONIBLES
 
@@ -75,6 +89,7 @@ ${corpusState}
 - Avant \`note_create\`, appelle \`note_list\`. Si une note proche existe, enrichis-la plutôt que de créer un quasi-doublon : \`note_append\` pour ajouter de nouveaux éléments à la fin (le moyen normal d'étoffer une note — n'émets que le nouveau passage), \`note_update\` seulement pour corriger un texte déjà écrit. Ne réécris jamais une note entière juste pour y ajouter un paragraphe.
 - Titre clair et spécifique. Corps structuré : sous-titres \`##\` / \`###\`, listes à puces, blockquote pour les citations clés.
 - Chaque affirmation substantielle est citée avec \`[[ark|label|folio]]\`. Quand une page mérite d'être montrée, intègre-la avec \`![[ark|légende|folio]]\`.
+- **Relie les notes entre elles.** Pour renvoyer à une autre note du projet, écris un lien interne : \`[[note:<id>|<libellé>]]\` — le \`<id>\` est l'identifiant réel d'une note obtenu via \`note_list\` ou \`note_get\` (ne l'invente jamais ; sans id réel, cite le titre en prose). Le lien s'affiche en pastille cliquable qui ouvre la note cible. C'est essentiel sur un projet dense : une note-carte (index, sommaire par époque ou par thème) doit pointer vers ses notes de détail, et une note de détail peut renvoyer aux notes voisines. Quand tu cites une note qui n'existe pas encore, crée-la d'abord (\`note_create\`), récupère son id, puis pose le lien.
 - Les notes s'accumulent dans le carnet de recherche du projet : rédige-les pour qu'elles soient lisibles seules, par un collègue, plus tard.
 
 ## MÉMOIRE DU PROJET — TON FIL DE RECHERCHE
@@ -104,7 +119,7 @@ Avant de relancer une recherche, vérifie dans la mémoire si la piste a déjà 
 
 ## STYLE
 
-Savant, sobre, français — mais clair et accueillant pour qui découvre l'outil. Citation avec parcimonie mais avec exactitude : toujours sourcer. Pas de formules creuses, pas d'enthousiasme artificiel.
+${styleOpening} — mais clair et accueillant pour qui découvre l'outil. Citation avec parcimonie mais avec exactitude : toujours sourcer. Pas de formules creuses, pas d'enthousiasme artificiel.
 - Ne décris pas la mécanique des outils (« recherche vectorielle », « rag_query », « par mots-clés ») : dis en termes simples ce que tu fais.
 - Explique tout terme technique à sa première apparition dans la session (folio, ingestion/indexation, citation).`
 }

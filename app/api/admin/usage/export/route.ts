@@ -7,20 +7,7 @@
 import { withAuth } from "@/app/api/_middleware"
 import { forbidden } from "@/lib/api-response"
 import { prisma } from "@/lib/db"
-
-/** Escape a single CSV cell value (RFC 4180). */
-function csvCell(value: string | number): string {
-  const str = String(value)
-  // Wrap in quotes if the value contains comma, newline, or double-quote.
-  if (str.includes('"') || str.includes(",") || str.includes("\n")) {
-    return `"${str.replace(/"/g, '""')}"`
-  }
-  return str
-}
-
-function csvRow(cells: (string | number)[]): string {
-  return cells.map(csvCell).join(",")
-}
+import { csvRow } from "@/lib/csv"
 
 export const GET = withAuth(async (_req, user) => {
   // Admin-only — flat role gate (not a per-resource ownership decision).
@@ -33,6 +20,7 @@ export const GET = withAuth(async (_req, user) => {
       id: true,
       name: true,
       ownerId: true,
+      owner: { select: { email: true } },
       appSessions: {
         select: {
           messages: {
@@ -48,6 +36,7 @@ export const GET = withAuth(async (_req, user) => {
       "project_id",
       "project_name",
       "owner_id",
+      "owner_email",
       "tokens_in",
       "tokens_out",
       "message_count",
@@ -79,7 +68,19 @@ export const GET = withAuth(async (_req, user) => {
       }
     }
 
-    rows.push(csvRow([p.id, p.name, p.ownerId, allIn, allOut, messageCount, weekIn, weekOut]))
+    rows.push(
+      csvRow([
+        p.id,
+        p.name,
+        p.ownerId,
+        p.owner.email,
+        allIn,
+        allOut,
+        messageCount,
+        weekIn,
+        weekOut,
+      ]),
+    )
   }
 
   const csv = rows.join("\r\n") + "\r\n"

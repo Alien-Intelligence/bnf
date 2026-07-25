@@ -8,7 +8,7 @@ replicaCount: 1
 image:
   repository: rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo
   pullPolicy: Always
-  tag: "0.11.0"
+  tag: "0.13.2"
 
 imagePullSecrets: []
 
@@ -69,6 +69,9 @@ config:
   # ExternalSecret to enable per-turn tracing. Leave blank → tracing off.
   langfusePublicKey: "pk-lf-014385ed-18f6-4fa1-84eb-4a7fdc7c7adf"
   langfuseBaseUrl: https://langfuse.alien.club
+  # Langfuse project id (the cuid in dashboard URLs). Enables "view in Langfuse"
+  # deep-links (admin feedback tab). 1:1 with the public key above.
+  langfuseProjectId: "cmqoadeo80003vf07cwn7dfpr"
 
   # Alien Auth (Authentik) SSO. Base URL + app slug are non-secret (here); the
   # client id/secret are pulled from Scaleway via the ExternalSecret below.
@@ -278,12 +281,17 @@ broker:
     # so the broker's own classifiable timeout wins over an opaque worker abort.
     upstreamTimeoutMs: "120000"
 
+  # Adopted from the live deployment (was bumped via `kubectl set resources`
+  # during the Gallica ingest load work — provision generously, RAM is cheap;
+  # keeping the chart at the old 96Mi/256Mi made every `helm upgrade` fail on
+  # an SSA field-ownership conflict with that kubectl-set).
   resources:
     requests:
       cpu: 50m
       memory: 512Mi
     limits:
       cpu: 500m
+<<<<<<< HEAD
       # The broker buffers each upstream response WHOLE in memory (server.ts:
       # `Buffer.from(await upstream.arrayBuffer())`) before mirroring it. At
       # worker bnfFetchConcurrency=128 × full-res "max" folio images (~10MB) that
@@ -291,6 +299,8 @@ broker:
       # took the single-replica broker down → every in-flight fetch got
       # ECONNREFUSED. Sized to hold a full 128-wide burst with headroom; drop it
       # only alongside streaming the proxy body instead of buffering it.
+=======
+>>>>>>> feature/note-charts
       memory: 2Gi
 
 # ===========================================================================

@@ -19,6 +19,10 @@ const bootEnvSchema = z.object({
   LANGFUSE_PUBLIC_KEY: z.string().min(1).optional(),
   LANGFUSE_SECRET_KEY: z.string().min(1).optional(),
   LANGFUSE_BASE_URL: z.string().url().optional(),
+  // Langfuse project id (the cuid in dashboard URLs: /project/<id>/…). Needed to
+  // build "view in Langfuse" deep-links (e.g. the admin feedback tab). It is 1:1
+  // with the public key; absent → deep-links are simply omitted. Non-secret.
+  LANGFUSE_PROJECT_ID: z.string().min(1).optional(),
   // Alien Auth (Authentik OIDC) SSO — OPTIONAL. When the base URL + client
   // id + secret are all set, the Better Auth genericOAuth plugin is wired up
   // and a "Se connecter avec Alien" button appears on the sign-in page.

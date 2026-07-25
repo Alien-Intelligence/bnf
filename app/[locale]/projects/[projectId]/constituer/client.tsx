@@ -12,7 +12,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useSearchParams, usePathname } from "next/navigation"
 import { useQueryClient } from "@tanstack/react-query"
-import { useCorpusFlattened, corpusKeys } from "@/hooks/api/corpus"
+import { useCorpusFlattened, useExportCorpus, corpusKeys } from "@/hooks/api/corpus"
 import { memoryKeys } from "@/hooks/api/memory"
 import { sessionKeys } from "@/hooks/api/sessions"
 import { useTurnStream } from "@/hooks/api/turn-stream"
@@ -29,7 +29,8 @@ import { CardCorpusSummary } from "@/components/cards/corpus/summary"
 import { CardCorpusFiltersDrawer } from "@/components/cards/corpus/filters-drawer"
 import { LayoutCorpusDocumentList } from "@/components/layouts/corpus/document-list"
 import { SheetDocumentDetail } from "@/components/sheets/corpus/document-detail"
-import { HelpCircle } from "lucide-react"
+import { HelpCircle, Download } from "lucide-react"
+import { Button } from "@/components/ui/button"
 import { useTranslations } from "next-intl"
 import { WorkspaceHeader } from "@/components/layouts/workspace/header"
 import { DialogOnboardingCorpus } from "@/components/dialogs/onboarding/corpus"
@@ -167,6 +168,9 @@ export function ConstituerClient({
     searchParams.get("selectedArk"),
   )
 
+  // ── Corpus CSV export — honours the active filters (exports what's shown) ─────
+  const exportCorpus = useExportCorpus(projectId)
+
   const onFiltersChange = useCallback((next: CorpusFilters) => setFilters(next), [])
   const onClearFilters = useCallback(() => setFilters(emptyCorpusFilters()), [])
   const onSelectArk = useCallback((ark: string | null) => setSelectedArk(ark), [])
@@ -247,15 +251,28 @@ export function ConstituerClient({
           <div className="flex flex-col gap-4 overflow-auto">
             <div className="flex items-center justify-between">
               <h2 className="text-sm font-semibold">{t("panelTitle")}</h2>
-              <button
-                type="button"
-                onClick={() => setIntroOpen(true)}
-                title={t("help")}
-                aria-label={t("help")}
-                className="flex size-5.5 items-center justify-center rounded-full border bg-card text-muted-foreground transition-colors hover:border-brand-teal/45 hover:text-brand-teal"
-              >
-                <HelpCircle className="size-3.5" />
-              </button>
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => exportCorpus.mutate(filters)}
+                  disabled={exportCorpus.isPending || displaySnapshot.total === 0}
+                  title={t("export.hint")}
+                >
+                  <Download />
+                  {exportCorpus.isPending ? t("export.pending") : t("export.label")}
+                </Button>
+                <button
+                  type="button"
+                  onClick={() => setIntroOpen(true)}
+                  title={t("help")}
+                  aria-label={t("help")}
+                  className="flex size-5.5 items-center justify-center rounded-full border bg-card text-muted-foreground transition-colors hover:border-brand-teal/45 hover:text-brand-teal"
+                >
+                  <HelpCircle className="size-3.5" />
+                </button>
+              </div>
             </div>
             <CardCorpusSummary corpus={displaySnapshot} />
             <CardCorpusFiltersDrawer

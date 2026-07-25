@@ -44,6 +44,7 @@ import {
   type CorpusDiff,
   type CorpusFacetDimension,
   type CorpusListPage,
+  type DocumentRow,
   type CorpusSnapshot,
   type CorpusVersionStatus,
   type CorpusVersionWithArks,
@@ -665,6 +666,34 @@ export class CorpusQueries {
       documents: rows.slice(0, limit),
       nextCursor,
     }
+  }
+
+  /**
+   * Returns every document in a version matching the active filters, ordered by
+   * ark — the unbounded read behind the CSV export. Unlike `list()` there is no
+   * pagination: a file export needs the whole set in one pass. This is the same
+   * full-scan trade-off `diff()` and `snapshot()`'s resolved pass already make;
+   * corpus sizes are in the thousands (see playbook/corpus-versioning.md).
+   *
+   * Shares the one `buildCorpusWhere` membership+filter predicate every corpus
+   * read uses, so the export honours the comprehension panel's active filters
+   * exactly — exporting the filtered subset the librarian is looking at, not a
+   * different population. Includes pending/failed stubs (they are real members);
+   * their `resolveStatus` column tells the consumer they are not yet resolved.
+   */
+  static async exportRows(
+    projectId: string,
+    ref: "head" | "ingested" | { seq: number },
+    filters?: CorpusFilterSet,
+  ): Promise<{ versionSeq: number; rows: DocumentRow[] }> {
+    const version = await CorpusQueries.resolveVersion(projectId, ref)
+    const { sharedWhere } = buildCorpusWhere(version.id, filters)
+    const rows = await prisma.document.findMany({
+      where: sharedWhere,
+      orderBy: { ark: "asc" },
+      ...documentRow,
+    })
+    return { versionSeq: version.seq, rows }
   }
 
   /**

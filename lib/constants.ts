@@ -14,10 +14,37 @@ export const ROUTES = {
   ingerer: (projectId: string) => `/projects/${projectId}/ingerer`,
   rechercher: (projectId: string) => `/projects/${projectId}/rechercher`,
   carnet: (projectId: string) => `/projects/${projectId}/rechercher/carnet`,
+  admin: "/admin",
+  adminOverview: "/admin/overview",
+  adminAccounts: "/admin/accounts",
+  adminFeedback: "/admin/feedback",
   adminUsage: "/admin/usage",
+  adminOcr: "/admin/ocr",
   signIn: "/sign-in",
   signUp: "/sign-up",
 } as const
+
+/**
+ * The admin console tabs, in order. The admin tab-nav derives its sequence from
+ * this list; `key` matches the route segment and the `admin.nav.*` i18n key.
+ */
+export const ADMIN_TABS = [
+  "overview",
+  "accounts",
+  "feedback",
+  "usage",
+  "ocr",
+] as const
+export type AdminTab = (typeof ADMIN_TABS)[number]
+
+/** Route path for each admin tab. */
+export const ADMIN_TAB_HREF: Record<AdminTab, string> = {
+  overview: ROUTES.adminOverview,
+  accounts: ROUTES.adminAccounts,
+  feedback: ROUTES.adminFeedback,
+  usage: ROUTES.adminUsage,
+  ocr: ROUTES.adminOcr,
+}
 
 /**
  * The three workspace steps, in order. The header step-nav and any progress
@@ -137,6 +164,15 @@ export const PROJECTS_INITIAL_VERSION_SEQ = 1
  * smoother default (25ms / word). See components/layouts/corpus/streaming-markdown.tsx.
  */
 export const CHAT_STREAM_REVEAL_MS = 25
+
+/**
+ * Request header carrying the UI locale on every chat request. The chat-sdk
+ * handler consumes the POST body before calling the `system(req)` callback,
+ * so the locale must ride a header, not the body. Sent by
+ * hooks/api/turn-stream.ts; read by lib/locale.ts (resolveRequestLocale) —
+ * it drives the working language of the agent's system prompt.
+ */
+export const LOCALE_HEADER = "x-app-locale"
 
 /**
  * MCP protocol version sent in the `initialize` handshake. The BnF MCP

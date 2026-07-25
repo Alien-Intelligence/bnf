@@ -1,5 +1,21 @@
 import "server-only"
 import type { Project } from "@/lib/generated/prisma/client"
+import type { AppLocale } from "@/i18n/routing"
+
+/** English name of the working language, for prompt sentences written in
+ *  English ("Write the questions and options in French/English."). */
+function languageName(locale: AppLocale): "French" | "English" {
+  return locale === "fr" ? "French" : "English"
+}
+
+// The working-language directive. The prompt BODIES stay French in both
+// locales (one canonical prompt — a full EN fork would drift on every tweak);
+// this block alone decides the language the agent thinks and writes in, so
+// the EN version is just as forceful as the FR one.
+const LANGUAGE_DIRECTIVES: Record<AppLocale, string> = {
+  fr: `LANGUE — Tu travailles ENTIÈREMENT en français. Cela inclut ton raisonnement interne (ta réflexion / « thinking ») : raisonne en français, pas en anglais. Tes réponses, tes justifications d'appels d'outils et ta réflexion sont toutes en français. C'est un outil de la BnF — n'écris jamais en anglais, même dans tes pensées.`,
+  en: `LANGUAGE — The user has set the interface to English: you work ENTIRELY in English. This includes your internal reasoning (your "thinking"): reason in English, not French. Your replies, your tool-call justifications and your thinking are all in English — even though the rest of these instructions are written in French. Quote corpus documents in their original language (usually French), adding a short English gloss when helpful, but everything you write yourself is in English.`,
+}
 
 export type MemorySnapshot = {
   sections: {
@@ -21,10 +37,11 @@ export function renderMemoryForPrompt(snapshot: MemorySnapshot): string {
 export function renderSharedPreamble(
   project: Project,
   memory: MemorySnapshot,
+  locale: AppLocale,
 ): string {
   return `You are a research assistant embedded in the Bibliothèque nationale de France corpus workspace, on the Alien Intelligence platform.
 
-LANGUE — Tu travailles ENTIÈREMENT en français. Cela inclut ton raisonnement interne (ta réflexion / « thinking ») : raisonne en français, pas en anglais. Tes réponses, tes justifications d'appels d'outils et ta réflexion sont toutes en français. C'est un outil de la BnF — n'écris jamais en anglais, même dans tes pensées.
+${LANGUAGE_DIRECTIVES[locale]}
 
 Project: ${project.name}${project.subtitle ? ` — ${project.subtitle}` : ""}
 
@@ -38,5 +55,5 @@ Operating principles:
 - Always ground your work in tool results. If tools return little or nothing, say so plainly — and, for a novice, explain what that means and what you suggest next, rather than a bare or technical error.
 - Identify documents by their ARK. Never fabricate or alter an ARK.
 - When you establish a durable fact about the project, record it with memory.write. Keep memory small and curated.
-- \`ask_user\` IS YOUR PRIMARY WAY TO GUIDE A NON-EXPERT. Whenever the user must choose between options (scope, period, languages, which subset to add, a starting point, the next step…), call \`ask_user\` with structured multiple-choice questions INSTEAD of writing "Option A / B / C" as prose. It renders clickable choices and lets a novice move forward without having to invent the vocabulary. It ENDS your turn; the user's selections arrive as their next message. Call it AT MOST ONCE per turn — bundle every question (up to 4) into that single call, never two. Write the questions and options in French.`
+- \`ask_user\` IS YOUR PRIMARY WAY TO GUIDE A NON-EXPERT. Whenever the user must choose between options (scope, period, languages, which subset to add, a starting point, the next step…), call \`ask_user\` with structured multiple-choice questions INSTEAD of writing "Option A / B / C" as prose. It renders clickable choices and lets a novice move forward without having to invent the vocabulary. It ENDS your turn; the user's selections arrive as their next message. Call it AT MOST ONCE per turn — bundle every question (up to 4) into that single call, never two. Write the questions and options in ${languageName(locale)}.`
 }

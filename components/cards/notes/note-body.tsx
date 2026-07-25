@@ -7,13 +7,16 @@ import rehypeSanitize from "rehype-sanitize"
 import {
   parseCitations,
   parseImageCitations,
+  parseNoteLinks,
   CITATION_REGEX,
   IMAGE_CITATION_REGEX,
+  NOTELINK_REGEX,
 } from "@/lib/citations/syntax"
 import type { ParsedCitation } from "@/lib/citations/syntax"
 import { iiifImageUrl } from "@/lib/citations/external"
 import { NOTE_IMAGE_IIIF_SIZE } from "@/lib/constants"
 import { CitationPill } from "./citation-pill"
+import { NoteLinkPill } from "./note-link-pill"
 
 // Fragment tags that carry a citation / image embed through markdown rendering.
 // Both are protocol-less (no colon), so react-markdown's urlTransform and
@@ -22,10 +25,18 @@ import { CitationPill } from "./citation-pill"
 // after sanitize).
 const CITE_HREF_PREFIX = "#cite-"
 const IMAGE_SRC_PREFIX = "#img-"
+const NOTE_HREF_PREFIX = "#note-"
 
 interface NoteBodyProps {
   body: string
   onCitationClick: (c: ParsedCitation) => void
+  /** Open another note from a `[[note:<id>|<label>]]` cross-reference. When
+   *  omitted, note links render as non-navigating pills. */
+  onNoteLinkClick?: (noteId: string) => void
+  /** Ids of notes known to exist in this project. When provided, a note link
+   *  whose target is absent renders as a greyed dead link. When omitted, every
+   *  link is assumed live (avoids false "introuvable" before the list loads). */
+  knownNoteIds?: ReadonlySet<string>
 }
 
 // Markdown element styles ported 1:1 from the prototype's `mdToHtml`
@@ -103,26 +114,38 @@ const MD_COMPONENTS: Components = {
   ),
 }
 
-export function NoteBody({ body, onCitationClick }: NoteBodyProps) {
-  // Image embeds and text citations in left-to-right order. The rewrite below
-  // numbers its `#img-<n>` / `#cite-<n>` carriers in the same order, so index n
-  // maps straight back to the matching ParsedCitation. CITATION_REGEX excludes
-  // `![[…]]` (negative lookbehind), so the two arrays don't overlap.
+export function NoteBody({
+  body,
+  onCitationClick,
+  onNoteLinkClick,
+  knownNoteIds,
+}: NoteBodyProps) {
+  // Image embeds, text citations, and note links in left-to-right order. The
+  // rewrite below numbers its `#img-<n>` / `#cite-<n>` / `#note-<n>` carriers in
+  // the same order, so index n maps straight back to the matching parsed token.
+  // The three regexes are disjoint on the original tokens (image needs a leading
+  // `!`; citation needs `ark:/…` and excludes `![[…]]`; note link needs `note:`
+  // and excludes `![[…]]`), so the three arrays don't overlap.
   const images = useMemo(() => parseImageCitations(body), [body])
   const citations = useMemo(() => parseCitations(body), [body])
+  const noteLinks = useMemo(() => parseNoteLinks(body), [body])
 
-  // Rewrite citation/image tokens into inline markdown on the RAW body, BEFORE
-  // parsing. Images become `![n](#img-n)`, citations `[n](#cite-n)` — both stay
-  // in their phrasing context (inline within the paragraph/list/quote) instead
-  // of breaking the block flow. It must run pre-parse: once markdown is parsed,
-  // `[[…]]` is ambiguous (a shortcut link reference) and no longer survives as
-  // plain text a post-parse plugin could match.
+  // Rewrite citation/image/note-link tokens into inline markdown on the RAW
+  // body, BEFORE parsing. Images become `![n](#img-n)`, citations `[n](#cite-n)`,
+  // note links `[n](#note-n)` — all stay in their phrasing context (inline within
+  // the paragraph/list/quote) instead of breaking the block flow. It must run
+  // pre-parse: once markdown is parsed, `[[…]]` is ambiguous (a shortcut link
+  // reference) and no longer survives as plain text a post-parse plugin could
+  // match. None of the carrier strings contain `[[`, so the replaces don't
+  // contaminate each other.
   const markdown = useMemo(() => {
     let img = 0
     let cite = 0
+    let note = 0
     return body
       .replace(IMAGE_CITATION_REGEX, () => `![${img}](${IMAGE_SRC_PREFIX}${img++})`)
       .replace(CITATION_REGEX, () => `[${cite}](${CITE_HREF_PREFIX}${cite++})`)
+      .replace(NOTELINK_REGEX, () => `[${note}](${NOTE_HREF_PREFIX}${note++})`)
   }, [body])
 
   const components: Components = useMemo(
@@ -133,6 +156,25 @@ export function NoteBody({ body, onCitationClick }: NoteBodyProps) {
           const citation = citations[Number(href.slice(CITE_HREF_PREFIX.length))]
           if (citation) {
             return <CitationPill citation={citation} onClick={onCitationClick} />
+          }
+        }
+        if (href?.startsWith(NOTE_HREF_PREFIX)) {
+          const link = noteLinks[Number(href.slice(NOTE_HREF_PREFIX.length))]
+          if (link) {
+            // Absent from a provided id set → dead link. With no set provided we
+            // assume live (the list may not have loaded yet).
+            const exists = knownNoteIds ? knownNoteIds.has(link.noteId) : true
+            return (
+              <NoteLinkPill
+                label={link.label}
+                exists={exists}
+                onClick={
+                  exists && onNoteLinkClick
+                    ? () => onNoteLinkClick(link.noteId)
+                    : undefined
+                }
+              />
+            )
           }
         }
         return (
@@ -176,7 +218,7 @@ export function NoteBody({ body, onCitationClick }: NoteBodyProps) {
         return null
       },
     }),
-    [citations, images, onCitationClick],
+    [citations, images, noteLinks, knownNoteIds, onCitationClick, onNoteLinkClick],
   )
 
   return (

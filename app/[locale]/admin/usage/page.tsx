@@ -1,6 +1,5 @@
 import { getTranslations } from "next-intl/server"
 import type { Metadata } from "next"
-import { requireAdminUser } from "@/lib/auth-helpers"
 import { AdminUsageClient } from "./client"
 
 export async function generateMetadata(): Promise<Metadata> {
@@ -8,7 +7,7 @@ export async function generateMetadata(): Promise<Metadata> {
   return { title: t("title") }
 }
 
-export default async function AdminUsagePage() {
-  await requireAdminUser("/admin/usage")
+// Access is gated by app/[locale]/admin/layout.tsx (requireAdminUser).
+export default function AdminUsagePage() {
   return <AdminUsageClient />
 }

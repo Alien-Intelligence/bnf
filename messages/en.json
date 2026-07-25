@@ -20,7 +20,122 @@
       "tools": "Tools",
       "toolName": "Tool",
       "count": "Count",
-      "empty": "No data for this period."
+      "empty": "No data for this period.",
+      "subtitle": "Tokens, messages and tools per project"
+    },
+    "nav": {
+      "title": "Admin console",
+      "overview": "Overview",
+      "accounts": "Accounts",
+      "feedback": "Feedback",
+      "usage": "Usage",
+      "ocr": "OCR"
+    },
+    "overview": {
+      "eyebrow": "Administration",
+      "title": "Overview",
+      "subtitle": "Platform-wide statistics",
+      "stat": {
+        "users": "Accounts",
+        "projects": "Projects",
+        "sessions": "Sessions",
+        "messages": "Messages",
+        "notes": "Notes",
+        "feedback": "Feedback",
+        "tokensIn": "Tokens in",
+        "tokensOut": "Tokens out",
+        "newUsers": "New accounts (30d)"
+      },
+      "signups": "Sign-ups — last 30 days",
+      "feedbackByRating": "Feedback by rating",
+      "feedbackByTarget": "Feedback by target",
+      "empty": "No data."
+    },
+    "accounts": {
+      "eyebrow": "Administration",
+      "title": "Accounts",
+      "subtitle": "All accounts and their activity",
+      "exportCsv": "Export CSV",
+      "col": {
+        "name": "Name",
+        "email": "Email",
+        "role": "Role",
+        "createdAt": "Created",
+        "projects": "Projects",
+        "sessions": "Sessions",
+        "messages": "Messages",
+        "notes": "Notes",
+        "feedback": "Feedback",
+        "tokensIn": "In",
+        "tokensOut": "Out",
+        "lastActive": "Last active"
+      },
+      "never": "—",
+      "empty": "No accounts."
+    },
+    "feedback": {
+      "eyebrow": "Administration",
+      "title": "Feedback",
+      "subtitle": "All user feedback",
+      "exportCsv": "Export CSV",
+      "col": {
+        "rating": "Rating",
+        "user": "User",
+        "project": "Project",
+        "target": "Target",
+        "comment": "Comment",
+        "date": "Date"
+      },
+      "deleted": "Target deleted",
+      "open": "Open",
+      "noComment": "—",
+      "empty": "No feedback.",
+      "langfuse": "Langfuse"
+    },
+    "rating": {
+      "bad": "Needs work",
+      "ok": "OK",
+      "great": "Great"
+    },
+    "target": {
+      "session": "Session",
+      "note": "Note",
+      "turn": "Answer"
+    },
+    "role": {
+      "admin": "Admin",
+      "member": "Member",
+      "guest": "Guest"
+    },
+    "ocr": {
+      "eyebrow": "Administration",
+      "title": "OCR usage",
+      "subtitle": "Paid OCR (Mistral) cost and ingestion volume. The vision and embedding steps aren't billed per call — not tracked here.",
+      "exportCsv": "Export CSV",
+      "stat": {
+        "spend": "OCR spend",
+        "pages": "Pages (approx.)",
+        "docs": "OCR documents",
+        "jobs": "Paid ingests"
+      },
+      "projects": "By project",
+      "recentJobs": "Recent ingests",
+      "col": {
+        "project": "Project",
+        "owner": "Owner",
+        "spent": "Spent",
+        "budget": "Budget",
+        "jobs": "Ingests",
+        "docs": "Documents",
+        "status": "Status",
+        "estimated": "Estimated",
+        "actual": "Actual",
+        "chunks": "Chunks",
+        "date": "Date"
+      },
+      "noBudget": "—",
+      "emptyProjects": "No OCR spend yet.",
+      "emptyJobs": "No paid ingests yet."
     }
   },
   "common": {
@@ -46,7 +161,8 @@
     "newProject": "New project",
     "switchProject": "Switch project",
     "userMenu": "User menu",
-    "language": "Language"
+    "language": "Language",
+    "admin": "Administration"
   },
   "health": {
     "aria": "Service health",
@@ -146,6 +262,11 @@
   "corpus": {
     "panelTitle": "Your corpus",
     "help": "How does this work?",
+    "export": {
+      "label": "Export (CSV)",
+      "pending": "Exporting…",
+      "hint": "Export the displayed corpus as CSV"
+    },
     "intro": {
       "tag": "Step 1 · Build",
       "title": "Build your corpus",
@@ -512,6 +633,10 @@
       "noMatch": "No results.",
       "count": "{count, plural, =0 {No artifacts} one {# artifact} other {# artifacts}}",
       "meta": "{count, plural, =0 {no refs} one {# ref} other {# refs}} · {time}"
+    },
+    "noteLink": {
+      "open": "Open note “{label}”",
+      "missing": "Note not found (deleted or outside this project)"
     },
     "atelier": {
       "chatTab": "Conversation",

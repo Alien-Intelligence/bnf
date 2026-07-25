@@ -1,65 +1,59 @@
 "use client"
 
 // app/[locale]/admin/usage/client.tsx
-// Admin usage dashboard — token and tool-call statistics, re-skinned to the
+// Admin console — Usage tab. Token and tool-call statistics, re-skinned to the
 // Alien × BnF DS: a row of stat tiles over the projects and tools tables.
-// No initial data prop: the server page only asserts the admin role; the report
-// is fetched client-side (not needed for SSR). States are distinct branches.
+// Header, tab-nav, and the centred main column come from the admin layout;
+// this renders only the tab's own content. States are distinct branches.
 
 import { useMemo } from "react"
 import { Download } from "lucide-react"
-import { useTranslations } from "next-intl"
+import { useLocale, useTranslations } from "next-intl"
 import { useAdminUsage } from "@/hooks/api/admin"
-import { WorkspaceHeader } from "@/components/layouts/workspace/header"
 import { CardSharedStat } from "@/components/cards/shared/stat"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 
-const fr = (n: number) => n.toLocaleString("fr-FR")
-
 export function AdminUsageClient() {
   const t = useTranslations("admin.usage")
   const tCommon = useTranslations("common")
+  const locale = useLocale()
+  const fr = (n: number) => n.toLocaleString(locale)
   const { data, isLoading, isError, refetch } = useAdminUsage()
 
+  // Tokens + messages are all-time (they line up with the per-project rows);
+  // tool calls are the last-7-day window the route aggregates.
   const totals = useMemo(() => {
     if (!data) return null
     return {
-      tokensIn: data.projects.reduce((s, p) => s + p.lastWeekTokens.in, 0),
-      tokensOut: data.projects.reduce((s, p) => s + p.lastWeekTokens.out, 0),
+      tokensIn: data.projects.reduce((s, p) => s + p.tokens.in, 0),
+      tokensOut: data.projects.reduce((s, p) => s + p.tokens.out, 0),
       messages: data.projects.reduce((s, p) => s + p.messageCount, 0),
       toolCalls: data.toolFrequency.reduce((s, e) => s + e.count, 0),
     }
   }, [data])
 
   return (
-    <div className="flex min-h-screen flex-col">
-      <WorkspaceHeader user={{ email: "admin" }} />
-      <main className="mx-auto w-full max-w-5xl px-6 py-12">
-        <div className="mb-8 flex items-end justify-between gap-4">
-          <div className="space-y-1">
-            <span className="mono-eyebrow">{t("eyebrow")}</span>
-            <h1 className="text-2xl font-semibold">{t("title")}</h1>
-            {data && (
-              <p className="text-sm text-muted-foreground">
-                {t("lastWeek")} —{" "}
-                {new Date(data.since).toLocaleDateString("fr-FR")}
-              </p>
-            )}
-          </div>
-          <Button
-            variant="outline"
-            onClick={() => {
-              window.location.href = "/api/admin/usage/export"
-            }}
-          >
-            <Download className="size-4" />
-            {t("exportCsv")}
-          </Button>
+    <div className="flex flex-col gap-8">
+      <div className="flex items-end justify-between gap-4">
+        <div className="space-y-1">
+          <span className="mono-eyebrow">{t("eyebrow")}</span>
+          <h1 className="text-2xl font-semibold">{t("title")}</h1>
+          <p className="text-sm text-muted-foreground">{t("subtitle")}</p>
         </div>
+        <Button
+          variant="outline"
+          onClick={() => {
+            window.location.href = "/api/admin/usage/export"
+          }}
+        >
+          <Download className="size-4" />
+          {t("exportCsv")}
+        </Button>
+      </div>
 
-        {isLoading ? (
+      {isLoading ? (
           <div className="flex flex-col gap-8">
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               {Array.from({ length: 4 }).map((_, i) => (
@@ -105,14 +99,17 @@ export function AdminUsageClient() {
                         {data.projects.map((p) => (
                           <tr key={p.id} className="border-b last:border-0">
                             <td className="px-4 py-2 font-medium">{p.name}</td>
-                            <td className="px-4 py-2 font-mono text-xs text-muted-foreground">
-                              {p.ownerId}
+                            <td
+                              className="px-4 py-2 text-xs text-muted-foreground"
+                              title={p.ownerName}
+                            >
+                              {p.ownerEmail}
                             </td>
                             <td className="px-4 py-2 text-right font-mono tabular-nums">
-                              {fr(p.lastWeekTokens.in)}
+                              {fr(p.tokens.in)}
                             </td>
                             <td className="px-4 py-2 text-right font-mono tabular-nums">
-                              {fr(p.lastWeekTokens.out)}
+                              {fr(p.tokens.out)}
                             </td>
                             <td className="px-4 py-2 text-right font-mono tabular-nums">
                               {fr(p.messageCount)}
@@ -127,7 +124,12 @@ export function AdminUsageClient() {
             </section>
 
             <section className="space-y-3">
-              <h2 className="text-base font-semibold">{t("tools")}</h2>
+              <h2 className="text-base font-semibold">
+                {t("tools")}{" "}
+                <span className="text-xs font-normal text-muted-foreground">
+                  ({t("lastWeek")})
+                </span>
+              </h2>
               {data.toolFrequency.length === 0 ? (
                 <p className="text-sm text-muted-foreground">{t("empty")}</p>
               ) : (
@@ -156,8 +158,7 @@ export function AdminUsageClient() {
               )}
             </section>
           </div>
-        ) : null}
-      </main>
+      ) : null}
     </div>
   )
 }

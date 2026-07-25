@@ -20,11 +20,13 @@ import type { ProjectListItem } from "@/models/projects/schema"
 interface ProjectsClientProps {
   initialProjects: ProjectListItem[]
   user: { name?: string; email: string }
+  isAdmin?: boolean
 }
 
 export function ProjectsClient({
   initialProjects,
   user,
+  isAdmin = false,
 }: ProjectsClientProps) {
   const t = useTranslations("projects")
   const [createOpen, setCreateOpen] = useState(false)
@@ -34,7 +36,7 @@ export function ProjectsClient({
 
   return (
     <div className="flex min-h-screen flex-col">
-      <WorkspaceHeader user={user} />
+      <WorkspaceHeader user={user} isAdmin={isAdmin} />
 
       <main className="mx-auto w-full max-w-5xl px-6 py-12">
         <div className="mb-8 flex items-end justify-between gap-4">

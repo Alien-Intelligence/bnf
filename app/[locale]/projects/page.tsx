@@ -17,6 +17,7 @@ export default async function ProjectsPage() {
     <ProjectsClient
       initialProjects={projects}
       user={{ name: user.name, email: user.email }}
+      isAdmin={user.role === "admin"}
     />
   )
 }
