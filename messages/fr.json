@@ -632,7 +632,9 @@
       "empty": "Aucune note. Posez une question à l'assistant pour en générer une.",
       "noMatch": "Aucun résultat.",
       "count": "{count, plural, =0 {Aucun artefact} one {# artefact} other {# artefacts}}",
-      "meta": "{count, plural, =0 {aucune réf.} one {# réf.} other {# réf.}} · {time}"
+      "meta": "{count, plural, =0 {aucune réf.} one {# réf.} other {# réf.}} · {time}",
+      "loadError": "Impossible de charger les notes.",
+      "retry": "Réessayer"
     },
     "noteLink": {
       "open": "Ouvrir la note « {label} »",

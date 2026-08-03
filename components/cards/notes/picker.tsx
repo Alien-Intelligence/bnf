@@ -13,6 +13,7 @@ import { useMemo, useState } from "react"
 import { Search } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { useNotes } from "@/hooks/api/notes"
+import { Button } from "@/components/ui/button"
 import { CardNoteListItem } from "./list-item"
 import type { NoteListItem } from "@/models/notes/schema"
 
@@ -32,7 +33,9 @@ export function CardNotesPicker({
   const t = useTranslations("research.artefacts")
   const [query, setQuery] = useState("")
 
-  const { data: notes } = useNotes(projectId, { initialData: initialNotes })
+  const { data: notes, isError, refetch } = useNotes(projectId, {
+    initialData: initialNotes,
+  })
 
   const filtered = useMemo(() => {
     const all = notes ?? []
@@ -64,7 +67,21 @@ export function CardNotesPicker({
 
       {/* List */}
       <div className="flex-1 overflow-y-auto px-2 pb-2.5">
-        {filtered.length === 0 ? (
+        {isError && total === 0 ? (
+          // A failed fetch must be distinguishable from a genuinely empty list —
+          // show a retriable error, never a silent "no notes" (ui-states §Error).
+          <div className="flex flex-col items-center gap-2 px-2 py-4 text-center">
+            <p className="text-xs text-muted-foreground">{t("loadError")}</p>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-6 text-[11px]"
+              onClick={() => void refetch()}
+            >
+              {t("retry")}
+            </Button>
+          </div>
+        ) : filtered.length === 0 ? (
           <p className="px-2 py-4 text-center text-xs text-muted-foreground">
             {total === 0 ? t("empty") : t("noMatch")}
           </p>

@@ -136,10 +136,16 @@ See [agent-streaming.md](agent-streaming.md) for the full event model.
 
 ## Ingestion has its own progress UI
 
-Step 2 has a four-stage pipeline (`extract → chunk → embed → index`) with
-per-stage fractions. This is *not* the generic loading state. The stage card
-component (`CardIngestStagePipeline`) renders all four stages always — pending,
-running, done — never "loading…" or "empty". See
+Step 2 is one component, `CardIngestPanel`, with six modes derived from the
+active job + delta (`empty` / `pending` / `uptodate` / `running` / `done` /
+`failed`). This is *not* the generic loading/empty/error triad. While running it
+narrates a single librarian-facing phase (mapped off the live queue read-model)
+with a progress bar + ETA + a "come back later" banner — never a bare
+"loading…". The raw per-stage telemetry is demoted into a collapsed "Détails"
+accordion (`CardIngestQueueDetail`), not shown as the headline. (The old
+four-stage `extract → chunk → embed → index` bars are retired from the UI; those
+four stages remain only the backend/callback contract.) A live-status polling
+failure surfaces a retriable notice — never a silently-stuck "running". See
 [ingestion-jobs.md](ingestion-jobs.md).
 
 ## Anti-patterns (FORBIDDEN)

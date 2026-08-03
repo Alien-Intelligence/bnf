@@ -632,7 +632,9 @@
       "empty": "No notes yet. Ask the assistant a question to generate one.",
       "noMatch": "No results.",
       "count": "{count, plural, =0 {No artifacts} one {# artifact} other {# artifacts}}",
-      "meta": "{count, plural, =0 {no refs} one {# ref} other {# refs}} · {time}"
+      "meta": "{count, plural, =0 {no refs} one {# ref} other {# refs}} · {time}",
+      "loadError": "Could not load the notes.",
+      "retry": "Retry"
     },
     "noteLink": {
       "open": "Open note “{label}”",
