@@ -31,15 +31,16 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible"
-import { IngestQueueDetail } from "@/components/cards/ingest/queue-detail"
+import { CardIngestQueueDetail } from "@/components/cards/ingest/queue-detail"
 import {
   INGEST_PHASE_KEYS,
   currentPhaseIndex,
-  formatEtaCompact,
+  etaParts,
 } from "@/lib/ingest/stage-narrative"
-import { ROUTES } from "@/lib/constants"
+import { INGEST_PROGRESS_MIN_PCT, ROUTES } from "@/lib/constants"
 import { cn } from "@/lib/utils"
-import type { PaidOcrEstimate } from "@/models/ingest/schema"
+import { INGEST_STATUS, type PaidOcrEstimate } from "@/models/ingest/schema"
+import type { IngestDeltaPreview } from "@/models/ingest/types"
 import type { ClusterQueueProgress } from "@/lib/cluster/contracts"
 
 export type IngestMode =
@@ -50,19 +51,45 @@ export type IngestMode =
   | "done"
   | "failed"
 
+/**
+ * Map the active job + delta onto the panel's six modes. A live or terminal job
+ * drives the mode directly; with no live job (or a canceled one) the delta
+ * decides: nothing to do → up to date, first-ever prep → empty, incremental add
+ * → pending. Co-located with {@link IngestMode} so the mode vocabulary lives in
+ * one file (the page client just calls this).
+ */
+export function deriveMode(
+  jobStatus: string | null,
+  already: number,
+  added: number,
+  removed: number,
+): IngestMode {
+  switch (jobStatus) {
+    case INGEST_STATUS.QUEUED:
+    case INGEST_STATUS.RUNNING:
+      return "running"
+    case INGEST_STATUS.DONE:
+      return "done"
+    case INGEST_STATUS.PARTIAL:
+    case INGEST_STATUS.FAILED:
+      return "failed"
+    default: {
+      const hasAction = added > 0 || removed > 0
+      if (!hasAction) return "uptodate"
+      return already > 0 ? "pending" : "empty"
+    }
+  }
+}
+
 interface Props {
   mode: IngestMode
   projectId: string
   /** Documents already consultable by the research assistant. */
   already: number
-  delta: {
-    added: number
-    removed: number
-    excluded: number
-    excludedNoText: number
-    excludedNoScan: number
-    paidOcr: PaidOcrEstimate
-  }
+  delta: Pick<
+    IngestDeltaPreview,
+    "added" | "removed" | "excluded" | "excludedNoText" | "excludedNoScan" | "paidOcr"
+  >
   paidOcrBudget: { spentUsd: number; ceilingUsd: number; withinBudget: boolean }
   includePaidOcr: boolean
   onTogglePaidOcr: () => void
@@ -259,23 +286,39 @@ export function CardIngestPanel({
 // ── "Ce qui se passe maintenant" — live phase + bar + debug accordion ─────────
 
 function RunningSection({ queue }: { queue: ClusterQueueProgress | null }) {
-  const t = useTranslations("ingest.panel")
+  const t = useTranslations("ingest.panel.running")
+  const tPhase = useTranslations("ingest.panel.phases")
   const [detailOpen, setDetailOpen] = useState(false)
 
   const total = queue?.docsTotal ?? 0
   const done = queue?.docsFinished ?? 0
-  const pct = total > 0 ? Math.max(2, Math.min(100, Math.round((done / total) * 100))) : 0
+  const pct =
+    total > 0
+      ? Math.max(INGEST_PROGRESS_MIN_PCT, Math.min(100, Math.round((done / total) * 100)))
+      : 0
   const phaseIndex = queue ? currentPhaseIndex(queue) : 0
-  const eta = queue ? formatEtaCompact(queue.etaSeconds) : null
   const foliosAhead = queue?.foliosAhead ?? 0
+
+  // ETA built through i18n so units are localized (the helper returns parts,
+  // never a pre-formatted string — see stage-narrative.ts).
+  const parts = queue ? etaParts(queue.etaSeconds) : null
+  const etaStr = !parts
+    ? null
+    : parts.kind === "ltMin"
+      ? t("etaLtMin")
+      : parts.kind === "min"
+        ? t("etaMin", { min: parts.min })
+        : parts.kind === "hours"
+          ? t("etaHours", { hours: parts.hours })
+          : t("etaHoursMinutes", { hours: parts.hours, minutes: parts.minutes })
 
   return (
     <section className="rounded-lg border border-brand-teal/30 bg-brand-teal/[0.06] px-5 py-4">
       <div className="flex items-center justify-between gap-3">
-        <div className="mono-eyebrow">{t("running.eyebrow")}</div>
+        <div className="mono-eyebrow">{t("eyebrow")}</div>
         {queue && (
           <span className="font-mono text-[10.5px] text-muted-foreground">
-            {t("running.phaseStep", {
+            {t("phaseStep", {
               step: phaseIndex + 1,
               total: INGEST_PHASE_KEYS.length,
             })}
@@ -287,8 +330,8 @@ function RunningSection({ queue }: { queue: ClusterQueueProgress | null }) {
         <Loader2 className="size-4 shrink-0 animate-spin text-brand-teal" />
         <span className="text-base font-semibold">
           {queue
-            ? t(`phases.${INGEST_PHASE_KEYS[phaseIndex]}` as "phases.notices")
-            : t("running.generic")}
+            ? tPhase(`${INGEST_PHASE_KEYS[phaseIndex]}` as "notices")
+            : t("generic")}
         </span>
       </div>
 
@@ -307,17 +350,17 @@ function RunningSection({ queue }: { queue: ClusterQueueProgress | null }) {
       {queue && (
         <div className="mt-2 flex items-baseline justify-between gap-3">
           <span className="text-[13px] text-neutral-200">
-            {t("running.progress", { done, total })}
+            {t("progress", { done, total })}
           </span>
           <span className="text-[13px] font-semibold text-brand-teal">
-            {eta ? t("running.eta", { eta }) : t("running.etaComputing")}
+            {etaStr ? t("eta", { eta: etaStr }) : t("etaComputing")}
           </span>
         </div>
       )}
 
       {foliosAhead > 0 && (
         <p className="mt-2.5 text-xs leading-relaxed text-neutral-400">
-          {t("running.queueAhead", { count: foliosAhead })}
+          {t("queueAhead", { count: foliosAhead })}
         </p>
       )}
 
@@ -325,7 +368,7 @@ function RunningSection({ queue }: { queue: ClusterQueueProgress | null }) {
       <div className="mt-3.5 flex items-start gap-2.5 rounded-md border border-info/30 bg-info/[0.09] px-3.5 py-3">
         <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-info" strokeWidth={1.9} />
         <span className="text-[13px] font-medium leading-relaxed text-neutral-100">
-          {t("running.serverNote")}
+          {t("serverNote")}
         </span>
       </div>
 
@@ -340,14 +383,14 @@ function RunningSection({ queue }: { queue: ClusterQueueProgress | null }) {
             <ChevronRight
               className={cn("size-3.5 transition-transform", detailOpen && "rotate-90")}
             />
-            {t("running.detailsToggle")}
+            {t("detailsToggle")}
             <span className="flex-1" />
             <span className="font-mono text-[10.5px] text-neutral-600">
-              {t("running.detailsTag")}
+              {t("detailsTag")}
             </span>
           </CollapsibleTrigger>
           <CollapsibleContent className="pb-1 pt-2">
-            <IngestQueueDetail queue={queue} />
+            <CardIngestQueueDetail queue={queue} />
           </CollapsibleContent>
         </Collapsible>
       )}
@@ -376,28 +419,29 @@ function CtaRow({
   onRetry: () => void
   onCancel: () => void
 }) {
-  const t = useTranslations("ingest.panel")
+  const t = useTranslations("ingest.panel.cta")
+  const tHint = useTranslations("ingest.panel.ctaHint")
   const research = ROUTES.rechercher(projectId)
 
   // Each mode has exactly one primary affordance (a submit/retry button or a
   // link into Rechercher) plus an optional secondary and a one-line hint.
-  const submitLabel = isSubmitting ? t("cta.submitting") : null
+  const submitLabel = isSubmitting ? t("submitting") : null
 
   switch (mode) {
     case "empty":
       return (
-        <ActionShell hint={t("ctaHint.empty")}>
+        <ActionShell hint={tHint("empty")}>
           <Button onClick={onSubmit} disabled={isSubmitting}>
-            {submitLabel ?? t("cta.empty")}
+            {submitLabel ?? t("empty")}
             <ArrowRight className="size-3.5" />
           </Button>
         </ActionShell>
       )
     case "pending":
       return (
-        <ActionShell hint={t("ctaHint.pending", { count: already })}>
+        <ActionShell hint={tHint("pending", { count: already })}>
           <Button onClick={onSubmit} disabled={isSubmitting}>
-            {submitLabel ?? t("cta.pending", { count: added })}
+            {submitLabel ?? t("pending", { count: added })}
             <ArrowRight className="size-3.5" />
           </Button>
         </ActionShell>
@@ -406,7 +450,7 @@ function CtaRow({
       return (
         <ActionShell>
           <Link href={research} className={buttonVariants()}>
-            {t("cta.uptodate")}
+            {t("uptodate")}
             <ArrowRight className="size-3.5" />
           </Link>
         </ActionShell>
@@ -416,12 +460,12 @@ function CtaRow({
         <ActionShell>
           {already > 0 && (
             <Link href={research} className={buttonVariants()}>
-              {t("cta.runningConsult")}
+              {t("runningConsult")}
               <ArrowRight className="size-3.5" />
             </Link>
           )}
           <Button variant="outline" onClick={onCancel}>
-            {t("cta.interrupt")}
+            {t("interrupt")}
           </Button>
         </ActionShell>
       )
@@ -429,7 +473,7 @@ function CtaRow({
       return (
         <ActionShell>
           <Link href={research} className={buttonVariants()}>
-            {t("cta.done")}
+            {t("done")}
             <ArrowRight className="size-3.5" />
           </Link>
         </ActionShell>
@@ -438,7 +482,7 @@ function CtaRow({
       return (
         <ActionShell>
           <Button onClick={onRetry}>
-            {t("cta.retry")}
+            {t("retry")}
             <ArrowRight className="size-3.5" />
           </Button>
           {already > 0 && (
@@ -446,7 +490,7 @@ function CtaRow({
               href={research}
               className={buttonVariants({ variant: "outline" })}
             >
-              {t("cta.toResearchAnyway")}
+              {t("toResearchAnyway")}
             </Link>
           )}
         </ActionShell>
@@ -511,7 +555,7 @@ function AdvancedDisclosure({
   includePaidOcr: boolean
   onTogglePaidOcr: () => void
 }) {
-  const t = useTranslations("ingest.panel")
+  const t = useTranslations("ingest.panel.advanced")
   const [open, setOpen] = useState(false)
 
   return (
@@ -520,29 +564,29 @@ function AdvancedDisclosure({
         <ChevronRight
           className={cn("size-3.5 transition-transform", open && "rotate-90")}
         />
-        {t("advanced.toggle")}
+        {t("toggle")}
         <span className="flex-1" />
         <span className="font-mono text-[10.5px] text-neutral-600">
-          {t("advanced.toggleTag")}
+          {t("toggleTag")}
         </span>
       </CollapsibleTrigger>
       <CollapsibleContent className="pb-4">
-        <div className="text-[13px] font-semibold">{t("advanced.title")}</div>
+        <div className="text-[13px] font-semibold">{t("title")}</div>
         <p className="mt-1.5 max-w-[52ch] text-xs leading-relaxed text-muted-foreground">
-          {t("advanced.explain", { count: noText })}
+          {t("explain", { count: noText })}
         </p>
         <div className="mt-3 flex items-center gap-3.5 rounded-md border bg-card px-3.5 py-3">
           <div>
-            <div className="mono-eyebrow">{t("advanced.docsLabel")}</div>
+            <div className="mono-eyebrow">{t("docsLabel")}</div>
             <div className="mt-0.5 font-mono text-base font-semibold tabular-nums">
               {paidOcr.docCount}
             </div>
           </div>
           <div className="h-8 w-px self-stretch bg-border" />
           <div>
-            <div className="mono-eyebrow">{t("advanced.costLabel")}</div>
+            <div className="mono-eyebrow">{t("costLabel")}</div>
             <div className="mt-0.5 font-mono text-base font-semibold text-warning tabular-nums">
-              {t("advanced.cost", { cost: paidOcr.usd.toFixed(2) })}
+              {t("cost", { cost: paidOcr.usd.toFixed(2) })}
             </div>
           </div>
           <span className="flex-1" />
@@ -554,21 +598,21 @@ function AdvancedDisclosure({
               aria-pressed={includePaidOcr}
               onClick={onTogglePaidOcr}
             >
-              {includePaidOcr ? t("advanced.enabled") : t("advanced.enable")}
+              {includePaidOcr ? t("enabled") : t("enable")}
             </Button>
           ) : (
             <span className="text-xs font-medium text-warning">
-              {t("advanced.overBudget", {
+              {t("overBudget", {
                 ceiling: paidOcrBudget.ceilingUsd.toFixed(0),
               })}
             </span>
           )}
         </div>
         <p className="mt-2 text-[11.5px] leading-relaxed text-neutral-600">
-          {t("advanced.footnote")}
+          {t("footnote")}
         </p>
         <p className="mt-1 font-mono text-[11px] tabular-nums text-neutral-600">
-          {t("advanced.budget", {
+          {t("budget", {
             spent: paidOcrBudget.spentUsd.toFixed(2),
             ceiling: paidOcrBudget.ceilingUsd.toFixed(2),
           })}
@@ -595,29 +639,29 @@ function TechnicalDisclosure({
   excludedNoScan: number
   queue: ClusterQueueProgress | null
 }) {
-  const t = useTranslations("ingest.panel")
+  const t = useTranslations("ingest.panel.tech")
   const format = useFormatter()
   const [open, setOpen] = useState(false)
   const n = (v: number) => format.number(v)
 
   const rows: { k: string; v: string }[] = [
-    { k: t("tech.added"), v: n(added) },
-    { k: t("tech.removed"), v: n(removed) },
+    { k: t("added"), v: n(added) },
+    { k: t("removed"), v: n(removed) },
     {
-      k: t("tech.excluded"),
-      v: t("tech.excludedValue", {
+      k: t("excluded"),
+      v: t("excludedValue", {
         excluded,
         noText: excludedNoText,
         noScan: excludedNoScan,
       }),
     },
-    { k: t("tech.phasesInternal"), v: t("tech.phasesValue") },
-    { k: t("tech.target"), v: t("tech.targetValue") },
+    { k: t("phasesInternal"), v: t("phasesValue") },
+    { k: t("target"), v: t("targetValue") },
   ]
   if (queue) {
     rows.push({
-      k: t("tech.processed"),
-      v: t("tech.processedValue", {
+      k: t("processed"),
+      v: t("processedValue", {
         done: queue.docsFinished,
         total: queue.docsTotal,
       }),

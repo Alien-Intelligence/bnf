@@ -27,6 +27,7 @@ import {
 import { estimatePaidOcrCostUsd, INGEST_STATUS } from "./schema"
 import type { PaidOcrEstimate } from "./schema"
 import type {
+  IngestDeltaPreview,
   IngestResults,
   IngestSubmitInput,
   IngestSubmitOutcome,
@@ -240,29 +241,7 @@ export class IngestService {
    */
   static async previewDelta(
     project: Project,
-  ): Promise<{
-    /** Documents currently consultable by the research assistant (indexed). */
-    already: number
-    added: number
-    removed: number
-    excluded: number
-    /** Excluded docs that are digitized but carry no readable text. */
-    excludedNoText: number
-    /** Excluded docs not digitized at the BnF. */
-    excludedNoScan: number
-    paidOcr: PaidOcrEstimate
-    /**
-     * Budget context for the paid-OCR opt-in, so the UI can show the cost
-     * against the cap and disable the opt-in when it won't fit. `withinBudget`
-     * is the single source of truth the client gates the opt-in on; the server
-     * re-checks it on submit (the UI can't be trusted with spend).
-     */
-    paidOcrBudget: {
-      spentUsd: number
-      ceilingUsd: number
-      withinBudget: boolean
-    }
-  }> {
+  ): Promise<IngestDeltaPreview> {
     const targetVersion = await CorpusQueries.headVersion(project.id)
 
     // Per-doc delta against the index (same source as submit()), so the preview

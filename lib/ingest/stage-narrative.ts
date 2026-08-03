@@ -6,11 +6,17 @@
 // components/cards/ingest/queue-detail.tsx). Pure — no React, no i18n.
 
 import type { ClusterQueueProgress } from "@/lib/cluster/contracts"
+import { WORKER_STAGE } from "@/lib/cluster/constants"
 
 /**
  * The five phases a librarian sees, in pipeline order. Each maps to an i18n key
  * under `ingest.panel.phases.<key>`. Kept as a const tuple so the panel can
  * index it by {@link currentPhaseIndex} and render "Phase N sur 5".
+ *
+ * This is a UI-NARRATION vocabulary, deliberately distinct from the persisted
+ * `INGEST_STAGE` enum (models/ingest/schema.ts): it groups the worker's live
+ * queue buckets into the plain-language phases the de-geekified panel narrates,
+ * and does not correspond to any DB value or API-contract field.
  */
 export const INGEST_PHASE_KEYS = [
   "notices",
@@ -21,16 +27,16 @@ export const INGEST_PHASE_KEYS = [
 ] as const
 export type IngestPhaseKey = (typeof INGEST_PHASE_KEYS)[number]
 
-// Worker stage buckets grouped under each librarian phase. Same grouping the
-// detail view uses, with the binding BnF fetch bucket owning its own phase (it
-// is the headline bottleneck). Keys that never appear in `queue.stages` are
-// simply ignored, so this tolerates worker-side stage renames gracefully.
+// Worker stage buckets grouped under each librarian phase, with the binding BnF
+// fetch bucket owning its own phase (it is the headline bottleneck). Keys that
+// never appear in `queue.stages` are simply ignored, so this tolerates
+// worker-side stage renames gracefully.
 const PHASE_STAGES: readonly (readonly string[])[] = [
-  ["metadata", "manifest"],
-  ["fetch"],
-  ["describe"],
-  ["assemble", "embed", "ocrSubmit", "ocrPoll"],
-  ["register"],
+  [WORKER_STAGE.METADATA, WORKER_STAGE.MANIFEST],
+  [WORKER_STAGE.FETCH],
+  [WORKER_STAGE.DESCRIBE],
+  [WORKER_STAGE.ASSEMBLE, WORKER_STAGE.EMBED, WORKER_STAGE.OCR_SUBMIT, WORKER_STAGE.OCR_POLL],
+  [WORKER_STAGE.REGISTER],
 ]
 
 /**
@@ -52,16 +58,25 @@ export function currentPhaseIndex(queue: ClusterQueueProgress): number {
 }
 
 /**
- * Compact ETA for the panel headline ("≈ 7 min", "≈ 1 h 10", "< 1 min"), or
- * null when the worker has not yet computed one (the panel then shows an
- * "estimation en cours…" placeholder instead).
+ * Structured ETA for the panel headline, or null when the worker has not yet
+ * computed one (the panel then shows an "estimation…" placeholder). The panel
+ * renders the parts through next-intl so the units are localized — the string
+ * is NOT built here (that would bake French abbreviations into every locale).
  */
-export function formatEtaCompact(seconds: number | null): string | null {
+export type EtaParts =
+  | { kind: "ltMin" }
+  | { kind: "min"; min: number }
+  | { kind: "hours"; hours: number }
+  | { kind: "hoursMinutes"; hours: number; minutes: number }
+
+export function etaParts(seconds: number | null): EtaParts | null {
   if (seconds == null) return null
-  if (seconds < 60) return "< 1 min"
+  if (seconds < 60) return { kind: "ltMin" }
   const totalMin = Math.round(seconds / 60)
-  if (totalMin < 60) return `≈ ${totalMin} min`
-  const h = Math.floor(totalMin / 60)
-  const m = totalMin % 60
-  return m === 0 ? `≈ ${h} h` : `≈ ${h} h ${String(m).padStart(2, "0")}`
+  if (totalMin < 60) return { kind: "min", min: totalMin }
+  const hours = Math.floor(totalMin / 60)
+  const minutes = totalMin % 60
+  return minutes === 0
+    ? { kind: "hours", hours }
+    : { kind: "hoursMinutes", hours, minutes }
 }

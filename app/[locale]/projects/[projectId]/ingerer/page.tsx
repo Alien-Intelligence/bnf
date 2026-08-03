@@ -37,17 +37,8 @@ export default async function IngererPage({
     <IngererClient
       projectId={projectId}
       initialUser={{ name: user.name ?? undefined, email: user.email }}
-      alreadyConsultable={deltaPreview.already}
-      deltaPreview={{
-        added: deltaPreview.added,
-        removed: deltaPreview.removed,
-        excluded: deltaPreview.excluded,
-        excludedNoText: deltaPreview.excludedNoText,
-        excludedNoScan: deltaPreview.excludedNoScan,
-        paidOcr: deltaPreview.paidOcr,
-        paidOcrBudget: deltaPreview.paidOcrBudget,
-      }}
-      activeJobId={activeJob?.id ?? null}
+      initialDeltaPreview={deltaPreview}
+      initialActiveJobId={activeJob?.id ?? null}
       initialRecentJobs={recentJobs.map(({ targetVersion, baseVersion, ...job }) => ({
         ...serializeIngestJob(job),
         targetVersionSeq: targetVersion.seq,

@@ -228,7 +228,7 @@ function ReaderAtelier({
   onNoteLinkClick,
   knownNoteIds,
 }: ReaderAtelierProps) {
-  const t = useTranslations("research")
+  const tEspace = useTranslations("research.espace")
   const tAtelier = useTranslations("research.atelier")
 
   const titleFor = (id: string) =>
@@ -244,10 +244,10 @@ function ReaderAtelier({
           <ArrowLeft className="size-4.5" strokeWidth={1.9} aria-hidden />
         </span>
         <p className="max-w-[19rem] text-sm font-semibold leading-snug">
-          {t("espace.emptyReaderTalk")}
+          {tEspace("emptyReaderTalk")}
         </p>
         <p className="max-w-[24rem] text-[12.5px] leading-relaxed text-muted-foreground">
-          {t("espace.emptyReaderTalkSub")}
+          {tEspace("emptyReaderTalkSub")}
         </p>
       </div>
     )

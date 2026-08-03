@@ -12,19 +12,21 @@
 import { useTranslations } from "next-intl"
 import { Loader2 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { WORKER_DOC_STATUS, WORKER_STAGE } from "@/lib/cluster/constants"
 import type {
   ClusterQueueProgress,
   ClusterQueueStage,
 } from "@/lib/cluster/contracts"
 
-// Worker stage buckets → the named groups. fetch is pulled out as the headline
-// bottleneck and is not in this list.
+// Worker stage buckets → the named groups (`key` is the i18n group key under
+// ingest.queue.groups.*). fetch is pulled out as the headline bottleneck and is
+// not in this list.
 const GROUPS = [
-  { key: "metadata", stages: ["metadata", "manifest"] },
-  { key: "images", stages: ["describe"] },
-  { key: "prep", stages: ["assemble", "embed"] },
-  { key: "ocr", stages: ["ocrSubmit", "ocrPoll"] },
-  { key: "index", stages: ["register"] },
+  { key: "metadata", stages: [WORKER_STAGE.METADATA, WORKER_STAGE.MANIFEST] },
+  { key: "images", stages: [WORKER_STAGE.DESCRIBE] },
+  { key: "prep", stages: [WORKER_STAGE.ASSEMBLE, WORKER_STAGE.EMBED] },
+  { key: "ocr", stages: [WORKER_STAGE.OCR_SUBMIT, WORKER_STAGE.OCR_POLL] },
+  { key: "index", stages: [WORKER_STAGE.REGISTER] },
 ] as const
 
 const EMPTY_STAGE: ClusterQueueStage = { done: 0, running: 0, queued: 0, failed: 0 }
@@ -48,13 +50,16 @@ function sumStages(
   )
 }
 
-export function IngestQueueDetail({ queue }: { queue: ClusterQueueProgress }) {
+export function CardIngestQueueDetail({ queue }: { queue: ClusterQueueProgress }) {
   const t = useTranslations("ingest.queue")
 
   const num = (k: string): number =>
     typeof queue.docs[k] === "number" ? queue.docs[k]! : 0
   const running =
-    num("planned") + num("fetching") + num("ready") + num("processing")
+    num(WORKER_DOC_STATUS.PLANNED) +
+    num(WORKER_DOC_STATUS.FETCHING) +
+    num(WORKER_DOC_STATUS.READY) +
+    num(WORKER_DOC_STATUS.PROCESSING)
 
   const fetch = queue.stages.fetch ?? EMPTY_STAGE
   const folios = queue.folios
@@ -64,13 +69,13 @@ export function IngestQueueDetail({ queue }: { queue: ClusterQueueProgress }) {
   // Run totals — always reconcile to docsTotal (done + running + queued + failed
   // + skipped). Surfaced verbatim so the view can never hide failures/skips.
   const totals: { key: string; value: number; tone: string }[] = [
-    { key: "done", value: num("done"), tone: "text-brand-teal" },
+    { key: "done", value: num(WORKER_DOC_STATUS.DONE), tone: "text-brand-teal" },
     { key: "running", value: running, tone: "text-foreground" },
-    { key: "queued", value: num("queued"), tone: "text-muted-foreground" },
-    { key: "failed", value: num("failed"), tone: "text-destructive" },
+    { key: "queued", value: num(WORKER_DOC_STATUS.QUEUED), tone: "text-muted-foreground" },
+    { key: "failed", value: num(WORKER_DOC_STATUS.FAILED), tone: "text-destructive" },
     {
       key: "skipped",
-      value: num("skipped") + num("excluded"),
+      value: num(WORKER_DOC_STATUS.SKIPPED) + num(WORKER_DOC_STATUS.EXCLUDED),
       tone: "text-muted-foreground",
     },
   ]

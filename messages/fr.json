@@ -629,7 +629,7 @@
     "artefacts": {
       "title": "Artefacts de recherche",
       "search": "Rechercher une note…",
-      "empty": "Aucune note pour l'instant.",
+      "empty": "Aucune note. Posez une question à l'assistant pour en générer une.",
       "noMatch": "Aucun résultat.",
       "count": "{count, plural, =0 {Aucun artefact} one {# artefact} other {# artefacts}}",
       "meta": "{count, plural, =0 {aucune réf.} one {# réf.} other {# réf.}} · {time}"
@@ -672,13 +672,20 @@
       "usages": "Utilisé dans d'autres notes"
     }
   },
-  "notes": {},
   "ingest": {
     "failures": {
       "tile": "{count, plural, =0 {Aucun échec} one {# échec} other {# échecs}}"
     },
     "panel": {
       "eyebrow": "Étape 2 · Préparer la recherche",
+      "error": {
+        "submit": "Le lancement de l'ingestion a échoué. Réessayez.",
+        "retry": "La reprise des documents en échec a échoué. Réessayez.",
+        "cancel": "L'annulation a échoué. Réessayez.",
+        "pollTitle": "Suivi en direct indisponible",
+        "pollBody": "Impossible de récupérer l'état du traitement pour le moment. Le traitement continue côté serveur.",
+        "pollRetry": "Réessayer"
+      },
       "title": {
         "empty": "Aucun document n'est encore consultable",
         "pending": "Des documents attendent d'être ajoutés",
@@ -716,6 +723,10 @@
         "progress": "{done, number} documents sur {total, number} préparés",
         "eta": "il reste {eta}",
         "etaComputing": "estimation en cours…",
+        "etaLtMin": "moins d'une minute",
+        "etaMin": "≈ {min} min",
+        "etaHours": "≈ {hours} h",
+        "etaHoursMinutes": "≈ {hours} h {minutes} min",
         "queueAhead": "{count, number} folios sont devant vous : une autre préparation partage la limite de débit de la BnF.",
         "serverNote": "Le traitement continue côté serveur. Vous pouvez fermer la page et revenir plus tard.",
         "detailsToggle": "Détails",

@@ -629,7 +629,7 @@
     "artefacts": {
       "title": "Research artifacts",
       "search": "Search a note…",
-      "empty": "No notes yet.",
+      "empty": "No notes yet. Ask the assistant a question to generate one.",
       "noMatch": "No results.",
       "count": "{count, plural, =0 {No artifacts} one {# artifact} other {# artifacts}}",
       "meta": "{count, plural, =0 {no refs} one {# ref} other {# refs}} · {time}"
@@ -672,13 +672,20 @@
       "usages": "Used in other notes"
     }
   },
-  "notes": {},
   "ingest": {
     "failures": {
       "tile": "{count, plural, =0 {No failures} one {# failure} other {# failures}}"
     },
     "panel": {
       "eyebrow": "Step 2 · Prepare the research",
+      "error": {
+        "submit": "Starting the ingestion failed. Please retry.",
+        "retry": "Retrying the failed documents failed. Please retry.",
+        "cancel": "Cancellation failed. Please retry.",
+        "pollTitle": "Live tracking unavailable",
+        "pollBody": "Could not fetch the processing status right now. Processing continues on the server.",
+        "pollRetry": "Retry"
+      },
       "title": {
         "empty": "Nothing is consultable yet",
         "pending": "Documents are waiting to be added",
@@ -716,6 +723,10 @@
         "progress": "{done, number} of {total, number} documents prepared",
         "eta": "{eta} left",
         "etaComputing": "estimating…",
+        "etaLtMin": "less than a minute",
+        "etaMin": "≈ {min} min",
+        "etaHours": "≈ {hours} h",
+        "etaHoursMinutes": "≈ {hours} h {minutes} min",
         "queueAhead": "{count, number} folios are ahead of you: another preparation shares the BnF rate limit.",
         "serverNote": "Processing continues server-side. You can close the page and come back later.",
         "detailsToggle": "Details",

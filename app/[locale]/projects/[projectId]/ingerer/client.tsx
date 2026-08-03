@@ -9,6 +9,8 @@
 
 import { useEffect, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
+import { useTranslations } from "next-intl"
+import { AlertTriangle } from "lucide-react"
 import {
   useIngestStatus,
   useSubmitIngest,
@@ -16,7 +18,7 @@ import {
   useRetryFailedIngest,
   isPaidOcrOutcome,
 } from "@/hooks/api/ingest"
-import { CardIngestPanel, type IngestMode } from "@/components/cards/ingest/panel"
+import { CardIngestPanel, deriveMode } from "@/components/cards/ingest/panel"
 import { CardIngestJobHistory } from "@/components/cards/ingest/job-history"
 import { INGEST_STATUS } from "@/models/ingest/schema"
 import { WorkspaceHeader } from "@/components/layouts/workspace/header"
@@ -25,65 +27,30 @@ import {
   DialogIngestPaidOcrConfirm,
   type PaidOcrDialogState,
 } from "@/components/dialogs/ingest/paid-ocr-confirm"
-import type { IngestJobView } from "@/models/ingest/types"
-import type { PaidOcrEstimate } from "@/models/ingest/schema"
+import { Card, CardContent } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
+import { useToast } from "@/components/ui/toast"
+import type { IngestDeltaPreview, IngestJobView } from "@/models/ingest/types"
 
 interface Props {
   projectId: string
   initialUser: { name?: string; email: string }
-  /** Documents already consultable by the research assistant (indexed). */
-  alreadyConsultable: number
-  deltaPreview: {
-    added: number
-    removed: number
-    excluded: number
-    excludedNoText: number
-    excludedNoScan: number
-    paidOcr: PaidOcrEstimate
-    paidOcrBudget: { spentUsd: number; ceilingUsd: number; withinBudget: boolean }
-  }
-  activeJobId: string | null
+  /** Server-computed delta preview (incl. the already-consultable count) — a
+   *  page-load snapshot, refreshed on the live→terminal transition. */
+  initialDeltaPreview: IngestDeltaPreview
+  initialActiveJobId: string | null
   initialRecentJobs: IngestJobView[]
-}
-
-/**
- * Map the active job + delta onto the panel's six librarian-facing modes. A live
- * or terminal job drives the mode directly; with no live job (or a canceled one)
- * the delta decides: nothing to do → up to date, else first-ever prep → empty,
- * else an incremental add → pending.
- */
-function deriveMode(
-  jobStatus: string | null,
-  already: number,
-  added: number,
-  removed: number,
-): IngestMode {
-  switch (jobStatus) {
-    case INGEST_STATUS.QUEUED:
-    case INGEST_STATUS.RUNNING:
-      return "running"
-    case INGEST_STATUS.DONE:
-      return "done"
-    case INGEST_STATUS.PARTIAL:
-    case INGEST_STATUS.FAILED:
-      return "failed"
-    default: {
-      // No live job, or a canceled one — the delta decides.
-      const hasAction = added > 0 || removed > 0
-      if (!hasAction) return "uptodate"
-      return already > 0 ? "pending" : "empty"
-    }
-  }
 }
 
 export function IngererClient({
   projectId,
   initialUser,
-  alreadyConsultable,
-  deltaPreview,
-  activeJobId: initialActiveJobId,
+  initialDeltaPreview,
+  initialActiveJobId,
   initialRecentJobs,
 }: Props) {
+  const t = useTranslations("ingest.panel.error")
+  const { toast } = useToast()
   const [activeJobId, setActiveJobId] = useState<string | null>(
     initialActiveJobId,
   )
@@ -129,28 +96,33 @@ export function IngererClient({
     }
   }, [status.data?.status, router])
 
-  const { paidOcr, paidOcrBudget } = deltaPreview
+  const { paidOcr, paidOcrBudget } = initialDeltaPreview
   const canIncludePaidOcr = paidOcr.docCount > 0 && paidOcrBudget.withinBudget
 
   // Dispatch the ingest. `confirmPaidOcr` is true only after the librarian opted
   // in AND confirmed the spend; otherwise the regular delta runs alone and the
   // sans_texte docs are left untouched (never sent silently). A budget_exceeded
   // outcome (server backstop) opens the budget notice instead of starting a job.
+  // A failed submit surfaces a toast — never a silent no-op (client-patterns §1).
   const dispatch = async (confirmPaidOcr: boolean) => {
-    const res = await submitMutation.mutateAsync(
-      confirmPaidOcr ? { confirmPaidOcr: true } : {},
-    )
-    if (isPaidOcrOutcome(res)) {
-      setPaidOcrDialog({
-        mode: "budget",
-        usd: res.paidOcr.usd,
-        spentUsd: res.spentUsd,
-        ceilingUsd: res.ceilingUsd,
-      })
-      return
+    try {
+      const res = await submitMutation.mutateAsync(
+        confirmPaidOcr ? { confirmPaidOcr: true } : {},
+      )
+      if (isPaidOcrOutcome(res)) {
+        setPaidOcrDialog({
+          mode: "budget",
+          usd: res.paidOcr.usd,
+          spentUsd: res.spentUsd,
+          ceilingUsd: res.ceilingUsd,
+        })
+        return
+      }
+      setPaidOcrDialog(null)
+      setActiveJobId(res.id)
+    } catch {
+      toast(t("submit"))
     }
-    setPaidOcrDialog(null)
-    setActiveJobId(res.id)
   }
 
   // Main CTA: if paid OCR is opted in (and affordable), confirm the spend first;
@@ -166,27 +138,45 @@ export function IngererClient({
 
   const onRetryFailed = async () => {
     if (!activeJobId) return
-    const job = await retryMutation.mutateAsync(activeJobId)
-    setActiveJobId(job.id)
+    try {
+      const job = await retryMutation.mutateAsync(activeJobId)
+      setActiveJobId(job.id)
+    } catch {
+      toast(t("retry"))
+    }
   }
 
   const onCancel = () => setShowCancel(true)
 
   const confirmCancel = async () => {
-    if (activeJobId) await cancelMutation.mutateAsync(activeJobId)
-    setShowCancel(false)
+    if (!activeJobId) {
+      setShowCancel(false)
+      return
+    }
+    try {
+      await cancelMutation.mutateAsync(activeJobId)
+      setShowCancel(false)
+    } catch {
+      toast(t("cancel"))
+    }
   }
 
   // A seeded/just-submitted job whose first poll hasn't landed yet is still
-  // live — treat it as running so the panel doesn't flash a delta state.
+  // live — treat it as running so the panel doesn't flash a delta state. The
+  // job keeps running server-side even if a poll fails, so an errored poll also
+  // stays "running"; the failure is surfaced by the banner below, not swallowed.
   const jobStatus: string | null =
     status.data?.status ?? (activeJobId ? INGEST_STATUS.RUNNING : null)
 
+  // Live-status polling failed (network/5xx) while a job is active — show a
+  // visible, retriable notice instead of a silently-stuck view (ui-states §Error).
+  const showPollError = Boolean(activeJobId) && status.isError
+
   const mode = deriveMode(
     jobStatus,
-    alreadyConsultable,
-    deltaPreview.added,
-    deltaPreview.removed,
+    initialDeltaPreview.already,
+    initialDeltaPreview.added,
+    initialDeltaPreview.removed,
   )
 
   return (
@@ -200,15 +190,8 @@ export function IngererClient({
         <CardIngestPanel
           mode={mode}
           projectId={projectId}
-          already={alreadyConsultable}
-          delta={{
-            added: deltaPreview.added,
-            removed: deltaPreview.removed,
-            excluded: deltaPreview.excluded,
-            excludedNoText: deltaPreview.excludedNoText,
-            excludedNoScan: deltaPreview.excludedNoScan,
-            paidOcr: deltaPreview.paidOcr,
-          }}
+          already={initialDeltaPreview.already}
+          delta={initialDeltaPreview}
           paidOcrBudget={paidOcrBudget}
           includePaidOcr={includePaidOcr}
           onTogglePaidOcr={() => setIncludePaidOcr((v) => !v)}
@@ -219,6 +202,29 @@ export function IngererClient({
           onRetry={() => void onRetryFailed()}
           onCancel={onCancel}
         />
+
+        {showPollError && (
+          <Card className="border-warning/35 bg-warning/[0.08]">
+            <CardContent className="flex items-start gap-3 py-4">
+              <AlertTriangle
+                className="mt-0.5 size-4 shrink-0 text-warning"
+                strokeWidth={1.9}
+              />
+              <div className="flex flex-col gap-1">
+                <p className="text-sm font-semibold">{t("pollTitle")}</p>
+                <p className="text-sm text-muted-foreground">{t("pollBody")}</p>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                className="ml-auto shrink-0"
+                onClick={() => void status.refetch()}
+              >
+                {t("pollRetry")}
+              </Button>
+            </CardContent>
+          </Card>
+        )}
 
         <DialogIngestPaidOcrConfirm
           state={paidOcrDialog}

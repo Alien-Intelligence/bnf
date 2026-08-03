@@ -75,6 +75,32 @@ export function serializeIngestJob(job: IngestJob): IngestJobView {
 }
 
 /**
+ * Plain-language delta preview for the Ingérer panel, computed once at page load
+ * by {@link IngestService.previewDelta}. The single source of truth for the
+ * panel's counts — `already` (documents consultable now), what a run would add /
+ * remove, the excluded split (no-text vs not-digitized), and the paid-OCR
+ * opt-in context. Crosses to the client as a server-rendered `initial*` snapshot.
+ */
+export type IngestDeltaPreview = {
+  /** Documents currently consultable by the research assistant (indexed). */
+  already: number
+  added: number
+  removed: number
+  excluded: number
+  /** Excluded docs that are digitized but carry no readable text (SANS_TEXTE). */
+  excludedNoText: number
+  /** Excluded docs not digitized at the BnF (NON_NUMERISE). */
+  excludedNoScan: number
+  paidOcr: PaidOcrEstimate
+  /**
+   * Budget context for the paid-OCR opt-in, so the UI can show the cost against
+   * the cap and disable the opt-in when it won't fit. `withinBudget` is the
+   * single source of truth the client gates on; the server re-checks on submit.
+   */
+  paidOcrBudget: { spentUsd: number; ceilingUsd: number; withinBudget: boolean }
+}
+
+/**
  * Body accepted by POST /api/projects/[id]/ingest.
  * `targetVersionSeq` is optional — omit to target the current head.
  * `confirmPaidOcr` opts into the paid fallback OCR (Mistral) of the delta's
