@@ -818,8 +818,6 @@
     "claudeSonnet46": "Claude Sonnet 4.6",
     "glm52": "GLM 5.2",
     "gemini35Flash": "Gemini 3.5 Flash",
-    "mistralMedium35": "Mistral Medium 3.5",
-    "qwen37Max": "Qwen3.7 Max",
     "deepseekV4Pro": "DeepSeek V4 Pro"
   },
   "feedback": {
