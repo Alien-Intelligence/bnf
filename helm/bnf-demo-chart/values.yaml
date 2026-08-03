@@ -8,7 +8,7 @@ replicaCount: 1
 image:
   repository: rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo
   pullPolicy: Always
-  tag: "0.13.2"
+  tag: "0.13.3"
 
 imagePullSecrets: []
 
@@ -291,7 +291,6 @@ broker:
       memory: 512Mi
     limits:
       cpu: 500m
-<<<<<<< HEAD
       # The broker buffers each upstream response WHOLE in memory (server.ts:
       # `Buffer.from(await upstream.arrayBuffer())`) before mirroring it. At
       # worker bnfFetchConcurrency=128 × full-res "max" folio images (~10MB) that
@@ -299,8 +298,6 @@ broker:
       # took the single-replica broker down → every in-flight fetch got
       # ECONNREFUSED. Sized to hold a full 128-wide burst with headroom; drop it
       # only alongside streaming the proxy body instead of buffering it.
-=======
->>>>>>> feature/note-charts
       memory: 2Gi
 
 # ===========================================================================
