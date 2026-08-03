@@ -1,8 +1,10 @@
 "use client"
 
 // app/[locale]/projects/[projectId]/ingerer/client.tsx
-// Ingérer step client component. Owns ingest job lifecycle state: submit,
-// poll, cancel. Renders the pipeline card only while a job is active.
+// Ingérer step client component. Owns ingest job lifecycle state: submit, poll,
+// cancel, retry. Derives the single de-geekified panel's `mode` from the active
+// job + the delta preview, then renders CardIngestPanel (which absorbs the old
+// summary / queue-status / come-back-later / completion / retry-failed cards).
 // No corpus mutation — ingest reads the corpus state set by Constituer.
 
 import { useEffect, useRef, useState } from "react"
@@ -14,11 +16,7 @@ import {
   useRetryFailedIngest,
   isPaidOcrOutcome,
 } from "@/hooks/api/ingest"
-import { CardIngestSummary } from "@/components/cards/ingest/summary"
-import { CardIngestQueueStatus } from "@/components/cards/ingest/queue-status"
-import { CardComeBackLater } from "@/components/cards/ingest/come-back-later"
-import { CardIngestCompletion } from "@/components/cards/ingest/completion"
-import { CardIngestRetryFailed } from "@/components/cards/ingest/retry-failed"
+import { CardIngestPanel, type IngestMode } from "@/components/cards/ingest/panel"
 import { CardIngestJobHistory } from "@/components/cards/ingest/job-history"
 import { INGEST_STATUS } from "@/models/ingest/schema"
 import { WorkspaceHeader } from "@/components/layouts/workspace/header"
@@ -33,12 +31,14 @@ import type { PaidOcrEstimate } from "@/models/ingest/schema"
 interface Props {
   projectId: string
   initialUser: { name?: string; email: string }
-  headVersionSeq: number
-  ingestedVersionSeq: number | null
+  /** Documents already consultable by the research assistant (indexed). */
+  alreadyConsultable: number
   deltaPreview: {
     added: number
     removed: number
     excluded: number
+    excludedNoText: number
+    excludedNoScan: number
     paidOcr: PaidOcrEstimate
     paidOcrBudget: { spentUsd: number; ceilingUsd: number; withinBudget: boolean }
   }
@@ -46,11 +46,40 @@ interface Props {
   initialRecentJobs: IngestJobView[]
 }
 
+/**
+ * Map the active job + delta onto the panel's six librarian-facing modes. A live
+ * or terminal job drives the mode directly; with no live job (or a canceled one)
+ * the delta decides: nothing to do → up to date, else first-ever prep → empty,
+ * else an incremental add → pending.
+ */
+function deriveMode(
+  jobStatus: string | null,
+  already: number,
+  added: number,
+  removed: number,
+): IngestMode {
+  switch (jobStatus) {
+    case INGEST_STATUS.QUEUED:
+    case INGEST_STATUS.RUNNING:
+      return "running"
+    case INGEST_STATUS.DONE:
+      return "done"
+    case INGEST_STATUS.PARTIAL:
+    case INGEST_STATUS.FAILED:
+      return "failed"
+    default: {
+      // No live job, or a canceled one — the delta decides.
+      const hasAction = added > 0 || removed > 0
+      if (!hasAction) return "uptodate"
+      return already > 0 ? "pending" : "empty"
+    }
+  }
+}
+
 export function IngererClient({
   projectId,
   initialUser,
-  headVersionSeq,
-  ingestedVersionSeq,
+  alreadyConsultable,
   deltaPreview,
   activeJobId: initialActiveJobId,
   initialRecentJobs,
@@ -71,8 +100,8 @@ export function IngererClient({
   const retryMutation = useRetryFailedIngest(projectId)
   const status = useIngestStatus(activeJobId)
 
-  // The delta panel (deltaPreview), ingested-version label, and job history are
-  // server-rendered props computed at page load — they are NOT live queries.
+  // The delta panel (deltaPreview), already-consultable count, and job history
+  // are server-rendered props computed at page load — they are NOT live queries.
   // While a job runs, useIngestStatus polls, but the moment it goes terminal
   // those props are stale: the job committed (Document.indexedAt advanced, the
   // delta shrank) yet the panel still shows the pre-ingest counts until a manual
@@ -148,25 +177,47 @@ export function IngererClient({
     setShowCancel(false)
   }
 
+  // A seeded/just-submitted job whose first poll hasn't landed yet is still
+  // live — treat it as running so the panel doesn't flash a delta state.
+  const jobStatus: string | null =
+    status.data?.status ?? (activeJobId ? INGEST_STATUS.RUNNING : null)
+
+  const mode = deriveMode(
+    jobStatus,
+    alreadyConsultable,
+    deltaPreview.added,
+    deltaPreview.removed,
+  )
+
   return (
-    <div className="flex flex-col h-screen">
+    <div className="flex h-screen flex-col">
       <WorkspaceHeader user={initialUser} projectId={projectId} />
 
       {/* *:shrink-0 — in a flex-col scroll container, items default to shrink:1
-          and get squeezed below their content height when the column overflows;
-          combined with the cards' overflow-hidden that clips their footers (e.g.
-          the submit button). Keep natural heights → the container scrolls. */}
-      <div className="flex flex-col gap-6 p-6 max-w-4xl mx-auto w-full overflow-auto *:shrink-0">
-        <CardIngestSummary
-          headSeq={headVersionSeq}
-          ingestedSeq={ingestedVersionSeq}
-          delta={deltaPreview}
+          and get squeezed below their content height when the column overflows.
+          Keep natural heights → the container scrolls. */}
+      <div className="mx-auto flex w-full max-w-4xl flex-col gap-6 overflow-auto p-6 *:shrink-0">
+        <CardIngestPanel
+          mode={mode}
+          projectId={projectId}
+          already={alreadyConsultable}
+          delta={{
+            added: deltaPreview.added,
+            removed: deltaPreview.removed,
+            excluded: deltaPreview.excluded,
+            excludedNoText: deltaPreview.excludedNoText,
+            excludedNoScan: deltaPreview.excludedNoScan,
+            paidOcr: deltaPreview.paidOcr,
+          }}
           paidOcrBudget={paidOcrBudget}
           includePaidOcr={includePaidOcr}
           onTogglePaidOcr={() => setIncludePaidOcr((v) => !v)}
-          activeJob={status.data ?? null}
-          onSubmit={onSubmit}
+          queue={status.data?.queue ?? null}
+          doneCount={status.data?.addedCount ?? 0}
           isSubmitting={submitMutation.isPending}
+          onSubmit={onSubmit}
+          onRetry={() => void onRetryFailed()}
+          onCancel={onCancel}
         />
 
         <DialogIngestPaidOcrConfirm
@@ -177,38 +228,6 @@ export function IngererClient({
           onConfirm={onConfirmPaidOcr}
           isPending={submitMutation.isPending}
         />
-
-        {activeJobId && status.data && (
-          <>
-            {/* Done: hand off to Rechercher. Partial: the successes ARE indexed,
-                so also offer the success CTA, plus a retry for the failed docs. */}
-            {(status.data.status === INGEST_STATUS.DONE ||
-              status.data.status === INGEST_STATUS.PARTIAL) && (
-              <CardIngestCompletion projectId={projectId} />
-            )}
-
-            {/* Live: the reassurance banner first, then the queue-status view
-                (buckets draining, BnF fetch as the headline bottleneck). */}
-            {(status.data.status === INGEST_STATUS.QUEUED ||
-              status.data.status === INGEST_STATUS.RUNNING) && (
-              <>
-                <CardComeBackLater />
-                <CardIngestQueueStatus job={status.data} onCancel={onCancel} />
-              </>
-            )}
-
-            {/* Failed (whole job) or partial (some docs) → offer to retry the
-                failed documents only. */}
-            {(status.data.status === INGEST_STATUS.FAILED ||
-              status.data.status === INGEST_STATUS.PARTIAL) && (
-              <CardIngestRetryFailed
-                error={status.data.error}
-                onRetry={() => void onRetryFailed()}
-                isRetrying={retryMutation.isPending}
-              />
-            )}
-          </>
-        )}
 
         <CardIngestJobHistory projectId={projectId} jobs={initialRecentJobs} />
       </div>

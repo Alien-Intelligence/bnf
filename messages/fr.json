@@ -677,24 +677,113 @@
     "failures": {
       "tile": "{count, plural, =0 {Aucun échec} one {# échec} other {# échecs}}"
     },
-    "summary": {
-      "title": "État d'ingestion",
-      "head": "Version actuelle",
-      "ingested": "Dernière ingestion",
-      "neverIngested": "Jamais ingéré",
-      "delta": "Delta",
-      "added": "{count} à ingérer",
-      "removed": "{count} à retirer",
-      "excluded": "{count, plural, =0 {} one {# document non ingérable exclu} other {# documents non ingérables exclus}}",
-      "paidOcr": "{count, plural, one {# document numérisé sans couche OCR} other {# documents numérisés sans couche OCR}}",
-      "paidOcrCost": "Océrisation à la demande · ≈ {cost} $ pour la plateforme",
-      "paidOcrBudget": "Budget plateforme : {spent} $ / {ceiling} $ utilisés",
-      "paidOcrInclude": "Inclure l'océrisation",
-      "paidOcrIncluded": "Océrisation incluse ✓",
-      "paidOcrOverBudget": "Coût supérieur au budget de la plateforme ({ceiling} $) : océrisation indisponible. Les autres documents seront ingérés normalement.",
-      "submit": "Lancer une ingestion",
-      "submitWithOcr": "Lancer l'ingestion + océrisation",
-      "submitting": "Envoi…"
+    "panel": {
+      "eyebrow": "Étape 2 · Préparer la recherche",
+      "title": {
+        "empty": "Aucun document n'est encore consultable",
+        "pending": "Des documents attendent d'être ajoutés",
+        "uptodate": "Votre recherche est à jour",
+        "running": "Préparation en cours",
+        "done": "Vos documents sont consultables",
+        "failed": "Préparation terminée, quelques documents en échec"
+      },
+      "lead": {
+        "empty": "Vos {added, number} documents sélectionnés doivent d'abord être préparés : l'assistant ne peut lire que des documents préparés.",
+        "pending": "Votre recherche fonctionne déjà. Cette action y ajoute les documents que vous avez ajoutés depuis la dernière fois.",
+        "uptodate": "Tous les documents de votre sélection sont déjà consultables par l'assistant. Vous n'avez rien à faire ici.",
+        "running": "Vous n'avez rien à faire. Voici où en est le traitement.",
+        "done": "L'assistant de recherche peut maintenant lire et citer ces documents.",
+        "failed": "La plupart des documents ont été ajoutés. Quelques-uns n'ont pas pu être récupérés à la BnF."
+      },
+      "already": {
+        "eyebrow": "Dans votre recherche",
+        "suffix": "{count, plural, one {document consultable} other {documents consultables}}",
+        "sub": "L'assistant peut déjà les lire et les citer dans ses notes.",
+        "subNone": "L'assistant de recherche ne peut encore rien lire dans ce projet."
+      },
+      "action": {
+        "eyebrow": "Ce que va faire cette action",
+        "suffix": "{count, plural, one {document ajouté} other {documents ajoutés}}",
+        "subEmpty": "Toute votre sélection sera préparée en une seule fois.",
+        "subPending": "Seuls ces documents seront traités — les autres restent en place.",
+        "removed": "{count, plural, one {# document retiré de votre sélection cessera d'être consultable} other {# documents retirés de votre sélection cesseront d'être consultables}}.",
+        "excluded": "{excluded, number} documents ne peuvent pas être ajoutés : {noText, number} sans texte lisible, {noScan, number} non numérisés à la BnF."
+      },
+      "running": {
+        "eyebrow": "Ce qui se passe maintenant",
+        "generic": "Préparation en cours…",
+        "phaseStep": "Phase {step, number} sur {total, number}",
+        "progress": "{done, number} documents sur {total, number} préparés",
+        "eta": "il reste {eta}",
+        "etaComputing": "estimation en cours…",
+        "queueAhead": "{count, number} folios sont devant vous : une autre préparation partage la limite de débit de la BnF.",
+        "serverNote": "Le traitement continue côté serveur. Vous pouvez fermer la page et revenir plus tard.",
+        "detailsToggle": "Détails",
+        "detailsTag": "files de traitement"
+      },
+      "phases": {
+        "notices": "Lecture des notices",
+        "fetch": "Récupération des pages à la BnF",
+        "describe": "Description des images",
+        "prepare": "Préparation du texte",
+        "index": "Indexation"
+      },
+      "uptodateNotice": {
+        "title": "Aucun nouveau document à ajouter",
+        "body": "Revenez ici seulement après avoir ajouté des documents à l'étape 1."
+      },
+      "doneNotice": {
+        "title": "{count, plural, one {# document ajouté à votre recherche} other {# documents ajoutés à votre recherche}}",
+        "body": "Rien d'autre à faire ici.",
+        "bodyRemoved": "{count, plural, one {# document retiré n'est plus consultable} other {# documents retirés ne sont plus consultables}}. Rien d'autre à faire ici."
+      },
+      "failedNotice": {
+        "ok": "Les documents récupérés ont été ajoutés et sont consultables dès maintenant.",
+        "fail": "Certains documents n'ont pas pu être récupérés à la BnF (service momentanément indisponible). Réessayer ne retraite que ceux-là."
+      },
+      "cta": {
+        "empty": "Préparer mes documents",
+        "pending": "Ajouter ces {count, number} documents",
+        "uptodate": "Aller à la recherche",
+        "runningConsult": "Consulter les documents déjà prêts",
+        "done": "Passer à la recherche",
+        "retry": "Réessayer les documents en échec",
+        "toResearchAnyway": "Passer à la recherche quand même",
+        "interrupt": "Interrompre",
+        "submitting": "Envoi…"
+      },
+      "ctaHint": {
+        "empty": "Environ 3 h, en arrière-plan.",
+        "pending": "Les {count, number} documents déjà présents ne sont pas retraités."
+      },
+      "advanced": {
+        "toggle": "Options avancées",
+        "toggleTag": "océrisation payante",
+        "title": "Faire lire les documents sans texte",
+        "explain": "{count, plural, one {# document textuel de votre sélection n'a pas de texte lisible} other {# documents textuels de votre sélection n'ont pas de texte lisible}}. Un service d'océrisation payant peut les rendre consultables.",
+        "docsLabel": "Documents concernés",
+        "costLabel": "Coût estimé",
+        "cost": "≈ {cost} $",
+        "enable": "Activer",
+        "enabled": "Océrisation incluse ✓",
+        "overBudget": "Coût supérieur au budget ({ceiling} $)",
+        "footnote": "Facturé à la page, en dehors de votre abonnement. Désactivé par défaut.",
+        "budget": "Budget plateforme : {spent} $ / {ceiling} $ utilisés"
+      },
+      "tech": {
+        "toggle": "Détails techniques",
+        "toggleTag": "pour l'exploitation",
+        "added": "Documents à ajouter",
+        "removed": "Documents à retirer",
+        "excluded": "Documents exclus",
+        "excludedValue": "{excluded, number} ({noText, number} sans OCR · {noScan, number} non numérisés)",
+        "phasesInternal": "Phases internes",
+        "phasesValue": "metadata → fetch_folios → vision_describe → chunk+embed → index",
+        "target": "Cible d'indexation",
+        "targetValue": "cluster RAG BnF",
+        "processed": "Documents traités",
+        "processedValue": "{done, number} / {total, number}"
+      }
     },
     "paidOcr": {
       "confirmTitle": "Océrisation à la demande",
@@ -705,36 +794,6 @@
       "budgetTitle": "Budget OCR dépassé",
       "budgetBody": "Cette transcription (~{cost} $) dépasserait le budget OCR du projet (déjà dépensé {spent} $ sur un plafond de {ceiling} $).",
       "close": "Fermer"
-    },
-    "stages": {
-      "extract": "Extraction OCR",
-      "chunk": "Découpage sémantique",
-      "embed": "Embedding",
-      "index": "Indexation"
-    },
-    "stageDesc": {
-      "extract": "Extraction du texte (OCR)",
-      "chunk": "Découpage sémantique des documents",
-      "embed": "Calcul des embeddings",
-      "index": "Indexation dans le cluster RAG"
-    },
-    "pipeline": {
-      "title": "Ingestion en cours",
-      "target": "Cible",
-      "targetValue": "cluster RAG BnF",
-      "overall": "Progression globale",
-      "pending": "En attente",
-      "skipped": "Ignoré",
-      "eta": "Temps restant estimé",
-      "etaComputing": "estimation…",
-      "outcomes": {
-        "ingested": "{count} ingéré·s",
-        "retrying": "{count} en reprise",
-        "skipped": "{count} ignoré·s",
-        "failed": "{count} en échec",
-        "excluded": "{count} non ingérable·s",
-        "removed": "{count} retiré·s"
-      }
     },
     "queue": {
       "title": "Traitement en cours",
@@ -784,20 +843,6 @@
       "confirmBody": "Le traitement sera arrêté côté cluster…",
       "confirm": "Confirmer",
       "dismiss": "Garder en cours"
-    },
-    "comeBackLater": {
-      "title": "Traitement en cours",
-      "body": "Le traitement continue côté serveur. Vous pouvez fermer la page et revenir plus tard."
-    },
-    "completion": {
-      "title": "Corpus ingéré",
-      "body": "Votre corpus est indexé et prêt à être interrogé. Lancez la recherche pour poser vos questions.",
-      "cta": "Passer à la recherche"
-    },
-    "retry": {
-      "title": "Ingestion incomplète",
-      "body": "Certains documents n'ont pas pu être ingérés. Vous pouvez relancer uniquement les documents en échec.",
-      "button": "Réessayer les documents échoués"
     }
   },
   "models": {
