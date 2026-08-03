@@ -366,13 +366,19 @@ export const OPENROUTER_APP_NAME = "Alien × BnF"
  * list. `labelKey` is an i18n key under the `models` namespace (NOT the raw id —
  * ids carry dots/slashes that collide with next-intl's key nesting); the display
  * name lives in messages/{fr,en}.json. The first entry is the default.
+ *
+ * DATA-RETENTION GUARDRAIL: this deployment mandates zero-data-retention (ZDR)
+ * routing on OpenRouter. Only models with at least one ZDR-capable endpoint may
+ * appear here — otherwise OpenRouter 404s the turn ("No endpoints found matching
+ * your data policy (Zero data retention)") and the librarian sees a dead model.
+ * Verified live (2026-08-03): `mistralai/mistral-medium-3-5` (only provider:
+ * Mistral) and `qwen/qwen3.7-max` (only provider: Alibaba) have NO ZDR endpoint,
+ * so both were removed. Re-check ZDR availability before adding any new model.
  */
 export const AGENT_AVAILABLE_MODELS = [
   { id: "z-ai/glm-5.2", labelKey: "glm52" },
   { id: "anthropic/claude-sonnet-4.6", labelKey: "claudeSonnet46" },
   { id: "google/gemini-3.5-flash", labelKey: "gemini35Flash" },
-  { id: "mistralai/mistral-medium-3-5", labelKey: "mistralMedium35" },
-  { id: "qwen/qwen3.7-max", labelKey: "qwen37Max" },
   { id: "deepseek/deepseek-v4-pro", labelKey: "deepseekV4Pro" },
 ] as const
 

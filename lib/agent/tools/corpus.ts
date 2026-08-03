@@ -521,7 +521,7 @@ const facetDimensionEnum = z.enum(["period", "type", "lang", "source"])
 export const corpusStatsTool = defineTool<
   z.ZodObject<{
     filters: z.ZodOptional<typeof corpusFiltersSchema>
-    cross_facets: z.ZodOptional<z.ZodTuple<[typeof facetDimensionEnum, typeof facetDimensionEnum]>>
+    cross_facets: z.ZodOptional<z.ZodArray<typeof facetDimensionEnum>>
   }>,
   TurnScopedCtx
 >({
@@ -537,8 +537,15 @@ export const corpusStatsTool = defineTool<
     "books\") without inspecting documents one by one.",
   inputSchema: z.object({
     filters: corpusFiltersSchema.optional(),
+    // A fixed-length ARRAY, not a z.tuple: a tuple serialises to the positional
+    // `items: [A, B]` JSON-schema form, which Google's function-declaration
+    // schema rejects ("properties[cross_facets].items: missing field"), crashing
+    // every Gemini turn via OpenRouter. An array of length 2 emits a single
+    // `items` object Google accepts; the handler still reads [0]/[1]. The shared
+    // chat-sdk converter also normalises this defensively.
     cross_facets: z
-      .tuple([facetDimensionEnum, facetDimensionEnum])
+      .array(facetDimensionEnum)
+      .length(2)
       .optional()
       .describe(
         'Two dimensions to cross-tabulate, e.g. ["period","type"] or ["period","source"].',
