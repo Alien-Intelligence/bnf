@@ -1,6 +1,6 @@
 apiVersion: v2
 name: bnf-demo
-version: 0.13.2
+version: 0.13.3
 description: BnF Corpus Research — Alien Intelligence × BnF demo (Next.js app + ingest worker + BnF broker + Postgres)
 type: application
 # 0.9.0 — worker+broker hardening pass 2: pg-boss sliding-window fetch (the ~600/min
@@ -19,6 +19,10 @@ type: application
 # activity), + a "folios ahead of you" counter for the shared fetch queue. Worker +
 # app (card display + contract). Broker unchanged.
 # 0.11.0 — skipped: deployed out-of-band to prod, never landed on main (version drift).
+# 0.13.3 — app-only: fix Gemini crash (corpus_stats cross_facets z.tuple → fixed-length
+# array; Google rejected the tuple's positional items schema) + drop ZDR-incompatible
+# models Qwen 3.7 Max and Mistral Medium 3.5 from the picker (no ZDR endpoint on the
+# account). Worker (0.10.1) and broker (0.9.0) unchanged — only the app image rolls.
 # 0.12.0 — chart-only: broker memory 256Mi→2Gi. It buffers each upstream response body
 # whole before mirroring (server.ts arrayBuffer), so at worker bnfFetchConcurrency=128 ×
 # ~10MB folio images it held >1GB and OOMKilled — the single-replica broker going down
