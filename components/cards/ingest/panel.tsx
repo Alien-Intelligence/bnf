@@ -674,10 +674,10 @@ function TechnicalDisclosure({
         <ChevronRight
           className={cn("size-3.5 transition-transform", open && "rotate-90")}
         />
-        {t("tech.toggle")}
+        {t("toggle")}
         <span className="flex-1" />
         <span className="font-mono text-[10.5px] text-neutral-600">
-          {t("tech.toggleTag")}
+          {t("toggleTag")}
         </span>
       </CollapsibleTrigger>
       <CollapsibleContent className="flex flex-col pb-2 pt-1">
