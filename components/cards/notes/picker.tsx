@@ -10,7 +10,7 @@
 // (agent-authored notes appear after a turn) without a second source of truth.
 
 import { useMemo, useState } from "react"
-import { Plus, Search } from "lucide-react"
+import { Search } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { useNotes } from "@/hooks/api/notes"
 import { CardNoteListItem } from "./list-item"
@@ -20,7 +20,6 @@ interface CardNotesPickerProps {
   projectId: string
   activeNoteId: string | null
   onOpenNote: (id: string) => void
-  onNewNote: () => void
   initialNotes?: NoteListItem[]
 }
 
@@ -28,7 +27,6 @@ export function CardNotesPicker({
   projectId,
   activeNoteId,
   onOpenNote,
-  onNewNote,
   initialNotes,
 }: CardNotesPickerProps) {
   const t = useTranslations("research.artefacts")
@@ -47,19 +45,11 @@ export function CardNotesPicker({
 
   return (
     <div className="flex min-h-[148px] flex-1 flex-col border-t">
-      {/* Header — eyebrow + new note */}
+      {/* Header — eyebrow + search. No new-note button: notes are agent-authored
+          (see item 8 of the ingestion-and-notes-ux plan). */}
       <div className="shrink-0 px-3.5 pb-2 pt-3">
-        <div className="mb-2 flex items-center justify-between">
+        <div className="mb-2 flex items-center">
           <span className="mono-eyebrow">{t("title")}</span>
-          <button
-            type="button"
-            onClick={onNewNote}
-            title={t("new")}
-            aria-label={t("new")}
-            className="flex size-5.5 items-center justify-center rounded-md border bg-card text-neutral-300 transition-colors hover:border-brand-teal/45 hover:text-brand-teal"
-          >
-            <Plus className="size-3.5" />
-          </button>
         </div>
         <div className="flex h-7.5 items-center gap-2 rounded-md border border-input bg-input/30 px-2.5">
           <Search className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />

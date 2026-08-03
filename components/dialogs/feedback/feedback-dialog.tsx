@@ -41,7 +41,7 @@ const RATINGS: FeedbackRating[] = [
 ]
 
 // Form-local schema: the dialog owns only rating + comment. target/targetId are
-// supplied by props and merged at submit (mirrors DialogNewNote's subset schema).
+// supplied by props and merged at submit (a form-local subset of the full model).
 const formSchema = z.object({
   rating: z.enum(["bad", "ok", "great"]),
   comment: z.string().trim().max(2_000).optional(),

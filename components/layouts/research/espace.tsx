@@ -11,7 +11,7 @@
 // shows notes the user has OPENED, as closable tabs — the design's tab model.
 
 import { useMemo } from "react"
-import { Download, FileText, HelpCircle, NotebookText, PenLine, X } from "lucide-react"
+import { ArrowLeft, Download, FileText, HelpCircle, NotebookText, PenLine, X } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { LayoutCorpusChat } from "@/components/layouts/corpus/chat"
 import { NoteBody } from "@/components/cards/notes/note-body"
@@ -51,7 +51,6 @@ interface LayoutResearchEspaceProps {
   onDispositionChange: (d: Disposition) => void
   clusterId: string
   docCount: number
-  onOpenNewNote: () => void
   onCitationClick: (c: ParsedCitation) => void
   /** Open another note from a `[[note:<id>|<label>]]` cross-reference. */
   onNoteLinkClick: (noteId: string) => void
@@ -78,7 +77,6 @@ export function LayoutResearchEspace({
   onDispositionChange,
   clusterId,
   docCount,
-  onOpenNewNote,
   onCitationClick,
   onNoteLinkClick,
   onOpenHelp,
@@ -167,7 +165,6 @@ export function LayoutResearchEspace({
               activeNoteId={activeNoteId}
               onActivateNote={onActivateNote}
               onCloseNote={onCloseNote}
-              onOpenNewNote={onOpenNewNote}
               onCitationClick={onCitationClick}
               onNoteLinkClick={onNoteLinkClick}
               knownNoteIds={knownNoteIds}
@@ -215,7 +212,6 @@ interface ReaderAtelierProps {
   activeNoteId: string | null
   onActivateNote: (id: string) => void
   onCloseNote: (id: string) => void
-  onOpenNewNote: () => void
   onCitationClick: (c: ParsedCitation) => void
   onNoteLinkClick: (noteId: string) => void
   knownNoteIds: ReadonlySet<string>
@@ -228,7 +224,6 @@ function ReaderAtelier({
   activeNoteId,
   onActivateNote,
   onCloseNote,
-  onOpenNewNote,
   onCitationClick,
   onNoteLinkClick,
   knownNoteIds,
@@ -240,15 +235,20 @@ function ReaderAtelier({
     notes.find((n) => n.id === id)?.title ?? tAtelier("noteTab")
 
   if (openNoteIds.length === 0) {
+    // Notes are agent-authored — the empty reader points the librarian at the
+    // assistant rather than offering a blank-note form (see item 8 of the
+    // ingestion-and-notes-ux plan). No manual create affordance here.
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 p-10 text-center">
-        <FileText className="size-7 text-neutral-600" strokeWidth={1.6} aria-hidden />
-        <p className="max-w-xs text-sm text-muted-foreground">{t("espace.emptyReader")}</p>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={onOpenNewNote}>
-            {tAtelier("newNote")}
-          </Button>
-        </div>
+        <span className="flex size-9 items-center justify-center rounded-full border border-brand-teal/30 bg-brand-teal/10 text-brand-teal">
+          <ArrowLeft className="size-4.5" strokeWidth={1.9} aria-hidden />
+        </span>
+        <p className="max-w-[19rem] text-sm font-semibold leading-snug">
+          {t("espace.emptyReaderTalk")}
+        </p>
+        <p className="max-w-[24rem] text-[12.5px] leading-relaxed text-muted-foreground">
+          {t("espace.emptyReaderTalkSub")}
+        </p>
       </div>
     )
   }

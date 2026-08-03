@@ -621,13 +621,13 @@
       "disposition": "Layout",
       "atelier": "Workbench",
       "carnet": "Notebook",
-      "emptyReader": "Open an artifact from the list, or ask a question to generate one.",
+      "emptyReaderTalk": "Talk to the assistant on the left to generate a research note.",
+      "emptyReaderTalkSub": "Ask your question; the assistant writes the note, cites its sources, and opens it here.",
       "openSource": "Research assistant",
       "openSubtitle": "Queries the corpus · cites its sources"
     },
     "artefacts": {
       "title": "Research artifacts",
-      "new": "New note",
       "search": "Search a note…",
       "empty": "No notes yet.",
       "noMatch": "No results.",
@@ -641,7 +641,6 @@
     "atelier": {
       "chatTab": "Conversation",
       "noteTab": "Note",
-      "newNote": "New note",
       "viewInCarnet": "View notebook",
       "noNotes": "No notes yet.",
       "closeTab": "Close",
@@ -657,11 +656,6 @@
       "compiledHeader": "Research notebook · {count, plural, =0 {no notes} one {# note} other {# notes}}",
       "export": "Export as Markdown",
       "empty": "No notes in this notebook."
-    },
-    "note": {
-      "titlePlaceholder": "Note title",
-      "bodyPlaceholder": "Write your note…",
-      "create": "Create note"
     }
   },
   "citations": {
@@ -678,14 +672,7 @@
       "usages": "Used in other notes"
     }
   },
-  "notes": {
-    "edit": {
-      "titleLabel": "Title",
-      "bodyLabel": "Content",
-      "save": "Save",
-      "saving": "Saving…"
-    }
-  },
+  "notes": {},
   "ingest": {
     "failures": {
       "tile": "{count, plural, =0 {No failures} one {# failure} other {# failures}}"

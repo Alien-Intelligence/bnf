@@ -621,13 +621,13 @@
       "disposition": "Disposition",
       "atelier": "Atelier",
       "carnet": "Carnet",
-      "emptyReader": "Ouvrez un artefact depuis la liste, ou posez une question pour en générer un.",
+      "emptyReaderTalk": "Parlez à l'assistant à gauche pour générer une note de recherche.",
+      "emptyReaderTalkSub": "Posez votre question ; l'assistant rédige la note, cite ses sources et l'ouvre ici.",
       "openSource": "Assistant de recherche",
       "openSubtitle": "Interroge le corpus · cite ses sources"
     },
     "artefacts": {
       "title": "Artefacts de recherche",
-      "new": "Nouvelle note",
       "search": "Rechercher une note…",
       "empty": "Aucune note pour l'instant.",
       "noMatch": "Aucun résultat.",
@@ -641,7 +641,6 @@
     "atelier": {
       "chatTab": "Conversation",
       "noteTab": "Note",
-      "newNote": "Nouvelle note",
       "viewInCarnet": "Voir le carnet",
       "noNotes": "Aucune note pour l'instant.",
       "closeTab": "Fermer",
@@ -657,11 +656,6 @@
       "compiledHeader": "Carnet de recherche · {count, plural, =0 {aucune note} one {# note} other {# notes}}",
       "export": "Exporter en Markdown",
       "empty": "Aucune note dans ce carnet."
-    },
-    "note": {
-      "titlePlaceholder": "Titre de la note",
-      "bodyPlaceholder": "Rédigez votre note…",
-      "create": "Créer la note"
     }
   },
   "citations": {
@@ -678,14 +672,7 @@
       "usages": "Utilisé dans d'autres notes"
     }
   },
-  "notes": {
-    "edit": {
-      "titleLabel": "Titre",
-      "bodyLabel": "Contenu",
-      "save": "Enregistrer",
-      "saving": "Enregistrement…"
-    }
-  },
+  "notes": {},
   "ingest": {
     "failures": {
       "tile": "{count, plural, =0 {Aucun échec} one {# échec} other {# échecs}}"
