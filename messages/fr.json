@@ -262,6 +262,24 @@
   "corpus": {
     "panelTitle": "Votre corpus",
     "help": "Comment ça marche ?",
+    "buffer": {
+      "title": "Tampon de recherche",
+      "subtitle": "Candidats rassemblés, à valider",
+      "count": "{count} candidat(s)",
+      "error": "Impossible de charger le tampon.",
+      "noTitle": "(sans titre)",
+      "discard": "Écarter ce candidat",
+      "more": "+{count} autres candidats",
+      "commit": "Ajouter au corpus",
+      "committing": "Ajout…",
+      "commitReason": "Validation du tampon depuis le panneau",
+      "clear": "Vider le tampon",
+      "clearing": "Suppression…",
+      "clearConfirmTitle": "Vider le tampon ?",
+      "clearConfirmBody": "Les {count} candidat(s) rassemblé(s) seront écartés. Le corpus n'est pas affecté.",
+      "clearConfirmCancel": "Annuler",
+      "clearConfirmOk": "Vider"
+    },
     "export": {
       "label": "Exporter (CSV)",
       "pending": "Export…",

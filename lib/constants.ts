@@ -156,6 +156,10 @@ export const CORPUS_REASON_MAX_LEN = 1_000
 /** Candidate rows per page in a buffer list / snapshot sample. */
 export const BUFFER_SAMPLE_SIZE = 25
 
+/** Candidate rows the Constituer buffer panel requests (a curation buffer is
+ *  bounded, so one page comfortably shows the working set). */
+export const BUFFER_PANEL_LIMIT = 100
+
 /**
  * Max candidate count under which the corpus agent may `buffer_commit` WITHOUT
  * an explicit `ask_user` confirmation. Above it, the agent narrates the count

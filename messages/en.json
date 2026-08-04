@@ -262,6 +262,24 @@
   "corpus": {
     "panelTitle": "Your corpus",
     "help": "How does this work?",
+    "buffer": {
+      "title": "Research buffer",
+      "subtitle": "Gathered candidates, pending commit",
+      "count": "{count} candidate(s)",
+      "error": "Could not load the buffer.",
+      "noTitle": "(untitled)",
+      "discard": "Discard this candidate",
+      "more": "+{count} more candidates",
+      "commit": "Add to corpus",
+      "committing": "Adding…",
+      "commitReason": "Buffer committed from the panel",
+      "clear": "Clear buffer",
+      "clearing": "Clearing…",
+      "clearConfirmTitle": "Clear the buffer?",
+      "clearConfirmBody": "The {count} gathered candidate(s) will be discarded. The corpus is not affected.",
+      "clearConfirmCancel": "Cancel",
+      "clearConfirmOk": "Clear"
+    },
     "export": {
       "label": "Export (CSV)",
       "pending": "Exporting…",
