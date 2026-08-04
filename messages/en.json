@@ -520,11 +520,21 @@
     "corpus": {
       "get_state": "Corpus state",
       "list": "List corpus",
+      "search": "BnF search",
       "add": "Add to corpus",
       "remove": "Remove from corpus",
       "remove_by_filter": "Remove by filter",
       "stats": "Stats",
       "diff": "Corpus diff"
+    },
+    "buffer": {
+      "list": "Buffer — list",
+      "stats": "Buffer — stats",
+      "remove_by_filter": "Buffer — remove by filter",
+      "add": "Buffer — add",
+      "discard": "Buffer — discard",
+      "commit": "Add buffer to corpus",
+      "clear": "Clear buffer"
     },
     "memory": {
       "read": "Read memory",

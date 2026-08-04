@@ -520,11 +520,21 @@
     "corpus": {
       "get_state": "État du corpus",
       "list": "Liste du corpus",
+      "search": "Recherche BnF",
       "add": "Ajout au corpus",
       "remove": "Retrait du corpus",
       "remove_by_filter": "Retrait par filtre",
       "stats": "Statistiques",
       "diff": "Diff de corpus"
+    },
+    "buffer": {
+      "list": "Tampon — liste",
+      "stats": "Tampon — statistiques",
+      "remove_by_filter": "Tampon — retrait par filtre",
+      "add": "Tampon — ajout",
+      "discard": "Tampon — écarter",
+      "commit": "Ajout du tampon au corpus",
+      "clear": "Vider le tampon"
     },
     "memory": {
       "read": "Lecture mémoire",
