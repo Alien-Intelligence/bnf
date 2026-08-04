@@ -148,6 +148,31 @@ export const CORPUS_REMOVE_PREVIEW_LIMIT = 50
  */
 export const CORPUS_REASON_MAX_LEN = 1_000
 
+// ---------------------------------------------------------------------------
+// Research buffer ("tampon") — the pre-commit candidate staging area.
+// See models/buffer/ and lib/agent/tools/buffer.ts.
+// ---------------------------------------------------------------------------
+
+/** Candidate rows per page in a buffer list / snapshot sample. */
+export const BUFFER_SAMPLE_SIZE = 25
+
+/**
+ * Max candidate count under which the corpus agent may `buffer_commit` WITHOUT
+ * an explicit `ask_user` confirmation. Above it, the agent narrates the count
+ * and asks before committing (large, hard-to-reverse corpus growth). A commit
+ * always advances a corpus version, so this is a deliberately conservative
+ * floor — tune against real BnF sessions.
+ */
+export const BUFFER_AUTO_COMMIT_MAX = 200
+
+/**
+ * Max hits a single `corpus_search` call writes into the buffer. Search can
+ * return thousands; the buffer is a curation surface, not a dump — this bounds
+ * one call's write (CLAUDE_ERROR_PATTERNS §14) and keeps the returned summary
+ * small. The agent paginates/narrows to gather more, deliberately.
+ */
+export const BUFFER_SEARCH_MAX_HITS = 200
+
 /**
  * The seq assigned to the first (empty) CorpusVersion created by
  * ProjectService.create(). Invariant 1: every project always has a head.

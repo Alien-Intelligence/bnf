@@ -3,8 +3,8 @@ import type { Project, User } from "@/lib/generated/prisma/client"
 import { prisma } from "@/lib/db"
 import { CorpusService, type CorpusAddResult } from "@/models/corpus/service"
 import { BUFFER_STATUS } from "./schema"
-import { BufferQueries } from "./queries"
-import type { BufferCandidateInput, BufferFilters } from "./types"
+import { BufferQueries, type BufferFilterSet } from "./queries"
+import type { BufferCandidateInput } from "./types"
 import { CORPUS_REMOVE_PREVIEW_LIMIT } from "@/lib/constants"
 
 /**
@@ -131,7 +131,7 @@ export class BufferService {
    */
   static async removeByFilter(
     projectId: string,
-    input: { filters: BufferFilters; dryRun: boolean },
+    input: { filters: BufferFilterSet; dryRun: boolean },
   ): Promise<BufferRemoveByFilterResult> {
     if (!BufferService.hasConstraint(input.filters)) return { status: "empty_filter" }
 
@@ -206,11 +206,11 @@ export class BufferService {
   }
 
   /** True when at least one filter field carries a constraint. */
-  private static hasConstraint(filters: BufferFilters): boolean {
+  private static hasConstraint(filters: BufferFilterSet): boolean {
     return !!(
-      filters.type ||
-      filters.lang ||
-      filters.source ||
+      filters.type?.length ||
+      filters.lang?.length ||
+      filters.source?.length ||
       filters.yearFrom !== undefined ||
       filters.yearTo !== undefined ||
       filters.undated === true ||

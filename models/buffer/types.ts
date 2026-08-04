@@ -104,20 +104,6 @@ export const bufferDiscardSchema = z.object({
 
 export type BufferDiscardInput = z.infer<typeof bufferDiscardSchema>
 
-/**
- * Remove candidates that MATCH a filter — the "filtrer sur les mois d'été" case:
- * the agent previews (dry-run default), then removes. Mirrors
- * corpus_remove_by_filter's dry-run-first ergonomics.
- */
-export const bufferRemoveByFilterSchema = z.object({
-  filters: bufferFiltersSchema,
-  /** When true (default), preview only — report the match count without
-   *  mutating. Set false to commit the removal. */
-  dryRun: z.boolean().optional(),
-})
-
-export type BufferRemoveByFilterInput = z.infer<typeof bufferRemoveByFilterSchema>
-
 /** Commit the buffer's candidates into the versioned corpus. */
 export const bufferCommitSchema = z.object({
   /** Human-readable reason, logged as the corpus version note. */
