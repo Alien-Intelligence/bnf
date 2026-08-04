@@ -19,14 +19,21 @@ import { z } from "zod"
 import { defineTool } from "@alien/chat-sdk/claude"
 import {
   BUFFER_SAMPLE_SIZE,
+  BUFFER_SEARCH_MAX_PAGE_SIZE,
+  BUFFER_SEARCH_PAGE_SIZE,
   CORPUS_REASON_MAX_LEN,
 } from "@/lib/constants"
 import { prisma } from "@/lib/db"
 import { kickCanonicalize } from "@/lib/documents/canonicalizer"
 import { kickResolve } from "@/lib/documents/resolver"
+import { requireMcpEnv } from "@/lib/env"
+import { callBnfTool } from "@/lib/mcp/call"
+import { BnfMcpError } from "@/lib/mcp/errors"
+import { parseBnfDate } from "@/lib/mcp/normalize"
+import { sourceFromArk } from "@/lib/mcp/vocab"
 import { BufferQueries, type BufferFilterSet } from "@/models/buffer/queries"
 import { BufferService } from "@/models/buffer/service"
-import { arkSchema } from "@/models/buffer/types"
+import { arkSchema, type BufferCandidateInput } from "@/models/buffer/types"
 import type { TurnScopedCtx } from "./registry-factory"
 import { AGENT_TOOLS } from "./constants"
 
@@ -378,9 +385,257 @@ export const bufferClearTool = defineTool<z.ZodObject<Record<string, never>>, Tu
   },
 })
 
-// Convenience array for the registry builder. corpus_search is appended once
-// the BnF-search wiring lands (see search.ts).
+// ---------------------------------------------------------------------------
+// corpus_search — BnF catalogue/Gallica search that funnels hits into the buffer
+// ---------------------------------------------------------------------------
+
+/** MCP search pagination block (bnf_search_gallica / bnf_search_catalogue). */
+interface BnfSearchPagination {
+  total: number
+  count: number
+  has_more: boolean
+  next_start_record?: number
+  start_record: number
+}
+/** One Gallica hit (bnf_search_gallica → data.data.results[]). */
+interface GallicaHit {
+  ark: string
+  title: string | null
+  creator: string | null
+  date: string | null
+  description: string | null
+  doc_type: string | null
+  language: string | null
+}
+/** One catalogue hit (bnf_search_catalogue → data.data.records[]). No doc_type. */
+interface CatalogueHit {
+  ark: string
+  title: string | null
+  author: string | null
+  date: string | null
+  publisher: string | null
+  language: string | null
+}
+interface GallicaPayload {
+  data: { results: GallicaHit[] }
+  pagination: BnfSearchPagination
+}
+interface CataloguePayload {
+  data: { records: CatalogueHit[] }
+  pagination: BnfSearchPagination
+}
+
+/** Bare local ARK id (e.g. "bpt6k…") → the canonical `ark:/12148/…` form. */
+function toFullArk(bare: string): string {
+  return bare.startsWith("ark:/") ? bare : `ark:/12148/${bare}`
+}
+/** Trim to a non-empty string, or undefined. */
+function clean(value: string | null | undefined): string | undefined {
+  const t = value?.trim()
+  return t && t.length > 0 ? t : undefined
+}
+/** Map a search hit's free-text date to a year, or undefined. */
+function toYear(date: string | null): number | undefined {
+  return parseBnfDate(date).year ?? undefined
+}
+
+const searchSourceEnum = z.enum(["gallica", "catalogue"])
+
+export const corpusSearchTool = defineTool<
+  z.ZodObject<{
+    source: typeof searchSourceEnum
+    query: z.ZodOptional<z.ZodString>
+    title: z.ZodOptional<z.ZodString>
+    creator: z.ZodOptional<z.ZodString>
+    date: z.ZodOptional<z.ZodString>
+    doc_type: z.ZodOptional<z.ZodString>
+    language: z.ZodOptional<z.ZodString>
+    start_record: z.ZodOptional<z.ZodNumber>
+    maximum_records: z.ZodOptional<z.ZodNumber>
+  }>,
+  TurnScopedCtx
+>({
+  name: AGENT_TOOLS.corpusSearch,
+  description:
+    "Search the BnF (Gallica full text or the catalogue) AND stage every hit in " +
+    "the research buffer in one step — this is your PRIMARY way to find documents. " +
+    "Prefer it over the raw bnf_search_* tools: it persists candidates to the " +
+    "visible buffer (so the librarian can curate them) instead of returning a long " +
+    "list into the conversation. Pick `source`: \"gallica\" for digitised full-text " +
+    "documents, \"catalogue\" for bibliographic records. Give at least one of " +
+    "query / title / creator / date. It returns a COMPACT summary — total available, " +
+    "how many were added to the buffer, the buffer size, and a small sample — NOT " +
+    "the full result list; inspect the staged candidates with buffer_stats / " +
+    "buffer_list. To gather more, call again with `start_record` advanced by the " +
+    "page size (use the returned `next_start_record`) until `has_more` is false. " +
+    "Curate with buffer_remove_by_filter, then buffer_commit to add them to the corpus.",
+  inputSchema: z.object({
+    source: searchSourceEnum.describe(
+      'Which BnF index: "gallica" (digitised full text) or "catalogue" (bibliographic).',
+    ),
+    query: z.string().trim().min(1).optional().describe("Free-text search terms."),
+    title: z.string().trim().min(1).optional().describe("Match on title."),
+    creator: z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .describe("Match on author/creator (mapped to author for the catalogue)."),
+    date: z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .describe('Exact year, e.g. "1889" (the BnF SRU date filter is year-exact).'),
+    doc_type: z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .describe(
+        "Gallica only — one of: monographie, image, carte, manuscrit, fascicule, " +
+          "partition, video, son, typeAffiche. Ignored for the catalogue.",
+      ),
+    language: z.string().trim().min(1).optional().describe("Language code to restrict to."),
+    start_record: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .describe("1-based offset for pagination (use the returned next_start_record). Default 1."),
+    maximum_records: z
+      .number()
+      .int()
+      .min(1)
+      .max(BUFFER_SEARCH_MAX_PAGE_SIZE)
+      .optional()
+      .describe(`Page size (1–${BUFFER_SEARCH_MAX_PAGE_SIZE}, default ${BUFFER_SEARCH_PAGE_SIZE}).`),
+  }),
+  handler: async (input, ctx) => {
+    // At least one search term (kept out of the Zod schema so the failure is a
+    // clean tool result the agent can react to, not a hard validation throw).
+    if (!input.query && !input.title && !input.creator && !input.date) {
+      return { error: "Fournissez au moins un critère de recherche : query, title, creator ou date." }
+    }
+
+    let mcpEnv: { BNF_MCP_URL: string; BNF_MCP_TOKEN: string }
+    try {
+      mcpEnv = requireMcpEnv()
+    } catch {
+      return {
+        error:
+          "La recherche BnF est indisponible (le MCP BnF n'est pas configuré pour cette session).",
+      }
+    }
+
+    const projectId = await projectIdFromSession(ctx.appSessionId)
+    const pageSize = input.maximum_records ?? BUFFER_SEARCH_PAGE_SIZE
+    const startRecord = input.start_record ?? 1
+
+    // Build the per-source MCP args (catalogue has no creator/doc_type: creator
+    // maps to `author`, doc_type is dropped). Only send provided fields.
+    const common: Record<string, unknown> = {
+      response_format: "json",
+      start_record: startRecord,
+      maximum_records: pageSize,
+    }
+    if (input.query) common.query = input.query
+    if (input.title) common.title = input.title
+    if (input.date) common.date = input.date
+    if (input.language) common.language = input.language
+
+    let candidates: BufferCandidateInput[]
+    let pagination: BnfSearchPagination
+    try {
+      if (input.source === "gallica") {
+        const args = { ...common }
+        if (input.creator) args.creator = input.creator
+        if (input.doc_type) args.doc_type = input.doc_type
+        const payload = await callBnfTool<GallicaPayload>(
+          mcpEnv.BNF_MCP_URL,
+          mcpEnv.BNF_MCP_TOKEN,
+          "bnf_search_gallica",
+          args,
+          ctx.signal,
+        )
+        pagination = payload.pagination
+        candidates = payload.data.results.map((h) => {
+          const ark = toFullArk(h.ark)
+          return {
+            ark,
+            title: clean(h.title),
+            year: toYear(h.date),
+            docType: clean(h.doc_type),
+            lang: clean(h.language),
+            source: sourceFromArk(ark),
+            snippet: clean(h.description),
+          }
+        })
+      } else {
+        const args = { ...common }
+        if (input.creator) args.author = input.creator
+        const payload = await callBnfTool<CataloguePayload>(
+          mcpEnv.BNF_MCP_URL,
+          mcpEnv.BNF_MCP_TOKEN,
+          "bnf_search_catalogue",
+          args,
+          ctx.signal,
+        )
+        pagination = payload.pagination
+        candidates = payload.data.records.map((h) => {
+          const ark = toFullArk(h.ark)
+          return {
+            ark,
+            title: clean(h.title),
+            year: toYear(h.date),
+            // The catalogue payload carries no doc_type; leave it for the
+            // background resolver to fill in after commit.
+            lang: clean(h.language),
+            source: sourceFromArk(ark),
+          }
+        })
+      }
+    } catch (err) {
+      // Coerce the transport/tool failure into a structured tool result the
+      // agent can react to (CLAUDE_ERROR_PATTERNS §15) — never throw out.
+      const message = err instanceof BnfMcpError ? err.message : String(err)
+      return { error: `La recherche BnF a échoué : ${message}` }
+    }
+
+    const registered = await BufferService.registerCandidates({
+      projectId,
+      sessionId: ctx.appSessionId,
+      originTool: AGENT_TOOLS.corpusSearch,
+      originQuery: input.query ?? input.title ?? input.creator ?? input.date ?? null,
+      candidates,
+    })
+
+    const buffered = await emitBuffer(ctx, projectId, "added", registered.added)
+
+    return {
+      source: input.source,
+      total: pagination.total,
+      found: candidates.length,
+      added: registered.added,
+      refreshed: registered.refreshed,
+      buffered,
+      has_more: pagination.has_more,
+      ...(pagination.next_start_record !== undefined
+        ? { next_start_record: pagination.next_start_record }
+        : {}),
+      sample: candidates.slice(0, 8).map((c) => ({
+        ark: c.ark,
+        title: c.title ?? null,
+        year: c.year ?? null,
+      })),
+    }
+  },
+})
+
+// Convenience array for the registry builder — the whole buffer tool set,
+// corpus_search included (it is the buffer's populator).
 export const bufferTools = [
+  corpusSearchTool,
   bufferListTool,
   bufferStatsTool,
   bufferRemoveByFilterTool,

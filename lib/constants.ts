@@ -166,12 +166,14 @@ export const BUFFER_SAMPLE_SIZE = 25
 export const BUFFER_AUTO_COMMIT_MAX = 200
 
 /**
- * Max hits a single `corpus_search` call writes into the buffer. Search can
- * return thousands; the buffer is a curation surface, not a dump — this bounds
- * one call's write (CLAUDE_ERROR_PATTERNS §14) and keeps the returned summary
- * small. The agent paginates/narrows to gather more, deliberately.
+ * Default page size for a `corpus_search` call (hits written to the buffer per
+ * call). The BnF MCP caps `maximum_records` at 50; the agent paginates with
+ * `start_record` to gather more, deliberately, keeping any single page — and the
+ * returned summary — bounded (CLAUDE_ERROR_PATTERNS §14).
  */
-export const BUFFER_SEARCH_MAX_HITS = 200
+export const BUFFER_SEARCH_PAGE_SIZE = 20
+/** Hard ceiling the BnF SRU search tools enforce on `maximum_records`. */
+export const BUFFER_SEARCH_MAX_PAGE_SIZE = 50
 
 /**
  * The seq assigned to the first (empty) CorpusVersion created by
