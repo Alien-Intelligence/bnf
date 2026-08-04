@@ -168,6 +168,7 @@ model Project {
   notes          Note[]
   ingestJobs     IngestJob[]
   feedback       Feedback[]
+  bufferItems    BufferItem[]
 
   @@map("project")
 }
@@ -579,4 +580,48 @@ model Feedback {
   @@unique([userId, target, targetId]) // one-per-target → enables revise/upsert
   @@index([projectId, target])
   @@map("feedback")
+}
+
+// -----------------------------------------------------------------------------
+// BufferItem — a persisted, project-scoped research "tampon" (staging area).
+// Search tools (corpus_search) auto-register every hit here as a `candidate`
+// BEFORE anything touches the versioned corpus, so the librarian can curate a
+// large candidate set verifiably (filter, preview-remove) and then commit it in
+// one pass. See ai-memories/tech/repos/bnf/corpus-curation-buffer + design 03/04.
+//
+// This is NOT a corpus version and NOT project memory:
+//   - Committing goes through CorpusService.addArks so advanceVersion() stays the
+//     sole version creator (playbook/corpus-versioning.md invariant).
+//   - Rows are transient scratch, deduped per ARK, cleared on commit or clear.
+// Metadata is denormalised at search time (nullable until a hit carries it) so
+// the buffer panel + buffer_stats can facet without a Document join.
+// status: BUFFER_STATUS in models/buffer/schema.ts (String, no native enum —
+// per this file's convention).
+// -----------------------------------------------------------------------------
+model BufferItem {
+  id        String  @id @default(uuid())
+  projectId String  @map("project_id")
+  ark       String
+  // Denormalised metadata captured from the search hit (null until a hit
+  // carries it). Never resolved in the background — the corpus is the resolved
+  // store; the buffer is pre-commit scratch.
+  title   String?
+  year    Int?
+  docType String? @map("doc_type")
+  lang    String?
+  source  String?
+  snippet String?
+  // Provenance + lifecycle.
+  originTool       String  @map("origin_tool") // which tool produced it, e.g. "corpus_search"
+  originQuery      String? @map("origin_query") // the query string that surfaced it
+  addedBySessionId String? @map("added_by_session_id") // AppSession.id; provenance only (no FK — sessions may be pruned)
+  status           String  @default("candidate") @map("status") // candidate | committed | discarded
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, ark]) // dedupe candidates by ARK (upsert target)
+  @@index([projectId, status])
+  @@map("buffer_item")
 }
