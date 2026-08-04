@@ -17,23 +17,10 @@ import "server-only"
 
 import { z } from "zod"
 import { defineTool } from "@alien/chat-sdk/claude"
-import { prisma } from "@/lib/db"
 import { ClusterRagClient } from "@/lib/cluster/rag"
 import type { TurnScopedCtx } from "./registry-factory"
 import { AGENT_TOOLS } from "./constants"
-
-const NOT_INGESTED_ERROR =
-  "Le corpus n'a pas encore été ingéré. " +
-  "Lance l'ingestion depuis l'étape « Ingérer » avant de lancer une recherche."
-
-/** Resolve the project's committed ingested version, or null if none. */
-async function ingestedVersionId(projectId: string): Promise<string | null> {
-  const project = await prisma.project.findUniqueOrThrow({
-    where: { id: projectId },
-    select: { ingestedVersionId: true },
-  })
-  return project.ingestedVersionId
-}
+import { NOT_INGESTED_ERROR, ingestedVersionId } from "./ingestion-guard"
 
 // ---------------------------------------------------------------------------
 // rag_query

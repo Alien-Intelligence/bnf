@@ -98,8 +98,14 @@ const handler = createChatHandler<TurnScopedCtx>({
       // when they alternate.
       return AgentService.buildSystemPrompt(session, resolveRequestLocale(req))
     },
-    // Per-request registry: opens a fresh BnF-MCP session for this turn.
-    buildTools: (_req, signal) => buildTurnScopedRegistry(signal),
+    // Per-request registry: opens a fresh BnF-MCP session for this turn and
+    // registers only the tools for THIS session's scope (corpus vs research) —
+    // the boundary gate (a corpus session carries no note tools, a research
+    // session no corpus/buffer tools). See toolsForScope().
+    buildTools: async (req, signal) => {
+      const session = await AgentQueries.getAppSessionOrThrow(sidFromUrl(req))
+      return buildTurnScopedRegistry(session.scope as "corpus" | "research", signal)
+    },
     buildToolContext: async (req, signal) => {
       const sid = sidFromUrl(req)
       const [session, user] = await Promise.all([

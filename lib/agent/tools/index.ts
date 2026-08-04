@@ -8,6 +8,7 @@ export type { AgentToolName } from "./constants"
 
 // Individual tool group arrays (useful for selective registry composition).
 export { corpusTools } from "./corpus"
+export { bufferTools } from "./buffer"
 export { memoryTools } from "./memory"
 export { ingestTools } from "./ingest"
 export { ragTools } from "./rag"
@@ -15,8 +16,8 @@ export { noteTools } from "./note"
 export { docTools } from "./doc"
 export { interactionTools } from "./interaction"
 
-// Aggregate array — pass to createToolRegistry({ tools: appTools }).
 import { corpusTools } from "./corpus"
+import { bufferTools } from "./buffer"
 import { memoryTools } from "./memory"
 import { ingestTools } from "./ingest"
 import { ragTools } from "./rag"
@@ -25,17 +26,24 @@ import { docTools } from "./doc"
 import { interactionTools } from "./interaction"
 
 /**
- * All app-defined `defineTool` handlers as a single flat array.
- *
- * Usage in buildTurnScopedRegistry:
- *   createToolRegistry<TurnScopedCtx>({ tools: appTools, mcpServers: [...] })
+ * The app-defined tools available in EVERY session regardless of scope: project
+ * memory (durable facts) and the interaction/ask_user primitive.
  */
-export const appTools = [
-  ...corpusTools,
-  ...memoryTools,
-  ...ingestTools,
-  ...ragTools,
-  ...noteTools,
-  ...docTools,
-  ...interactionTools,
-] as const
+const sharedTools = [...memoryTools, ...interactionTools]
+
+/**
+ * Compose the app-defined `defineTool` handlers for a session scope — the
+ * BOUNDARY gate (design item 4, plan §3.5 layer 1). A corpus session must not
+ * carry note tools; a research session must not carry corpus/buffer tools.
+ * Registration-time gating, not just prompt framing:
+ *   - corpus   → corpus_*, buffer_* (incl. corpus_search), ingest_submit + shared
+ *   - research → rag_*, note_*, doc_* + shared
+ * MCP tools (BnF search/read) are attached separately in buildTurnScopedRegistry
+ * and are not gated here (McpServerConfig has no per-tool filter).
+ */
+export function toolsForScope(scope: "corpus" | "research") {
+  if (scope === "corpus") {
+    return [...corpusTools, ...bufferTools, ...ingestTools, ...sharedTools]
+  }
+  return [...ragTools, ...noteTools, ...docTools, ...sharedTools]
+}
