@@ -27,6 +27,7 @@ import { prisma } from "@/lib/db"
 import { LOCALE_HEADER } from "@/lib/constants"
 import { toolsForScope } from "@/lib/agent/tools"
 import { AGENT_TOOLS } from "@/lib/agent/tools/constants"
+import { noteCreateTool } from "@/lib/agent/tools/note"
 import { SESSION_SCOPE } from "@/models/sessions/schema"
 import { BUFFER_STATUS } from "@/models/buffer/schema"
 import { ProjectService } from "@/models/projects/service"
@@ -117,7 +118,7 @@ async function runTurn(
       Cookie: cookie,
       [LOCALE_HEADER]: "fr",
     },
-    body: JSON.stringify({ mode: "claude", messages: history, model: MODEL }),
+    body: JSON.stringify({ sessionId, mode: "claude", messages: history, model: MODEL }),
     signal: controller.signal,
   }).catch((err: unknown) => {
     clearTimeout(timer)
@@ -411,6 +412,22 @@ async function main(): Promise<void> {
   const docCount = await prisma.document.count({ where: { projectId: project.id } })
   check("B10 Document rows exist for the committed ARKs", docCount > 0, `${docCount} document row(s)`)
 
+  // The invariant that actually matters: a malformed identifier must never reach
+  // the versioned corpus. The service layer below the tools does NOT re-run the
+  // route's Zod schema, so this is the only place it is enforced end to end.
+  const allDocs = await prisma.document.findMany({
+    where: { projectId: project.id },
+    select: { ark: true },
+  })
+  const badDocs = allDocs.filter((d) => !ARK_RE.test(d.ark))
+  check(
+    "B12 NO malformed ARK reached Document / the corpus",
+    badDocs.length === 0,
+    badDocs.length === 0
+      ? `all ${allDocs.length} corpus ARKs valid`
+      : `${badDocs.length} corrupt corpus member(s): ${badDocs.slice(0, 5).map((d) => d.ark).join(", ")}`,
+  )
+
   const remainingCandidates = await prisma.bufferItem.count({
     where: { projectId: project.id, status: BUFFER_STATUS.CANDIDATE },
   })
@@ -436,6 +453,28 @@ async function main(): Promise<void> {
     },
   })
   const notesBefore = await prisma.note.count({ where: { projectId: project.id } })
+
+  // Deterministic proof of the guard: invoke the note_create handler directly.
+  // The live turn below depends on the model choosing to attempt a note, which
+  // it may (correctly) decline to do — that would leave the guard unexercised.
+  const guardCtx = {
+    signal: new AbortController().signal,
+    db: prisma,
+    user,
+    appSessionId: researchSession.id,
+    projectId: project.id,
+    scope: "research" as const,
+  } as unknown as Parameters<typeof noteCreateTool.handler>[1]
+  const guardResult = (await noteCreateTool.handler(
+    { title: "E2E guard probe", body_md: "Ceci ne doit pas être écrit." },
+    guardCtx,
+  )) as Record<string, unknown>
+  const guardNotes = await prisma.note.count({ where: { projectId: project.id } })
+  check(
+    "C0 note_create is refused outright when nothing is ingested (direct call)",
+    typeof guardResult["error"] === "string" && guardNotes === notesBefore,
+    `returned=${JSON.stringify(guardResult).slice(0, 160)} noteCount=${guardNotes}`,
+  )
 
   const cPrompt =
     "Rédige une note de recherche intitulée « Le Figaro en 1889 » résumant ce que contient le corpus."

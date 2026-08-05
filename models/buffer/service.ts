@@ -4,7 +4,7 @@ import { prisma } from "@/lib/db"
 import { CorpusService, type CorpusAddResult } from "@/models/corpus/service"
 import { BUFFER_STATUS } from "./schema"
 import { BufferQueries, type BufferFilterSet } from "./queries"
-import type { BufferCandidateInput } from "./types"
+import { arkSchema, type BufferCandidateInput } from "./types"
 import { CORPUS_REMOVE_PREVIEW_LIMIT } from "@/lib/constants"
 
 /**
@@ -20,6 +20,9 @@ export type BufferRegisterResult = {
   added: number
   /** Existing rows whose metadata was refreshed (already in the buffer). */
   refreshed: number
+  /** Supplied hits rejected because the ARK is not a valid document identifier
+   *  (e.g. a periodical COLLECTION entry like `cb…/date`). Never staged. */
+  skipped: number
   /** Candidate count in the buffer after this write. */
   total: number
 }
@@ -64,9 +67,17 @@ export class BufferService {
     originQuery?: string | null
     candidates: BufferCandidateInput[]
   }): Promise<BufferRegisterResult> {
+    // Reject anything that is not a valid ARK BEFORE it can be staged. The
+    // buffer feeds CorpusService.addArks, and the tool path does not re-run the
+    // route-level Zod schema — so this is the structural guarantee that a
+    // malformed identifier (e.g. the `cb…/date` periodical-collection form the
+    // BnF SRU returns) can never reach Document / corpus_membership.
+    const valid = args.candidates.filter((c) => arkSchema.safeParse(c.ark).success)
+    const skipped = args.candidates.length - valid.length
+
     // Dedupe the incoming batch by ARK (last write wins) before touching the DB.
     const byArk = new Map<string, BufferCandidateInput>()
-    for (const c of args.candidates) byArk.set(c.ark, c)
+    for (const c of valid) byArk.set(c.ark, c)
     const unique = [...byArk.values()]
 
     let added = 0
@@ -110,7 +121,7 @@ export class BufferService {
     }
 
     const total = await BufferQueries.count(args.projectId)
-    return { requested: args.candidates.length, added, refreshed, total }
+    return { requested: args.candidates.length, added, refreshed, skipped, total }
   }
 
   /** Mark candidates as `discarded` by ARK. Returns how many were dropped. */
@@ -162,7 +173,11 @@ export class BufferService {
     user: User,
     args: { sessionId?: string | null; reason: string },
   ): Promise<BufferCommitResult> {
-    const arks = await BufferQueries.candidateArks(project.id)
+    // Belt and braces: registerCandidates already refuses malformed ARKs, but a
+    // row staged before that guard existed must never poison a corpus version —
+    // the service layer below does NOT re-run the route's Zod schema.
+    const staged = await BufferQueries.candidateArks(project.id)
+    const arks = staged.filter((a) => arkSchema.safeParse(a).success)
     if (arks.length === 0) {
       // Nothing to commit — reflect the corpus as-is without advancing a version.
       const snapshot = await CorpusService.addArks(

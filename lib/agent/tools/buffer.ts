@@ -425,9 +425,26 @@ interface CataloguePayload {
   pagination: BnfSearchPagination
 }
 
-/** Bare local ARK id (e.g. "bpt6k…") → the canonical `ark:/12148/…` form. */
-function toFullArk(bare: string): string {
-  return bare.startsWith("ark:/") ? bare : `ark:/12148/${bare}`
+/**
+ * Search-hit ARK → the canonical `ark:/12148/<id>` form, or null when the hit
+ * carries no usable identifier.
+ *
+ * The BnF SRU returns bare local ids ("bpt6k…"), and for PERIODICALS it returns
+ * the *collection* entry as `cb…/date` — the Gallica collection page, not a
+ * document. Prefixing that verbatim yields `ark:/12148/cb…/date`, which is not a
+ * valid ARK (it fails the corpus ARK contract) and is not an addressable
+ * document. We keep the underlying catalogue notice (`cb…`), which IS a valid
+ * corpus member and is auto-upgraded to its digitized doc by the canonicaliser;
+ * the individual issues come from `bnf__bnf_get_periodical_issues`.
+ */
+function toFullArk(bare: string): string | null {
+  const id = bare
+    .trim()
+    .replace(/^https?:\/\/[^/]+\//, "")
+    .replace(/^ark:\/\d+\//, "")
+    .replace(/\/.*$/, "") // drop trailing path segments ("/date", "/f1.item", …)
+  if (!/^[A-Za-z0-9]+$/.test(id)) return null
+  return `ark:/12148/${id}`
 }
 /** Trim to a non-empty string, or undefined. */
 function clean(value: string | null | undefined): string | undefined {
@@ -559,17 +576,20 @@ export const corpusSearchTool = defineTool<
           ctx.signal,
         )
         pagination = payload.pagination
-        candidates = payload.data.results.map((h) => {
+        candidates = payload.data.results.flatMap((h) => {
           const ark = toFullArk(h.ark)
-          return {
-            ark,
-            title: clean(h.title),
-            year: toYear(h.date),
-            docType: clean(h.doc_type),
-            lang: clean(h.language),
-            source: sourceFromArk(ark),
-            snippet: clean(h.description),
-          }
+          if (ark === null) return []
+          return [
+            {
+              ark,
+              title: clean(h.title),
+              year: toYear(h.date),
+              docType: clean(h.doc_type),
+              lang: clean(h.language),
+              source: sourceFromArk(ark),
+              snippet: clean(h.description),
+            },
+          ]
         })
       } else {
         const args = { ...common }
@@ -582,17 +602,20 @@ export const corpusSearchTool = defineTool<
           ctx.signal,
         )
         pagination = payload.pagination
-        candidates = payload.data.records.map((h) => {
+        candidates = payload.data.records.flatMap((h) => {
           const ark = toFullArk(h.ark)
-          return {
-            ark,
-            title: clean(h.title),
-            year: toYear(h.date),
-            // The catalogue payload carries no doc_type; leave it for the
-            // background resolver to fill in after commit.
-            lang: clean(h.language),
-            source: sourceFromArk(ark),
-          }
+          if (ark === null) return []
+          return [
+            {
+              ark,
+              title: clean(h.title),
+              year: toYear(h.date),
+              // The catalogue payload carries no doc_type; leave it for the
+              // background resolver to fill in after commit.
+              lang: clean(h.language),
+              source: sourceFromArk(ark),
+            },
+          ]
         })
       }
     } catch (err) {
@@ -618,6 +641,10 @@ export const corpusSearchTool = defineTool<
       found: candidates.length,
       added: registered.added,
       refreshed: registered.refreshed,
+      // Hits dropped because they are not addressable documents (e.g. a
+      // periodical COLLECTION entry): enumerate its issues with
+      // bnf__bnf_get_periodical_issues, then stage those with buffer_add.
+      ...(registered.skipped > 0 ? { skipped_not_a_document: registered.skipped } : {}),
       buffered,
       has_more: pagination.has_more,
       ...(pagination.next_start_record !== undefined
