@@ -176,7 +176,7 @@ function loadState(): State {
   if (!existsSync(STATE_FILE)) return { version: 1, done: {} };
   return JSON.parse(readFileSync(STATE_FILE, "utf8")) as State;
 }
-let state = loadState();
+const state = loadState();
 let dirtyCount = 0;
 function saveState(): void {
   const tmp = `${STATE_FILE}.tmp`;
