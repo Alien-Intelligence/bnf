@@ -289,9 +289,13 @@ async function main(): Promise<void> {
   // =========================================================================
 
   // --- Turn 1: search + stage ------------------------------------------------
+  // Explicitly a FULL-TEXT SEARCH (not a periodical enumeration): this is the
+  // path that returns periodical COLLECTION entries (`cb…/date`) and so is the
+  // regression case for the ARK-normalisation bug this e2e originally caught.
   const t1Prompt =
-    "Cherche dans Gallica des numéros du journal Le Figaro parus en 1889 " +
-    "et rassemble-les pour que je puisse les examiner. Une seule page de résultats suffit."
+    "Fais une recherche plein texte dans Gallica sur « Le Figaro » pour l'année 1889 " +
+    "et rassemble les résultats pour que je puisse les examiner. " +
+    "N'énumère pas les numéros du périodique : je veux une recherche. Une seule page suffit."
   history.push({ role: "user", content: t1Prompt })
   console.log(`\n> TURN 1: ${t1Prompt}`)
   const t1 = await runTurn(corpusSession.id, cookie, history)
@@ -302,13 +306,16 @@ async function main(): Promise<void> {
   const callsT1 = await toolCalls(corpusSession.id)
   console.log(`  tools: ${trace(callsT1)}`)
 
+  // The INVARIANT (not the tool choice): everything the agent gathered reached
+  // the buffer through a funnelled path. Enumerating a periodical's issues with
+  // bnf__bnf_get_periodical_issues → buffer_add is equally legitimate, so
+  // asserting corpus_search specifically would over-specify the agent's method.
   const searchCalls = named(callsT1, AGENT_TOOLS.corpusSearch)
+  const stageCalls = named(callsT1, AGENT_TOOLS.bufferAdd)
   check(
-    "B1 agent used corpus_search (the buffer-funnelled search)",
-    searchCalls.length > 0 && searchCalls.some((c) => c.status === "ok"),
-    searchCalls.length === 0
-      ? `never called it; used: ${trace(callsT1)}`
-      : `${searchCalls.length} call(s), statuses: ${searchCalls.map((c) => c.status).join(",")}`,
+    "B1 gathered documents entered the buffer via a funnelled path",
+    searchCalls.some((c) => c.status === "ok") || stageCalls.some((c) => c.status === "ok"),
+    `corpus_search=${searchCalls.length} buffer_add=${stageCalls.length}; used: ${trace(callsT1)}`,
   )
 
   const rawSearchLeak = callsT1.filter((c) => c.tool.startsWith("bnf__bnf_search_"))
@@ -318,6 +325,21 @@ async function main(): Promise<void> {
     rawSearchLeak.length === 0
       ? "no raw search calls"
       : `bypassed with: ${rawSearchLeak.map((c) => c.tool).join(", ")}`,
+  )
+
+  const directAdds = named(callsT1, AGENT_TOOLS.corpusAdd)
+  check(
+    "B2b agent did NOT bypass the buffer with a direct corpus_add",
+    directAdds.length === 0,
+    directAdds.length === 0 ? "no direct corpus_add" : `${directAdds.length} direct corpus_add call(s)`,
+  )
+
+  check(
+    "B2c corpus_search was exercised (ARK-normalisation regression path)",
+    searchCalls.some((c) => c.status === "ok"),
+    searchCalls.length === 0
+      ? `NOT exercised this run — the search path (source of the cb…/date bug) went untested; used: ${trace(callsT1)}`
+      : `${searchCalls.length} call(s), statuses: ${searchCalls.map((c) => c.status).join(",")}`,
   )
 
   const stagedAfterT1 = await prisma.bufferItem.findMany({ where: { projectId: project.id } })
