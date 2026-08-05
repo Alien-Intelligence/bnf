@@ -10,8 +10,12 @@ node_modules
 .env.*.local
 
 # The worker has its own image (worker/Dockerfile.worker); don't bloat the
-# app context with it or its local sandbox data.
+# app context with it or its local sandbox data. worker-v2 is the current
+# ingest worker (its own Dockerfile + deps); it must be excluded too, else the
+# app's `next build` type-checks worker-v2 sources against deps the app image
+# doesn't install (e.g. @aws-sdk/client-s3) and fails.
 worker
+worker-v2
 
 # Docs, design, scratch — irrelevant to the runtime image.
 ai_docs
