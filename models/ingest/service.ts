@@ -27,6 +27,7 @@ import {
 import { estimatePaidOcrCostUsd, INGEST_STATUS } from "./schema"
 import type { PaidOcrEstimate } from "./schema"
 import type {
+  IngestDeltaPreview,
   IngestResults,
   IngestSubmitInput,
   IngestSubmitOutcome,
@@ -240,23 +241,7 @@ export class IngestService {
    */
   static async previewDelta(
     project: Project,
-  ): Promise<{
-    added: number
-    removed: number
-    excluded: number
-    paidOcr: PaidOcrEstimate
-    /**
-     * Budget context for the paid-OCR opt-in, so the UI can show the cost
-     * against the cap and disable the opt-in when it won't fit. `withinBudget`
-     * is the single source of truth the client gates the opt-in on; the server
-     * re-checks it on submit (the UI can't be trusted with spend).
-     */
-    paidOcrBudget: {
-      spentUsd: number
-      ceilingUsd: number
-      withinBudget: boolean
-    }
-  }> {
+  ): Promise<IngestDeltaPreview> {
     const targetVersion = await CorpusQueries.headVersion(project.id)
 
     // Per-doc delta against the index (same source as submit()), so the preview
@@ -273,7 +258,7 @@ export class IngestService {
 
     // Same partition (and same paidOcr gate) as submit(), so the preview's
     // counts and cost estimate can never drift from what a submit would carry.
-    const { ingestable, excluded, paidOcr } =
+    const { ingestable, excluded, paidOcr, excludedNoText, excludedNoScan } =
       await IngestService._partitionByIngestability(project.id, deltaAddedArks, {
         paidOcr: project.paidOcrEnabled,
       })
@@ -283,9 +268,12 @@ export class IngestService {
     const spentUsd = Number(project.paidOcrSpentUsd)
 
     return {
+      already: indexedArks.length,
       added: ingestable.length,
       removed: removedArks.length,
       excluded: excluded.length,
+      excludedNoText,
+      excludedNoScan,
       paidOcr: paidOcrEstimate,
       paidOcrBudget: {
         spentUsd,
@@ -711,8 +699,23 @@ export class IngestService {
     projectId: string,
     arks: string[],
     opts: { paidOcr?: boolean } = {},
-  ): Promise<{ ingestable: string[]; excluded: string[]; paidOcr: string[] }> {
-    if (arks.length === 0) return { ingestable: [], excluded: [], paidOcr: [] }
+  ): Promise<{
+    ingestable: string[]
+    excluded: string[]
+    paidOcr: string[]
+    /** Excluded docs digitized but with no readable text (SANS_TEXTE). */
+    excludedNoText: number
+    /** Excluded docs not digitized at the BnF (NON_NUMERISE). */
+    excludedNoScan: number
+  }> {
+    if (arks.length === 0)
+      return {
+        ingestable: [],
+        excluded: [],
+        paidOcr: [],
+        excludedNoText: 0,
+        excludedNoScan: 0,
+      }
     const rows = await prisma.document.findMany({
       where: { projectId, ark: { in: arks } },
       select: {
@@ -729,6 +732,11 @@ export class IngestService {
     const ingestable: string[] = []
     const excluded: string[] = []
     const paidOcr: string[] = []
+    // Excluded split, for the librarian-facing "ne peuvent pas être ajoutés"
+    // line. Only SANS_TEXTE / NON_NUMERISE ever land in `excluded`, so the two
+    // counts always sum to excluded.length.
+    let excludedNoText = 0
+    let excludedNoScan = 0
     for (const ark of arks) {
       const doc = byArk.get(ark)
       if (!doc) {
@@ -757,11 +765,13 @@ export class IngestService {
         paidOcr.push(ark)
       } else if (!isIngestableClass(cls) && confident) {
         excluded.push(ark)
+        if (cls === INGESTION_CLASS.NON_NUMERISE) excludedNoScan++
+        else excludedNoText++
       } else {
         ingestable.push(ark)
       }
     }
-    return { ingestable, excluded, paidOcr }
+    return { ingestable, excluded, paidOcr, excludedNoText, excludedNoScan }
   }
 
   /**

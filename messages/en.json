@@ -621,18 +621,20 @@
       "disposition": "Layout",
       "atelier": "Workbench",
       "carnet": "Notebook",
-      "emptyReader": "Open an artifact from the list, or ask a question to generate one.",
+      "emptyReaderTalk": "Talk to the assistant on the left to generate a research note.",
+      "emptyReaderTalkSub": "Ask your question; the assistant writes the note, cites its sources, and opens it here.",
       "openSource": "Research assistant",
       "openSubtitle": "Queries the corpus · cites its sources"
     },
     "artefacts": {
       "title": "Research artifacts",
-      "new": "New note",
       "search": "Search a note…",
-      "empty": "No notes yet.",
+      "empty": "No notes yet. Ask the assistant a question to generate one.",
       "noMatch": "No results.",
       "count": "{count, plural, =0 {No artifacts} one {# artifact} other {# artifacts}}",
-      "meta": "{count, plural, =0 {no refs} one {# ref} other {# refs}} · {time}"
+      "meta": "{count, plural, =0 {no refs} one {# ref} other {# refs}} · {time}",
+      "loadError": "Could not load the notes.",
+      "retry": "Retry"
     },
     "noteLink": {
       "open": "Open note “{label}”",
@@ -641,7 +643,6 @@
     "atelier": {
       "chatTab": "Conversation",
       "noteTab": "Note",
-      "newNote": "New note",
       "viewInCarnet": "View notebook",
       "noNotes": "No notes yet.",
       "closeTab": "Close",
@@ -657,11 +658,6 @@
       "compiledHeader": "Research notebook · {count, plural, =0 {no notes} one {# note} other {# notes}}",
       "export": "Export as Markdown",
       "empty": "No notes in this notebook."
-    },
-    "note": {
-      "titlePlaceholder": "Note title",
-      "bodyPlaceholder": "Write your note…",
-      "create": "Create note"
     }
   },
   "citations": {
@@ -678,36 +674,129 @@
       "usages": "Used in other notes"
     }
   },
-  "notes": {
-    "edit": {
-      "titleLabel": "Title",
-      "bodyLabel": "Content",
-      "save": "Save",
-      "saving": "Saving…"
-    }
-  },
   "ingest": {
     "failures": {
       "tile": "{count, plural, =0 {No failures} one {# failure} other {# failures}}"
     },
-    "summary": {
-      "title": "Ingestion state",
-      "head": "Current version",
-      "ingested": "Last ingested",
-      "neverIngested": "Never ingested",
-      "delta": "Delta",
-      "added": "{count} to add",
-      "removed": "{count} to remove",
-      "excluded": "{count, plural, =0 {} one {# non-ingestable document excluded} other {# non-ingestable documents excluded}}",
-      "paidOcr": "{count, plural, one {# digitized document with no OCR layer} other {# digitized documents with no OCR layer}}",
-      "paidOcrCost": "On-demand OCR · ≈ ${cost} to the platform",
-      "paidOcrBudget": "Platform budget: ${spent} / ${ceiling} used",
-      "paidOcrInclude": "Include OCR",
-      "paidOcrIncluded": "OCR included ✓",
-      "paidOcrOverBudget": "Cost exceeds the platform budget (${ceiling}): OCR unavailable. The other documents will be ingested normally.",
-      "submit": "Start ingestion",
-      "submitWithOcr": "Start ingestion + OCR",
-      "submitting": "Submitting…"
+    "panel": {
+      "eyebrow": "Step 2 · Prepare the research",
+      "error": {
+        "submit": "Starting the ingestion failed. Please retry.",
+        "retry": "Retrying the failed documents failed. Please retry.",
+        "cancel": "Cancellation failed. Please retry.",
+        "pollTitle": "Live tracking unavailable",
+        "pollBody": "Could not fetch the processing status right now. Processing continues on the server.",
+        "pollRetry": "Retry"
+      },
+      "title": {
+        "empty": "Nothing is consultable yet",
+        "pending": "Documents are waiting to be added",
+        "uptodate": "Your research is up to date",
+        "running": "Preparation in progress",
+        "done": "Your documents are consultable",
+        "failed": "Preparation finished, a few documents failed"
+      },
+      "lead": {
+        "empty": "Your {added, number} selected documents must first be prepared: the assistant can only read prepared documents.",
+        "pending": "Your research already works. This action adds the documents you have added since last time.",
+        "uptodate": "Every document in your selection is already consultable by the assistant. There is nothing to do here.",
+        "running": "There is nothing for you to do. Here is where the processing stands.",
+        "done": "The research assistant can now read and cite these documents.",
+        "failed": "Most documents were added. A few could not be fetched from the BnF."
+      },
+      "already": {
+        "eyebrow": "In your research",
+        "suffix": "{count, plural, one {consultable document} other {consultable documents}}",
+        "sub": "The assistant can already read and cite them in its notes.",
+        "subNone": "The research assistant cannot read anything in this project yet."
+      },
+      "action": {
+        "eyebrow": "What this action will do",
+        "suffix": "{count, plural, one {document added} other {documents added}}",
+        "subEmpty": "Your whole selection will be prepared in one go.",
+        "subPending": "Only these documents will be processed — the others stay in place.",
+        "removed": "{count, plural, one {# document removed from your selection will no longer be consultable} other {# documents removed from your selection will no longer be consultable}}.",
+        "excluded": "{excluded, number} documents cannot be added: {noText, number} with no readable text, {noScan, number} not digitized at the BnF."
+      },
+      "running": {
+        "eyebrow": "What is happening now",
+        "generic": "Preparation in progress…",
+        "phaseStep": "Phase {step, number} of {total, number}",
+        "progress": "{done, number} of {total, number} documents prepared",
+        "eta": "{eta} left",
+        "etaComputing": "estimating…",
+        "etaLtMin": "less than a minute",
+        "etaMin": "≈ {min} min",
+        "etaHours": "≈ {hours} h",
+        "etaHoursMinutes": "≈ {hours} h {minutes} min",
+        "queueAhead": "{count, number} folios are ahead of you: another preparation shares the BnF rate limit.",
+        "serverNote": "Processing continues server-side. You can close the page and come back later.",
+        "detailsToggle": "Details",
+        "detailsTag": "processing queues"
+      },
+      "phases": {
+        "notices": "Reading catalogue records",
+        "fetch": "Fetching pages from the BnF",
+        "describe": "Describing images",
+        "prepare": "Preparing the text",
+        "index": "Indexing"
+      },
+      "uptodateNotice": {
+        "title": "No new document to add",
+        "body": "Come back here only after adding documents in step 1."
+      },
+      "doneNotice": {
+        "title": "{count, plural, one {# document added to your research} other {# documents added to your research}}",
+        "body": "Nothing else to do here.",
+        "bodyRemoved": "{count, plural, one {# removed document is no longer consultable} other {# removed documents are no longer consultable}}. Nothing else to do here."
+      },
+      "failedNotice": {
+        "ok": "The documents that were fetched have been added and are consultable right now.",
+        "fail": "Some documents could not be fetched from the BnF (service temporarily unavailable). Retrying only reprocesses those."
+      },
+      "cta": {
+        "empty": "Prepare my documents",
+        "pending": "Add these {count, number} documents",
+        "uptodate": "Go to research",
+        "runningConsult": "Consult the documents already ready",
+        "done": "Go to research",
+        "retry": "Retry the failed documents",
+        "toResearchAnyway": "Go to research anyway",
+        "interrupt": "Stop",
+        "submitting": "Submitting…"
+      },
+      "ctaHint": {
+        "empty": "About 3 h, in the background.",
+        "pending": "The {count, number} documents already present are not reprocessed."
+      },
+      "advanced": {
+        "toggle": "Advanced options",
+        "toggleTag": "paid OCR",
+        "title": "Have documents without text read",
+        "explain": "{count, plural, one {# text document in your selection has no readable text} other {# text documents in your selection have no readable text}}. A paid OCR service can make them consultable.",
+        "docsLabel": "Documents concerned",
+        "costLabel": "Estimated cost",
+        "cost": "≈ ${cost}",
+        "enable": "Enable",
+        "enabled": "OCR included ✓",
+        "overBudget": "Cost exceeds the budget (${ceiling})",
+        "footnote": "Billed per page, outside your subscription. Off by default.",
+        "budget": "Platform budget: ${spent} / ${ceiling} used"
+      },
+      "tech": {
+        "toggle": "Technical details",
+        "toggleTag": "for operators",
+        "added": "Documents to add",
+        "removed": "Documents to remove",
+        "excluded": "Excluded documents",
+        "excludedValue": "{excluded, number} ({noText, number} no OCR · {noScan, number} not digitized)",
+        "phasesInternal": "Internal phases",
+        "phasesValue": "metadata → fetch_folios → vision_describe → chunk+embed → index",
+        "target": "Index target",
+        "targetValue": "BnF RAG cluster",
+        "processed": "Documents processed",
+        "processedValue": "{done, number} / {total, number}"
+      }
     },
     "paidOcr": {
       "confirmTitle": "On-demand OCR",
@@ -718,36 +807,6 @@
       "budgetTitle": "OCR budget exceeded",
       "budgetBody": "This transcription (~${cost}) would exceed the project's OCR budget (already spent ${spent} of a ${ceiling} cap).",
       "close": "Close"
-    },
-    "stages": {
-      "extract": "OCR extraction",
-      "chunk": "Semantic chunking",
-      "embed": "Embedding",
-      "index": "Indexing"
-    },
-    "stageDesc": {
-      "extract": "Text extraction (OCR)",
-      "chunk": "Semantic chunking of documents",
-      "embed": "Computing embeddings",
-      "index": "Indexing into the RAG cluster"
-    },
-    "pipeline": {
-      "title": "Ingestion in progress",
-      "target": "Target",
-      "targetValue": "BnF RAG cluster",
-      "overall": "Overall progress",
-      "pending": "Pending",
-      "skipped": "Skipped",
-      "eta": "Est. time remaining",
-      "etaComputing": "estimating…",
-      "outcomes": {
-        "ingested": "{count} ingested",
-        "retrying": "{count} retrying",
-        "skipped": "{count} skipped",
-        "failed": "{count} failed",
-        "excluded": "{count} not ingestable",
-        "removed": "{count} removed"
-      }
     },
     "queue": {
       "title": "Processing",
@@ -797,20 +856,6 @@
       "confirmBody": "Processing will be stopped on the cluster…",
       "confirm": "Confirm",
       "dismiss": "Keep running"
-    },
-    "comeBackLater": {
-      "title": "Processing in progress",
-      "body": "Processing continues server-side. You can close the page and return later."
-    },
-    "completion": {
-      "title": "Corpus ingested",
-      "body": "Your corpus is indexed and ready to query. Start researching to ask your questions.",
-      "cta": "Go to research"
-    },
-    "retry": {
-      "title": "Ingestion incomplete",
-      "body": "Some documents could not be ingested. You can re-run only the failed documents.",
-      "button": "Retry failed documents"
     }
   },
   "models": {

@@ -154,6 +154,12 @@ export const CORPUS_REASON_MAX_LEN = 1_000
  */
 export const PROJECTS_INITIAL_VERSION_SEQ = 1
 
+/**
+ * Minimum width (%) the Ingérer progress bar renders once a run is live, so a
+ * just-started job never shows an empty bar. See CardIngestPanel's running mode.
+ */
+export const INGEST_PROGRESS_MIN_PCT = 2
+
 // ---------------------------------------------------------------------------
 // Chat streaming presentation
 // ---------------------------------------------------------------------------

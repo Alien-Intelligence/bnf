@@ -21,7 +21,6 @@ import { LayoutSessionsSidebar } from "@/components/layouts/corpus/sessions-side
 import { CardNotesPicker } from "@/components/cards/notes/picker"
 import { LayoutResearchEspace } from "@/components/layouts/research/espace"
 import { SheetCitationSource } from "@/components/sheets/citations/source"
-import { DialogNewNote } from "@/components/dialogs/notes/create"
 import { DialogOnboardingResearch } from "@/components/dialogs/onboarding/research"
 import { useMarkOnboardingSeen } from "@/hooks/api/onboarding"
 import { ONBOARDING_INTRO } from "@/models/onboarding/schema"
@@ -119,9 +118,8 @@ export function RechercherClient({
     }
   }
 
-  // ── Citation source panel + new-note dialog ─────────────────────────────────
+  // ── Citation source panel ───────────────────────────────────────────────────
   const [selectedCitation, setSelectedCitation] = useState<ParsedCitation | null>(null)
-  const [newNoteOpen, setNewNoteOpen] = useState(false)
   const onCitationClick = (c: ParsedCitation) => setSelectedCitation(c)
 
   const qc = useQueryClient()
@@ -216,7 +214,6 @@ export function RechercherClient({
                 projectId={projectId}
                 activeNoteId={activeNoteId}
                 onOpenNote={openNote}
-                onNewNote={() => setNewNoteOpen(true)}
                 initialNotes={initialNotes}
               />
             }
@@ -240,7 +237,6 @@ export function RechercherClient({
             onDispositionChange={setDisposition}
             clusterId={clusterId}
             docCount={docCount}
-            onOpenNewNote={() => setNewNoteOpen(true)}
             onCitationClick={onCitationClick}
             onNoteLinkClick={openNote}
             onOpenHelp={() => setIntroOpen(true)}
@@ -262,13 +258,6 @@ export function RechercherClient({
         onOpenChange={(o) => {
           if (!o) setSelectedCitation(null)
         }}
-      />
-
-      <DialogNewNote
-        open={newNoteOpen}
-        onOpenChange={setNewNoteOpen}
-        projectId={projectId}
-        onCreated={(noteId) => openNote(noteId)}
       />
     </div>
   )

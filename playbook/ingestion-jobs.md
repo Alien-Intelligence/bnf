@@ -35,8 +35,13 @@ extract → chunk → embed → index → commit
 ```
 
 `commit` is internal to this app (advance pointers, mark version `ingested`).
-The four stages above are what the UI shows (matches the prototype's
-four-row pipeline view).
+These four stages are the **backend/callback contract** (`IngestStage`, the
+`progress_cb` vocabulary, `IngestStatusResponse.stages`). They are NOT what the
+UI renders any more — see "UX during a long job" below. The worker-v2 live
+queue read-model (`ClusterQueueProgress`) superseded the prototype's four-row
+bars, and the de-geekified panel narrates a single librarian-facing phase over
+that read-model. Keep the two separate: the callback stages are an integration
+contract; the UI phase vocabulary (`INGEST_PHASE_KEYS`) is presentation.
 
 ## The job submit flow
 
@@ -200,21 +205,34 @@ export type IngestStatusResponse = {
 ```
 
 The `stages[]` array always has four entries in fixed order (extract, chunk,
-embed, index) so the UI always renders all four rows. A stage not yet started
-is `{ status: "pending", fraction: 0 }`.
+embed, index). This is the poll-response contract; it is not rendered directly
+(the panel reads the richer `ClusterQueueProgress` queue read-model instead). A
+stage not yet started is `{ status: "pending", fraction: 0 }`.
 
 ## UX during a long job — "come back later"
 
-While `status = running`, the Ingest page shows:
-- The four-row pipeline (`CardIngestStagePipeline`) with live fractions.
-- A banner — "Le traitement continue côté serveur. Vous pouvez revenir plus
-  tard." — implemented as `<AlertIngestComeBackLater />`.
-- The current overall percent and the ETA when available.
+The Ingérer step is **one component**, `CardIngestPanel`
+(`components/cards/ingest/panel.tsx`), with six modes derived from the active
+job + delta preview (`deriveMode`): `empty`, `pending`, `uptodate`, `running`,
+`done`, `failed`. It answers three librarian questions in plain French — what is
+already consultable, what this action will do, what is happening now — and hides
+engineering vocabulary behind two disclosures. Do NOT reintroduce the old
+`summary` / `queue-status` / `come-back-later` / `completion` / `retry-failed`
+cards; those states are modes of this panel.
 
-When `status = done`, the page swaps to a completion state that hands off
-to Research (`<CardIngestComplete />` with a CTA to `ROUTES.rechercher(projectId)`).
+While `mode = running`, the panel shows:
+- **One narrated phase** (from `INGEST_PHASE_KEYS`, mapped off the live queue
+  read-model by `currentPhaseIndex`) with a single progress bar + ETA — NOT the
+  four backend stages, and NOT the raw per-bucket telemetry.
+- A reassurance banner — "Le traitement continue côté serveur…".
+- A collapsed **"Détails"** accordion holding the full live per-queue telemetry
+  (`CardIngestQueueDetail`) for debugging/operators — demoted, not deleted.
 
-On `failed`, an `AlertIngestFailed` shows the error and offers retry.
+`done` / `failed` are notice modes of the same panel; the primary CTA hands off
+to Research (`ROUTES.rechercher(projectId)`) or retries the failed documents.
+Raw operator counters (delta, excluded split, processed) live behind a
+collapsed **"Détails techniques"** disclosure; paid OCR behind **"Options
+avancées"**. See `playbook/ui-states.md` §Ingestion.
 
 ## One active ingest per project (🔶 recommended)
 

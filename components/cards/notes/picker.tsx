@@ -10,9 +10,10 @@
 // (agent-authored notes appear after a turn) without a second source of truth.
 
 import { useMemo, useState } from "react"
-import { Plus, Search } from "lucide-react"
+import { Search } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { useNotes } from "@/hooks/api/notes"
+import { Button } from "@/components/ui/button"
 import { CardNoteListItem } from "./list-item"
 import type { NoteListItem } from "@/models/notes/schema"
 
@@ -20,7 +21,6 @@ interface CardNotesPickerProps {
   projectId: string
   activeNoteId: string | null
   onOpenNote: (id: string) => void
-  onNewNote: () => void
   initialNotes?: NoteListItem[]
 }
 
@@ -28,13 +28,14 @@ export function CardNotesPicker({
   projectId,
   activeNoteId,
   onOpenNote,
-  onNewNote,
   initialNotes,
 }: CardNotesPickerProps) {
   const t = useTranslations("research.artefacts")
   const [query, setQuery] = useState("")
 
-  const { data: notes } = useNotes(projectId, { initialData: initialNotes })
+  const { data: notes, isError, refetch } = useNotes(projectId, {
+    initialData: initialNotes,
+  })
 
   const filtered = useMemo(() => {
     const all = notes ?? []
@@ -47,19 +48,11 @@ export function CardNotesPicker({
 
   return (
     <div className="flex min-h-[148px] flex-1 flex-col border-t">
-      {/* Header — eyebrow + new note */}
+      {/* Header — eyebrow + search. No new-note button: notes are agent-authored
+          (see item 8 of the ingestion-and-notes-ux plan). */}
       <div className="shrink-0 px-3.5 pb-2 pt-3">
-        <div className="mb-2 flex items-center justify-between">
+        <div className="mb-2 flex items-center">
           <span className="mono-eyebrow">{t("title")}</span>
-          <button
-            type="button"
-            onClick={onNewNote}
-            title={t("new")}
-            aria-label={t("new")}
-            className="flex size-5.5 items-center justify-center rounded-md border bg-card text-neutral-300 transition-colors hover:border-brand-teal/45 hover:text-brand-teal"
-          >
-            <Plus className="size-3.5" />
-          </button>
         </div>
         <div className="flex h-7.5 items-center gap-2 rounded-md border border-input bg-input/30 px-2.5">
           <Search className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
@@ -74,7 +67,21 @@ export function CardNotesPicker({
 
       {/* List */}
       <div className="flex-1 overflow-y-auto px-2 pb-2.5">
-        {filtered.length === 0 ? (
+        {isError && total === 0 ? (
+          // A failed fetch must be distinguishable from a genuinely empty list —
+          // show a retriable error, never a silent "no notes" (ui-states §Error).
+          <div className="flex flex-col items-center gap-2 px-2 py-4 text-center">
+            <p className="text-xs text-muted-foreground">{t("loadError")}</p>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-6 text-[11px]"
+              onClick={() => void refetch()}
+            >
+              {t("retry")}
+            </Button>
+          </div>
+        ) : filtered.length === 0 ? (
           <p className="px-2 py-4 text-center text-xs text-muted-foreground">
             {total === 0 ? t("empty") : t("noMatch")}
           </p>
