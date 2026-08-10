@@ -25,6 +25,9 @@ const eslintConfig = defineConfig([
     "lib/generated/**",
     "design/**",
     "sandbox/**",
+    // Local SDK dev link (yalc): a built third-party package copied into the
+    // tree — never our source to lint.
+    ".yalc/**",
   ]),
 ]);
 

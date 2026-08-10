@@ -494,7 +494,11 @@
       "removed": "−{count} documents · v{versionSeq}",
       "memoryWrite": "Memory updated · {section}",
       "ingestSubmitted": "Ingestion submitted · {status}",
-      "openIngest": "Open Ingest"
+      "openIngest": "Open Ingest",
+      "subagentStart": "Research sub-agent running…",
+      "subagentDone": "Sub-agent finished · {toolCalls} tool calls",
+      "subagentDoneBuffered": "Sub-agent finished · {buffered} candidates staged in the buffer · {toolCalls} tool calls",
+      "compaction": "Conversation condensed · {count} earlier messages summarized to free context"
     }
   },
   "memory": {

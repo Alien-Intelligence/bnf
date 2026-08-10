@@ -59,6 +59,12 @@ export const AGENT_TOOLS = {
   // selections come back as the next user message. See lib/agent/tools/interaction.ts.
   askUser: "ask_user",
 
+  // --- Sub-agent tools --------------------------------------------------------
+  // Runs a bounded child agent loop in an ISOLATED context and returns only a
+  // distilled result — heavy sweeps stage into the buffer / gather via RAG
+  // without flooding the parent context window. See lib/agent/tools/spawn.ts.
+  spawnResearch: "spawn_research",
+
   // --- BnF MCP tools (prefixed by the MCP server name "bnf") -----------------
   // These are NOT registered via defineTool — they come from the MCP server.
   // Listed here so the prompt-builder and the SSE event labels can reference

@@ -2,8 +2,7 @@ import "server-only"
 
 import { createToolRegistry, type ToolContext } from "@alien/chat-sdk/claude"
 import { prisma } from "@/lib/db"
-import { requireMcpEnv } from "@/lib/env"
-import { openMcpSession } from "@/lib/mcp/session"
+import { resolveMcpServers } from "./mcp-servers"
 import { toolsForScope } from "./index"
 import type { User } from "@/lib/generated/prisma/client"
 
@@ -92,30 +91,7 @@ export async function buildTurnScopedRegistry(scope: "corpus" | "research", sign
   // session handshake fails (server down) — the app-defined corpus/memory/
   // ingest tools still work; the agent just has no BnF search capability for
   // this turn. Never crash the dev server.
-  let mcpServers: { name: string; url: string; headers: Record<string, string> }[] = []
-  try {
-    const mcpEnv = requireMcpEnv()
-    // The BnF MCP runs stateless (no session). We still run the `initialize`
-    // handshake for forward-compat with a stateful server: if it returns a
-    // session id we thread it back as a header so the chat-sdk's (session-blind)
-    // client echoes it on every tools/list + tools/call; if it returns null we
-    // omit the header entirely. See lib/mcp/session.ts.
-    const sessionId = await openMcpSession(
-      mcpEnv.BNF_MCP_URL,
-      mcpEnv.BNF_MCP_TOKEN,
-      signal,
-    )
-    const headers: Record<string, string> = {
-      Authorization: `Bearer ${mcpEnv.BNF_MCP_TOKEN}`,
-    }
-    if (sessionId) headers["Mcp-Session-Id"] = sessionId
-    mcpServers = [{ name: "bnf", url: mcpEnv.BNF_MCP_URL, headers }]
-  } catch (err) {
-    console.warn(
-      "[registry-factory] BnF MCP unavailable — agent has no BnF search " +
-        `tools for this turn: ${err instanceof Error ? err.message : String(err)}`,
-    )
-  }
+  const mcpServers = await resolveMcpServers(signal)
 
   // NOTE: ToolCall persistence is intentionally NOT done via registry lifecycle
   // hooks. The SDK's TurnRuntime owns it — it wraps `registry.dispatch` and

@@ -27,7 +27,12 @@ import {
   AGENT_DEFAULT_MODEL,
   AGENT_MAX_ITERATIONS,
   OPENROUTER_APP_NAME,
+  COMPACTION_ENABLED,
+  COMPACTION_TRIGGER_RATIO,
+  COMPACTION_KEEP_RECENT_MESSAGES,
+  COMPACTION_CONTEXT_WINDOW_TOKENS,
 } from "@/lib/constants"
+import { summarizeForCompaction } from "@/lib/agent/compaction-summarizer"
 import { AgentQueries } from "@/models/agents/queries"
 import { AgentPolicy } from "@/models/agents/policy"
 import { AgentService } from "@/models/agents/service"
@@ -136,6 +141,18 @@ const handler = createChatHandler<TurnScopedCtx>({
         metadata: { projectId: session.projectId, appSessionId: session.id },
       }
     },
+  },
+  // Auto-compaction (agent-context-survival Slice 2): fold the oldest turns of a
+  // long session into a Haiku-class synopsis before each dispatch, keeping the
+  // conversation under the context window. Checkpoint persists on AppSession via
+  // the Prisma adapter (load/saveCheckpoint); the summariser preserves ARKs /
+  // folios / note-ids. Degrades to the full history on any failure.
+  compaction: {
+    enabled: COMPACTION_ENABLED,
+    triggerRatio: COMPACTION_TRIGGER_RATIO,
+    keepRecentMessages: COMPACTION_KEEP_RECENT_MESSAGES,
+    contextWindowTokens: COMPACTION_CONTEXT_WINDOW_TOKENS,
+    summarize: summarizeForCompaction,
   },
 })
 
