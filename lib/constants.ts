@@ -445,6 +445,27 @@ export const AGENT_DEFAULT_MODEL: AgentModelId = AGENT_AVAILABLE_MODELS[0].id
 export const AGENT_MAX_ITERATIONS = 100
 
 // ---------------------------------------------------------------------------
+// Generalist sub-agents (spawn_research) — see agent-context-survival plan
+// ---------------------------------------------------------------------------
+
+/** Tool-loop ceiling for a spawned sub-agent's OWN loop. Lower than the parent
+ * (AGENT_MAX_ITERATIONS): a sub-agent runs a focused sweep, not an open-ended
+ * conversation, and its work is bounded so a stalled child cannot burn the
+ * parent's turn. (CLAUDE_ERROR_PATTERNS §14: no unbounded loops.) */
+export const SPAWN_MAX_TOOL_TURNS = 40
+
+/** Wall-clock ceiling for a single spawn_research child. On expiry the child's
+ * AbortController fires and the handler returns a clean tool-result (never
+ * throws / never hangs the parent turn — §14/§15). */
+export const SPAWN_TIMEOUT_MS = 240_000
+
+/** Cap on concurrent/total sub-agent tokens is implicit via the two bounds
+ * above; the child text returned to the parent is truncated to this many chars
+ * so a verbose child cannot re-flood the parent context (the whole point of
+ * isolation). */
+export const SPAWN_SUMMARY_MAX_CHARS = 8_000
+
+// ---------------------------------------------------------------------------
 // Session auto-naming
 // ---------------------------------------------------------------------------
 

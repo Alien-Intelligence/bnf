@@ -44,6 +44,7 @@ import { StreamingMarkdown } from "./streaming-markdown"
 import { ModelSelector } from "./model-selector"
 import { EventMemoryRow } from "@/components/events/agent/memory-event"
 import { EventIngestRow } from "@/components/events/agent/ingest-event"
+import { EventSubagentRow } from "@/components/events/agent/subagent-event"
 import { FeedbackButton } from "@/components/cards/feedback/feedback-button"
 import type { AgentProvider } from "@/lib/constants"
 
@@ -227,6 +228,17 @@ function DomainPartView({
         status={event.data.status ?? event.data.kind}
         jobId={event.data.jobId}
         projectLocaleHref={`/${locale}/projects/${projectId}/ingerer`}
+      />
+    )
+  }
+  if (event.type === "subagent_event") {
+    return event.data.kind === "start" ? (
+      <EventSubagentRow kind="start" />
+    ) : (
+      <EventSubagentRow
+        kind="done"
+        toolCalls={event.data.toolCalls}
+        buffered={event.data.buffered}
       />
     )
   }

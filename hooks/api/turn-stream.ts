@@ -62,6 +62,12 @@ export type StreamDomainEvent =
       type: "buffer_event"
       data: { kind: "added" | "removed" | "committed" | "cleared"; count: number; total: number }
     }
+  | {
+      type: "subagent_event"
+      data:
+        | { kind: "start"; scope: "corpus" | "research" }
+        | { kind: "done"; scope: "corpus" | "research"; toolCalls: number; buffered?: number }
+    }
 
 export type UseTurnStreamResult = {
   messages: StreamMessage[]
@@ -89,6 +95,7 @@ const DOMAIN_EVENT_TYPES = new Set([
   "ingest_event",
   "note_event",
   "buffer_event",
+  "subagent_event",
 ])
 
 function joinText(parts: AgentPart[]): string {

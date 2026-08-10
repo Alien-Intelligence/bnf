@@ -494,7 +494,10 @@
       "removed": "−{count} documents · v{versionSeq}",
       "memoryWrite": "Mémoire mise à jour · {section}",
       "ingestSubmitted": "Ingestion soumise · {status}",
-      "openIngest": "Ouvrir Ingérer"
+      "openIngest": "Ouvrir Ingérer",
+      "subagentStart": "Sous-agent de recherche en cours…",
+      "subagentDone": "Sous-agent terminé · {toolCalls} appels d'outils",
+      "subagentDoneBuffered": "Sous-agent terminé · {buffered} candidats déposés dans le tampon · {toolCalls} appels d'outils"
     }
   },
   "memory": {

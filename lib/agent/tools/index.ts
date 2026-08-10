@@ -15,6 +15,7 @@ export { ragTools } from "./rag"
 export { noteTools } from "./note"
 export { docTools } from "./doc"
 export { interactionTools } from "./interaction"
+export { spawnTools } from "./spawn"
 
 import { corpusTools } from "./corpus"
 import { bufferTools } from "./buffer"
@@ -24,12 +25,15 @@ import { ragTools } from "./rag"
 import { noteTools } from "./note"
 import { docTools } from "./doc"
 import { interactionTools } from "./interaction"
+import { spawnTools } from "./spawn"
 
 /**
  * The app-defined tools available in EVERY session regardless of scope: project
- * memory (durable facts) and the interaction/ask_user primitive.
+ * memory (durable facts), the interaction/ask_user primitive, and the
+ * spawn_research sub-agent (both a corpus sweep and a research fan-out can be
+ * delegated). The child registry excludes spawn_research → no recursion.
  */
-const sharedTools = [...memoryTools, ...interactionTools]
+const sharedTools = [...memoryTools, ...interactionTools, ...spawnTools]
 
 /**
  * Compose the app-defined `defineTool` handlers for a session scope — the
