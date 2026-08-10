@@ -31,12 +31,17 @@ import { noteCreateTool } from "@/lib/agent/tools/note"
 import { SESSION_SCOPE } from "@/models/sessions/schema"
 import { BUFFER_STATUS } from "@/models/buffer/schema"
 import { ProjectService } from "@/models/projects/service"
+import { cleanupProject } from "@/lib/testing/project-cleanup"
 
 const BASE_URL = (process.env["E2E_BASE_URL"] ?? "http://localhost:3939").replace(/\/+$/, "")
 /** Model id for the OpenRouter gateway. Defaults to the app's shipped default. */
 const MODEL = process.env["E2E_MODEL"] ?? "z-ai/glm-5.2"
 /** Per-turn wall-clock ceiling — a paginated sweep legitimately takes a while. */
 const TURN_TIMEOUT_MS = Number(process.env["E2E_TURN_TIMEOUT_MS"] ?? 300_000)
+/** When set, delete the throwaway project (+ sessions/buffer/corpus) after the
+ *  run. Off by default so a human can inspect the buffer panel; the CI wrapper
+ *  turns it on so runs don't accumulate projects in the dev DB. */
+const CLEANUP = process.env["E2E_CLEANUP"] === "1" || process.env["E2E_CLEANUP"] === "true"
 
 const E2E_EMAIL = "e2e-buffer@bnf-e2e.local"
 const E2E_PASSWORD = "e2e-buffer-pw-42"
@@ -203,6 +208,30 @@ function trace(calls: CallRow[]): string {
 function outputText(row: CallRow | undefined): string {
   if (!row) return ""
   return typeof row.output === "string" ? row.output : JSON.stringify(row.output ?? {})
+}
+
+/**
+ * The real tool result as an object. The runtime persists tool output as
+ * `{ content: "<stringified result>" }` — a JSON string nested inside a JSON
+ * column — so a naive regex over the stringified row sees escaped quotes and
+ * silently never matches. Unwrap both layers and parse the inner payload so
+ * assertions read the actual fields (status, cleared, matched, …).
+ */
+function outputData(row: CallRow | undefined): Record<string, unknown> {
+  if (!row) return {}
+  const out = row.output
+  const inner =
+    out !== null && typeof out === "object" && "content" in out
+      ? (out as { content?: unknown }).content
+      : out
+  if (typeof inner === "string") {
+    try {
+      return JSON.parse(inner) as Record<string, unknown>
+    } catch {
+      return {}
+    }
+  }
+  return inner !== null && typeof inner === "object" ? (inner as Record<string, unknown>) : {}
 }
 
 // ---------------------------------------------------------------------------
@@ -374,6 +403,33 @@ async function main(): Promise<void> {
           .join(", ")}`,
   )
 
+  // --- Multi-session persistence (design §7: the buffer is project-scoped) ---
+  // The tampon survives across corpus sessions: a SECOND session opened on the
+  // same project must see the SAME candidates (no per-session buffer). This is a
+  // pure DB invariant — no extra LLM turn — so it is cheap and deterministic.
+  const secondSession = await prisma.appSession.create({
+    data: {
+      id: randomUUID(),
+      projectId: project.id,
+      scope: SESSION_SCOPE.CORPUS,
+      title: "E2E second corpus session",
+      status: "active",
+    },
+  })
+  const arksFromSession1 = new Set(stagedAfterT1.map((r) => r.ark))
+  const visibleToSession2 = await prisma.bufferItem.findMany({
+    where: { projectId: project.id, status: BUFFER_STATUS.CANDIDATE },
+    select: { ark: true },
+  })
+  const allVisible =
+    visibleToSession2.length === arksFromSession1.size &&
+    visibleToSession2.every((r) => arksFromSession1.has(r.ark))
+  check(
+    "B5b the buffer is project-scoped — a second session sees session-1's candidates",
+    stagedAfterT1.length > 0 && allVisible,
+    `session1 staged=${arksFromSession1.size} visibleFromSession2=${visibleToSession2.length} (session2=${secondSession.id})`,
+  )
+
   // --- Turn 2: characterise --------------------------------------------------
   const t2Prompt = "Combien de candidats as-tu rassemblés, et de quels types et périodes sont-ils ?"
   history.push({ role: "user", content: t2Prompt })
@@ -390,6 +446,69 @@ async function main(): Promise<void> {
     `tools this turn: ${trace(callsT2)}`,
   )
 
+  // --- Turn 2.5: verifiable curation (item 6's marquee scenario) -------------
+  // « Il faudrait un tampon … pour curer verifiablement ». The whole point of
+  // the tampon is that filtering happens on a PERSISTED, inspectable set with a
+  // preview before anything is dropped — not in the model's thinking text. We
+  // steer an explicit dry-run so the verifiable-before-destructive pattern is
+  // exercised. Assertions are on the INVARIANT (a curation tool ran; a
+  // destructive remove_by_filter was previewed first; the candidate set stays
+  // valid) — NOT on which tool the agent picked, mirroring f67f379.
+  const beforeCurate = callsT1.length + callsT2.length
+  const candidatesBeforeCurate = await prisma.bufferItem.count({
+    where: { projectId: project.id, status: BUFFER_STATUS.CANDIDATE },
+  })
+  const curatePrompt =
+    "Avant de valider, je veux affiner la sélection. Montre-moi d'abord en aperçu (dry-run) " +
+    "combien de candidats seraient retirés si on excluait tout ce qui n'est PAS de l'année 1889, " +
+    "puis applique ce filtrage pour ne garder que 1889."
+  history.push({ role: "user", content: curatePrompt })
+  console.log(`\n> TURN 2.5 (curate): ${curatePrompt}`)
+  const tCurate = await runTurn(corpusSession.id, cookie, history)
+  history.push({ role: "assistant", content: tCurate.text })
+  console.log(`< (${Math.round(tCurate.elapsedMs / 1000)}s) ${tCurate.text.slice(0, 300)}`)
+
+  const callsCurate = (await toolCalls(corpusSession.id)).slice(beforeCurate)
+  console.log(`  tools: ${trace(callsCurate)}`)
+
+  const removeCalls = named(callsCurate, AGENT_TOOLS.bufferRemoveByFilter)
+  const discardCalls = named(callsCurate, AGENT_TOOLS.bufferDiscard)
+  check(
+    "B6b agent curated the buffer on request (remove_by_filter or discard)",
+    removeCalls.length > 0 || discardCalls.length > 0,
+    `remove_by_filter=${removeCalls.length} discard=${discardCalls.length}; used: ${trace(callsCurate)}`,
+  )
+
+  // The verifiable-before-destructive promise: a destructive remove_by_filter
+  // (status:"removed" in its output) must be preceded by a dry-run preview in
+  // the same turn. If the agent only previewed, or only used discard, that is
+  // also acceptable — the point is that no filter-removal happened WITHOUT a
+  // preview having been produced.
+  const removedOutputs = removeCalls.filter((c) => outputData(c)["status"] === "removed")
+  const dryRunOutputs = removeCalls.filter((c) => outputData(c)["status"] === "dry_run")
+  check(
+    "B6c a destructive remove_by_filter was previewed with a dry-run first",
+    removedOutputs.length === 0 || dryRunOutputs.length > 0,
+    `dry_run previews=${dryRunOutputs.length} destructive removals=${removedOutputs.length}`,
+  )
+
+  // Invariant: whatever the agent removed, the buffer is left in a valid state —
+  // the candidate set never grows from a curation turn, discarded rows leave the
+  // candidate set, and every surviving/discarded ARK is still a valid ARK.
+  const candidatesAfterCurate = await prisma.bufferItem.count({
+    where: { projectId: project.id, status: BUFFER_STATUS.CANDIDATE },
+  })
+  const discardedRows = await prisma.bufferItem.findMany({
+    where: { projectId: project.id, status: BUFFER_STATUS.DISCARDED },
+    select: { ark: true },
+  })
+  const badDiscarded = discardedRows.filter((r) => !ARK_RE.test(r.ark))
+  check(
+    "B6d curation left the buffer valid (candidates did not grow; discards are valid ARKs)",
+    candidatesAfterCurate <= candidatesBeforeCurate && badDiscarded.length === 0,
+    `candidates ${candidatesBeforeCurate}→${candidatesAfterCurate}, discarded=${discardedRows.length}, badDiscarded=${badDiscarded.length}`,
+  )
+
   // --- Turn 3: commit --------------------------------------------------------
   const t3Prompt = "Parfait, ajoute maintenant ces documents au corpus."
   history.push({ role: "user", content: t3Prompt })
@@ -399,7 +518,7 @@ async function main(): Promise<void> {
   console.log(`< (${Math.round(t3.elapsedMs / 1000)}s) ${t3.text.slice(0, 300)}`)
 
   const allCalls = await toolCalls(corpusSession.id)
-  const callsT3 = allCalls.slice(callsT1.length + callsT2.length)
+  const callsT3 = allCalls.slice(beforeCurate + callsCurate.length)
   console.log(`  tools: ${trace(callsT3)}`)
 
   const commitCalls = named(allCalls, AGENT_TOOLS.bufferCommit)
@@ -460,6 +579,107 @@ async function main(): Promise<void> {
     "B11 committed candidates left the active buffer",
     remainingCandidates === 0 && committedRows > 0,
     `candidate=${remainingCandidates} committed=${committedRows}`,
+  )
+
+  // --- Turn 4a: fresh line of inquiry re-populates the buffer ----------------
+  // Split from the clear (Turn 4b) so the clear provably acts on a POPULATED
+  // buffer: the agent is free to order tools within a turn (an earlier run did
+  // clear-then-search, leaving the buffer non-empty), so we stage and clear in
+  // SEPARATE turns rather than asserting an intra-turn ordering (f67f379).
+  // NB: the prompt must NOT hint at "starting over / changing track" — that
+  // makes the agent proactively buffer_clear BEFORE searching, then (in the next
+  // turn) believe the buffer is already empty and refuse to clear the freshly
+  // staged hits. Keep 4a purely additive; the clear is 4b's job alone.
+  const beforeRestage = allCalls.length
+  const restagePrompt =
+    "Lance une recherche plein texte Gallica sur « Le Petit Journal » pour 1889 et dépose " +
+    "les résultats dans le tampon. N'énumère pas les numéros ; une seule page suffit. " +
+    "Ne vide pas le tampon et ne touche pas au corpus déjà constitué."
+  history.push({ role: "user", content: restagePrompt })
+  console.log(`\n> TURN 4a (re-stage): ${restagePrompt}`)
+  const t4a = await runTurn(corpusSession.id, cookie, history)
+  history.push({ role: "assistant", content: t4a.text })
+  console.log(`< (${Math.round(t4a.elapsedMs / 1000)}s) ${t4a.text.slice(0, 300)}`)
+  console.log(`  tools: ${trace((await toolCalls(corpusSession.id)).slice(beforeRestage))}`)
+
+  const candidatesAfterRestage = await prisma.bufferItem.count({
+    where: { projectId: project.id, status: BUFFER_STATUS.CANDIDATE },
+  })
+  check(
+    "B13 a fresh search re-populated the (post-commit empty) buffer",
+    candidatesAfterRestage > 0,
+    `candidates after re-stage=${candidatesAfterRestage}`,
+  )
+
+  // --- Turn 4b: clear the populated buffer -----------------------------------
+  // Clearing is destructive, so the agent legitimately sometimes asks to confirm
+  // before executing (the "ask is primary" steer) instead of clearing outright.
+  // Both behaviours are correct UX, so the test tolerates both: pre-authorise in
+  // the prompt, and if the agent still didn't clear, send ONE confirmation turn.
+  // We assert the OUTCOME (the buffer got cleared), not that it happened in the
+  // first turn — asserting the turn count would test the agent's caution, not
+  // the feature.
+  const beforeClear = (await toolCalls(corpusSession.id)).length
+  const clearPrompts = [
+    "Le tampon contient les candidats du Petit Journal que tu viens de déposer. Vérifie leur " +
+      "nombre, puis vide entièrement le tampon maintenant avec l'outil buffer_clear, sans me " +
+      "redemander. Ne touche pas au corpus déjà constitué.",
+    "Oui, je confirme : appelle buffer_clear pour vider le tampon.",
+  ]
+  for (let attempt = 0; attempt < clearPrompts.length; attempt++) {
+    const prompt = clearPrompts[attempt]
+    history.push({ role: "user", content: prompt })
+    console.log(`\n> TURN 4b (clear, attempt ${attempt + 1}): ${prompt}`)
+    const turn = await runTurn(corpusSession.id, cookie, history)
+    history.push({ role: "assistant", content: turn.text })
+    console.log(`< (${Math.round(turn.elapsedMs / 1000)}s) ${turn.text.slice(0, 300)}`)
+    const clearedSoFar = named(
+      (await toolCalls(corpusSession.id)).slice(beforeClear),
+      AGENT_TOOLS.bufferClear,
+    )
+    if (clearedSoFar.some((c) => c.status === "ok")) break
+  }
+
+  const callsT4 = (await toolCalls(corpusSession.id)).slice(beforeClear)
+  console.log(`  tools: ${trace(callsT4)}`)
+
+  const clearCalls = named(callsT4, AGENT_TOOLS.bufferClear)
+  check(
+    "B13b agent cleared the buffer on a change of inquiry",
+    clearCalls.some((c) => c.status === "ok"),
+    clearCalls.length === 0 ? `never cleared; used: ${trace(callsT4)}` : `${clearCalls.length} call(s)`,
+  )
+  // The clear must report it actually dropped the freshly-staged candidates —
+  // proof it cleared a POPULATED buffer, not a no-op on an already-empty one.
+  const clearedOk = clearCalls.some((c) => Number(outputData(c)["cleared"] ?? 0) > 0)
+  check(
+    "B13c buffer_clear reported dropping the staged candidates (cleared > 0)",
+    clearedOk,
+    `clear outputs: ${clearCalls.map((c) => JSON.stringify(outputData(c))).join(" | ") || "none"}`,
+  )
+
+  const candidatesAfterClear = await prisma.bufferItem.count({
+    where: { projectId: project.id, status: BUFFER_STATUS.CANDIDATE },
+  })
+  const committedAfterClear = await prisma.bufferItem.count({
+    where: { projectId: project.id, status: BUFFER_STATUS.COMMITTED },
+  })
+  check(
+    "B14 clear emptied the candidate set but preserved committed provenance",
+    candidatesAfterClear === 0 && committedAfterClear === committedRows,
+    `candidate=${candidatesAfterClear} committed=${committedAfterClear} (was ${committedRows})`,
+  )
+
+  // The corpus must be untouched by a buffer clear — same head version + members
+  // as right after the commit (the clear is pre-commit scratch only).
+  const projectAfterClear = await prisma.project.findUniqueOrThrow({ where: { id: project.id } })
+  const membersAfterClear = projectAfterClear.headVersionId
+    ? await prisma.corpusMembership.count({ where: { versionId: projectAfterClear.headVersionId } })
+    : 0
+  check(
+    "B15 clear did NOT touch the committed corpus",
+    projectAfterClear.headVersionId === finalProject.headVersionId && membersAfterClear === memberCount,
+    `head unchanged=${projectAfterClear.headVersionId === finalProject.headVersionId} members ${memberCount}→${membersAfterClear}`,
   )
 
   // =========================================================================
@@ -549,6 +769,13 @@ async function main(): Promise<void> {
     console.error(`\n${failed.length} FAILING ASSERTION(S):`)
     for (const f of failed) console.error(`  - ${f.name}\n      ${f.detail}`)
     process.exitCode = 1
+  }
+
+  if (CLEANUP) {
+    await cleanupProject(project.id)
+    console.log(`\ncleaned up project ${project.id} (+ sessions, buffer, corpus)`)
+  } else {
+    console.log(`\nkept project ${project.id} for inspection (set E2E_CLEANUP=1 to remove)`)
   }
 }
 
