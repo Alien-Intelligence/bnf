@@ -13,6 +13,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { useSearchParams, usePathname } from "next/navigation"
 import { useQueryClient } from "@tanstack/react-query"
 import { useCorpusFlattened, useExportCorpus, corpusKeys } from "@/hooks/api/corpus"
+import { bufferKeys } from "@/hooks/api/buffer"
 import { memoryKeys } from "@/hooks/api/memory"
 import { sessionKeys } from "@/hooks/api/sessions"
 import { useTurnStream } from "@/hooks/api/turn-stream"
@@ -26,6 +27,7 @@ import {
 import { LayoutCorpusChat } from "@/components/layouts/corpus/chat"
 import { LayoutSessionsSidebar } from "@/components/layouts/corpus/sessions-sidebar"
 import { CardCorpusSummary } from "@/components/cards/corpus/summary"
+import { CardBufferPanel } from "@/components/cards/buffer/panel"
 import { CardCorpusFiltersDrawer } from "@/components/cards/corpus/filters-drawer"
 import { LayoutCorpusDocumentList } from "@/components/layouts/corpus/document-list"
 import { SheetDocumentDetail } from "@/components/sheets/corpus/document-detail"
@@ -102,6 +104,8 @@ export function ConstituerClient({
   const qc = useQueryClient()
   const corpusEventCountRef = useRef(0)
   const corpusDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const bufferEventCountRef = useRef(0)
+  const bufferDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     const currentCount = stream.domainEvents.filter(
@@ -125,6 +129,26 @@ export function ConstituerClient({
       if (corpusDebounceRef.current !== null) {
         clearTimeout(corpusDebounceRef.current)
       }
+    }
+  }, [stream.domainEvents, projectId, qc])
+
+  // ── Debounced buffer refresh on buffer_event ─────────────────────────────────
+  // The agent stages candidates (corpus_search), curates, and commits — each
+  // fires a buffer_event. Debounce like the corpus refresh so a paginated sweep
+  // (one event per page) doesn't hammer the API.
+  useEffect(() => {
+    const currentCount = stream.domainEvents.filter((e) => e.type === "buffer_event").length
+    if (currentCount <= bufferEventCountRef.current) return
+    bufferEventCountRef.current = currentCount
+
+    if (bufferDebounceRef.current !== null) clearTimeout(bufferDebounceRef.current)
+    bufferDebounceRef.current = setTimeout(() => {
+      bufferDebounceRef.current = null
+      void qc.invalidateQueries({ queryKey: bufferKeys.all(projectId) })
+    }, CORPUS_REFRESH_DEBOUNCE_MS)
+
+    return () => {
+      if (bufferDebounceRef.current !== null) clearTimeout(bufferDebounceRef.current)
     }
   }, [stream.domainEvents, projectId, qc])
 
@@ -274,6 +298,7 @@ export function ConstituerClient({
                 </button>
               </div>
             </div>
+            <CardBufferPanel projectId={projectId} />
             <CardCorpusSummary corpus={displaySnapshot} />
             <CardCorpusFiltersDrawer
               corpus={displaySnapshot}

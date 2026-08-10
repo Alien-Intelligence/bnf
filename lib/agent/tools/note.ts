@@ -29,6 +29,7 @@ import { NoteService } from "@/models/notes/service"
 import { NoteQueries } from "@/models/notes/queries"
 import type { TurnScopedCtx } from "./registry-factory"
 import { AGENT_TOOLS } from "./constants"
+import { NOTE_NOT_INGESTED_ERROR, ingestedVersionId } from "./ingestion-guard"
 
 // ---------------------------------------------------------------------------
 // note_list
@@ -110,6 +111,12 @@ export const noteCreateTool = defineTool<
       ),
   }),
   handler: async (input, ctx) => {
+    // Structural guard: a note must rest on the ingested corpus, never on
+    // general knowledge before any retrieval exists (design item 4).
+    if (!(await ingestedVersionId(ctx.projectId))) {
+      return { error: NOTE_NOT_INGESTED_ERROR }
+    }
+
     const note = await NoteService.create({
       projectId: ctx.projectId,
       appSessionId: ctx.appSessionId,
@@ -165,6 +172,10 @@ export const noteUpdateTool = defineTool<
       ),
   }),
   handler: async (input, ctx) => {
+    if (!(await ingestedVersionId(ctx.projectId))) {
+      return { error: NOTE_NOT_INGESTED_ERROR }
+    }
+
     const note = await NoteService.update(input.id, {
       title: input.title,
       bodyMd: input.body_md,
@@ -214,6 +225,10 @@ export const noteAppendTool = defineTool<
       ),
   }),
   handler: async (input, ctx) => {
+    if (!(await ingestedVersionId(ctx.projectId))) {
+      return { error: NOTE_NOT_INGESTED_ERROR }
+    }
+
     const note = await NoteService.append(input.id, { bodyMd: input.body_md })
 
     ctx.emit?.({

@@ -262,6 +262,24 @@
   "corpus": {
     "panelTitle": "Your corpus",
     "help": "How does this work?",
+    "buffer": {
+      "title": "Research buffer",
+      "subtitle": "Gathered candidates, pending commit",
+      "count": "{count} candidate(s)",
+      "error": "Could not load the buffer.",
+      "noTitle": "(untitled)",
+      "discard": "Discard this candidate",
+      "more": "+{count} more candidates",
+      "commit": "Add to corpus",
+      "committing": "Adding…",
+      "commitReason": "Buffer committed from the panel",
+      "clear": "Clear buffer",
+      "clearing": "Clearing…",
+      "clearConfirmTitle": "Clear the buffer?",
+      "clearConfirmBody": "The {count} gathered candidate(s) will be discarded. The corpus is not affected.",
+      "clearConfirmCancel": "Cancel",
+      "clearConfirmOk": "Clear"
+    },
     "export": {
       "label": "Export (CSV)",
       "pending": "Exporting…",
@@ -520,11 +538,21 @@
     "corpus": {
       "get_state": "Corpus state",
       "list": "List corpus",
+      "search": "BnF search",
       "add": "Add to corpus",
       "remove": "Remove from corpus",
       "remove_by_filter": "Remove by filter",
       "stats": "Stats",
       "diff": "Corpus diff"
+    },
+    "buffer": {
+      "list": "Buffer — list",
+      "stats": "Buffer — stats",
+      "remove_by_filter": "Buffer — remove by filter",
+      "add": "Buffer — add",
+      "discard": "Buffer — discard",
+      "commit": "Add buffer to corpus",
+      "clear": "Clear buffer"
     },
     "memory": {
       "read": "Read memory",

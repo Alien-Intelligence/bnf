@@ -58,6 +58,10 @@ export type StreamDomainEvent =
   | { type: "memory_event"; data: { kind: "write"; itemId: string; section: string } }
   | { type: "ingest_event"; data: { kind: "submitted-stub" | "submitted"; jobId?: string; status?: string } }
   | { type: "note_event"; data: { kind: "created" | "updated"; noteId: string; title: string } }
+  | {
+      type: "buffer_event"
+      data: { kind: "added" | "removed" | "committed" | "cleared"; count: number; total: number }
+    }
 
 export type UseTurnStreamResult = {
   messages: StreamMessage[]
@@ -84,6 +88,7 @@ const DOMAIN_EVENT_TYPES = new Set([
   "memory_event",
   "ingest_event",
   "note_event",
+  "buffer_event",
 ])
 
 function joinText(parts: AgentPart[]): string {

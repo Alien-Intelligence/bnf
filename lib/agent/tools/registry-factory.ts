@@ -4,7 +4,7 @@ import { createToolRegistry, type ToolContext } from "@alien/chat-sdk/claude"
 import { prisma } from "@/lib/db"
 import { requireMcpEnv } from "@/lib/env"
 import { openMcpSession } from "@/lib/mcp/session"
-import { appTools } from "./index"
+import { toolsForScope } from "./index"
 import type { User } from "@/lib/generated/prisma/client"
 
 /**
@@ -82,11 +82,12 @@ export function buildTurnScopedCtx(
  * // pass registry as the SDK handler's per-request `buildTools` result
  * ```
  *
- * No per-turn opts are needed: the registry is stateless apart from the MCP
- * session it opens (keyed off the signal). Tool-scoped data (user, project,
- * scope) lives on the `TurnScopedCtx` built by `buildTurnScopedCtx`.
+ * `scope` selects the tool BOUNDARY (design item 4): a corpus session registers
+ * corpus/buffer/ingest tools; a research session registers rag/note/doc tools;
+ * memory + ask_user are shared. See toolsForScope(). Tool-scoped data (user,
+ * project, scope) lives on the `TurnScopedCtx` built by `buildTurnScopedCtx`.
  */
-export async function buildTurnScopedRegistry(signal?: AbortSignal) {
+export async function buildTurnScopedRegistry(scope: "corpus" | "research", signal?: AbortSignal) {
   // MCP server is optional: if BNF_MCP_URL / BNF_MCP_TOKEN are absent — or the
   // session handshake fails (server down) — the app-defined corpus/memory/
   // ingest tools still work; the agent just has no BnF search capability for
@@ -122,7 +123,7 @@ export async function buildTurnScopedRegistry(signal?: AbortSignal) {
   // order (see @alien/chat-sdk/server runtime). The Prisma adapter
   // (lib/agent/persistence/prisma-adapter.ts) writes the ToolCall rows.
   return createToolRegistry<TurnScopedCtx>({
-    tools: [...appTools],
+    tools: toolsForScope(scope),
     mcpServers,
   })
 }

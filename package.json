@@ -7,6 +7,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "test": "node --import tsx --conditions react-server --env-file-if-exists=.env.local --test \"{models,lib,components,app}/**/*.test.ts\"",
+    "e2e:buffer": "node --import tsx --conditions react-server --env-file-if-exists=.env.local scripts/e2e-buffer.ts",
+    "e2e:buffer:ci": "node --import tsx --conditions react-server --env-file-if-exists=.env.local scripts/e2e-buffer-ci.ts",
     "smoke": "tsx --env-file-if-exists .env.local --conditions react-server scripts/smoke-test.ts",
     "fix:doc-types": "tsx --env-file-if-exists .env.local --conditions react-server scripts/fix-doc-types.ts"
   },

@@ -148,6 +148,37 @@ export const CORPUS_REMOVE_PREVIEW_LIMIT = 50
  */
 export const CORPUS_REASON_MAX_LEN = 1_000
 
+// ---------------------------------------------------------------------------
+// Research buffer ("tampon") — the pre-commit candidate staging area.
+// See models/buffer/ and lib/agent/tools/buffer.ts.
+// ---------------------------------------------------------------------------
+
+/** Candidate rows per page in a buffer list / snapshot sample. */
+export const BUFFER_SAMPLE_SIZE = 25
+
+/** Candidate rows the Constituer buffer panel requests (a curation buffer is
+ *  bounded, so one page comfortably shows the working set). */
+export const BUFFER_PANEL_LIMIT = 100
+
+/**
+ * Max candidate count under which the corpus agent may `buffer_commit` WITHOUT
+ * an explicit `ask_user` confirmation. Above it, the agent narrates the count
+ * and asks before committing (large, hard-to-reverse corpus growth). A commit
+ * always advances a corpus version, so this is a deliberately conservative
+ * floor — tune against real BnF sessions.
+ */
+export const BUFFER_AUTO_COMMIT_MAX = 200
+
+/**
+ * Default page size for a `corpus_search` call (hits written to the buffer per
+ * call). The BnF MCP caps `maximum_records` at 50; the agent paginates with
+ * `start_record` to gather more, deliberately, keeping any single page — and the
+ * returned summary — bounded (CLAUDE_ERROR_PATTERNS §14).
+ */
+export const BUFFER_SEARCH_PAGE_SIZE = 20
+/** Hard ceiling the BnF SRU search tools enforce on `maximum_records`. */
+export const BUFFER_SEARCH_MAX_PAGE_SIZE = 50
+
 /**
  * The seq assigned to the first (empty) CorpusVersion created by
  * ProjectService.create(). Invariant 1: every project always has a head.

@@ -20,6 +20,18 @@ export const AGENT_TOOLS = {
   corpusStats:          "corpus_stats",
   corpusDiff:           "corpus_diff",
 
+  // --- Buffer tools (the research "tampon" — corpus scope only) --------------
+  // corpus_search funnels BnF search through the buffer; the buffer_* tools
+  // curate the candidate set before committing it to the versioned corpus.
+  corpusSearch:          "corpus_search",
+  bufferList:            "buffer_list",
+  bufferStats:           "buffer_stats",
+  bufferRemoveByFilter:  "buffer_remove_by_filter",
+  bufferAdd:             "buffer_add",
+  bufferDiscard:         "buffer_discard",
+  bufferCommit:          "buffer_commit",
+  bufferClear:           "buffer_clear",
+
   // --- Memory tools -----------------------------------------------------------
   memoryRead:  "memory_read",
   memoryWrite: "memory_write",
