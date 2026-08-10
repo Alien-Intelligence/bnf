@@ -42,3 +42,7 @@ yarn-error.log*
 next-env.d.ts
 lib/generated/
 sandbox/
+
+# yalc — local SDK dev link (temporary; never commit the file: dep in package.json)
+.yalc/
+yalc.lock

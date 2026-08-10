@@ -45,6 +45,7 @@ import { ModelSelector } from "./model-selector"
 import { EventMemoryRow } from "@/components/events/agent/memory-event"
 import { EventIngestRow } from "@/components/events/agent/ingest-event"
 import { EventSubagentRow } from "@/components/events/agent/subagent-event"
+import { EventCompactionRow } from "@/components/events/agent/compaction-event"
 import { FeedbackButton } from "@/components/cards/feedback/feedback-button"
 import type { AgentProvider } from "@/lib/constants"
 
@@ -241,6 +242,11 @@ function DomainPartView({
         buffered={event.data.buffered}
       />
     )
+  }
+  if (event.type === "compaction_event") {
+    // Only surface a FRESH compaction; the per-turn cache-reuse is silent.
+    if (event.data.reused) return null
+    return <EventCompactionRow coveredMessageCount={event.data.coveredMessageCount} />
   }
   return null
 }

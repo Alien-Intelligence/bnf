@@ -15,6 +15,7 @@ import "server-only"
 import type {
   BeginTurnInput,
   ChatPersistenceAdapter,
+  CompactionCheckpoint,
   PersistedTurnRef,
   ServerSnapshot,
   SnapshotTurn,
@@ -156,6 +157,31 @@ export function createPrismaChatAdapter(): ChatPersistenceAdapter {
     // (corpus/memory/note chips) from ToolCall rows and live `ctx.emit` events,
     // so there is nothing to persist separately. Leaving it undefined tells the
     // runtime not to attempt a write.
+
+    // --- Auto-compaction checkpoint (agent-context-survival Slice 2) ----------
+    // Session-scoped: the synopsis + how many leading messages it covers live on
+    // AppSession. The runtime reuses the synopsis verbatim across turns and only
+    // re-summarises when the kept tail grows past the budget (see the SDK
+    // compaction module). Both methods are no-ops on the checkpoint when
+    // compaction is disabled (the runtime never calls them).
+    async loadCheckpoint(sessionId: string): Promise<CompactionCheckpoint | null> {
+      const session = await prisma.appSession.findUnique({
+        where: { id: sessionId },
+        select: { synopsis: true, compactedMessageCount: true },
+      })
+      if (!session?.synopsis || session.compactedMessageCount === null) return null
+      return { synopsis: session.synopsis, coveredMessageCount: session.compactedMessageCount }
+    },
+
+    async saveCheckpoint(sessionId: string, checkpoint: CompactionCheckpoint): Promise<void> {
+      await prisma.appSession.update({
+        where: { id: sessionId },
+        data: {
+          synopsis: checkpoint.synopsis,
+          compactedMessageCount: checkpoint.coveredMessageCount,
+        },
+      })
+    },
 
     async endTurn(turnId: string, final: TurnFinal): Promise<void> {
       await prisma.$transaction([

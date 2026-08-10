@@ -471,8 +471,29 @@ export const SPAWN_SUMMARY_MAX_CHARS = 8_000
 
 /** Claude model used to name a session from its first user message. Haiku-class
  * because this is a cheap, one-shot summarization — not an agent loop. See
- * lib/agent/title.ts. */
+ * lib/agent/title.ts. Also used for the compaction summariser (below). */
 export const SESSION_TITLE_MODEL = "claude-haiku-4-5"
+
+// ---------------------------------------------------------------------------
+// Auto-compaction (agent-context-survival Slice 2) — chat-sdk runtime config
+// ---------------------------------------------------------------------------
+
+/** Whether long-conversation auto-compaction is on. Opt-in per the shared SDK
+ * contract; a long research session otherwise grows unbounded and degrades. */
+export const COMPACTION_ENABLED = true
+/** Compact once the estimated prompt reaches this fraction of the model's
+ * context window. 0.6 = act at 60% full, leaving headroom for the turn's output
+ * + tool results before the hard wall. */
+export const COMPACTION_TRIGGER_RATIO = 0.6
+/** How many most-recent messages to keep verbatim (never summarised). Enough to
+ * preserve the immediate working thread; older turns fold into the synopsis. */
+export const COMPACTION_KEEP_RECENT_MESSAGES = 24
+/** Context window (tokens) used as the budget denominator. Conservative for the
+ * 200k-class models the agent runs (Claude / GLM / Gemini via OpenRouter); the
+ * trigger ratio leaves margin so this need not track each model exactly. */
+export const COMPACTION_CONTEXT_WINDOW_TOKENS = 180_000
+/** Output cap for the summariser — a synopsis is a page or two, not an essay. */
+export const COMPACTION_SUMMARY_MAX_TOKENS = 1_500
 
 /** Title a session opened from the rail's "+" is born with, until its first
  * message auto-names it. French-first, matching the default locale. */

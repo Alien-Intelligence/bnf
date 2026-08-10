@@ -68,6 +68,10 @@ export type StreamDomainEvent =
         | { kind: "start"; scope: "corpus" | "research" }
         | { kind: "done"; scope: "corpus" | "research"; toolCalls: number; buffered?: number }
     }
+  | {
+      type: "compaction_event"
+      data: { coveredMessageCount: number; keptMessageCount: number; reused: boolean }
+    }
 
 export type UseTurnStreamResult = {
   messages: StreamMessage[]
@@ -96,6 +100,7 @@ const DOMAIN_EVENT_TYPES = new Set([
   "note_event",
   "buffer_event",
   "subagent_event",
+  "compaction_event",
 ])
 
 function joinText(parts: AgentPart[]): string {

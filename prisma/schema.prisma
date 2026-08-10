@@ -313,6 +313,14 @@ model AppSession {
   activeMessageId String?   @unique @map("active_message_id")
   systemPrompt    String?   @map("system_prompt") // Cached rendered prompt (corpus or research); re-generated on memory change
   promptLocale    String?   @map("prompt_locale") // Locale the cached systemPrompt was rendered in; a turn in another locale rebuilds it
+  // Auto-compaction checkpoint (agent-context-survival Slice 2). `synopsis` is a
+  // model-produced summary standing in for the first `compactedMessageCount`
+  // messages of this session's history (the SDK CompactionCheckpoint shape); the
+  // chat-sdk runtime reuses it verbatim and only re-summarises when the kept tail
+  // grows back past the budget. Null until a session first crosses the compaction
+  // threshold. This is transient conversation state — NOT project memory.
+  synopsis              String? @map("synopsis")
+  compactedMessageCount Int?    @map("compacted_message_count")
   createdAt       DateTime  @default(now()) @map("created_at")
   updatedAt       DateTime  @updatedAt @map("updated_at")
 
