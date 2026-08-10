@@ -8,6 +8,8 @@ import { Button } from "@/components/ui/button"
 import { CardSessionListItem } from "@/components/cards/sessions/list-item"
 import { CardMemoryBox } from "@/components/cards/memory/box"
 import { DialogMemory } from "@/components/dialogs/memory"
+import { CardBufferBox } from "@/components/cards/buffer/box"
+import { DialogBuffer } from "@/components/dialogs/buffer"
 import {
   useSessions,
   useCreateSession,
@@ -42,6 +44,7 @@ export function LayoutSessionsSidebar({
   const t = useTranslations("sessions.sidebar")
   const tCommon = useTranslations("common")
   const [memoryOpen, setMemoryOpen] = useState(false)
+  const [bufferOpen, setBufferOpen] = useState(false)
 
   const { data: sessions, isLoading, isError, refetch } = useSessions(
     projectId,
@@ -140,6 +143,15 @@ export function LayoutSessionsSidebar({
 
       {/* Research artefacts picker — elastic middle section (research only). */}
       {artefactsSlot}
+
+      {/* Research buffer ("tampon") — corpus step only; the pre-commit staging
+          area, directly above project memory. Opens the full buffer dialog. */}
+      {scope === "corpus" && (
+        <>
+          <CardBufferBox projectId={projectId} onOpen={() => setBufferOpen(true)} />
+          <DialogBuffer open={bufferOpen} onOpenChange={setBufferOpen} projectId={projectId} />
+        </>
+      )}
 
       {/* Project memory — compact info box, opens the full memory dialog. */}
       <CardMemoryBox

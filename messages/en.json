@@ -266,6 +266,8 @@
       "title": "Research buffer",
       "subtitle": "Gathered candidates, pending commit",
       "count": "{count} candidate(s)",
+      "empty": "The buffer is empty. Run a search to gather candidates here.",
+      "emptyHint": "No candidates yet",
       "error": "Could not load the buffer.",
       "noTitle": "(untitled)",
       "discard": "Discard this candidate",
@@ -496,6 +498,7 @@
       "ingestSubmitted": "Ingestion submitted · {status}",
       "openIngest": "Open Ingest",
       "subagentStart": "Research sub-agent running…",
+      "subagentStartHint": "Working in a separate context; it will return a synthesis.",
       "subagentDone": "Sub-agent finished · {toolCalls} tool calls",
       "subagentDoneBuffered": "Sub-agent finished · {buffered} candidates staged in the buffer · {toolCalls} tool calls",
       "compaction": "Conversation condensed · {count} earlier messages summarized to free context"
