@@ -120,13 +120,41 @@ export async function buildProgress(
     foliosAhead = Math.max(0, globalPending - runPending);
   }
 
-  // ETA: the binding stage is BnF fetch (your backlog + the folios queued AHEAD of
-  // you, since the rate cap is shared) ÷ rate. Add the one-time Mistral tail only
-  // while OCR work is still in flight.
+  // Run-scoped folio tally for the fetch headline + the ETA. Only meaningful with
+  // a runId (the /progress/:runId path always sets it); the unscoped status CLI
+  // gets zeros.
+  const folios = opts.runId
+    ? await docState.folioCounts(opts.runId)
+    : { expected: 0, done: 0, failed: 0 };
+
+  // ETA: BnF fetch is the binding stage (its rate cap is shared across runs). The
+  // remaining work is NOT the current fetch-queue depth — during planning most
+  // docs haven't been expanded into folios yet, so that depth is tiny and the ETA
+  // would collapse to "moins d'une minute" for an hour-long run (the reported bug).
+  // Estimate the run's TOTAL folios by extrapolating the average folios/doc of the
+  // already-planned docs across the docs still queued for planning, then subtract
+  // what has already landed. Add the one-time Mistral tail while OCR is in flight.
   const rate = opts.fetchRatePerMin ?? 300;
-  const fetchBacklog =
-    (stages.fetch?.queued ?? 0) + (stages.fetch?.running ?? 0) + foliosAhead;
-  let etaSeconds: number | null = rate > 0 ? Math.ceil((fetchBacklog / rate) * 60) : null;
+  const plannedDocs =
+    docs.planned + docs.fetching + docs.ready + docs.processing + docs.done;
+  const unplannedDocs = docs.queued; // still to be planned → folio count unknown
+  let runRemainingFolios: number | null;
+  if (docsTotal === 0) {
+    // No doc-level state (synthetic / queue-only path): fall back to queue depth.
+    runRemainingFolios = (stages.fetch?.queued ?? 0) + (stages.fetch?.running ?? 0);
+  } else if (plannedDocs === 0) {
+    // Docs exist but none planned yet → the total is genuinely unknown. Don't
+    // fabricate a number: null makes the UI show "estimating…" rather than lie.
+    runRemainingFolios = null;
+  } else {
+    const avgFoliosPerDoc = folios.expected / plannedDocs;
+    const estTotalFolios = folios.expected + avgFoliosPerDoc * unplannedDocs;
+    runRemainingFolios = Math.max(0, Math.round(estTotalFolios) - folios.done - folios.failed);
+  }
+  // Fold in the folios queued AHEAD of you (other runs on the shared cap).
+  const bindingBacklog = runRemainingFolios === null ? null : runRemainingFolios + foliosAhead;
+  let etaSeconds: number | null =
+    bindingBacklog !== null && rate > 0 ? Math.ceil((bindingBacklog / rate) * 60) : null;
   const ocrInFlight =
     (stages.ocrSubmit?.queued ?? 0) +
     (stages.ocrSubmit?.running ?? 0) +
@@ -137,12 +165,6 @@ export async function buildProgress(
   }
 
   const reconciles = docsTotal === sumStatuses(docs);
-
-  // Run-scoped folio tally for the fetch headline. Only meaningful with a runId
-  // (the /progress/:runId path always sets it); the unscoped status CLI gets zeros.
-  const folios = opts.runId
-    ? await docState.folioCounts(opts.runId)
-    : { expected: 0, done: 0, failed: 0 };
 
   const report: ProgressReport = {
     docs,

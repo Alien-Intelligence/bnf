@@ -59,6 +59,38 @@ test("ETA derives from the fetch backlog ÷ rate", async () => {
   assert.equal(report.etaSeconds, 120);
 });
 
+test("ETA extrapolates the WHOLE run from planned docs — not the momentary fetch-queue depth", async () => {
+  // Repro of the "moins d'une minute" bug: early in a run most docs are still
+  // queued for planning, so the fetch queue is nearly empty. The ETA must reflect
+  // the run's ESTIMATED TOTAL folios (extrapolated from the planned docs), not the
+  // handful currently queued.
+  const ds = new MemoryDocState();
+  const q = new MemoryQueue();
+  // 10 docs: 2 planned @ 50 folios each (none fetched yet), 8 still queued.
+  for (let i = 0; i < 10; i++) {
+    await ds.upsertDoc({ docJobId: `d${i}`, runId: "r1", projectId: "p", ark: `ark:/12148/d${i}` });
+  }
+  for (const id of ["d0", "d1"]) {
+    await ds.recordPlan(id, { lane: "text", pagesExpected: 50, meta: META });
+  }
+  // Fetch queue is EMPTY (planning hasn't expanded folios yet).
+  const report = await buildProgress(ds, q, { runId: "r1", fetchRatePerMin: 300 });
+  // avg = 100/2 = 50 folios/doc; est total = 100 + 50*8 = 500; none landed.
+  // ceil(500 / 300 * 60) = 100 s — a real estimate, NOT "< 1 min".
+  assert.equal(report.stages.fetch?.queued ?? 0, 0, "fetch queue is empty at this phase");
+  assert.equal(report.etaSeconds, 100);
+});
+
+test("ETA is null (estimating…) when docs exist but none are planned yet", async () => {
+  const ds = new MemoryDocState();
+  const q = new MemoryQueue();
+  for (let i = 0; i < 5; i++) {
+    await ds.upsertDoc({ docJobId: `q${i}`, runId: "r1", projectId: "p", ark: `ark:/12148/q${i}` });
+  }
+  const report = await buildProgress(ds, q, { runId: "r1", fetchRatePerMin: 300 });
+  assert.equal(report.etaSeconds, null, "no basis to extrapolate → estimating…, not a fake number");
+});
+
 test("ETA adds the one-time Mistral tail while OCR work is in flight", async () => {
   const ds = new MemoryDocState();
   const q = new MemoryQueue();
