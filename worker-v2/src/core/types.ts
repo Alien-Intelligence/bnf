@@ -80,6 +80,9 @@ export interface QueueClient {
    * Subscribe a handler; `concurrency` items processed in parallel. A handler
    * that throws is redelivered up to `retryLimit` times (at-least-once), then the
    * message is marked failed. `retryDelayMs`/`retryBackoff` pace the redeliveries.
+   * `expireInSeconds` is the transport's wall-clock ceiling on ONE delivery — see
+   * the field's doc on PipelineStage (core/stage.ts) for why every stage declares
+   * it explicitly.
    */
   work<T>(
     queue: string,
@@ -89,6 +92,7 @@ export interface QueueClient {
       retryLimit?: number;
       retryDelayMs?: number;
       retryBackoff?: boolean;
+      expireInSeconds?: number;
     },
   ): Promise<void>;
   /** Count items by state for the progress read-model (GLOBAL — all runs). */
@@ -101,6 +105,21 @@ export interface QueueClient {
    * card uses them); `completed`/`failed` come from the run-scoped doc-state.
    */
   countsForDocs(queue: string, docJobIds: readonly string[]): Promise<QueueCounts>;
+  /**
+   * Which of `docJobIds` still have a LIVE job (queued, in-flight, or awaiting a
+   * retry) on any of `queues`. The reconciliation sweep (live/reconciler.ts) asks
+   * this to tell "this doc is still being worked on" from "this doc's job is GONE
+   * and nothing will ever move it again" — the orphan class the 2026-08-11 wedge
+   * created (a pg-boss EXPIRED job runs no handler code, so no in-handler idiom
+   * can mark the doc; see F7 in ai-memories/tech/repos/bnf/ingest-hardening).
+   *
+   * Batched by contract: ONE call per sweep, not one per doc. An empty
+   * `docJobIds` returns an empty set without touching the transport.
+   */
+  liveDocJobIds(
+    queues: readonly string[],
+    docJobIds: readonly string[],
+  ): Promise<ReadonlySet<string>>;
   stop(): Promise<void>;
 }
 

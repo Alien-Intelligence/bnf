@@ -25,6 +25,13 @@ import type {
   StageOutcome,
 } from "./types.js";
 
+/**
+ * The generic per-delivery ceiling every stage inherits unless it declares its own
+ * (see PipelineStage.expireInSeconds). 10 minutes: above any S3-bound handler,
+ * below the point where an expiry would read as a hang.
+ */
+export const DEFAULT_EXPIRE_IN_SECONDS = 600;
+
 export interface StageDeps {
   queue: QueueClient;
   blob: BlobStore;
@@ -61,6 +68,29 @@ export abstract class PipelineStage<In, Out> {
    * the base delay respects BnF's window size.
    */
   readonly queueRetryDelayMs?: number;
+  /**
+   * Wall-clock ceiling (seconds) the TRANSPORT puts on one delivery of this
+   * stage's message: past it, pg-boss expires the job from the outside
+   * ("job failed by timeout in active state").
+   *
+   * This MUST be declared, not inherited from the transport, because an expired
+   * job runs NO handler code — every last-attempt reconciliation idiom in this
+   * codebase (MetadataStage/FetchStage's in-process exhaustion branch,
+   * `onExhausted` below) is bypassed, and the doc orphans in a non-terminal
+   * status forever. That is exactly how prod run efe5d747 wedged at 464/465: a
+   * mid-run redeploy orphaned an in-flight v2.metadata delivery, pg-boss expired
+   * it at its SILENT 15-minute default (`expire_seconds` was NULL on every
+   * queue), and the doc stayed `queued` forever (F7/F10,
+   * ai-memories/tech/repos/bnf/ingest-hardening).
+   *
+   * So each stage sets this to its own worst-case handler wall-clock + margin.
+   * The default below (10 min) is the safe generic: comfortably above any
+   * S3-bound handler, comfortably below the point where an expiry would look
+   * like a hang. Stages whose worst case is materially different override it.
+   * The reconciliation sweep (live/reconciler.ts) is the second belt: whatever
+   * the ceiling, an expired job's doc gets re-driven within a sweep interval.
+   */
+  readonly expireInSeconds: number = DEFAULT_EXPIRE_IN_SECONDS;
 
   protected readonly queue: QueueClient;
   protected readonly blob: BlobStore;
@@ -101,6 +131,7 @@ export abstract class PipelineStage<In, Out> {
     await this.queue.work<In>(this.inputQueue, (m) => this.handle(m), {
       concurrency: this.concurrency,
       retryLimit: Math.max(0, this.retry.attempts - 1),
+      expireInSeconds: this.expireInSeconds,
       ...(this.queueRetryDelayMs !== undefined
         ? { retryDelayMs: this.queueRetryDelayMs }
         : {}),
@@ -110,9 +141,23 @@ export abstract class PipelineStage<In, Out> {
       out: this.outputQueue ?? null,
       concurrency: this.concurrency,
       rate: this.rate?.ratePerMin ?? null,
+      expireInSeconds: this.expireInSeconds,
     });
   }
 
+  /**
+   * One delivery. EVERY external call in here — the artifact-cache read, the rate
+   * acquire, process(), the outcome persist, the dispatch send — sits inside the
+   * same guarded region, so a throw from ANY of them on the FINAL attempt runs the
+   * `onExhausted` safety net before the error reaches the transport.
+   *
+   * That widening is F11 (ai-memories/tech/repos/bnf/ingest-hardening): the cache
+   * read and the outcome persist used to sit OUTSIDE the try, so an S3 blip on the
+   * last attempt failed the pg-boss job without marking the doc — the same orphan
+   * class as an expired job, reached by a different door. The net fires at most
+   * once per delivery (`netFired`), so a non-terminal fail (which reaches the
+   * transport by throwing out of dispatch) still triggers it exactly once.
+   */
   private async handle(msg: QueueMessage<In>): Promise<void> {
     const ctx: StageContext = {
       blob: this.blob,
@@ -120,48 +165,59 @@ export abstract class PipelineStage<In, Out> {
       messageId: msg.id,
       attempt: msg.attempts,
     };
-
-    // Resume / idempotency: a cached outcome means this stage already ran.
-    const key = this.artifactKey(msg.payload);
-    if (key) {
-      const cached = await this.blob.getJson<StageOutcome<Out>>(key);
-      if (cached) {
-        this.log.info("stage_cache_hit", { key });
-        await this.dispatch(cached, msg.payload, true);
-        return;
-      }
-    }
-
-    if (this.rate) await this.rate.acquire();
-
-    let outcome: StageOutcome<Out>;
-    try {
-      outcome = await this.process(msg.payload, ctx);
-    } catch (e) {
-      outcome = { kind: "fail", reason: describeError(e) };
-    }
-
-    // Last-delivery safety net: a non-terminal fail on the FINAL attempt means
-    // retries are exhausted. Without this, the doc would stay in a non-terminal
-    // status forever (the queue marks the message failed, but nothing marks the
-    // DOC) and the run could never complete. Give the stage a chance to mark its
-    // doc failed (onExhausted). The outcome is left non-terminal so the queue
-    // still records the message failure exactly as before.
-    if (
-      outcome.kind === "fail" &&
-      outcome.terminal !== true &&
-      msg.attempts >= this.retry.attempts
-    ) {
-      await this.onExhausted(msg.payload, outcome.reason).catch((err) =>
+    // The FINAL allowed delivery: no redelivery follows, so anything left
+    // non-terminal here stays non-terminal forever unless the net runs.
+    const lastAttempt = msg.attempts >= this.retry.attempts;
+    let netFired = false;
+    const net = async (reason: string): Promise<void> => {
+      if (!lastAttempt || netFired) return;
+      netFired = true;
+      await this.onExhausted(msg.payload, reason).catch((err) =>
         this.log.error("on_exhausted_failed", { error: errMsg(err) }),
       );
-      this.log.warn("stage_exhausted", { reason: outcome.reason, attempts: msg.attempts });
-    }
+      this.log.warn("stage_exhausted", { reason, attempts: msg.attempts });
+    };
 
-    if (key && (outcome.kind === "emit" || outcome.kind === "done")) {
-      await this.blob.putJson(key, outcome);
+    try {
+      // Resume / idempotency: a cached outcome means this stage already ran.
+      const key = this.artifactKey(msg.payload);
+      if (key) {
+        const cached = await this.blob.getJson<StageOutcome<Out>>(key);
+        if (cached) {
+          this.log.info("stage_cache_hit", { key });
+          await this.dispatch(cached, msg.payload, true);
+          return;
+        }
+      }
+
+      if (this.rate) await this.rate.acquire();
+
+      let outcome: StageOutcome<Out>;
+      try {
+        outcome = await this.process(msg.payload, ctx);
+      } catch (e) {
+        outcome = { kind: "fail", reason: describeError(e) };
+      }
+
+      // A non-terminal fail on the final attempt means retries are exhausted:
+      // the queue will mark the MESSAGE failed, but nothing marks the DOC. Give
+      // the stage a chance to mark it (onExhausted). The outcome stays
+      // non-terminal so the queue records the message failure exactly as before.
+      if (outcome.kind === "fail" && outcome.terminal !== true) {
+        await net(outcome.reason);
+      }
+
+      if (key && (outcome.kind === "emit" || outcome.kind === "done")) {
+        await this.blob.putJson(key, outcome);
+      }
+      await this.dispatch(outcome, msg.payload, false);
+    } catch (e) {
+      // Anything that escaped the inner catch: an S3 read/write, a rate gate
+      // shutdown, the dispatch send — or dispatch's own re-throw of a
+      // non-terminal fail (whose net already fired, hence the once-guard).
+      await net(describeError(e));
+      throw e;
     }
-    await this.dispatch(outcome, msg.payload, false);
   }
 
   private async dispatch(

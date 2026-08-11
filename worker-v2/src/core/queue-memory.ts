@@ -107,6 +107,18 @@ export class MemoryQueue implements QueueClient {
     }
   }
 
+  /**
+   * The payloads still waiting on a queue (delivered to nobody yet). Test helper —
+   * side-effect free, unlike attaching a consumer, so a test can assert exactly
+   * what a producer enqueued without draining it or needing every OTHER queue to
+   * be drained first (which is what `idle()` requires).
+   */
+  pending<T>(queue: string): T[] {
+    return (this.queues.get(queue) ?? [])
+      .filter((m) => m.state === "queued")
+      .map((m) => m.payload as T);
+  }
+
   /** Resolve when every worked queue is drained (no queued/active items). Test helper. */
   idle(): Promise<void> {
     return new Promise((resolve) => {
@@ -138,6 +150,31 @@ export class MemoryQueue implements QueueClient {
       completed: 0,
       failed: 0,
     };
+  }
+
+  /**
+   * The docJobIds that still have a live message on one of `queues`.
+   *
+   * "Live" mirrors pg-boss's `created`/`active`/`retry`: here that is `queued`
+   * (including a message put back for redelivery — this queue reuses the `queued`
+   * state for a retry) plus `active`. A `completed`/`failed` message is NOT live,
+   * which is precisely the orphan the sweep hunts.
+   */
+  async liveDocJobIds(
+    queues: readonly string[],
+    docJobIds: readonly string[],
+  ): Promise<ReadonlySet<string>> {
+    const live = new Set<string>();
+    if (queues.length === 0 || docJobIds.length === 0) return live;
+    const wanted = new Set(docJobIds);
+    for (const name of queues) {
+      for (const m of this.queues.get(name) ?? []) {
+        if (m.state !== "queued" && m.state !== "active") continue;
+        const id = (m.payload as { docJobId?: unknown } | null)?.docJobId;
+        if (typeof id === "string" && wanted.has(id)) live.add(id);
+      }
+    }
+    return live;
   }
 
   async stop(): Promise<void> {

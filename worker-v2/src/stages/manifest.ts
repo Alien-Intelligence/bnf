@@ -17,7 +17,7 @@ import { PermanentBnfError } from "../bnf/errors.js";
 import type { BnfClient, Manifest } from "../bnf/types.js";
 import type { DocStateStore } from "../domain/doc-state.js";
 import { keys } from "../domain/keys.js";
-import { FETCH_PRIORITY, Q } from "../domain/queues.js";
+import { Q, withFetchPriority } from "../domain/queues.js";
 import type { FolioItem, ManifestReq } from "../domain/types.js";
 import type { RateGate } from "../core/types.js";
 
@@ -40,6 +40,10 @@ export class ManifestStage extends PipelineStage<ManifestReq, never> {
   // manifest quota resets on fixed clock-minute windows, so pg-boss's default 5s
   // ladder just re-hits the still-closed window (F6).
   override readonly queueRetryDelayMs = 30_000;
+  // 600s: same worst case as MetadataStage minus the OAI fallback — a cache miss
+  // waits on the shared 40/min manifest gate (up to a clock-minute window) and
+  // then spends up to 135s in the fetch itself.
+  override readonly expireInSeconds = 600;
 
   private readonly maxCanvases: number;
 
@@ -103,15 +107,14 @@ export class ManifestStage extends PipelineStage<ManifestReq, never> {
       pagesExpected: canvases.length,
       meta: req.meta,
     });
-    const folios: Array<FolioItem & { priority: number }> = canvases.map((c) => ({
+    const folios: FolioItem[] = canvases.map((c) => ({
       docJobId: req.docJobId,
       ark: req.ark,
       ordre: c.ordre,
       kind: "image",
       lane: req.lane,
-      priority: FETCH_PRIORITY[req.lane],
     }));
-    await this.queue.sendMany(Q.fetch, folios);
+    await this.queue.sendMany(Q.fetch, withFetchPriority(folios));
     ctx.log.info("manifest_fanout", { ark: req.ark, lane: req.lane, folios: canvases.length });
     return { kind: "done" };
   }

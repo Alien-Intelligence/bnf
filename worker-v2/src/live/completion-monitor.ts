@@ -66,17 +66,22 @@ export class CompletionMonitor {
 
   /**
    * Check whether a run is fully terminal and, if so, emit its terminal callback.
+   * Returns true iff THIS call actually sent the terminal event — the periodic
+   * reconciliation sweep (live/reconciler.ts) calls this for every non-terminal run
+   * and only logs the ones that fired, so a quiet sweep stays quiet.
+   *
    * Also called directly by the ingress for a zero-doc (removal-only) run, which is
    * "complete" the moment it is created. Safe to call repeatedly — the emitter's
-   * latch guarantees a single callback.
+   * latch guarantees a single callback. Throws if the callback POST fails after its
+   * retries (the emitter releases the latch first, so a later check retries).
    */
-  async checkRun(runId: string): Promise<void> {
+  async checkRun(runId: string): Promise<boolean> {
     const run = await this.runStore.get(runId);
-    if (!run || run.terminalEmitted || run.canceled) return;
+    if (!run || run.terminalEmitted || run.canceled) return false;
     const counts = await this.docState.statusCounts({ runId });
     const terminal =
       counts.done + counts.failed + counts.skipped + counts.excluded;
-    if (terminal < run.totalDocs) return; // still in flight
-    await this.emitter.emit(run);
+    if (terminal < run.totalDocs) return false; // still in flight
+    return await this.emitter.emit(run);
   }
 }

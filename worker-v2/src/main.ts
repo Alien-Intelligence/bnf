@@ -25,6 +25,7 @@ import { LiveEmbedder } from "./live/embedder.js";
 import { LiveClusterSink } from "./live/cluster.js";
 import { TerminalEmitter } from "./live/progress-callback.js";
 import { CompletionMonitor } from "./live/completion-monitor.js";
+import { Reconciler } from "./live/reconciler.js";
 import { startServer } from "./server.js";
 
 async function main(): Promise<void> {
@@ -34,7 +35,12 @@ async function main(): Promise<void> {
   const queue = new PgBossQueue(cfg.databaseUrl);
   await queue.start();
 
-  const pool = new Pool({ connectionString: cfg.databaseUrl });
+  // statement_timeout: pg has NO query timeout by default, so a lock wait or a bad
+  // plan parks whatever awaited it — a stage handler until pg-boss expires the job,
+  // or (new in this slice) the reconciliation sweep, forever. Every query this pool
+  // runs is small OLTP work measured in milliseconds, so 30s only ever fires on
+  // something genuinely stuck (CLAUDE_ERROR_PATTERNS §14).
+  const pool = new Pool({ connectionString: cfg.databaseUrl, statement_timeout: 30_000 });
   const docState = new PgDocState(pool);
   await docState.migrate();
   const runStore = new PgRunStore(pool);
@@ -81,6 +87,15 @@ async function main(): Promise<void> {
 
   await pipeline.start();
 
+  // The reconciliation sweep — started AFTER the stages, so anything it re-drives
+  // has a consumer waiting. Its first sweep runs now: that is what un-wedges a run
+  // whose docs were orphaned by the previous pod (see live/reconciler.ts).
+  const reconciler = new Reconciler(
+    { runStore, docState, queue, blob, completion, log },
+    { intervalMs: cfg.reconcilerIntervalMs, maxRequeues: cfg.reconcilerMaxRequeues },
+  );
+  reconciler.start();
+
   // The app↔worker HTTP ingress: POST /ingest (open a run + seed) + GET
   // /progress/:runId (the Ingérer poll read-model) + cancel + health.
   const server = await startServer(
@@ -101,6 +116,7 @@ async function main(): Promise<void> {
     fetchRatePerMin: cfg.fetchRatePerMin,
     manifestRatePerMin: cfg.manifestRatePerMin,
     mistralEnabled: cfg.mistralEnabled,
+    reconcilerIntervalMs: cfg.reconcilerIntervalMs,
   });
 
   let shuttingDown = false;
@@ -108,9 +124,16 @@ async function main(): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     log.info("worker_v2_shutdown", { sig });
+    // Order matters: stop the sweep FIRST. It re-enqueues work, and re-enqueueing
+    // into a pipeline that is draining would leave fresh jobs behind with nobody
+    // consuming them (and could race pg-boss's shutdown mid-send).
+    reconciler.stop();
     fetchRate.stop();
     manifestRate.stop();
     await new Promise<void>((r) => server.close(() => r()));
+    // pipeline.stop() → PgBossQueue.stop(), which drains in-flight handlers within
+    // an explicit 110s budget (F12) — inside the pod's 120s grace period, and
+    // immediate when nothing is in flight.
     await pipeline.stop().catch(() => {});
     await pool.end().catch(() => {});
     process.exit(0);

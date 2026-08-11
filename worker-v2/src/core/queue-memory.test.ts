@@ -226,6 +226,47 @@ test("idle() resolves only after all queued + active work finishes, including re
   assert.equal(processed, 3);
 });
 
+test("liveDocJobIds: queued + active are live; completed/failed are not (the sweep's orphan test)", async () => {
+  const q = new MemoryQueue();
+  const gate = deferred();
+
+  // "a" completes, "b" stays active behind a gate, "c" is never worked (queued —
+  // "other" has no consumer), "d" throws with no retries left → failed.
+  // Live == b (active) + c (queued). a and d are the orphan shape the sweep hunts.
+  await q.work<{ docJobId: string }>(
+    "lane",
+    async (msg) => {
+      if (msg.payload.docJobId === "b") await gate.promise;
+      if (msg.payload.docJobId === "d") throw new Error("dead");
+    },
+    { concurrency: 2, retryLimit: 0 },
+  );
+  await q.send("lane", { docJobId: "a" });
+  await q.send("lane", { docJobId: "d" });
+  await q.send("lane", { docJobId: "b" });
+  await q.send("other", { docJobId: "c" });
+  await new Promise((r) => setTimeout(r, 10)); // let a/d finish, b block on the gate
+
+  const ids = ["a", "b", "c", "d"];
+  const live = await q.liveDocJobIds(["lane", "other"], ids);
+  assert.deepEqual([...live].sort(), ["b", "c"], "only the in-flight/queued docs are live");
+
+  // Queue scoping: asking only about "lane" must not see "other"'s message.
+  assert.deepEqual([...(await q.liveDocJobIds(["lane"], ids))], ["b"]);
+
+  // Degenerate inputs never touch the transport.
+  assert.equal((await q.liveDocJobIds([], ids)).size, 0);
+  assert.equal((await q.liveDocJobIds(["lane"], [])).size, 0);
+
+  gate.resolve();
+  await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(
+    [...(await q.liveDocJobIds(["lane", "other"], ids))],
+    ["c"],
+    "b completed → no longer live; only the never-consumed 'c' remains",
+  );
+});
+
 test("counts() reconcile: completed + failed equals total sent, none left in flight", async () => {
   const q = new MemoryQueue();
   const total = 10;

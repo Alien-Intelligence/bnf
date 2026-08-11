@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS sandbox_ingest_v2.document_ingest_job_v2 (
   meta           jsonb,
   error          text,
   skip_reason    text,
+  requeues       integer NOT NULL DEFAULT 0,  -- reconciliation re-drives (see the ALTER below)
   created_at     timestamptz NOT NULL DEFAULT now(),
   updated_at     timestamptz NOT NULL DEFAULT now()
 );
@@ -54,6 +55,15 @@ CREATE TABLE IF NOT EXISTS sandbox_ingest_v2.document_ingest_job_v2 (
 -- in the CREATE above for fresh installs; this covers an already-migrated DB).
 ALTER TABLE sandbox_ingest_v2.document_ingest_job_v2
   ADD COLUMN IF NOT EXISTS run_id text;
+
+-- requeues: how many times the reconciliation sweep (live/reconciler.ts) has had
+-- to re-drive this doc because its queue job vanished (a pg-boss expiration, a
+-- killed pod mid-delivery). The sweep re-enqueues an orphan, but a doc that keeps
+-- orphaning without progress is not "unlucky" — it is stuck, and looping forever
+-- would hide that. Past the cap it fails terminally with
+-- `stranded_after_requeues`, which keeps the RUN able to complete.
+ALTER TABLE sandbox_ingest_v2.document_ingest_job_v2
+  ADD COLUMN IF NOT EXISTS requeues integer NOT NULL DEFAULT 0;
 
 CREATE INDEX IF NOT EXISTS document_ingest_job_v2_project_status_idx
   ON sandbox_ingest_v2.document_ingest_job_v2 (project_id, status);

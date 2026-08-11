@@ -40,6 +40,15 @@ export interface RunStore {
    */
   getByAppJobId(appJobId: string): Promise<IngestRun | null>;
   /**
+   * Every run that has NOT reached its terminal callback and was not canceled —
+   * i.e. every run the app is still waiting on. This is the reconciliation sweep's
+   * entry point (live/reconciler.ts): before it, `checkRun` was reachable ONLY
+   * from a live stage outcome, so a single lost transition stranded the run
+   * forever (F8, ai-memories/tech/repos/bnf/ingest-hardening). Oldest first, so a
+   * long-wedged run is re-driven before a fresh one.
+   */
+  listActiveRuns(): Promise<IngestRun[]>;
+  /**
    * Atomically claim the terminal callback: flip terminal_emitted false→true,
    * returning true ONLY for the caller that won. A non-winning caller (already
    * emitted, or canceled) gets false and must not POST.

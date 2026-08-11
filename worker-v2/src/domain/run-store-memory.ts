@@ -27,6 +27,13 @@ export class MemoryRunStore implements RunStore {
     return null;
   }
 
+  async listActiveRuns(): Promise<IngestRun[]> {
+    // Insertion order == creation order in JS, matching the pg ORDER BY created_at.
+    return [...this.runs.values()]
+      .filter((r) => !r.terminalEmitted && !r.canceled)
+      .map((r) => ({ ...r }));
+  }
+
   async markTerminalEmitted(runId: string): Promise<boolean> {
     const r = this.runs.get(runId);
     if (!r || r.terminalEmitted || r.canceled) return false;

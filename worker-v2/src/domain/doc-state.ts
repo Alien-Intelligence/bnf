@@ -34,6 +34,24 @@ export interface DocRow {
   meta: DocMeta | null;
   error: string | null;
   skipReason: string | null;
+  /** How many times the reconciliation sweep has re-driven this doc (see
+   *  `incrementRequeues`); 0 for a doc that has never orphaned. */
+  requeues: number;
+}
+
+/** The non-terminal doc statuses — a doc in one of these still owes the run work. */
+export const NON_TERMINAL_STATUSES: readonly DocStatus[] = [
+  "queued",
+  "planned",
+  "fetching",
+  "ready",
+  "processing",
+];
+
+/** One recorded folio outcome (the fan-in rows), ordre-ascending. */
+export interface FolioRecord {
+  ordre: number;
+  ok: boolean;
 }
 
 /** One failed doc, for the terminal callback's `errors[]` (ark + lane-as-stage + reason). */
@@ -110,6 +128,24 @@ export interface DocStateStore {
   get(docJobId: string): Promise<DocRow | null>;
   /** Sorted ordres of folios that landed ok — the doc's usable pages. */
   listOkFolios(docJobId: string): Promise<number[]>;
+  /**
+   * EVERY recorded folio of a doc (ok and lost), ordre-ascending. The
+   * reconciliation sweep needs the lost ones too: a lost folio already reached the
+   * Monitor's counter, so re-fetching it would be wasted BnF quota — only the
+   * ordres with NO row at all are missing work.
+   */
+  listFolios(docJobId: string): Promise<FolioRecord[]>;
+  /**
+   * The run's docs that are still non-terminal (NON_TERMINAL_STATUSES) — the
+   * sweep's candidate set. Ordered by ark for stable logs.
+   */
+  listNonTerminalDocs(runId: string): Promise<DocRow[]>;
+  /**
+   * Count one reconciliation re-drive of this doc and return the NEW total.
+   * Incremented BEFORE the re-enqueue, so a send that itself keeps failing still
+   * walks toward the cap instead of looping forever.
+   */
+  incrementRequeues(docJobId: string): Promise<number>;
   /** Aggregate status counts for the progress read-model, optionally scoped by
    *  project or run (omit the scope for an unscoped global count). */
   statusCounts(scope?: DocScope): Promise<Record<DocStatus, number>>;

@@ -40,7 +40,7 @@ import { PermanentBnfError } from "../bnf/errors.js";
 import { ensureCanonicalArk, isCatalogueNotice } from "../bnf/parse.js";
 import type { DocStateStore } from "../domain/doc-state.js";
 import { keys } from "../domain/keys.js";
-import { FETCH_PRIORITY, Q } from "../domain/queues.js";
+import { Q, withFetchPriority } from "../domain/queues.js";
 import type { DocMeta, DocRef, FolioItem, ManifestReq } from "../domain/types.js";
 
 export interface MetadataOpts {
@@ -84,6 +84,13 @@ export class MetadataStage extends PipelineStage<DocRef, never> {
   // for why: BnF's manifest quota resets on fixed clock-minute windows, so
   // pg-boss's default 5s ladder just re-hits the still-closed window (F6).
   override readonly queueRetryDelayMs = 30_000;
+  // 600s. Worst case for ONE delivery: a manifest-cache miss waits on the shared
+  // 40/min gate (up to a clock-minute window), then a 135s manifest fetch
+  // (BNF_PAGE_TIMEOUT_MS, deliberately above the broker's 120s), and if that comes
+  // back permanent, a 45s OAI fallback (BNF_META_TIMEOUT_MS) — plus S3 round trips
+  // and margin. This is the stage whose expiration wedged prod run efe5d747; it is
+  // now chosen, not inherited (see PipelineStage.expireInSeconds).
+  override readonly expireInSeconds = 600;
 
   private readonly mistralEnabled: boolean;
   private readonly maxPages: number;
@@ -157,7 +164,7 @@ export class MetadataStage extends PipelineStage<DocRef, never> {
         kind: "alto",
         lane: "text",
       }));
-      await this.queue.sendMany(Q.fetch, withPriority(folios));
+      await this.queue.sendMany(Q.fetch, withFetchPriority(folios));
       ctx.log.info("metadata_text_fanout", { ark: doc.ark, folios: pages });
       return { kind: "done" };
     }
@@ -220,10 +227,4 @@ export class MetadataStage extends PipelineStage<DocRef, never> {
     await this.blob.putJson(keys.manifest(canonicalArk), manifest);
     return manifest;
   }
-}
-
-/** pg-boss reads `priority` off the payload at send-time; memory queue ignores it.
- *  Stamped so the fetch queue drains tail-first (mistral images > vision > alto). */
-function withPriority(items: FolioItem[]): Array<FolioItem & { priority: number }> {
-  return items.map((it) => ({ ...it, priority: FETCH_PRIORITY[it.lane] }));
 }

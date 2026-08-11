@@ -83,9 +83,14 @@ data:
   BNF_META_TIMEOUT_MS: {{ .Values.worker.config.bnfMetaTimeoutMs | quote }}
 
   # --- Ingest reliability ---
-  INGEST_JOB_EXPIRE_SECONDS: {{ .Values.worker.config.ingestJobExpireSeconds | quote }}
-  INGEST_RETRY_LIMIT: {{ .Values.worker.config.ingestRetryLimit | quote }}
-  INGEST_RETRY_DELAY_SECONDS: {{ .Values.worker.config.ingestRetryDelaySeconds | quote }}
+  # NOTE: INGEST_JOB_EXPIRE_SECONDS / INGEST_RETRY_LIMIT / INGEST_RETRY_DELAY_SECONDS
+  # used to be set here and configured NOTHING — worker-v2 has no reader for them
+  # (V1 leftovers). They implied a 4h job ceiling while the real one was pg-boss's
+  # silent 15-min default, which is how a run wedged (F7/F10,
+  # ai-memories/tech/repos/bnf/ingest-hardening). Retry + per-delivery expiration
+  # are now declared per STAGE in code (PipelineStage.retry / .expireInSeconds),
+  # deliberately not env-tunable: each ceiling is derived from that stage's own
+  # worst-case wall clock, not from an operator's guess.
   MAX_OCR_PAGES: {{ .Values.worker.config.maxOcrPages | quote }}
   MAX_IMAGE_CANVASES: {{ .Values.worker.config.maxImageCanvases | quote }}
   IMAGE_CONCURRENCY: {{ .Values.worker.config.imageConcurrency | quote }}
@@ -96,4 +101,14 @@ data:
   # held below the doc loop so the broker's rate bucket stays continuously fed.
   BNF_FETCH_CONCURRENCY: {{ .Values.worker.config.bnfFetchConcurrency | quote }}
   WORKER_CONCURRENCY: {{ .Values.worker.config.workerConcurrency | quote }}
+
+  # --- Reconciliation sweep ---
+  # The periodic re-drive of docs whose queue job vanished (pg-boss expiration, a
+  # pod killed mid-delivery) + the re-check of every run the app still waits on.
+  # This is what makes a mid-run redeploy self-healing instead of a permanent
+  # wedge; see worker-v2/src/live/reconciler.ts.
+  RECONCILER_INTERVAL_MS: {{ .Values.worker.config.reconcilerIntervalMs | quote }}
+  # Re-drives allowed per doc before it fails as `stranded_after_requeues` — a
+  # poisoned doc must stop consuming quota AND stop blocking its run.
+  RECONCILER_MAX_REQUEUES: {{ .Values.worker.config.reconcilerMaxRequeues | quote }}
 {{- end }}

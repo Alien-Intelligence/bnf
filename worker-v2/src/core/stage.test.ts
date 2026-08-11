@@ -21,7 +21,7 @@ import assert from "node:assert/strict";
 import { MemoryBlobStore } from "./blob.js";
 import { createMemoryLogger } from "./logger.js";
 import { MemoryQueue } from "./queue-memory.js";
-import { PipelineStage, type StageDeps } from "./stage.js";
+import { DEFAULT_EXPIRE_IN_SECONDS, PipelineStage, type StageDeps } from "./stage.js";
 import type {
   QueueClient,
   QueueCounts,
@@ -50,6 +50,7 @@ class TestStage extends PipelineStage<Item, Item> {
   readonly concurrency = 1; // deterministic ordering for assertions
   readonly rate?: RateGate;
   readonly queueRetryDelayMs?: number;
+  override readonly expireInSeconds: number;
 
   /** Records the payload of every process() invocation. */
   readonly processed: Item[] = [];
@@ -67,11 +68,13 @@ class TestStage extends PipelineStage<Item, Item> {
     retryAttempts?: number;
     artifactKey?: (payload: Item) => string | null;
     queueRetryDelayMs?: number;
+    expireInSeconds?: number;
   }) {
     super(opts.deps);
     this.outputQueue = opts.outputQueue;
     this.rate = opts.rate;
     this.queueRetryDelayMs = opts.queueRetryDelayMs;
+    this.expireInSeconds = opts.expireInSeconds ?? DEFAULT_EXPIRE_IN_SECONDS;
     if (opts.retryAttempts !== undefined) {
       this.retry = { attempts: opts.retryAttempts, baseMs: 1, maxDelayMs: 1 };
     }
@@ -111,18 +114,23 @@ class CountingRate implements RateGate {
  * nothing — for asserting exactly what a stage's `start()` passes downstream
  * (queueRetryDelayMs plumbing) without needing real delivery.
  */
+interface SpyWorkOpts {
+  concurrency: number;
+  retryLimit?: number;
+  retryDelayMs?: number;
+  retryBackoff?: boolean;
+  expireInSeconds?: number;
+}
+
 class SpyQueue implements QueueClient {
-  readonly workCalls: Array<{
-    queue: string;
-    opts: { concurrency: number; retryLimit?: number; retryDelayMs?: number; retryBackoff?: boolean };
-  }> = [];
+  readonly workCalls: Array<{ queue: string; opts: SpyWorkOpts }> = [];
 
   async send(): Promise<void> {}
   async sendMany(): Promise<void> {}
   async work<T>(
     queue: string,
     _handler: (msg: QueueMessage<T>) => Promise<void>,
-    opts: { concurrency: number; retryLimit?: number; retryDelayMs?: number; retryBackoff?: boolean },
+    opts: SpyWorkOpts,
   ): Promise<void> {
     this.workCalls.push({ queue, opts });
   }
@@ -131,6 +139,9 @@ class SpyQueue implements QueueClient {
   }
   async countsForDocs(): Promise<QueueCounts> {
     return { queued: 0, running: 0, completed: 0, failed: 0 };
+  }
+  async liveDocJobIds(): Promise<ReadonlySet<string>> {
+    return new Set<string>();
   }
   async stop(): Promise<void> {}
 }
@@ -437,4 +448,78 @@ test("queueRetryDelayMs unset → queue.work() gets no retryDelayMs override (tr
     undefined,
     "a stage that doesn't set queueRetryDelayMs passes no override at all",
   );
+});
+
+test("expireInSeconds always rides through to queue.work() — declared, never inherited (F7/F10)", async () => {
+  const { logger } = createMemoryLogger();
+  const blob = new MemoryBlobStore();
+
+  // A stage that declares its own ceiling.
+  const spy = new SpyQueue();
+  const stage = new TestStage({ deps: { queue: spy, blob, log: logger }, expireInSeconds: 120 });
+  await stage.start();
+  assert.equal(spy.workCalls[0]?.opts.expireInSeconds, 120, "the stage's own ceiling rode through");
+
+  // A stage that declares nothing still passes a CHOSEN value, never undefined —
+  // undefined is what let pg-boss apply its silent 15-minute default and expire the
+  // delivery that wedged prod run efe5d747.
+  const spy2 = new SpyQueue();
+  const plain = new TestStage({ deps: { queue: spy2, blob, log: logger } });
+  await plain.start();
+  assert.equal(
+    spy2.workCalls[0]?.opts.expireInSeconds,
+    DEFAULT_EXPIRE_IN_SECONDS,
+    "an undeclared ceiling falls back to the framework default, not to the transport's",
+  );
+});
+
+test("F11: a throw from the artifact-cache read on the final attempt still fires onExhausted", async () => {
+  const { logger, lines } = createMemoryLogger();
+  const queue = new MemoryQueue();
+  // The cache READ fails (an S3 outage). Pre-F11 this sat outside the guarded
+  // region: the message failed and the DOC was never marked → orphan.
+  const blob = new MemoryBlobStore();
+  blob.getJson = async () => {
+    throw new Error("s3 down");
+  };
+
+  const stage = new TestStage({
+    deps: { queue, blob, log: logger },
+    retryAttempts: 2,
+    artifactKey: () => "cache-key",
+  });
+  await stage.start();
+
+  await queue.send(IN_Q, { ark: "ark:/s3-outage" });
+  await queue.idle();
+
+  assert.equal(stage.processed.length, 0, "process() was never reached — the cache read threw");
+  assert.equal(stage.exhausted.length, 1, "onExhausted fired once, on the final attempt");
+  assert.match(String(stage.exhausted[0]?.reason), /s3 down/, "the S3 error is the reason");
+  const counts = await queue.counts(IN_Q);
+  assert.equal(counts.failed, 1, "the message still ends failed — semantics unchanged");
+  assert.ok(lines.find((l) => l.event === "stage_exhausted"), "stage_exhausted logged");
+});
+
+test("F11: a throw from the outcome PERSIST on the final attempt fires onExhausted exactly once", async () => {
+  const { logger } = createMemoryLogger();
+  const queue = new MemoryQueue();
+  const blob = new MemoryBlobStore();
+  blob.putJson = async () => {
+    throw new Error("s3 write down");
+  };
+
+  const stage = new TestStage({
+    deps: { queue, blob, log: logger },
+    retryAttempts: 1, // one delivery == the final attempt
+    artifactKey: () => "cache-key",
+    outcome: { kind: "done" }, // success → the base tries to persist it
+  });
+  await stage.start();
+
+  await queue.send(IN_Q, { ark: "ark:/write-fail" });
+  await queue.idle();
+
+  assert.equal(stage.processed.length, 1, "process() ran and succeeded");
+  assert.equal(stage.exhausted.length, 1, "the persist failure still reached the safety net");
 });

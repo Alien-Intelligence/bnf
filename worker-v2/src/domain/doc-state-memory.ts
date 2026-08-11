@@ -10,8 +10,10 @@ import type {
   DocStateStore,
   DocStatus,
   FailedDoc,
+  FolioRecord,
   FolioTally,
 } from "./doc-state.js";
+import { NON_TERMINAL_STATUSES } from "./doc-state.js";
 
 interface Entry extends DocRow {
   folios: Map<number, boolean>; // ordre → ok
@@ -40,6 +42,7 @@ export class MemoryDocState implements DocStateStore {
       meta: null,
       error: null,
       skipReason: null,
+      requeues: 0,
       folios: new Map(),
     });
   }
@@ -120,6 +123,28 @@ export class MemoryDocState implements DocStateStore {
     const e = this.docs.get(docJobId);
     if (!e) return [];
     return [...e.folios.entries()].filter(([, ok]) => ok).map(([ordre]) => ordre).sort((a, b) => a - b);
+  }
+
+  async listFolios(docJobId: string): Promise<FolioRecord[]> {
+    const e = this.docs.get(docJobId);
+    if (!e) return [];
+    return [...e.folios.entries()]
+      .map(([ordre, ok]) => ({ ordre, ok }))
+      .sort((a, b) => a.ordre - b.ordre);
+  }
+
+  async listNonTerminalDocs(runId: string): Promise<DocRow[]> {
+    const nonTerminal = new Set<DocStatus>(NON_TERMINAL_STATUSES);
+    return [...this.docs.values()]
+      .filter((e) => e.runId === runId && nonTerminal.has(e.status))
+      .sort((a, b) => a.ark.localeCompare(b.ark))
+      .map(({ folios: _folios, ...row }) => ({ ...row }));
+  }
+
+  async incrementRequeues(docJobId: string): Promise<number> {
+    const e = this.require(docJobId);
+    e.requeues += 1;
+    return e.requeues;
   }
 
   async statusCounts(scope?: DocScope): Promise<Record<DocStatus, number>> {

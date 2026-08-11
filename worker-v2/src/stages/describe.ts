@@ -23,6 +23,11 @@ export class DescribeStage extends PipelineStage<DocReady, PreparedDoc> {
   override readonly outputQueue = Q.embed;
   override readonly concurrency: number;
   override readonly rate?: RateGate;
+  // 900s — the longest ceiling in the pipeline, and deliberately so: ONE delivery
+  // describes EVERY folio of the doc, and each folio call queues behind the shared
+  // vision semaphore (DESCRIBE_CALL_CONCURRENCY across all docs). A 40-folio doc
+  // arriving while the gate is saturated legitimately takes many minutes.
+  override readonly expireInSeconds = 900;
 
   /** Shared across all concurrently-processing docs: the total number of in-flight
    *  vision calls is capped here, so a single big doc fans its folios out wide

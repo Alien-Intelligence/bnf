@@ -87,6 +87,21 @@ export interface WorkerConfig {
   /** Mistral OCR batch-poll concurrency (cheap GETs). */
   ocrPollConcurrency: number;
   failRatio: number;
+  /**
+   * Reconciliation sweep cadence (ms). The sweep is what makes a lost queue job
+   * (a pg-boss expiration, a pod killed mid-delivery) self-healing instead of a
+   * permanent wedge — see live/reconciler.ts. 60s: fast enough that a wedge is
+   * measured in a minute, slow enough that the two queries per active run are
+   * noise. Lower it only with an eye on those queries.
+   */
+  reconcilerIntervalMs: number;
+  /**
+   * How many times the sweep may re-drive ONE doc before failing it terminally
+   * with `stranded_after_requeues`. 3: enough to ride out a rolling redeploy that
+   * catches the same doc twice, few enough that a genuinely poisoned doc stops
+   * consuming quota and lets its run complete.
+   */
+  reconcilerMaxRequeues: number;
 }
 
 export function loadConfig(): WorkerConfig {
@@ -119,5 +134,7 @@ export function loadConfig(): WorkerConfig {
     ocrSubmitConcurrency: optionalInt("OCR_SUBMIT_CONCURRENCY", 12),
     ocrPollConcurrency: optionalInt("OCR_POLL_CONCURRENCY", 16),
     failRatio: Number(process.env.DOC_FAIL_RATIO ?? "0.25"),
+    reconcilerIntervalMs: optionalInt("RECONCILER_INTERVAL_MS", 60_000),
+    reconcilerMaxRequeues: optionalInt("RECONCILER_MAX_REQUEUES", 3),
   };
 }
