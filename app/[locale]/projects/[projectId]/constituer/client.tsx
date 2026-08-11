@@ -27,7 +27,6 @@ import {
 import { LayoutCorpusChat } from "@/components/layouts/corpus/chat"
 import { LayoutSessionsSidebar } from "@/components/layouts/corpus/sessions-sidebar"
 import { CardCorpusSummary } from "@/components/cards/corpus/summary"
-import { CardBufferPanel } from "@/components/cards/buffer/panel"
 import { CardCorpusFiltersDrawer } from "@/components/cards/corpus/filters-drawer"
 import { LayoutCorpusDocumentList } from "@/components/layouts/corpus/document-list"
 import { SheetDocumentDetail } from "@/components/sheets/corpus/document-detail"
@@ -178,6 +177,10 @@ export function ConstituerClient({
     if (prevStreamingRef.current && !streaming) {
       void qc.invalidateQueries({ queryKey: corpusKeys.all(projectId) })
       void qc.invalidateQueries({ queryKey: memoryKeys.all(projectId, "corpus") })
+      // The buffer's live channel (buffer_event) can miss a mid-stream event, so
+      // the tampon box/dialog could go stale (agent says it staged candidates,
+      // the panel still shows the old count). Reconcile it on turn-finish too.
+      void qc.invalidateQueries({ queryKey: bufferKeys.all(projectId) })
       // A session's first turn auto-names it server-side — pull the new title.
       void qc.invalidateQueries({ queryKey: sessionKeys.list(projectId, "corpus") })
     }
@@ -298,7 +301,6 @@ export function ConstituerClient({
                 </button>
               </div>
             </div>
-            <CardBufferPanel projectId={projectId} />
             <CardCorpusSummary corpus={displaySnapshot} />
             <CardCorpusFiltersDrawer
               corpus={displaySnapshot}

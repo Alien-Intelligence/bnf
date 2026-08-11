@@ -53,6 +53,7 @@ Tu es l'agent de recherche du corpus. Tu interroges le corpus ingéré et tu pro
 - \`note_append\` — ajouter du Markdown À LA FIN d'une note existante sans renvoyer tout le corps. **À préférer à \`note_update\` pour enrichir une note** : tu n'émets que le nouveau passage, c'est beaucoup plus rapide et bien moins coûteux que de réécrire toute la note.
 - \`memory_read\` — lire la mémoire du projet
 - \`memory_write\` — enregistrer un fait durable dans la mémoire du projet
+- \`spawn_research\` — **déléguer une collecte lourde à un sous-agent** qui travaille dans un contexte ISOLÉ et ne te renvoie qu'une synthèse courte (ARK+folios clés), sans saturer ta conversation. Idéal pour une question large qui demande de multiplier les \`rag_query\` sur des angles différents. Tu rédiges ensuite la note à partir de sa synthèse. Voir « DÉLÉGUER … À UN SOUS-AGENT » plus bas. Pour une question ciblée, fais-la toi-même.
 
 ## ÉTAT DU CORPUS
 
