@@ -69,6 +69,26 @@ export class IngestQueries {
   }
 
   /**
+   * Candidate jobs for the ingest watchdog (lib/ingest/watchdog.ts, F18): every
+   * RUNNING job with a clusterJobId to poll, plus QUEUED jobs old enough to be
+   * an F19 submit-corpse (a job row inserted but never transitioned to RUNNING
+   * — closed at the source now, but a row written before that fix could still
+   * exist). This is a coarse pre-filter to keep the scan small; the watchdog's
+   * own decision function re-checks age/clusterJobId so correctness never
+   * depends on this query alone.
+   */
+  static async watchdogCandidates(queuedCutoff: Date): Promise<IngestJob[]> {
+    return prisma.ingestJob.findMany({
+      where: {
+        OR: [
+          { status: "running", clusterJobId: { not: null } },
+          { status: "queued", createdAt: { lt: queuedCutoff } },
+        ],
+      },
+    })
+  }
+
+  /**
    * Paid-OCR (Mistral) spend and ingest volume across every project, for the
    * admin OCR tab. `Project.paidOcrSpentUsd` is the authoritative cumulative
    * spend (set-once per job on commit); the paid jobs supply per-job detail and

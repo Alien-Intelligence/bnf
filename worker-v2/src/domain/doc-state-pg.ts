@@ -55,6 +55,34 @@ export class PgDocState implements DocStateStore {
     );
   }
 
+  /**
+   * Batch-seed doc rows in chunks of 1000 — one multi-row INSERT per chunk
+   * instead of N sequential awaits (F19: seeding hundreds of docs one at a
+   * time can straddle the app's client timeout on `POST /ingest`). Same
+   * ON CONFLICT DO NOTHING idempotency as upsertDoc.
+   */
+  async upsertDocs(
+    refs: { docJobId: string; projectId: string; ark: string; runId?: string | null }[],
+  ): Promise<void> {
+    const CHUNK = 1000;
+    for (let i = 0; i < refs.length; i += CHUNK) {
+      const batch = refs.slice(i, i + CHUNK);
+      const values: string[] = [];
+      const params: unknown[] = [];
+      batch.forEach((ref, idx) => {
+        const base = idx * 4;
+        values.push(`($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, 'queued')`);
+        params.push(ref.docJobId, ref.runId ?? null, ref.projectId, ref.ark);
+      });
+      await this.pool.query(
+        `INSERT INTO ${JOBS} (doc_job_id, run_id, project_id, ark, status)
+         VALUES ${values.join(", ")}
+         ON CONFLICT (doc_job_id) DO NOTHING`,
+        params,
+      );
+    }
+  }
+
   async recordPlan(
     docJobId: string,
     plan: { lane: Lane; pagesExpected: number; meta: DocMeta },

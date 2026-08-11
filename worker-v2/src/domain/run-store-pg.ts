@@ -64,6 +64,36 @@ export class PgRunStore implements RunStore {
     };
   }
 
+  async getByAppJobId(appJobId: string): Promise<IngestRun | null> {
+    const { rows } = await this.pool.query<{
+      run_id: string;
+      app_job_id: string;
+      project_id: string;
+      callback_url: string;
+      callback_secret: string;
+      target_version_id: string;
+      total_docs: number;
+      terminal_emitted: boolean;
+      canceled: boolean;
+    }>(
+      `SELECT * FROM ${RUNS} WHERE app_job_id = $1 ORDER BY created_at ASC LIMIT 1`,
+      [appJobId],
+    );
+    const r = rows[0];
+    if (!r) return null;
+    return {
+      runId: r.run_id,
+      appJobId: r.app_job_id,
+      projectId: r.project_id,
+      callbackUrl: r.callback_url,
+      callbackSecret: r.callback_secret,
+      targetVersionId: r.target_version_id,
+      totalDocs: r.total_docs,
+      terminalEmitted: r.terminal_emitted,
+      canceled: r.canceled,
+    };
+  }
+
   async markTerminalEmitted(runId: string): Promise<boolean> {
     const { rowCount } = await this.pool.query(
       `UPDATE ${RUNS}

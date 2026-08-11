@@ -65,6 +65,21 @@ export interface DocStateStore {
     ark: string;
     runId?: string | null;
   }): Promise<void>;
+  /**
+   * Batch-seed doc rows for a run's ARKs in one round trip instead of N
+   * sequential `upsertDoc` awaits — seeding hundreds of docs one at a time
+   * can straddle the app's client timeout on `POST /ingest` (audit finding
+   * F19). Same idempotency contract as `upsertDoc` (a no-op per already-seen
+   * docJobId).
+   */
+  upsertDocs(
+    refs: {
+      docJobId: string;
+      projectId: string;
+      ark: string;
+      runId?: string | null;
+    }[],
+  ): Promise<void>;
   /** Record the plan from the metadata stage: lane, expected folio count, meta. */
   recordPlan(
     docJobId: string,

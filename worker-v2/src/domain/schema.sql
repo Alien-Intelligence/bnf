@@ -30,6 +30,11 @@ CREATE TABLE IF NOT EXISTS sandbox_ingest_v2.ingest_run (
   updated_at        timestamptz NOT NULL DEFAULT now()
 );
 
+-- Looked up by getByAppJobId to make POST /ingest idempotent on appJobId (an
+-- app-side retry must find its existing run instead of opening a second one).
+CREATE INDEX IF NOT EXISTS ingest_run_app_job_id_idx
+  ON sandbox_ingest_v2.ingest_run (app_job_id);
+
 CREATE TABLE IF NOT EXISTS sandbox_ingest_v2.document_ingest_job_v2 (
   doc_job_id     text PRIMARY KEY,
   run_id         text,                       -- groups docs by ingest_run (null for seed-CLI docs)

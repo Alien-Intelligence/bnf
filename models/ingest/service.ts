@@ -40,6 +40,38 @@ import { ClusterRunner } from "@/lib/cluster/runner"
 import { PAID_OCR_DEFAULT_BUDGET_USD } from "@/lib/constants"
 import { env } from "@/lib/env"
 
+/**
+ * F20 — the pure selection logic behind {@link IngestService.retryFailed}.
+ * Pulled out of the class (no Prisma, no I/O) so the fallback rule is
+ * unit-testable without a database: given the source job's `stats.errors`
+ * AND the current per-doc `Document` truth, decide which ARKs a retry job
+ * should target.
+ *
+ *   • `statsErrors` non-empty → those ARKs (the normal path: the worker's
+ *     terminal callback recorded exactly which docs failed).
+ *   • `statsErrors` empty → fall back to `documentRows`, already expected to
+ *     be pre-filtered by the caller to `addedArks` members with
+ *     `indexedAt === null && indexError !== null` (never indexed, and a
+ *     reason is on record). `addedArks` is re-checked here too, so the
+ *     function is correct even if a caller passes an unfiltered row set.
+ *   • Both empty → `[]` (the caller reports `{ created: false }`).
+ */
+export function computeRetryArks(
+  statsErrors: ReadonlyArray<{ ark: string }>,
+  addedArks: readonly string[],
+  documentRows: ReadonlyArray<{
+    ark: string
+    indexedAt: Date | null
+    indexError: string | null
+  }>,
+): string[] {
+  if (statsErrors.length > 0) return statsErrors.map((e) => e.ark)
+  const addedSet = new Set(addedArks)
+  return documentRows
+    .filter((d) => addedSet.has(d.ark) && d.indexedAt === null && d.indexError !== null)
+    .map((d) => d.ark)
+}
+
 export class IngestService {
   /**
    * Submit an ingestion job for a project.
@@ -199,15 +231,35 @@ export class IngestService {
     const callbackBase = process.env.WORKER_CALLBACK_BASE_URL ?? env.APP_URL
     const callbackUrl = `${callbackBase}/api/internal/ingest/${job.id}/progress`
 
-    const { clusterJobId } = await ClusterRunner.submit({
-      projectId: project.id,
-      targetVersionId: targetVersion.id,
-      appJobId: job.id,
-      added: addedDocs,
-      removed: removedArks,
-      callbackUrl,
-      callbackSecret,
-    })
+    // F19: a transport failure here (worker blip, timeout, non-2xx) must NOT
+    // leave the QUEUED row from step 8 behind as a corpse — the dedup guard
+    // (step 4) would return that same corpse on every future submit for this
+    // version, wedging the project's ingestion forever. Mark the job FAILED
+    // with an honest transport reason and re-throw so the route still
+    // surfaces the error to the caller (the request itself still fails).
+    let clusterJobId: string
+    try {
+      const result = await ClusterRunner.submit({
+        projectId: project.id,
+        targetVersionId: targetVersion.id,
+        appJobId: job.id,
+        added: addedDocs,
+        removed: removedArks,
+        callbackUrl,
+        callbackSecret,
+      })
+      clusterJobId = result.clusterJobId
+    } catch (err) {
+      await prisma.ingestJob.update({
+        where: { id: job.id },
+        data: {
+          status: INGEST_STATUS.FAILED,
+          error: IngestService._truncateError(err),
+          finishedAt: new Date(),
+        },
+      })
+      throw err
+    }
 
     // 10. Persist clusterJobId and transition to running
     const running = await prisma.ingestJob.update({
@@ -326,6 +378,15 @@ export class IngestService {
    *
    * NOTE: IngestPubSub is not yet wired (slice 4b). This method only does DB
    * writes. SSE stream integration lands in a later commit.
+   *
+   * INTERACTION WITH THE WATCHDOG (lib/ingest/watchdog.ts, F18): this method
+   * applies unconditionally — it does not check the job's current status
+   * before writing. That is intentional. If the watchdog has already marked
+   * a wedged job FAILED and the worker's real terminal callback then arrives
+   * late (the run actually did finish), this call still commits it to
+   * DONE/PARTIAL, overwriting FAILED. Late truth wins on purpose: the
+   * watchdog's job is only to stop a stuck row from blocking the dedup guard
+   * forever, not to have the final word on outcome.
    */
   static async applyProgress(
     job: IngestJob,
@@ -556,8 +617,17 @@ export class IngestService {
    * Retry failed documents from a previous ingest job.
    *
    * Reads `stats.errors` from the source job for the list of failed ARKs.
-   * If there are no recorded per-document errors, returns `{ created: false }`.
-   * Otherwise creates a new ingest job targeting the same version with
+   * **F20**: `stats.errors` is absent exactly in the failure modes that most
+   * need recovery — a job the watchdog failed after the worker stopped
+   * reporting, or one that died before ever emitting a terminal callback,
+   * never got a `stats` write. When `stats.errors` is empty, fall back to the
+   * per-doc truth: `Document` rows within this job's `addedArks` that never
+   * made it into the index (`indexedAt` null) but carry a recorded reason
+   * (`indexError` set — written by `commitPartialFailure`). See
+   * {@link computeRetryArks} for the pure selection logic.
+   *
+   * Returns `{ created: false }` only when BOTH sources are empty. Otherwise
+   * creates a new ingest job targeting the same version with
    * `addedArks = failed ARKs` and `removedArks = []`.
    *
    * The source job may be in any state — the deduplication guard in submit()
@@ -570,16 +640,32 @@ export class IngestService {
     const job = await prisma.ingestJob.findUniqueOrThrow({ where: { id: jobId } })
 
     // Defensively read stats.errors — absent when no per-doc failures were
-    // recorded (e.g. FakeClusterRunner stub, or job died before emit).
+    // recorded (e.g. FakeClusterRunner stub, or job died/was watchdog-failed
+    // before emit).
     const stats = job.stats as Record<string, unknown> | null | undefined
     const rawErrors = stats?.errors
-    const errors = Array.isArray(rawErrors)
+    const statsErrors = Array.isArray(rawErrors)
       ? (rawErrors as { ark: string; stage: string; reason: string }[])
       : []
 
-    if (errors.length === 0) return { created: false }
+    // Only queried when stats carried nothing — the common path (a normal
+    // partial-failure retry) never touches Document here.
+    const docRows =
+      statsErrors.length === 0
+        ? await prisma.document.findMany({
+            where: {
+              projectId: job.projectId,
+              ark: { in: job.addedArks },
+              indexedAt: null,
+              indexError: { not: null },
+            },
+            select: { ark: true, indexedAt: true, indexError: true },
+          })
+        : []
 
-    const failedArks = errors.map((e) => e.ark)
+    const failedArks = computeRetryArks(statsErrors, job.addedArks, docRows)
+
+    if (failedArks.length === 0) return { created: false }
 
     const addedDocs = await IngestService._loadClusterDocs(job.projectId, failedArks)
 
@@ -602,15 +688,31 @@ export class IngestService {
     const retryCallbackBase = process.env.WORKER_CALLBACK_BASE_URL ?? env.APP_URL
     const callbackUrl = `${retryCallbackBase}/api/internal/ingest/${retryJob.id}/progress`
 
-    const { clusterJobId } = await ClusterRunner.submit({
-      projectId: job.projectId,
-      targetVersionId: job.targetVersionId,
-      appJobId: retryJob.id,
-      added: addedDocs,
-      removed: [],
-      callbackUrl,
-      callbackSecret,
-    })
+    // Same F19 treatment as submit(): a transport failure here must not leave
+    // this retry job QUEUED forever either.
+    let clusterJobId: string
+    try {
+      const result = await ClusterRunner.submit({
+        projectId: job.projectId,
+        targetVersionId: job.targetVersionId,
+        appJobId: retryJob.id,
+        added: addedDocs,
+        removed: [],
+        callbackUrl,
+        callbackSecret,
+      })
+      clusterJobId = result.clusterJobId
+    } catch (err) {
+      await prisma.ingestJob.update({
+        where: { id: retryJob.id },
+        data: {
+          status: INGEST_STATUS.FAILED,
+          error: IngestService._truncateError(err),
+          finishedAt: new Date(),
+        },
+      })
+      throw err
+    }
 
     return prisma.ingestJob.update({
       where: { id: retryJob.id },
@@ -625,6 +727,17 @@ export class IngestService {
   // ---------------------------------------------------------------------------
   // Private helpers
   // ---------------------------------------------------------------------------
+
+  /**
+   * Render a caught error as a bounded string for `IngestJob.error` (F19). A
+   * raw transport failure can carry headers/stack noise; the UI only needs
+   * enough of it to diagnose, and an unbounded string has no business in a
+   * column read by the librarian-facing panel.
+   */
+  private static _truncateError(err: unknown, max = 500): string {
+    const message = err instanceof Error ? err.message : String(err)
+    return message.length > max ? `${message.slice(0, max)}…` : message
+  }
 
   /**
    * No-op short-circuit path: added and removed are both empty.

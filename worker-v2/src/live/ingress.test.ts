@@ -94,4 +94,40 @@ test("createRunAndSeed with an empty added → zero-doc run, no metadata message
   assert.equal(totalDocs, 0);
   assert.equal((await queue.counts(Q.metadata)).queued, 0);
   assert.equal((await runStore.get(runId))?.totalDocs, 0);
+})
+
+// --- idempotency on appJobId (F19) ------------------------------------------
+
+test("two createRunAndSeed calls with the same appJobId produce ONE run — the second returns the first's runId, seeds nothing again", async () => {
+  const queue = new MemoryQueue();
+  const docState = new MemoryDocState();
+  const runStore = new MemoryRunStore();
+
+  const parsed = parseIngestRequest(validBody());
+  assert.equal(parsed.ok, true);
+  if (!parsed.ok) return;
+
+  // First POST — opens the run and seeds both docs.
+  const first = await createRunAndSeed({ runStore, docState, queue }, parsed.value);
+  assert.equal(first.totalDocs, 2);
+
+  // Second POST for the SAME appJobId — models an app-side retry after a
+  // client timeout on the first request (which may or may not have actually
+  // succeeded worker-side). Must NOT open a second run or re-seed.
+  const second = await createRunAndSeed({ runStore, docState, queue }, parsed.value);
+
+  assert.equal(second.runId, first.runId, "the retry returns the SAME runId")
+  assert.equal(second.totalDocs, first.totalDocs)
+
+  // Only one run row exists for this appJobId, and only the original 2
+  // metadata messages were ever queued (no re-seed on the second call).
+  const run = await runStore.getByAppJobId("job-1")
+  assert.ok(run)
+  assert.equal(run?.runId, first.runId)
+  assert.equal((await queue.counts(Q.metadata)).queued, 2, "the second call queued nothing new")
+})
+
+test("getByAppJobId returns null when no run has been opened for that appJobId", async () => {
+  const runStore = new MemoryRunStore();
+  assert.equal(await runStore.getByAppJobId("never-seen"), null);
 });

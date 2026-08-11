@@ -44,6 +44,14 @@ export class MemoryDocState implements DocStateStore {
     });
   }
 
+  async upsertDocs(
+    refs: { docJobId: string; projectId: string; ark: string; runId?: string | null }[],
+  ): Promise<void> {
+    // Trivial loop — the memory store has no round-trip cost to amortize; the
+    // batching only matters for the pg implementation.
+    for (const ref of refs) await this.upsertDoc(ref);
+  }
+
   private require(docJobId: string): Entry {
     const e = this.docs.get(docJobId);
     if (!e) throw new Error(`doc-state: unknown docJobId ${docJobId}`);

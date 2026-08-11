@@ -90,11 +90,25 @@ export function parseIngestRequest(
  * immediately — the caller emits its terminal event so the app commits the
  * removal. We never short-circuit it away here; the run row must exist for the
  * callback to fire.
+ *
+ * IDEMPOTENT ON appJobId (audit finding F19): the app is the only caller of
+ * `POST /ingest`, and it has its own client-side timeout independent of
+ * whether this call actually succeeded. If the app retries after a timeout
+ * (or after never receiving our response for any other transport reason), a
+ * second POST for the SAME appJobId must NOT open a second run and re-seed
+ * the same ARKs a second time — it returns the run already open for that
+ * job. This is checked first, before any run is created or any doc is
+ * touched.
  */
 export async function createRunAndSeed(
   deps: IngressDeps,
   req: ParsedIngestRequest,
 ): Promise<IngressResult> {
+  const existing = await deps.runStore.getByAppJobId(req.appJobId);
+  if (existing) {
+    return { runId: existing.runId, totalDocs: existing.totalDocs };
+  }
+
   const runId = randomUUID();
   const refs: DocRef[] = req.arks.map((ark) => ({
     projectId: req.projectId,
@@ -113,7 +127,11 @@ export async function createRunAndSeed(
     totalDocs: refs.length,
   });
 
-  for (const ref of refs) await deps.docState.upsertDoc(ref);
+  // Batch-seed (F19): one multi-row insert (chunked at 1000 in the pg impl)
+  // instead of N sequential awaits — for a large delta (465 docs in the
+  // incident that motivated this slice) the sequential form could approach
+  // the app's client timeout on its own.
+  await deps.docState.upsertDocs(refs);
   if (refs.length > 0) await deps.queue.sendMany(Q.metadata, refs);
 
   return { runId, totalDocs: refs.length };

@@ -18,6 +18,15 @@ export class MemoryRunStore implements RunStore {
     return r ? { ...r } : null;
   }
 
+  async getByAppJobId(appJobId: string): Promise<IngestRun | null> {
+    // Map insertion order is iteration order in JS — the first match is the
+    // oldest, matching the pg implementation's ORDER BY created_at ASC.
+    for (const r of this.runs.values()) {
+      if (r.appJobId === appJobId) return { ...r };
+    }
+    return null;
+  }
+
   async markTerminalEmitted(runId: string): Promise<boolean> {
     const r = this.runs.get(runId);
     if (!r || r.terminalEmitted || r.canceled) return false;
