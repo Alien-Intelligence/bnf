@@ -68,6 +68,17 @@ SELECT ark FROM "Document" WHERE "ocrAvailable" = false
    channels, the observability counters + ETA are correct, retries recover, and
    failures are isolated (no doc holds a slot hostage — the V1 killer).
 
+## Security posture
+
+The worker's HTTP ingress (`POST /ingest`, `POST /ingest/:id/cancel`) has **no
+authentication of its own** — it trusts the cluster network (any pod that can
+reach `:7777` can open or cancel a run). The broker it talks to has the same
+posture (see `../broker/README.md`). The one thing that IS authenticated is
+the terminal callback the worker POSTs back to the app: it's HMAC-signed
+(`x-callback-signature`, per-run secret) and the app verifies it byte-for-byte.
+This is accepted for the demo deployment — flagged for ISO 27001 work (F22,
+`ai-memories/tech/repos/bnf/ingest-hardening`).
+
 ## ⚠️ Safety constraints (do NOT skip)
 
 - **The BnF credential is shared (300/min via the broker).** Never run a gate

@@ -53,7 +53,9 @@ async function main(): Promise<void> {
   // The terminal commit callback + the run-completion detector. The detector is
   // wired to the pipeline's onOutcome seam (below), so a doc reaching a terminal
   // status triggers a run-completeness check → one HMAC-signed terminal event.
-  const emitter = new TerminalEmitter(docState, runStore, log);
+  const emitter = new TerminalEmitter(docState, runStore, log, {
+    maxCallbackFailures: cfg.reconcilerMaxCallbackFailures,
+  });
   const completion = new CompletionMonitor(docState, runStore, emitter, log);
 
   const pipeline = buildPipeline({

@@ -24,6 +24,15 @@ export interface IngestRunInput {
 export interface IngestRun extends IngestRunInput {
   terminalEmitted: boolean;
   canceled: boolean;
+  /**
+   * Consecutive terminal-callback POST failures (TerminalEmitter.emit's catch
+   * path). Drives the dead-callback give-up: past
+   * RECONCILER_MAX_CALLBACK_FAILURES the emitter cancels the run instead of
+   * letting the reconciler sweep re-drive a permanently-dead callback URL
+   * forever. See the dead-callback give-up item,
+   * ai-memories/tech/repos/bnf/ingest-hardening.
+   */
+  terminalPostFailures: number;
 }
 
 export interface RunStore {
@@ -58,4 +67,13 @@ export interface RunStore {
   resetTerminalEmitted(runId: string): Promise<void>;
   /** Mark the run canceled — suppresses the terminal callback. */
   markCanceled(runId: string): Promise<void>;
+  /**
+   * Increment the run's terminal-callback failure count and return the new
+   * total. Called from TerminalEmitter.emit's catch path on every failed POST
+   * (dead-callback give-up, ai-memories/tech/repos/bnf/ingest-hardening) — a
+   * run whose callback URL is permanently dead would otherwise be re-driven by
+   * every reconciler sweep forever, with no resolution and no signal beyond log
+   * spam. A no-op (returns 0) if the run doesn't exist.
+   */
+  incrementTerminalPostFailures(runId: string): Promise<number>;
 }

@@ -101,3 +101,15 @@ test("a zero-doc (removal-only) run fires immediately via checkRun", async () =>
   assert.equal(event.stage, "done");
   assert.equal(event.stats.total, 0);
 });
+
+test("checkRun on a canceled run does nothing (dead-callback give-up is honored)", async () => {
+  const { docState, runStore, monitor, posts } = wire();
+  await runStore.create(baseRun("r1", 1));
+  await docState.upsertDoc({ docJobId: "d1", projectId: "p1", ark: "ark:/12148/a", runId: "r1" });
+  await docState.setStatus("d1", "done");
+  await runStore.markCanceled("r1"); // simulates the emitter having abandoned this run
+
+  const emitted = await monitor.checkRun("r1");
+  assert.equal(emitted, false);
+  assert.equal(posts.length, 0, "a canceled run is never POSTed to again");
+});

@@ -35,6 +35,17 @@ CREATE TABLE IF NOT EXISTS sandbox_ingest_v2.ingest_run (
 CREATE INDEX IF NOT EXISTS ingest_run_app_job_id_idx
   ON sandbox_ingest_v2.ingest_run (app_job_id);
 
+-- terminal_post_failures: consecutive terminal-callback POST failures
+-- (TerminalEmitter.emit's catch path, incremented every time). Without this a
+-- run whose callback URL is permanently dead gets re-driven by every
+-- reconciler sweep forever — log spam, no resolution, while the app-side
+-- watchdog independently gives up on its own ~30min ceiling (dead-callback
+-- give-up item, ai-memories/tech/repos/bnf/ingest-hardening). Past
+-- RECONCILER_MAX_CALLBACK_FAILURES the emitter marks the run canceled instead
+-- of incrementing forever.
+ALTER TABLE sandbox_ingest_v2.ingest_run
+  ADD COLUMN IF NOT EXISTS terminal_post_failures integer NOT NULL DEFAULT 0;
+
 CREATE TABLE IF NOT EXISTS sandbox_ingest_v2.document_ingest_job_v2 (
   doc_job_id     text PRIMARY KEY,
   run_id         text,                       -- groups docs by ingest_run (null for seed-CLI docs)

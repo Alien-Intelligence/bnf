@@ -130,6 +130,12 @@ worker:
     # Google AI — vision provider (primary or fallback per visionPrimary). Key is a secret.
     geminiVisionModel: gemma-4-31b-it
     visionPrimary: holo
+    # How long describeViaGemini waits for the `@google/genai` SDK call before
+    # giving up (F26, ai-memories/tech/repos/bnf/ingest-hardening — this used to
+    # have no bound at all). The SDK takes no AbortSignal, so this only bounds
+    # OUR wait; describeImage's caller treats the resulting throw the same as
+    # any other provider failure (falls through to the next round/provider).
+    geminiTimeoutMs: "60000"
 
     # OpenRouter — the PRIMARY vision provider (Holo/Gemini are fallbacks). The paid
     # key has no per-key RPM cap, so throughput is bounded only by upstream provider
@@ -206,6 +212,15 @@ worker:
     # on a wedge against two cheap queries per active run.
     reconcilerIntervalMs: "60000"
     reconcilerMaxRequeues: "3"
+    # How many consecutive terminal-callback POST failures a run may accumulate
+    # (TerminalEmitter.emit's catch path, one failure per sweep re-drive) before
+    # the worker gives up and marks it canceled instead of retrying forever.
+    # 120 ≈ 2h of sweeps at the 60s cadence above — long enough to ride out a
+    # transient app outage, short enough that a permanently-dead callback URL
+    # stops spamming the log every sweep. The app-side watchdog independently
+    # fails the app job on its own ~30min ceiling, so this is well past that
+    # (dead-callback give-up item, ai-memories/tech/repos/bnf/ingest-hardening).
+    reconcilerMaxCallbackFailures: "120"
     # Per-folio fetch timeout (ms). 135s sits just ABOVE the broker's 120s upstream
     # timeout so the broker's own classifiable timeout fires first, instead of the
     # worker aborting the broker mid-flight (which logged opaque "operation was

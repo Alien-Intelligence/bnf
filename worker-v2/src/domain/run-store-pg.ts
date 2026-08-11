@@ -26,6 +26,7 @@ interface RunRow {
   total_docs: number;
   terminal_emitted: boolean;
   canceled: boolean;
+  terminal_post_failures: number;
 }
 
 function toRun(r: RunRow): IngestRun {
@@ -39,6 +40,7 @@ function toRun(r: RunRow): IngestRun {
     totalDocs: r.total_docs,
     terminalEmitted: r.terminal_emitted,
     canceled: r.canceled,
+    terminalPostFailures: r.terminal_post_failures,
   };
 }
 
@@ -113,5 +115,16 @@ export class PgRunStore implements RunStore {
       `UPDATE ${RUNS} SET canceled = true, updated_at = now() WHERE run_id = $1`,
       [runId],
     );
+  }
+
+  async incrementTerminalPostFailures(runId: string): Promise<number> {
+    const { rows } = await this.pool.query<{ terminal_post_failures: number }>(
+      `UPDATE ${RUNS}
+         SET terminal_post_failures = terminal_post_failures + 1, updated_at = now()
+       WHERE run_id = $1
+       RETURNING terminal_post_failures`,
+      [runId],
+    );
+    return rows[0]?.terminal_post_failures ?? 0;
   }
 }

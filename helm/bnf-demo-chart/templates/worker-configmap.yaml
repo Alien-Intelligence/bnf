@@ -23,6 +23,8 @@ data:
   # --- Google AI (vision provider) ---
   GEMINI_VISION_MODEL: {{ .Values.worker.config.geminiVisionModel | quote }}
   VISION_PRIMARY: {{ .Values.worker.config.visionPrimary | quote }}
+  # Bound on the Gemini SDK's generateContent call (F26, ai-memories/tech/repos/bnf/ingest-hardening).
+  GEMINI_TIMEOUT_MS: {{ .Values.worker.config.geminiTimeoutMs | quote }}
 
   # --- OpenRouter (primary vision provider) ---
   # The API key is a secret (worker-creds: OPENROUTER_API_KEY).
@@ -114,4 +116,9 @@ data:
   # Re-drives allowed per doc before it fails as `stranded_after_requeues` — a
   # poisoned doc must stop consuming quota AND stop blocking its run.
   RECONCILER_MAX_REQUEUES: {{ .Values.worker.config.reconcilerMaxRequeues | quote }}
+  # Consecutive terminal-callback POST failures before the emitter gives up on
+  # a run and cancels it (dead-callback give-up item,
+  # ai-memories/tech/repos/bnf/ingest-hardening) — otherwise a permanently-dead
+  # callback URL gets re-driven by every sweep forever.
+  RECONCILER_MAX_CALLBACK_FAILURES: {{ .Values.worker.config.reconcilerMaxCallbackFailures | quote }}
 {{- end }}

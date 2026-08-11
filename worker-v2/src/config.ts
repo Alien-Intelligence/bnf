@@ -23,6 +23,20 @@ function optionalBool(name: string, fallback: boolean): boolean {
   if (v !== "true" && v !== "false") throw new Error(`${name} must be "true"|"false", got ${v}`);
   return v === "true";
 }
+/** A ratio var (0 < v <= 1) — NaN or an out-of-range value throws rather than
+ *  silently disabling whatever gate reads it (F23,
+ *  ai-memories/tech/repos/bnf/ingest-hardening: `Number(env ?? fallback)` let a
+ *  typo'd DOC_FAIL_RATIO become NaN, which compares false against every ratio
+ *  and quietly turns the Monitor's fail-ratio gate off). */
+function optionalFloat(name: string, fallback: number): number {
+  const v = process.env[name];
+  if (v == null || v.trim() === "") return fallback;
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0 || n > 1) {
+    throw new Error(`${name} must be a number in (0, 1], got ${v}`);
+  }
+  return n;
+}
 
 export interface WorkerConfig {
   databaseUrl: string;
@@ -114,6 +128,19 @@ export interface WorkerConfig {
    * consuming quota and lets its run complete.
    */
   reconcilerMaxRequeues: number;
+  /**
+   * How many consecutive terminal-callback POST failures a run may accumulate
+   * (across every sweep's retry, TerminalEmitter.emit's catch path) before the
+   * worker gives up and marks it canceled instead of retrying forever. 120 ≈ 2h
+   * of sweeps at the default 60s cadence — long enough to ride out a transient
+   * app outage, short enough that a permanently-dead callback URL stops
+   * spamming the log every sweep. The app-side watchdog independently fails the
+   * app job on its own ~30min ceiling, so by the time this fires the app has
+   * already moved on; a human can resurrect via resetTerminalEmitted +
+   * un-canceling the row manually if ever needed. See the dead-callback
+   * give-up item, ai-memories/tech/repos/bnf/ingest-hardening.
+   */
+  reconcilerMaxCallbackFailures: number;
 }
 
 export function loadConfig(): WorkerConfig {
@@ -146,8 +173,9 @@ export function loadConfig(): WorkerConfig {
     embedConcurrency: optionalInt("EMBED_CONCURRENCY", 8),
     ocrSubmitConcurrency: optionalInt("OCR_SUBMIT_CONCURRENCY", 12),
     ocrPollConcurrency: optionalInt("OCR_POLL_CONCURRENCY", 16),
-    failRatio: Number(process.env.DOC_FAIL_RATIO ?? "0.25"),
+    failRatio: optionalFloat("DOC_FAIL_RATIO", 0.25),
     reconcilerIntervalMs: optionalInt("RECONCILER_INTERVAL_MS", 60_000),
     reconcilerMaxRequeues: optionalInt("RECONCILER_MAX_REQUEUES", 3),
+    reconcilerMaxCallbackFailures: optionalInt("RECONCILER_MAX_CALLBACK_FAILURES", 120),
   };
 }

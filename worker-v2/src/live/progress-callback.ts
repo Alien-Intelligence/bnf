@@ -14,6 +14,16 @@
  * win the emit; a failed POST releases the latch so a later completion check
  * retries. The app's applyProgress is itself idempotent (a redelivered terminal
  * overwrites), so a rare double-fire is harmless.
+ *
+ * Dead-callback give-up: a released latch means the reconciler sweep retries the
+ * POST every sweep forever if the callback URL never comes back — log spam, no
+ * resolution, while the app-side watchdog independently gives up on its own
+ * ~30min ceiling. So every failed POST also increments the run's
+ * `terminal_post_failures` counter; past `maxCallbackFailures` the run is marked
+ * canceled (suppressing further emit attempts via the existing canceled check in
+ * `checkRun`/`emit`) and an error-level `terminal_callback_abandoned` is logged.
+ * A human can resurrect an abandoned run by hand (resetTerminalEmitted + clearing
+ * `canceled` directly in the DB) if the callback URL is ever fixed.
  */
 import crypto from "node:crypto";
 
@@ -131,12 +141,21 @@ export interface TerminalEmitterOpts {
   backoffMs?: number;
   /** Injectable fetch for tests; defaults to the global fetch. */
   fetchFn?: typeof fetch;
+  /**
+   * How many times `emit` may fail (across every call — the reconciler sweep
+   * retries a released latch every RECONCILER_INTERVAL_MS) before the run is
+   * marked canceled instead of retried again (default 120, matching
+   * config.ts's RECONCILER_MAX_CALLBACK_FAILURES default — see the
+   * dead-callback give-up item, ai-memories/tech/repos/bnf/ingest-hardening).
+   */
+  maxCallbackFailures?: number;
 }
 
 export class TerminalEmitter {
   private readonly maxAttempts: number;
   private readonly backoffMs: number;
   private readonly fetchFn: typeof fetch;
+  private readonly maxCallbackFailures: number;
 
   constructor(
     private readonly docState: DocStateStore,
@@ -147,6 +166,7 @@ export class TerminalEmitter {
     this.maxAttempts = opts.maxAttempts ?? 4;
     this.backoffMs = opts.backoffMs ?? 500;
     this.fetchFn = opts.fetchFn ?? fetch;
+    this.maxCallbackFailures = opts.maxCallbackFailures ?? 120;
   }
 
   /**
@@ -187,10 +207,23 @@ export class TerminalEmitter {
       return true;
     } catch (e) {
       await this.runStore.resetTerminalEmitted(run.runId);
+      const failures = await this.runStore.incrementTerminalPostFailures(run.runId);
       this.log.error("terminal_emit_failed", {
         runId: run.runId,
         error: e instanceof Error ? e.message : String(e),
+        terminalPostFailures: failures,
       });
+      if (failures > this.maxCallbackFailures) {
+        // The callback URL is permanently dead — stop letting the reconciler
+        // sweep re-drive it forever. markCanceled makes checkRun/emit's canceled
+        // check a no-op from here on (F8's guard, reused as the give-up path).
+        await this.runStore.markCanceled(run.runId);
+        this.log.error("terminal_callback_abandoned", {
+          runId: run.runId,
+          appJobId: run.appJobId,
+          attempts: failures,
+        });
+      }
       throw e;
     }
   }

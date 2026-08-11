@@ -18,6 +18,10 @@ GET  /health  -> {"ok": true}
 
 Only `*.bnf.fr` upstreams are accepted (SSRF guard). Partner-API hosts get a Bearer token + the global cap; manifests additionally take the manifest cap; ungated hosts use the politeness bucket and no auth.
 
+## Security posture
+
+`POST /fetch` and `GET /calls.csv` have **no authentication of their own** — the broker trusts the cluster network (any pod that can reach `:8792` can fetch through it or read the call log). This is accepted for the demo deployment: the broker is not exposed outside the cluster, and the real secret it protects (the BnF `KEY`/`SECRET`) never leaves it. Flagged for ISO 27001 work (F22, `ai-memories/tech/repos/bnf/ingest-hardening`) — a production posture would put a shared bearer token or mTLS between the worker/app and the broker instead of relying on network placement alone.
+
 ## Run
 
 ```bash

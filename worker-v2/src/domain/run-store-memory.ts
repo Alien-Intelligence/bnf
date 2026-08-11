@@ -10,7 +10,12 @@ export class MemoryRunStore implements RunStore {
 
   async create(input: IngestRunInput): Promise<void> {
     if (this.runs.has(input.runId)) return; // idempotent on runId
-    this.runs.set(input.runId, { ...input, terminalEmitted: false, canceled: false });
+    this.runs.set(input.runId, {
+      ...input,
+      terminalEmitted: false,
+      canceled: false,
+      terminalPostFailures: 0,
+    });
   }
 
   async get(runId: string): Promise<IngestRun | null> {
@@ -49,5 +54,12 @@ export class MemoryRunStore implements RunStore {
   async markCanceled(runId: string): Promise<void> {
     const r = this.runs.get(runId);
     if (r) r.canceled = true;
+  }
+
+  async incrementTerminalPostFailures(runId: string): Promise<number> {
+    const r = this.runs.get(runId);
+    if (!r) return 0;
+    r.terminalPostFailures += 1;
+    return r.terminalPostFailures;
   }
 }

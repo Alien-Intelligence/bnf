@@ -165,6 +165,7 @@ function run(overrides: Partial<IngestRun> = {}): IngestRun {
     totalDocs: 1,
     terminalEmitted: false,
     canceled: false,
+    terminalPostFailures: 0,
     ...overrides,
   };
 }
@@ -228,7 +229,51 @@ test("emit releases the latch and throws when the callback never succeeds", asyn
   await assert.rejects(() => emitter.emit(r));
   assert.equal(calls, 2); // retried up to maxAttempts
   // Latch released → a later check can retry.
-  assert.equal((await runStore.get("run-1"))?.terminalEmitted, false);
+  const after = await runStore.get("run-1");
+  assert.equal(after?.terminalEmitted, false);
+  // The failure was counted (dead-callback give-up bookkeeping).
+  assert.equal(after?.terminalPostFailures, 1);
+  assert.equal(after?.canceled, false); // one failure alone doesn't abandon the run
+});
+
+test("crossing maxCallbackFailures cancels the run and logs terminal_callback_abandoned", async () => {
+  const docState = new MemoryDocState();
+  await docState.upsertDoc({ docJobId: "d1", projectId: "p1", ark: "ark:/12148/a", runId: "run-1" });
+  await docState.setStatus("d1", "done");
+  const runStore = new MemoryRunStore();
+  await runStore.create(run());
+  const { logger, lines } = createMemoryLogger();
+
+  const fetchFn = (async () => new Response("nope", { status: 500 })) as typeof fetch;
+  const emitter = new TerminalEmitter(docState, runStore, logger, {
+    fetchFn,
+    maxAttempts: 1,
+    backoffMs: 1,
+    maxCallbackFailures: 2,
+  });
+
+  // Every completion check re-claims the latch (released by the previous
+  // failure) and fails the POST again — exactly what the reconciler sweep does
+  // on repeated ticks against a permanently dead callback URL.
+  for (let i = 0; i < 3; i++) {
+    const r = (await runStore.get("run-1"))!;
+    await assert.rejects(() => emitter.emit(r));
+  }
+
+  const finalRun = await runStore.get("run-1");
+  assert.equal(finalRun?.terminalPostFailures, 3);
+  assert.equal(finalRun?.canceled, true, "abandoned past the cap");
+
+  const abandoned = lines.find((l) => l.event === "terminal_callback_abandoned");
+  assert.ok(abandoned, "logs terminal_callback_abandoned");
+  assert.equal(abandoned?.level, "error");
+  assert.equal(abandoned?.runId, "run-1");
+  assert.equal(abandoned?.appJobId, "job-1");
+  assert.equal(abandoned?.attempts, 3);
+
+  // A canceled run is never re-claimed again — the give-up actually sticks.
+  const after = (await runStore.get("run-1"))!;
+  assert.equal(await runStore.markTerminalEmitted(after.runId), false);
 });
 
 test("emit pulls listDoneWithDrops into the POSTed event's warning channel", async () => {
