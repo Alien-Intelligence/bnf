@@ -110,7 +110,7 @@ worker:
   image:
     repository: rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo-worker
     pullPolicy: Always
-    tag: "0.14.0"
+    tag: "0.14.1"
 
   service:
     type: ClusterIP
