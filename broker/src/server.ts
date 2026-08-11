@@ -2,10 +2,11 @@
  * BnF broker — the single egress chokepoint for all BnF traffic.
  *
  * Generalises the demo `gallica-relay` into a real gateway: it owns the OAuth
- * token (single-flight), enforces the shared 300/min global + 12/min-per-IP
- * manifest + politeness buckets, and centralises 429/Retry-After backoff. The
- * BnF KEY/SECRET live ONLY here — the app and worker hold no BnF credentials,
- * they just POST a fetch request and get the upstream status + bytes verbatim.
+ * token (single-flight), enforces the partner API's two SEPARATE budgets
+ * (1000/min global + 40/min IIIF manifest) plus a politeness bucket for
+ * ungated hosts, and centralises 429/Retry-After backoff. The BnF KEY/SECRET
+ * live ONLY here — the app and worker hold no BnF credentials, they just POST
+ * a fetch request and get the upstream status + bytes verbatim.
  *
  * Contract (mirrors the relay so clients stay trivial):
  *   POST /fetch       {"url": "...", "accept": "..."}  -> upstream status + body verbatim
@@ -22,43 +23,11 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 
 import { fetch as undiciFetch } from "undici";
 
-import {
-  config,
-  isAllowedUpstream,
-  isManifest,
-  isPartnerApi,
-} from "./config.js";
+import { config, isAllowedUpstream, isManifest, isPartnerApi } from "./config.js";
 import { callCount, recordCall, resetCalls, toCsv } from "./calls.js";
-import { RateWaitTimeoutError, retryAfterToEpochMs, TokenBucket } from "./rate.js";
+import { buckets, planFor } from "./plan.js";
+import { RateWaitTimeoutError, retryAfterToEpochMs } from "./rate.js";
 import { getAuthHeader, invalidateToken } from "./token.js";
-
-const buckets = {
-  global: new TokenBucket({ rpm: config.globalRpm, burst: config.globalBurst }),
-  manifest: new TokenBucket({ rpm: config.manifestRpm, burst: config.manifestBurst }),
-  external: new TokenBucket({ rpm: config.externalRpm, burst: config.externalBurst }),
-};
-
-interface Plan {
-  /** Buckets to acquire before sending, in order. */
-  acquire: TokenBucket[];
-  /** Whether to attach a Bearer token (partner API only). */
-  auth: boolean;
-  /** Bucket(s) to freeze on a 429 from this upstream. */
-  penalize: TokenBucket[];
-}
-
-/** Decide which buckets + auth a target upstream needs. */
-function planFor(target: URL): Plan {
-  if (isPartnerApi(target)) {
-    if (isManifest(target)) {
-      return { acquire: [buckets.global, buckets.manifest], auth: true, penalize: [buckets.global, buckets.manifest] };
-    }
-    return { acquire: [buckets.global], auth: true, penalize: [buckets.global] };
-  }
-  // Ungated hosts (oai/catalogue/data.bnf.fr): politeness bucket, no auth, NOT
-  // counted against the partner 300/min.
-  return { acquire: [buckets.external], auth: false, penalize: [buckets.external] };
-}
 
 function send(res: ServerResponse, status: number, contentType: string, body: Buffer | string): void {
   const buf = typeof body === "string" ? Buffer.from(body) : body;
@@ -154,7 +123,7 @@ async function handleFetch(req: IncomingMessage, res: ServerResponse): Promise<v
 
   const tAcquireStart = Date.now();
   try {
-    for (const b of plan.acquire) await b.acquire(config.acquireMaxWaitMs);
+    for (const name of plan.acquire) await buckets[name].acquire(config.acquireMaxWaitMs);
   } catch (e) {
     if (e instanceof RateWaitTimeoutError) {
       // Bucket contended/frozen beyond the wait budget — shed with 429 so the
@@ -211,7 +180,7 @@ async function handleFetch(req: IncomingMessage, res: ServerResponse): Promise<v
   let note = reminted ? "remint" : "ok";
   if (upstream.status === 429) {
     const until = retryAfterToEpochMs(retryAfter ?? undefined, 60_000);
-    for (const b of plan.penalize) b.penalizeUntil(until);
+    for (const name of plan.penalize) buckets[name].penalizeUntil(until);
     console.warn(`[broker] 429 from ${target.host}${target.pathname} — bucket frozen until ${new Date(until).toISOString()}`);
     note = "freeze";
   } else if (upstream.status === 403 && !isPartnerApi(target)) {
@@ -221,7 +190,7 @@ async function handleFetch(req: IncomingMessage, res: ServerResponse): Promise<v
     // (A 403 from the partner API IS an auth/scope failure; freezing wouldn't
     // help, so it's mirrored through untouched.) See bnf-gallica-ip-throttle.
     const until = Date.now() + config.forbiddenBackoffMs;
-    for (const b of plan.penalize) b.penalizeUntil(until);
+    for (const name of plan.penalize) buckets[name].penalizeUntil(until);
     console.warn(`[broker] 403 (IP throttle) from ${target.host}${target.pathname} — bucket frozen ${config.forbiddenBackoffMs}ms`);
     note = "freeze_403";
   }

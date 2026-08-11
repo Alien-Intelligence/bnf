@@ -1,11 +1,11 @@
 # BnF Broker
 
-The single egress chokepoint for all BnF traffic (app metadata resolver + ingest worker). It exists because the BnF partner API enforces a **shared 300/min global** quota across all APIs per credential, plus a **40/min-per-IP** cap on IIIF manifests — limits that two independent processes cannot honour without one coordination point.
+The single egress chokepoint for all BnF traffic (app metadata resolver + ingest worker). It exists because the BnF partner API enforces a **shared 1000/min global** quota across all APIs per credential, plus a **separate 40/min-per-IP** budget on IIIF manifests (confirmed 2026-08-11; the earlier agreement was 300/min) — limits that two independent processes cannot honour without one coordination point.
 
 ## What it owns
 
 - **OAuth token** — single-flight client_credentials mint, ~1h bearer, re-minted at expiry − skew. The BnF `KEY`/`SECRET` live ONLY here.
-- **Rate governance** — configurable token buckets: `global` (300/min), `manifest` (40/min/IP), `external` (politeness for the ungated `oai`/`catalogue`/`data` hosts, not counted against the partner quota).
+- **Rate governance** — configurable token buckets: `global` (1000/min), `manifest` (40/min/IP, a **separate** budget — manifest calls neither consume nor freeze the global bucket), `external` (politeness for the ungated `oai`/`catalogue`/`data` hosts, not counted against the partner quota).
 - **429 backoff** — parses the absolute-GMT `Retry-After`, freezes the offending bucket until then, and mirrors the 429 to the caller.
 
 ## Contract

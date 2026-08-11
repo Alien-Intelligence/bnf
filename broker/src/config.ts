@@ -58,20 +58,27 @@ export const config = {
   // Upstream hosts. Authenticated partner API vs the ungated OAI host.
   // The AUTHENTICATED partner gateway is openapiproext.bnf.fr — NOT openapi.bnf.fr.
   // openapi.bnf.fr serves IIIF on a public, no-token, anonymous-per-IP pool (our
-  // calls there wouldn't count against the 300/min app quota and get throttled
-  // behind the shared egress IP). openapiproext.bnf.fr requires the Bearer (401
-  // without) and attributes usage to our credential. Verified live 2026-06-24.
+  // calls there wouldn't count against our partner-API quota at all, and get
+  // throttled behind the shared egress IP instead). openapiproext.bnf.fr
+  // requires the Bearer (401 without) and attributes usage to our credential.
+  // Verified live 2026-06-24.
   apiBaseUrl: url("BNF_API_BASE_URL", "https://openapiproext.bnf.fr"),
 
-  // Rate buckets (requests/min), env-overridable (no rebuild). Global = 300, the
-  // REAL provisioned quota (Ludovic fixed it 2026-06-25 — the earlier "100" was a
-  // mis-clicked tier that 429'd us every minute, NOT BnF's true ceiling). Verified
-  // live via the broker call log: freeze (real BnF 429) dropped to ~0 once the
-  // quota was corrected. Manifest 40/min/IP. Fixed clock-minute windows. See
-  // ai-memories bnf-partner-api-design.
-  globalRpm: num("BNF_GLOBAL_RPM", 300), //   partner API, all endpoints combined
+  // Rate buckets (requests/min), env-overridable (no rebuild).
+  //
+  // History: global started at 300 (Ludovic fixed it 2026-06-25 — the earlier
+  // "100" was a mis-clicked tier that 429'd us every minute, NOT BnF's true
+  // ceiling); manifest went 12→40/min/IP on 2026-06-24.
+  //
+  // Present (Leo, 2026-08-11): the confirmed agreement is 1000/min global +
+  // 40/min manifest as TWO SEPARATE budgets, not one bucket the manifest
+  // shares. `planFor` (plan.ts) acquires/penalizes manifests against the
+  // manifest bucket ONLY — a manifest request never spends a global token,
+  // and a manifest 429 never freezes non-manifest partner traffic (F5). See
+  // ai-memories bnf-partner-api-design and tech/repos/bnf/ingest-hardening.
+  globalRpm: num("BNF_GLOBAL_RPM", 1000), // partner API, everything except manifests
   globalBurst: num("BNF_GLOBAL_BURST", 20),
-  manifestRpm: num("BNF_MANIFEST_RPM", 40), // IIIF manifest, per IP (BnF raised 12→40 on 2026-06-24)
+  manifestRpm: num("BNF_MANIFEST_RPM", 40), // IIIF manifest — separate budget, not shared with global
   manifestBurst: num("BNF_MANIFEST_BURST", 4),
   externalRpm: num("BNF_EXTERNAL_RPM", 120), // ungated hosts (oai/catalogue/data) — politeness only
   externalBurst: num("BNF_EXTERNAL_BURST", 20),
@@ -92,7 +99,16 @@ export const config = {
    * the broker SHEDS it with a 429 (callers' retry policy treats 429 as
    * transient and backs off). Without this, a far-future 429-freeze would
    * serialize every queued request behind the whole freeze window — the §14
-   * unbounded-await anti-pattern. Kept below the clients' 30s per-call timeout.
+   * unbounded-await anti-pattern. The property that matters is not a specific
+   * number but the RELATION: this must sit well below any client's per-call
+   * timeout, so the shed 429 always beats the client giving up on its own —
+   * a client abort produces an opaque "aborted" failure the caller can't
+   * classify, where a 429 is an honest, actionable signal. Worker client
+   * timeouts are currently 45s (metadata-path) / 135s (page-path); this stays
+   * far below both. (Stale note: an earlier version of this comment cited a
+   * 30s client timeout that no longer exists — fixed 2026-08-11.) This budget
+   * is now measured from `acquire()`'s own call time, not from whenever the
+   * FIFO chain gets around to the caller (F3) — see rate.ts.
    */
   acquireMaxWaitMs: num("BNF_ACQUIRE_MAX_WAIT_MS", 10_000),
   /**
@@ -132,12 +148,12 @@ export function isAllowedUpstream(target: URL): boolean {
   return target.hostname === "bnf.fr" || target.hostname.endsWith(".bnf.fr");
 }
 
-/** The authenticated partner API host (gets a Bearer token + the global cap). */
+/** The authenticated partner API host (gets a Bearer token + the SEPARATE global/manifest caps). */
 export function isPartnerApi(target: URL): boolean {
   return target.host === partnerApiHost;
 }
 
-/** A IIIF Presentation manifest — the 12/min-per-IP bucket. */
+/** A IIIF Presentation manifest — routed to the SEPARATE 40/min manifest bucket, not global. */
 export function isManifest(target: URL): boolean {
   return /\/presentation\/v\d+\/.*\/manifest\.json$/.test(target.pathname);
 }
