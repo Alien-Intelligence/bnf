@@ -166,6 +166,13 @@ worker:
     # stuck batch fails the doc itself instead of being killed by an expiration
     # (which runs no handler code and orphans the doc).
     mistralOcrBatchTimeoutMs: "1800000"
+    # IIIF size requested for OCR-lane folio images. "max" is today's behaviour.
+    # F13 sizing-experiment prep (ai-memories/tech/repos/bnf/ingest-hardening):
+    # full-res dense 1949 broadsheets are the hypothesized cause of Mistral OCR
+    # hallucinating on the Nice-Matin corpus. The live max/pct:50/tiling A-B
+    # test runs in the validation phase, not via this default — change it only
+    # once that experiment names a winner.
+    mistralImageSize: "max"
 
     # RunPod bge-m3 embedder. Key is a secret.
     runpodEndpointId: pngrbp0y1aj28i

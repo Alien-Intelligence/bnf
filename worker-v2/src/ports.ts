@@ -33,9 +33,33 @@ export interface OcrEngine {
   pollBatch(batchId: string): Promise<OcrBatchStatus>;
 }
 
+/** Pages dropped by the honest parse (F14) — never silently absorbed. */
+export interface OcrDropCounts {
+  /** Legitimately blank folio (empty/whitespace-only markdown). */
+  empty: number;
+  /** Dropped by looksLikeHallucinatedOcr — Mistral fabricated filler. */
+  hallucinated: number;
+}
+
+/** One batch-output entry that failed at the REQUEST level (a per-line
+ *  `error`, or a non-2xx `response.status_code`) or couldn't be parsed at all
+ *  (malformed JSON / unrecognized custom_id — `ordre` is null for those). */
+export interface OcrEntryError {
+  ordre: number | null;
+  error: string;
+}
+
 export type OcrBatchStatus =
   | { state: "pending" }
-  | { state: "done"; pages: PreparedPage[] }
+  | {
+      state: "done";
+      pages: PreparedPage[];
+      dropped: OcrDropCounts;
+      entryErrors: OcrEntryError[];
+      /** Mistral's own succeeded/failed request counters for this batch. */
+      succeeded: number;
+      failed: number;
+    }
   | { state: "failed"; reason: string };
 
 /** RunPod (or any) embedder — vectors for a doc's page texts. */

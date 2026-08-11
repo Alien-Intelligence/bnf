@@ -9,6 +9,7 @@ import type {
   DocScope,
   DocStateStore,
   DocStatus,
+  DroppedPagesDoc,
   FailedDoc,
   FolioRecord,
   FolioTally,
@@ -43,6 +44,8 @@ export class MemoryDocState implements DocStateStore {
       error: null,
       skipReason: null,
       requeues: 0,
+      pagesDropped: 0,
+      dropReason: null,
       folios: new Map(),
     });
   }
@@ -165,6 +168,28 @@ export class MemoryDocState implements DocStateStore {
       .filter((e) => e.runId === runId && e.status === "failed")
       .sort((a, b) => a.ark.localeCompare(b.ark))
       .map((e) => ({ ark: e.ark, lane: e.lane, error: e.error }));
+  }
+
+  async recordPageDrops(
+    docJobId: string,
+    drop: { dropped: number; expected: number; reason: string },
+  ): Promise<void> {
+    const e = this.require(docJobId);
+    e.pagesDropped = Math.min(drop.dropped, drop.expected);
+    e.dropReason = drop.reason;
+  }
+
+  async listDoneWithDrops(runId: string): Promise<DroppedPagesDoc[]> {
+    return [...this.docs.values()]
+      .filter((e) => e.runId === runId && e.status === "done" && e.pagesDropped > 0)
+      .sort((a, b) => a.ark.localeCompare(b.ark))
+      .map((e) => ({
+        ark: e.ark,
+        lane: e.lane,
+        pagesDropped: e.pagesDropped,
+        pagesExpected: e.pagesExpected,
+        dropReason: e.dropReason,
+      }));
   }
 
   async donePageCount(runId: string): Promise<number> {

@@ -44,6 +44,9 @@ data:
   MISTRAL_OCR_MAX_PAGES: {{ .Values.worker.config.mistralOcrMaxPages | quote }}
   MISTRAL_OCR_POLL_INTERVAL_MS: {{ .Values.worker.config.mistralOcrPollIntervalMs | quote }}
   MISTRAL_OCR_BATCH_TIMEOUT_MS: {{ .Values.worker.config.mistralOcrBatchTimeoutMs | quote }}
+  # OCR-lane folio image size — see values.yaml's comment (F13 sizing-experiment
+  # prep, ai-memories/tech/repos/bnf/ingest-hardening).
+  MISTRAL_IMAGE_SIZE: {{ .Values.worker.config.mistralImageSize | quote }}
 {{- end }}
 
   # --- RunPod embedder ---

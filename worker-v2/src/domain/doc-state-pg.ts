@@ -22,6 +22,7 @@ import type {
   DocScope,
   DocStateStore,
   DocStatus,
+  DroppedPagesDoc,
   FailedDoc,
   FolioRecord,
   FolioTally,
@@ -46,6 +47,8 @@ interface JobRow {
   error: string | null;
   skip_reason: string | null;
   requeues: number;
+  pages_dropped: number;
+  drop_reason: string | null;
   pages_done: string;
   pages_failed: string;
 }
@@ -65,6 +68,8 @@ function toDocRow(r: JobRow): DocRow {
     error: r.error,
     skipReason: r.skip_reason,
     requeues: Number(r.requeues),
+    pagesDropped: Number(r.pages_dropped),
+    dropReason: r.drop_reason,
   };
 }
 
@@ -299,6 +304,41 @@ export class PgDocState implements DocStateStore {
       [runId],
     );
     return rows.map((r) => ({ ark: r.ark, lane: r.lane, error: r.error }));
+  }
+
+  async recordPageDrops(
+    docJobId: string,
+    drop: { dropped: number; expected: number; reason: string },
+  ): Promise<void> {
+    const dropped = Math.min(drop.dropped, drop.expected);
+    await this.pool.query(
+      `UPDATE ${JOBS}
+         SET pages_dropped = $2, drop_reason = $3, updated_at = now()
+       WHERE doc_job_id = $1`,
+      [docJobId, dropped, drop.reason],
+    );
+  }
+
+  async listDoneWithDrops(runId: string): Promise<DroppedPagesDoc[]> {
+    const { rows } = await this.pool.query<{
+      ark: string;
+      lane: Lane | null;
+      pages_dropped: number;
+      pages_expected: number | null;
+      drop_reason: string | null;
+    }>(
+      `SELECT ark, lane, pages_dropped, pages_expected, drop_reason FROM ${JOBS}
+       WHERE run_id = $1 AND status = 'done' AND pages_dropped > 0
+       ORDER BY ark ASC`,
+      [runId],
+    );
+    return rows.map((r) => ({
+      ark: r.ark,
+      lane: r.lane,
+      pagesDropped: Number(r.pages_dropped),
+      pagesExpected: r.pages_expected,
+      dropReason: r.drop_reason,
+    }));
   }
 
   async donePageCount(runId: string): Promise<number> {

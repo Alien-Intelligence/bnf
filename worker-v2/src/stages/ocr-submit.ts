@@ -9,6 +9,16 @@
  * batch handle in S3 (keys.ocrBatch): a redelivered submit reuses the existing
  * batch_id and re-emits the poll pointer rather than paying twice. (So it does
  * NOT use the base outcome cache, whose re-dispatch could mask a re-submit.)
+ *
+ * Un-poison invariant (F15, ai-memories/tech/repos/bnf/ingest-hardening): this
+ * dedupe is only safe because ocr-poll.ts DELETES the handle on any batch
+ * outcome that will never become usable (a `failed` poll state, or a SUCCESS
+ * with zero surviving pages) — see the invariant note there. That means this
+ * stage's `getJson(keys.ocrBatch(...))` check only ever sees a LIVE (pending)
+ * or SUCCESSFUL handle; it never needs to distinguish "in flight" from "dead"
+ * itself. Before that fix, a terminally-failed batch's id was reused forever,
+ * so a re-ingest of a failed ARK re-polled the same dead batch and failed
+ * identically every time.
  */
 import { PipelineStage, type StageDeps } from "../core/stage.js";
 import type { StageContext, StageOutcome } from "../core/types.js";

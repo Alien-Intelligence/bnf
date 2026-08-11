@@ -60,6 +60,18 @@ export interface WorkerConfig {
    *  ("max") images time out the vision API under concurrency; vision only needs
    *  a description. Mistral OCR keeps full res. */
   visionImageSize: string;
+  /**
+   * IIIF size for the MISTRAL-lane (OCR) images — FetchStage's `imageSize` opt
+   * (fetch.ts: "max" for every lane except vision, which gets its own
+   * downscale above). Sizing-experiment prep (F13 §6,
+   * ai-memories/tech/repos/bnf/ingest-hardening): full-res dense 1949
+   * broadsheets are the hypothesized cause of Mistral OCR's hallucination on
+   * the Nice-Matin corpus (analogous to why the vision lane already downscales
+   * to pct:33). Defaults to today's behaviour ("max") — the live A/B
+   * (max vs pct:50 vs tiling) runs in the validation phase, not here; this only
+   * makes the knob configurable without a code change once a winner is chosen.
+   */
+  mistralImageSize: string;
   /** Vision-lane DOC concurrency — how many docs the describe stage processes at
    *  once. */
   describeConcurrency: number;
@@ -123,6 +135,7 @@ export function loadConfig(): WorkerConfig {
     fetchConcurrency: optionalInt("BNF_FETCH_CONCURRENCY", 32),
     manifestRatePerMin: optionalInt("BNF_MANIFEST_RPM", 42),
     visionImageSize: process.env.VISION_IMAGE_SIZE?.trim() || "pct:33",
+    mistralImageSize: process.env.MISTRAL_IMAGE_SIZE?.trim() || "max",
     describeConcurrency: optionalInt("DESCRIBE_CONCURRENCY", 16),
     // 64: the vision lane is the bottleneck and the paid OpenRouter key has no
     // per-key RPM cap — push concurrency hard and let the in-call 429/timeout

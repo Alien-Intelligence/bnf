@@ -18,7 +18,7 @@
 import crypto from "node:crypto";
 
 import type { Logger } from "../core/types.js";
-import type { DocStateStore, FailedDoc } from "../domain/doc-state.js";
+import type { DocStateStore, DroppedPagesDoc, FailedDoc } from "../domain/doc-state.js";
 import type { DocStatus } from "../domain/doc-state.js";
 import type { IngestRun, RunStore } from "../domain/run.js";
 
@@ -28,8 +28,16 @@ export interface TerminalStats {
   done: number;
   failed: number;
   skipped: number;
-  /** ONE entry per failed doc — drives per-ark indexError + the retry list. */
-  errors: Array<{ ark: string; stage: string; reason: string }>;
+  /**
+   * ONE entry per failed doc (drives per-ark indexError + the retry list) PLUS
+   * one entry per `done` doc that lost pages to the OCR honesty drop (F13,
+   * ai-memories/tech/repos/bnf/ingest-hardening) — those carry `warning: true`
+   * and must never be read as a failure: the doc still indexed successfully,
+   * just with fewer pages than expected. The app annotates `Document.
+   * indexError` for a warning entry WITHOUT clearing `indexedAt` (see
+   * models/ingest/service.ts).
+   */
+  errors: Array<{ ark: string; stage: string; reason: string; warning?: true }>;
 }
 
 /** The terminal ClusterProgressEvent (the app contract's two terminal variants). */
@@ -43,12 +51,27 @@ export function signBody(body: string, secret: string): string {
 }
 
 /**
+ * The French warning message for a `done` doc that lost pages (F13). Exact
+ * wording is part of the app contract (Slice 4 plan, ai-memories/tech/repos/
+ * bnf/ingest-hardening): "pages partiellement illisibles: N/M pages OCR
+ * rejetées (<cause>)" — N/M reads naturally in the librarian-facing UI.
+ */
+function warningReasonFor(d: DroppedPagesDoc): string {
+  const total = d.pagesExpected ?? d.pagesDropped;
+  const cause = d.dropReason ?? "cause inconnue";
+  return `pages partiellement illisibles: ${d.pagesDropped}/${total} pages OCR rejetées (${cause})`;
+}
+
+/**
  * Build the terminal event from the run's doc-status counts + its failed docs.
  *
  * Rule (matches applyProgress, see Phase 0): a run with ANY success — or no hard
  * failures — emits `done` (the app advances the version pointer; partial failures
  * are reconciled per-ark from `errors[]`). A run where EVERY ingestable doc failed
  * (zero done, ≥1 failed) emits `failed` so the app leaves the pointer behind.
+ * This decision is driven entirely by doc-status COUNTS, never by `errors[]`
+ * contents — `warningDocs` are `done` docs by construction, so they can never
+ * flip a `done` run to `failed` and are never counted as failures (F13).
  *
  * `skipped`/`excluded` go to `stats.skipped`, never `errors[]`: they are
  * non-ingestable, so the app marks them indexed (they drop from the delta) instead
@@ -58,17 +81,29 @@ export function buildTerminalEvent(input: {
   totalDocs: number;
   counts: Record<DocStatus, number>;
   failedDocs: FailedDoc[];
+  /** `done` docs that lost pages to the OCR honesty drop (F13) — optional so
+   *  existing callers/tests that predate the warning channel still compile. */
+  warningDocs?: DroppedPagesDoc[];
   chunksWritten: number;
 }): TerminalEvent {
   const { counts, failedDocs, chunksWritten } = input;
+  const warningDocs = input.warningDocs ?? [];
   const done = counts.done;
   const failed = counts.failed;
   const skipped = counts.skipped + counts.excluded;
-  const errors = failedDocs.map((d) => ({
-    ark: d.ark,
-    stage: d.lane ?? "unknown",
-    reason: d.error ?? "échec",
-  }));
+  const errors: TerminalStats["errors"] = [
+    ...failedDocs.map((d) => ({
+      ark: d.ark,
+      stage: d.lane ?? "unknown",
+      reason: d.error ?? "échec",
+    })),
+    ...warningDocs.map((d) => ({
+      ark: d.ark,
+      stage: d.lane ?? "unknown",
+      reason: warningReasonFor(d),
+      warning: true as const,
+    })),
+  ];
   const stats: TerminalStats = {
     total: input.totalDocs,
     done,
@@ -123,11 +158,13 @@ export class TerminalEmitter {
   async emit(run: IngestRun): Promise<boolean> {
     const counts = await this.docState.statusCounts({ runId: run.runId });
     const failedDocs = await this.docState.listFailedDocs(run.runId);
+    const warningDocs = await this.docState.listDoneWithDrops(run.runId);
     const chunksWritten = await this.docState.donePageCount(run.runId);
     const event = buildTerminalEvent({
       totalDocs: run.totalDocs,
       counts,
       failedDocs,
+      warningDocs,
       chunksWritten,
     });
 

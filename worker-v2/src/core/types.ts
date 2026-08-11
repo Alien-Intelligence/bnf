@@ -62,6 +62,13 @@ export interface BlobStore {
   getBytes(key: string): Promise<Buffer | null>;
   putJson(key: string, value: unknown): Promise<void>;
   putBytes(key: string, bytes: Buffer, contentType?: string): Promise<void>;
+  /**
+   * Delete a key. Idempotent — deleting an already-absent key is success, not
+   * an error (F15, ai-memories/tech/repos/bnf/ingest-hardening): un-poisoning a
+   * dead OCR batch handle (see stages/ocr-poll.ts) must never itself become a
+   * new failure mode on a redelivered/duplicate delete.
+   */
+  delete(key: string): Promise<void>;
 }
 
 /** Options for a single enqueue. `startAfterMs` defers delivery (pg-boss honours

@@ -65,6 +65,19 @@ ALTER TABLE sandbox_ingest_v2.document_ingest_job_v2
 ALTER TABLE sandbox_ingest_v2.document_ingest_job_v2
   ADD COLUMN IF NOT EXISTS requeues integer NOT NULL DEFAULT 0;
 
+-- pages_dropped/drop_reason (F13, ai-memories/tech/repos/bnf/ingest-hardening):
+-- a doc can finish `done` with ≥1 surviving OCR page while some of its pages
+-- were discarded as unusable (hallucinated or blank) — "partial by design", per
+-- Leo, no abort threshold. Before this, that loss had NO record anywhere: the
+-- doc counted as a clean success and the RAG entry was silently hollow (the
+-- 2026-08-11 incident's 32 "done" Nice-Matin docs, mostly missing 5/6 pages).
+-- Set by DocStateStore.recordPageDrops; surfaced to the app via the terminal
+-- event's warning channel (buildTerminalEvent), never as a doc failure.
+ALTER TABLE sandbox_ingest_v2.document_ingest_job_v2
+  ADD COLUMN IF NOT EXISTS pages_dropped integer NOT NULL DEFAULT 0;
+ALTER TABLE sandbox_ingest_v2.document_ingest_job_v2
+  ADD COLUMN IF NOT EXISTS drop_reason text;
+
 CREATE INDEX IF NOT EXISTS document_ingest_job_v2_project_status_idx
   ON sandbox_ingest_v2.document_ingest_job_v2 (project_id, status);
 

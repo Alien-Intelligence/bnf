@@ -143,12 +143,29 @@ export class FakeDescriber implements Describer {
   }
 }
 
+/** Options for FakeOcrEngine — beyond the default "every folio survives",
+ *  individual ordres can be scripted to drop (empty/hallucinated) or error at
+ *  the request level, so tests can exercise F13/F14's honest-outcome paths
+ *  (zero survivors, partial survivors + recorded drops) without the real
+ *  Mistral SDK. */
+export interface FakeOcrOpts {
+  pendingPolls?: number;
+  /** Synthetic terminal batch failure (mirrors a TIMEOUT_EXCEEDED/FAILED batch). */
+  fail?: boolean;
+  /** Ordres dropped as hallucinated (simulates looksLikeHallucinatedOcr). */
+  hallucinatedOrdres?: number[];
+  /** Ordres dropped as legitimately empty/blank. */
+  emptyOrdres?: number[];
+  /** Ordres reported as a per-entry request error instead of a page. */
+  errorOrdres?: number[];
+}
+
 /** OCR engine that completes after `pendingPolls` polls (default 1 = immediate done). */
 export class FakeOcrEngine implements OcrEngine {
   private readonly polls = new Map<string, number>();
   private readonly batchFolios = new Map<string, number[]>();
   readonly submitted: string[] = [];
-  constructor(private readonly opts: { pendingPolls?: number; fail?: boolean } = {}) {}
+  constructor(private readonly opts: FakeOcrOpts = {}) {}
 
   async submitBatch(input: {
     ark: string;
@@ -165,9 +182,39 @@ export class FakeOcrEngine implements OcrEngine {
     const n = (this.polls.get(batchId) ?? 0) + 1;
     this.polls.set(batchId, n);
     if (n < (this.opts.pendingPolls ?? 1)) return { state: "pending" };
+
     const ordres = this.batchFolios.get(batchId) ?? [];
-    const pages: PreparedPage[] = ordres.map((ordre) => ({ ordre, text: `OCR text folio ${ordre}` }));
-    return { state: "done", pages };
+    const hallucinated = new Set(this.opts.hallucinatedOrdres ?? []);
+    const empty = new Set(this.opts.emptyOrdres ?? []);
+    const errored = new Set(this.opts.errorOrdres ?? []);
+
+    const pages: PreparedPage[] = [];
+    const entryErrors: Array<{ ordre: number | null; error: string }> = [];
+    let droppedEmpty = 0;
+    let droppedHallucinated = 0;
+    for (const ordre of ordres) {
+      if (errored.has(ordre)) {
+        entryErrors.push({ ordre, error: "synthetic_entry_error" });
+        continue;
+      }
+      if (hallucinated.has(ordre)) {
+        droppedHallucinated++;
+        continue;
+      }
+      if (empty.has(ordre)) {
+        droppedEmpty++;
+        continue;
+      }
+      pages.push({ ordre, text: `OCR text folio ${ordre}` });
+    }
+    return {
+      state: "done",
+      pages,
+      dropped: { empty: droppedEmpty, hallucinated: droppedHallucinated },
+      entryErrors,
+      succeeded: pages.length,
+      failed: entryErrors.length,
+    };
   }
 }
 
@@ -179,13 +226,38 @@ export class FakeEmbedder implements Embedder {
 }
 
 export class FakeClusterSink implements ClusterSink {
-  readonly upserts: Array<{ ark: string; pages: number }> = [];
+  readonly upserts: Array<{ ark: string; datasetId: number; pages: number }> = [];
   private nextEntry = 1;
-  async ensureDataset(): Promise<{ datasetId: number }> {
-    return { datasetId: 1 };
+  private nextDataset = 1;
+  private readonly datasetIdByProject = new Map<string, number>();
+
+  // One dataset id per projectId, assigned on first ensureDataset() and stable
+  // thereafter (real per-project datasets) — see register.test's F16 coverage,
+  // which needs two distinct projects ingesting the same ARK to land in two
+  // distinct datasets.
+  async ensureDataset(input: { projectId: string }): Promise<{ datasetId: number }> {
+    let id = this.datasetIdByProject.get(input.projectId);
+    if (id === undefined) {
+      id = this.nextDataset++;
+      this.datasetIdByProject.set(input.projectId, id);
+    }
+    return { datasetId: id };
   }
-  async upsert(input: { ark: string; pages: PreparedPage[] }): Promise<{ entryId: number }> {
-    this.upserts.push({ ark: input.ark, pages: input.pages.length });
+
+  async upsert(input: {
+    datasetId: number;
+    ark: string;
+    pages: PreparedPage[];
+  }): Promise<{ entryId: number }> {
+    this.upserts.push({ ark: input.ark, datasetId: input.datasetId, pages: input.pages.length });
     return { entryId: this.nextEntry++ };
+  }
+
+  /** Test hook: simulate a project's dataset being deleted and recreated —
+   *  the next ensureDataset() call for `projectId` returns a NEW id. */
+  recreateDataset(projectId: string): number {
+    const id = this.nextDataset++;
+    this.datasetIdByProject.set(projectId, id);
+    return id;
   }
 }

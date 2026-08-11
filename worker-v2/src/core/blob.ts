@@ -10,6 +10,7 @@
  *  - S3BlobStore: Scaleway Object Storage (prod), lazily constructed.
  */
 import {
+  DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
   PutObjectCommand,
@@ -36,6 +37,9 @@ export class MemoryBlobStore implements BlobStore {
   }
   async putJson(key: string, value: unknown): Promise<void> {
     this.store.set(key, Buffer.from(JSON.stringify(value), "utf8"));
+  }
+  async delete(key: string): Promise<void> {
+    this.store.delete(key); // Map.delete on an absent key is a no-op — already idempotent.
   }
   /** Test helper. */
   size(): number {
@@ -140,6 +144,18 @@ export class S3BlobStore implements BlobStore {
 
   async putJson(key: string, value: unknown): Promise<void> {
     await this.putBytes(key, Buffer.from(JSON.stringify(value), "utf8"), "application/json");
+  }
+
+  async delete(key: string): Promise<void> {
+    try {
+      await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: this.k(key) }));
+    } catch (e) {
+      // S3 itself already treats delete-of-absent as success, but Scaleway's
+      // implementation is defended against here too — idempotency is the
+      // contract, not an implementation detail of one provider.
+      if (isNotFound(e)) return;
+      throw e;
+    }
   }
 }
 

@@ -69,6 +69,27 @@ export interface ClusterQueueProgress {
   reconciles: boolean
 }
 
+/**
+ * One entry in a terminal event's `stats.errors[]` (worker-v2's
+ * TerminalStats). `stats` itself stays a loose `Record<string, unknown>`
+ * below (V1/V2 shapes differ), but `errors[]` entries follow this shape once
+ * parsed.
+ *
+ * `warning: true` marks a doc that still SUCCEEDED — status `done`,
+ * `indexedAt` set — but lost pages to the worker's OCR honesty drop (F13,
+ * ai-memories/tech/repos/bnf/ingest-hardening: Mistral OCR hallucinating on
+ * dense newspaper scans). It is NEVER a per-doc failure: `IngestService.
+ * applyProgress`/`commit`/`commitPartialFailure` must annotate `Document.
+ * indexError` for these ARKs without clearing `indexedAt`, and must not count
+ * them toward a job's failed-doc total.
+ */
+export interface ClusterProgressErrorEntry {
+  ark: string
+  stage: string
+  reason: string
+  warning?: true
+}
+
 export type ClusterProgressEvent =
   | {
       stage: "extract" | "chunk" | "embed" | "index"

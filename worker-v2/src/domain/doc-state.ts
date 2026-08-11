@@ -37,6 +37,17 @@ export interface DocRow {
   /** How many times the reconciliation sweep has re-driven this doc (see
    *  `incrementRequeues`); 0 for a doc that has never orphaned. */
   requeues: number;
+  /**
+   * How many of this doc's OCR pages were discarded as unusable (hallucinated
+   * or blank) despite the doc otherwise completing (F13,
+   * ai-memories/tech/repos/bnf/ingest-hardening) — 0 for a doc with no drops.
+   * Set by `recordPageDrops`, never by `recordFolio` (a dropped OCR page still
+   * "landed ok" at the folio-fetch level; this counts a LATER, OCR-stage loss).
+   */
+  pagesDropped: number;
+  /** Short cause description for `pagesDropped` (e.g. "hallucination
+   *  détectée"); null while `pagesDropped` is 0. */
+  dropReason: string | null;
 }
 
 /** The non-terminal doc statuses — a doc in one of these still owes the run work. */
@@ -65,6 +76,16 @@ export interface FailedDoc {
 export interface DocScope {
   projectId?: string;
   runId?: string;
+}
+
+/** A `done` doc that lost pages to the OCR-stage honesty drop (F13) — feeds the
+ *  terminal callback's warning channel (buildTerminalEvent). */
+export interface DroppedPagesDoc {
+  ark: string;
+  lane: Lane | null;
+  pagesDropped: number;
+  pagesExpected: number | null;
+  dropReason: string | null;
 }
 
 export interface FolioTally {
@@ -151,6 +172,25 @@ export interface DocStateStore {
   statusCounts(scope?: DocScope): Promise<Record<DocStatus, number>>;
   /** The failed docs of a run — feeds the terminal callback's `errors[]`. */
   listFailedDocs(runId: string): Promise<FailedDoc[]>;
+  /**
+   * Record that `drop.dropped` of a doc's `drop.expected` OCR pages were
+   * discarded as unusable (F13) even though the doc has ≥1 surviving page and
+   * proceeds. `drop.dropped` is clamped to `drop.expected` defensively.
+   * Idempotent-by-overwrite: a redelivered poll simply re-records the same
+   * tally. Never fails the doc — that decision belongs to the caller
+   * (stages/ocr-poll.ts): zero survivors is a `setStatus(..., "failed")`
+   * instead, not a `recordPageDrops` call.
+   */
+  recordPageDrops(
+    docJobId: string,
+    drop: { dropped: number; expected: number; reason: string },
+  ): Promise<void>;
+  /**
+   * Docs of a run that finished `done` but lost pages (F13's silent-hollow-RAG
+   * fix) — feeds the terminal callback's warning channel (buildTerminalEvent).
+   * Ordered by ark for stable logs/output, mirroring `listFailedDocs`.
+   */
+  listDoneWithDrops(runId: string): Promise<DroppedPagesDoc[]>;
   /** Total ok folios (registered pages) across the `done` docs of a run — the
    *  terminal callback's display-only `chunksWritten`. */
   donePageCount(runId: string): Promise<number>;

@@ -5,19 +5,49 @@
  *
  * Pure transform (embeddings S3 write + emit), so the base outcome cache gives
  * free resume: a redelivered doc re-emits without re-spending GPU time.
+ *
+ * Content-aware cache (F17, ai-memories/tech/repos/bnf/ingest-hardening): the
+ * cache used to trust a page-COUNT match alone, which reuses stale vectors when
+ * the same number of pages carry different text (e.g. after an OCR quality fix
+ * re-generates pages with the same page count) — silently misaligning citations
+ * from semantics. `pagesHash` is a content fingerprint (sha256 over the ordered
+ * folios) persisted alongside the vectors; a cache hit now requires the count
+ * AND the hash to match. A legacy blob with no `pagesHash` is treated as a miss.
  */
+import { createHash } from "node:crypto";
+
 import { PipelineStage, type StageDeps } from "../core/stage.js";
 import type { RateGate, StageContext, StageOutcome } from "../core/types.js";
 import type { Embedder } from "../ports.js";
 import type { DocStateStore } from "../domain/doc-state.js";
 import { keys } from "../domain/keys.js";
 import { Q } from "../domain/queues.js";
-import type { EmbeddedDoc, PreparedDoc } from "../domain/types.js";
+import type { EmbeddedDoc, PreparedDoc, PreparedPage } from "../domain/types.js";
 import { failDoc } from "./doc-fail.js";
 
 interface EmbeddingsBlob {
   dim: number;
   vectors: number[][];
+  /** sha256 content fingerprint of the pages that produced `vectors` (F17).
+   *  Optional so legacy blobs (written before this fix) parse — and are then
+   *  treated as a cache miss rather than trusted blindly. */
+  pagesHash?: string;
+}
+
+/**
+ * Content fingerprint for a doc's pages — order-sensitive, so a folio reorder
+ * counts as a change too. Streamed per page (no giant intermediate string) since
+ * a doc's pages can carry a lot of OCR/vision text.
+ */
+export function computePagesHash(pages: PreparedPage[]): string {
+  const hash = createHash("sha256");
+  for (const p of pages) {
+    hash.update(String(p.ordre));
+    hash.update("\0");
+    hash.update(p.text);
+    hash.update("\n");
+  }
+  return hash.digest("hex");
 }
 
 export class EmbedStage extends PipelineStage<PreparedDoc, EmbeddedDoc> {
@@ -51,12 +81,19 @@ export class EmbedStage extends PipelineStage<PreparedDoc, EmbeddedDoc> {
     }
     // Resume from the embeddings artifact, NOT the base outcome cache (which would
     // replay a prior job's identity on a re-ingest). If the vectors are already in
-    // S3 for this ARK (and align with the page count), skip the GPU call and emit
-    // an EmbeddedDoc built from THIS message's identity.
+    // S3 for this ARK, cover the SAME page count, AND were computed from the SAME
+    // page content (F17), skip the GPU call and emit an EmbeddedDoc built from
+    // THIS message's identity.
+    const pagesHash = computePagesHash(doc.pages);
     const cached = await this.blob.getJson<EmbeddingsBlob>(keys.embeddings(doc.ark));
-    if (cached && cached.vectors.length === doc.pages.length) {
+    if (cached && cached.vectors.length === doc.pages.length && cached.pagesHash === pagesHash) {
       ctx.log.info("embed_cache_hit", { ark: doc.ark, pages: doc.pages.length });
       return { kind: "emit", items: [this.emitted(doc)] };
+    }
+    if (cached && cached.vectors.length === doc.pages.length && cached.pagesHash === undefined) {
+      ctx.log.info("embed_cache_miss_legacy", { ark: doc.ark, pages: doc.pages.length });
+    } else if (cached) {
+      ctx.log.info("embed_cache_miss_content_changed", { ark: doc.ark, pages: doc.pages.length });
     }
 
     const vectors = await this.embedder.embed(doc.pages.map((p) => p.text));
@@ -68,7 +105,7 @@ export class EmbedStage extends PipelineStage<PreparedDoc, EmbeddedDoc> {
         `embed_count_mismatch ${vectors.length}/${doc.pages.length}`,
       );
     }
-    const blob: EmbeddingsBlob = { dim: this.embedder.dim, vectors };
+    const blob: EmbeddingsBlob = { dim: this.embedder.dim, vectors, pagesHash };
     await this.blob.putJson(keys.embeddings(doc.ark), blob);
     ctx.log.info("embedded", { ark: doc.ark, pages: doc.pages.length, dim: this.embedder.dim });
     return { kind: "emit", items: [this.emitted(doc)] };

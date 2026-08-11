@@ -72,6 +72,10 @@ async function main(): Promise<void> {
       mistralEnabled: cfg.mistralEnabled,
       maxPages: cfg.maxPages,
       maxCanvases: cfg.maxCanvases,
+      // FetchStage's `imageSize` opt is the mistral/text-lane size (fetch.ts
+      // defaults it to "max" itself); `visionImageSize` is the separate,
+      // already-downscaled vision-lane size. See config.ts's mistralImageSize doc.
+      imageSize: cfg.mistralImageSize,
       visionImageSize: cfg.visionImageSize,
       fetchConcurrency: cfg.fetchConcurrency,
       metadataConcurrency: cfg.metadataConcurrency,

@@ -7,14 +7,22 @@
  *
  *   submitBatch → upload the JSONL + create the batch job → return { batchId }.
  *   pollBatch   → get the job; while non-terminal return { state: "pending" };
- *                 on SUCCESS download + parse the output into folio-aligned pages
- *                 ({ state: "done" }); on a failed terminal state with no output
- *                 return { state: "failed", reason }.
+ *                 on SUCCESS download + parse the output into folio-aligned
+ *                 pages ({ state: "done", pages, dropped, entryErrors, … });
+ *                 on ANY OTHER terminal state (FAILED/TIMEOUT_EXCEEDED/
+ *                 CANCELLED) return { state: "failed", reason } — even when
+ *                 Mistral attached a partial output file (F14,
+ *                 ai-memories/tech/repos/bnf/ingest-hardening: a partial
+ *                 output on a non-SUCCESS batch must never masquerade as done).
  *
  * Folio alignment is by `custom_id` (`f<ordre>`), never positional — citations
  * depend on it, so the mapping is preserved exactly from V1. Hallucinated pages
- * (Mistral fabricates filler on blank folios) are dropped via V1's
- * `looksLikeHallucinatedOcr`; a dropped page is simply omitted.
+ * (Mistral fabricates filler on blank folios) and legitimately blank folios are
+ * dropped from `pages` but counted in `dropped` (F14) — never silently
+ * absorbed the way V1/the original V2 parse did; per-entry request errors
+ * (a line's `error` field, or a non-2xx `response.status_code`) land in
+ * `entryErrors`. The caller (stages/ocr-poll.ts) decides what a doc with
+ * drops/errors means for that doc.
  *
  * The image bytes arrive as Buffers (already in S3), so we base64 them into the
  * `data:image/jpeg` URL shape the Mistral OCR request wants — mirroring V1.
@@ -24,7 +32,7 @@ import { Mistral } from "@mistralai/mistralai";
 import { mistralOcr } from "./vendor/env.js";
 import { looksLikeHallucinatedOcr } from "./vendor/mistral-ocr.js";
 import type { PreparedPage } from "../domain/types.js";
-import type { OcrBatchStatus, OcrEngine } from "../ports.js";
+import type { OcrBatchStatus, OcrEngine, OcrEntryError } from "../ports.js";
 
 export { looksLikeHallucinatedOcr };
 
@@ -63,20 +71,40 @@ function parseOrdre(customId: string | undefined): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+/** The honest result of parsing a batch's output JSONL (F14) — nothing is
+ *  silently discarded; every dropped/errored entry is counted. */
+export interface OcrParseResult {
+  pages: PreparedPage[];
+  dropped: { empty: number; hallucinated: number };
+  entryErrors: OcrEntryError[];
+}
+
 /**
- * Pure: parse the downloaded batch output JSONL into folio-aligned pages.
+ * Pure: parse the downloaded batch output JSONL into folio-aligned pages,
+ * HONESTLY (F14) — every entry that doesn't become a page is counted, not
+ * silently dropped:
  *
- * - Each line is one JSON object; malformed lines are skipped.
+ * - Each line is one JSON object; a malformed line (bad JSON, or a custom_id
+ *   that doesn't parse to an ordre) is skipped but recorded in `entryErrors`
+ *   with `ordre: null` (its folio can't be known).
  * - `custom_id` maps back to the folio `ordre` (NOT positional — a batch may
  *   reorder entries; citations depend on the custom_id mapping).
- * - Empty markdown is dropped (a legitimately blank folio = no page).
- * - Hallucinated pages (blank-folio filler) are dropped via the V1 detector.
- * - Output is sorted ascending by ordre.
+ * - A per-line `error` field or a non-2xx `response.status_code` means the
+ *   REQUEST failed for that folio — recorded in `entryErrors`, no page.
+ * - Empty markdown is counted in `dropped.empty` (a legitimately blank folio).
+ * - Hallucinated pages (blank-folio filler, via the V1 detector) are counted
+ *   in `dropped.hallucinated`.
+ * - Output pages are sorted ascending by ordre.
  *
- * Exported so the alignment can be unit-tested with a fixture, no SDK/HTTP.
+ * Exported so the alignment + the honesty accounting can be unit-tested with
+ * a fixture, no SDK/HTTP.
  */
-export function parseOcrOutput(jsonl: string): PreparedPage[] {
+export function parseOcrOutput(jsonl: string): OcrParseResult {
   const pages: PreparedPage[] = [];
+  const entryErrors: OcrEntryError[] = [];
+  let droppedEmpty = 0;
+  let droppedHallucinated = 0;
+
   for (const line of jsonl.split("\n")) {
     const trimmed = line.trim();
     if (!trimmed) continue;
@@ -84,17 +112,39 @@ export function parseOcrOutput(jsonl: string): PreparedPage[] {
     try {
       entry = JSON.parse(trimmed) as MistralBatchOutputLine;
     } catch {
+      entryErrors.push({ ordre: null, error: "malformed_output_line: invalid JSON" });
       continue;
     }
     const ordre = parseOrdre(entry.custom_id);
-    if (ordre === null) continue;
+    if (ordre === null) {
+      entryErrors.push({
+        ordre: null,
+        error: `malformed_output_line: unrecognized custom_id "${entry.custom_id ?? ""}"`,
+      });
+      continue;
+    }
+    if (entry.error) {
+      entryErrors.push({ ordre, error: `request_error: ${JSON.stringify(entry.error)}` });
+      continue;
+    }
+    const statusCode = entry.response?.status_code;
+    if (typeof statusCode === "number" && (statusCode < 200 || statusCode >= 300)) {
+      entryErrors.push({ ordre, error: `http_${statusCode}` });
+      continue;
+    }
     const markdown = entry.response?.body?.pages?.[0]?.markdown;
-    if (typeof markdown !== "string" || markdown.trim().length === 0) continue;
-    if (looksLikeHallucinatedOcr(markdown)) continue;
+    if (typeof markdown !== "string" || markdown.trim().length === 0) {
+      droppedEmpty++;
+      continue;
+    }
+    if (looksLikeHallucinatedOcr(markdown)) {
+      droppedHallucinated++;
+      continue;
+    }
     pages.push({ ordre, text: markdown });
   }
   pages.sort((a, b) => a.ordre - b.ordre);
-  return pages;
+  return { pages, dropped: { empty: droppedEmpty, hallucinated: droppedHallucinated }, entryErrors };
 }
 
 /**
@@ -161,6 +211,20 @@ async function streamToString(stream: ReadableStream<Uint8Array>): Promise<strin
 }
 
 export class LiveOcrEngine implements OcrEngine {
+  /**
+   * Optional injected SDK client — the same pattern as LiveEmbedder's injected
+   * `RunpodBgeM3` (embedder.ts): tests build a minimal stub cast `as unknown as
+   * Mistral` (see ocr.test.ts) so `pollBatch`'s honesty classification (F14) is
+   * unit-testable without touching the network. Production passes none, so the
+   * module-level `client()` lazy singleton is untouched — non-OCR runs still
+   * never construct a Mistral client and never need MISTRAL_API_KEY.
+   */
+  constructor(private readonly injected?: Mistral) {}
+
+  private mistralClient(): Mistral {
+    return this.injected ?? client();
+  }
+
   async submitBatch(input: {
     ark: string;
     folios: Array<{ ordre: number; image: Buffer }>;
@@ -168,7 +232,7 @@ export class LiveOcrEngine implements OcrEngine {
     if (input.folios.length === 0) {
       throw new Error(`ocr submitBatch: no folios for ${input.ark}`);
     }
-    const mistral = client();
+    const mistral = this.mistralClient();
 
     // 1. Build the JSONL — one OCR request per folio. custom_id carries the
     //    folio ordre so the result maps back regardless of batch ordering.
@@ -198,26 +262,33 @@ export class LiveOcrEngine implements OcrEngine {
   }
 
   async pollBatch(batchId: string): Promise<OcrBatchStatus> {
-    const mistral = client();
+    const mistral = this.mistralClient();
     const job = await mistral.batch.jobs.get({ jobId: batchId });
 
     if (!TERMINAL_STATES.has(String(job.status))) {
       return { state: "pending" };
     }
 
-    if (job.status !== "SUCCESS" && !job.outputFile) {
+    // Honest terminal classification (F14): a batch that ended anything OTHER
+    // than SUCCESS is ALWAYS "failed" — even when Mistral attached a partial
+    // outputFile. A TIMEOUT_EXCEEDED/FAILED/CANCELLED batch's output must never
+    // masquerade as done; the caller (ocr-poll) un-poisons the batch handle
+    // (F15) on this path so a re-ingest resubmits fresh instead of re-polling
+    // this same dead batch forever.
+    if (job.status !== "SUCCESS") {
       return {
         state: "failed",
         reason:
-          `Mistral batch ${batchId} ended ${job.status} with no output ` +
-          `(${job.succeededRequests}/${job.totalRequests} succeeded)`,
+          `Mistral batch ${batchId} ended ${job.status} ` +
+          `(${job.succeededRequests}/${job.totalRequests} succeeded, ` +
+          `${job.failedRequests} failed)`,
       };
     }
 
     if (!job.outputFile) {
       return {
         state: "failed",
-        reason: `Mistral batch ${batchId} ${job.status} but no output file`,
+        reason: `Mistral batch ${batchId} SUCCESS but no output file`,
       };
     }
 
@@ -225,7 +296,14 @@ export class LiveOcrEngine implements OcrEngine {
     if (process.env.MISTRAL_OCR_DEBUG === "1") {
       console.log(`[mistral-ocr] raw output (${text.length} chars):\n${text.slice(0, 3000)}`);
     }
-    const pages = parseOcrOutput(text);
-    return { state: "done", pages };
+    const { pages, dropped, entryErrors } = parseOcrOutput(text);
+    return {
+      state: "done",
+      pages,
+      dropped,
+      entryErrors,
+      succeeded: job.succeededRequests,
+      failed: job.failedRequests,
+    };
   }
 }

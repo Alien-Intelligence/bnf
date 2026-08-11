@@ -110,6 +110,41 @@ describe("MemoryBlobStore", () => {
     await blob.putJson("a", { n: 99 });
     assert.equal(blob.size(), 2);
   });
+
+  describe("delete() — F15 un-poisoning (ai-memories/tech/repos/bnf/ingest-hardening)", () => {
+    it("removes a key — getJson/getBytes/has all report it gone", async () => {
+      const blob = new MemoryBlobStore();
+      await blob.putJson("ocr-batch/x", { batchId: "b1" });
+      assert.equal(await blob.has("ocr-batch/x"), true);
+
+      await blob.delete("ocr-batch/x");
+
+      assert.equal(await blob.has("ocr-batch/x"), false);
+      assert.equal(await blob.getJson("ocr-batch/x"), null);
+      assert.equal(await blob.getBytes("ocr-batch/x"), null);
+    });
+
+    it("deleting an absent key is a no-op, not an error (idempotent)", async () => {
+      const blob = new MemoryBlobStore();
+      await assert.doesNotReject(() => blob.delete("never-existed"));
+      // Deleting twice is equally safe.
+      await blob.putJson("k", { v: 1 });
+      await blob.delete("k");
+      await assert.doesNotReject(() => blob.delete("k"));
+    });
+
+    it("deletes exactly the targeted key, leaving others untouched", async () => {
+      const blob = new MemoryBlobStore();
+      await blob.putJson("keep", { v: 1 });
+      await blob.putJson("drop", { v: 2 });
+
+      await blob.delete("drop");
+
+      assert.deepEqual(await blob.getJson("keep"), { v: 1 });
+      assert.equal(await blob.getJson("drop"), null);
+      assert.equal(blob.size(), 1);
+    });
+  });
 });
 
 describe("S3BlobStore", () => {
