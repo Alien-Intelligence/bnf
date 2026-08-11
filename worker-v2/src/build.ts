@@ -69,9 +69,15 @@ export function buildPipeline(deps: PipelineDeps): Pipeline {
   const rates = deps.rates ?? {};
 
   const stages: RunnableStage[] = [
-    new MetadataStage(base, deps.bnf, deps.docState, {
+    // rates.manifest is THE SAME RateGate instance passed to ManifestStage below —
+    // that sharing is the invariant the 2026-08-11 rate-collapse fix depends on
+    // (one 40/min budget, one gate, no matter which stage needs the manifest
+    // first). maxCanvases is likewise the SAME cfg value ManifestStage gets, so
+    // the manifest blob the two stages share is produced identically either way.
+    new MetadataStage(base, deps.bnf, deps.docState, rates.manifest, {
       mistralEnabled: cfg.mistralEnabled ?? false,
       ...(cfg.maxPages !== undefined ? { maxPages: cfg.maxPages } : {}),
+      ...(cfg.maxCanvases !== undefined ? { maxCanvases: cfg.maxCanvases } : {}),
       ...(cfg.metadataConcurrency !== undefined ? { concurrency: cfg.metadataConcurrency } : {}),
     }),
     new ManifestStage(base, deps.bnf, deps.docState, rates.manifest, {

@@ -34,13 +34,27 @@ export interface WorkerConfig {
   mistralEnabled: boolean;
   maxPages: number;
   maxCanvases: number;
-  /** BnF fetch rate (folios/min) — 300 today; 1000 if the per-IP raise lands. */
+  /**
+   * BnF fetch rate (folios/min) — part of the 1000/min GLOBAL partner-API
+   * budget (everything except IIIF manifests, which has its own separate
+   * 40/min bucket — see manifestRatePerMin). Authoritative quota per Leo,
+   * 2026-08-11 (ai-memories/tech/repos/bnf/ingest-hardening).
+   */
   fetchRatePerMin: number;
   /** In-flight folio fetches. Must be high enough that fetches-in-progress keep
    *  the 300/min token bucket drained (≈ rate/60 × per-fetch latency). 12 measured
    *  ~178/min (latency ~4s); 24 is the floor to approach the cap. */
   fetchConcurrency: number;
-  /** IIIF manifest rate (per egress IP). */
+  /**
+   * IIIF manifest rate (per egress IP) — a SEPARATE, scarcer budget from
+   * fetchRatePerMin's 1000/min (40/min, authoritative per Leo, 2026-08-11).
+   * Shared by MetadataStage and ManifestStage through ONE RateLimiter instance
+   * (build.ts `rates.manifest`) — see F1/F2 in
+   * ai-memories/tech/repos/bnf/ingest-hardening for what happens when it isn't
+   * (the 2026-08-11 broker queue collapse). The code default below (42) is the
+   * historical value; prod actually sets BNF_MANIFEST_RPM=40 to match the real
+   * quota exactly.
+   */
   manifestRatePerMin: number;
   /** IIIF size for VISION-lane images (pct:N — BnF-safe downscale). Full-res
    *  ("max") images time out the vision API under concurrency; vision only needs
@@ -53,8 +67,15 @@ export interface WorkerConfig {
    *  calls across all docs (a doc fans its folios out up to this). The real
    *  OpenRouter/Holo ceiling; keep under the provider's rate/DDoS limit. */
   describeCallConcurrency: number;
-  /** Doc-resolution (metadata/OAI) concurrency — bounded downstream by the broker's
-   *  external rate (~120/min); this just keeps that rate fed. */
+  /**
+   * Doc-resolution concurrency. Does NOT multiply into manifest demand — on a
+   * manifest cache MISS, MetadataStage waits on the shared 40/min manifest gate
+   * (rates.manifest, the SAME instance ManifestStage uses) before calling
+   * getManifest, so raising this only helps keep cache HITS and the OAI
+   * fallback fed faster; it can no longer flood the manifest budget the way it
+   * did pre-fix (F1, ai-memories/tech/repos/bnf/ingest-hardening: 16 concurrent
+   * ungated resolutions collapsed the broker's queue).
+   */
   metadataConcurrency: number;
   /** Data-cluster register (indexing) concurrency — the cluster autoscales, so this
    *  can be pushed to drain the register backlog. */

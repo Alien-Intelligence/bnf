@@ -45,6 +45,22 @@ export abstract class PipelineStage<In, Out> {
   readonly concurrency: number = 4;
   readonly rate?: RateGate;
   readonly retry: RetryPolicy = { attempts: 4, baseMs: 500, maxDelayMs: 30_000 };
+  /**
+   * Override the queue transport's redelivery pacing (pg-boss `retryDelay`,
+   * seconds under the hood — see queue-pgboss.ts). Undefined keeps the
+   * transport's own default (pg-boss: 5s, retryBackoff true).
+   *
+   * BnF enforces its manifest quota over FIXED CLOCK-MINUTE windows, not a
+   * sliding one — so a retry that lands 5-10s later almost always lands in the
+   * SAME still-closed window and gets shed again (F6,
+   * ai-memories/tech/repos/bnf/ingest-hardening). Stages that share the
+   * manifest gate set this to 30_000: with pg-boss's default retryBackoff
+   * (true), that spans 30/60/120s — the second attempt already lands in the
+   * NEXT window. This is deliberately just a delay knob, not a smarter
+   * per-message re-enqueue scheduler — the queue's own backoff is enough once
+   * the base delay respects BnF's window size.
+   */
+  readonly queueRetryDelayMs?: number;
 
   protected readonly queue: QueueClient;
   protected readonly blob: BlobStore;
@@ -85,6 +101,9 @@ export abstract class PipelineStage<In, Out> {
     await this.queue.work<In>(this.inputQueue, (m) => this.handle(m), {
       concurrency: this.concurrency,
       retryLimit: Math.max(0, this.retry.attempts - 1),
+      ...(this.queueRetryDelayMs !== undefined
+        ? { retryDelayMs: this.queueRetryDelayMs }
+        : {}),
     });
     this.log.info("stage_started", {
       queue: this.inputQueue,

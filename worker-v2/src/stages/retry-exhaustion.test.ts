@@ -35,7 +35,11 @@ const META: DocMeta = {
   ocrAvailable: false,
 };
 
-test("metadata: transient OAI exhaustion → doc failed (not orphaned)", async () => {
+// Metadata resolution's PRIMARY path is now the manifest fetch (F1/F2 fix —
+// MetadataStage no longer calls an ungated getDocumentInfo; it calls getManifest
+// through the same cache/gate ManifestStage uses). So the transient-failure
+// surface that can exhaust retries here is the manifest fetch, not OAI.
+test("metadata: transient manifest exhaustion → doc failed (not orphaned)", async () => {
   const q = new MemoryQueue();
   const blob = new MemoryBlobStore();
   const { logger } = createMemoryLogger();
@@ -45,9 +49,11 @@ test("metadata: transient OAI exhaustion → doc failed (not orphaned)", async (
     ocrAvailable: true,
     docType: "texte",
     pageCount: 3,
-    metadataFault: { alwaysTransient: true, status: 500 },
+    manifestFault: { alwaysTransient: true, status: 500 },
   });
-  const stage = new MetadataStage({ queue: q, blob, log: logger }, bnf, ds, { mistralEnabled: false });
+  const stage = new MetadataStage({ queue: q, blob, log: logger }, bnf, ds, undefined, {
+    mistralEnabled: false,
+  });
   await stage.start();
   const ref: DocRef = { projectId: "p", docJobId: "d1", ark: "ark:/12148/flaky" };
   await ds.upsertDoc(ref);
@@ -56,7 +62,7 @@ test("metadata: transient OAI exhaustion → doc failed (not orphaned)", async (
 
   const row = await ds.get("d1");
   assert.equal(row?.status, "failed", "doc must be terminally failed, not orphaned");
-  assert.ok(bnf.calls.metadata >= 2, "should have retried before giving up");
+  assert.ok(bnf.calls.manifest >= 2, "should have retried the manifest before giving up");
 });
 
 test("manifest: persistent 500 exhaustion → doc failed (not orphaned)", async () => {

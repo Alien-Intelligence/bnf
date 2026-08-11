@@ -47,10 +47,19 @@ export interface FakeDocSpec {
   title?: string | null;
   /** Folios (ordre) that have no ALTO text — fetched ok but empty. */
   emptyFolios?: number[];
-  /** Fault on getDocumentInfo. */
-  metadataFault?: Fault;
-  /** Fault on getManifest. */
+  /**
+   * Fault on getManifest — the PRIMARY path for both metadata resolution
+   * (MetadataStage) and canvas fan-out (ManifestStage); both stages share one
+   * call/cache per ARK, so this one knob covers both callers.
+   */
   manifestFault?: Fault;
+  /**
+   * Fault on getDocumentInfoViaOai — the metadata FALLBACK, reached only when
+   * getManifest throws Permanent. To make a doc fail metadata resolution
+   * entirely (the old "permanent metadata error" scenario), set BOTH
+   * `manifestFault: { permanent: true }` and `oaiFault: { permanent: true }`.
+   */
+  oaiFault?: Fault;
   /** Faults per folio fetch (ALTO or image), keyed by ordre. */
   folioFaults?: Record<number, Fault>;
 }
@@ -58,7 +67,7 @@ export interface FakeDocSpec {
 export class FakeBnfClient implements BnfClient {
   private readonly docs = new Map<string, FakeDocSpec>();
   private readonly faults = new FaultCounter();
-  readonly calls = { metadata: 0, manifest: 0, alto: 0, image: 0 };
+  readonly calls = { oai: 0, manifest: 0, alto: 0, image: 0 };
 
   add(spec: FakeDocSpec): this {
     this.docs.set(spec.ark, spec);
@@ -71,10 +80,10 @@ export class FakeBnfClient implements BnfClient {
     return s;
   }
 
-  async getDocumentInfo(ark: string): Promise<BnfDocInfo> {
-    this.calls.metadata++;
+  async getDocumentInfoViaOai(ark: string): Promise<BnfDocInfo> {
+    this.calls.oai++;
     const s = this.spec(ark);
-    this.faults.hit(`meta:${ark}`, s.metadataFault);
+    this.faults.hit(`oai:${ark}`, s.oaiFault);
     return {
       ark,
       title: s.title ?? `Doc ${ark}`,
@@ -100,7 +109,16 @@ export class FakeBnfClient implements BnfClient {
       width: 1000,
       height: 1400,
     }));
-    return { title: s.title ?? null, metadata: [], totalPages: s.pageCount, canvases };
+    // Mirror the real IIIF manifest's label/value metadata pairs so
+    // docInfoFromManifest (client.ts) derives the SAME docType/ocrAvailable the
+    // spec declares, through the SAME parsing path the live client uses — not a
+    // shortcut that bypasses it. (This is exactly the gap that let F1/F2 go
+    // untested: the old fake's getDocumentInfo built a BnfDocInfo directly and
+    // never round-tripped through a manifest at all.)
+    const metadata: Array<{ label: string; value: string }> = [{ label: "langue", value: "fre" }];
+    if (s.docType) metadata.push({ label: "type document", value: s.docType });
+    if (s.ocrAvailable) metadata.push({ label: "taux ocr", value: "100%" });
+    return { title: s.title ?? `Doc ${ark}`, metadata, totalPages: s.pageCount, canvases };
   }
 
   async fetchAltoFolio(ark: string, ordre: number): Promise<AltoFolio> {

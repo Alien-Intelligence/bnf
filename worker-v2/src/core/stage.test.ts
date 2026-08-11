@@ -22,7 +22,14 @@ import { MemoryBlobStore } from "./blob.js";
 import { createMemoryLogger } from "./logger.js";
 import { MemoryQueue } from "./queue-memory.js";
 import { PipelineStage, type StageDeps } from "./stage.js";
-import type { QueueMessage, RateGate, StageContext, StageOutcome } from "./types.js";
+import type {
+  QueueClient,
+  QueueCounts,
+  QueueMessage,
+  RateGate,
+  StageContext,
+  StageOutcome,
+} from "./types.js";
 
 const IN_Q = "in";
 const OUT_Q = "out";
@@ -42,6 +49,7 @@ class TestStage extends PipelineStage<Item, Item> {
   readonly outputQueue?: string;
   readonly concurrency = 1; // deterministic ordering for assertions
   readonly rate?: RateGate;
+  readonly queueRetryDelayMs?: number;
 
   /** Records the payload of every process() invocation. */
   readonly processed: Item[] = [];
@@ -58,10 +66,12 @@ class TestStage extends PipelineStage<Item, Item> {
     rate?: RateGate;
     retryAttempts?: number;
     artifactKey?: (payload: Item) => string | null;
+    queueRetryDelayMs?: number;
   }) {
     super(opts.deps);
     this.outputQueue = opts.outputQueue;
     this.rate = opts.rate;
+    this.queueRetryDelayMs = opts.queueRetryDelayMs;
     if (opts.retryAttempts !== undefined) {
       this.retry = { attempts: opts.retryAttempts, baseMs: 1, maxDelayMs: 1 };
     }
@@ -94,6 +104,35 @@ class CountingRate implements RateGate {
   async acquire(): Promise<void> {
     this.acquired += 1;
   }
+}
+
+/**
+ * A QueueClient that records every `work()` call's options and otherwise does
+ * nothing — for asserting exactly what a stage's `start()` passes downstream
+ * (queueRetryDelayMs plumbing) without needing real delivery.
+ */
+class SpyQueue implements QueueClient {
+  readonly workCalls: Array<{
+    queue: string;
+    opts: { concurrency: number; retryLimit?: number; retryDelayMs?: number; retryBackoff?: boolean };
+  }> = [];
+
+  async send(): Promise<void> {}
+  async sendMany(): Promise<void> {}
+  async work<T>(
+    queue: string,
+    _handler: (msg: QueueMessage<T>) => Promise<void>,
+    opts: { concurrency: number; retryLimit?: number; retryDelayMs?: number; retryBackoff?: boolean },
+  ): Promise<void> {
+    this.workCalls.push({ queue, opts });
+  }
+  async counts(): Promise<QueueCounts> {
+    return { queued: 0, running: 0, completed: 0, failed: 0 };
+  }
+  async countsForDocs(): Promise<QueueCounts> {
+    return { queued: 0, running: 0, completed: 0, failed: 0 };
+  }
+  async stop(): Promise<void> {}
 }
 
 /** Stand up the shared collaborators. */
@@ -363,4 +402,39 @@ test("rate gate is acquired once per processed item, never on a cache hit", asyn
   await queue.idle();
   assert.equal(rate.acquired, 1, "rate NOT acquired on the cache hit");
   assert.equal(stage.processed.length, 1, "process still not re-run");
+});
+
+test("queueRetryDelayMs is passed through to queue.work() as retryDelayMs (F6 pacing)", async () => {
+  const { logger } = createMemoryLogger();
+  const blob = new MemoryBlobStore();
+  const queue = new SpyQueue();
+
+  const stage = new TestStage({
+    deps: { queue, blob, log: logger },
+    queueRetryDelayMs: 30_000,
+  });
+  await stage.start();
+
+  assert.equal(queue.workCalls.length, 1, "start() called queue.work() exactly once");
+  assert.equal(
+    queue.workCalls[0]?.opts.retryDelayMs,
+    30_000,
+    "the stage's queueRetryDelayMs rode through to the transport's retryDelayMs",
+  );
+});
+
+test("queueRetryDelayMs unset → queue.work() gets no retryDelayMs override (transport default stands)", async () => {
+  const { logger } = createMemoryLogger();
+  const blob = new MemoryBlobStore();
+  const queue = new SpyQueue();
+
+  const stage = new TestStage({ deps: { queue, blob, log: logger } });
+  await stage.start();
+
+  assert.equal(queue.workCalls.length, 1);
+  assert.equal(
+    queue.workCalls[0]?.opts.retryDelayMs,
+    undefined,
+    "a stage that doesn't set queueRetryDelayMs passes no override at all",
+  );
 });
