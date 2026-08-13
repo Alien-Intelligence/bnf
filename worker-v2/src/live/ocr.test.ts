@@ -35,20 +35,26 @@ function streamOf(text: string): ReadableStream<Uint8Array> {
 }
 
 /** Minimal stub typed as Mistral — only batch.jobs.get + files.download are
- *  reached by pollBatch. */
+ *  reached by pollBatch. `errorJsonl` is served when the ERROR file id is
+ *  downloaded (an all-entries-failed SUCCESS batch ships only that file). */
 function stubMistral(
   job: {
     status: string;
     outputFile?: string | null;
+    errorFile?: string | null;
     succeededRequests: number;
     failedRequests: number;
     totalRequests: number;
   },
   outputJsonl = "",
+  errorJsonl = "",
 ): Mistral {
   return {
     batch: { jobs: { get: async () => job } },
-    files: { download: async () => streamOf(outputJsonl) },
+    files: {
+      download: async ({ fileId }: { fileId: string }) =>
+        streamOf(fileId === job.errorFile ? errorJsonl : outputJsonl),
+    },
   } as unknown as Mistral;
 }
 
@@ -271,4 +277,57 @@ test("pollBatch: SUCCESS with failedRequests > 0 → done, with honest counts + 
   assert.equal(status.failed, 1);
   assert.deepEqual(status.pages, [{ ordre: 1, text: "Vrai texte de la page" }]);
   assert.deepEqual(status.dropped, { empty: 0, hallucinated: 0 });
+});
+
+// --- Error-file honesty (2026-08-13: SUCCESS batches with ONLY an error file) --
+
+test("pollBatch: SUCCESS with no outputFile but an errorFile → failed with the sanitized per-entry reason", async () => {
+  // The live shape: every entry 400'd, the body embeds the WHOLE data URL.
+  const errLine = JSON.stringify({
+    custom_id: "f5",
+    response: {
+      status_code: 400,
+      body: JSON.stringify({
+        object: "error",
+        message:
+          "Image, 'data:image/jpeg;base64,/9j/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', could not be loaded as a valid image. Allowed formats are JPEG, PNG, WEBP",
+        code: "3310",
+      }),
+    },
+  });
+  const engine = new LiveOcrEngine(
+    stubMistral(
+      { status: "SUCCESS", outputFile: null, errorFile: "err-1", succeededRequests: 0, failedRequests: 6, totalRequests: 6 },
+      "",
+      errLine,
+    ),
+  );
+  const status = await engine.pollBatch("batch-err");
+  assert.equal(status.state, "failed");
+  assert.ok(status.state === "failed" && status.reason.includes("0/6 entries succeeded"), status.state === "failed" ? status.reason : "");
+  assert.ok(status.state === "failed" && status.reason.includes("f5 http_400"), "carries the entry identity + status");
+  assert.ok(status.state === "failed" && status.reason.includes("could not be loaded as a valid image"), "carries the human reason");
+  assert.ok(status.state === "failed" && !status.reason.includes("base64,/9j/"), "data URL stripped — never logged");
+});
+
+test("pollBatch: SUCCESS with BOTH output and error files → done, error-file entries merged into entryErrors", async () => {
+  const okLine = line("f1", "Vrai texte de la page un, assez long pour passer.");
+  const errLine = JSON.stringify({
+    custom_id: "f2",
+    response: { status_code: 400, body: "{\"message\":\"bad image\"}" },
+  });
+  const engine = new LiveOcrEngine(
+    stubMistral(
+      { status: "SUCCESS", outputFile: "out-1", errorFile: "err-1", succeededRequests: 5, failedRequests: 1, totalRequests: 6 },
+      okLine,
+      errLine,
+    ),
+  );
+  const status = await engine.pollBatch("batch-mixed");
+  assert.equal(status.state, "done");
+  assert.ok(status.state === "done" && status.pages.length === 1);
+  assert.ok(
+    status.state === "done" && status.entryErrors.some((e) => e.ordre === 2 && e.error === "http_400"),
+    "error-file entry surfaced in entryErrors",
+  );
 });

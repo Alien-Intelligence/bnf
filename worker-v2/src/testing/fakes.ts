@@ -47,6 +47,9 @@ export interface FakeDocSpec {
   title?: string | null;
   /** Folios (ordre) that have no ALTO text — fetched ok but empty. */
   emptyFolios?: number[];
+  /** Image folios (ordre) served TRUNCATED (valid SOI, missing EOI) — the
+   *  poisoned-transport shape the fetch stage must reject, never cache. */
+  truncatedFolios?: number[];
   /**
    * Fault on getManifest — the PRIMARY path for both metadata resolution
    * (MetadataStage) and canvas fan-out (ManifestStage); both stages share one
@@ -133,7 +136,15 @@ export class FakeBnfClient implements BnfClient {
     this.calls.image++;
     const s = this.spec(ark);
     this.faults.hit(`folio:${ark}:${ordre}`, s.folioFaults?.[ordre]);
-    return Buffer.from(`IMG ${ark} f${ordre}`, "utf8");
+    // A STRUCTURALLY valid JPEG (SOI … payload … EOI) — the fetch stage
+    // validates completeness before caching (isCompleteJpeg), so the fake must
+    // produce bytes that pass it. `truncatedFolios` opts a folio into the
+    // truncated shape (valid SOI, no EOI) to exercise the rejection path.
+    const payload = Buffer.from(`IMG ${ark} f${ordre}`, "utf8");
+    if (s.truncatedFolios?.includes(ordre)) {
+      return Buffer.concat([Buffer.from([0xff, 0xd8]), payload]);
+    }
+    return Buffer.concat([Buffer.from([0xff, 0xd8]), payload, Buffer.from([0xff, 0xd9])]);
   }
 }
 

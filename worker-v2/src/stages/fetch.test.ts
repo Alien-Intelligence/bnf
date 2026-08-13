@@ -178,3 +178,33 @@ test("redelivered folio is an outcome-cache hit: re-emits without re-hitting BnF
   assert.equal(h.emitted[1]?.ok, true);
   assert.equal(h.bnf.calls.alto, 1, "no new BnF call on the redelivery (cache hit)");
 });
+
+// --- Image completeness validation (2026-08-13 truncated-cache incident) ----
+
+test("a truncated image response is NEVER cached and the folio retries", async () => {
+  const h = await setup(imageSpec({ truncatedFolios: [1] }));
+  await h.seed(folio("image", 1));
+  await h.q.idle();
+
+  // All 4 attempts fetched (transient → retried), nothing ever cached, and the
+  // exhausted folio is emitted as lost so the fan-in still completes.
+  assert.equal(h.bnf.calls.image, 4, "every attempt re-fetched");
+  assert.equal(await h.blob.getBytes(keys.image(ARK, 1)), null, "truncated bytes never cached");
+  assert.equal(h.emitted.length, 1);
+  assert.equal(h.emitted[0]?.ok, false, "folio reported lost after exhaustion");
+});
+
+test("a poisoned cache entry (no EOI) is deleted and re-fetched, then re-cached valid", async () => {
+  const h = await setup(imageSpec());
+  // Poison the cache the way the 2026-08-13 incident did: header, no EOI.
+  await h.blob.putBytes(keys.image(ARK, 2), Buffer.from([0xff, 0xd8, 0x41, 0x42]));
+
+  await h.seed(folio("image", 2));
+  await h.q.idle();
+
+  assert.equal(h.bnf.calls.image, 1, "cache was NOT trusted — one fresh fetch");
+  const bytes = await h.blob.getBytes(keys.image(ARK, 2));
+  assert.ok(bytes && bytes[0] === 0xff && bytes[1] === 0xd8, "re-cached with SOI");
+  assert.ok(bytes.subarray(-32).includes(Buffer.from([0xff, 0xd9])), "re-cached with EOI");
+  assert.equal(h.emitted[0]?.ok, true, "folio succeeds after self-repair");
+});
