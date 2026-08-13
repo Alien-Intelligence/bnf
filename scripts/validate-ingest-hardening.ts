@@ -107,9 +107,13 @@ async function main(): Promise<void> {
   })
   console.log(`[${ts()}] project ${project.id} (${count} arks)`)
 
-  const add = await CorpusService.addArks(project, user, { arks }, undefined, {
-    canonicalize: false,
-  })
+  const add = await CorpusService.addArks(
+    project,
+    user,
+    { arks, reason: `validation ${label}` },
+    undefined,
+    { canonicalize: false },
+  )
   console.log(
     `[${ts()}] corpus add: +${add.lastDeltaAdded} (pending=${add.pending}, nonIngestable=${add.nonIngestable.length})`,
   )
