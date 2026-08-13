@@ -285,10 +285,23 @@ export class LiveOcrEngine implements OcrEngine {
       };
     }
 
+    // A batch whose entries ALL failed still reports the JOB as SUCCESS — with
+    // no outputFile and ONLY an errorFile (observed live 2026-08-13: 39 prod
+    // docs, every entry a 400 rejecting a truncated cached image). The error
+    // file is per-entry JSONL like the output file; read it so the failure
+    // carries the real per-entry reason instead of the misleading
+    // "SUCCESS but no output file".
     if (!job.outputFile) {
+      const detail = job.errorFile
+        ? await this.firstEntryError(mistral, job.errorFile)
+        : null;
       return {
         state: "failed",
-        reason: `Mistral batch ${batchId} SUCCESS but no output file`,
+        reason:
+          `Mistral batch ${batchId} SUCCESS with no output file ` +
+          `(0/${job.totalRequests} entries succeeded` +
+          (detail ? `; first entry error: ${detail}` : "") +
+          `)`,
       };
     }
 
@@ -297,6 +310,14 @@ export class LiveOcrEngine implements OcrEngine {
       console.log(`[mistral-ocr] raw output (${text.length} chars):\n${text.slice(0, 3000)}`);
     }
     const { pages, dropped, entryErrors } = parseOcrOutput(text);
+    // Entries that failed at request level land in the SEPARATE error file,
+    // not the output file — merge them so partial batches report every loss.
+    if (job.errorFile) {
+      const errText = await streamToString(
+        await mistral.files.download({ fileId: job.errorFile }),
+      );
+      entryErrors.push(...parseOcrOutput(errText).entryErrors);
+    }
     return {
       state: "done",
       pages,
@@ -305,5 +326,47 @@ export class LiveOcrEngine implements OcrEngine {
       succeeded: job.succeededRequests,
       failed: job.failedRequests,
     };
+  }
+
+  /**
+   * First per-entry error from a batch ERROR file, sanitized for a failure
+   * reason. Mistral embeds the ENTIRE offending data-URL in its 400 messages
+   * (megabytes of base64), which must never reach a log line or a doc row —
+   * strip it before surfacing. Best-effort: a null here degrades the reason,
+   * never the failed classification.
+   */
+  private async firstEntryError(
+    mistral: Mistral,
+    errorFileId: string,
+  ): Promise<string | null> {
+    try {
+      const text = await streamToString(
+        await mistral.files.download({ fileId: errorFileId }),
+      );
+      const firstLine = text.split("\n").find((l) => l.trim());
+      if (!firstLine) return null;
+      const entry = JSON.parse(firstLine) as {
+        custom_id?: string;
+        response?: { status_code?: number; body?: unknown };
+      };
+      // The body is a JSON STRING of Mistral's error envelope; its `message`
+      // carries the human reason (with the data URL embedded — sanitize).
+      let message: string | null = null;
+      if (typeof entry.response?.body === "string") {
+        try {
+          const body = JSON.parse(entry.response.body) as { message?: unknown };
+          if (typeof body.message === "string") message = body.message;
+        } catch {
+          message = entry.response.body;
+        }
+      }
+      const status = entry.response?.status_code;
+      const clean = (message ?? "")
+        .replace(/data:[a-z/+.-]+;base64,[^'"\s]*/gi, "<data-url>")
+        .slice(0, 200);
+      return `${entry.custom_id ?? "?"} http_${status ?? "?"}${clean ? `: ${clean}` : ""}`;
+    } catch {
+      return null;
+    }
   }
 }

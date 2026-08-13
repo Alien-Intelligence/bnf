@@ -24,6 +24,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { fetch as undiciFetch } from "undici";
 
 import { config, isAllowedUpstream, isManifest, isPartnerApi } from "./config.js";
+import { truncatedBodyError } from "./body.js";
 import { callCount, recordCall, resetCalls, toCsv } from "./calls.js";
 import { buckets, planFor } from "./plan.js";
 import { RateWaitTimeoutError, retryAfterToEpochMs } from "./rate.js";
@@ -197,6 +198,14 @@ async function handleFetch(req: IncomingMessage, res: ServerResponse): Promise<v
   log(upstream.status, note, waitMs, fetchMs, retryAfter);
 
   const bytes = Buffer.from(await upstream.arrayBuffer());
+  // Truncation guard — see body.ts for the incident this prevents. A mismatch
+  // between the buffered body and the upstream's declared content-length is a
+  // transport failure the caller must retry (502), never a body to mirror.
+  const truncated = truncatedBodyError(bytes.length, upstream.headers.get("content-length"));
+  if (truncated) {
+    log(502, "truncated_upstream", waitMs, fetchMs, retryAfter);
+    return send(res, 502, "text/plain", truncated);
+  }
   const ct = upstream.headers.get("content-type") ?? "application/octet-stream";
   send(res, upstream.status, ct, bytes);
 }

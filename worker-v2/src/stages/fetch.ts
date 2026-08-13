@@ -22,7 +22,7 @@
  */
 import { PipelineStage, type StageDeps } from "../core/stage.js";
 import type { RateGate, StageContext, StageOutcome } from "../core/types.js";
-import { PermanentBnfError } from "../bnf/errors.js";
+import { PermanentBnfError, TransientBnfError } from "../bnf/errors.js";
 import type { BnfClient } from "../bnf/types.js";
 import { keys } from "../domain/keys.js";
 import { Q } from "../domain/queues.js";
@@ -104,10 +104,27 @@ export class FetchStage extends PipelineStage<FolioItem, FolioResult> {
   private async fetchImage(item: FolioItem): Promise<StageOutcome<FolioResult>> {
     const key = keys.image(item.ark, item.ordre);
     const cached = await this.blob.getBytes(key);
-    if (!cached) {
+    if (cached && !isCompleteJpeg(cached)) {
+      // A poisoned cache entry (see isCompleteJpeg). Delete and fall through to
+      // a fresh fetch — trusting it would poison every downstream consumer
+      // (Mistral 400s the whole batch entry; vision describes garbage).
+      await this.blob.delete(key);
+    }
+    if (!cached || !isCompleteJpeg(cached)) {
       // Vision lane downscales (description, not OCR); Mistral keeps full res.
       const size = item.lane === "vision" ? this.visionImageSize : this.imageSize;
       const bytes = await this.bnf.fetchImageFolio(item.ark, item.ordre, size);
+      if (!isCompleteJpeg(bytes)) {
+        // NEVER cache unvalidated bytes. A truncated body reaches us when an
+        // upstream chunked response closes cleanly mid-stream (observed
+        // 2026-08-13: tunnel/OOM-era broker forwarded partial BnF bodies as
+        // complete; the cached JPEGs had headers but no EOI, and every later
+        // run inherited them — Mistral rejected whole batches with per-entry
+        // 400s). Transient: the retry re-fetches.
+        throw new TransientBnfError("image_truncated", {
+          hint: `${item.ark} f${item.ordre}: ${bytes.length} bytes, JPEG EOI marker missing`,
+        });
+      }
       await this.blob.putBytes(key, bytes, "image/jpeg");
     }
     return this.ok(item, false);
@@ -135,4 +152,23 @@ export class FetchStage extends PipelineStage<FolioItem, FolioResult> {
     };
     return { kind: "emit", items: [r] };
   }
+}
+
+/**
+ * Is `bytes` a structurally COMPLETE JPEG — SOI magic at the start and the EOI
+ * marker (ffd9) within the trailing window?
+ *
+ * This is the cheap validity gate between "bytes arrived" and "bytes become a
+ * permanent cache entry". A transport that ends a chunked body with a clean
+ * close (dying broker, flaky tunnel) yields a prefix that LOOKS like a JPEG
+ * (valid header) but cannot be decoded — and once cached, every later run
+ * inherits it (2026-08-13: 39 prod docs failed on Mistral per-entry 400s from
+ * exactly this). The EOI is checked within a small trailing window, not just
+ * the last two bytes, because encoders may pad after EOI.
+ */
+export function isCompleteJpeg(bytes: Buffer): boolean {
+  if (bytes.length < 4) return false;
+  if (bytes[0] !== 0xff || bytes[1] !== 0xd8) return false; // SOI
+  const tail = bytes.subarray(Math.max(0, bytes.length - 32));
+  return tail.includes(Buffer.from([0xff, 0xd9])); // EOI in the trailing window
 }
