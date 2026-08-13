@@ -40,6 +40,110 @@ import { ClusterRunner } from "@/lib/cluster/runner"
 import { PAID_OCR_DEFAULT_BUDGET_USD } from "@/lib/constants"
 import { env } from "@/lib/env"
 
+/**
+ * F20 — the pure selection logic behind {@link IngestService.retryFailed}.
+ * Pulled out of the class (no Prisma, no I/O) so the fallback rule is
+ * unit-testable without a database: given the source job's `stats.errors`
+ * AND the current per-doc `Document` truth, decide which ARKs a retry job
+ * should target.
+ *
+ *   • `statsErrors` non-empty → those ARKs (the normal path: the worker's
+ *     terminal callback recorded exactly which docs failed).
+ *   • `statsErrors` empty → fall back to `documentRows`, already expected to
+ *     be pre-filtered by the caller to `addedArks` members with
+ *     `indexedAt === null && indexError !== null` (never indexed, and a
+ *     reason is on record). `addedArks` is re-checked here too, so the
+ *     function is correct even if a caller passes an unfiltered row set.
+ *   • Both empty → `[]` (the caller reports `{ created: false }`).
+ */
+export function computeRetryArks(
+  statsErrors: ReadonlyArray<{ ark: string }>,
+  addedArks: readonly string[],
+  documentRows: ReadonlyArray<{
+    ark: string
+    indexedAt: Date | null
+    indexError: string | null
+  }>,
+): string[] {
+  if (statsErrors.length > 0) return statsErrors.map((e) => e.ark)
+  const addedSet = new Set(addedArks)
+  return documentRows
+    .filter((d) => addedSet.has(d.ark) && d.indexedAt === null && d.indexError !== null)
+    .map((d) => d.ark)
+}
+
+/**
+ * F13 warning channel (ai-memories/tech/repos/bnf/ingest-hardening) — the pure
+ * logic behind {@link IngestService.applyProgress}'s done-routing decision.
+ * `stats.errors[]` now carries BOTH real per-doc failures and `warning: true`
+ * entries (a doc that succeeded but lost OCR pages). A warning entry must
+ * NEVER be counted as a failure: a `done` event whose `errors[]` contains
+ * ONLY warnings still routes to `commit()`, not `commitPartialFailure()`.
+ * Pulled out of the class (no Prisma, no I/O) for the same reason as
+ * {@link computeRetryArks} — unit-testable without a database.
+ */
+export function countNonWarningErrors(
+  errors: ReadonlyArray<{ warning?: unknown }>,
+): number {
+  return errors.filter((e) => e.warning !== true).length
+}
+
+/** One parsed entry from the worker's `stats.errors[]` (F13). */
+export interface ParsedErrorEntry {
+  reason: string
+  warning: boolean
+}
+
+/**
+ * Pure parse of `stats.errors[]` into `ark → { reason, warning }`. Defensive
+ * against a missing/malformed entry (no `ark` string → skipped) the same way
+ * the pre-F13 code was. Shared by {@link IngestService.commit} (which only
+ * ever sees warning entries) and {@link IngestService.commitPartialFailure}
+ * (which sees both).
+ */
+export function parseErrorEntries(
+  errors: ReadonlyArray<{
+    ark?: unknown
+    stage?: unknown
+    reason?: unknown
+    warning?: unknown
+  }>,
+): Map<string, ParsedErrorEntry> {
+  const out = new Map<string, ParsedErrorEntry>()
+  for (const e of errors) {
+    if (e && typeof e.ark === "string") {
+      out.set(e.ark, {
+        reason:
+          typeof e.reason === "string"
+            ? e.reason
+            : typeof e.stage === "string"
+              ? e.stage
+              : "échec",
+        warning: e.warning === true,
+      })
+    }
+  }
+  return out
+}
+
+/**
+ * F13 — split an added-ARK list into "succeeded" (should get `indexedAt`
+ * stamped) and "failed" (stays out of the index, `indexedAt` null) given the
+ * parsed error entries. A `warning` entry does NOT exclude its ARK from
+ * succeeded — the doc indexed successfully, it just lost some pages. Pulled
+ * out of {@link IngestService.commitPartialFailure} so the decision that
+ * matters most (which ARKs get re-indexed) is unit-testable without Prisma.
+ */
+export function splitSucceededArks(
+  addedArks: readonly string[],
+  entries: ReadonlyMap<string, ParsedErrorEntry>,
+): { succeeded: string[]; failed: string[] } {
+  const failed = [...entries.entries()].filter(([, v]) => !v.warning).map(([ark]) => ark)
+  const failedSet = new Set(failed)
+  const succeeded = addedArks.filter((a) => !failedSet.has(a))
+  return { succeeded, failed }
+}
+
 export class IngestService {
   /**
    * Submit an ingestion job for a project.
@@ -199,15 +303,35 @@ export class IngestService {
     const callbackBase = process.env.WORKER_CALLBACK_BASE_URL ?? env.APP_URL
     const callbackUrl = `${callbackBase}/api/internal/ingest/${job.id}/progress`
 
-    const { clusterJobId } = await ClusterRunner.submit({
-      projectId: project.id,
-      targetVersionId: targetVersion.id,
-      appJobId: job.id,
-      added: addedDocs,
-      removed: removedArks,
-      callbackUrl,
-      callbackSecret,
-    })
+    // F19: a transport failure here (worker blip, timeout, non-2xx) must NOT
+    // leave the QUEUED row from step 8 behind as a corpse — the dedup guard
+    // (step 4) would return that same corpse on every future submit for this
+    // version, wedging the project's ingestion forever. Mark the job FAILED
+    // with an honest transport reason and re-throw so the route still
+    // surfaces the error to the caller (the request itself still fails).
+    let clusterJobId: string
+    try {
+      const result = await ClusterRunner.submit({
+        projectId: project.id,
+        targetVersionId: targetVersion.id,
+        appJobId: job.id,
+        added: addedDocs,
+        removed: removedArks,
+        callbackUrl,
+        callbackSecret,
+      })
+      clusterJobId = result.clusterJobId
+    } catch (err) {
+      await prisma.ingestJob.update({
+        where: { id: job.id },
+        data: {
+          status: INGEST_STATUS.FAILED,
+          error: IngestService._truncateError(err),
+          finishedAt: new Date(),
+        },
+      })
+      throw err
+    }
 
     // 10. Persist clusterJobId and transition to running
     const running = await prisma.ingestJob.update({
@@ -326,6 +450,15 @@ export class IngestService {
    *
    * NOTE: IngestPubSub is not yet wired (slice 4b). This method only does DB
    * writes. SSE stream integration lands in a later commit.
+   *
+   * INTERACTION WITH THE WATCHDOG (lib/ingest/watchdog.ts, F18): this method
+   * applies unconditionally — it does not check the job's current status
+   * before writing. That is intentional. If the watchdog has already marked
+   * a wedged job FAILED and the worker's real terminal callback then arrives
+   * late (the run actually did finish), this call still commits it to
+   * DONE/PARTIAL, overwriting FAILED. Late truth wins on purpose: the
+   * watchdog's job is only to stop a stuck row from blocking the dedup guard
+   * forever, not to have the final word on outcome.
    */
   static async applyProgress(
     job: IngestJob,
@@ -338,8 +471,13 @@ export class IngestService {
       // can move the pointer without orphaning the failures (they stay in the
       // delta via indexedAt=null + indexError). Only the 'failed' stage below
       // (the whole job died) leaves the pointer untouched.
-      const failedCount = Number(
-        (event.stats as Record<string, unknown>)?.failed ?? 0,
+      //
+      // F13: derived from `stats.errors[]` directly (not a separate `stats.
+      // failed` counter) so a doc that succeeded but only carries a `warning`
+      // entry (lost OCR pages, never counted as a failure) can never flip this
+      // routing to commitPartialFailure — see countNonWarningErrors.
+      const failedCount = countNonWarningErrors(
+        IngestService._rawErrors(event.stats as Record<string, unknown>),
       )
       if (failedCount > 0) {
         await IngestService.commitPartialFailure(job, {
@@ -386,6 +524,9 @@ export class IngestService {
    *   • Mark targetVersion status = "ingested".
    *   • Advance project.ingestedVersionId.
    *   • Stamp Document.indexedAt for every added ARK; clear it for removed ARKs.
+   *   • Re-annotate Document.indexError for any ARK carrying an F13 `warning`
+   *     entry (lost OCR pages) — the doc still indexed, but the librarian sees
+   *     why it might have fewer pages than expected.
    *
    * The pointer is also advanced by commitPartialFailure() (a partial run still
    * moves the baseline); only a whole-job failure leaves it. See
@@ -398,7 +539,18 @@ export class IngestService {
     // page counts) is conservative — it never under-counts spend, which is the
     // safe direction for a budget ceiling. See _chargePaidOcr* helpers.
     const paidOcrCharge = IngestService._paidOcrChargeFor(job)
-    await prisma.$transaction([
+    // F13: warning-only entries route here (never commitPartialFailure), so the
+    // annotation must be applied here too — same transaction, so it's atomic
+    // with the indexedAt stamp it rides in on. `commit()` only ever sees
+    // warning entries (a real failure would have routed to
+    // commitPartialFailure), so every parsed entry here IS a warning.
+    const errorEntries = parseErrorEntries(
+      IngestService._rawErrors(results.stats as Record<string, unknown>),
+    )
+    const warningsByArk = new Map(
+      [...errorEntries.entries()].map(([ark, v]) => [ark, v.reason] as const),
+    )
+    const ops: Prisma.PrismaPromise<unknown>[] = [
       prisma.ingestJob.update({
         where: { id: job.id },
         data: {
@@ -434,7 +586,19 @@ export class IngestService {
         where: { projectId: job.projectId, ark: { in: job.removedArks } },
         data: { indexedAt: null },
       }),
-    ])
+    ]
+    // Applied AFTER the blanket indexError:null above so the annotation
+    // survives — indexedAt stays `now` (the doc IS indexed), only indexError
+    // carries the warning text.
+    for (const [ark, reason] of warningsByArk) {
+      ops.push(
+        prisma.document.updateMany({
+          where: { projectId: job.projectId, ark },
+          data: { indexError: reason },
+        }),
+      )
+    }
+    await prisma.$transaction(ops)
   }
 
   /**
@@ -460,9 +624,11 @@ export class IngestService {
     const stats = results.stats as Record<string, unknown>
     const failed = Number(stats?.failed ?? 0)
     const total = Number(stats?.total ?? 0)
-    const errorByArk = IngestService._errorsByArk(stats)
-    const failedSet = new Set(errorByArk.keys())
-    const succeededAdded = job.addedArks.filter((a) => !failedSet.has(a))
+    const entriesByArk = parseErrorEntries(IngestService._rawErrors(stats))
+    // F13: only NON-warning entries are real failures — a warning doc (lost
+    // OCR pages) still indexed successfully, so it belongs in succeededAdded,
+    // not in the excluded/failed set. See splitSucceededArks.
+    const { succeeded: succeededAdded } = splitSucceededArks(job.addedArks, entriesByArk)
     const now = new Date()
 
     // Charge the confirmed paid-OCR estimate even on a partial run: the worker
@@ -510,11 +676,26 @@ export class IngestService {
     }
     // Mark each failed doc with its reason; indexedAt stays null so it remains
     // the outstanding delta. updateMany (not update) so a missing row can't throw.
-    for (const [ark, reason] of errorByArk) {
+    // Warning entries are handled in the SECOND loop below, after
+    // succeededAdded's blanket indexError:null, so their annotation survives.
+    for (const [ark, v] of entriesByArk) {
+      if (v.warning) continue
       ops.push(
         prisma.document.updateMany({
           where: { projectId: job.projectId, ark },
-          data: { indexError: reason },
+          data: { indexError: v.reason },
+        }),
+      )
+    }
+    // F13: a warning doc IS in succeededAdded (indexedAt just set to `now`,
+    // indexError cleared, above) — re-apply the warning text afterward, in the
+    // same transaction, so the doc stays indexed but the reason survives.
+    for (const [ark, v] of entriesByArk) {
+      if (!v.warning) continue
+      ops.push(
+        prisma.document.updateMany({
+          where: { projectId: job.projectId, ark },
+          data: { indexError: v.reason },
         }),
       )
     }
@@ -529,35 +710,35 @@ export class IngestService {
     await prisma.$transaction(ops)
   }
 
-  /** Map of failed ARK → reason, read from the worker's `stats.errors[]`. */
-  private static _errorsByArk(
+  /**
+   * Defensively extract `stats.errors[]` as an array — `stats` is a loose
+   * `Record<string, unknown>` (V1/V2 shapes differ), so this is the one place
+   * that trusts it's array-shaped before handing it to {@link parseErrorEntries}.
+   */
+  private static _rawErrors(
     stats: Record<string, unknown> | null | undefined,
-  ): Map<string, string> {
+  ): ReadonlyArray<{ ark?: unknown; stage?: unknown; reason?: unknown; warning?: unknown }> {
     const raw = stats?.errors
-    const out = new Map<string, string>()
-    if (!Array.isArray(raw)) return out
-    for (const e of raw) {
-      if (e && typeof e === "object" && typeof (e as { ark?: unknown }).ark === "string") {
-        const r = e as { ark: string; stage?: unknown; reason?: unknown }
-        out.set(
-          r.ark,
-          typeof r.reason === "string"
-            ? r.reason
-            : typeof r.stage === "string"
-              ? r.stage
-              : "échec",
-        )
-      }
-    }
-    return out
+    return Array.isArray(raw)
+      ? (raw as Array<{ ark?: unknown; stage?: unknown; reason?: unknown; warning?: unknown }>)
+      : []
   }
 
   /**
    * Retry failed documents from a previous ingest job.
    *
    * Reads `stats.errors` from the source job for the list of failed ARKs.
-   * If there are no recorded per-document errors, returns `{ created: false }`.
-   * Otherwise creates a new ingest job targeting the same version with
+   * **F20**: `stats.errors` is absent exactly in the failure modes that most
+   * need recovery — a job the watchdog failed after the worker stopped
+   * reporting, or one that died before ever emitting a terminal callback,
+   * never got a `stats` write. When `stats.errors` is empty, fall back to the
+   * per-doc truth: `Document` rows within this job's `addedArks` that never
+   * made it into the index (`indexedAt` null) but carry a recorded reason
+   * (`indexError` set — written by `commitPartialFailure`). See
+   * {@link computeRetryArks} for the pure selection logic.
+   *
+   * Returns `{ created: false }` only when BOTH sources are empty. Otherwise
+   * creates a new ingest job targeting the same version with
    * `addedArks = failed ARKs` and `removedArks = []`.
    *
    * The source job may be in any state — the deduplication guard in submit()
@@ -570,16 +751,32 @@ export class IngestService {
     const job = await prisma.ingestJob.findUniqueOrThrow({ where: { id: jobId } })
 
     // Defensively read stats.errors — absent when no per-doc failures were
-    // recorded (e.g. FakeClusterRunner stub, or job died before emit).
+    // recorded (e.g. FakeClusterRunner stub, or job died/was watchdog-failed
+    // before emit).
     const stats = job.stats as Record<string, unknown> | null | undefined
     const rawErrors = stats?.errors
-    const errors = Array.isArray(rawErrors)
+    const statsErrors = Array.isArray(rawErrors)
       ? (rawErrors as { ark: string; stage: string; reason: string }[])
       : []
 
-    if (errors.length === 0) return { created: false }
+    // Only queried when stats carried nothing — the common path (a normal
+    // partial-failure retry) never touches Document here.
+    const docRows =
+      statsErrors.length === 0
+        ? await prisma.document.findMany({
+            where: {
+              projectId: job.projectId,
+              ark: { in: job.addedArks },
+              indexedAt: null,
+              indexError: { not: null },
+            },
+            select: { ark: true, indexedAt: true, indexError: true },
+          })
+        : []
 
-    const failedArks = errors.map((e) => e.ark)
+    const failedArks = computeRetryArks(statsErrors, job.addedArks, docRows)
+
+    if (failedArks.length === 0) return { created: false }
 
     const addedDocs = await IngestService._loadClusterDocs(job.projectId, failedArks)
 
@@ -602,15 +799,31 @@ export class IngestService {
     const retryCallbackBase = process.env.WORKER_CALLBACK_BASE_URL ?? env.APP_URL
     const callbackUrl = `${retryCallbackBase}/api/internal/ingest/${retryJob.id}/progress`
 
-    const { clusterJobId } = await ClusterRunner.submit({
-      projectId: job.projectId,
-      targetVersionId: job.targetVersionId,
-      appJobId: retryJob.id,
-      added: addedDocs,
-      removed: [],
-      callbackUrl,
-      callbackSecret,
-    })
+    // Same F19 treatment as submit(): a transport failure here must not leave
+    // this retry job QUEUED forever either.
+    let clusterJobId: string
+    try {
+      const result = await ClusterRunner.submit({
+        projectId: job.projectId,
+        targetVersionId: job.targetVersionId,
+        appJobId: retryJob.id,
+        added: addedDocs,
+        removed: [],
+        callbackUrl,
+        callbackSecret,
+      })
+      clusterJobId = result.clusterJobId
+    } catch (err) {
+      await prisma.ingestJob.update({
+        where: { id: retryJob.id },
+        data: {
+          status: INGEST_STATUS.FAILED,
+          error: IngestService._truncateError(err),
+          finishedAt: new Date(),
+        },
+      })
+      throw err
+    }
 
     return prisma.ingestJob.update({
       where: { id: retryJob.id },
@@ -625,6 +838,17 @@ export class IngestService {
   // ---------------------------------------------------------------------------
   // Private helpers
   // ---------------------------------------------------------------------------
+
+  /**
+   * Render a caught error as a bounded string for `IngestJob.error` (F19). A
+   * raw transport failure can carry headers/stack noise; the UI only needs
+   * enough of it to diagnose, and an unbounded string has no business in a
+   * column read by the librarian-facing panel.
+   */
+  private static _truncateError(err: unknown, max = 500): string {
+    const message = err instanceof Error ? err.message : String(err)
+    return message.length > max ? `${message.slice(0, max)}…` : message
+  }
 
   /**
    * No-op short-circuit path: added and removed are both empty.

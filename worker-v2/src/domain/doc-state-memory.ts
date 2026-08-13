@@ -9,9 +9,12 @@ import type {
   DocScope,
   DocStateStore,
   DocStatus,
+  DroppedPagesDoc,
   FailedDoc,
+  FolioRecord,
   FolioTally,
 } from "./doc-state.js";
+import { NON_TERMINAL_STATUSES } from "./doc-state.js";
 
 interface Entry extends DocRow {
   folios: Map<number, boolean>; // ordre → ok
@@ -40,8 +43,19 @@ export class MemoryDocState implements DocStateStore {
       meta: null,
       error: null,
       skipReason: null,
+      requeues: 0,
+      pagesDropped: 0,
+      dropReason: null,
       folios: new Map(),
     });
+  }
+
+  async upsertDocs(
+    refs: { docJobId: string; projectId: string; ark: string; runId?: string | null }[],
+  ): Promise<void> {
+    // Trivial loop — the memory store has no round-trip cost to amortize; the
+    // batching only matters for the pg implementation.
+    for (const ref of refs) await this.upsertDoc(ref);
   }
 
   private require(docJobId: string): Entry {
@@ -114,6 +128,28 @@ export class MemoryDocState implements DocStateStore {
     return [...e.folios.entries()].filter(([, ok]) => ok).map(([ordre]) => ordre).sort((a, b) => a - b);
   }
 
+  async listFolios(docJobId: string): Promise<FolioRecord[]> {
+    const e = this.docs.get(docJobId);
+    if (!e) return [];
+    return [...e.folios.entries()]
+      .map(([ordre, ok]) => ({ ordre, ok }))
+      .sort((a, b) => a.ordre - b.ordre);
+  }
+
+  async listNonTerminalDocs(runId: string): Promise<DocRow[]> {
+    const nonTerminal = new Set<DocStatus>(NON_TERMINAL_STATUSES);
+    return [...this.docs.values()]
+      .filter((e) => e.runId === runId && nonTerminal.has(e.status))
+      .sort((a, b) => a.ark.localeCompare(b.ark))
+      .map(({ folios: _folios, ...row }) => ({ ...row }));
+  }
+
+  async incrementRequeues(docJobId: string): Promise<number> {
+    const e = this.require(docJobId);
+    e.requeues += 1;
+    return e.requeues;
+  }
+
   async statusCounts(scope?: DocScope): Promise<Record<DocStatus, number>> {
     const out: Record<DocStatus, number> = {
       queued: 0, planned: 0, fetching: 0, ready: 0, processing: 0,
@@ -132,6 +168,28 @@ export class MemoryDocState implements DocStateStore {
       .filter((e) => e.runId === runId && e.status === "failed")
       .sort((a, b) => a.ark.localeCompare(b.ark))
       .map((e) => ({ ark: e.ark, lane: e.lane, error: e.error }));
+  }
+
+  async recordPageDrops(
+    docJobId: string,
+    drop: { dropped: number; expected: number; reason: string },
+  ): Promise<void> {
+    const e = this.require(docJobId);
+    e.pagesDropped = Math.min(drop.dropped, drop.expected);
+    e.dropReason = drop.reason;
+  }
+
+  async listDoneWithDrops(runId: string): Promise<DroppedPagesDoc[]> {
+    return [...this.docs.values()]
+      .filter((e) => e.runId === runId && e.status === "done" && e.pagesDropped > 0)
+      .sort((a, b) => a.ark.localeCompare(b.ark))
+      .map((e) => ({
+        ark: e.ark,
+        lane: e.lane,
+        pagesDropped: e.pagesDropped,
+        pagesExpected: e.pagesExpected,
+        dropReason: e.dropReason,
+      }));
   }
 
   async donePageCount(runId: string): Promise<number> {

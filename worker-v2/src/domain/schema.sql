@@ -30,6 +30,22 @@ CREATE TABLE IF NOT EXISTS sandbox_ingest_v2.ingest_run (
   updated_at        timestamptz NOT NULL DEFAULT now()
 );
 
+-- Looked up by getByAppJobId to make POST /ingest idempotent on appJobId (an
+-- app-side retry must find its existing run instead of opening a second one).
+CREATE INDEX IF NOT EXISTS ingest_run_app_job_id_idx
+  ON sandbox_ingest_v2.ingest_run (app_job_id);
+
+-- terminal_post_failures: consecutive terminal-callback POST failures
+-- (TerminalEmitter.emit's catch path, incremented every time). Without this a
+-- run whose callback URL is permanently dead gets re-driven by every
+-- reconciler sweep forever — log spam, no resolution, while the app-side
+-- watchdog independently gives up on its own ~30min ceiling (dead-callback
+-- give-up item, ai-memories/tech/repos/bnf/ingest-hardening). Past
+-- RECONCILER_MAX_CALLBACK_FAILURES the emitter marks the run canceled instead
+-- of incrementing forever.
+ALTER TABLE sandbox_ingest_v2.ingest_run
+  ADD COLUMN IF NOT EXISTS terminal_post_failures integer NOT NULL DEFAULT 0;
+
 CREATE TABLE IF NOT EXISTS sandbox_ingest_v2.document_ingest_job_v2 (
   doc_job_id     text PRIMARY KEY,
   run_id         text,                       -- groups docs by ingest_run (null for seed-CLI docs)
@@ -41,6 +57,7 @@ CREATE TABLE IF NOT EXISTS sandbox_ingest_v2.document_ingest_job_v2 (
   meta           jsonb,
   error          text,
   skip_reason    text,
+  requeues       integer NOT NULL DEFAULT 0,  -- reconciliation re-drives (see the ALTER below)
   created_at     timestamptz NOT NULL DEFAULT now(),
   updated_at     timestamptz NOT NULL DEFAULT now()
 );
@@ -49,6 +66,28 @@ CREATE TABLE IF NOT EXISTS sandbox_ingest_v2.document_ingest_job_v2 (
 -- in the CREATE above for fresh installs; this covers an already-migrated DB).
 ALTER TABLE sandbox_ingest_v2.document_ingest_job_v2
   ADD COLUMN IF NOT EXISTS run_id text;
+
+-- requeues: how many times the reconciliation sweep (live/reconciler.ts) has had
+-- to re-drive this doc because its queue job vanished (a pg-boss expiration, a
+-- killed pod mid-delivery). The sweep re-enqueues an orphan, but a doc that keeps
+-- orphaning without progress is not "unlucky" — it is stuck, and looping forever
+-- would hide that. Past the cap it fails terminally with
+-- `stranded_after_requeues`, which keeps the RUN able to complete.
+ALTER TABLE sandbox_ingest_v2.document_ingest_job_v2
+  ADD COLUMN IF NOT EXISTS requeues integer NOT NULL DEFAULT 0;
+
+-- pages_dropped/drop_reason (F13, ai-memories/tech/repos/bnf/ingest-hardening):
+-- a doc can finish `done` with ≥1 surviving OCR page while some of its pages
+-- were discarded as unusable (hallucinated or blank) — "partial by design", per
+-- Leo, no abort threshold. Before this, that loss had NO record anywhere: the
+-- doc counted as a clean success and the RAG entry was silently hollow (the
+-- 2026-08-11 incident's 32 "done" Nice-Matin docs, mostly missing 5/6 pages).
+-- Set by DocStateStore.recordPageDrops; surfaced to the app via the terminal
+-- event's warning channel (buildTerminalEvent), never as a doc failure.
+ALTER TABLE sandbox_ingest_v2.document_ingest_job_v2
+  ADD COLUMN IF NOT EXISTS pages_dropped integer NOT NULL DEFAULT 0;
+ALTER TABLE sandbox_ingest_v2.document_ingest_job_v2
+  ADD COLUMN IF NOT EXISTS drop_reason text;
 
 CREATE INDEX IF NOT EXISTS document_ingest_job_v2_project_status_idx
   ON sandbox_ingest_v2.document_ingest_job_v2 (project_id, status);

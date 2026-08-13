@@ -62,6 +62,41 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * How long to wait for the Gemini SDK call before giving up (F26,
+ * ai-memories/tech/repos/bnf/ingest-hardening — describeViaGemini used to be
+ * the one provider call with no §14 bound at all). SET-but-junk throws at
+ * startup rather than silently disabling the bound, matching config.ts's
+ * convention.
+ */
+export function geminiTimeoutMs(): number {
+  const raw = process.env.GEMINI_TIMEOUT_MS;
+  if (raw == null || raw.trim() === "") return 60_000;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new Error(`GEMINI_TIMEOUT_MS must be a positive number, got ${raw}`);
+  }
+  return Math.floor(n);
+}
+
+/**
+ * Race `promise` against a timer that rejects after `ms`. The timer is always
+ * cleared (try/finally) so a promise that settles well within its budget never
+ * leaves a dangling `setTimeout` handle behind (§14 — an uncleared timer is the
+ * same open-handle-leak class as an unbounded await, just cheaper to miss).
+ */
+export async function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const timedOut = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  try {
+    return await Promise.race([promise, timedOut]);
+  } finally {
+    clearTimeout(timer!);
+  }
+}
+
 /** Catalogue context handed to the model as ground truth (never contradicted). */
 export interface DocumentContext {
   ark?: string;
@@ -592,6 +627,15 @@ async function describeViaHolo(
  * FALLBACK provider: Google AI Gemma. Gemma has no system role, so the system
  * prompt is folded into the single user text part. It's a reasoning model
  * (burns "thoughts" tokens) so the output budget must be generous.
+ *
+ * Bounded by GEMINI_TIMEOUT_MS (F26, ai-memories/tech/repos/bnf/ingest-hardening):
+ * `@google/genai`'s `generateContent` takes no AbortSignal, so the SDK call
+ * itself cannot be aborted mid-flight — `withTimeout` only bounds OUR wait, not
+ * the underlying socket, which stays open on the Google side until it resolves
+ * or its own transport times out. That is acceptable here because
+ * describeImage's caller treats a throw from this function exactly like any
+ * other provider failure: it falls through to the next round/provider rather
+ * than assuming the request was actually canceled.
  */
 async function describeViaGemini(
   img: FetchedImage,
@@ -602,25 +646,30 @@ async function describeViaGemini(
 
   // Single attempt — describeImage owns the retry loop and provider fallback.
   const start = Date.now();
-  const resp = await geminiClient().models.generateContent({
-    model,
-    contents: [
-      {
-        role: "user",
-        parts: [
-          { text: prompt },
-          { inlineData: { mimeType: img.mimeType, data: img.base64 } },
-        ],
+  const timeoutMs = geminiTimeoutMs();
+  const resp = await withTimeout(
+    geminiClient().models.generateContent({
+      model,
+      contents: [
+        {
+          role: "user",
+          parts: [
+            { text: prompt },
+            { inlineData: { mimeType: img.mimeType, data: img.base64 } },
+          ],
+        },
+      ],
+      config: {
+        // gemma-4-31b-it spends a large share of tokens on hidden reasoning,
+        // so the budget must cover thoughts + the JSON answer.
+        maxOutputTokens: options.maxTokens ?? 8192,
+        temperature: 0.3,
+        topP: 0.95,
       },
-    ],
-    config: {
-      // gemma-4-31b-it spends a large share of tokens on hidden reasoning,
-      // so the budget must cover thoughts + the JSON answer.
-      maxOutputTokens: options.maxTokens ?? 8192,
-      temperature: 0.3,
-      topP: 0.95,
-    },
-  });
+    }),
+    timeoutMs,
+    `Gemini generateContent timed out after ${timeoutMs}ms`,
+  );
   const raw =
     resp.text ??
     resp.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("") ??

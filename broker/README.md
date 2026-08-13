@@ -1,11 +1,11 @@
 # BnF Broker
 
-The single egress chokepoint for all BnF traffic (app metadata resolver + ingest worker). It exists because the BnF partner API enforces a **shared 300/min global** quota across all APIs per credential, plus a **40/min-per-IP** cap on IIIF manifests — limits that two independent processes cannot honour without one coordination point.
+The single egress chokepoint for all BnF traffic (app metadata resolver + ingest worker). It exists because the BnF partner API enforces a **shared 1000/min global** quota across all APIs per credential, plus a **separate 40/min-per-IP** budget on IIIF manifests (confirmed 2026-08-11; the earlier agreement was 300/min) — limits that two independent processes cannot honour without one coordination point.
 
 ## What it owns
 
 - **OAuth token** — single-flight client_credentials mint, ~1h bearer, re-minted at expiry − skew. The BnF `KEY`/`SECRET` live ONLY here.
-- **Rate governance** — configurable token buckets: `global` (300/min), `manifest` (40/min/IP), `external` (politeness for the ungated `oai`/`catalogue`/`data` hosts, not counted against the partner quota).
+- **Rate governance** — configurable token buckets: `global` (1000/min), `manifest` (40/min/IP, a **separate** budget — manifest calls neither consume nor freeze the global bucket), `external` (politeness for the ungated `oai`/`catalogue`/`data` hosts, not counted against the partner quota).
 - **429 backoff** — parses the absolute-GMT `Retry-After`, freezes the offending bucket until then, and mirrors the 429 to the caller.
 
 ## Contract
@@ -17,6 +17,10 @@ GET  /health  -> {"ok": true}
 ```
 
 Only `*.bnf.fr` upstreams are accepted (SSRF guard). Partner-API hosts get a Bearer token + the global cap; manifests additionally take the manifest cap; ungated hosts use the politeness bucket and no auth.
+
+## Security posture
+
+`POST /fetch` and `GET /calls.csv` have **no authentication of their own** — the broker trusts the cluster network (any pod that can reach `:8792` can fetch through it or read the call log). This is accepted for the demo deployment: the broker is not exposed outside the cluster, and the real secret it protects (the BnF `KEY`/`SECRET`) never leaves it. Flagged for ISO 27001 work (F22, `ai-memories/tech/repos/bnf/ingest-hardening`) — a production posture would put a shared bearer token or mTLS between the worker/app and the broker instead of relying on network placement alone.
 
 ## Run
 

@@ -10,6 +10,7 @@
  *  - S3BlobStore: Scaleway Object Storage (prod), lazily constructed.
  */
 import {
+  DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
   PutObjectCommand,
@@ -37,6 +38,9 @@ export class MemoryBlobStore implements BlobStore {
   async putJson(key: string, value: unknown): Promise<void> {
     this.store.set(key, Buffer.from(JSON.stringify(value), "utf8"));
   }
+  async delete(key: string): Promise<void> {
+    this.store.delete(key); // Map.delete on an absent key is a no-op — already idempotent.
+  }
   /** Test helper. */
   size(): number {
     return this.store.size;
@@ -51,6 +55,10 @@ export interface S3BlobStoreOpts {
   secretAccessKey: string;
   /** Optional key namespace, e.g. a per-project prefix. */
   prefix?: string;
+  /** TCP connect budget in ms (default 3_000). */
+  connectionTimeoutMs?: number;
+  /** Per-request budget in ms, up to response headers (default 30_000). */
+  requestTimeoutMs?: number;
 }
 
 export class S3BlobStore implements BlobStore {
@@ -61,11 +69,33 @@ export class S3BlobStore implements BlobStore {
   constructor(opts: S3BlobStoreOpts) {
     this.bucket = opts.bucket;
     this.prefix = opts.prefix ? opts.prefix.replace(/\/$/, "") + "/" : "";
+    const requestTimeout = opts.requestTimeoutMs ?? 30_000;
     this.client = new S3Client({
       endpoint: opts.endpoint,
       region: opts.region,
       credentials: { accessKeyId: opts.accessKeyId, secretAccessKey: opts.secretAccessKey },
       forcePathStyle: true,
+      // BOUNDED S3 (F25, ai-memories/tech/repos/bnf/ingest-hardening). The SDK
+      // ships with NO timeouts: an S3 hang parked a stage handler until pg-boss
+      // expired the job from outside — which runs no handler code and orphans the
+      // doc (the F7 wedge, reached through the artifact store).
+      // The object form is the SDK's own NodeHttpHandlerOptions passthrough, so we
+      // don't hand-construct a handler (nor import @smithy directly).
+      //   connectionTimeout — TCP connect only; 3s is generous for a same-region
+      //     endpoint, and a connect that slow is a network fault, not slow S3.
+      //   requestTimeout    — request→response-headers; every object we move is
+      //     small (JSON pointers, one ALTO page, one folio image).
+      //   throwOnRequestTimeout — REQUIRED: without it a breach only logs a
+      //     warning and the request keeps hanging (@smithy/node-http-handler),
+      //     i.e. the timeout would be decoration.
+      //   socketTimeout     — idle-socket bound; requestTimeout's timer is cleared
+      //     once headers arrive, so this is what bounds a stalled body stream.
+      requestHandler: {
+        connectionTimeout: opts.connectionTimeoutMs ?? 3_000,
+        requestTimeout,
+        throwOnRequestTimeout: true,
+        socketTimeout: requestTimeout,
+      },
     });
   }
 
@@ -114,6 +144,18 @@ export class S3BlobStore implements BlobStore {
 
   async putJson(key: string, value: unknown): Promise<void> {
     await this.putBytes(key, Buffer.from(JSON.stringify(value), "utf8"), "application/json");
+  }
+
+  async delete(key: string): Promise<void> {
+    try {
+      await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: this.k(key) }));
+    } catch (e) {
+      // S3 itself already treats delete-of-absent as success, but Scaleway's
+      // implementation is defended against here too — idempotency is the
+      // contract, not an implementation detail of one provider.
+      if (isNotFound(e)) return;
+      throw e;
+    }
   }
 }
 

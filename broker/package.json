@@ -5,6 +5,7 @@
   "description": "BnF partner-API broker — OAuth token + shared rate governance + verbatim proxy.",
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test \"src/**/*.test.ts\"",
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts"
   },

@@ -55,29 +55,17 @@ export const blob = {
   localRoot: () => optional("LOCAL_BLOB_ROOT", "./data")!,
 };
 
-// --- Ingest reliability knobs (Track 2) ---
+// --- Ingest reliability knobs: REMOVED (V1 leftovers) ---
 //
-// Tuned for "completes cleanly without tripping Gallica". A 205-doc run at high
-// concurrency + 8 rps got our egress IP hard-blocked by Gallica, and a short
-// retry base then failed the throttled docs inside the (sticky) block window.
-// So the retry span is deliberately long — prevention is the concurrency/rate
-// knobs (WORKER_CONCURRENCY / GALLICA_GENERAL_RPS); this is the safety net:
-//   - jobExpireSeconds: per-doc-job wall-clock ceiling. Generous (4h) so the
-//     rare slow book or ALTO fallback still finishes; bounded so a wedged job
-//     can't run forever. MUST exceed the worst-case OCR time for maxOcrPages.
-//   - retryLimit / retryDelaySeconds: a transiently-failed doc retries with
-//     exponential backoff off a 60s base (60→120→240→480→960s, ~32 min span) —
-//     long enough to OUTLAST a Gallica throttle window. Parked docs are visible
-//     as "N en reprise" in the UI (stage-pipeline outcomes line), so the long
-//     park no longer reads as a frozen bar the way it did before that landed.
-//   - maxOcrPages: hard ceiling so the worst case is bounded (no unbounded loop
-//     — see ../../CLAUDE_ERROR_PATTERNS.md §14).
-export const ingest = {
-  jobExpireSeconds: () => optionalInt("INGEST_JOB_EXPIRE_SECONDS", 4 * 60 * 60),
-  retryLimit: () => optionalInt("INGEST_RETRY_LIMIT", 5),
-  retryDelaySeconds: () => optionalInt("INGEST_RETRY_DELAY_SECONDS", 60),
-  maxOcrPages: () => optionalInt("MAX_OCR_PAGES", 300),
-};
+// `ingest.jobExpireSeconds` / `retryLimit` / `retryDelaySeconds` (env
+// INGEST_JOB_EXPIRE_SECONDS / INGEST_RETRY_LIMIT / INGEST_RETRY_DELAY_SECONDS)
+// were V1's pg-boss knobs and had ZERO callers in v2 — while the prod configmap
+// still set them, so operators believed jobs had a 4h ceiling when the real
+// ceiling was pg-boss's silent 15-minute default and the wedge that followed from
+// it (F10, ai-memories/tech/repos/bnf/ingest-hardening). In v2 each STAGE declares
+// its own retry policy and per-delivery expiration (PipelineStage.retry /
+// .expireInSeconds), and `MAX_OCR_PAGES` is read by config.ts. Dead config that
+// looks live is worse than no config.
 
 // --- Scaleway GenAI / Holo2 (Track 1, primary vision) ---
 export const genai = {
@@ -122,8 +110,10 @@ export const openrouter = {
 //   - maxPages: hard per-doc folio ceiling (mirrors the app's
 //     PAID_OCR_MAX_PAGES_PER_DOC); bounds the worst-case spend + upload size.
 //   - batchTimeoutMs: wall-clock ceiling on the poll loop — MUST stay under the
-//     doc-job ceiling (INGEST_JOB_EXPIRE_SECONDS) so a stuck batch fails the doc
-//     (→ pg-boss retry) instead of wedging the worker (CLAUDE_ERROR_PATTERNS §14).
+//     OCR stages' per-delivery expiration (PipelineStage.expireInSeconds) so a
+//     stuck batch fails the doc (→ pg-boss retry) instead of being killed from
+//     outside by an expiration, which runs no handler code and orphans the doc
+//     (CLAUDE_ERROR_PATTERNS §14, plus F7 in the ingest-hardening audit).
 export const mistralOcr = {
   enabled: (): boolean => {
     const v = optional("MISTRAL_OCR_ENABLED", "false")!;

@@ -22,14 +22,56 @@ import type {
   DocScope,
   DocStateStore,
   DocStatus,
+  DroppedPagesDoc,
   FailedDoc,
+  FolioRecord,
   FolioTally,
 } from "./doc-state.js";
+import { NON_TERMINAL_STATUSES } from "./doc-state.js";
 
 const SCHEMA = "sandbox_ingest_v2";
 const JOBS = `${SCHEMA}.document_ingest_job_v2`;
 const FOLIOS = `${SCHEMA}.document_folio_v2`;
 const PRE_ROUTED = ["queued", "planned", "fetching"];
+
+/** The columns of a doc row, plus the derived folio tallies (the DocRow shape). */
+interface JobRow {
+  doc_job_id: string;
+  run_id: string | null;
+  project_id: string;
+  ark: string;
+  lane: Lane | null;
+  status: DocStatus;
+  pages_expected: number | null;
+  meta: DocMeta | null;
+  error: string | null;
+  skip_reason: string | null;
+  requeues: number;
+  pages_dropped: number;
+  drop_reason: string | null;
+  pages_done: string;
+  pages_failed: string;
+}
+
+function toDocRow(r: JobRow): DocRow {
+  return {
+    docJobId: r.doc_job_id,
+    runId: r.run_id,
+    projectId: r.project_id,
+    ark: r.ark,
+    lane: r.lane,
+    status: r.status,
+    pagesExpected: r.pages_expected,
+    pagesDone: Number(r.pages_done),
+    pagesFailed: Number(r.pages_failed),
+    meta: r.meta,
+    error: r.error,
+    skipReason: r.skip_reason,
+    requeues: Number(r.requeues),
+    pagesDropped: Number(r.pages_dropped),
+    dropReason: r.drop_reason,
+  };
+}
 
 export class PgDocState implements DocStateStore {
   constructor(private readonly pool: Pool) {}
@@ -53,6 +95,34 @@ export class PgDocState implements DocStateStore {
        ON CONFLICT (doc_job_id) DO NOTHING`,
       [d.docJobId, d.runId ?? null, d.projectId, d.ark],
     );
+  }
+
+  /**
+   * Batch-seed doc rows in chunks of 1000 — one multi-row INSERT per chunk
+   * instead of N sequential awaits (F19: seeding hundreds of docs one at a
+   * time can straddle the app's client timeout on `POST /ingest`). Same
+   * ON CONFLICT DO NOTHING idempotency as upsertDoc.
+   */
+  async upsertDocs(
+    refs: { docJobId: string; projectId: string; ark: string; runId?: string | null }[],
+  ): Promise<void> {
+    const CHUNK = 1000;
+    for (let i = 0; i < refs.length; i += CHUNK) {
+      const batch = refs.slice(i, i + CHUNK);
+      const values: string[] = [];
+      const params: unknown[] = [];
+      batch.forEach((ref, idx) => {
+        const base = idx * 4;
+        values.push(`($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, 'queued')`);
+        params.push(ref.docJobId, ref.runId ?? null, ref.projectId, ref.ark);
+      });
+      await this.pool.query(
+        `INSERT INTO ${JOBS} (doc_job_id, run_id, project_id, ark, status)
+         VALUES ${values.join(", ")}
+         ON CONFLICT (doc_job_id) DO NOTHING`,
+        params,
+      );
+    }
   }
 
   async recordPlan(
@@ -130,20 +200,7 @@ export class PgDocState implements DocStateStore {
   }
 
   async get(docJobId: string): Promise<DocRow | null> {
-    const { rows } = await this.pool.query<{
-      doc_job_id: string;
-      run_id: string | null;
-      project_id: string;
-      ark: string;
-      lane: Lane | null;
-      status: DocStatus;
-      pages_expected: number | null;
-      meta: DocMeta | null;
-      error: string | null;
-      skip_reason: string | null;
-      pages_done: string;
-      pages_failed: string;
-    }>(
+    const { rows } = await this.pool.query<JobRow>(
       `SELECT j.*,
               count(f.*) FILTER (WHERE f.ok)     AS pages_done,
               count(f.*) FILTER (WHERE NOT f.ok) AS pages_failed
@@ -154,21 +211,37 @@ export class PgDocState implements DocStateStore {
       [docJobId],
     );
     const r = rows[0];
-    if (!r) return null;
-    return {
-      docJobId: r.doc_job_id,
-      runId: r.run_id,
-      projectId: r.project_id,
-      ark: r.ark,
-      lane: r.lane,
-      status: r.status,
-      pagesExpected: r.pages_expected,
-      pagesDone: Number(r.pages_done),
-      pagesFailed: Number(r.pages_failed),
-      meta: r.meta,
-      error: r.error,
-      skipReason: r.skip_reason,
-    };
+    return r ? toDocRow(r) : null;
+  }
+
+  async listNonTerminalDocs(runId: string): Promise<DocRow[]> {
+    // (run_id, status) is indexed (document_ingest_job_v2_run_status_idx), so this
+    // stays cheap even when the run's terminal docs vastly outnumber the live ones.
+    const { rows } = await this.pool.query<JobRow>(
+      `SELECT j.*,
+              count(f.*) FILTER (WHERE f.ok)     AS pages_done,
+              count(f.*) FILTER (WHERE NOT f.ok) AS pages_failed
+       FROM ${JOBS} j
+       LEFT JOIN ${FOLIOS} f ON f.doc_job_id = j.doc_job_id
+       WHERE j.run_id = $1 AND j.status = ANY($2)
+       GROUP BY j.doc_job_id
+       ORDER BY j.ark ASC`,
+      [runId, NON_TERMINAL_STATUSES as DocStatus[]],
+    );
+    return rows.map(toDocRow);
+  }
+
+  async incrementRequeues(docJobId: string): Promise<number> {
+    const { rows } = await this.pool.query<{ requeues: number }>(
+      `UPDATE ${JOBS}
+         SET requeues = requeues + 1, updated_at = now()
+       WHERE doc_job_id = $1
+       RETURNING requeues`,
+      [docJobId],
+    );
+    const r = rows[0];
+    if (!r) throw new Error(`doc-state: unknown docJobId ${docJobId}`);
+    return Number(r.requeues);
   }
 
   async listOkFolios(docJobId: string): Promise<number[]> {
@@ -177,6 +250,14 @@ export class PgDocState implements DocStateStore {
       [docJobId],
     );
     return rows.map((r) => r.ordre);
+  }
+
+  async listFolios(docJobId: string): Promise<FolioRecord[]> {
+    const { rows } = await this.pool.query<{ ordre: number; ok: boolean }>(
+      `SELECT ordre, ok FROM ${FOLIOS} WHERE doc_job_id = $1 ORDER BY ordre ASC`,
+      [docJobId],
+    );
+    return rows.map((r) => ({ ordre: r.ordre, ok: r.ok }));
   }
 
   async statusCounts(scope?: DocScope): Promise<Record<DocStatus, number>> {
@@ -223,6 +304,41 @@ export class PgDocState implements DocStateStore {
       [runId],
     );
     return rows.map((r) => ({ ark: r.ark, lane: r.lane, error: r.error }));
+  }
+
+  async recordPageDrops(
+    docJobId: string,
+    drop: { dropped: number; expected: number; reason: string },
+  ): Promise<void> {
+    const dropped = Math.min(drop.dropped, drop.expected);
+    await this.pool.query(
+      `UPDATE ${JOBS}
+         SET pages_dropped = $2, drop_reason = $3, updated_at = now()
+       WHERE doc_job_id = $1`,
+      [docJobId, dropped, drop.reason],
+    );
+  }
+
+  async listDoneWithDrops(runId: string): Promise<DroppedPagesDoc[]> {
+    const { rows } = await this.pool.query<{
+      ark: string;
+      lane: Lane | null;
+      pages_dropped: number;
+      pages_expected: number | null;
+      drop_reason: string | null;
+    }>(
+      `SELECT ark, lane, pages_dropped, pages_expected, drop_reason FROM ${JOBS}
+       WHERE run_id = $1 AND status = 'done' AND pages_dropped > 0
+       ORDER BY ark ASC`,
+      [runId],
+    );
+    return rows.map((r) => ({
+      ark: r.ark,
+      lane: r.lane,
+      pagesDropped: Number(r.pages_dropped),
+      pagesExpected: r.pages_expected,
+      dropReason: r.drop_reason,
+    }));
   }
 
   async donePageCount(runId: string): Promise<number> {

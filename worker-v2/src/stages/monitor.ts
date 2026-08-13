@@ -11,14 +11,8 @@
 import { PipelineStage, type StageDeps } from "../core/stage.js";
 import type { StageContext, StageOutcome } from "../core/types.js";
 import type { DocStateStore } from "../domain/doc-state.js";
-import { Q, type Lane } from "../domain/queues.js";
+import { LANE_QUEUE, Q } from "../domain/queues.js";
 import type { DocReady, FolioResult } from "../domain/types.js";
-
-const LANE_QUEUE: Record<Lane, string> = {
-  text: Q.assemble,
-  vision: Q.describe,
-  mistral: Q.ocrSubmit,
-};
 
 export interface MonitorOpts {
   /** Fail the doc if failed/expected exceeds this (default 0.25). */
@@ -31,6 +25,10 @@ export class MonitorStage extends PipelineStage<FolioResult, never> {
   readonly name = "monitor";
   readonly inputQueue = Q.monitor;
   override readonly concurrency = 8;
+  // 120s: pure Postgres (record the folio, maybe claim the route) plus one send.
+  // Nothing here talks to a provider, so a delivery this stage can't finish in two
+  // minutes is stuck, and expiring it fast lets the sweep re-drive it sooner.
+  override readonly expireInSeconds = 120;
 
   private readonly failRatio: number;
   private readonly floor: number;

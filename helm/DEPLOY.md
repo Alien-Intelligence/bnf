@@ -355,8 +355,21 @@ kubectl --context platform-prod logs -n bnf deploy/bnf-demo-prod-worker --tail=8
 ```
 Common causes: a missing worker credential (S3 / RunPod / SCW), or `clusterId`
 not matching the RAG dataset region. A long OCR book legitimately takes tens of
-minutes at Gallica's 5 req/min — that's the `INGEST_JOB_EXPIRE_SECONDS` ceiling,
-not a hang.
+minutes at BnF's rate cap — that is not a hang.
+
+A run that is genuinely stuck heals itself: the worker sweeps every unfinished
+run every `RECONCILER_INTERVAL_MS` (60s), re-drives docs whose queue job vanished
+(a pg-boss expiration, a pod killed mid-delivery), and re-fires a terminal
+callback whose POST failed. Watch it:
+```bash
+kubectl --context platform-prod logs -n bnf deploy/bnf-demo-prod-worker --tail=200 \
+  | grep -E "reconciler_(requeued|doc_failed|run_checked|sweep)"
+```
+A quiet sweep logs nothing. `reconciler_doc_failed` with
+`stranded_after_requeues` means one doc was re-driven `RECONCILER_MAX_REQUEUES`
+times without progress and was failed so the run could finish — look at that
+doc's ARK, not at the sweep. To sweep ONE run immediately instead of waiting for
+the next tick: `node --import tsx src/requeue-stranded.ts <runId>`.
 
 ### Worker init-container stuck `Init:0/1`, logs `pg_isready ... - no attempt`
 `no attempt` (PQPING_NO_ATTEMPT) means libpq bailed *before* connecting because

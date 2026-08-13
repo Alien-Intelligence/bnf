@@ -38,3 +38,28 @@ export const FETCH_PRIORITY: Record<Lane, number> = {
   vision: 50,
   text: 10,
 };
+
+/**
+ * Where a routed doc goes once its folios are all in — the Monitor's routing
+ * table. Also the table the reconciliation sweep and the requeue CLI rebuild a
+ * stranded doc's lane message from, so it lives here rather than being restated
+ * per caller (three copies of a routing table is three chances to drift).
+ */
+export const LANE_QUEUE: Record<Lane, string> = {
+  text: Q.assemble,
+  vision: Q.describe,
+  mistral: Q.ocrSubmit,
+};
+
+/**
+ * Stamp each folio item with its lane's fetch priority. pg-boss reads `priority`
+ * off the payload at send time (the memory queue ignores it), which is what makes
+ * the fetch bucket drain tail-first. Every producer of fetch work goes through
+ * here — the metadata fan-out, the manifest fan-out, and the sweep's rebuild — so
+ * a replayed folio keeps the same priority it would have had first time round.
+ */
+export function withFetchPriority<T extends { lane: Lane }>(
+  items: readonly T[],
+): Array<T & { priority: number }> {
+  return items.map((it) => ({ ...it, priority: FETCH_PRIORITY[it.lane] }));
+}

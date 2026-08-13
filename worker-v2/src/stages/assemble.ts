@@ -23,6 +23,9 @@ export class AssembleStage extends PipelineStage<DocReady, PreparedDoc> {
   readonly inputQueue = Q.assemble;
   override readonly outputQueue = Q.embed;
   override readonly concurrency = 8;
+  // 300s: N S3 GETs (one per folio, each bounded at 30s by the blob store) plus one
+  // PUT. Only a pathological doc gets near it; anything slower is a stuck S3 call.
+  override readonly expireInSeconds = 300;
 
   constructor(
     deps: StageDeps,

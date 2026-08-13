@@ -96,7 +96,12 @@ test("one doc of each lane flows end to end to registration", async () => {
   // Text doc fetched ALTO (3), the two image docs fetched images (6) via manifest.
   assert.equal(h.bnf.calls.alto, 3);
   assert.equal(h.bnf.calls.image, 6);
-  assert.equal(h.bnf.calls.manifest, 2); // only the image lanes hit the manifest
+  // ALL THREE docs resolve metadata via the manifest now (F1/F2 fix: the manifest
+  // is the primary metadata source for every lane, not just image lanes) — but
+  // each ARK's manifest is fetched exactly ONCE regardless of how many stages
+  // want it: the vision/mistral docs' ManifestStage.process() hits the SAME
+  // cached blob MetadataStage populated, at zero extra cost.
+  assert.equal(h.bnf.calls.manifest, 3);
   assert.equal(h.ocr.submitted.length, 1); // one Mistral batch (the mistral doc)
 });
 
@@ -154,17 +159,23 @@ test("permanent manifest failure fails the image doc terminally (no retry storm)
 
   const counts = await h.docState.statusCounts();
   assert.equal(counts.failed, 1);
-  assert.equal(h.bnf.calls.manifest, 1); // permanent → exactly one attempt, no storm
+  // Two one-shot permanent attempts, no retry storm: MetadataStage tries the
+  // manifest once (fails, falls back to OAI — which succeeds off the spec's
+  // OCR/docType/pageCount fields, routing to the vision lane), then
+  // ManifestStage tries the SAME permanently-broken manifest once more (it
+  // never got cached) before failing the doc terminally.
+  assert.equal(h.bnf.calls.manifest, 2);
 });
 
-test("permanent metadata failure (404/forbidden) → skipped, never fetched", async () => {
+test("permanent metadata failure (manifest AND OAI both dead) → skipped, never fetched", async () => {
   const h = harness([
     {
       ark: "ark:/12148/forbidden",
       ocrAvailable: true,
       docType: "texte",
       pageCount: 3,
-      metadataFault: { permanent: true, status: 403 },
+      manifestFault: { permanent: true, status: 403 },
+      oaiFault: { permanent: true, status: 403 },
     },
   ]);
   await h.seed([ref("forbidden")]);
@@ -209,7 +220,8 @@ test("observability counters reconcile: done + failed + skipped = total", async 
       ocrAvailable: true,
       docType: "texte",
       pageCount: 3,
-      metadataFault: { permanent: true },
+      manifestFault: { permanent: true },
+      oaiFault: { permanent: true },
     },
   ]);
   await h.seed([ref("ok1"), ref("ok2"), ref("skip1")]);

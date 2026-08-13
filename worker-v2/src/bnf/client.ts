@@ -13,6 +13,19 @@
  *   - No withBnfRetry. Retry is the fetch stage's concern (pg-boss + RateGate);
  *     this client throws Transient/Permanent on the FIRST failure and lets the
  *     stage decide. Double-retrying would burn the shared 300/min budget.
+ *   - No metadata orchestration. Before the 2026-08-11 rate-collapse incident
+ *     (ai-memories/tech/repos/bnf/ingest-hardening) this client owned
+ *     getDocumentInfo(): try the manifest, fall back to OAI. That meant the
+ *     metadata stage fetched a SECOND, ungated copy of the manifest that the
+ *     manifest stage fetched again — the manifest budget (40/min, separate from
+ *     the 1000/min global budget) collapsed under offered demand in the
+ *     thousands/min. The orchestration now lives in MetadataStage, which shares
+ *     ONE cached manifest + ONE rate gate with ManifestStage. This client only
+ *     exposes the two primitives that orchestration composes: getManifest
+ *     (rate-gated by the caller) and getDocumentInfoViaOai (the ungated
+ *     fallback), plus docInfoFromManifest — a pure function, not a method, so
+ *     any caller with a manifest (fetched or cache-hit) can derive the same
+ *     BnfDocInfo without a second HTTP call.
  *
  * Status classification (classifyStatus) is byte-identical to V1: 403→forbidden
  * (permanent — it's an access decision, not throttling), 404→not_found, 400→
@@ -27,7 +40,6 @@ import {
   ensureCanonicalArk,
   extractPageCountFromFormat,
   firstOrNull,
-  isCatalogueNotice,
   metadataValue,
   oaiParser,
   parseAltoText,
@@ -39,14 +51,21 @@ import {
   typedocSubtype,
 } from "./parse.js";
 
-// Per-request timeouts. The BnF-facing budget is owned by the BROKER
-// (BNF_UPSTREAM_TIMEOUT_MS, 120s) — under load BnF can take a long time to serve a
-// folio image. The worker's broker-call timeout is set a touch HIGHER (135s) so the
-// broker's own clean upstream-timeout (a 5xx/abort it can classify) wins, instead of
-// the worker aborting the broker mid-flight and logging an opaque "operation was
-// aborted". Page fetches (ALTO/image) were 15s — far too tight for a saturated BnF,
-// which produced the bulk of the transient fetch aborts. Metadata (OAI) is fast, so
-// it keeps a shorter budget.
+// Per-request timeouts, split by which upstream host the call lands on:
+//
+//   - PAGE_TIMEOUT_MS (135s): every call that goes through the broker to the
+//     token'd IIIF host (openapiproext.bnf.fr) — manifest AND folio (ALTO/image).
+//     The broker's own upstream timeout (BNF_UPSTREAM_TIMEOUT_MS, 120s) is what
+//     should fire first and classify cleanly (a 5xx/abort the client can retry
+//     on); ours is set a touch HIGHER so the broker's clean timeout always wins
+//     instead of the worker aborting the broker mid-flight and logging an opaque
+//     "operation was aborted" (F4, ai-memories/tech/repos/bnf/ingest-hardening —
+//     getManifest used to run on DEFAULT_TIMEOUT_MS, which is SHORTER than the
+//     broker's own 120s upstream budget, so the worker's abort raced and usually
+//     lost against a broker that was itself still legitimately waiting).
+//   - DEFAULT_TIMEOUT_MS (45s): the OAI-PMH fallback ONLY. oai.bnf.fr is
+//     ungated (no OAuth, no shared quota) and fast — a 45s budget is already
+//     generous for it.
 const DEFAULT_TIMEOUT_MS = optionalIntEnv("BNF_META_TIMEOUT_MS", 45_000);
 const PAGE_TIMEOUT_MS = optionalIntEnv("BNF_PAGE_TIMEOUT_MS", 135_000);
 
@@ -185,127 +204,104 @@ function classifyStatus(
   });
 }
 
+/**
+ * Derive a full BnfDocInfo from an already-obtained IIIF v3 manifest — pure, no
+ * I/O. `canonicalArk` must already be validated (ensureCanonicalArk) by the
+ * caller; this function only shapes data, it never classifies an ARK.
+ *
+ * Exported (not a client method) so the ONE caller who actually fetches the
+ * manifest — MetadataStage, behind its shared cache + rate gate — can derive
+ * BnfDocInfo from either a freshly-fetched manifest OR one it found already
+ * cached under keys.manifest(ark) (the SAME blob ManifestStage reads/writes),
+ * without a second HTTP call either way. This split is the F1/F2 fix: metadata
+ * resolution and manifest fan-out used to each fetch their own copy of the same
+ * manifest; now there is exactly one fetch per ARK, gated once.
+ *
+ *   • title    — `Titre` metadata pair, else the manifest label (BnF's label is
+ *                often the shelfmark; the Titre pair carries the real title).
+ *   • ocr      — presence of the `Taux OCR` pair (absent on manuscripts/maps/
+ *                scores/image-serials → image lane; present → text lane). The
+ *                manifest-native equivalent of OAI's "Avec mode texte" flag.
+ *   • docType  — `Type document` (Livre/Carte/Manuscrit/Musique notée…) joined
+ *                with the generic `Type` ("publication en série imprimée" =
+ *                press). Kept raw+lowercased: classifyLane substring-matches it.
+ *   • pageCount— the canvas count (manifest.totalPages) — authoritative AND
+ *                independent of maxCanvases (parseV3Manifest computes totalPages
+ *                from the full canvas list, before slicing it to maxCanvases).
+ *   • subtype  — null: the fine Gallica typedoc sub-category (fascicules/titres)
+ *                lives only in OAI's setSpec, which the manifest does not carry.
+ */
+export function docInfoFromManifest(manifest: Manifest, canonicalArk: string): BnfDocInfo {
+  const title = metadataValue(manifest.metadata, ["titre", "title"]) ?? manifest.title;
+  if (!title) {
+    throw new PermanentBnfError("not_found", {
+      hint: `manifest has no title for ${canonicalArk}`,
+    });
+  }
+  const creator = metadataValue(manifest.metadata, [
+    "créateur",
+    "createur",
+    "creator",
+    "auteur",
+    "author",
+    "contributeur",
+  ]);
+  const date = metadataValue(manifest.metadata, [
+    "date",
+    "date d'édition",
+    "date d'edition",
+    "publication date",
+  ]);
+  const lang = metadataValue(manifest.metadata, ["langue", "language"]);
+  const typeDocument = metadataValue(manifest.metadata, ["type document"]);
+  const typeGeneric = metadataValue(manifest.metadata, ["type", "nature"]);
+  const docType =
+    [typeDocument, typeGeneric].filter(Boolean).join(" | ").toLowerCase() || null;
+  const ocrAvailable = metadataValue(manifest.metadata, ["taux ocr", "taux d'ocr"]) !== null;
+  const pageCount = manifest.totalPages || null;
+
+  const slug = arkToSlug(canonicalArk);
+  const iiifManifestUrl = `${OPENAPI}/iiif/presentation/v3/ark:/12148/${slug}/manifest.json`;
+
+  return {
+    ark: canonicalArk,
+    title,
+    creator,
+    date,
+    docType,
+    subtype: null,
+    ocrAvailable,
+    pageCount,
+    iiifManifestUrl,
+    lang,
+    raw: {
+      source: "iiif_manifest",
+      type_document: typeDocument,
+      type: typeGeneric,
+      language: lang,
+      pageNumber: pageCount,
+      metadata: manifest.metadata,
+    },
+  };
+}
+
 export class LiveBnfClient implements BnfClient {
-  // ---------------- getDocumentInfo ----------------
+  // ---------------- getDocumentInfoViaOai ----------------
 
-  async getDocumentInfo(ark: string): Promise<BnfDocInfo> {
+  /**
+   * Fallback metadata path: the ungated OAI-PMH endpoint (oai.bnf.fr) via the
+   * broker. Called by MetadataStage ONLY when the IIIF manifest is permanently
+   * unavailable (a rare, legacy/edge-ARK condition — every digitized doc has a
+   * manifest); the manifest is the PRIMARY path (see docInfoFromManifest).
+   * Dublin Core fields under <OAI-PMH><GetRecord><record><metadata><oai_dc:dc>.
+   * OCR availability is the "Avec mode texte" <dc:description> flag (scanning
+   * ALL descriptions); page count is the "Nombre total de vues" <dc:format>
+   * note — collection-level and occasionally wildly wrong for periodical issues
+   * (e.g. bpt6k268418n: 4 real folios, OAI claims 3197), which is exactly why
+   * the manifest's canvas count is authoritative when it's available.
+   */
+  async getDocumentInfoViaOai(ark: string): Promise<BnfDocInfo> {
     const canonicalArk = ensureCanonicalArk(ark);
-    // Fail fast on catalogue notices. `cb*` ARKs are bibliographic/authority
-    // records, not digitized documents — they have no pages, so every fetch
-    // ECONNRESETs. The prefix is deterministic → a permanent classification
-    // (NOT a generic "network error → permanent" rule; real throttling on a
-    // digitized ARK must still retry).
-    if (isCatalogueNotice(canonicalArk)) {
-      throw new PermanentBnfError("not_digitized", {
-        hint: `${canonicalArk}: catalogue notice (cb*), not a digitized document`,
-      });
-    }
-    // PRIMARY: the IIIF v3 manifest (openapiproext.bnf.fr — the partner gateway,
-    // on the broker's authenticated quota). It carries everything OAI did and
-    // more: title/creator/date/lang, the `Taux OCR` text-layer signal, the doc
-    // type (`Type document` + the "publication en série" press marker), and the
-    // AUTHORITATIVE page count — the canvas count, which matches the real
-    // fetchable folios (f1..fN). OAI's "Nombre total de vues" is collection-level
-    // and wildly wrong for periodical issues (e.g. bpt6k268418n: 4 real folios,
-    // OAI claims 3197), which the old OAI text lane over-fetched. See
-    // ai-memories bnf-metadata-via-manifest.
-    try {
-      return await this.getDocumentInfoViaManifest(canonicalArk);
-    } catch (e) {
-      // FALLBACK: a permanently-unavailable manifest is rare (every digitized doc
-      // has one) but possible for a few legacy/edge ARKs. Fall back to the OAI-PMH
-      // record (ungated oai.bnf.fr via the broker) so those still resolve rather
-      // than being dropped. Transient errors propagate so the stage retries.
-      if (e instanceof PermanentBnfError) {
-        return await this.getDocumentInfoViaOaiPmh(canonicalArk);
-      }
-      throw e;
-    }
-  }
-
-  /**
-   * PRIMARY metadata path — derive a full BnfDocInfo from the IIIF v3 manifest.
-   *
-   *   • title    — `Titre` metadata pair, else the manifest label (BnF's label is
-   *                often the shelfmark; the Titre pair carries the real title).
-   *   • ocr      — presence of the `Taux OCR` pair (absent on manuscripts/maps/
-   *                scores/image-serials → image lane; present → text lane). The
-   *                manifest-native equivalent of OAI's "Avec mode texte" flag.
-   *   • docType  — `Type document` (Livre/Carte/Manuscrit/Musique notée…) joined
-   *                with the generic `Type` ("publication en série imprimée" =
-   *                press). Kept raw+lowercased: classifyLane substring-matches it.
-   *   • pageCount— the canvas count (manifest.totalPages), authoritative.
-   *   • subtype  — null: the fine Gallica typedoc sub-category (fascicules/titres)
-   *                lives only in OAI's setSpec, which the manifest does not carry.
-   */
-  private async getDocumentInfoViaManifest(canonicalArk: string): Promise<BnfDocInfo> {
-    // maxCanvases=1: we need only totalPages here (the true canvas count, computed
-    // before the slice), not the canvas list — the fetch stage re-fetches it.
-    const manifest = await this.getManifest(canonicalArk, 1);
-
-    const title =
-      metadataValue(manifest.metadata, ["titre", "title"]) ?? manifest.title;
-    if (!title) {
-      throw new PermanentBnfError("not_found", {
-        hint: `manifest has no title for ${canonicalArk}`,
-      });
-    }
-    const creator = metadataValue(manifest.metadata, [
-      "créateur",
-      "createur",
-      "creator",
-      "auteur",
-      "author",
-      "contributeur",
-    ]);
-    const date = metadataValue(manifest.metadata, [
-      "date",
-      "date d'édition",
-      "date d'edition",
-      "publication date",
-    ]);
-    const lang = metadataValue(manifest.metadata, ["langue", "language"]);
-    const typeDocument = metadataValue(manifest.metadata, ["type document"]);
-    const typeGeneric = metadataValue(manifest.metadata, ["type", "nature"]);
-    const docType =
-      [typeDocument, typeGeneric].filter(Boolean).join(" | ").toLowerCase() || null;
-    const ocrAvailable =
-      metadataValue(manifest.metadata, ["taux ocr", "taux d'ocr"]) !== null;
-    const pageCount = manifest.totalPages || null;
-
-    const slug = arkToSlug(canonicalArk);
-    const iiifManifestUrl = `${OPENAPI}/iiif/presentation/v3/ark:/12148/${slug}/manifest.json`;
-
-    return {
-      ark: canonicalArk,
-      title,
-      creator,
-      date,
-      docType,
-      subtype: null,
-      ocrAvailable,
-      pageCount,
-      iiifManifestUrl,
-      lang,
-      raw: {
-        source: "iiif_manifest",
-        type_document: typeDocument,
-        type: typeGeneric,
-        language: lang,
-        pageNumber: pageCount,
-        metadata: manifest.metadata,
-      },
-    };
-  }
-
-  /**
-   * Partner-API metadata path: the ungated OAI-PMH endpoint (oai.bnf.fr) via the
-   * broker. Dublin Core fields under <OAI-PMH><GetRecord><record><metadata>
-   * <oai_dc:dc>. OCR availability is the "Avec mode texte" <dc:description> flag
-   * (scanning ALL descriptions); page count is the "Nombre total de vues"
-   * <dc:format> note.
-   */
-  private async getDocumentInfoViaOaiPmh(canonicalArk: string): Promise<BnfDocInfo> {
     const identifier = `oai:bnf.fr:gallica/${canonicalArk}`;
     const url = `${OAI_PMH}?verb=GetRecord&metadataPrefix=oai_dc&identifier=${encodeURIComponent(identifier)}`;
 
@@ -400,10 +396,14 @@ export class LiveBnfClient implements BnfClient {
     const slug = arkToSlug(canonicalArk);
     const url = `${OPENAPI}/iiif/presentation/v3/ark:/12148/${slug}/manifest.json`;
 
+    // PAGE_TIMEOUT_MS, not DEFAULT_TIMEOUT_MS — this is a broker→openapiproext
+    // call like ALTO/image, not the ungated OAI call. See the timeout-constants
+    // header comment (F4: this used to run on the shorter budget, which raced
+    // and usually lost against the broker's own legitimate 120s upstream wait).
     const { status, bytes, contentType } = await brokerFetch(
       url,
       "application/json, application/ld+json",
-      DEFAULT_TIMEOUT_MS,
+      PAGE_TIMEOUT_MS,
     );
     const body = decodeBnfBytes(bytes, contentType);
     const err = classifyStatus(status, body, url);

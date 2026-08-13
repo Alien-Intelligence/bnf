@@ -23,6 +23,8 @@ data:
   # --- Google AI (vision provider) ---
   GEMINI_VISION_MODEL: {{ .Values.worker.config.geminiVisionModel | quote }}
   VISION_PRIMARY: {{ .Values.worker.config.visionPrimary | quote }}
+  # Bound on the Gemini SDK's generateContent call (F26, ai-memories/tech/repos/bnf/ingest-hardening).
+  GEMINI_TIMEOUT_MS: {{ .Values.worker.config.geminiTimeoutMs | quote }}
 
   # --- OpenRouter (primary vision provider) ---
   # The API key is a secret (worker-creds: OPENROUTER_API_KEY).
@@ -44,6 +46,9 @@ data:
   MISTRAL_OCR_MAX_PAGES: {{ .Values.worker.config.mistralOcrMaxPages | quote }}
   MISTRAL_OCR_POLL_INTERVAL_MS: {{ .Values.worker.config.mistralOcrPollIntervalMs | quote }}
   MISTRAL_OCR_BATCH_TIMEOUT_MS: {{ .Values.worker.config.mistralOcrBatchTimeoutMs | quote }}
+  # OCR-lane folio image size — see values.yaml's comment (F13 sizing-experiment
+  # prep, ai-memories/tech/repos/bnf/ingest-hardening).
+  MISTRAL_IMAGE_SIZE: {{ .Values.worker.config.mistralImageSize | quote }}
 {{- end }}
 
   # --- RunPod embedder ---
@@ -83,9 +88,14 @@ data:
   BNF_META_TIMEOUT_MS: {{ .Values.worker.config.bnfMetaTimeoutMs | quote }}
 
   # --- Ingest reliability ---
-  INGEST_JOB_EXPIRE_SECONDS: {{ .Values.worker.config.ingestJobExpireSeconds | quote }}
-  INGEST_RETRY_LIMIT: {{ .Values.worker.config.ingestRetryLimit | quote }}
-  INGEST_RETRY_DELAY_SECONDS: {{ .Values.worker.config.ingestRetryDelaySeconds | quote }}
+  # NOTE: INGEST_JOB_EXPIRE_SECONDS / INGEST_RETRY_LIMIT / INGEST_RETRY_DELAY_SECONDS
+  # used to be set here and configured NOTHING — worker-v2 has no reader for them
+  # (V1 leftovers). They implied a 4h job ceiling while the real one was pg-boss's
+  # silent 15-min default, which is how a run wedged (F7/F10,
+  # ai-memories/tech/repos/bnf/ingest-hardening). Retry + per-delivery expiration
+  # are now declared per STAGE in code (PipelineStage.retry / .expireInSeconds),
+  # deliberately not env-tunable: each ceiling is derived from that stage's own
+  # worst-case wall clock, not from an operator's guess.
   MAX_OCR_PAGES: {{ .Values.worker.config.maxOcrPages | quote }}
   MAX_IMAGE_CANVASES: {{ .Values.worker.config.maxImageCanvases | quote }}
   IMAGE_CONCURRENCY: {{ .Values.worker.config.imageConcurrency | quote }}
@@ -96,4 +106,19 @@ data:
   # held below the doc loop so the broker's rate bucket stays continuously fed.
   BNF_FETCH_CONCURRENCY: {{ .Values.worker.config.bnfFetchConcurrency | quote }}
   WORKER_CONCURRENCY: {{ .Values.worker.config.workerConcurrency | quote }}
+
+  # --- Reconciliation sweep ---
+  # The periodic re-drive of docs whose queue job vanished (pg-boss expiration, a
+  # pod killed mid-delivery) + the re-check of every run the app still waits on.
+  # This is what makes a mid-run redeploy self-healing instead of a permanent
+  # wedge; see worker-v2/src/live/reconciler.ts.
+  RECONCILER_INTERVAL_MS: {{ .Values.worker.config.reconcilerIntervalMs | quote }}
+  # Re-drives allowed per doc before it fails as `stranded_after_requeues` — a
+  # poisoned doc must stop consuming quota AND stop blocking its run.
+  RECONCILER_MAX_REQUEUES: {{ .Values.worker.config.reconcilerMaxRequeues | quote }}
+  # Consecutive terminal-callback POST failures before the emitter gives up on
+  # a run and cancels it (dead-callback give-up item,
+  # ai-memories/tech/repos/bnf/ingest-hardening) — otherwise a permanently-dead
+  # callback URL gets re-driven by every sweep forever.
+  RECONCILER_MAX_CALLBACK_FAILURES: {{ .Values.worker.config.reconcilerMaxCallbackFailures | quote }}
 {{- end }}

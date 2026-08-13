@@ -22,12 +22,25 @@
 /** Default in-flight permit count when BNF_FETCH_CONCURRENCY is unset (300/min cap). */
 const DEFAULT_PERMITS = 12;
 
-const PERMITS = (() => {
+/**
+ * Parse BNF_FETCH_CONCURRENCY. A SET-but-junk value (typo, "0", "-4", "abc")
+ * throws instead of silently falling back to DEFAULT_PERMITS — same convention
+ * as config.ts's `optionalInt` (F24, ai-memories/tech/repos/bnf/ingest-hardening:
+ * this used to be the one env var in the worker that swallowed a bad value
+ * rather than failing startup, which would have hidden a misconfigured gate
+ * behind a permit count nobody chose).
+ */
+function parsePermits(): number {
   const raw = process.env.BNF_FETCH_CONCURRENCY;
   if (raw == null || raw.trim() === "") return DEFAULT_PERMITS;
   const n = Number(raw);
-  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : DEFAULT_PERMITS;
-})();
+  if (!Number.isFinite(n) || n < 1) {
+    throw new Error(`BNF_FETCH_CONCURRENCY must be a number >= 1, got ${raw}`);
+  }
+  return Math.floor(n);
+}
+
+const PERMITS = parsePermits();
 
 let available = PERMITS;
 const waiters: Array<() => void> = [];

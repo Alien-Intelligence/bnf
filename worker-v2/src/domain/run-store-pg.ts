@@ -15,6 +15,35 @@ import type { IngestRun, IngestRunInput, RunStore } from "./run.js";
 const SCHEMA = "sandbox_ingest_v2";
 const RUNS = `${SCHEMA}.ingest_run`;
 
+/** The ingest_run columns, as they come back from `SELECT *`. */
+interface RunRow {
+  run_id: string;
+  app_job_id: string;
+  project_id: string;
+  callback_url: string;
+  callback_secret: string;
+  target_version_id: string;
+  total_docs: number;
+  terminal_emitted: boolean;
+  canceled: boolean;
+  terminal_post_failures: number;
+}
+
+function toRun(r: RunRow): IngestRun {
+  return {
+    runId: r.run_id,
+    appJobId: r.app_job_id,
+    projectId: r.project_id,
+    callbackUrl: r.callback_url,
+    callbackSecret: r.callback_secret,
+    targetVersionId: r.target_version_id,
+    totalDocs: r.total_docs,
+    terminalEmitted: r.terminal_emitted,
+    canceled: r.canceled,
+    terminalPostFailures: r.terminal_post_failures,
+  };
+}
+
 export class PgRunStore implements RunStore {
   constructor(private readonly pool: Pool) {}
 
@@ -38,30 +67,30 @@ export class PgRunStore implements RunStore {
   }
 
   async get(runId: string): Promise<IngestRun | null> {
-    const { rows } = await this.pool.query<{
-      run_id: string;
-      app_job_id: string;
-      project_id: string;
-      callback_url: string;
-      callback_secret: string;
-      target_version_id: string;
-      total_docs: number;
-      terminal_emitted: boolean;
-      canceled: boolean;
-    }>(`SELECT * FROM ${RUNS} WHERE run_id = $1`, [runId]);
+    const { rows } = await this.pool.query<RunRow>(
+      `SELECT * FROM ${RUNS} WHERE run_id = $1`,
+      [runId],
+    );
     const r = rows[0];
-    if (!r) return null;
-    return {
-      runId: r.run_id,
-      appJobId: r.app_job_id,
-      projectId: r.project_id,
-      callbackUrl: r.callback_url,
-      callbackSecret: r.callback_secret,
-      targetVersionId: r.target_version_id,
-      totalDocs: r.total_docs,
-      terminalEmitted: r.terminal_emitted,
-      canceled: r.canceled,
-    };
+    return r ? toRun(r) : null;
+  }
+
+  async getByAppJobId(appJobId: string): Promise<IngestRun | null> {
+    const { rows } = await this.pool.query<RunRow>(
+      `SELECT * FROM ${RUNS} WHERE app_job_id = $1 ORDER BY created_at ASC LIMIT 1`,
+      [appJobId],
+    );
+    const r = rows[0];
+    return r ? toRun(r) : null;
+  }
+
+  async listActiveRuns(): Promise<IngestRun[]> {
+    const { rows } = await this.pool.query<RunRow>(
+      `SELECT * FROM ${RUNS}
+        WHERE NOT terminal_emitted AND NOT canceled
+        ORDER BY created_at ASC`,
+    );
+    return rows.map(toRun);
   }
 
   async markTerminalEmitted(runId: string): Promise<boolean> {
@@ -86,5 +115,16 @@ export class PgRunStore implements RunStore {
       `UPDATE ${RUNS} SET canceled = true, updated_at = now() WHERE run_id = $1`,
       [runId],
     );
+  }
+
+  async incrementTerminalPostFailures(runId: string): Promise<number> {
+    const { rows } = await this.pool.query<{ terminal_post_failures: number }>(
+      `UPDATE ${RUNS}
+         SET terminal_post_failures = terminal_post_failures + 1, updated_at = now()
+       WHERE run_id = $1
+       RETURNING terminal_post_failures`,
+      [runId],
+    );
+    return rows[0]?.terminal_post_failures ?? 0;
   }
 }

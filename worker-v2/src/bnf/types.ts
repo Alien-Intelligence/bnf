@@ -51,10 +51,19 @@ export interface AltoFolio {
 }
 
 export interface BnfClient {
-  /** OAI-PMH metadata (manifest fallback inside). Throws Permanent on 404/bad-ark/notice. */
-  getDocumentInfo(ark: string): Promise<BnfDocInfo>;
-  /** IIIF v3 manifest → canvas list. Throws Permanent on terminal manifest failure. */
+  /**
+   * IIIF v3 manifest → canvas list + totalPages. This is the metadata stage's
+   * PRIMARY metadata source too (via the pure `docInfoFromManifest` in
+   * client.ts) — there is no separate "get metadata" call. Throws Permanent on
+   * terminal manifest failure, in which case the caller falls back to
+   * `getDocumentInfoViaOai`.
+   */
   getManifest(ark: string, maxCanvases: number): Promise<Manifest>;
+  /**
+   * Fallback metadata path: ungated OAI-PMH (oai.bnf.fr). Called only when the
+   * manifest is permanently unavailable. Throws Permanent on 404/bad-ark/notice.
+   */
+  getDocumentInfoViaOai(ark: string): Promise<BnfDocInfo>;
   /** Fetch + parse ONE folio's ALTO text. 404 → `{text:"", empty:true}` (not an error). */
   fetchAltoFolio(ark: string, ordre: number): Promise<AltoFolio>;
   /** Fetch ONE folio's IIIF image bytes (JPEG). */

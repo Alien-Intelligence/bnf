@@ -47,10 +47,19 @@ export interface FakeDocSpec {
   title?: string | null;
   /** Folios (ordre) that have no ALTO text — fetched ok but empty. */
   emptyFolios?: number[];
-  /** Fault on getDocumentInfo. */
-  metadataFault?: Fault;
-  /** Fault on getManifest. */
+  /**
+   * Fault on getManifest — the PRIMARY path for both metadata resolution
+   * (MetadataStage) and canvas fan-out (ManifestStage); both stages share one
+   * call/cache per ARK, so this one knob covers both callers.
+   */
   manifestFault?: Fault;
+  /**
+   * Fault on getDocumentInfoViaOai — the metadata FALLBACK, reached only when
+   * getManifest throws Permanent. To make a doc fail metadata resolution
+   * entirely (the old "permanent metadata error" scenario), set BOTH
+   * `manifestFault: { permanent: true }` and `oaiFault: { permanent: true }`.
+   */
+  oaiFault?: Fault;
   /** Faults per folio fetch (ALTO or image), keyed by ordre. */
   folioFaults?: Record<number, Fault>;
 }
@@ -58,7 +67,7 @@ export interface FakeDocSpec {
 export class FakeBnfClient implements BnfClient {
   private readonly docs = new Map<string, FakeDocSpec>();
   private readonly faults = new FaultCounter();
-  readonly calls = { metadata: 0, manifest: 0, alto: 0, image: 0 };
+  readonly calls = { oai: 0, manifest: 0, alto: 0, image: 0 };
 
   add(spec: FakeDocSpec): this {
     this.docs.set(spec.ark, spec);
@@ -71,10 +80,10 @@ export class FakeBnfClient implements BnfClient {
     return s;
   }
 
-  async getDocumentInfo(ark: string): Promise<BnfDocInfo> {
-    this.calls.metadata++;
+  async getDocumentInfoViaOai(ark: string): Promise<BnfDocInfo> {
+    this.calls.oai++;
     const s = this.spec(ark);
-    this.faults.hit(`meta:${ark}`, s.metadataFault);
+    this.faults.hit(`oai:${ark}`, s.oaiFault);
     return {
       ark,
       title: s.title ?? `Doc ${ark}`,
@@ -100,7 +109,16 @@ export class FakeBnfClient implements BnfClient {
       width: 1000,
       height: 1400,
     }));
-    return { title: s.title ?? null, metadata: [], totalPages: s.pageCount, canvases };
+    // Mirror the real IIIF manifest's label/value metadata pairs so
+    // docInfoFromManifest (client.ts) derives the SAME docType/ocrAvailable the
+    // spec declares, through the SAME parsing path the live client uses — not a
+    // shortcut that bypasses it. (This is exactly the gap that let F1/F2 go
+    // untested: the old fake's getDocumentInfo built a BnfDocInfo directly and
+    // never round-tripped through a manifest at all.)
+    const metadata: Array<{ label: string; value: string }> = [{ label: "langue", value: "fre" }];
+    if (s.docType) metadata.push({ label: "type document", value: s.docType });
+    if (s.ocrAvailable) metadata.push({ label: "taux ocr", value: "100%" });
+    return { title: s.title ?? `Doc ${ark}`, metadata, totalPages: s.pageCount, canvases };
   }
 
   async fetchAltoFolio(ark: string, ordre: number): Promise<AltoFolio> {
@@ -125,12 +143,29 @@ export class FakeDescriber implements Describer {
   }
 }
 
+/** Options for FakeOcrEngine — beyond the default "every folio survives",
+ *  individual ordres can be scripted to drop (empty/hallucinated) or error at
+ *  the request level, so tests can exercise F13/F14's honest-outcome paths
+ *  (zero survivors, partial survivors + recorded drops) without the real
+ *  Mistral SDK. */
+export interface FakeOcrOpts {
+  pendingPolls?: number;
+  /** Synthetic terminal batch failure (mirrors a TIMEOUT_EXCEEDED/FAILED batch). */
+  fail?: boolean;
+  /** Ordres dropped as hallucinated (simulates looksLikeHallucinatedOcr). */
+  hallucinatedOrdres?: number[];
+  /** Ordres dropped as legitimately empty/blank. */
+  emptyOrdres?: number[];
+  /** Ordres reported as a per-entry request error instead of a page. */
+  errorOrdres?: number[];
+}
+
 /** OCR engine that completes after `pendingPolls` polls (default 1 = immediate done). */
 export class FakeOcrEngine implements OcrEngine {
   private readonly polls = new Map<string, number>();
   private readonly batchFolios = new Map<string, number[]>();
   readonly submitted: string[] = [];
-  constructor(private readonly opts: { pendingPolls?: number; fail?: boolean } = {}) {}
+  constructor(private readonly opts: FakeOcrOpts = {}) {}
 
   async submitBatch(input: {
     ark: string;
@@ -147,9 +182,39 @@ export class FakeOcrEngine implements OcrEngine {
     const n = (this.polls.get(batchId) ?? 0) + 1;
     this.polls.set(batchId, n);
     if (n < (this.opts.pendingPolls ?? 1)) return { state: "pending" };
+
     const ordres = this.batchFolios.get(batchId) ?? [];
-    const pages: PreparedPage[] = ordres.map((ordre) => ({ ordre, text: `OCR text folio ${ordre}` }));
-    return { state: "done", pages };
+    const hallucinated = new Set(this.opts.hallucinatedOrdres ?? []);
+    const empty = new Set(this.opts.emptyOrdres ?? []);
+    const errored = new Set(this.opts.errorOrdres ?? []);
+
+    const pages: PreparedPage[] = [];
+    const entryErrors: Array<{ ordre: number | null; error: string }> = [];
+    let droppedEmpty = 0;
+    let droppedHallucinated = 0;
+    for (const ordre of ordres) {
+      if (errored.has(ordre)) {
+        entryErrors.push({ ordre, error: "synthetic_entry_error" });
+        continue;
+      }
+      if (hallucinated.has(ordre)) {
+        droppedHallucinated++;
+        continue;
+      }
+      if (empty.has(ordre)) {
+        droppedEmpty++;
+        continue;
+      }
+      pages.push({ ordre, text: `OCR text folio ${ordre}` });
+    }
+    return {
+      state: "done",
+      pages,
+      dropped: { empty: droppedEmpty, hallucinated: droppedHallucinated },
+      entryErrors,
+      succeeded: pages.length,
+      failed: entryErrors.length,
+    };
   }
 }
 
@@ -161,13 +226,38 @@ export class FakeEmbedder implements Embedder {
 }
 
 export class FakeClusterSink implements ClusterSink {
-  readonly upserts: Array<{ ark: string; pages: number }> = [];
+  readonly upserts: Array<{ ark: string; datasetId: number; pages: number }> = [];
   private nextEntry = 1;
-  async ensureDataset(): Promise<{ datasetId: number }> {
-    return { datasetId: 1 };
+  private nextDataset = 1;
+  private readonly datasetIdByProject = new Map<string, number>();
+
+  // One dataset id per projectId, assigned on first ensureDataset() and stable
+  // thereafter (real per-project datasets) — see register.test's F16 coverage,
+  // which needs two distinct projects ingesting the same ARK to land in two
+  // distinct datasets.
+  async ensureDataset(input: { projectId: string }): Promise<{ datasetId: number }> {
+    let id = this.datasetIdByProject.get(input.projectId);
+    if (id === undefined) {
+      id = this.nextDataset++;
+      this.datasetIdByProject.set(input.projectId, id);
+    }
+    return { datasetId: id };
   }
-  async upsert(input: { ark: string; pages: PreparedPage[] }): Promise<{ entryId: number }> {
-    this.upserts.push({ ark: input.ark, pages: input.pages.length });
+
+  async upsert(input: {
+    datasetId: number;
+    ark: string;
+    pages: PreparedPage[];
+  }): Promise<{ entryId: number }> {
+    this.upserts.push({ ark: input.ark, datasetId: input.datasetId, pages: input.pages.length });
     return { entryId: this.nextEntry++ };
+  }
+
+  /** Test hook: simulate a project's dataset being deleted and recreated —
+   *  the next ensureDataset() call for `projectId` returns a NEW id. */
+  recreateDataset(projectId: string): number {
+    const id = this.nextDataset++;
+    this.datasetIdByProject.set(projectId, id);
+    return id;
   }
 }

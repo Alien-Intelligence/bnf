@@ -51,4 +51,12 @@ export async function register() {
       console.error("[instrumentation] periodic canonicalize sweep failed:", err)
     })
   }, CANONICALIZE_SWEEP_INTERVAL_MS)
+
+  // Ingest lifecycle watchdog (audit findings F18 + F21) — periodically
+  // reconciles RUNNING ingest jobs whose worker has stopped reporting and
+  // QUEUED jobs that never reached the worker at all, so neither can wedge a
+  // project's dedup guard forever. No-op unless CLUSTER_MODE=real (fake mode
+  // has no worker to poll). See lib/ingest/watchdog.ts for the full contract.
+  const { startIngestWatchdog } = await import("@/lib/ingest/watchdog")
+  startIngestWatchdog()
 }

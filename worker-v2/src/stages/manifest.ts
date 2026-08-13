@@ -17,12 +17,18 @@ import { PermanentBnfError } from "../bnf/errors.js";
 import type { BnfClient, Manifest } from "../bnf/types.js";
 import type { DocStateStore } from "../domain/doc-state.js";
 import { keys } from "../domain/keys.js";
-import { FETCH_PRIORITY, Q } from "../domain/queues.js";
+import { Q, withFetchPriority } from "../domain/queues.js";
 import type { FolioItem, ManifestReq } from "../domain/types.js";
 import type { RateGate } from "../core/types.js";
 
 export interface ManifestOpts {
-  /** Max canvases per doc (matches V1 maxImageCanvases / mistral maxPages). */
+  /**
+   * Max canvases per doc (matches V1 maxImageCanvases / mistral maxPages).
+   * MUST equal MetadataStage's own `maxCanvases` (build.ts wires both from the
+   * SAME `cfg.maxCanvases`) — both stages read/write the identical blob under
+   * keys.manifest(ark), so a mismatched cap would make the cached canvas list's
+   * length depend on which stage fetched it first.
+   */
   maxCanvases?: number;
 }
 
@@ -30,7 +36,14 @@ export class ManifestStage extends PipelineStage<ManifestReq, never> {
   readonly name = "manifest";
   readonly inputQueue = Q.manifest;
   override readonly concurrency = 4;
-  override readonly rate?: RateGate;
+  // 30s base delay — see PipelineStage.queueRetryDelayMs (core/stage.ts): BnF's
+  // manifest quota resets on fixed clock-minute windows, so pg-boss's default 5s
+  // ladder just re-hits the still-closed window (F6).
+  override readonly queueRetryDelayMs = 30_000;
+  // 600s: same worst case as MetadataStage minus the OAI fallback — a cache miss
+  // waits on the shared 40/min manifest gate (up to a clock-minute window) and
+  // then spends up to 135s in the fetch itself.
+  override readonly expireInSeconds = 600;
 
   private readonly maxCanvases: number;
 
@@ -38,11 +51,16 @@ export class ManifestStage extends PipelineStage<ManifestReq, never> {
     deps: StageDeps,
     private readonly bnf: BnfClient,
     private readonly docState: DocStateStore,
-    rate: RateGate | undefined,
+    /** The shared manifest RateGate — the SAME instance MetadataStage holds.
+     *  Deliberately NOT exposed as the base class's `rate`: the base acquires
+     *  BEFORE process() runs, which would burn a scarce 40/min token on every
+     *  delivery — including the (now dominant, post-F2) case where the manifest
+     *  is already cached by the metadata stage and no HTTP call happens at all.
+     *  Instead the gate is acquired inside process(), only on a cache MISS. */
+    private readonly manifestRate: RateGate | undefined,
     opts: ManifestOpts = {},
   ) {
     super(deps);
-    this.rate = rate;
     this.maxCanvases = opts.maxCanvases ?? 200;
   }
 
@@ -50,8 +68,15 @@ export class ManifestStage extends PipelineStage<ManifestReq, never> {
     let manifest: Manifest;
     try {
       const cached = await this.blob.getJson<Manifest>(keys.manifest(req.ark));
-      manifest = cached ?? (await this.bnf.getManifest(req.ark, this.maxCanvases));
-      if (!cached) await this.blob.putJson(keys.manifest(req.ark), manifest);
+      if (cached) {
+        manifest = cached;
+      } else {
+        // Cache miss — the only path that actually spends BnF quota, so the
+        // only path that pays a gate token (see the constructor note).
+        if (this.manifestRate) await this.manifestRate.acquire();
+        manifest = await this.bnf.getManifest(req.ark, this.maxCanvases);
+        await this.blob.putJson(keys.manifest(req.ark), manifest);
+      }
     } catch (e) {
       if (e instanceof PermanentBnfError) {
         await this.docState.setStatus(req.docJobId, "failed", {
@@ -82,15 +107,14 @@ export class ManifestStage extends PipelineStage<ManifestReq, never> {
       pagesExpected: canvases.length,
       meta: req.meta,
     });
-    const folios: Array<FolioItem & { priority: number }> = canvases.map((c) => ({
+    const folios: FolioItem[] = canvases.map((c) => ({
       docJobId: req.docJobId,
       ark: req.ark,
       ordre: c.ordre,
       kind: "image",
       lane: req.lane,
-      priority: FETCH_PRIORITY[req.lane],
     }));
-    await this.queue.sendMany(Q.fetch, folios);
+    await this.queue.sendMany(Q.fetch, withFetchPriority(folios));
     ctx.log.info("manifest_fanout", { ark: req.ark, lane: req.lane, folios: canvases.length });
     return { kind: "done" };
   }

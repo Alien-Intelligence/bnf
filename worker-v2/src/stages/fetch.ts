@@ -45,6 +45,11 @@ export class FetchStage extends PipelineStage<FolioItem, FolioResult> {
   override readonly outputQueue = Q.monitor;
   override readonly concurrency: number;
   override readonly rate?: RateGate;
+  // 600s: the base-class `rate` acquire (a wait on the 1000/min global bucket)
+  // plus ONE folio fetch at BNF_PAGE_TIMEOUT_MS (135s, above the broker's 120s)
+  // plus the S3 read/write around it. Generous on purpose — expiring a folio
+  // fetch loses the FolioResult the fan-in is waiting for.
+  override readonly expireInSeconds = 600;
 
   private readonly imageSize: string;
   private readonly visionImageSize: string;
