@@ -98,6 +98,18 @@ interface Props {
   /** Documents added by a finished run (job.addedCount) — only meaningful in
    *  the `done` mode, where every attempted doc succeeded. */
   doneCount: number
+  /**
+   * Failure summary of the most recent TERMINAL job, shown in the idle modes
+   * (empty/pending/uptodate) so failures survive a page reload. Without it the
+   * retry affordance existed only in the `failed` mode — reachable only by
+   * WATCHING a job fail live in-session (activeForProject returns only
+   * queued/running jobs, so a fresh page load after a partial run showed the
+   * generic delta state and the failed docs silently folded into the count).
+   * Null when the last terminal job had no failures (or there is none).
+   */
+  lastRunFailures: { failedCount: number } | null
+  /** Retry the LAST terminal job's failed docs (the idle-mode affordance). */
+  onRetryLast: () => void
   isSubmitting: boolean
   onSubmit: () => void
   onRetry: () => void
@@ -114,6 +126,8 @@ export function CardIngestPanel({
   onTogglePaidOcr,
   queue,
   doneCount,
+  lastRunFailures,
+  onRetryLast,
   isSubmitting,
   onSubmit,
   onRetry,
@@ -200,6 +214,36 @@ export function CardIngestPanel({
 
         {/* 3 — what is happening now. */}
         {mode === "running" && <RunningSection queue={queue} />}
+
+        {/* Failures of the LAST terminal run, surfaced in the idle modes so a
+            partial run that finished while nobody watched still gets its
+            explicit retry (see the lastRunFailures prop doc). The normal
+            submit also re-carries these docs (indexedAt stays null), so the
+            button is a shortcut scoped to just the failures, not the only path. */}
+        {lastRunFailures &&
+          (mode === "empty" || mode === "pending" || mode === "uptodate") && (
+            <section className="rounded-lg border border-warning/35 bg-warning/[0.08] px-5 py-4">
+              <div className="flex items-center gap-2.5">
+                <TriangleAlert className="size-4.5 shrink-0 text-warning" strokeWidth={1.9} />
+                <span className="text-sm font-semibold">
+                  {t("lastRunFailures.title", { count: lastRunFailures.failedCount })}
+                </span>
+              </div>
+              <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+                {t("lastRunFailures.body", { count: lastRunFailures.failedCount })}
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                className="mt-3"
+                onClick={onRetryLast}
+                disabled={isSubmitting}
+              >
+                {t("cta.retry")}
+                <ArrowRight className="size-3.5" />
+              </Button>
+            </section>
+          )}
 
         {/* Terminal / no-op notices. */}
         {mode === "uptodate" && (
@@ -520,7 +564,7 @@ function Notice({
   title,
   children,
 }: {
-  tone: "info"
+  tone: "info" | "warning"
   title: string
   children: React.ReactNode
 }) {
@@ -529,10 +573,15 @@ function Notice({
       className={cn(
         "rounded-lg border px-5 py-4",
         tone === "info" && "border-info/35 bg-info/[0.09]",
+        tone === "warning" && "border-warning/35 bg-warning/[0.08]",
       )}
     >
       <div className="flex items-center gap-2.5">
-        <CheckCircle2 className="size-4.5 shrink-0 text-info" strokeWidth={2} />
+        {tone === "info" ? (
+          <CheckCircle2 className="size-4.5 shrink-0 text-info" strokeWidth={2} />
+        ) : (
+          <TriangleAlert className="size-4.5 shrink-0 text-warning" strokeWidth={1.9} />
+        )}
         <span className="text-sm font-semibold">{title}</span>
       </div>
       <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{children}</p>

@@ -780,6 +780,10 @@
         "title": "No new document to add",
         "body": "Come back here only after adding documents in step 1."
       },
+      "lastRunFailures": {
+        "title": "{count, plural, =0 {Some documents failed during the last preparation} one {# document failed during the last preparation} other {# documents failed during the last preparation}}",
+        "body": "These documents stay in the to-prepare list: a new preparation will pick them up again, or retry just them below. Per-document details are in the history."
+      },
       "doneNotice": {
         "title": "{count, plural, one {# document added to your research} other {# documents added to your research}}",
         "body": "Nothing else to do here.",

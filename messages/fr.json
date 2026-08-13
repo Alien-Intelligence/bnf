@@ -780,6 +780,10 @@
         "title": "Aucun nouveau document à ajouter",
         "body": "Revenez ici seulement après avoir ajouté des documents à l'étape 1."
       },
+      "lastRunFailures": {
+        "title": "{count, plural, =0 {Des documents ont échoué lors de la dernière préparation} one {# document a échoué lors de la dernière préparation} other {# documents ont échoué lors de la dernière préparation}}",
+        "body": "Ces documents restent dans la liste à préparer : une nouvelle préparation les reprendra, ou relancez-les seuls ci-dessous. Le détail par document figure dans l'historique."
+      },
       "doneNotice": {
         "title": "{count, plural, one {# document ajouté à votre recherche} other {# documents ajoutés à votre recherche}}",
         "body": "Rien d'autre à faire ici.",

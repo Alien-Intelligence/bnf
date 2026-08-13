@@ -136,15 +136,40 @@ export function IngererClient({
   }
   const onConfirmPaidOcr = () => void dispatch(true)
 
-  const onRetryFailed = async () => {
-    if (!activeJobId) return
+  const onRetryFailed = async (jobId: string | null = activeJobId) => {
+    if (!jobId) return
     try {
-      const job = await retryMutation.mutateAsync(activeJobId)
+      const job = await retryMutation.mutateAsync(jobId)
       setActiveJobId(job.id)
     } catch {
       toast(t("retry"))
     }
   }
+
+  // The most recent TERMINAL job's failures, for the idle-mode retry notice.
+  // initialRecentJobs is createdAt-desc; the first terminal entry is the last
+  // run that finished. A newer successful run ranks first and correctly hides
+  // the notice (its commit already re-indexed whatever recovered). Failures are
+  // read from stats.failed (the worker's count, warnings excluded); a FAILED
+  // job that never got stats (submit-transport failure) still surfaces with
+  // count 0 — retryFailed's Document.indexError fallback handles the doc list.
+  const lastTerminal = initialRecentJobs.find(
+    (j) =>
+      j.status === INGEST_STATUS.DONE ||
+      j.status === INGEST_STATUS.PARTIAL ||
+      j.status === INGEST_STATUS.FAILED,
+  )
+  const lastRunFailures =
+    lastTerminal &&
+    (lastTerminal.status === INGEST_STATUS.PARTIAL ||
+      lastTerminal.status === INGEST_STATUS.FAILED)
+      ? {
+          jobId: lastTerminal.id,
+          failedCount: Number(
+            (lastTerminal.stats as Record<string, unknown> | null)?.failed ?? 0,
+          ),
+        }
+      : null
 
   const onCancel = () => setShowCancel(true)
 
@@ -197,7 +222,9 @@ export function IngererClient({
           onTogglePaidOcr={() => setIncludePaidOcr((v) => !v)}
           queue={status.data?.queue ?? null}
           doneCount={status.data?.addedCount ?? 0}
-          isSubmitting={submitMutation.isPending}
+          lastRunFailures={lastRunFailures}
+          onRetryLast={() => void onRetryFailed(lastRunFailures?.jobId ?? null)}
+          isSubmitting={submitMutation.isPending || retryMutation.isPending}
           onSubmit={onSubmit}
           onRetry={() => void onRetryFailed()}
           onCancel={onCancel}
