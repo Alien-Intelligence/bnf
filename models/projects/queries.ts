@@ -56,6 +56,7 @@ export class ProjectQueries {
       include: {
         ...projectWithShares.include,
         owner: { select: { name: true } },
+        corpusSource: { select: { name: true } },
       },
     })
 
@@ -74,12 +75,13 @@ export class ProjectQueries {
 
     const sizeByVersion = new Map(counts.map((c) => [c.versionId, c._count.ark]))
 
-    return projects.map(({ owner, ...p }) => ({
+    return projects.map(({ owner, corpusSource, ...p }) => ({
       ...p,
       corpusSize: p.headVersionId ? (sizeByVersion.get(p.headVersionId) ?? 0) : 0,
       isIngested: p.ingestedVersionId !== null,
       access: projectAccessLevel(user, p),
       ownerName: owner.name,
+      corpusSourceName: corpusSource?.name ?? null,
     }))
   }
 

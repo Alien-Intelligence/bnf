@@ -23,10 +23,13 @@ export class SessionPolicy {
    * one, because a corpus session carries the buffer/ingest tools (see
    * lib/agent/tools — the tool-boundary half of read-only consumption).
    */
-  create(resource: ProjectWithShares | { project: ProjectWithShares; scope: SessionScope }): boolean {
-    const project = "project" in resource ? resource.project : resource
-    const scope = "scope" in resource ? resource.scope : null
-
+  create({
+    project,
+    scope,
+  }: {
+    project: ProjectWithShares
+    scope: SessionScope
+  }): boolean {
     if (!canWriteProject(this.user, project)) return false
     if (scope === SESSION_SCOPE.CORPUS && isDerived(project)) return false
     return true

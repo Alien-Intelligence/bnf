@@ -43,7 +43,7 @@ export const docGetTool = defineTool<
   handler: async (input, ctx) => {
     const doc = await prisma.document.findUnique({
       where: {
-        projectId_ark: { projectId: ctx.projectId, ark: input.ark },
+        projectId_ark: { projectId: ctx.corpusProjectId, ark: input.ark },
       },
     })
 

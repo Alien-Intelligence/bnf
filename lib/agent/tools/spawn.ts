@@ -191,6 +191,10 @@ export const spawnResearchTool = defineTool<
         user: ctx.user,
         appSessionId: ctx.appSessionId,
         projectId: ctx.projectId,
+        // The child reads whatever corpus the parent reads — inheriting the
+        // resolved id, never re-deriving it.
+        corpusProjectId: ctx.corpusProjectId,
+        corpusReachable: ctx.corpusReachable,
         scope,
       }
 

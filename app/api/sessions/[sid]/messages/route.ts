@@ -38,6 +38,7 @@ import { AgentPolicy } from "@/models/agents/policy"
 import { AgentService } from "@/models/agents/service"
 import { UserQueries } from "@/models/users/queries"
 import { resolveRequestLocale } from "@/lib/locale"
+import { canReachCorpus, corpusProjectId } from "@/lib/authz/corpus-source"
 import { createPrismaChatAdapter } from "@/lib/agent/persistence/prisma-adapter"
 import {
   buildTurnScopedCtx,
@@ -114,7 +115,7 @@ const handler = createChatHandler<TurnScopedCtx>({
     buildToolContext: async (req, signal) => {
       const sid = sidFromUrl(req)
       const [session, user] = await Promise.all([
-        AgentQueries.getAppSessionOrThrow(sid),
+        AgentQueries.getAppSessionWithProjectOrThrow(sid),
         resolveUser(req),
       ])
       return buildTurnScopedCtx(
@@ -122,6 +123,11 @@ const handler = createChatHandler<TurnScopedCtx>({
           user,
           appSessionId: sid,
           projectId: session.projectId,
+          // Notes, memory and sessions stay local; the corpus, documents and
+          // RAG dataset come from the source when this project is derived.
+          // Resolved once, here — no tool re-derives it.
+          corpusProjectId: corpusProjectId(session.project),
+          corpusReachable: canReachCorpus(session.project),
           scope: session.scope as "corpus" | "research",
         },
         req,

@@ -14,7 +14,7 @@ import Image from "next/image"
 import { ShieldUser } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { Link } from "@/i18n/navigation"
-import { ROUTES } from "@/lib/constants"
+import { ROUTES, type WorkspaceStep } from "@/lib/constants"
 import { LayoutWorkspaceStepNav } from "./step-nav"
 import { LayoutWorkspaceProjectSwitcher } from "./project-switcher"
 import { LayoutWorkspaceLangToggle } from "./lang-toggle"
@@ -27,6 +27,11 @@ interface WorkspaceHeaderProps {
   projectId?: string
   /** When true, reveal the discreet link to the admin console. */
   isAdmin?: boolean
+  /**
+   * The steps available on this project. Omitted means the full progression;
+   * a read-only member or a derived workspace passes `["rechercher"]`.
+   */
+  workspaceSteps?: readonly WorkspaceStep[]
 }
 
 function initials(user: { name?: string; email: string }): string {
@@ -58,6 +63,7 @@ export function WorkspaceHeader({
   user,
   projectId,
   isAdmin = false,
+  workspaceSteps,
 }: WorkspaceHeaderProps) {
   const t = useTranslations("nav")
 
@@ -92,7 +98,9 @@ export function WorkspaceHeader({
       </div>
 
       {/* Step navigation — only inside a project workspace */}
-      {projectId && <LayoutWorkspaceStepNav projectId={projectId} />}
+      {projectId && (
+        <LayoutWorkspaceStepNav projectId={projectId} steps={workspaceSteps} />
+      )}
 
       {/* Version + MCP status + user menu */}
       <div className="flex items-center gap-3">

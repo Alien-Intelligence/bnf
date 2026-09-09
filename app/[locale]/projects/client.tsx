@@ -2,8 +2,14 @@
 
 // app/[locale]/projects/client.tsx
 // ProjectsClient — the branded projects grid. Seeds the TanStack cache from the
-// server-fetched initialProjects, owns the create-dialog open state, and renders
-// loading / error / empty / content as distinct branches (playbook/ui-states).
+// server-fetched initialProjects, owns the create/share/derive dialog state, and
+// renders loading / error / empty / content as distinct branches
+// (playbook/ui-states).
+//
+// Two sections: « Mes projets » (owned) and « Partagés avec moi » (everything
+// else the caller can see). The split is derived from the per-row access level
+// resolved server-side by lib/authz/project-access.ts — the client never
+// re-decides who may see what.
 
 import { useState } from "react"
 import { FolderOpen, Plus } from "lucide-react"
@@ -12,9 +18,12 @@ import { useProjects } from "@/hooks/api/projects"
 import { WorkspaceHeader } from "@/components/layouts/workspace/header"
 import { CardProjectTile } from "@/components/cards/projects/tile"
 import { DialogProjectCreate } from "@/components/dialogs/projects/create"
+import { DialogProjectShare } from "@/components/dialogs/projects/share"
+import { DialogProjectDerive } from "@/components/dialogs/projects/derive"
 import { LayoutSharedEmptyState } from "@/components/layouts/shared/empty-state"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
+import { PROJECT_ACCESS_LEVEL } from "@/lib/authz/project-access"
 import type { ProjectListItem } from "@/models/projects/schema"
 
 interface ProjectsClientProps {
@@ -30,9 +39,32 @@ export function ProjectsClient({
 }: ProjectsClientProps) {
   const t = useTranslations("projects")
   const [createOpen, setCreateOpen] = useState(false)
+  const [sharing, setSharing] = useState<ProjectListItem | null>(null)
+  const [deriving, setDeriving] = useState<ProjectListItem | null>(null)
+
   const { data: projects, isLoading, isError } = useProjects({
     initialData: initialProjects,
   })
+
+  const owned = (projects ?? []).filter(
+    (p) => p.access === PROJECT_ACCESS_LEVEL.OWNER,
+  )
+  const shared = (projects ?? []).filter(
+    (p) => p.access !== PROJECT_ACCESS_LEVEL.OWNER,
+  )
+
+  const grid = (items: ProjectListItem[]) => (
+    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      {items.map((project) => (
+        <CardProjectTile
+          key={project.id}
+          project={project}
+          onShare={() => setSharing(project)}
+          onDerive={() => setDeriving(project)}
+        />
+      ))}
+    </div>
+  )
 
   return (
     <div className="flex min-h-screen flex-col">
@@ -59,7 +91,7 @@ export function ProjectsClient({
           </div>
         ) : isError ? (
           <p className="text-sm text-destructive">{t("loadError")}</p>
-        ) : !projects || projects.length === 0 ? (
+        ) : owned.length === 0 && shared.length === 0 ? (
           <LayoutSharedEmptyState
             icon={FolderOpen}
             title={t("empty")}
@@ -72,15 +104,56 @@ export function ProjectsClient({
             }
           />
         ) : (
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {projects.map((project) => (
-              <CardProjectTile key={project.id} project={project} />
-            ))}
+          <div className="flex flex-col gap-10">
+            {/* The owned section is shown even when empty as long as something
+                is shared, so a reader-only account still sees where their own
+                projects would go. */}
+            <section className="space-y-4">
+              <h2 className="text-sm font-medium text-muted-foreground">
+                {t("section.mine")}
+              </h2>
+              {owned.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  {t("section.mineEmpty")}
+                </p>
+              ) : (
+                grid(owned)
+              )}
+            </section>
+
+            {shared.length > 0 && (
+              <section className="space-y-4">
+                <h2 className="text-sm font-medium text-muted-foreground">
+                  {t("section.shared")}
+                </h2>
+                {grid(shared)}
+              </section>
+            )}
           </div>
         )}
       </main>
 
       <DialogProjectCreate open={createOpen} onOpenChange={setCreateOpen} />
+
+      {sharing && (
+        <DialogProjectShare
+          project={sharing}
+          open
+          onOpenChange={(open) => {
+            if (!open) setSharing(null)
+          }}
+        />
+      )}
+
+      {deriving && (
+        <DialogProjectDerive
+          source={deriving}
+          open
+          onOpenChange={(open) => {
+            if (!open) setDeriving(null)
+          }}
+        />
+      )}
     </div>
   )
 }

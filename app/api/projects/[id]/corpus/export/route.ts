@@ -25,6 +25,7 @@ import { parseQuery } from "@/app/api/_helpers"
 import { notFound } from "@/lib/api-response"
 import { z } from "zod"
 import { ProjectQueries } from "@/models/projects/queries"
+import { resolveCorpusProject } from "@/app/api/_corpus-source"
 import { CorpusPolicy } from "@/models/corpus/policy"
 import { CorpusQueries, type CorpusFilterSet } from "@/models/corpus/queries"
 import { corpusFiltersSchema } from "@/models/corpus/types"
@@ -106,6 +107,9 @@ export const GET = withAuth(async (req, user, bouncer, ctx: RouteCtx) => {
   if (!project) return notFound("Projet introuvable")
   await bouncer.with(CorpusPolicy).authorize("read", project)
 
+  const corpusId = resolveCorpusProject(project)
+  if (corpusId instanceof Response) return corpusId
+
   // Mirror the corpus snapshot route: build the filter set only when at least
   // one filter field is present; pass undefined otherwise.
   const typeArr = splitCsv(parsed.type)
@@ -140,7 +144,7 @@ export const GET = withAuth(async (req, user, bouncer, ctx: RouteCtx) => {
 
   const versionRef = parsed.version ?? "head"
   const { versionSeq, rows } = await CorpusQueries.exportRows(
-    projectId,
+    corpusId,
     typeof versionRef === "number" ? { seq: versionRef } : versionRef,
     filters,
   )

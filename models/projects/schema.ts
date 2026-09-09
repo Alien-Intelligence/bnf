@@ -41,5 +41,12 @@ export type ProjectListItem = Project & {
   access: ProjectAccessLevel
   /** The owner's display name — shown on tiles under « Partagés avec moi ». */
   ownerName: string
+  /**
+   * The name of the project this one reads its corpus from, or null when it
+   * owns its corpus. Set even when the grant has been revoked: a derived
+   * project keeps pointing at its source, and naming it is what makes the
+   * revoked state legible.
+   */
+  corpusSourceName: string | null
 }
 

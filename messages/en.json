@@ -242,12 +242,15 @@
     "list": {
       "openCorpus": "Open corpus",
       "openIngest": "Ingest",
-      "openResearch": "Research"
+      "openResearch": "Research",
+      "share": "Share",
+      "derive": "Create a workspace"
     },
     "tile": {
       "documents": "documents",
       "ingested": "Ingested",
-      "notIngested": "Not ingested"
+      "notIngested": "Not ingested",
+      "ownedBy": "Corpus by {name}"
     },
     "form": {
       "title": "New project",
@@ -258,6 +261,46 @@
       "subtitlePlaceholder": "Press and controversies",
       "submit": "Create project",
       "created": "Project “{name}” created"
+    },
+    "section": {
+      "mine": "My projects",
+      "mineEmpty": "You do not own any project yet.",
+      "shared": "Shared with me"
+    },
+    "access": {
+      "read": "Read-only",
+      "write": "Can edit"
+    },
+    "sharedCorpus": {
+      "label": "Shared corpus · {source}",
+      "revoked": "Corpus access revoked"
+    },
+    "share": {
+      "title": "Share “{name}”",
+      "description": "Give a group access to this project. With read access its members consult the corpus and build their own research workspaces; with edit access they can also change and ingest it. Only you can share or delete the project.",
+      "group": "Group",
+      "groupPlaceholder": "Choose a group",
+      "access": "Access",
+      "level": {
+        "read": "Read-only",
+        "write": "Can edit"
+      },
+      "grant": "Share",
+      "revoke": "Revoke access for {name}",
+      "empty": "This project is not shared with any group.",
+      "noGroups": "No group exists yet. Ask an administrator to create one.",
+      "allGroupsShared": "All of your groups already have access to this project.",
+      "derived": "{count, plural, one {# research workspace depends on it} other {# research workspaces depend on it}}"
+    },
+    "derive": {
+      "title": "Create a research workspace",
+      "description": "You will work on the corpus of “{source}”, built by {owner}. Your sessions, project memory and notes are your own; the corpus stays read-only.",
+      "defaultName": "Research — {source}",
+      "name": "Workspace name",
+      "subtitle": "Subtitle (optional)",
+      "subtitlePlaceholder": "Your research angle",
+      "submit": "Create workspace",
+      "created": "Workspace “{name}” created"
     }
   },
   "corpus": {
@@ -649,7 +692,8 @@
     "notIngested": {
       "title": "Corpus not ingested",
       "body": "The corpus must be ingested before you can run searches. Please start the ingestion.",
-      "openIngest": "Open ingestion"
+      "openIngest": "Open ingestion",
+      "sharedBody": "The corpus of “{source}” has not been ingested yet. Only the team that owns it can run that step; research becomes possible afterwards."
     },
     "espace": {
       "title": "Research workspace",
@@ -694,6 +738,11 @@
       "compiledHeader": "Research notebook · {count, plural, =0 {no notes} one {# note} other {# notes}}",
       "export": "Export as Markdown",
       "empty": "No notes in this notebook."
+    },
+    "revoked": {
+      "title": "Corpus access revoked",
+      "body": "The share that gave you access to the corpus of “{source}” has been removed. Your notes remain available in the carnet, but the corpus can no longer be queried. Contact the corpus owner to restore access.",
+      "openCarnet": "Open the carnet"
     }
   },
   "citations": {

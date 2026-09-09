@@ -37,7 +37,12 @@ export const POST = withAuth(async (req, _user, bouncer, ctx: RouteCtx) => {
 
   const project = await ProjectQueries.get(projectId)
   if (!project) return notFound("Projet introuvable")
-  await bouncer.with(SessionPolicy).authorize("create", project)
+  // The scope is part of the decision: a derived project may own research
+  // sessions but never a corpus one, which would carry the buffer and ingest
+  // tools for a corpus it does not own.
+  await bouncer
+    .with(SessionPolicy)
+    .authorize("create", { project, scope: parsed.scope })
 
   const session = await SessionService.create(projectId, parsed.scope, parsed.title)
   return ok<AppSession>(session, 201)

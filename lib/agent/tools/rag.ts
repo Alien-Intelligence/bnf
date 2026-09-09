@@ -20,7 +20,7 @@ import { defineTool } from "@alien/chat-sdk/claude"
 import { ClusterRagClient } from "@/lib/cluster/rag"
 import type { TurnScopedCtx } from "./registry-factory"
 import { AGENT_TOOLS } from "./constants"
-import { NOT_INGESTED_ERROR, ingestedVersionId } from "./ingestion-guard"
+import { NOT_INGESTED_ERROR, resolveIngestedCorpus } from "./ingestion-guard"
 
 // ---------------------------------------------------------------------------
 // rag_query
@@ -76,14 +76,14 @@ export const ragQueryTool = defineTool<
       .describe("Optional filters to narrow the search scope."),
   }),
   handler: async (input, ctx) => {
-    const versionId = await ingestedVersionId(ctx.projectId)
-    if (!versionId) {
-      return { passages: [], total: 0, error: NOT_INGESTED_ERROR }
+    const corpus = await resolveIngestedCorpus(ctx, NOT_INGESTED_ERROR)
+    if ("error" in corpus) {
+      return { passages: [], total: 0, error: corpus.error }
     }
 
     return ClusterRagClient.query({
-      projectId: ctx.projectId,
-      ingestedVersionId: versionId,
+      projectId: ctx.corpusProjectId,
+      ingestedVersionId: corpus.versionId,
       query: input.query,
       k: input.k,
       filters: input.filters,
@@ -141,14 +141,14 @@ export const ragKeywordSearchTool = defineTool<
       .describe("Exact-match facet filters applied before ranking."),
   }),
   handler: async (input, ctx) => {
-    const versionId = await ingestedVersionId(ctx.projectId)
-    if (!versionId) {
-      return { hits: [], total: 0, error: NOT_INGESTED_ERROR }
+    const corpus = await resolveIngestedCorpus(ctx, NOT_INGESTED_ERROR)
+    if ("error" in corpus) {
+      return { hits: [], total: 0, error: corpus.error }
     }
 
     return ClusterRagClient.keywordSearch({
-      projectId: ctx.projectId,
-      ingestedVersionId: versionId,
+      projectId: ctx.corpusProjectId,
+      ingestedVersionId: corpus.versionId,
       query: input.query,
       limit: input.limit,
       filters: input.filters,
@@ -196,13 +196,13 @@ export const ragGetTextTool = defineTool<
       .describe("Characters to return; 0 = the rest of the document (default 4000)."),
   }),
   handler: async (input, ctx) => {
-    const versionId = await ingestedVersionId(ctx.projectId)
-    if (!versionId) {
-      return { text: "", error: NOT_INGESTED_ERROR }
+    const corpus = await resolveIngestedCorpus(ctx, NOT_INGESTED_ERROR)
+    if ("error" in corpus) {
+      return { text: "", error: corpus.error }
     }
 
     return ClusterRagClient.getEntryContent({
-      projectId: ctx.projectId,
+      projectId: ctx.corpusProjectId,
       entryId: input.entryId,
       charOffset: input.charOffset,
       charLimit: input.charLimit,

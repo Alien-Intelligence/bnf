@@ -57,6 +57,13 @@ export const ADMIN_TAB_HREF: Record<AdminTab, string> = {
 export const WORKSPACE_STEPS = ["constituer", "ingerer", "rechercher"] as const
 export type WorkspaceStep = (typeof WORKSPACE_STEPS)[number]
 
+/**
+ * The progression a reader gets: someone with only read access, or working in a
+ * derived workspace over a shared corpus. Constituer and Ingérer mutate the
+ * corpus and are not theirs to open.
+ */
+export const RESEARCH_ONLY_STEPS = ["rechercher"] as const satisfies readonly WorkspaceStep[]
+
 // ---------------------------------------------------------------------------
 // Authentication — Alien Auth (Authentik) SSO.
 // ---------------------------------------------------------------------------

@@ -3,16 +3,29 @@ import "server-only"
 import type { Project } from "@/lib/generated/prisma/client"
 import type { AppLocale } from "@/i18n/routing"
 import { renderSharedPreamble, type MemorySnapshot } from "./shared"
+import {
+  CORPUS_SOURCE_STATE,
+  type CorpusSourceState,
+} from "@/lib/authz/corpus-source"
 
 type IngestStatus =
   | { ingested: false }
   | { ingested: true; seq: number; total: number }
+
+/**
+ * Set when this project reads another project's corpus. `null` for a normal
+ * project. The distinction changes what the agent may offer to do: a derived
+ * workspace cannot extend its corpus, so proposing an ingestion would be
+ * proposing a step that does not exist for this librarian.
+ */
+type CorpusSource = { name: string; state: CorpusSourceState } | null
 
 export function renderResearchPrompt(
   project: Project,
   memory: MemorySnapshot,
   ingestStatus: IngestStatus,
   locale: AppLocale,
+  source: CorpusSource = null,
 ): string {
   // Working-language restatements inside the (French) prompt body — the
   // LANGUAGE directive in the preamble is authoritative; these keep the RÔLE
@@ -26,11 +39,39 @@ export function renderResearchPrompt(
       ? "Savant, sobre, français"
       : "Scholarly, sober, in English"
 
-  const corpusState = ingestStatus.ingested
-    ? `Ingéré — version ${ingestStatus.seq} (${ingestStatus.total} documents).`
-    : `**PAS ENCORE INGÉRÉ.** Tu ne peux pas encore répondre aux questions de fond : ` +
-      `le corpus doit d'abord être indexé (« ingéré ») pour devenir interrogeable. ` +
-      `Explique-le simplement et invite l'utilisateur à lancer cette étape depuis « Ingérer ».`
+  // Three distinct situations, three distinct instructions. Collapsing the
+  // revoked case into "not ingested" would make the agent invite the librarian
+  // to run an ingestion they have no way to run.
+  const corpusState =
+    source?.state === CORPUS_SOURCE_STATE.REVOKED
+      ? `**ACCÈS RÉVOQUÉ.** Ce corpus appartient au projet « ${source.name} », et le ` +
+        `partage qui donnait accès à ce corpus a été retiré. Tu ne peux plus ` +
+        `l'interroger. Explique-le simplement : les notes déjà rédigées restent ` +
+        `consultables, mais toute nouvelle recherche est impossible tant que le ` +
+        `propriétaire du corpus n'a pas rétabli le partage. Ne propose ni ingestion ` +
+        `ni ajout de documents — ce n'est pas au chercheur de le faire.`
+      : ingestStatus.ingested
+        ? `Ingéré — version ${ingestStatus.seq} (${ingestStatus.total} documents).`
+        : `**PAS ENCORE INGÉRÉ.** Tu ne peux pas encore répondre aux questions de fond : ` +
+          `le corpus doit d'abord être indexé (« ingéré ») pour devenir interrogeable. ` +
+          `Explique-le simplement et invite l'utilisateur à lancer cette étape depuis « Ingérer ».`
+
+  // Only rendered for a derived workspace — a normal project's section would
+  // be noise, and the prompt is cached per (project, scope).
+  const sharedCorpusSection =
+    source === null
+      ? ""
+      : `
+## CORPUS PARTAGÉ — LECTURE SEULE
+
+Le corpus que tu interroges appartient au projet « ${source.name} » ; il a été constitué et ingéré par une autre équipe. Cet espace de recherche en est un **lecteur** :
+
+- Tu **ne peux pas** ajouter, retirer ni ré-ingérer de documents. Ces outils n'existent pas dans cette session — ne les propose jamais.
+- Les notes, la mémoire et les sessions de cet espace lui appartiennent : elles ne sont **pas** visibles par l'équipe propriétaire du corpus.
+- Quand le corpus ne couvre pas la question posée, **dis-le franchement** : « ce corpus ne contient rien sur ce point ». Ne propose pas de l'étendre — ce n'est pas au chercheur de le faire ici. Il peut en revanche demander au propriétaire du corpus d'ajouter ces documents.
+
+---
+`
 
   return `${renderSharedPreamble(project, memory, locale)}
 
@@ -60,7 +101,7 @@ Tu es l'agent de recherche du corpus. Tu interroges le corpus ingéré et tu pro
 ${corpusState}
 
 ---
-
+${sharedCorpusSection}
 ## AU DÉBUT DE CHAQUE SESSION
 
 1. Salue le chercheur sobrement.

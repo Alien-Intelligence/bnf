@@ -15,6 +15,12 @@ import { cn } from "@/lib/utils"
 
 interface LayoutWorkspaceStepNavProps {
   projectId: string
+  /**
+   * The steps this user actually has on this project. A read-only member and a
+   * derived workspace both get Rechercher alone: showing a step that answers
+   * 404 is worse than not showing it. Defaults to the full progression.
+   */
+  steps?: readonly WorkspaceStep[]
 }
 
 const STEP_HREF: Record<WorkspaceStep, (projectId: string) => string> = {
@@ -32,15 +38,20 @@ function activeStepFromPathname(pathname: string): WorkspaceStep {
 
 export function LayoutWorkspaceStepNav({
   projectId,
+  steps = WORKSPACE_STEPS,
 }: LayoutWorkspaceStepNavProps) {
   const t = useTranslations("nav")
   const pathname = usePathname()
   const activeStep = activeStepFromPathname(pathname)
-  const activeIndex = WORKSPACE_STEPS.indexOf(activeStep)
+  const activeIndex = steps.indexOf(activeStep)
+
+  // A single-step progression is not a progression — the numbered dots would
+  // read as "step 1 of 1" and say nothing.
+  if (steps.length < 2) return null
 
   return (
     <nav className="flex items-center gap-1" aria-label={t("constituer")}>
-      {WORKSPACE_STEPS.map((step, index) => {
+      {steps.map((step, index) => {
         const isDone = index < activeIndex
         const isActive = index === activeIndex
 

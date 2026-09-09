@@ -24,10 +24,19 @@ import { SheetCitationSource } from "@/components/sheets/citations/source"
 import { DialogOnboardingResearch } from "@/components/dialogs/onboarding/research"
 import { useMarkOnboardingSeen } from "@/hooks/api/onboarding"
 import { ONBOARDING_INTRO } from "@/models/onboarding/schema"
-import { SESSIONS_RAIL_WIDTH, AGENT_DEFAULT_MODEL, type AgentProvider } from "@/lib/constants"
+import {
+  SESSIONS_RAIL_WIDTH,
+  AGENT_DEFAULT_MODEL,
+  type AgentProvider,
+  type WorkspaceStep,
+} from "@/lib/constants"
 import type { NoteListItem } from "@/models/notes/schema"
 import type { AppSession } from "@/models/sessions/schema"
 import type { ParsedCitation } from "@/lib/citations/syntax"
+import {
+  CORPUS_SOURCE_STATE,
+  type CorpusSourceState,
+} from "@/lib/authz/corpus-source"
 import { useTranslations } from "next-intl"
 
 type Disposition = "atelier" | "carnet"
@@ -41,6 +50,16 @@ interface RechercherClientProps {
   initialSessions: AppSession[]
   initialNotes: NoteListItem[]
   isIngested: boolean
+  /**
+   * Whether this project owns its corpus, reads a shared one, or has had that
+   * grant revoked. `revoked` is NOT "not ingested": the carnet stays open, and
+   * the fix is the corpus owner's, not the researcher's.
+   */
+  /** The steps this user has on this project — see LayoutWorkspaceStepNav. */
+  workspaceSteps: readonly WorkspaceStep[]
+  corpusSourceState: CorpusSourceState
+  /** The corpus source's project name, when this project is derived. */
+  corpusSourceName: string | null
   clusterId: string
   docCount: number
   introSeen: boolean
@@ -58,6 +77,9 @@ export function RechercherClient({
   initialSessions,
   initialNotes,
   isIngested,
+  workspaceSteps,
+  corpusSourceState,
+  corpusSourceName,
   clusterId,
   docCount,
   introSeen,
@@ -173,22 +195,31 @@ export function RechercherClient({
     email: initialUser.email,
   }
 
-  if (!isIngested) {
+  // A revoked grant and a never-ingested corpus both block research, but for
+  // opposite reasons: one the researcher can fix from « Ingérer », the other
+  // only the corpus owner can. Offering the wrong action is worse than none.
+  if (corpusSourceState === CORPUS_SOURCE_STATE.REVOKED) {
     return (
       <div className="flex h-screen flex-col">
-        <WorkspaceHeader user={user} projectId={projectId} />
+        <WorkspaceHeader
+          user={user}
+          projectId={projectId}
+          workspaceSteps={workspaceSteps}
+        />
         <div className="flex flex-1 items-center justify-center p-6">
           <Card className="max-w-md">
             <CardHeader>
-              <CardTitle>{t("notIngested.title")}</CardTitle>
-              <CardDescription>{t("notIngested.body")}</CardDescription>
+              <CardTitle>{t("revoked.title")}</CardTitle>
+              <CardDescription>
+                {t("revoked.body", { source: corpusSourceName ?? "" })}
+              </CardDescription>
             </CardHeader>
             <CardContent>
               <Link
-                href={`/projects/${projectId}/ingerer`}
-                className={buttonVariants()}
+                href={`/projects/${projectId}/rechercher/carnet`}
+                className={buttonVariants({ variant: "outline" })}
               >
-                {t("notIngested.openIngest")}
+                {t("revoked.openCarnet")}
               </Link>
             </CardContent>
           </Card>
@@ -197,9 +228,51 @@ export function RechercherClient({
     )
   }
 
+  if (!isIngested) {
+    return (
+      <div className="flex h-screen flex-col">
+        <WorkspaceHeader
+          user={user}
+          projectId={projectId}
+          workspaceSteps={workspaceSteps}
+        />
+        <div className="flex flex-1 items-center justify-center p-6">
+          <Card className="max-w-md">
+            <CardHeader>
+              <CardTitle>{t("notIngested.title")}</CardTitle>
+              <CardDescription>
+                {corpusSourceState === CORPUS_SOURCE_STATE.SHARED
+                  ? t("notIngested.sharedBody", {
+                      source: corpusSourceName ?? "",
+                    })
+                  : t("notIngested.body")}
+              </CardDescription>
+            </CardHeader>
+            {/* Only the corpus owner can run an ingestion — a derived
+                workspace has no « Ingérer » step to send the reader to. */}
+            {corpusSourceState === CORPUS_SOURCE_STATE.OWN && (
+              <CardContent>
+                <Link
+                  href={`/projects/${projectId}/ingerer`}
+                  className={buttonVariants()}
+                >
+                  {t("notIngested.openIngest")}
+                </Link>
+              </CardContent>
+            )}
+          </Card>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="flex h-screen flex-col">
-      <WorkspaceHeader user={user} projectId={projectId} />
+      <WorkspaceHeader
+          user={user}
+          projectId={projectId}
+          workspaceSteps={workspaceSteps}
+        />
       <div className="flex flex-1 overflow-hidden">
         {/* Rail — sessions + artefacts picker + project memory */}
         <div className="shrink-0 overflow-hidden" style={{ width: SESSIONS_RAIL_WIDTH }}>

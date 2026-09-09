@@ -1,5 +1,11 @@
 import "server-only"
 import { prisma } from "@/lib/db"
+import {
+  CORPUS_SOURCE_STATE,
+  corpusProjectId,
+  corpusSourceState,
+  isDerived,
+} from "@/lib/authz/corpus-source"
 import type { AppLocale } from "@/i18n/routing"
 import { renderCorpusPrompt } from "./corpus"
 import { renderResearchPrompt } from "./research"
@@ -51,13 +57,37 @@ export class PromptBuilder {
     const project = await prisma.project.findUniqueOrThrow({
       where: { id: session.projectId },
     })
+    // Memory is the project's own; the corpus belongs to the source when this
+    // project is derived. Conflating the two is the modelling error this whole
+    // feature is built to avoid — see lib/authz/corpus-source.ts.
     const memory = await this.loadMemory(session.projectId, session.scope)
+    const corpusId = corpusProjectId(project)
+
     if (session.scope === "corpus") {
-      const snapshot = await this.loadCorpusSnapshot(session.projectId)
+      const snapshot = await this.loadCorpusSnapshot(corpusId)
       return renderCorpusPrompt(project, memory, snapshot, locale)
     }
-    const ingestStatus = await this.loadIngestStatus(session.projectId)
-    return renderResearchPrompt(project, memory, ingestStatus, locale)
+
+    const source = isDerived(project)
+      ? {
+          name: (
+            await prisma.project.findUniqueOrThrow({
+              where: { id: corpusId },
+              select: { name: true },
+            })
+          ).name,
+          state: corpusSourceState(project),
+        }
+      : null
+
+    // A revoked grant is not "an empty corpus": the agent is told the access is
+    // gone so it explains rather than inviting an ingestion it cannot run.
+    const ingestStatus =
+      source?.state === CORPUS_SOURCE_STATE.REVOKED
+        ? ({ ingested: false } as const)
+        : await this.loadIngestStatus(corpusId)
+
+    return renderResearchPrompt(project, memory, ingestStatus, locale, source)
   }
 
   private static async loadMemory(

@@ -135,6 +135,20 @@ export class AgentQueries {
   }
 
   /**
+   * Like getAppSessionWithProject, but throws if not found. Used by the chat
+   * handler's per-turn callbacks, where the session was already loaded and
+   * authorized by the route.
+   */
+  static async getAppSessionWithProjectOrThrow(
+    id: string,
+  ): Promise<AppSessionWithProject> {
+    return prisma.appSession.findUniqueOrThrow({
+      where: { id },
+      include: { project: projectWithShares },
+    })
+  }
+
+  /**
    * Fetches the full AppSession by ID, throwing if not found.
    * Used by the service when the session is guaranteed to exist (already
    * loaded and authorized by the handler).
