@@ -68,7 +68,7 @@ export function ProjectsClient({
     <div className="flex min-h-screen flex-col">
       <WorkspaceHeader user={user} isAdmin={isAdmin} />
 
-      <main className="mx-auto w-full max-w-5xl px-6 py-12">
+      <main className="mx-auto w-full max-w-7xl px-6 py-12">
         <div className="mb-8 flex items-end justify-between gap-4">
           <div className="space-y-1">
             <span className="mono-eyebrow">{t("eyebrow")}</span>

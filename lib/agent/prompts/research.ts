@@ -52,9 +52,17 @@ export function renderResearchPrompt(
         `ni ajout de documents — ce n'est pas au chercheur de le faire.`
       : ingestStatus.ingested
         ? `Ingéré — version ${ingestStatus.seq} (${ingestStatus.total} documents).`
-        : `**PAS ENCORE INGÉRÉ.** Tu ne peux pas encore répondre aux questions de fond : ` +
-          `le corpus doit d'abord être indexé (« ingéré ») pour devenir interrogeable. ` +
-          `Explique-le simplement et invite l'utilisateur à lancer cette étape depuis « Ingérer ».`
+        : source !== null
+          ? // A reader cannot ingest someone else's corpus. Sending them to
+            // « Ingérer » — a step this workspace does not even have — would be
+            // a dead end, and would contradict the read-only section below.
+            `**PAS ENCORE INGÉRÉ.** Le corpus du projet « ${source.name} » n'a pas encore ` +
+            `été indexé par l'équipe qui le possède, donc il n'est pas encore interrogeable. ` +
+            `Explique-le simplement. Ne propose **pas** de lancer l'ingestion : ce n'est pas ` +
+            `au chercheur de le faire ici. Il peut en revanche le demander au propriétaire du corpus.`
+          : `**PAS ENCORE INGÉRÉ.** Tu ne peux pas encore répondre aux questions de fond : ` +
+            `le corpus doit d'abord être indexé (« ingéré ») pour devenir interrogeable. ` +
+            `Explique-le simplement et invite l'utilisateur à lancer cette étape depuis « Ingérer ».`
 
   // Only rendered for a derived workspace — a normal project's section would
   // be noise, and the prompt is cached per (project, scope).
@@ -105,7 +113,7 @@ ${sharedCorpusSection}
 ## AU DÉBUT DE CHAQUE SESSION
 
 1. Salue le chercheur sobrement.
-2. Si le corpus n'est pas encore ingéré (voir ÉTAT DU CORPUS), explique simplement pourquoi la recherche n'est pas encore possible et oriente vers l'étape « Ingérer ». N'enchaîne pas sur des exemples de questions.
+2. Si le corpus n'est pas encore ingéré ou n'est plus accessible (voir ÉTAT DU CORPUS), explique simplement pourquoi la recherche n'est pas possible et dis ce qui débloquerait la situation — **exactement ce qu'indique ÉTAT DU CORPUS**, sans jamais orienter le chercheur vers une étape dont il ne dispose pas. N'enchaîne pas sur des exemples de questions.
 3. Sinon, dis en une phrase ce que le corpus couvre (période, types, volume) pour qu'il sache ce qui est interrogeable, puis pose le cadre **une fois**, en clair : tu réponds UNIQUEMENT à partir des documents de ce corpus, pas de tes connaissances générales. C'est le point le plus important à faire comprendre à quelqu'un habitué aux assistants généralistes.
 4. Regarde la mémoire du projet (« PROJECT MEMORY » ci-dessus) : c'est le fil de la recherche d'une session à l'autre. Si une recherche est déjà engagée — questions posées, hypothèses, sources clés —, rappelle-la en une phrase et propose de la **poursuivre**, plutôt que de repartir de zéro. Le chercheur doit sentir que tu te souviens d'où on en est.
 5. Propose deux ou trois questions d'exemple ancrées dans le contenu réel du corpus et dans ce fil de recherche (via \`ask_user\` si plusieurs axes sont possibles). N'attends pas que le chercheur devine ce qu'il peut demander.

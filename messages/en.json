@@ -250,7 +250,8 @@
       "documents": "documents",
       "ingested": "Ingested",
       "notIngested": "Not ingested",
-      "ownedBy": "Corpus by {name}"
+      "ownedBy": "Corpus by {name}",
+      "readsCorpus": "reads “{source}”"
     },
     "form": {
       "title": "New project",
@@ -272,8 +273,8 @@
       "write": "Can edit"
     },
     "sharedCorpus": {
-      "label": "Shared corpus · {source}",
-      "revoked": "Corpus access revoked"
+      "revoked": "Corpus access revoked",
+      "short": "Shared corpus"
     },
     "share": {
       "title": "Share “{name}”",

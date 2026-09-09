@@ -1,9 +1,13 @@
 "use client"
 
 // components/badges/projects/shared-corpus.tsx
-// BadgeSharedCorpus — marks a derived project: a workspace whose corpus belongs
-// to another project. Renders the revoked state distinctly, because a revoked
-// grant is not "an empty corpus" but "a corpus you can no longer reach".
+// BadgeSharedCorpus — marks a project that reads another project's corpus.
+// Short by design: the source's NAME belongs on the tile's meta line, beside
+// the owner, where it has room to be read. A badge carrying a full project
+// title overflows a 400px card.
+//
+// The revoked state gets its own, visually distinct badge: a withdrawn grant is
+// not "a shared corpus", it is a workspace that can no longer reach one.
 
 import { useTranslations } from "next-intl"
 import { Link2, Link2Off } from "lucide-react"
@@ -13,13 +17,9 @@ import type { CorpusSourceState } from "@/lib/authz/corpus-source"
 
 interface BadgeSharedCorpusProps {
   state: CorpusSourceState
-  sourceName: string
 }
 
-export function BadgeSharedCorpus({
-  state,
-  sourceName,
-}: BadgeSharedCorpusProps) {
+export function BadgeSharedCorpus({ state }: BadgeSharedCorpusProps) {
   const t = useTranslations("projects.sharedCorpus")
 
   if (state === CORPUS_SOURCE_STATE.OWN) return null
@@ -36,7 +36,7 @@ export function BadgeSharedCorpus({
   return (
     <Badge variant="outline">
       <Link2 className="size-3" strokeWidth={1.8} />
-      {t("label", { source: sourceName })}
+      {t("short")}
     </Badge>
   )
 }

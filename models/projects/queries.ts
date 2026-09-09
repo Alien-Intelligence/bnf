@@ -2,6 +2,7 @@ import "server-only"
 
 import { prisma } from "@/lib/db"
 import { projectAccessLevel } from "@/lib/authz/project-access"
+import { canReachCorpus } from "@/lib/authz/corpus-source"
 import { USER_ROLE, type PolicyUser } from "@/models/users/schema"
 import {
   projectWithShares,
@@ -56,13 +57,23 @@ export class ProjectQueries {
       include: {
         ...projectWithShares.include,
         owner: { select: { name: true } },
-        corpusSource: { select: { name: true } },
+        // The corpus pointers come from the source for a derived project —
+        // the same rule corpusProjectId() applies on every other read path.
+        corpusSource: {
+          select: { name: true, headVersionId: true, ingestedVersionId: true },
+        },
       },
     })
 
-    const headIds = projects
-      .map((p) => p.headVersionId)
-      .filter((id): id is string => id !== null)
+    // A derived project's tile must show the corpus it actually reads, so the
+    // count is taken over the source's head, not its own empty placeholder.
+    const headIds = [
+      ...new Set(
+        projects
+          .map((p) => p.corpusSource?.headVersionId ?? p.headVersionId)
+          .filter((id): id is string => id !== null),
+      ),
+    ]
 
     const counts =
       headIds.length === 0
@@ -75,14 +86,23 @@ export class ProjectQueries {
 
     const sizeByVersion = new Map(counts.map((c) => [c.versionId, c._count.ark]))
 
-    return projects.map(({ owner, corpusSource, ...p }) => ({
-      ...p,
-      corpusSize: p.headVersionId ? (sizeByVersion.get(p.headVersionId) ?? 0) : 0,
-      isIngested: p.ingestedVersionId !== null,
-      access: projectAccessLevel(user, p),
-      ownerName: owner.name,
-      corpusSourceName: corpusSource?.name ?? null,
-    }))
+    return projects.map(({ owner, corpusSource, ...p }) => {
+      // A revoked workspace can no longer reach the corpus it points at, so it
+      // reports nothing rather than the stats it used to have.
+      const reachable = canReachCorpus(p)
+      const headId = corpusSource?.headVersionId ?? p.headVersionId
+      const ingestedId = corpusSource?.ingestedVersionId ?? p.ingestedVersionId
+
+      return {
+        ...p,
+        corpusSize:
+          reachable && headId ? (sizeByVersion.get(headId) ?? 0) : 0,
+        isIngested: reachable && ingestedId !== null,
+        access: projectAccessLevel(user, p),
+        ownerName: owner.name,
+        corpusSourceName: corpusSource?.name ?? null,
+      }
+    })
   }
 
   /**
