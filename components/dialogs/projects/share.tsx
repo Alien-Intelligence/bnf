@@ -101,15 +101,22 @@ export function DialogProjectShare({
                 : t("allGroupsShared")}
             </p>
           ) : (
-            <div className="flex items-end gap-2">
-              <div className="flex-1 space-y-1.5">
+            <div className="flex flex-wrap items-end gap-2">
+              <div className="min-w-40 flex-1 space-y-1.5">
                 <label className="text-sm font-medium">{t("group")}</label>
                 <Select
                   value={groupId}
                   onValueChange={(v) => setGroupId(v ?? "")}
                 >
                   <SelectTrigger>
-                    <SelectValue placeholder={t("groupPlaceholder")} />
+                    {/* Base UI renders the raw value unless told how to label
+                        it — a bare SelectValue would show the group's uuid. */}
+                    <SelectValue placeholder={t("groupPlaceholder")}>
+                      {(value: string | null) =>
+                        available.find((g) => g.id === value)?.name ??
+                        t("groupPlaceholder")
+                      }
+                    </SelectValue>
                   </SelectTrigger>
                   <SelectContent>
                     {available.map((g) => (
@@ -120,14 +127,20 @@ export function DialogProjectShare({
                   </SelectContent>
                 </Select>
               </div>
-              <div className="w-40 space-y-1.5">
+              <div className="w-36 space-y-1.5">
                 <label className="text-sm font-medium">{t("access")}</label>
                 <Select
                   value={access}
                   onValueChange={(v) => setAccess(v as ProjectAccess)}
                 >
                   <SelectTrigger>
-                    <SelectValue />
+                    <SelectValue>
+                      {(value: string | null) =>
+                        value === PROJECT_ACCESS.WRITE
+                          ? t("level.write")
+                          : t("level.read")
+                      }
+                    </SelectValue>
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value={PROJECT_ACCESS.READ}>

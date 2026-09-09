@@ -32,19 +32,27 @@ import type { ProjectListItem } from "@/models/projects/schema"
 
 interface CardProjectTileProps {
   project: ProjectListItem
+  /** The viewing user, to tell "I own this" from "I may act as an owner". */
+  currentUserId: string
   onShare?: () => void
   onDerive?: () => void
 }
 
 export function CardProjectTile({
   project,
+  currentUserId,
   onShare,
   onDerive,
 }: CardProjectTileProps) {
   const t = useTranslations("projects")
 
-  const isOwner = project.access === PROJECT_ACCESS_LEVEL.OWNER
-  const canWrite = isOwner || project.access === PROJECT_ACCESS_LEVEL.WRITE
+  // Two different questions, deliberately kept apart. `isMine` is a fact about
+  // the row; `mayShare` is a permission, and an admin holds it on every project
+  // without owning any of them.
+  const isMine = project.ownerId === currentUserId
+  const mayShare = project.access === PROJECT_ACCESS_LEVEL.OWNER
+  const canWrite =
+    mayShare || project.access === PROJECT_ACCESS_LEVEL.WRITE
   const derived = isDerived(project)
   // Constituer and Ingérer mutate the corpus; a derived project has none of
   // its own, and a read-only member may not touch the one it points at.
@@ -57,7 +65,7 @@ export function CardProjectTile({
         {project.subtitle && (
           <CardDescription>{project.subtitle}</CardDescription>
         )}
-        {!isOwner && (
+        {!isMine && (
           <CardDescription className="inline-flex items-center gap-1.5">
             <User className="size-3.5" strokeWidth={1.8} />
             {t("tile.ownedBy", { name: project.ownerName })}
@@ -116,7 +124,7 @@ export function CardProjectTile({
           {!showCorpusSteps && <ArrowRight className="size-3.5" />}
         </Link>
 
-        {isOwner && onShare && (
+        {mayShare && onShare && (
           <Button variant="ghost" size="sm" onClick={onShare}>
             <Share2 className="size-3.5" />
             {t("list.share")}
@@ -124,7 +132,7 @@ export function CardProjectTile({
         )}
         {/* Deriving needs an ingested corpus to read: without one the new
             workspace could do nothing at all. */}
-        {!isOwner && !derived && project.isIngested && onDerive && (
+        {!isMine && !derived && project.isIngested && onDerive && (
           <Button variant="ghost" size="sm" onClick={onDerive}>
             <Sparkles className="size-3.5" />
             {t("list.derive")}

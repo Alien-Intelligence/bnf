@@ -7,9 +7,11 @@
 // (playbook/ui-states).
 //
 // Two sections: « Mes projets » (owned) and « Partagés avec moi » (everything
-// else the caller can see). The split is derived from the per-row access level
-// resolved server-side by lib/authz/project-access.ts — the client never
-// re-decides who may see what.
+// else the caller can see). The split is on actual ownership, NOT on the
+// resolved access level: an admin resolves to `owner` on every project (rule 2
+// of the access table), and filing someone else's corpus under « Mes projets »
+// would be a lie. Visibility itself is still decided server-side by
+// lib/authz/project-access.ts — the client never re-decides who may see what.
 
 import { useState } from "react"
 import { FolderOpen, Plus } from "lucide-react"
@@ -23,12 +25,11 @@ import { DialogProjectDerive } from "@/components/dialogs/projects/derive"
 import { LayoutSharedEmptyState } from "@/components/layouts/shared/empty-state"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
-import { PROJECT_ACCESS_LEVEL } from "@/lib/authz/project-access"
 import type { ProjectListItem } from "@/models/projects/schema"
 
 interface ProjectsClientProps {
   initialProjects: ProjectListItem[]
-  user: { name?: string; email: string }
+  user: { id: string; name?: string; email: string }
   isAdmin?: boolean
 }
 
@@ -46,12 +47,8 @@ export function ProjectsClient({
     initialData: initialProjects,
   })
 
-  const owned = (projects ?? []).filter(
-    (p) => p.access === PROJECT_ACCESS_LEVEL.OWNER,
-  )
-  const shared = (projects ?? []).filter(
-    (p) => p.access !== PROJECT_ACCESS_LEVEL.OWNER,
-  )
+  const owned = (projects ?? []).filter((p) => p.ownerId === user.id)
+  const shared = (projects ?? []).filter((p) => p.ownerId !== user.id)
 
   const grid = (items: ProjectListItem[]) => (
     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -59,6 +56,7 @@ export function ProjectsClient({
         <CardProjectTile
           key={project.id}
           project={project}
+          currentUserId={user.id}
           onShare={() => setSharing(project)}
           onDerive={() => setDeriving(project)}
         />

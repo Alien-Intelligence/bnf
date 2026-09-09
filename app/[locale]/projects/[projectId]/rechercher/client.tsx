@@ -207,7 +207,7 @@ export function RechercherClient({
           workspaceSteps={workspaceSteps}
         />
         <div className="flex flex-1 items-center justify-center p-6">
-          <Card className="max-w-md">
+          <Card className="w-full max-w-md">
             <CardHeader>
               <CardTitle>{t("revoked.title")}</CardTitle>
               <CardDescription>
@@ -237,7 +237,7 @@ export function RechercherClient({
           workspaceSteps={workspaceSteps}
         />
         <div className="flex flex-1 items-center justify-center p-6">
-          <Card className="max-w-md">
+          <Card className="w-full max-w-md">
             <CardHeader>
               <CardTitle>{t("notIngested.title")}</CardTitle>
               <CardDescription>
