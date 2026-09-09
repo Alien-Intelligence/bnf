@@ -5,7 +5,10 @@
 import "server-only"
 
 import { prisma } from "@/lib/db"
-import type { Project } from "@/models/projects/schema"
+import {
+  projectWithShares,
+  type ProjectWithShares,
+} from "@/models/projects/schema"
 import type { AppSession, TurnSnapshot } from "./schema"
 
 // ---------------------------------------------------------------------------
@@ -13,12 +16,14 @@ import type { AppSession, TurnSnapshot } from "./schema"
 // ---------------------------------------------------------------------------
 
 /**
- * AppSession with its parent Project pre-loaded.
- * Used by route handlers that must pass { session, project } to AgentPolicy
- * methods — policy methods never fetch, so the project must be loaded by the
- * handler before the authorize() call.
+ * AppSession with its parent Project pre-loaded — including the project's
+ * shares, which lib/authz/project-access.ts reads. Used by route handlers that
+ * must pass { session, project } to AgentPolicy methods; policy methods never
+ * fetch, so the project must be loaded by the handler before authorize().
  */
-export type AppSessionWithProject = AppSession & { project: Project }
+export type AppSessionWithProject = AppSession & {
+  project: ProjectWithShares
+}
 
 export class AgentQueries {
   /**
@@ -124,7 +129,7 @@ export class AgentQueries {
   ): Promise<AppSessionWithProject | null> {
     const row = await prisma.appSession.findUnique({
       where: { id },
-      include: { project: true },
+      include: { project: projectWithShares },
     })
     return row
   }

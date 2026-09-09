@@ -1,22 +1,24 @@
 import "server-only"
-import type { User, Project } from "@/lib/generated/prisma/client"
+import { canReadProject, canWriteProject } from "@/lib/authz/project-access"
+import type { PolicyUser } from "@/models/users/schema"
+import type { ProjectWithShares } from "@/models/projects/schema"
 
+/**
+ * Project memory is local to the project that owns it — a derived project has
+ * its own memory, so there is no corpus-source condition here.
+ */
 export class MemoryPolicy {
-  constructor(private user: User) {}
+  constructor(private user: PolicyUser) {}
 
-  before(u: User): true | undefined {
-    return u.role === "admin" ? true : undefined
+  read(project: ProjectWithShares): boolean {
+    return canReadProject(this.user, project)
   }
 
-  read(project: Project): boolean {
-    return project.ownerId === this.user.id || project.isPublic
+  write(project: ProjectWithShares): boolean {
+    return canWriteProject(this.user, project)
   }
 
-  write(project: Project): boolean {
-    return project.ownerId === this.user.id
-  }
-
-  forget(project: Project): boolean {
-    return project.ownerId === this.user.id
+  forget(project: ProjectWithShares): boolean {
+    return canWriteProject(this.user, project)
   }
 }

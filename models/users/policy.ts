@@ -1,22 +1,15 @@
-import type { User } from "./schema"
+import { USER_ROLE, type PolicyUser, type User } from "./schema"
 
+/**
+ * Not project-scoped, so it does not route through
+ * lib/authz/project-access.ts; it carries its own explicit admin check (the
+ * `before()` bypass was removed from every policy in Phase 0).
+ */
 export class UserPolicy {
-  constructor(private user: User) {}
+  constructor(private user: PolicyUser) {}
 
-  /**
-   * Admin bypass: if the acting user is an admin, every action is allowed.
-   * Returns true to short-circuit; undefined to fall through to the action
-   * method (per playbook/api-layers.md bouncer contract).
-   */
-  before(u: User): boolean | undefined {
-    if (u.role === "admin") return true
-    return undefined
-  }
-
-  /**
-   * A user may view their own profile only.
-   */
+  /** A user may view their own profile; an admin may view any. */
   view(target: User): boolean {
-    return this.user.id === target.id
+    return this.user.role === USER_ROLE.ADMIN || this.user.id === target.id
   }
 }

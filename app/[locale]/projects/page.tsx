@@ -11,7 +11,7 @@ export async function generateMetadata(): Promise<Metadata> {
 
 export default async function ProjectsPage() {
   const user = await requireSessionUser("/projects")
-  const projects = await ProjectQueries.listForOwnerWithStats(user.id)
+  const projects = await ProjectQueries.listVisibleForUserWithStats(user)
 
   return (
     <ProjectsClient

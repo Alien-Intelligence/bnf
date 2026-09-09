@@ -4,6 +4,7 @@
 
 import { notFound } from "next/navigation"
 import { requireSessionUser } from "@/lib/auth-helpers"
+import { canReadProject } from "@/lib/authz/project-access"
 import { ProjectQueries } from "@/models/projects/queries"
 import { prisma } from "@/lib/db"
 import { CarnetClient } from "./carnet-client"
@@ -23,7 +24,7 @@ export default async function CarnetPage({
 
   const project = await ProjectQueries.get(projectId)
   if (!project) notFound()
-  if (project.ownerId !== user.id && !project.isPublic) notFound()
+  if (!canReadProject(user, project)) notFound()
 
   const notes = await prisma.note.findMany({
     where: { projectId },

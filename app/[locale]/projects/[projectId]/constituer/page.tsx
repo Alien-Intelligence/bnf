@@ -5,7 +5,10 @@
 // No interactivity — see client.tsx.
 
 import { notFound } from "next/navigation"
+import { redirect } from "@/i18n/navigation"
 import { requireSessionUser } from "@/lib/auth-helpers"
+import { canWriteProject } from "@/lib/authz/project-access"
+import { isDerived } from "@/lib/authz/corpus-source"
 import { ProjectQueries } from "@/models/projects/queries"
 import { CorpusQueries } from "@/models/corpus/queries"
 import { SessionService } from "@/models/sessions/service"
@@ -27,7 +30,13 @@ export default async function ConstituerPage({
   const user = await requireSessionUser(`/projects/${projectId}/constituer`)
 
   const project = await ProjectQueries.get(projectId)
-  if (!project || project.ownerId !== user.id) notFound()
+  if (!project) notFound()
+  // Constituer mutates the corpus: read access is not enough.
+  if (!canWriteProject(user, project)) notFound()
+  // A derived project consumes someone else's corpus and has no Constituer
+  // step. The project exists and the user may see it, so redirect to the step
+  // they do have — notFound() would be a lie.
+  if (isDerived(project)) redirect({ href: `/projects/${projectId}/rechercher`, locale })
 
   const [initialCorpus, session] = await Promise.all([
     CorpusQueries.snapshot(projectId, "head"),

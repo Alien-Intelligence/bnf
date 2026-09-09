@@ -5,6 +5,7 @@
 
 import { notFound } from "next/navigation"
 import { requireSessionUser } from "@/lib/auth-helpers"
+import { canReadProject } from "@/lib/authz/project-access"
 import { ProjectQueries } from "@/models/projects/queries"
 import { NoteQueries } from "@/models/notes/queries"
 import { CorpusQueries } from "@/models/corpus/queries"
@@ -29,7 +30,7 @@ export default async function RechercherPage({
 
   const project = await ProjectQueries.get(projectId)
   if (!project) notFound()
-  if (project.ownerId !== user.id && !project.isPublic) notFound()
+  if (!canReadProject(user, project)) notFound()
 
   const [session, initialNotes, seenIntros] = await Promise.all([
     SessionService.ensureDefaultForScope(projectId, "research"),

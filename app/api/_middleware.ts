@@ -13,18 +13,19 @@
  *   image, emailVerified, createdAt, updatedAt). It does NOT include custom
  *   fields added to the User table (e.g. `role`). A bare `session.user as User`
  *   cast produces an object where `role` is `undefined` at runtime, silently
- *   breaking the CorpusPolicy `before()` admin bypass.
+ *   breaking the admin rule inside lib/authz/project-access.ts.
  *   Fetching the full row from Prisma is the only correct fix.
  */
 import { auth } from "@/lib/auth"
 import { bouncer, type Bouncer, AuthorizationError } from "@/lib/bouncer"
 import { unauthorized, forbidden, notFound } from "@/lib/api-response"
 import { UserQueries } from "@/models/users/queries"
-import type { User } from "@/models/users/schema"
+import { GroupQueries } from "@/models/groups/queries"
+import type { PolicyUser } from "@/models/users/schema"
 
 type AuthedHandler<C = unknown> = (
   req: Request,
-  user: User,
+  user: PolicyUser,
   bouncer: Bouncer,
   ctx: C,
 ) => Promise<Response>
@@ -36,8 +37,15 @@ export function withAuth<C = unknown>(handler: AuthedHandler<C>) {
 
     // Refetch the full Prisma User to ensure all application fields (role,
     // etc.) are present — better-auth session.user only carries BaseUser.
-    const user = await UserQueries.get(session.user.id)
-    if (!user) return notFound("Utilisateur introuvable")
+    // Group membership is resolved here, once, so policies stay I/O-free:
+    // every project-access decision reads `groupIds` off the PolicyUser.
+    const [row, groupIds] = await Promise.all([
+      UserQueries.get(session.user.id),
+      GroupQueries.groupIdsForUser(session.user.id),
+    ])
+    if (!row) return notFound("Utilisateur introuvable")
+
+    const user: PolicyUser = { ...row, groupIds }
 
     try {
       return await handler(req, user, bouncer(user), ctx)

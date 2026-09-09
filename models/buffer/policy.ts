@@ -1,24 +1,24 @@
-import type { User, Project } from "@/lib/generated/prisma/client"
+import { canReadProject, canWriteProject } from "@/lib/authz/project-access"
+import { isDerived } from "@/lib/authz/corpus-source"
+import type { PolicyUser } from "@/models/users/schema"
+import type { ProjectWithShares } from "@/models/projects/schema"
 
 /**
- * Authorization for the research buffer. The buffer is pre-commit scratch scoped
- * to a project: reading follows the project's visibility, but every mutation
- * (add / discard / remove / commit / clear) is owner-only — committing advances
- * the corpus, so it must never be triggerable by a non-owner viewing a public
- * project.
+ * Authorization for the research buffer. The buffer is pre-commit scratch
+ * scoped to a project: reading follows the project's visibility, but every
+ * mutation (add / discard / remove / commit / clear) needs write access —
+ * committing advances the corpus, so it must never be triggerable by someone
+ * who only holds a read share or is viewing a public project.
  */
 export class BufferPolicy {
-  constructor(private user: User) {}
+  constructor(private user: PolicyUser) {}
 
-  before(u: User): true | undefined {
-    return u.role === "admin" ? true : undefined
+  read(project: ProjectWithShares): boolean {
+    return canReadProject(this.user, project)
   }
 
-  read(project: Project): boolean {
-    return project.ownerId === this.user.id || project.isPublic
-  }
-
-  mutate(project: Project): boolean {
-    return project.ownerId === this.user.id
+  /** Write access, and only on a project that owns its corpus. */
+  mutate(project: ProjectWithShares): boolean {
+    return canWriteProject(this.user, project) && !isDerived(project)
   }
 }
