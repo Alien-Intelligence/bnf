@@ -50,7 +50,7 @@ The rulebook this codebase follows. Read these before writing any feature code.
 |---|---|
 | App skeleton | [page-structure](playbook/page-structure.md), [page-client-split](playbook/page-client-split.md), [componentization](playbook/componentization.md), [forms](playbook/forms.md), [ui-states](playbook/ui-states.md), [new-primitives](playbook/new-primitives.md) |
 | Data flow | [hooks](playbook/hooks.md), [client-patterns](playbook/client-patterns.md), [api-routes](playbook/api-routes.md), [api-layers](playbook/api-layers.md), [models](playbook/models.md), [constants](playbook/constants.md), [i18n](playbook/i18n.md) |
-| BnF-specific | [corpus-versioning](playbook/corpus-versioning.md), [agent-streaming](playbook/agent-streaming.md), [mcp-client](playbook/mcp-client.md), [ingestion-jobs](playbook/ingestion-jobs.md), [citations](playbook/citations.md), [memory](playbook/memory.md) |
+| BnF-specific | [corpus-versioning](playbook/corpus-versioning.md), [agent-streaming](playbook/agent-streaming.md), [mcp-client](playbook/mcp-client.md), [ingestion-jobs](playbook/ingestion-jobs.md), [citations](playbook/citations.md), [memory](playbook/memory.md), [sharing](playbook/sharing.md) |
 
 [`playbook/README.md`](playbook/README.md) is the index. When a rule says
 "forbidden", code review rejects it.
@@ -115,6 +115,7 @@ bnf/
 ├── models/                       # five files per model — see playbook/models.md
 │   ├── projects/{schema,queries,service,policy,types}.ts
 │   ├── corpus/{schema,queries,service,policy,types,versioning}.ts
+│   ├── groups/{schema,queries,service,policy,types}.ts
 │   ├── documents/…
 │   ├── sessions/…
 │   ├── messages/…
@@ -130,6 +131,9 @@ bnf/
 │   ├── api-fetch.ts              # client-side fetch wrapper (basePath-aware)
 │   ├── api-response.ts           # ok / notFound / unauthorized / forbidden
 │   ├── constants.ts              # cross-cutting strings, numbers, IIIF templates
+│   ├── authz/
+│   │   ├── project-access.ts     # THE project-access predicate
+│   │   └── corpus-source.ts      # THE corpus-source resolver
 │   ├── agent/
 │   │   ├── loop.ts               # the streaming agent loop
 │   │   ├── tools.ts              # AGENT_TOOLS constants + registry
@@ -227,6 +231,22 @@ vocabulary is fixed (`token`, `tool_call`, `tool_result`, `corpus_event`,
 call is persisted to `tool_call`. The route still parses and authorizes
 before returning the stream. See
 [playbook/agent-streaming.md](playbook/agent-streaming.md).
+
+### One predicate decides project access ✅
+`lib/authz/project-access.ts` is the **only** place that decides what a user
+may do with a project. Every policy, every server-page guard and every route
+delegates to `canReadProject` / `canWriteProject` / `isProjectOwner`. Policies
+take a `PolicyUser` (the User row plus `groupIds`, resolved once per request)
+and a `ProjectWithShares` (loaded only via `ProjectQueries.get`) — a project
+loaded without its shares would silently deny access to every shared member.
+See [playbook/sharing.md](playbook/sharing.md).
+
+### `corpusProjectId()` decides whose corpus to read ✅
+A *derived* project reads another project's corpus while owning its sessions,
+memory and notes. `lib/authz/corpus-source.ts` is the only way to resolve which
+project's corpus, documents and RAG dataset a read targets — never `ctx.projectId`
+directly. A revoked grant is an explicit, queryable state, never an empty
+corpus. See [playbook/sharing.md](playbook/sharing.md).
 
 ### French is the default locale ✅
 All user-facing strings are translation keys in `messages/fr.json` and

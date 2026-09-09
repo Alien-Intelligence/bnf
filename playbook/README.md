@@ -34,12 +34,13 @@ debuggable as it grows.
 | 17 | [Ingestion jobs](ingestion-jobs.md) | Async job runner contract, stage progress |
 | 18 | [Citations](citations.md) | `[[ark\|label\|folio]]` parsing, rendering, deep-links |
 | 19 | [Memory](memory.md) | Project memory vs. session context — they are not the same thing |
+| 20 | [Sharing](sharing.md) | Groups, project shares, and read-only corpus consumption |
 
 ## How to use this playbook
 
 - Read 01–13 once before writing any feature code; they describe the spine of
   the app. Refer back to them every time you create a file.
-- Read 14–19 before touching the feature each one names. The BnF-specific rules
+- Read 14–20 before touching the feature each one names. The BnF-specific rules
   encode invariants the design docs spell out — getting them wrong silently
   breaks corpus state, retrieval, or onboarding.
 - When a rule says "forbidden", it means: if you write it that way, code review
