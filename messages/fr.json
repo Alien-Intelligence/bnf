@@ -291,7 +291,8 @@
       "empty": "Ce projet n'est partagé avec aucun groupe.",
       "noGroups": "Aucun groupe n'existe encore. Demandez à un administrateur d'en créer un.",
       "allGroupsShared": "Tous vos groupes ont déjà accès à ce projet.",
-      "derived": "{count, plural, one {# espace de recherche en dépend} other {# espaces de recherche en dépendent}}"
+      "derived": "{count, plural, one {# espace de recherche en dépend} other {# espaces de recherche en dépendent}}",
+      "changeAccess": "Modifier l'accès de {name}"
     },
     "derive": {
       "title": "Créer un espace de recherche",

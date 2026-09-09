@@ -71,6 +71,7 @@ export function CardProjectTile({
   // Constituer and Ingérer mutate the corpus; a derived project has none of
   // its own, and a read-only member may not touch the one it points at.
   const showCorpusSteps = canWrite && !derived
+  const canDerive = !isMine && !derived && project.isIngested && onDerive
 
   return (
     <Card className="flex flex-col transition-colors hover:bg-accent/30">
@@ -99,7 +100,10 @@ export function CardProjectTile({
           </CardDescription>
         )}
 
-        {mayShare && onShare && (
+        {/* One secondary action, in the header rather than the step bar.
+            Sharing and deriving are mutually exclusive by construction: the
+            first is owner-only, the second non-owner-only. */}
+        {mayShare && onShare ? (
           <CardAction>
             <Button
               variant="ghost"
@@ -111,6 +115,22 @@ export function CardProjectTile({
               <Share2 className="size-3.5" />
             </Button>
           </CardAction>
+        ) : (
+          // Deriving needs an ingested corpus to read: without one the new
+          // workspace could do nothing at all.
+          canDerive && (
+            <CardAction>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={onDerive}
+                aria-label={t("list.derive")}
+                title={t("list.derive")}
+              >
+                <Sparkles className="size-3.5" />
+              </Button>
+            </CardAction>
+          )
         )}
       </CardHeader>
 
@@ -163,15 +183,6 @@ export function CardProjectTile({
           {t("list.openResearch")}
           {!showCorpusSteps && <ArrowRight className="size-3.5" />}
         </Link>
-
-        {/* Deriving needs an ingested corpus to read: without one the new
-            workspace could do nothing at all. */}
-        {!isMine && !derived && project.isIngested && onDerive && (
-          <Button variant="ghost" size="sm" onClick={onDerive}>
-            <Sparkles className="size-3.5" />
-            {t("list.derive")}
-          </Button>
-        )}
       </CardFooter>
     </Card>
   )

@@ -291,7 +291,8 @@
       "empty": "This project is not shared with any group.",
       "noGroups": "No group exists yet. Ask an administrator to create one.",
       "allGroupsShared": "All of your groups already have access to this project.",
-      "derived": "{count, plural, one {# research workspace depends on it} other {# research workspaces depend on it}}"
+      "derived": "{count, plural, one {# research workspace depends on it} other {# research workspaces depend on it}}",
+      "changeAccess": "Change access for {name}"
     },
     "derive": {
       "title": "Create a research workspace",

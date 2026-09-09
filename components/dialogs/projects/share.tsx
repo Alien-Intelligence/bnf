@@ -73,6 +73,16 @@ export function DialogProjectShare({
     }
   }
 
+  const onChangeAccess = async (gid: string, value: string | null) => {
+    if (value !== PROJECT_ACCESS.READ && value !== PROJECT_ACCESS.WRITE) return
+    setError(null)
+    try {
+      await shareProject.mutateAsync({ groupId: gid, access: value })
+    } catch (e) {
+      setError(e instanceof Error ? e.message : tCommon("error"))
+    }
+  }
+
   const onRevoke = async (gid: string) => {
     setError(null)
     try {
@@ -191,25 +201,55 @@ export function DialogProjectShare({
                     <div className="truncate text-sm font-medium">
                       {share.group.name}
                     </div>
-                    <div className="text-xs text-muted-foreground">
-                      {share.access === PROJECT_ACCESS.WRITE
-                        ? t("level.write")
-                        : t("level.read")}
-                      {/* Revoking costs these workspaces their corpus — say so
-                          before the owner clicks, not after. */}
-                      {share.derivedCount > 0 &&
-                        ` · ${t("derived", { count: share.derivedCount })}`}
-                    </div>
+                    {/* Revoking costs these workspaces their corpus — say so
+                        before the owner clicks, not after. */}
+                    {share.derivedCount > 0 && (
+                      <div className="text-xs text-muted-foreground">
+                        {t("derived", { count: share.derivedCount })}
+                      </div>
+                    )}
                   </div>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    aria-label={t("revoke", { name: share.group.name })}
-                    disabled={unshareProject.isPending}
-                    onClick={() => onRevoke(share.groupId)}
-                  >
-                    <Trash2 className="size-3.5" />
-                  </Button>
+                  <div className="flex shrink-0 items-center gap-1">
+                    {/* The level is editable in place: one row per (project,
+                        group) means changing it is an update, so requiring a
+                        revoke-then-re-share to widen access would be busywork
+                        that also breaks any workspace derived from the grant. */}
+                    <Select
+                      value={share.access}
+                      onValueChange={(v) => onChangeAccess(share.groupId, v)}
+                    >
+                      <SelectTrigger
+                        size="sm"
+                        className="w-36"
+                        aria-label={t("changeAccess", { name: share.group.name })}
+                      >
+                        <SelectValue>
+                          {(value: string | null) =>
+                            value === PROJECT_ACCESS.WRITE
+                              ? t("level.write")
+                              : t("level.read")
+                          }
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value={PROJECT_ACCESS.READ}>
+                          {t("level.read")}
+                        </SelectItem>
+                        <SelectItem value={PROJECT_ACCESS.WRITE}>
+                          {t("level.write")}
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      aria-label={t("revoke", { name: share.group.name })}
+                      disabled={unshareProject.isPending}
+                      onClick={() => onRevoke(share.groupId)}
+                    >
+                      <Trash2 className="size-3.5" />
+                    </Button>
+                  </div>
                 </li>
               ))}
             </ul>
