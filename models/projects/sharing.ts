@@ -69,7 +69,7 @@ export class ProjectSharingService {
     })
     if (!group) throw new GroupNotFoundError(input.groupId)
 
-    await prisma.projectShare.upsert({
+    const share = await prisma.projectShare.upsert({
       where: {
         projectId_groupId: { projectId: project.id, groupId: input.groupId },
       },
@@ -80,6 +80,21 @@ export class ProjectSharingService {
         createdBy: granterId,
       },
       update: { access: input.access },
+    })
+
+    // Re-attach workspaces this grant had orphaned. A revoke deletes the share
+    // row and nulls the pointer (SetNull); re-sharing creates a NEW row, so
+    // without this a revoke could never be undone — the workspace would stay in
+    // the revoked state for ever even though its owner demonstrably has access
+    // again. Only workspaces reading THIS corpus, currently detached, and owned
+    // by a member of the group being granted are re-pointed.
+    await prisma.project.updateMany({
+      where: {
+        corpusSourceId: project.id,
+        corpusSourceShareId: null,
+        owner: { groupMemberships: { some: { groupId: input.groupId } } },
+      },
+      data: { corpusSourceShareId: share.id },
     })
 
     return this.list(project.id)

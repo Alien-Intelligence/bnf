@@ -38,6 +38,7 @@ let owner: User
 let reader: User
 let groupId: string
 const projects: string[] = []
+const otherGroups: string[] = []
 
 function policyUser(user: User, groupIds: string[] = []): PolicyUser {
   return { ...user, groupIds }
@@ -77,7 +78,7 @@ after(async () => {
   // source being deleted while a derived project reads it.
   const ordered = [...projects].reverse()
   for (const id of ordered) await cleanupProject(id)
-  await prisma.group.deleteMany({ where: { id: groupId } })
+  await prisma.group.deleteMany({ where: { id: { in: [groupId, ...otherGroups] } } })
   await deleteTestUser(owner.id)
   await deleteTestUser(reader.id)
 })
@@ -214,6 +215,78 @@ test("revoking the share leaves the workspace intact in the revoked state", asyn
     1,
     "the notes survive",
   )
+})
+
+test("re-sharing re-attaches a workspace the revoke had orphaned", async () => {
+  const source = await freshProject("re-share heals")
+  await markIngested(source.id)
+  await ProjectSharingService.share(
+    (await ProjectQueries.get(source.id))!,
+    owner.id,
+    { groupId, access: PROJECT_ACCESS.READ },
+  )
+
+  const derived = await ProjectService.createDerived({
+    source: (await ProjectQueries.get(source.id))!,
+    user: policyUser(reader, [groupId]),
+    name: "Espace réparable",
+  })
+  projects.push(derived.id)
+
+  await ProjectSharingService.unshare(source.id, groupId)
+  assert.equal(
+    corpusSourceState(
+      await prisma.project.findUniqueOrThrow({ where: { id: derived.id } }),
+    ),
+    CORPUS_SOURCE_STATE.REVOKED,
+  )
+
+  // Re-sharing creates a NEW share row, so the workspace has to be re-pointed
+  // at it — otherwise an accidental revoke would be permanent.
+  const reshared = await ProjectSharingService.share(
+    (await ProjectQueries.get(source.id))!,
+    owner.id,
+    { groupId, access: PROJECT_ACCESS.WRITE },
+  )
+
+  const healed = await prisma.project.findUniqueOrThrow({
+    where: { id: derived.id },
+  })
+  assert.equal(healed.corpusSourceShareId, reshared[0]!.id, "pinned to the new grant")
+  assert.equal(corpusSourceState(healed), CORPUS_SOURCE_STATE.SHARED)
+  assert.equal(canReachCorpus(healed), true)
+})
+
+test("re-sharing to a group the workspace's owner is NOT in leaves it revoked", async () => {
+  const source = await freshProject("re-share other group")
+  await markIngested(source.id)
+  await ProjectSharingService.share(
+    (await ProjectQueries.get(source.id))!,
+    owner.id,
+    { groupId, access: PROJECT_ACCESS.READ },
+  )
+  const derived = await ProjectService.createDerived({
+    source: (await ProjectQueries.get(source.id))!,
+    user: policyUser(reader, [groupId]),
+    name: "Espace non réparé",
+  })
+  projects.push(derived.id)
+  await ProjectSharingService.unshare(source.id, groupId)
+
+  // A grant to a group the reader does not belong to gives them nothing, so it
+  // must not silently resurrect their workspace.
+  const otherGroup = await prisma.group.create({
+    data: { name: `TEST other ${randomUUID()}`, slug: `test-other-${randomUUID()}` },
+  })
+  otherGroups.push(otherGroup.id)
+  await ProjectSharingService.share(
+    (await ProjectQueries.get(source.id))!,
+    owner.id,
+    { groupId: otherGroup.id, access: PROJECT_ACCESS.READ },
+  )
+
+  const still = await prisma.project.findUniqueOrThrow({ where: { id: derived.id } })
+  assert.equal(corpusSourceState(still), CORPUS_SOURCE_STATE.REVOKED)
 })
 
 test("a source cannot be deleted while a derived project reads it", async () => {
