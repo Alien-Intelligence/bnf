@@ -50,6 +50,33 @@ export class PromptBuilder {
     })
   }
 
+  /**
+   * Invalidate the cached research prompt for a project whose corpus has just
+   * been ingested — and for every derived project that reads it.
+   *
+   * The research prompt embeds ÉTAT DU CORPUS, so a commit makes it stale: the
+   * agent would keep telling the librarian the corpus is not ingested and
+   * refuse to search. A derived workspace is affected by an ingestion it did
+   * not run, which is exactly the case a per-project invalidation misses.
+   *
+   * Only the `research` scope carries ingest status; corpus-scope prompts embed
+   * the head snapshot, which an ingestion does not move.
+   */
+  static async invalidateForIngestedCorpus(corpusProjectId: string): Promise<void> {
+    const derived = await prisma.project.findMany({
+      where: { corpusSourceId: corpusProjectId },
+      select: { id: true },
+    })
+
+    await prisma.appSession.updateMany({
+      where: {
+        projectId: { in: [corpusProjectId, ...derived.map((p) => p.id)] },
+        scope: "research",
+      },
+      data: { systemPrompt: null },
+    })
+  }
+
   private static async render(
     session: AppSession,
     locale: AppLocale,

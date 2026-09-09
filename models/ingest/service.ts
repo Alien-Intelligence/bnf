@@ -14,6 +14,7 @@ import "server-only"
 //     IngestService.submit() returns the existing job — no new row.
 import crypto from "node:crypto"
 import { prisma } from "@/lib/db"
+import { PromptBuilder } from "@/lib/agent/prompts/builder"
 import { Prisma } from "@/lib/generated/prisma/client"
 import type { IngestJob, Project, User } from "@/lib/generated/prisma/client"
 import { CorpusQueries } from "@/models/corpus/queries"
@@ -599,6 +600,12 @@ export class IngestService {
       )
     }
     await prisma.$transaction(ops)
+
+    // The research prompt embeds ÉTAT DU CORPUS, so a commit makes it stale:
+    // without this the agent keeps saying the corpus is not ingested and
+    // refuses to search. Derived workspaces reading this corpus are affected by
+    // an ingestion they did not run, so they are invalidated too.
+    await PromptBuilder.invalidateForIngestedCorpus(job.projectId)
   }
 
   /**
@@ -708,6 +715,12 @@ export class IngestService {
       )
     }
     await prisma.$transaction(ops)
+
+    // The research prompt embeds ÉTAT DU CORPUS, so a commit makes it stale:
+    // without this the agent keeps saying the corpus is not ingested and
+    // refuses to search. Derived workspaces reading this corpus are affected by
+    // an ingestion they did not run, so they are invalidated too.
+    await PromptBuilder.invalidateForIngestedCorpus(job.projectId)
   }
 
   /**
@@ -892,6 +905,11 @@ export class IngestService {
         data: { ingestedVersionId: targetVersionId },
       })
     })
+
+    // Same reason as the commit path: the pointer moved, so the research
+    // prompt's ÉTAT DU CORPUS is stale here and in every derived workspace.
+    await PromptBuilder.invalidateForIngestedCorpus(project.id)
+
     return job
   }
 
