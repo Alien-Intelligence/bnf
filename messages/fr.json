@@ -29,7 +29,8 @@
       "accounts": "Comptes",
       "feedback": "Retours",
       "usage": "Utilisation",
-      "ocr": "OCR"
+      "ocr": "OCR",
+      "groups": "Groupes"
     },
     "overview": {
       "eyebrow": "Administration",
@@ -921,5 +922,48 @@
     "success": "Merci pour votre retour",
     "error": "Échec de l'envoi de l'avis",
     "cancel": "Annuler"
+  },
+  "groups": {
+    "eyebrow": "Administration",
+    "title": "Groupes",
+    "subtitle": "Les groupes sont l'unité de partage : un administrateur les crée et gère leurs membres, puis chaque propriétaire partage ses projets avec eux.",
+    "new": "Nouveau groupe",
+    "empty": "Aucun groupe",
+    "emptyHint": "Créez un premier groupe pour permettre le partage de projets entre utilisateurs.",
+    "col": {
+      "name": "Nom",
+      "members": "Membres",
+      "shares": "Projets partagés"
+    },
+    "row": {
+      "members": "Membres",
+      "rename": "Renommer le groupe",
+      "delete": "Supprimer le groupe"
+    },
+    "form": {
+      "title": "Nouveau groupe",
+      "description": "Le nom est affiché partout ; un identifiant en est dérivé automatiquement.",
+      "name": "Nom du groupe",
+      "namePlaceholder": "Département Recherche",
+      "submit": "Créer le groupe",
+      "created": "Groupe « {name} » créé",
+      "renameTitle": "Renommer le groupe",
+      "renameDescription": "L'identifiant est redérivé du nouveau nom.",
+      "renameSubmit": "Renommer",
+      "renamed": "Groupe renommé en « {name} »"
+    },
+    "members": {
+      "description": "Ajoutez un membre par son adresse e-mail. Le retrait est immédiat : l'accès aux projets partagés avec ce groupe est révoqué dès la requête suivante.",
+      "emailPlaceholder": "prenom.nom@bnf.fr",
+      "add": "Ajouter",
+      "remove": "Retirer {name} du groupe",
+      "empty": "Aucun membre dans ce groupe"
+    },
+    "delete": {
+      "title": "Supprimer « {name} » ?",
+      "description": "{members, plural, =0 {Aucun membre} one {# membre} other {# membres}} et {shares, plural, =0 {aucun partage de projet} one {# partage de projet} other {# partages de projet}} seront supprimés. Les espaces de recherche créés à partir de ces partages sont conservés, mais perdent l'accès au corpus.",
+      "confirm": "Supprimer le groupe",
+      "done": "Groupe « {name} » supprimé"
+    }
   }
 }

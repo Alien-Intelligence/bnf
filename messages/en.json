@@ -29,7 +29,8 @@
       "accounts": "Accounts",
       "feedback": "Feedback",
       "usage": "Usage",
-      "ocr": "OCR"
+      "ocr": "OCR",
+      "groups": "Groups"
     },
     "overview": {
       "eyebrow": "Administration",
@@ -921,5 +922,48 @@
     "success": "Thanks for your feedback",
     "error": "Failed to send feedback",
     "cancel": "Cancel"
+  },
+  "groups": {
+    "eyebrow": "Administration",
+    "title": "Groups",
+    "subtitle": "Groups are the unit of sharing: an admin creates them and manages their members, then each owner shares their projects with them.",
+    "new": "New group",
+    "empty": "No groups",
+    "emptyHint": "Create a first group to allow projects to be shared between users.",
+    "col": {
+      "name": "Name",
+      "members": "Members",
+      "shares": "Shared projects"
+    },
+    "row": {
+      "members": "Members",
+      "rename": "Rename group",
+      "delete": "Delete group"
+    },
+    "form": {
+      "title": "New group",
+      "description": "The name is shown everywhere; an identifier is derived from it automatically.",
+      "name": "Group name",
+      "namePlaceholder": "Research Department",
+      "submit": "Create group",
+      "created": "Group “{name}” created",
+      "renameTitle": "Rename group",
+      "renameDescription": "The identifier is re-derived from the new name.",
+      "renameSubmit": "Rename",
+      "renamed": "Group renamed to “{name}”"
+    },
+    "members": {
+      "description": "Add a member by email address. Removal is immediate: access to projects shared with this group is revoked on their next request.",
+      "emailPlaceholder": "first.last@bnf.fr",
+      "add": "Add",
+      "remove": "Remove {name} from the group",
+      "empty": "No members in this group"
+    },
+    "delete": {
+      "title": "Delete “{name}”?",
+      "description": "{members, plural, =0 {No members} one {# member} other {# members}} and {shares, plural, =0 {no project shares} one {# project share} other {# project shares}} will be deleted. Research workspaces created from those shares are kept, but lose access to the corpus.",
+      "confirm": "Delete group",
+      "done": "Group “{name}” deleted"
+    }
   }
 }

@@ -28,7 +28,6 @@ function user(
   overrides: Partial<PolicyUser> & Pick<PolicyUser, "id">,
 ): PolicyUser {
   return {
-    id: overrides.id,
     email: `${overrides.id}@example.test`,
     emailVerified: true,
     name: overrides.id,
