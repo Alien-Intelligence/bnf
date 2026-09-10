@@ -51,7 +51,7 @@ export function ProjectsClient({
   const shared = (projects ?? []).filter((p) => p.ownerId !== user.id)
 
   const grid = (items: ProjectListItem[]) => (
-    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
       {items.map((project) => (
         <CardProjectTile
           key={project.id}
@@ -82,7 +82,7 @@ export function ProjectsClient({
         </div>
 
         {isLoading ? (
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
             {Array.from({ length: 3 }).map((_, i) => (
               <Skeleton key={i} className="h-44 rounded-xl" />
             ))}
