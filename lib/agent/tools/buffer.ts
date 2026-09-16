@@ -30,6 +30,7 @@ import { requireMcpEnv } from "@/lib/env"
 import { callBnfTool } from "@/lib/mcp/call"
 import { BnfMcpError } from "@/lib/mcp/errors"
 import { parseBnfDate } from "@/lib/mcp/normalize"
+import { BNF_SEARCH_TOOL } from "@/lib/mcp/tools"
 import { sourceFromArk } from "@/lib/mcp/vocab"
 import { BufferQueries, type BufferFilterSet } from "@/models/buffer/queries"
 import { BufferService } from "@/models/buffer/service"
@@ -456,6 +457,219 @@ function toYear(date: string | null): number | undefined {
   return parseBnfDate(date).year ?? undefined
 }
 
+/**
+ * Weights for `mostDistinctiveTerm`'s scoring. A capitalised token outranks any
+ * lowercase one; length only breaks ties between tokens of the same class; the
+ * weak-proper-noun penalty exactly cancels the capitalisation bonus, demoting
+ * "Laboratoires" to compete on length alone.
+ */
+const TERM_SCORE = {
+  capitalised: 3,
+  weakProperNounPenalty: 3,
+  lengthDivisor: 10,
+} as const
+
+/** Shortest token worth probing — below this a term carries no discrimination. */
+const MIN_TERM_LENGTH = 3
+
+/**
+ * Capitalised words that carry a company or edition name without discriminating
+ * between any two of them. They rank as proper nouns on every structural signal
+ * yet make terrible search terms, and they lead French institutional names often
+ * enough ("Laboratoires Vichy", "Éditions Gallimard") to be worth demoting.
+ */
+const WEAK_PROPER_NOUNS = new Set([
+  "laboratoire",
+  "laboratoires",
+  "etablissement",
+  "etablissements",
+  "societe",
+  "editions",
+  "edition",
+  "maison",
+  "compagnie",
+  "institut",
+  "collection",
+  "recueil",
+])
+
+/** Casefold for comparison: lowercase, accents removed. */
+function fold(term: string): string {
+  return term
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+}
+
+/**
+ * The most distinctive-looking term of a free-text query, or null when the query
+ * is already a single term (nothing to narrow to).
+ *
+ * A librarian types "Maybelline maquillage". The catalogue index holds
+ * bibliographic notices only — no full text — and its CQL `all` operator demands
+ * that EVERY word appear in one notice, so a single descriptive word zeroes an
+ * otherwise rich result set: "Maybelline" matches 111 records, "Maybelline
+ * maquillage" matches none. What a notice actually contains is proper nouns —
+ * brands, people, titles — so capitalisation is the signal we rank on, with
+ * length as the tiebreak and a demotion for the generic name-leaders above.
+ * Elided articles ("L'Oréal") are stripped so the scored token is the name.
+ *
+ * This is a HEURISTIC and it will sometimes pick the wrong proper noun — the
+ * real signal is corpus rarity, which we cannot compute here. That is tolerable
+ * because of how the result is used: the probe exists to produce a count that
+ * CONTRADICTS a zero, and `zeroResultDiagnostic` deliberately does not tell the
+ * agent to re-run on this term. The agent knows the librarian's subject; we
+ * only know the string.
+ */
+export function mostDistinctiveTerm(query: string): string | null {
+  const tokens = query.split(/\s+/).filter(Boolean)
+  if (tokens.length < 2) return null
+
+  let bestTerm: string | null = null
+  let bestScore = -1
+  for (const raw of tokens) {
+    const term = raw
+      .replace(/^\p{L}['’]/u, "") // elision: "L'Oréal" → "Oréal", "d'Alembert" → "Alembert"
+      .replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "") // strip surrounding punctuation
+    if (term.length < MIN_TERM_LENGTH) continue
+    const capitalised = term[0] !== term[0].toLowerCase()
+    const score =
+      (capitalised ? TERM_SCORE.capitalised : 0) +
+      term.length / TERM_SCORE.lengthDivisor -
+      (WEAK_PROPER_NOUNS.has(fold(term)) ? TERM_SCORE.weakProperNounPenalty : 0)
+    if (score > bestScore) {
+      bestScore = score
+      bestTerm = term
+    }
+  }
+  return bestTerm !== null && bestTerm !== query ? bestTerm : null
+}
+
+/**
+ * How many records one term matches, without staging anything.
+ *
+ * Used solely to contradict a zero result, so its own failure is NOT the
+ * caller's failure: log and return null, and let the diagnostic fall back to
+ * prose. (The deliberate exception to the log-AND-propagate rule in
+ * CLAUDE_ERROR_PATTERNS §5 — raising here would turn a successful search that
+ * happened to match nothing into a failed one.)
+ *
+ * DELIBERATE DEVIATION from playbook/mcp-client.md ("Don't add new BnF egress
+ * here"). The rule exists to stop uncoordinated traffic contending with the
+ * broker for BnF's shared quota; the measured cost here is the other way round.
+ * Prod ran 313 catalogue searches in 90 days, 43% of them zero — so this adds
+ * roughly 1.5 one-record calls a day, against a 1000/min budget — and it exists
+ * to END the blind reformulation loop a zero currently triggers (twenty-odd
+ * wasted searches in the session this was written for). If that trade ever
+ * stops holding, delete the probe: `zeroResultDiagnostic` degrades to prose.
+ */
+async function countMatches(
+  mcpEnv: { BNF_MCP_URL: string; BNF_MCP_TOKEN: string },
+  source: "gallica" | "catalogue",
+  query: string,
+  signal: AbortSignal | undefined,
+): Promise<number | null> {
+  const tool = BNF_SEARCH_TOOL[source]
+  try {
+    const payload = await callBnfTool<{ pagination: BnfSearchPagination }>(
+      mcpEnv.BNF_MCP_URL,
+      mcpEnv.BNF_MCP_TOKEN,
+      tool,
+      { response_format: "json", query, start_record: 1, maximum_records: 1 },
+      signal,
+    )
+    const total = payload.pagination?.total
+    if (typeof total !== "number") {
+      // Succeeded but shaped wrong — the same contract breach the search branches
+      // throw on. Here it only costs the diagnostic, so log it rather than fail
+      // the search, but never let it pass as an ordinary "probe unavailable".
+      console.warn(`[corpus_search] zero-result probe on ${tool} ("${query}") returned no total`)
+      return null
+    }
+    return total
+  } catch (err) {
+    console.warn(`[corpus_search] zero-result probe on ${tool} ("${query}") failed:`, err)
+    return null
+  }
+}
+
+/** What the agent is told when a search matched nothing. */
+interface ZeroResultDiagnostic {
+  meaning: string
+  probed_term?: string
+  probed_term_total?: number
+  next_step: string
+}
+
+/**
+ * Explain a zero — never hand one back bare.
+ *
+ * A bare `total: 0` is the most dangerous value this tool returns. The agent
+ * reads it as "the BnF holds nothing on this" and tells a BnF librarian so; in
+ * the incident this guards against, the agent reported two brands as having
+ * "aucune trace au catalogue ni sur Gallica" while 68 documents from those very
+ * searches sat committed in the user's corpus. So we state what a zero means,
+ * and — when the query has something narrower to fall back to — we spend one
+ * 1-record probe to hand back the count that contradicts it. Prose alone did not
+ * prove enough: a NUMBER is what stops the model concluding absence.
+ *
+ * The probe only fires on the pattern that is actually broken (a multi-term
+ * query that matched nothing), and it replaces the blind reformulation loop the
+ * agent otherwise runs — around twenty wasted searches in the reference session
+ * — so it costs the shared BnF rate budget less than the behaviour it removes.
+ */
+async function zeroResultDiagnostic(
+  mcpEnv: { BNF_MCP_URL: string; BNF_MCP_TOKEN: string },
+  source: "gallica" | "catalogue",
+  query: string | undefined,
+  signal: AbortSignal | undefined,
+): Promise<ZeroResultDiagnostic> {
+  const meaning =
+    source === "catalogue"
+      ? "`total: 0` ne veut PAS dire que ces documents sont absents des collections de la BnF. " +
+        "Le catalogue indexe des NOTICES bibliographiques (titre, auteur, éditeur, sujet), sans plein texte, " +
+        "et TOUS les mots de `query` doivent figurer dans une même notice : un seul mot descriptif " +
+        "(« cosmétiques », « histoire », « produits ») suffit à ramener un résultat riche à zéro."
+      : "`total: 0` ne veut PAS dire que ces documents sont absents de Gallica. " +
+        "Gallica indexe le plein texte OCR, et TOUS les mots de `query` doivent apparaître dans un même document."
+
+  const narrowed = query ? mostDistinctiveTerm(query) : null
+  if (narrowed === null) {
+    return {
+      meaning,
+      next_step:
+        "Essaie l'AUTRE source (catalogue ↔ gallica) et les critères `creator` / `title`, " +
+        "qui ciblent un champ précis au lieu du plein texte, AVANT toute conclusion. " +
+        "Ne dis jamais au bibliothécaire qu'un sujet est absent sur la foi d'une seule requête.",
+    }
+  }
+
+  const probed = await countMatches(mcpEnv, source, narrowed, signal)
+  const narrowAdvice =
+    "Relance avec le SEUL terme distinctif de ton sujet — la marque, la personne ou le titre, " +
+    "celui que porterait la notice — puis affine avec `date` / `language` / `doc_type`. " +
+    "N'ajoute jamais de mot descriptif à `query` : chaque mot en plus retire des résultats."
+
+  if (probed === null) {
+    return { meaning, probed_term: narrowed, next_step: narrowAdvice }
+  }
+  return {
+    meaning,
+    probed_term: narrowed,
+    probed_term_total: probed,
+    next_step:
+      probed > 0
+        ? `Vérification : « ${narrowed} », tiré de ta requête, donne à lui seul ${probed} résultat(s) dans ce ` +
+          "même index. C'est donc ta REQUÊTE qui était trop étroite, pas le fonds qui est vide. " +
+          narrowAdvice
+        : `Vérification : « ${narrowed} », tiré de ta requête, ne donne rien non plus ici — mais ce terme n'est ` +
+          "peut-être pas le bon. " +
+          narrowAdvice +
+          " Essaie aussi l'AUTRE source (catalogue ↔ gallica), `creator` / `title`, et les variantes du nom, " +
+          "avant de conclure quoi que ce soit.",
+  }
+}
+
 const searchSourceEnum = z.enum(["gallica", "catalogue"])
 
 export const corpusSearchTool = defineTool<
@@ -485,6 +699,11 @@ export const corpusSearchTool = defineTool<
     "the full result list; inspect the staged candidates with buffer_stats / " +
     "buffer_list. To gather more, call again with `start_record` advanced by the " +
     "page size (use the returned `next_start_record`) until `has_more` is false. " +
+    "Both indexes require EVERY word of `query` to occur in one record, so extra " +
+    "descriptive words NARROW rather than broaden: query the brand / person / title " +
+    "alone and restrict with date / language / doc_type. A `total` of 0 means " +
+    '"nothing under these terms in this index" — never that the BnF holds nothing; ' +
+    "when it happens, read the returned `zero_result` block and follow its next_step. " +
     "Curate with buffer_remove_by_filter, then buffer_commit to add them to the corpus.",
   inputSchema: z.object({
     source: searchSourceEnum.describe(
@@ -532,7 +751,10 @@ export const corpusSearchTool = defineTool<
     // At least one search term (kept out of the Zod schema so the failure is a
     // clean tool result the agent can react to, not a hard validation throw).
     if (!input.query && !input.title && !input.creator && !input.date) {
-      return { error: "Fournissez au moins un critère de recherche : query, title, creator ou date." }
+      return {
+        success: false,
+        error: "Fournissez au moins un critère de recherche : query, title, creator ou date.",
+      }
     }
 
     let mcpEnv: { BNF_MCP_URL: string; BNF_MCP_TOKEN: string }
@@ -540,6 +762,7 @@ export const corpusSearchTool = defineTool<
       mcpEnv = requireMcpEnv()
     } catch {
       return {
+        success: false,
         error:
           "La recherche BnF est indisponible (le MCP BnF n'est pas configuré pour cette session).",
       }
@@ -571,11 +794,17 @@ export const corpusSearchTool = defineTool<
         const payload = await callBnfTool<GallicaPayload>(
           mcpEnv.BNF_MCP_URL,
           mcpEnv.BNF_MCP_TOKEN,
-          "bnf_search_gallica",
+          BNF_SEARCH_TOOL.gallica,
           args,
           ctx.signal,
         )
         pagination = payload.pagination
+        // `callBnfTool` has already rejected the `{success:false}` envelope, so a
+        // payload reaching here and still missing its result list is a contract
+        // breach, not an empty search — say so rather than staging nothing.
+        if (!Array.isArray(payload.data?.results)) {
+          throw new BnfMcpError(`${BNF_SEARCH_TOOL.gallica}: payload carried no results array`)
+        }
         candidates = payload.data.results.flatMap((h) => {
           const ark = toFullArk(h.ark)
           if (ark === null) return []
@@ -597,11 +826,16 @@ export const corpusSearchTool = defineTool<
         const payload = await callBnfTool<CataloguePayload>(
           mcpEnv.BNF_MCP_URL,
           mcpEnv.BNF_MCP_TOKEN,
-          "bnf_search_catalogue",
+          BNF_SEARCH_TOOL.catalogue,
           args,
           ctx.signal,
         )
         pagination = payload.pagination
+        // See the gallica branch: a successful payload without its record list
+        // is a contract breach, not an empty search.
+        if (!Array.isArray(payload.data?.records)) {
+          throw new BnfMcpError(`${BNF_SEARCH_TOOL.catalogue}: payload carried no records array`)
+        }
         candidates = payload.data.records.flatMap((h) => {
           const ark = toFullArk(h.ark)
           if (ark === null) return []
@@ -621,8 +855,16 @@ export const corpusSearchTool = defineTool<
     } catch (err) {
       // Coerce the transport/tool failure into a structured tool result the
       // agent can react to (CLAUDE_ERROR_PATTERNS §15) — never throw out.
+      //
+      // `success: false` is what marks this as a REAL failure rather than a
+      // structured outcome. `toolCallErrored` keys on that flag, so without it
+      // the row persists as status "ok": the chip shows ✓ and the health lane
+      // stays green through an outage. It is set deliberately here and NOT
+      // inferred from the presence of an `error` key, because several handlers
+      // return `{ error }` for expected states — rag_* before ingestion,
+      // doc_get on an ARK outside the corpus — which must NOT flare the lanes.
       const message = err instanceof BnfMcpError ? err.message : String(err)
-      return { error: `La recherche BnF a échoué : ${message}` }
+      return { success: false, error: `La recherche BnF a échoué : ${message}` }
     }
 
     const registered = await BufferService.registerCandidates({
@@ -635,9 +877,16 @@ export const corpusSearchTool = defineTool<
 
     const buffered = await emitBuffer(ctx, projectId, "added", registered.added)
 
+    // Never return a bare zero — see zeroResultDiagnostic.
+    const zeroResult =
+      pagination.total === 0
+        ? await zeroResultDiagnostic(mcpEnv, input.source, input.query, ctx.signal)
+        : null
+
     return {
       source: input.source,
       total: pagination.total,
+      ...(zeroResult !== null ? { zero_result: zeroResult } : {}),
       found: candidates.length,
       added: registered.added,
       refreshed: registered.refreshed,
