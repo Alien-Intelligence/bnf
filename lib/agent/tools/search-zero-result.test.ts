@@ -11,7 +11,7 @@ import "server-only"
 
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { mostDistinctiveTerm } from "./buffer"
+import { mostDistinctiveTerm, refusalZeroResult } from "./buffer"
 import { toolCallErrored } from "@/lib/tools/display"
 
 test("picks the proper noun out of a descriptive query", () => {
@@ -129,4 +129,47 @@ test("the BnF MCP soft-failure envelope still counts as a failure", () => {
     }),
   }
   assert.equal(toolCallErrored(false, soft), true)
+})
+
+// ---------------------------------------------------------------------------
+// Two different zeros — and only one of them is worth probing.
+//
+// mcp-bnf >= 0.4.0 forwards the BnF's own `srw:diagnostics`. When they are
+// present the zero means "this query was not expressible here", and re-running
+// a narrower term would issue the SAME unsupported construct, get another zero,
+// and report that the term "ne donne rien non plus" — manufacturing exactly the
+// false absence the probe was built to prevent.
+// ---------------------------------------------------------------------------
+
+test("a refused zero is explained from the BnF's diagnostic, not probed", () => {
+  const block = refusalZeroResult([
+    {
+      uri: "info:srw/diagnostic/1/82",
+      message: "Séquence de tri non supportée",
+      details: "bib.date",
+    },
+  ])
+
+  assert.notEqual(block, null, "a diagnostic must short-circuit the probe")
+  assert.match(block!.meaning, /REFUSÉ/)
+  assert.match(block!.meaning, /Séquence de tri non supportée/)
+  assert.match(block!.meaning, /bib\.date/, "the offending index must be named")
+  assert.match(block!.meaning, /PAS « rien n'existe »/)
+  assert.match(block!.next_step, /Ne conclus RIEN/)
+})
+
+test("several diagnostics are all reported, not just the first", () => {
+  const block = refusalZeroResult([
+    { uri: "u1", message: "Proximité non supportée", details: "" },
+    { uri: "u2", message: "Index non supporté", details: "bib.ark" },
+  ])
+
+  assert.match(block!.meaning, /Proximité non supportée/)
+  assert.match(block!.meaning, /Index non supporté \(bib\.ark\)/)
+})
+
+test("no diagnostic falls through to the distinctive-term probe", () => {
+  // The genuine zero: the query ran and matched nothing, because `all` demands
+  // every word in one record. This is the case the probe was written for.
+  assert.equal(refusalZeroResult([]), null)
 })

@@ -28,7 +28,7 @@ import { kickCanonicalize } from "@/lib/documents/canonicalizer"
 import { kickResolve } from "@/lib/documents/resolver"
 import { requireMcpEnv } from "@/lib/env"
 import { callBnfTool } from "@/lib/mcp/call"
-import { BnfMcpError } from "@/lib/mcp/errors"
+import { BnfMcpError, BnfMcpQueryRefusedError } from "@/lib/mcp/errors"
 import { parseBnfDate } from "@/lib/mcp/normalize"
 import { BNF_SEARCH_TOOL } from "@/lib/mcp/tools"
 import { sourceFromArk } from "@/lib/mcp/vocab"
@@ -417,13 +417,27 @@ interface CatalogueHit {
   publisher: string | null
   language: string | null
 }
-interface GallicaPayload {
-  data: { results: GallicaHit[] }
-  pagination: BnfSearchPagination
+/** One thing the BnF refused, in its own words (mcp-bnf >= 0.4.0). */
+interface BnfDiagnostic {
+  uri: string
+  message: string
+  details: string
 }
-interface CataloguePayload {
-  data: { records: CatalogueHit[] }
+/** Fields every search payload carries, whatever the source. */
+interface BnfSearchCommon {
   pagination: BnfSearchPagination
+  /** The CQL actually sent — provenance for the buffer and the UI. */
+  executed_cql?: string
+  endpoint?: string
+  collapsing?: boolean
+  /** Present when the endpoint refused part of the query; explains a zero. */
+  diagnostics?: BnfDiagnostic[]
+}
+interface GallicaPayload extends BnfSearchCommon {
+  data: { results: GallicaHit[] }
+}
+interface CataloguePayload extends BnfSearchCommon {
+  data: { records: CatalogueHit[] }
 }
 
 /**
@@ -602,6 +616,33 @@ interface ZeroResultDiagnostic {
 }
 
 /**
+ * The `zero_result` block for a zero the BnF REFUSED, or null when it did not.
+ *
+ * Null is the signal to fall through to `zeroResultDiagnostic`'s probe, and the
+ * distinction is the whole point: probing a refused query re-runs the SAME
+ * unsupported construct, gets another zero, and reports "ce terme ne donne rien
+ * non plus" — manufacturing the false absence the probe exists to prevent.
+ *
+ * Pure so the ordering can be tested without a BnF round-trip.
+ */
+export function refusalZeroResult(diagnostics: BnfDiagnostic[]): ZeroResultDiagnostic | null {
+  if (diagnostics.length === 0) return null
+
+  const reasons = diagnostics
+    .map((d) => (d.details ? `${d.message} (${d.details})` : d.message))
+    .join(" ; ")
+
+  return {
+    meaning:
+      "La BnF a REFUSÉ une partie de cette requête — ce zéro signifie « non exprimable " +
+      `sur cet index », PAS « rien n'existe » : ${reasons}`,
+    next_step:
+      "Corrige la requête comme l'indique le diagnostic, ou passe à l'autre source " +
+      "(catalogue ↔ gallica). Ne conclus RIEN sur les collections à partir de ce zéro.",
+  }
+}
+
+/**
  * Explain a zero — never hand one back bare.
  *
  * A bare `total: 0` is the most dangerous value this tool returns. The agent
@@ -675,6 +716,7 @@ const searchSourceEnum = z.enum(["gallica", "catalogue"])
 export const corpusSearchTool = defineTool<
   z.ZodObject<{
     source: typeof searchSourceEnum
+    cql: z.ZodOptional<z.ZodString>
     query: z.ZodOptional<z.ZodString>
     title: z.ZodOptional<z.ZodString>
     creator: z.ZodOptional<z.ZodString>
@@ -709,6 +751,18 @@ export const corpusSearchTool = defineTool<
     source: searchSourceEnum.describe(
       'Which BnF index: "gallica" (digitised full text) or "catalogue" (bibliographic).',
     ),
+    cql: z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .describe(
+        "Raw CQL, for what the simple criteria cannot express: proximity " +
+          '(text all "a" prox/unit=word/distance=3 "b"), date ranges, or/not, ' +
+          'grouping, a shelfmark (bib.cote adj "RES P-YF-3"). Overrides the other ' +
+          "criteria when given. Validated before it is sent: an unsupported " +
+          "construct comes back as a list of problems to fix, never as a silent zero.",
+      ),
     query: z.string().trim().min(1).optional().describe("Free-text search terms."),
     title: z.string().trim().min(1).optional().describe("Match on title."),
     creator: z
@@ -750,7 +804,7 @@ export const corpusSearchTool = defineTool<
   handler: async (input, ctx) => {
     // At least one search term (kept out of the Zod schema so the failure is a
     // clean tool result the agent can react to, not a hard validation throw).
-    if (!input.query && !input.title && !input.creator && !input.date) {
+    if (!input.cql && !input.query && !input.title && !input.creator && !input.date) {
       return {
         success: false,
         error: "Fournissez au moins un critère de recherche : query, title, creator ou date.",
@@ -779,18 +833,30 @@ export const corpusSearchTool = defineTool<
       start_record: startRecord,
       maximum_records: pageSize,
     }
-    if (input.query) common.query = input.query
-    if (input.title) common.title = input.title
-    if (input.date) common.date = input.date
-    if (input.language) common.language = input.language
+    // `cql` is exclusive: mixing it with the simple criteria would AND two
+    // queries the librarian never asked to combine.
+    if (input.cql) common.cql = input.cql
+    else if (input.query) common.query = input.query
+    if (!input.cql) {
+      if (input.title) common.title = input.title
+      if (input.date) common.date = input.date
+      if (input.language) common.language = input.language
+    }
 
     let candidates: BufferCandidateInput[]
     let pagination: BnfSearchPagination
+    // Provenance: what was actually run, so the librarian can see and correct it.
+    let executedCql: string | undefined
+    let endpoint: string | undefined
+    let collapsing: boolean | undefined
+    let diagnostics: BnfDiagnostic[] = []
     try {
       if (input.source === "gallica") {
         const args = { ...common }
-        if (input.creator) args.creator = input.creator
-        if (input.doc_type) args.doc_type = input.doc_type
+        if (!input.cql) {
+          if (input.creator) args.creator = input.creator
+          if (input.doc_type) args.doc_type = input.doc_type
+        }
         const payload = await callBnfTool<GallicaPayload>(
           mcpEnv.BNF_MCP_URL,
           mcpEnv.BNF_MCP_TOKEN,
@@ -799,6 +865,10 @@ export const corpusSearchTool = defineTool<
           ctx.signal,
         )
         pagination = payload.pagination
+        executedCql = payload.executed_cql
+        endpoint = payload.endpoint
+        collapsing = payload.collapsing
+        diagnostics = payload.diagnostics ?? []
         // `callBnfTool` has already rejected the `{success:false}` envelope, so a
         // payload reaching here and still missing its result list is a contract
         // breach, not an empty search — say so rather than staging nothing.
@@ -822,7 +892,7 @@ export const corpusSearchTool = defineTool<
         })
       } else {
         const args = { ...common }
-        if (input.creator) args.author = input.creator
+        if (!input.cql && input.creator) args.author = input.creator
         const payload = await callBnfTool<CataloguePayload>(
           mcpEnv.BNF_MCP_URL,
           mcpEnv.BNF_MCP_TOKEN,
@@ -831,6 +901,10 @@ export const corpusSearchTool = defineTool<
           ctx.signal,
         )
         pagination = payload.pagination
+        executedCql = payload.executed_cql
+        endpoint = payload.endpoint
+        collapsing = payload.collapsing
+        diagnostics = payload.diagnostics ?? []
         // See the gallica branch: a successful payload without its record list
         // is a contract breach, not an empty search.
         if (!Array.isArray(payload.data?.records)) {
@@ -863,6 +937,20 @@ export const corpusSearchTool = defineTool<
       // inferred from the presence of an `error` key, because several handlers
       // return `{ error }` for expected states — rag_* before ingestion,
       // doc_get on an ARK outside the corpus — which must NOT flare the lanes.
+      // A refused query is not a failure: nothing broke, the CQL was simply not
+      // expressible on that index and the MCP declined to send it. Hand the
+      // agent the specific fixes so it can correct itself inside the turn —
+      // flattening this into "la recherche a échoué" would teach it nothing.
+      if (err instanceof BnfMcpQueryRefusedError) {
+        return {
+          success: false,
+          refused: true,
+          error:
+            "Cette requête n'est pas exprimable sur cet index : elle n'a PAS été envoyée. " +
+            "Ce n'est pas un résultat vide — corrige la requête et relance.",
+          problems: err.problems,
+        }
+      }
       const message = err instanceof BnfMcpError ? err.message : String(err)
       return { success: false, error: `La recherche BnF a échoué : ${message}` }
     }
@@ -871,20 +959,42 @@ export const corpusSearchTool = defineTool<
       projectId,
       sessionId: ctx.appSessionId,
       originTool: AGENT_TOOLS.corpusSearch,
-      originQuery: input.query ?? input.title ?? input.creator ?? input.date ?? null,
+      // The EXECUTED CQL, not the agent's input: it is what the librarian needs
+      // to judge a result set, and the only form that can be re-run verbatim.
+      // Falls back to the raw criteria when talking to a pre-0.4.0 MCP.
+      originQuery:
+        executedCql ?? input.cql ?? input.query ?? input.title ?? input.creator ?? input.date ?? null,
       candidates,
     })
 
     const buffered = await emitBuffer(ctx, projectId, "added", registered.added)
 
     // Never return a bare zero — see zeroResultDiagnostic.
+    //
+    // ORDER MATTERS. There are two different zeros and only one of them is
+    // worth probing:
+    //
+    //   1. The BnF REFUSED part of the query and said so in `diagnostics`
+    //      (mcp-bnf >= 0.4.0 surfaces them). The result set is empty because
+    //      the query was not expressible, not because the fonds is. Probing a
+    //      narrower term here would re-run the SAME unsupported construct, get
+    //      another zero, and report "ce terme ne donne rien non plus" —
+    //      manufacturing exactly the false absence this guard exists to stop.
+    //   2. No diagnostic: the query ran and genuinely matched nothing, usually
+    //      because `all` requires every word in one record. That is what the
+    //      distinctive-term probe is for.
     const zeroResult =
       pagination.total === 0
-        ? await zeroResultDiagnostic(mcpEnv, input.source, input.query, ctx.signal)
+        ? (refusalZeroResult(diagnostics) ??
+          (await zeroResultDiagnostic(mcpEnv, input.source, input.query, ctx.signal)))
         : null
 
     return {
       source: input.source,
+      ...(executedCql !== undefined ? { executed_cql: executedCql } : {}),
+      ...(endpoint !== undefined ? { endpoint } : {}),
+      ...(collapsing !== undefined ? { collapsing } : {}),
+      ...(diagnostics.length > 0 ? { diagnostics } : {}),
       total: pagination.total,
       ...(zeroResult !== null ? { zero_result: zeroResult } : {}),
       found: candidates.length,

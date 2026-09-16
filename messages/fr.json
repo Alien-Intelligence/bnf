@@ -280,7 +280,8 @@
       "clearConfirmTitle": "Vider le tampon ?",
       "clearConfirmBody": "Les {count} candidat(s) rassemblé(s) seront écartés. Le corpus n'est pas affecté.",
       "clearConfirmCancel": "Annuler",
-      "clearConfirmOk": "Vider"
+      "clearConfirmOk": "Vider",
+      "foundBy": "Trouvé par la recherche : {query}"
     },
     "export": {
       "label": "Exporter (CSV)",

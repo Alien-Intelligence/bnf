@@ -127,6 +127,7 @@ export function DialogBuffer({ open, onOpenChange, projectId }: Props) {
                   noTitle={t("noTitle")}
                   discardLabel={t("discard")}
                   disabled={isBusy || discard.isPending}
+                  foundByLabel={(query) => t("foundBy", { query })}
                   onDiscard={() => discard.mutate({ arks: [row.ark] })}
                 />
               ))}
@@ -202,16 +203,31 @@ interface RowProps {
   row: BufferRow
   noTitle: string
   discardLabel: string
+  foundByLabel: (query: string) => string
   disabled: boolean
   onDiscard: () => void
 }
 
-function CandidateRow({ row, noTitle, discardLabel, disabled, onDiscard }: RowProps) {
+function CandidateRow({
+  row,
+  noTitle,
+  discardLabel,
+  foundByLabel,
+  disabled,
+  onDiscard,
+}: RowProps) {
   const meta = [row.year?.toString(), row.docType].filter(Boolean).join(" · ")
+  // The query that surfaced this candidate — CQL once the agent used it. A
+  // buffer mixes results from many searches, so provenance belongs per row, and
+  // a librarian reads CQL faster than we could paraphrase it. Kept to the title
+  // attribute so 300 candidates stay scannable.
+  const foundBy = row.originQuery ? foundByLabel(row.originQuery) : undefined
   return (
     <div className="group flex items-center gap-2 rounded px-1.5 py-1 text-sm hover:bg-muted/50">
       <div className="min-w-0 flex-1">
-        <p className="truncate">{row.title ?? noTitle}</p>
+        <p className="truncate" title={foundBy}>
+          {row.title ?? noTitle}
+        </p>
         {meta ? <p className="truncate text-xs text-muted-foreground">{meta}</p> : null}
       </div>
       <button

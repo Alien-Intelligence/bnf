@@ -16,7 +16,12 @@ import "server-only"
 
 import { BNF_MCP_TIMEOUT_MS } from "@/lib/constants"
 import { withTimeout } from "./abort"
-import { BnfMcpAuthError, BnfMcpError, BnfMcpRateLimitError } from "./errors"
+import {
+  BnfMcpAuthError,
+  BnfMcpError,
+  BnfMcpQueryRefusedError,
+  BnfMcpRateLimitError,
+} from "./errors"
 
 interface JsonRpcOk<T> {
   jsonrpc: "2.0"
@@ -51,6 +56,9 @@ interface McpFailureEnvelope {
   error?: unknown
   status_code?: unknown
   context?: unknown
+  // Present when the MCP VALIDATED the query and declined to send it — each
+  // entry names one thing to fix. No upstream call happened.
+  problems?: unknown
 }
 
 function isFailureEnvelope(payload: unknown): payload is McpFailureEnvelope {
@@ -90,6 +98,14 @@ function softFailureError(envelope: McpFailureEnvelope, toolName: string): BnfMc
         ? `HTTP ${status}`
         : "tool reported failure"
   const message = `MCP ${toolName}: ${detail}`
+
+  // A refusal carries `problems` and no status: the query never left the MCP.
+  // Surfaced as its own type so the caller can hand the agent something it can
+  // act on, rather than a generic "search failed".
+  const problems = Array.isArray(envelope.problems)
+    ? envelope.problems.filter((p): p is string => typeof p === "string")
+    : []
+  if (problems.length > 0) return new BnfMcpQueryRefusedError(message, problems)
 
   if (status === 401 || status === 403) return new BnfMcpAuthError(message)
   if (status === 429) return new BnfMcpRateLimitError(message)
