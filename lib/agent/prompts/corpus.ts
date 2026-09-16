@@ -2,7 +2,12 @@ import "server-only"
 import type { Project } from "@/lib/generated/prisma/client"
 import type { AppLocale } from "@/i18n/routing"
 import { renderSharedPreamble, type MemorySnapshot } from "./shared"
-import { BNF_CATALOGUE_GUIDE, BNF_PERIODICAL_GUIDE, BNF_SPARQL_GUIDE } from "./bnf-knowledge"
+import {
+  BNF_CATALOGUE_GUIDE,
+  BNF_COLLECTIONS_GUIDE,
+  BNF_PERIODICAL_GUIDE,
+  BNF_SPARQL_GUIDE,
+} from "./bnf-knowledge"
 
 type CorpusSnapshot = {
   versionSeq: number
@@ -131,7 +136,10 @@ Les bibliothécaires de la BnF écrivent du CQL tous les jours dans la recherche
 | cote d'un document numérisé | gallica | \`dc.source all "RES P-YF-3"\` |
 | mots dans le CORPS du texte | gallica | \`text\` |
 | mots partout (texte + métadonnées) | gallica | \`gallica\` |
+| mots dans les MÉTADONNÉES seules | gallica | \`metadata\` |
 | table des matières | gallica | \`toc\` |
+| genre documentaire (annuaires, catalogues…) | gallica | \`dc.description adj "Annuaires"\` |
+| genre documentaire | catalogue | \`bib.genre adj "Annuaires"\` |
 | période | gallica | \`dc.date >= "1850" and dc.date <= "1860"\` |
 | période (catalogue) | catalogue | \`bib.publicationdate >= "1850" and bib.publicationdate <= "1860"\` |
 | thème Dewey | gallica | \`dewey any "8"\` |
@@ -149,6 +157,21 @@ Exemple — « je cherche des monographies où on parle du sentiment amoureux »
 \`\`\`
 cql: text all "sentiment" prox/unit=word/distance=3 "amoureux" and dc.type all "monographie"
 \`\`\`
+
+### Chercher par GENRE documentaire (annuaires, répertoires, catalogues…)
+
+Quand le bibliothécaire demande une **nature de document** — « les annuaires et répertoires », « les catalogues d'exposition », « les dictionnaires » — ce n'est ni un sujet ni un \`doc_type\`. C'est le **genre**, et il a son propre index dans chaque source :
+
+- **gallica** → \`dc.description adj "<libellé>"\`. Utilise \`adj\`, jamais \`all\` : \`dc.description\` contient aussi de la prose, et \`all\` y accroche des mots isolés.
+- **catalogue** → \`bib.genre adj "<libellé>"\` (ou \`any\` pour en viser plusieurs d'un coup).
+
+*Mesuré : \`dc.description adj "Annuaires"\` → 2 694 ; \`bib.genre any "Annuaires Répertoires"\` → 16 663 ; \`dc.description adj "Catalogues"\` → 7 827.*
+
+Les libellés viennent du vocabulaire Rameau « genre-forme ». Ceux-ci sont réels et utilisables tels quels : *Annuaires, Annuaires téléphoniques, Répertoires, Répertoires géographiques, Catalogues, Catalogues collectifs, Catalogues commerciaux, Catalogues d'exposition, Catalogues d'éditeurs, Catalogues de vente, Catalogues raisonnés, Dictionnaires, Dictionnaires biographiques.* **N'invente pas d'autre libellé** : un libellé inexistant renvoie zéro sans le signaler.
+
+Trois valeurs de \`dc.description\` ne sont PAS des genres mais des indicateurs techniques : \`Avec mode texte\` (le document a une couche OCR), \`Contient une table des matières\`, \`Numérisé par le partenaire\`.
+
+**Piège \`dc.type\`.** Une notice Gallica peut AFFICHER un type qui n'est pas cherchable : \`Annuaire\`, \`estampe\`, \`dessin\`, \`photographie\`, \`Genre musical : sonate\` apparaissent dans les réponses, mais \`dc.type all "Annuaire"\` renvoie **0**. L'index ne connaît que \`monographie\`, \`fascicule\`, \`image\`, \`objet\`, \`manuscrit\`, \`carte\`, \`partition\`, \`sonore\`. Si tu vois un type hors de cette liste, passe par le genre ci-dessus — et ne conclus jamais d'un zéro sur \`dc.type\` que la BnF n'a pas ce type de document.
 
 **Règles de syntaxe** : les booléens \`and\` / \`or\` / \`not\` s'écrivent en **minuscules** ; \`unit=word\` est la seule unité de proximité qui fonctionne ; une seule proximité par requête ; les noms d'index sont sensibles à la casse. Une requête mal formée est **refusée avant d'être envoyée**, avec la liste de ce qu'il faut corriger.
 
@@ -245,6 +268,10 @@ Quand l'utilisateur demande une vue d'ensemble ou que c'est utile :
 - Synthétise en termes humains : quelles périodes, quels types, quelles langues, quelle densité historique.
 - Signale les lacunes évidentes si elles sont pertinentes pour le sujet du projet.
 - Ne fabrique jamais de statistiques. Tout chiffre vient des outils.
+
+---
+
+${BNF_COLLECTIONS_GUIDE}
 
 ---
 
