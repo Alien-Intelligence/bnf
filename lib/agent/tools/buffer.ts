@@ -31,7 +31,7 @@ import { callBnfTool } from "@/lib/mcp/call"
 import { BnfMcpError, BnfMcpQueryRefusedError } from "@/lib/mcp/errors"
 import { parseBnfDate } from "@/lib/mcp/normalize"
 import { BNF_SEARCH_TOOL } from "@/lib/mcp/tools"
-import { GALLICA_DOC_TYPE, sourceFromArk } from "@/lib/mcp/vocab"
+import { GALLICA_SEARCHABLE_DOC_TYPE, sourceFromArk } from "@/lib/mcp/vocab"
 import { BufferQueries, type BufferFilterSet } from "@/models/buffer/queries"
 import { BufferService } from "@/models/buffer/service"
 import { arkSchema, type BufferCandidateInput } from "@/models/buffer/types"
@@ -795,9 +795,11 @@ export const corpusSearchTool = defineTool<
       .min(1)
       .optional()
       .describe(
-        // The nine codes come from GALLICA_DOC_TYPE — restating them here would be a
-        // second source of truth that drifts silently when BnF changes its typedoc set.
-        `Gallica only — one of: ${Object.keys(GALLICA_DOC_TYPE).join(", ")}. ` +
+        // From GALLICA_SEARCHABLE_DOC_TYPE, NOT the response map: the values Gallica
+        // labels records with are a superset of the ones it accepts as a filter, and
+        // offering a dead one (typeAffiche, son, video) returns 0 — which the agent
+        // reads as absence.
+        `Gallica only — one of: ${GALLICA_SEARCHABLE_DOC_TYPE.join(", ")}. ` +
           "Ignored for the catalogue. " +
           "This is the strongest precision lever Gallica has: it splits located " +
           'documents ("monographie" and the other item types) from periodical ' +
