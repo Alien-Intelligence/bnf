@@ -746,6 +746,18 @@ export const corpusSearchTool = defineTool<
     "alone and restrict with date / language / doc_type. A `total` of 0 means " +
     '"nothing under these terms in this index" — never that the BnF holds nothing; ' +
     "when it happens, read the returned `zero_result` block and follow its next_step. " +
+    "THE OPPOSITE PROBLEM IS THE COMMON ONE. A Gallica topic search usually returns " +
+    "thousands of hits that are mostly PERIODICAL COLLECTIONS — one record standing " +
+    "for a title's entire run, matching because the terms appear somewhere across " +
+    "decades of issues. That is why a perfume query surfaces L'Est républicain (1889). " +
+    "Narrowing the words will not fix it, and neither will `date`: a run covering " +
+    "1861-1946 satisfies any year inside it. Only `doc_type` separates the two lanes. " +
+    'Want readable documents? doc_type: "monographie" (measured: 13 of 20 hits were ' +
+    "collections, 0 of 20 after). Want the press — publicité, comptes rendus, " +
+    'réception? Keep the periodical lane, but treat a "fascicule" hit as a TITLE to ' +
+    "drill into with bnf__bnf_get_periodical_issues, never as a document you found. " +
+    "For a named person use `creator`, not `query`: free text gave 1131 hits with none " +
+    "on target where the creator index gave 23 that were all correct. " +
     "Curate with buffer_remove_by_filter, then buffer_commit to add them to the corpus.",
   inputSchema: z.object({
     source: searchSourceEnum.describe(
@@ -784,7 +796,12 @@ export const corpusSearchTool = defineTool<
       .optional()
       .describe(
         "Gallica only — one of: monographie, image, carte, manuscrit, fascicule, " +
-          "partition, video, son, typeAffiche. Ignored for the catalogue.",
+          "partition, video, son, typeAffiche. Ignored for the catalogue. " +
+          "This is the strongest precision lever Gallica has: it splits located " +
+          'documents ("monographie" and the other item types) from periodical ' +
+          'COLLECTION records ("fascicule"), which is where nearly all apparent ' +
+          "volume — and nearly all noise — comes from. Reach for it before you start " +
+          "rewording the query.",
       ),
     language: z.string().trim().min(1).optional().describe("Language code to restrict to."),
     start_record: z
