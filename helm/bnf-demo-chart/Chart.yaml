@@ -1,6 +1,6 @@
 apiVersion: v2
 name: bnf-demo
-version: 0.15.2
+version: 0.16.2
 description: BnF Corpus Research — Alien Intelligence × BnF demo (Next.js app + ingest worker + BnF broker + Postgres)
 type: application
 # 0.9.0 — worker+broker hardening pass 2: pg-boss sliding-window fetch (the ~600/min
@@ -32,4 +32,13 @@ type: application
 # the recorded image tags up to live (app 0.11.0, worker 0.10.1) — they had drifted below
 # prod, so a plain helm upgrade would have downgraded them; deploying now is a no-op on
 # the app/worker images and only rolls the broker (2Gi) + worker configmap.
-appVersion: "0.15.2"
+# 0.16.2 — app-only: the CQL/search-honesty release the librarians have been waiting
+# for. corpus_search speaks the full validated CQL surface and echoes the executed
+# query; a zero result now comes back as a `zero_result` diagnostic with a contradicting
+# probe count instead of a bare 0 the agent reads as "does not exist at the BnF"; the
+# doc_type enum is cut to the eight values Gallica actually accepts as a filter (the
+# three dead ones returned zero forever); and the prompts gained the genre indexes
+# (bib.genre / dc.description) plus BNF_COLLECTIONS_GUIDE. Requires mcp-bnf >= 0.5.1,
+# which has been live on prod since 2026-09-16. worker and broker sources are unchanged
+# since 0.15.2 — their images are rebuilt only to keep the three tags in lock-step.
+appVersion: "0.16.2"
