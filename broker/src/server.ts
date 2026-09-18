@@ -201,7 +201,15 @@ async function handleFetch(req: IncomingMessage, res: ServerResponse): Promise<v
   // Truncation guard — see body.ts for the incident this prevents. A mismatch
   // between the buffered body and the upstream's declared content-length is a
   // transport failure the caller must retry (502), never a body to mirror.
-  const truncated = truncatedBodyError(bytes.length, upstream.headers.get("content-length"));
+  // `content-encoding` must be passed too: undici decodes the body before
+  // arrayBuffer() resolves, so on a compressed response the buffer is the
+  // decoded size while content-length is the encoded size. Without it the guard
+  // read every gzip'd upstream as truncated — see body.ts.
+  const truncated = truncatedBodyError(
+    bytes.length,
+    upstream.headers.get("content-length"),
+    upstream.headers.get("content-encoding"),
+  );
   if (truncated) {
     log(502, "truncated_upstream", waitMs, fetchMs, retryAfter);
     return send(res, 502, "text/plain", truncated);
