@@ -46,5 +46,9 @@ type: application
 # arrayBuffer() resolves, so every gzip'd upstream 502'd — oai.bnf.fr (the ungated
 # OAI-PMH metadata host) declares 1341 and decodes to 3800, which took the worker's
 # OAI metadata fallback lane down from 0.15.2. App image stays 0.16.2, worker stays
-# 0.16.2; only the broker rolls.
+# 0.16.2 — only the broker image changes. Note that all three pods still ROLL: the
+# chart version reaches the ConfigMap through bnf-demo.labels (helm.sh/chart), and
+# deployment.yaml hashes that ConfigMap into its checksum/config annotation, so any
+# version bump here restarts the app and worker too. An image-scoped release is not
+# a restart-scoped one.
 appVersion: "0.16.2"
