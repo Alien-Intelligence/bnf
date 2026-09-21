@@ -164,6 +164,20 @@ logs before declaring success — never report "deployed" on unverified pods.
 
 ## Gotchas (learned the hard way)
 
+- **A chart version bump rolls EVERY pod, not just the image you changed.**
+  `bnf-demo.labels` puts `helm.sh/chart: bnf-demo-<version>` on the ConfigMap, and
+  `deployment.yaml` hashes that ConfigMap into `checksum/config` — so bumping
+  `Chart.yaml` restarts the app and worker even when their image tags are
+  untouched. An image-scoped release (like the broker-only 0.16.3) is still a
+  full restart; plan it as one. pg-boss row locks + the reconciler make the worker
+  restart safe, and the app is stateless, so this costs seconds of downtime, not
+  correctness.
+- **A plain `helm --dry-run` renders FRESH random secrets.** `--dry-run` disables
+  `lookup`, so `postgres-secret.yaml` and `secret-app.yaml` generate new
+  passwords/`BETTER_AUTH_SECRET`/`JOB_CALLBACK_SECRET` in the output — it looks
+  like the upgrade is about to rotate them. It isn't; a real upgrade runs `lookup`
+  and preserves them. Use `--dry-run=server` when you want to verify preservation,
+  and diff the rendered secret against the live one before a risky upgrade.
 - **Helm `failed` on `.spec.refreshInterval` conflict.** external-secrets
   normalizes `1h`→`1h0m0s` and owns the field; the chart already sets `1h0m0s`
   to match. If it resurfaces, keep the normalized form — don't `--force`.

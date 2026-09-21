@@ -326,7 +326,8 @@
       "clearConfirmTitle": "Clear the buffer?",
       "clearConfirmBody": "The {count} gathered candidate(s) will be discarded. The corpus is not affected.",
       "clearConfirmCancel": "Cancel",
-      "clearConfirmOk": "Clear"
+      "clearConfirmOk": "Clear",
+      "foundBy": "Found by the search: {query}"
     },
     "export": {
       "label": "Export (CSV)",

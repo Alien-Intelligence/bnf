@@ -27,8 +27,9 @@ export const MARC_TO_ISO_LANG: Record<string, string> = {
 }
 
 /**
- * Gallica doc_type enum → our canonical docType.
- * These are the 9 values the Gallica SRU actually returns (MCP contract §doc_type).
+ * Gallica doc_type → our canonical docType, for READING a record back.
+ * Tolerant by design: it keeps values the SRU may still emit on old records
+ * even where they are no longer usable as a search filter.
  */
 export const GALLICA_DOC_TYPE: Record<string, string> = {
   monographie: "book",
@@ -37,10 +38,37 @@ export const GALLICA_DOC_TYPE: Record<string, string> = {
   manuscrit: "manuscript",
   fascicule: "press",
   partition: "score",
+  objet: "object",
+  sonore: "audio",
   video: "video",
   son: "audio",
   typeAffiche: "poster",
 }
+
+/**
+ * The doc_type values that are SEARCHABLE — a strict subset of the map above,
+ * and the only list we may offer the agent.
+ *
+ * These two sets are NOT the same, and treating them as one is how three dead
+ * values survived in the tool schema. Probed live 2026-09-16 as
+ * `dc.type all "<v>"`: `typeAffiche` and `son` return 0, `video` answers HTTP
+ * 500, and `vidéo` returns 0 despite appearing in BnF's own published list —
+ * so none of them are here. An enum value that always returns zero is read by
+ * the agent as absence, which is the failure this whole change exists to stop.
+ *
+ * Kept in step with `_DOC_TYPES` in mcp-bnf (`tools/search/search_gallica.py`),
+ * which validates the value and will reject anything not on its list.
+ */
+export const GALLICA_SEARCHABLE_DOC_TYPE = [
+  "fascicule",
+  "monographie",
+  "image",
+  "objet",
+  "manuscrit",
+  "carte",
+  "partition",
+  "sonore",
+] as const
 
 /**
  * Gallica OAI-PMH typedoc set → our canonical docType.

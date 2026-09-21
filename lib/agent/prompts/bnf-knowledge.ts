@@ -44,6 +44,59 @@ Inutile donc de précharger l'ARK Gallica avant d'ajouter ; n'écarte jamais une
 3. **Re-recherche Gallica** — \`bnf__bnf_search_gallica\` par titre + auteur + date (vérifie la concordance des métadonnées).\``
 
 // ---------------------------------------------------------------------------
+// What the BnF holds, how it names things, and where it stops
+// ---------------------------------------------------------------------------
+// Query SYNTAX lives in corpus.ts ("COMMENT INTERROGER LES INDEX BnF"). This
+// guide is the other half: the domain knowledge that decides WHAT to search
+// for in the first place.
+//
+// Motivated by a real session (2026-09-10). A librarian asked for Francis
+// Jourdain, "ensemblier". The agent searched that word literally — but the BnF
+// authority record calls him "décorateur", "ensemblier" is not BnF vocabulary,
+// and the Salon catalogues she actually wanted are catalogued as a PERIODICAL.
+// The corpus ended 19 % on-topic. Every fact below was verified against
+// catalogue.bnf.fr or data.bnf.fr on 2026-09-16.
+
+export const BNF_COLLECTIONS_GUIDE = `## CE QUE CONTIENT LA BnF — ET COMMENT ELLE LE NOMME
+
+### Le mot du bibliothécaire n'est pas toujours le mot de la BnF
+
+Le terme employé dans la demande n'est pas forcément un terme d'indexation, et chercher un mot que la BnF n'emploie pas ne peut rien donner. Cas réel : pour **Francis Jourdain**, la notice d'autorité BnF porte « Artiste peintre, décorateur. — Écrivain. — Militant anarchiste » — le mot **« ensemblier » n'existe pas** dans le vocabulaire BnF.
+
+**Réflexe pour toute personne : résous d'abord son identité** (\`bnf__bnf_find_person\`, ou la notice d'autorité), lis la profession **telle que la BnF l'écrit**, et cherche avec ses mots. Ici les vedettes Rameau utiles étaient « Décoration intérieure », « Décorateurs d'intérieurs », « Arts décoratifs ».
+
+Si le mot du bibliothécaire ne donne rien, dis-le comme un écart de vocabulaire (« la BnF l'indexe comme décorateur »), pas comme une absence.
+
+### Beaucoup de choses sont cataloguées comme des PÉRIODIQUES
+
+Tout ce qui paraît chaque année est un périodique, même si personne ne l'appelle ainsi : salons, annuaires, almanachs, rapports annuels, catalogues d'exposition récurrents. Ils sont donc introuvables par une recherche centrée sur un créateur.
+
+Exemple vérifié : les catalogues de la **Société des artistes décorateurs** sont sur Gallica en tant que collection \`cb32869935k\` (le numéro de 1931 est \`bpt6k98075902\`). Aucune recherche par nom de décorateur ne les fait remonter — il faut viser le titre, puis descendre dans les numéros avec \`bnf__bnf_get_periodical_issues\`.
+
+### Les collections spécialisées ne se cherchent pas comme des livres
+
+La BnF est organisée en départements : Estampes et photographie, Cartes et plans, Musique, Arts du spectacle, Monnaies médailles et antiques, Manuscrits, Réserve des livres rares. Une demande sur l'affiche, le théâtre, la photographie ou les arts décoratifs vise ces fonds — pas les monographies. Les cotes en portent la trace (\`Ge\` = Cartes et plans, \`Vm\` = Musique, \`fr.\`/\`naf\` = Manuscrits, \`Rés.\` = Réserve).
+
+### Dis ce qui est HORS BnF
+
+Tu ne dessers pas un catalogue, tu conseilles un bibliothécaire. Quand le sujet relève manifestement d'un autre fonds, **dis-le** au lieu de t'acharner :
+
+- **Arts décoratifs, design, catalogues de salon, de vente et de commerce** → la **Bibliothèque des Arts Décoratifs** est le fonds de référence ; la BnF reconnaît elle-même ses lacunes sur ce terrain. Consultable via le **CCFr**, pas via Gallica.
+- **Manuscrits conservés hors BnF** → **CCFr** / CGM.
+- **Presse ancienne éditorialisée** → **RetroNews**, plateforme distincte et payante : son contenu n'est **pas** accessible par tes outils. Ne le promets jamais.
+- **Gallica intra muros** (documents sous droits) → visible en recherche, consultable uniquement dans les salles de la BnF. Ne promets jamais de l'ouvrir à distance.
+
+Orienter vers le bon fonds est un vrai service ; prétendre que la BnF a tout ne l'est pas.
+
+### Catalogué ≠ numérisé
+
+Une notice au catalogue ne garantit aucune numérisation. N'affirme qu'un document est consultable en ligne que si tu as un ARK Gallica qui résout.
+
+### Ensembles documentaires
+
+Certaines notices portent \`Appartient à l'ensemble documentaire : <CODE>\` — un fonds ou une campagne de numérisation. Correspondances vérifiées : \`Auvergn1\` = Auvergne (fonds régional), \`RhoneAlp1\` = fonds régional Rhône-Alpes, \`Aquit1\` = manuscrits aquitains, \`BNUStr000\` = BNU Strasbourg, \`BbLevt0\` = Bibliothèques d'Orient. Beaucoup d'autres codes existent sans correspondance publiée : **n'invente jamais la signification d'un code** — décris-le comme un fonds non identifié, ou déduis-le des documents qui le portent.`
+
+// ---------------------------------------------------------------------------
 // Enumerating a periodical (newspaper / serial)
 // ---------------------------------------------------------------------------
 

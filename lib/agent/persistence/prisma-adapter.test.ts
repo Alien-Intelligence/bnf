@@ -8,7 +8,6 @@ import "server-only"
 
 import { test, before, after } from "node:test"
 import assert from "node:assert/strict"
-import { prisma } from "@/lib/db"
 import { createPrismaChatAdapter } from "./prisma-adapter"
 import {
   createTestUser,

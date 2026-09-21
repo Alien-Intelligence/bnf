@@ -1,6 +1,6 @@
 {
   "name": "bnf",
-  "version": "0.15.2",
+  "version": "0.16.2",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -13,7 +13,8 @@
     "e2e:spawn": "node --import tsx --conditions react-server --env-file-if-exists=.env.local scripts/e2e-spawn.ts",
     "e2e:sharing": "node --import tsx --conditions react-server --env-file-if-exists=.env.local scripts/golden-sharing.ts",
     "smoke": "tsx --env-file-if-exists .env.local --conditions react-server scripts/smoke-test.ts",
-    "fix:doc-types": "tsx --env-file-if-exists .env.local --conditions react-server scripts/fix-doc-types.ts"
+    "fix:doc-types": "tsx --env-file-if-exists .env.local --conditions react-server scripts/fix-doc-types.ts",
+    "e2e:sessions": "node --import tsx --conditions react-server --env-file-if-exists=.env.local scripts/e2e-sessions-2026-09-15.ts"
   },
   "dependencies": {
     "@alien/chat-sdk": "npm:@alien_intelligence/chat-sdk@^0.11.0",

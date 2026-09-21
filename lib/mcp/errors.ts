@@ -29,6 +29,26 @@ export class BnfMcpRateLimitError extends BnfMcpError {
   }
 }
 
+/**
+ * The MCP refused to RUN the query — it was validated against what the endpoint
+ * supports and never sent upstream.
+ *
+ * Distinct from every other failure here because nothing went wrong: the query
+ * was simply not expressible, and `problems` says how to fix it. Terminal as a
+ * transport concern (retrying the same string changes nothing) but recoverable
+ * by the agent, which is why the problems travel with the error instead of
+ * being flattened into the message.
+ */
+export class BnfMcpQueryRefusedError extends BnfMcpError {
+  problems: string[]
+
+  constructor(message: string, problems: string[]) {
+    super(message)
+    this.name = "BnfMcpQueryRefusedError"
+    this.problems = problems
+  }
+}
+
 /** HTTP 404 on ARK resolve — document not found in BnF. Terminal: no retry. */
 export class BnfMcpNotFoundError extends BnfMcpError {
   constructor(m = "ARK not found") {
