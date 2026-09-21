@@ -11,7 +11,7 @@ import { parseBody } from "@/app/api/_helpers"
 import { ok, conflict, unprocessable } from "@/lib/api-response"
 import { GroupPolicy } from "@/models/groups/policy"
 import { GroupQueries } from "@/models/groups/queries"
-import { visibilityScopeFor } from "@/lib/authz/project-access"
+import { adminVisibilityScope } from "@/lib/authz/project-access"
 import { GroupService } from "@/models/groups/service"
 import { createGroupSchema } from "@/models/groups/types"
 import {
@@ -26,7 +26,7 @@ import {
 export const GET = withAuth(async (_req, user, bouncer) => {
   await bouncer.with(GroupPolicy).authorize("list")
   return ok<GroupListItem[]>(
-    await GroupQueries.listVisible(visibilityScopeFor(user)),
+    await GroupQueries.listVisible(adminVisibilityScope(user)),
   )
 })
 

@@ -15,7 +15,10 @@ import {
   isProjectOwner,
   isProjectAccess,
   projectAccessLevel,
+  personalVisibilityScope,
+  adminVisibilityScope,
 } from "./project-access"
+import { ProjectPolicy } from "@/models/projects/policy"
 import type { PolicyUser } from "@/models/users/schema"
 import type { ProjectWithShares } from "@/models/projects/schema"
 
@@ -227,4 +230,62 @@ test("an unrecognised access value in the DB grants nothing", () => {
   const p = project({ shares: [share(GROUP_A, "admin")] })
 
   assert.equal(projectAccessLevel(u, p), PROJECT_ACCESS_LEVEL.NONE)
+})
+
+// --- listing scopes ---------------------------------------------------------
+
+test("personalVisibilityScope is never widened for an admin", () => {
+  // The 0.17.0 regression: the user-facing projects list used the admin-widened
+  // scope, so every project in the instance appeared under « Partagés avec moi »
+  // — a heading asserting a share that never happened. An admin may OPEN any
+  // project (rule 2); that is not the same as every project being theirs.
+  const admin = user({ id: OWNER_ID, role: "admin", groupIds: [GROUP_A] })
+
+  const scope = personalVisibilityScope(admin)
+  assert.equal(scope.unrestricted, false)
+  assert.deepEqual(scope, {
+    unrestricted: false,
+    userId: OWNER_ID,
+    groupIds: [GROUP_A],
+  })
+})
+
+test("personalVisibilityScope carries the inputs rules 1, 4 and 5 read", () => {
+  const member = user({ id: OTHER_ID, groupIds: [GROUP_A, GROUP_B] })
+
+  assert.deepEqual(personalVisibilityScope(member), {
+    unrestricted: false,
+    userId: OTHER_ID,
+    groupIds: [GROUP_A, GROUP_B],
+  })
+})
+
+test("adminVisibilityScope is unrestricted for an admin only", () => {
+  const admin = user({ id: OWNER_ID, role: "admin" })
+  assert.deepEqual(adminVisibilityScope(admin), { unrestricted: true })
+
+  // A non-admin reaching an admin listing still sees only their own rows, so a
+  // forgotten authorize() degrades to the personal list rather than leaking the
+  // whole table.
+  const member = user({ id: OTHER_ID, groupIds: [GROUP_A] })
+  assert.deepEqual(adminVisibilityScope(member), {
+    unrestricted: false,
+    userId: OTHER_ID,
+    groupIds: [GROUP_A],
+  })
+})
+
+test("ProjectPolicy.listAll is admin-only and distinct from view", () => {
+  const admin = user({ id: "someone", role: "admin" })
+  const member = user({ id: "someone-else" })
+  const foreign = project({ ownerId: "a-third-party" })
+
+  assert.equal(new ProjectPolicy(admin).listAll(), true)
+  assert.equal(new ProjectPolicy(member).listAll(), false)
+
+  // The distinction the regression missed: an admin may open a project they do
+  // not own, while a member may not — but "may open it" never implied "list
+  // them all".
+  assert.equal(new ProjectPolicy(admin).view(foreign), true)
+  assert.equal(new ProjectPolicy(member).view(foreign), false)
 })

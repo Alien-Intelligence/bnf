@@ -20,6 +20,18 @@ export class ProjectPolicy {
     return this.user.role !== USER_ROLE.GUEST
   }
 
+  /**
+   * See every project in the instance — the admin console's oversight table.
+   *
+   * Not project-scoped, so it carries its own explicit admin check rather than
+   * delegating to the access table. Deliberately separate from `view`: an admin
+   * may open any single project (rule 2), but listing them all is a different
+   * question and belongs only to the console. See sharing.md.
+   */
+  listAll(): boolean {
+    return this.user.role === USER_ROLE.ADMIN
+  }
+
   edit(p: ProjectWithShares): boolean {
     return canWriteProject(this.user, p)
   }

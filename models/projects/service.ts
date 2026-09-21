@@ -4,7 +4,8 @@ import { prisma } from "@/lib/db"
 import {
   PROJECT_ACCESS_LEVEL,
   projectAccessLevel,
-  visibilityScopeFor,
+  adminVisibilityScope,
+  personalVisibilityScope,
   type ProjectAccess,
 } from "@/lib/authz/project-access"
 import { canReachCorpus } from "@/lib/authz/corpus-source"
@@ -170,21 +171,48 @@ export class ProjectService {
 }
 
 /**
- * The projects-list payload: the rows the user may see, each decorated with
- * what they may do with it and the corpus stats its tile shows.
+ * A user's own projects list: what they own, plus what has genuinely been shared
+ * with them. Each row is decorated with what they may do with it and the corpus
+ * stats its tile shows.
  *
- * The decoration lives here rather than in `queries.ts` because access level
- * and corpus reachability are decisions — `projectAccessLevel` and
- * `canReachCorpus` are the two predicates, and queries.ts holds no
- * authorization logic (playbook/models.md). A derived project's stats come from
- * the source's pointers, and a revoked one reports nothing at all rather than
- * the numbers it used to have.
+ * Scoped with `personalVisibilityScope`, so an **admin sees their own projects
+ * here, not everyone's** — org-wide oversight is `listAllProjects` and lives in
+ * the admin console. The decoration lives here rather than in `queries.ts`
+ * because access level and corpus reachability are decisions
+ * (playbook/models.md). A derived project's stats come from the source's
+ * pointers, and a revoked one reports nothing at all rather than the numbers it
+ * used to have.
  */
 export async function listProjectsForUser(
   user: PolicyUser,
 ): Promise<ProjectListItem[]> {
-  const rows = await ProjectQueries.listVisibleRows(visibilityScopeFor(user))
+  return decorateProjectRows(
+    user,
+    await ProjectQueries.listVisibleRows(personalVisibilityScope(user)),
+  )
+}
 
+/**
+ * Every project in the instance, for the admin console's oversight table.
+ *
+ * Authorize with `ProjectPolicy.listAll` before calling. A non-admin who
+ * reaches it gets their own rows rather than the whole table, so a missing
+ * authorize() degrades to the personal list instead of leaking everything.
+ */
+export async function listAllProjects(
+  user: PolicyUser,
+): Promise<ProjectListItem[]> {
+  return decorateProjectRows(
+    user,
+    await ProjectQueries.listVisibleRows(adminVisibilityScope(user)),
+  )
+}
+
+/** Shared decoration for both listings — see `listProjectsForUser`. */
+async function decorateProjectRows(
+  user: PolicyUser,
+  rows: Awaited<ReturnType<typeof ProjectQueries.listVisibleRows>>,
+): Promise<ProjectListItem[]> {
   const headIds = [
     ...new Set(
       rows

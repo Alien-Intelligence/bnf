@@ -112,9 +112,7 @@ export function isProjectOwner(
  * `projectAccessLevel` answers "may this user reach THIS project", one row at a
  * time. A list has to answer it for rows it has not loaded yet, so the same
  * decision has to be expressible as a filter — and that filter must be derived
- * HERE, not hand-written into a `where` clause somewhere else. `unrestricted`
- * is rule 2 (admin); the identity form carries exactly the inputs rules 1, 4
- * and 5 read.
+ * HERE, not hand-written into a `where` clause somewhere else.
  *
  * Queries take this value and apply it. They never see the user, so they cannot
  * re-derive the answer — which is the whole point.
@@ -123,7 +121,30 @@ export type VisibilityScope =
   | { unrestricted: true }
   | { unrestricted: false; userId: string; groupIds: string[] }
 
-export function visibilityScopeFor(user: PolicyUser): VisibilityScope {
-  if (user.role === USER_ROLE.ADMIN) return { unrestricted: true }
+/**
+ * What belongs to a user personally: projects they own, projects shared into one
+ * of their groups, and public ones — rules 1, 4 and 5 of the access table.
+ *
+ * **Deliberately not widened for an admin**, and this is the one place in the
+ * codebase where the admin bypass does not apply. Admin is rule 2 of the access
+ * table because an admin may *open* any project; it does not follow that every
+ * project belongs on their home screen. 0.17.0 conflated the two and listed
+ * every researcher's private workspace under « Partagés avec moi » — a heading
+ * asserting a share that never happened. Org-wide oversight is a different
+ * question, asked in the admin console (`adminVisibilityScope`).
+ */
+export function personalVisibilityScope(user: PolicyUser): VisibilityScope {
   return { unrestricted: false, userId: user.id, groupIds: user.groupIds }
+}
+
+/**
+ * Everything an admin may administer — unrestricted for them, and identical to
+ * `personalVisibilityScope` for everyone else, so a non-admin reaching an admin
+ * listing still sees only their own rows rather than the whole table.
+ *
+ * For the admin console only. A user-facing list wants the personal scope.
+ */
+export function adminVisibilityScope(user: PolicyUser): VisibilityScope {
+  if (user.role === USER_ROLE.ADMIN) return { unrestricted: true }
+  return personalVisibilityScope(user)
 }

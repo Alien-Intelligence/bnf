@@ -206,6 +206,35 @@ asking who *else* can reach the data once a legitimate grant exists.
 `scripts/golden-sharing.ts` §6b now pins it with a third account that is
 granted nothing.
 
+## "May I open it" is not "is it mine" ⛔
+
+The access table answers one question: may this user reach THIS project. Admin
+is rule 2, so an admin may open anything. A **listing** asks a different
+question, and the two must not share an answer:
+
+```ts
+// The user's own workspace — own + real shares. NEVER widened by role.
+personalVisibilityScope(user)
+
+// The admin console — unrestricted for an admin, personal for everyone else.
+adminVisibilityScope(user)
+```
+
+⛔ **Forbidden**: using the admin-widened scope for a user-facing list. 0.17.0
+did, and every project in the instance appeared on the admin's home screen
+under « Partagés avec moi » — a heading asserting a share that had never
+happened. No access was granted that the admin did not already have; what broke
+was the claim the UI made about *why* they could see it.
+
+Org-wide oversight is a real need and has its own home: `/admin/projects`,
+gated by `ProjectPolicy.listAll` (its own explicit admin check, because listing
+everything is not project-scoped) and labelled so the admin knows why those rows
+are there.
+
+The general shape: when a role widens what someone can *reach*, check separately
+what it should widen about what they are *shown*. Those are different questions
+and the honest answer is usually different.
+
 ## Deletion
 
 `Project.corpusSourceId` is `onDelete: Restrict`. A source cannot be deleted
@@ -227,6 +256,10 @@ chain stays monotonic. No new machinery — see
 ## Forbidden patterns
 
 ```ts
+// ❌ The admin-widened scope on a user-facing list
+const rows = await ProjectQueries.listVisibleRows(adminVisibilityScope(user))
+// → personalVisibilityScope(user); admin oversight lives in /admin/projects
+
 // ❌ Re-deriving access instead of asking the one predicate
 if (project.ownerId === user.id || project.isPublic) { … }
 // → projectAccessLevel(user, project) — every rule, in one place
@@ -264,6 +297,8 @@ mutate(p) { return canWriteProject(this.user, p) }
 - [ ] A revoked grant renders its own state — never an empty result.
 - [ ] `owner`-only actions (delete, share) use `isProjectOwner`.
 - [ ] `share` also excludes derived projects — a grant is never re-grantable.
+- [ ] User-facing lists use `personalVisibilityScope` — a role widens what you
+      may reach, not what belongs to you.
 - [ ] New reach over shared data tested from an account granted **nothing**.
 
 

@@ -255,6 +255,14 @@ workspace and hands out the **source's** corpus, because the derived read path i
 gated on the workspace's pinned share, not on the caller's access to the source.
 Admin is no exception. See [playbook/sharing.md](playbook/sharing.md).
 
+### A role widens reach, not ownership ✅
+Admin resolves to `owner` in the access table, so an admin may open any project.
+That never means every project is theirs: user-facing lists use
+`personalVisibilityScope` (own + real shares, never widened by role), and
+org-wide oversight lives in the admin console behind `ProjectPolicy.listAll`.
+0.17.0 conflated the two and listed the whole instance under « Partagés avec
+moi ». See [playbook/sharing.md](playbook/sharing.md).
+
 ### French is the default locale ✅
 All user-facing strings are translation keys in `messages/fr.json` and
 `messages/en.json` — both files updated in the same commit. The agent's

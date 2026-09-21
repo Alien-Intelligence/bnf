@@ -225,6 +225,23 @@ async function main() {
   const bAfterRemoval = await b(`/api/projects/${source}/corpus`)
   check(bAfterRemoval.status === 403, "B loses access immediately → 403", String(bAfterRemoval.status))
 
+  // 10. An admin's OWN list is not the whole instance.
+  //
+  // The 0.17.0 regression: the user-facing projects list used the admin-widened
+  // scope, so every project appeared under « Partagés avec moi » — a heading
+  // asserting a share that never happened. The admin here has no share on A's
+  // project and does not own it, so it must not be in their list. That they can
+  // still OPEN it is the point of the second assertion: authorization is
+  // unchanged, only the listing is scoped.
+  console.log("\n10. an admin's own projects list is not the whole instance")
+  const adminList = await adminApi("/api/projects")
+  check(
+    !(adminList.body as { id: string }[]).some((x) => x.id === source),
+    "the admin's list excludes a project they neither own nor are shared",
+  )
+  const adminOpen = await adminApi(`/api/projects/${source}/corpus`)
+  check(adminOpen.status === 200, "...while the admin may still open it → 200", String(adminOpen.status))
+
   console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECK(S) FAILED`}`)
 
   // Teardown

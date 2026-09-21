@@ -30,7 +30,8 @@
       "feedback": "Feedback",
       "usage": "Usage",
       "ocr": "OCR",
-      "groups": "Groups"
+      "groups": "Groups",
+      "projects": "Projects"
     },
     "overview": {
       "eyebrow": "Administration",
@@ -137,6 +138,25 @@
       "noBudget": "—",
       "emptyProjects": "No OCR spend yet.",
       "emptyJobs": "No paid ingests yet."
+    },
+    "projects": {
+      "eyebrow": "ADMINISTRATION",
+      "title": "All projects",
+      "subtitle": "Instance-wide overview. The projects listed here are not shared with you — you can see them because you are an administrator.",
+      "empty": "No projects on this instance.",
+      "col": {
+        "name": "Project",
+        "owner": "Owner",
+        "docs": "Documents",
+        "state": "State",
+        "source": "Reads corpus"
+      },
+      "ingested": "Ingested",
+      "notIngested": "Not ingested",
+      "revoked": "Access revoked",
+      "open": "Open",
+      "you": "You",
+      "ownCorpus": "Its own"
     }
   },
   "common": {
