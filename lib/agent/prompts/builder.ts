@@ -1,10 +1,18 @@
 import "server-only"
 import { prisma } from "@/lib/db"
+import { MemoryQueries } from "@/models/memory/queries"
+import { ProjectQueries } from "@/models/projects/queries"
+import { SESSION_SCOPE } from "@/models/sessions/schema"
+import {
+  CORPUS_SOURCE_STATE,
+  corpusProjectId,
+  corpusSourceState,
+  isDerived,
+} from "@/lib/authz/corpus-source"
 import type { AppLocale } from "@/i18n/routing"
 import { renderCorpusPrompt } from "./corpus"
 import { renderResearchPrompt } from "./research"
 import type { AppSession } from "@/lib/generated/prisma/client"
-import type { MemorySnapshot } from "./shared"
 
 export class PromptBuilder {
   /**
@@ -51,37 +59,32 @@ export class PromptBuilder {
     const project = await prisma.project.findUniqueOrThrow({
       where: { id: session.projectId },
     })
-    const memory = await this.loadMemory(session.projectId, session.scope)
-    if (session.scope === "corpus") {
-      const snapshot = await this.loadCorpusSnapshot(session.projectId)
+    // Memory is the project's own; the corpus belongs to the source when this
+    // project is derived. Conflating the two is the modelling error this whole
+    // feature is built to avoid — see lib/authz/corpus-source.ts.
+    const memory = await MemoryQueries.snapshot(session.projectId, session.scope)
+    const corpusId = corpusProjectId(project)
+
+    if (session.scope === SESSION_SCOPE.CORPUS) {
+      const snapshot = await this.loadCorpusSnapshot(corpusId)
       return renderCorpusPrompt(project, memory, snapshot, locale)
     }
-    const ingestStatus = await this.loadIngestStatus(session.projectId)
-    return renderResearchPrompt(project, memory, ingestStatus, locale)
-  }
 
-  private static async loadMemory(
-    projectId: string,
-    scope: string,
-  ): Promise<MemorySnapshot> {
-    const items = await prisma.memoryItem.findMany({
-      where: { projectId, scope },
-      orderBy: [
-        { section: "asc" },
-        { position: "asc" },
-        { createdAt: "asc" },
-      ],
-    })
-    const sections = new Map<
-      string,
-      { title: string; items: { id: string; text: string; origin: string | null }[] }
-    >()
-    for (const it of items) {
-      const s = sections.get(it.section) ?? { title: it.section, items: [] }
-      s.items.push({ id: it.id, text: it.text, origin: it.origin ?? null })
-      sections.set(it.section, s)
-    }
-    return { sections: [...sections.values()] }
+    const source = isDerived(project)
+      ? {
+          name: (await ProjectQueries.get(corpusId))?.name ?? "",
+          state: corpusSourceState(project),
+        }
+      : null
+
+    // A revoked grant is not "an empty corpus": the agent is told the access is
+    // gone so it explains rather than inviting an ingestion it cannot run.
+    const ingestStatus =
+      source?.state === CORPUS_SOURCE_STATE.REVOKED
+        ? ({ ingested: false } as const)
+        : await this.loadIngestStatus(corpusId)
+
+    return renderResearchPrompt(project, memory, ingestStatus, locale, source)
   }
 
   private static async loadIngestStatus(projectId: string) {

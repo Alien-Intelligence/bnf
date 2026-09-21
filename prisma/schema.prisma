@@ -52,6 +52,7 @@ model User {
   projects        Project[]
   onboardingSeen  UserOnboardingSeen[]
   feedback        Feedback[]
+  groupMemberships GroupMember[]
 
   @@map("user")
 }
@@ -107,6 +108,43 @@ model Verification {
 // =============================================================================
 
 // -----------------------------------------------------------------------------
+// Group — a local, admin-managed set of users. The unit a project is shared
+// with (see ProjectShare). Deliberately NOT shaped for Authentik/OIDC group
+// sync: the decision was local-only groups, and wiring an IdP later is an
+// accepted migration cost.
+//
+// No `role` column on GroupMember: groups are admin-managed, so a per-member
+// role would be an unused column with a meaningless default. Add it when a
+// requirement exists.
+// -----------------------------------------------------------------------------
+model Group {
+  id        String   @id @default(uuid())
+  name      String
+  slug      String   @unique
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  members GroupMember[]
+  shares  ProjectShare[]
+
+  @@map("group")
+}
+
+model GroupMember {
+  groupId String   @map("group_id")
+  userId  String   @map("user_id")
+  addedAt DateTime @default(now()) @map("added_at")
+
+  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([groupId, userId])
+  // withAuth resolves the caller's groupIds on every authenticated request.
+  @@index([userId])
+  @@map("group_member")
+}
+
+// -----------------------------------------------------------------------------
 // UserOnboardingSeen — tracks which onboarding intros a user has dismissed.
 // intro: "corpus" | "research" — one row per intro, per user.
 // Composite PK (userId, intro): natural dedup; no duplicates possible.
@@ -157,6 +195,15 @@ model Project {
   // Running paid-OCR spend in USD, incremented set-once-per-job from the
   // worker's reported actual cost on commit. Never decremented.
   paidOcrSpentUsd   Decimal  @default(0) @map("paid_ocr_spent_usd")
+  // Derived projects (read-only corpus consumption). Three states:
+  //   (null, null) — a normal project; it owns its corpus.
+  //   (set,  set)  — derived; reads the source's corpus through a live grant.
+  //   (set,  null) — derived, but the grant was revoked (onDelete: SetNull).
+  // The third state is deliberate: revocation is a first-class, queryable
+  // state rather than a silently empty corpus. A CHECK constraint forbids the
+  // fourth combination. See lib/authz/corpus-source.ts.
+  corpusSourceId      String? @map("corpus_source_id")
+  corpusSourceShareId String? @map("corpus_source_share_id")
   createdAt         DateTime @default(now()) @map("created_at")
   updatedAt         DateTime @updatedAt @map("updated_at")
 
@@ -169,8 +216,45 @@ model Project {
   ingestJobs     IngestJob[]
   feedback       Feedback[]
   bufferItems    BufferItem[]
+  shares         ProjectShare[]
+  // Restrict: a source project cannot be deleted while derived projects read
+  // its corpus — deleting it would leave their notes citing ARKs they can no
+  // longer open. ProjectService.delete surfaces a typed error → 409.
+  corpusSource      Project?      @relation("CorpusSource", fields: [corpusSourceId], references: [id], onDelete: Restrict)
+  derivedProjects   Project[]     @relation("CorpusSource")
+  corpusSourceShare ProjectShare? @relation("CorpusSourceShare", fields: [corpusSourceShareId], references: [id], onDelete: SetNull)
 
+  @@index([corpusSourceId])
   @@map("project")
+}
+
+// -----------------------------------------------------------------------------
+// ProjectShare — the ONLY grant that widens access to a project beyond its
+// owner. One row per (project, group) pair; changing the access level is an
+// update, not a second row.
+//
+// `access` is PROJECT_ACCESS in lib/authz/project-access.ts ("read" | "write").
+// `createdBy` records the granting user for audit; it is not a relation
+// (a granter may be deleted without invalidating the audit trail).
+// -----------------------------------------------------------------------------
+model ProjectShare {
+  id        String   @id @default(uuid())
+  projectId String   @map("project_id")
+  groupId   String   @map("group_id")
+  access    String
+  createdBy String   @map("created_by")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  group   Group   @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  // Derived projects that read the source's corpus through this grant.
+  // SetNull on revoke — see Project.corpusSourceShareId.
+  derivedProjects Project[] @relation("CorpusSourceShare")
+
+  @@unique([projectId, groupId])
+  @@index([groupId])
+  @@map("project_share")
 }
 
 // -----------------------------------------------------------------------------

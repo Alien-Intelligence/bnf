@@ -4,9 +4,11 @@
 
 import { notFound } from "next/navigation"
 import { requireSessionUser } from "@/lib/auth-helpers"
+import { canReadProject } from "@/lib/authz/project-access"
+import { workspaceStepsFor } from "@/lib/authz/workspace-steps"
 import { ProjectQueries } from "@/models/projects/queries"
-import { prisma } from "@/lib/db"
-import { CarnetClient } from "./carnet-client"
+import { NoteQueries } from "@/models/notes/queries"
+import { CarnetClient } from "./client"
 
 type RouteParams = { locale: string; projectId: string }
 
@@ -23,18 +25,16 @@ export default async function CarnetPage({
 
   const project = await ProjectQueries.get(projectId)
   if (!project) notFound()
-  if (project.ownerId !== user.id && !project.isPublic) notFound()
+  if (!canReadProject(user, project)) notFound()
 
-  const notes = await prisma.note.findMany({
-    where: { projectId },
-    orderBy: { createdAt: "asc" },
-  })
+  const notes = await NoteQueries.listForProjectWithBodies(projectId)
 
   return (
     <CarnetClient
       projectId={projectId}
       initialUser={{ name: user.name, email: user.email }}
-      notes={notes}
+      initialWorkspaceSteps={workspaceStepsFor(user, project)}
+      initialNotes={notes}
     />
   )
 }

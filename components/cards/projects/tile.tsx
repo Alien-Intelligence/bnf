@@ -1,13 +1,28 @@
-// components/cards/projects/tile.tsx
-// CardProjectTile — one project in the projects-list grid. Shows the name,
-// optional subtitle, the head-corpus size and ingestion status, and the three
-// step entry points. Dark, hairline, mono numerals per the Alien × BnF DS.
+"use client"
 
-import { ArrowRight, Database } from "lucide-react"
+// components/cards/projects/tile.tsx
+// CardProjectTile — one project in the projects-list grid.
+//
+// Layout, in the order a librarian reads it:
+//   header  — name, subtitle, then a meta line for provenance (who owns it,
+//             whose corpus it reads) and, top-right, the owner-only actions
+//   content — corpus size, ingestion state, and what the caller may do
+//   footer  — navigation only: the steps this user can actually open
+//
+// Owner actions live in the header's CardAction slot rather than the footer:
+// the footer is a step bar, and mixing "go to Ingérer" with "share this
+// project" in one row both confuses the two and wraps to a second line.
+//
+// The steps offered follow lib/authz/project-access.ts, not the other way
+// round: a read-only member sees Rechercher alone, and a derived project has
+// no Constituer or Ingérer step to offer at all.
+
+import { ArrowRight, Database, Share2, Sparkles, User } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { Link } from "@/i18n/navigation"
 import {
   Card,
+  CardAction,
   CardContent,
   CardDescription,
   CardFooter,
@@ -15,58 +30,168 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { buttonVariants } from "@/components/ui/button"
+import { Button, buttonVariants } from "@/components/ui/button"
+import { BadgeProjectAccess } from "@/components/badges/projects/access"
+import { BadgeProjectSharedCorpus } from "@/components/badges/projects/shared-corpus"
 import { ROUTES } from "@/lib/constants"
+import { PROJECT_ACCESS_LEVEL } from "@/lib/authz/project-access"
+import {
+  CORPUS_SOURCE_STATE,
+  corpusSourceState,
+  isDerived,
+} from "@/lib/authz/corpus-source"
 import type { ProjectListItem } from "@/models/projects/schema"
 
 interface CardProjectTileProps {
   project: ProjectListItem
+  /** The viewing user, to tell "I own this" from "I may act as an owner". */
+  currentUserId: string
+  onShare?: () => void
+  onDerive?: () => void
 }
 
-export function CardProjectTile({ project }: CardProjectTileProps) {
-  const t = useTranslations("projects")
+export function CardProjectTile({
+  project,
+  currentUserId,
+  onShare,
+  onDerive,
+}: CardProjectTileProps) {
+  const t = useTranslations("projects.tile")
+  // The footer links and the header actions are the projects-list chrome, not
+  // the tile's own copy, so they keep their own scope rather than being reached
+  // through a shared parent namespace.
+  const tList = useTranslations("projects.list")
+
+  // Two different questions, deliberately kept apart. `isMine` is a fact about
+  // the row; `mayShare` is a permission, and an admin holds it on every project
+  // without owning any of them.
+  const isMine = project.ownerId === currentUserId
+  const isOwner = project.access === PROJECT_ACCESS_LEVEL.OWNER
+  const canWrite = isOwner || project.access === PROJECT_ACCESS_LEVEL.WRITE
+
+  const sourceState = corpusSourceState(project)
+  const derived = isDerived(project)
+  const revoked = sourceState === CORPUS_SOURCE_STATE.REVOKED
+  // Owning a derived workspace is not owning the corpus it reads. Sharing it
+  // would hand the source's corpus to a group its owner never granted — see
+  // ProjectPolicy.share, which refuses the same case server-side.
+  const mayShare = isOwner && !derived
+  // Constituer and Ingérer mutate the corpus; a derived project has none of
+  // its own, and a read-only member may not touch the one it points at.
+  const showCorpusSteps = canWrite && !derived
+  const canDerive = !isMine && !derived && project.isIngested && onDerive
 
   return (
-    <Card className="transition-colors hover:bg-accent/30">
+    <Card className="flex flex-col transition-colors hover:bg-accent/30">
       <CardHeader>
         <CardTitle>{project.name}</CardTitle>
         {project.subtitle && (
           <CardDescription>{project.subtitle}</CardDescription>
         )}
+
+        {/* Provenance. Absent for your own ordinary project — the unmarked
+            case is "mine, and it owns its corpus". */}
+        {(!isMine || derived) && (
+          <CardDescription className="flex flex-col gap-0.5 text-xs">
+            {!isMine && (
+              <span className="inline-flex items-center gap-1.5">
+                <User className="size-3 shrink-0" strokeWidth={1.8} />
+                {t("ownedBy", { name: project.ownerName })}
+              </span>
+            )}
+            {derived && project.corpusSourceName && (
+              <span className="inline-flex items-center gap-1.5">
+                <Database className="size-3 shrink-0" strokeWidth={1.8} />
+                {t("readsCorpus", { source: project.corpusSourceName })}
+              </span>
+            )}
+          </CardDescription>
+        )}
+
+        {/* One secondary action, in the header rather than the step bar.
+            Sharing and deriving are mutually exclusive by construction: the
+            first is owner-only, the second non-owner-only. A derived workspace
+            offers neither — its owner may not re-grant a corpus that is not
+            theirs, and it cannot be derived from a second time. */}
+        {mayShare && onShare ? (
+          <CardAction>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onShare}
+              aria-label={tList("share")}
+              title={tList("share")}
+            >
+              <Share2 className="size-3.5" />
+            </Button>
+          </CardAction>
+        ) : (
+          // Deriving needs an ingested corpus to read: without one the new
+          // workspace could do nothing at all.
+          canDerive && (
+            <CardAction>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={onDerive}
+                aria-label={tList("derive")}
+                title={tList("derive")}
+              >
+                <Sparkles className="size-3.5" />
+              </Button>
+            </CardAction>
+          )
+        )}
       </CardHeader>
 
-      <CardContent className="flex items-center gap-3">
-        <span className="inline-flex items-center gap-1.5 text-sm text-muted-foreground">
-          <Database className="size-3.5" strokeWidth={1.8} />
-          <span className="font-mono font-medium text-foreground">
-            {project.corpusSize.toLocaleString("fr-FR")}
-          </span>
-          {t("tile.documents")}
-        </span>
-        <Badge variant={project.isIngested ? "default" : "outline"}>
-          {project.isIngested ? t("tile.ingested") : t("tile.notIngested")}
-        </Badge>
+      <CardContent className="flex flex-1 flex-wrap items-center gap-2">
+        {/* A revoked workspace can no longer read the corpus it points at, so
+            it reports nothing about it rather than a stale count. */}
+        {!revoked && (
+          <>
+            <span className="inline-flex items-center gap-1.5 text-sm text-muted-foreground">
+              <Database className="size-3.5" strokeWidth={1.8} />
+              <span className="font-mono font-medium text-foreground">
+                {project.corpusSize.toLocaleString("fr-FR")}
+              </span>
+              {t("documents")}
+            </span>
+            <Badge variant={project.isIngested ? "default" : "outline"}>
+              {project.isIngested ? t("ingested") : t("notIngested")}
+            </Badge>
+          </>
+        )}
+        <BadgeProjectAccess access={project.access} />
+        <BadgeProjectSharedCorpus state={sourceState} />
       </CardContent>
 
       <CardFooter className="flex flex-wrap gap-2">
-        <Link
-          href={ROUTES.constituer(project.id)}
-          className={buttonVariants({ variant: "default", size: "sm" })}
-        >
-          {t("list.openCorpus")}
-          <ArrowRight className="size-3.5" />
-        </Link>
-        <Link
-          href={ROUTES.ingerer(project.id)}
-          className={buttonVariants({ variant: "outline", size: "sm" })}
-        >
-          {t("list.openIngest")}
-        </Link>
+        {showCorpusSteps && (
+          <>
+            <Link
+              href={ROUTES.constituer(project.id)}
+              className={buttonVariants({ variant: "default", size: "sm" })}
+            >
+              {tList("openCorpus")}
+              <ArrowRight className="size-3.5" />
+            </Link>
+            <Link
+              href={ROUTES.ingerer(project.id)}
+              className={buttonVariants({ variant: "outline", size: "sm" })}
+            >
+              {tList("openIngest")}
+            </Link>
+          </>
+        )}
         <Link
           href={ROUTES.rechercher(project.id)}
-          className={buttonVariants({ variant: "outline", size: "sm" })}
+          className={buttonVariants({
+            variant: showCorpusSteps ? "outline" : "default",
+            size: "sm",
+          })}
         >
-          {t("list.openResearch")}
+          {tList("openResearch")}
+          {!showCorpusSteps && <ArrowRight className="size-3.5" />}
         </Link>
       </CardFooter>
     </Card>

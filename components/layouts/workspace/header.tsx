@@ -14,7 +14,7 @@ import Image from "next/image"
 import { ShieldUser } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { Link } from "@/i18n/navigation"
-import { ROUTES } from "@/lib/constants"
+import { ROUTES, type WorkspaceStep } from "@/lib/constants"
 import { LayoutWorkspaceStepNav } from "./step-nav"
 import { LayoutWorkspaceProjectSwitcher } from "./project-switcher"
 import { LayoutWorkspaceLangToggle } from "./lang-toggle"
@@ -27,6 +27,11 @@ interface WorkspaceHeaderProps {
   projectId?: string
   /** When true, reveal the discreet link to the admin console. */
   isAdmin?: boolean
+  /**
+   * The steps available on this project. Omitted means the full progression;
+   * a read-only member or a derived workspace passes `["rechercher"]`.
+   */
+  workspaceSteps?: readonly WorkspaceStep[]
 }
 
 function initials(user: { name?: string; email: string }): string {
@@ -58,8 +63,10 @@ export function WorkspaceHeader({
   user,
   projectId,
   isAdmin = false,
+  workspaceSteps,
 }: WorkspaceHeaderProps) {
   const t = useTranslations("nav")
+  const tBrand = useTranslations("brand")
 
   return (
     <header className="relative z-20 flex h-14 shrink-0 items-center justify-between gap-4 border-b bg-background/85 px-4.5 backdrop-blur-md">
@@ -67,7 +74,7 @@ export function WorkspaceHeader({
       <div className="flex min-w-0 items-center gap-3">
         <Image
           src="/brand/logo-w.svg"
-          alt="Alien Intelligence"
+          alt={tBrand("alien")}
           width={1048}
           height={153}
           priority
@@ -76,8 +83,8 @@ export function WorkspaceHeader({
         <div className="h-6.5 w-px bg-border" aria-hidden />
         <Image
           src="/brand/bnf-logo-w.png"
-          alt="BnF — Bibliothèque nationale de France"
-          title="Bibliothèque nationale de France"
+          alt={tBrand("bnf")}
+          title={tBrand("bnfFull")}
           width={960}
           height={359}
           priority
@@ -92,7 +99,9 @@ export function WorkspaceHeader({
       </div>
 
       {/* Step navigation — only inside a project workspace */}
-      {projectId && <LayoutWorkspaceStepNav projectId={projectId} />}
+      {projectId && (
+        <LayoutWorkspaceStepNav projectId={projectId} steps={workspaceSteps} />
+      )}
 
       {/* Version + MCP status + user menu */}
       <div className="flex items-center gap-3">

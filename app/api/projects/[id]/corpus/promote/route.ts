@@ -13,7 +13,8 @@
  * the notice has no digitization ("not_digitized") or the BnF API is still flaky
  * ("api_error"), nothing is mutated and the outcome is recorded for the UI.
  *
- * Authorization: project owner (mutate) or admin (before() bypass).
+ * Authorization: project owner (mutate); admin resolves to owner — see
+ * lib/authz/project-access.ts. There is no before() bypass.
  */
 import { withAuth } from "@/app/api/_middleware"
 import { parseBody } from "@/app/api/_helpers"

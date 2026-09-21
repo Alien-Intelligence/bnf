@@ -2,46 +2,85 @@ import "server-only"
 import { prisma } from "@/lib/db"
 import type { Note, Prisma } from "@/lib/generated/prisma/client"
 import { parseCitations } from "@/lib/citations/syntax"
+import { CorpusQueries } from "@/models/corpus/queries"
+
+/**
+ * A write, plus the ARKs it refused to record.
+ *
+ * Citation rows are a derived projection of the body, and only ARKs the corpus
+ * actually holds get a row (playbook/citations.md). The body keeps the
+ * offending text — the renderer shows it struck through — but the projection
+ * must not, or a fabricated ARK would enter the citation index looking exactly
+ * like a real one. `rejected` is what lets the tool handler tell the agent
+ * which citation it invented, so it can correct itself within the turn.
+ */
+export type NoteWriteResult = { note: Note; rejected: string[] }
 
 export class NoteService {
+  /**
+   * `corpusProjectId` is the project whose corpus the citations are validated
+   * against — the SOURCE's when the note lives in a derived workspace, since
+   * that is the corpus its citations are drawn from. Never re-derive it here;
+   * callers resolve it once through `corpusProjectId()`.
+   */
   static async create(args: {
     projectId: string
+    corpusProjectId: string
     appSessionId?: string | null
     title: string
     bodyMd: string
-  }): Promise<Note> {
-    const citations = parseCitations(args.bodyMd)
-    return prisma.$transaction(async (tx) => {
-      const note = await tx.note.create({
+  }): Promise<NoteWriteResult> {
+    const known = await NoteService.knownArks(args.corpusProjectId)
+    const { valid, rejected } = NoteService.splitCitations(args.bodyMd, known)
+
+    const note = await prisma.$transaction(async (tx) => {
+      const created = await tx.note.create({
         data: {
           projectId: args.projectId,
           appSessionId: args.appSessionId ?? null,
           title: args.title,
           body_md: args.bodyMd,
-          citationCount: citations.length,
+          citationCount: valid.length,
           updatedAt: new Date(),
         },
       })
-      if (citations.length) {
+      if (valid.length) {
         await tx.citation.createMany({
-          data: citations.map((c) => ({
-            noteId: note.id,
+          data: valid.map((c) => ({
+            noteId: created.id,
             ark: c.ark,
             folio: c.folio,
             label: c.label,
           })),
         })
       }
-      return note
+      return created
     })
+
+    return { note, rejected }
   }
 
-  static async update(id: string, args: { title?: string; bodyMd?: string }): Promise<Note> {
+  /**
+   * Returns `null` when no note with this id exists — deliberately, rather than
+   * throwing. The agent tool layer calls this with an id the model produced,
+   * which may name nothing at all; a `findUniqueOrThrow` there escapes the tool
+   * loop as a 500 instead of giving the agent something it can recover from
+   * (CLAUDE_ERROR_PATTERNS.md §15). The HTTP route turns the same `null` into a
+   * 404.
+   */
+  static async update(
+    id: string,
+    corpusProjectId: string,
+    args: { title?: string; bodyMd?: string },
+  ): Promise<NoteWriteResult | null> {
+    const known = await NoteService.knownArks(corpusProjectId)
+
     return prisma.$transaction(async (tx) => {
-      const current = await tx.note.findUniqueOrThrow({ where: { id } })
+      const current = await tx.note.findUnique({ where: { id } })
+      if (!current) return null
       const nextBody = args.bodyMd ?? current.body_md
       const nextTitle = args.title ?? current.title
-      return NoteService.snapshotAndReplace(tx, current, {
+      return NoteService.snapshotAndReplace(tx, current, known, {
         title: nextTitle,
         body: nextBody,
         bodyChanged: args.bodyMd !== undefined,
@@ -55,22 +94,48 @@ export class NoteService {
    * findings). The addition is separated from the prior body by a blank line so
    * Markdown blocks (headings, lists) render correctly. Prior body is
    * snapshotted; citations are re-parsed over the combined body. An empty
-   * addition is a no-op (no version churn).
+   * addition is a no-op (no version churn). `null` when the note is gone — see
+   * `update`.
    */
-  static async append(id: string, args: { bodyMd: string }): Promise<Note> {
+  static async append(
+    id: string,
+    corpusProjectId: string,
+    args: { bodyMd: string },
+  ): Promise<NoteWriteResult | null> {
+    const known = await NoteService.knownArks(corpusProjectId)
+
     return prisma.$transaction(async (tx) => {
-      const current = await tx.note.findUniqueOrThrow({ where: { id } })
+      const current = await tx.note.findUnique({ where: { id } })
+      if (!current) return null
       const addition = args.bodyMd.trim()
-      if (addition.length === 0) return current
+      if (addition.length === 0) return { note: current, rejected: [] }
 
       const base = current.body_md.replace(/\s+$/, "")
       const nextBody = base.length ? `${base}\n\n${addition}` : addition
-      return NoteService.snapshotAndReplace(tx, current, {
+      return NoteService.snapshotAndReplace(tx, current, known, {
         title: current.title,
         body: nextBody,
         bodyChanged: true,
       })
     })
+  }
+
+  /** The ARKs a citation may legally point at. */
+  private static async knownArks(corpusProjectId: string): Promise<Set<string>> {
+    return new Set(await CorpusQueries.allArksInProject(corpusProjectId))
+  }
+
+  /**
+   * Parsed citations split into the ones the corpus can vouch for and the ARKs
+   * it cannot. Note links (`[[note:<id>|…]]`) are not citations and never reach
+   * here — `parseCitations` yields only ARK references.
+   */
+  private static splitCitations(body: string, known: Set<string>) {
+    const parsed = parseCitations(body)
+    return {
+      valid: parsed.filter((c) => known.has(c.ark)),
+      rejected: [...new Set(parsed.filter((c) => !known.has(c.ark)).map((c) => c.ark))],
+    }
   }
 
   /**
@@ -82,8 +147,9 @@ export class NoteService {
   private static async snapshotAndReplace(
     tx: Prisma.TransactionClient,
     current: Note,
+    known: Set<string>,
     next: { title: string; body: string; bodyChanged: boolean },
-  ): Promise<Note> {
+  ): Promise<NoteWriteResult> {
     const lastVersion = await tx.noteVersion.findFirst({
       where: { noteId: current.id },
       orderBy: { seq: "desc" },
@@ -95,12 +161,14 @@ export class NoteService {
     })
 
     let citationCount = current.citationCount
+    let rejected: string[] = []
     if (next.bodyChanged) {
+      const split = NoteService.splitCitations(next.body, known)
+      rejected = split.rejected
       await tx.citation.deleteMany({ where: { noteId: current.id } })
-      const cites = parseCitations(next.body)
-      if (cites.length) {
+      if (split.valid.length) {
         await tx.citation.createMany({
-          data: cites.map((c) => ({
+          data: split.valid.map((c) => ({
             noteId: current.id,
             ark: c.ark,
             folio: c.folio,
@@ -108,10 +176,10 @@ export class NoteService {
           })),
         })
       }
-      citationCount = cites.length
+      citationCount = split.valid.length
     }
 
-    return tx.note.update({
+    const note = await tx.note.update({
       where: { id: current.id },
       data: {
         title: next.title,
@@ -120,6 +188,8 @@ export class NoteService {
         updatedAt: new Date(),
       },
     })
+
+    return { note, rejected }
   }
 
   static async delete(id: string): Promise<void> {

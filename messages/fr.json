@@ -29,7 +29,8 @@
       "accounts": "Comptes",
       "feedback": "Retours",
       "usage": "Utilisation",
-      "ocr": "OCR"
+      "ocr": "OCR",
+      "groups": "Groupes"
     },
     "overview": {
       "eyebrow": "Administration",
@@ -241,12 +242,16 @@
     "list": {
       "openCorpus": "Ouvrir le corpus",
       "openIngest": "Ingestion",
-      "openResearch": "Recherche"
+      "openResearch": "Recherche",
+      "share": "Partager",
+      "derive": "Créer un espace"
     },
     "tile": {
       "documents": "documents",
       "ingested": "Ingéré",
-      "notIngested": "Non ingéré"
+      "notIngested": "Non ingéré",
+      "ownedBy": "Corpus de {name}",
+      "readsCorpus": "d'après « {source} »"
     },
     "form": {
       "title": "Nouveau projet",
@@ -257,6 +262,48 @@
       "subtitlePlaceholder": "Presse et controverses",
       "submit": "Créer le projet",
       "created": "Projet « {name} » créé"
+    },
+    "section": {
+      "mine": "Mes projets",
+      "mineEmpty": "Vous ne possédez aucun projet pour l'instant.",
+      "shared": "Partagés avec moi"
+    },
+    "access": {
+      "read": "Lecture seule",
+      "write": "Édition"
+    },
+    "sharedCorpus": {
+      "revoked": "Accès au corpus révoqué",
+      "short": "Corpus partagé"
+    },
+    "share": {
+      "title": "Partager « {name} »",
+      "description": "Donnez à un groupe l'accès à ce projet. En lecture, ses membres consultent le corpus et créent leurs propres espaces de recherche ; en édition, ils peuvent aussi le modifier et l'ingérer. Vous restez le seul à pouvoir partager ou supprimer le projet.",
+      "group": "Groupe",
+      "groupPlaceholder": "Choisir un groupe",
+      "access": "Accès",
+      "level": {
+        "read": "Lecture seule",
+        "write": "Édition"
+      },
+      "grant": "Partager",
+      "revoke": "Retirer l'accès de {name}",
+      "empty": "Ce projet n'est partagé avec aucun groupe.",
+      "noGroups": "Aucun groupe n'existe encore. Demandez à un administrateur d'en créer un.",
+      "allGroupsShared": "Tous vos groupes ont déjà accès à ce projet.",
+      "groupsError": "Impossible de charger la liste des groupes.",
+      "derived": "{count, plural, one {# espace de recherche en dépend} other {# espaces de recherche en dépendent}}",
+      "changeAccess": "Modifier l'accès de {name}"
+    },
+    "derive": {
+      "title": "Créer un espace de recherche",
+      "description": "Vous travaillerez sur le corpus de « {source} », constitué par {owner}. Vos sessions, votre mémoire de projet et vos notes vous appartiennent ; le corpus reste en lecture seule.",
+      "defaultName": "Recherche — {source}",
+      "name": "Nom de l'espace",
+      "subtitle": "Sous-titre (facultatif)",
+      "subtitlePlaceholder": "Votre angle de recherche",
+      "submit": "Créer l'espace",
+      "created": "Espace « {name} » créé"
     }
   },
   "corpus": {
@@ -649,7 +696,8 @@
     "notIngested": {
       "title": "Corpus non ingéré",
       "body": "Le corpus doit être ingéré avant de pouvoir effectuer des recherches. Veuillez lancer l'ingestion.",
-      "openIngest": "Ouvrir l'ingestion"
+      "openIngest": "Ouvrir l'ingestion",
+      "sharedBody": "Le corpus de « {source} » n'a pas encore été ingéré. Seule l'équipe qui le possède peut lancer cette étape ; la recherche sera possible ensuite."
     },
     "espace": {
       "title": "Espace de recherche",
@@ -694,6 +742,11 @@
       "compiledHeader": "Carnet de recherche · {count, plural, =0 {aucune note} one {# note} other {# notes}}",
       "export": "Exporter en Markdown",
       "empty": "Aucune note dans ce carnet."
+    },
+    "revoked": {
+      "title": "Accès au corpus révoqué",
+      "body": "Le partage qui vous donnait accès au corpus de « {source} » a été retiré. Vos notes restent consultables dans le carnet, mais le corpus n'est plus interrogeable. Contactez le propriétaire du corpus pour rétablir l'accès.",
+      "openCarnet": "Ouvrir le carnet"
     }
   },
   "citations": {
@@ -922,5 +975,54 @@
     "success": "Merci pour votre retour",
     "error": "Échec de l'envoi de l'avis",
     "cancel": "Annuler"
+  },
+  "groups": {
+    "eyebrow": "Administration",
+    "title": "Groupes",
+    "subtitle": "Les groupes sont l'unité de partage : un administrateur les crée et gère leurs membres, puis chaque propriétaire partage ses projets avec eux.",
+    "new": "Nouveau groupe",
+    "empty": "Aucun groupe",
+    "emptyHint": "Créez un premier groupe pour permettre le partage de projets entre utilisateurs.",
+    "col": {
+      "name": "Nom",
+      "members": "Membres",
+      "shares": "Projets partagés"
+    },
+    "row": {
+      "members": "Membres",
+      "rename": "Renommer le groupe",
+      "delete": "Supprimer le groupe"
+    },
+    "form": {
+      "title": "Nouveau groupe",
+      "description": "Le nom est affiché partout ; un identifiant en est dérivé automatiquement.",
+      "name": "Nom du groupe",
+      "namePlaceholder": "Département Recherche",
+      "submit": "Créer le groupe",
+      "created": "Groupe « {name} » créé",
+      "renameTitle": "Renommer le groupe",
+      "renameDescription": "L'identifiant est redérivé du nouveau nom.",
+      "renameSubmit": "Renommer",
+      "renamed": "Groupe renommé en « {name} »"
+    },
+    "members": {
+      "description": "Ajoutez un membre par son adresse e-mail. Le retrait est immédiat : l'accès aux projets partagés avec ce groupe est révoqué dès la requête suivante.",
+      "emailLabel": "Adresse e-mail du membre",
+      "emailPlaceholder": "prenom.nom@bnf.fr",
+      "add": "Ajouter",
+      "remove": "Retirer {name} du groupe",
+      "empty": "Aucun membre dans ce groupe"
+    },
+    "delete": {
+      "title": "Supprimer « {name} » ?",
+      "description": "{members, plural, =0 {Aucun membre} one {# membre} other {# membres}} et {shares, plural, =0 {aucun partage de projet} one {# partage de projet} other {# partages de projet}} seront supprimés. Les espaces de recherche créés à partir de ces partages sont conservés, mais perdent l'accès au corpus.",
+      "confirm": "Supprimer le groupe",
+      "done": "Groupe « {name} » supprimé"
+    }
+  },
+  "brand": {
+    "alien": "Alien Intelligence",
+    "bnf": "BnF — Bibliothèque nationale de France",
+    "bnfFull": "Bibliothèque nationale de France"
   }
 }

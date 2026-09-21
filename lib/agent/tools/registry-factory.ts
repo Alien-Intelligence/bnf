@@ -23,8 +23,22 @@ export interface TurnScopedCtx extends ToolContext {
   db: typeof prisma
   user: User
   appSessionId: string
-  /** The project this session belongs to. */
+  /** The project this session belongs to. Notes, memory and sessions are its. */
   projectId: string
+  /**
+   * The project whose corpus, documents and RAG dataset this turn reads. Equal
+   * to `projectId` for a normal project; the source's id for a derived one.
+   * Resolved once, by the route, via lib/authz/corpus-source.ts — a tool must
+   * never re-derive it.
+   */
+  corpusProjectId: string
+  /**
+   * False when this is a derived project whose corpus grant was revoked. The
+   * corpus tools return CORPUS_ACCESS_REVOKED_ERROR as structured output rather
+   * than an empty result set, so the agent explains instead of hallucinating an
+   * empty corpus.
+   */
+  corpusReachable: boolean
   /** Whether this is a corpus-building or RAG research session. */
   scope: "corpus" | "research"
 }
@@ -34,6 +48,10 @@ export interface BuildTurnCtxOpts {
   appSessionId: string
   /** The project this session belongs to. */
   projectId: string
+  /** The project whose corpus/documents/RAG dataset this turn reads. */
+  corpusProjectId: string
+  /** False when a derived project's corpus grant was revoked. */
+  corpusReachable: boolean
   /** Whether this is a corpus-building or RAG research session. */
   scope: "corpus" | "research"
 }
@@ -55,6 +73,8 @@ export function buildTurnScopedCtx(
     user: opts.user,
     appSessionId: opts.appSessionId,
     projectId: opts.projectId,
+    corpusProjectId: opts.corpusProjectId,
+    corpusReachable: opts.corpusReachable,
     scope: opts.scope,
   }
 }

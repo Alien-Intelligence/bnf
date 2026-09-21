@@ -3,34 +3,27 @@
 // No DB calls — resources are passed in by the route handler.
 // See playbook/api-layers.md for the bouncer contract.
 
-import type { User } from "@/models/users/schema"
-import type { Project } from "@/models/projects/schema"
+import { canReadProject, canWriteProject } from "@/lib/authz/project-access"
+import { isDerived } from "@/lib/authz/corpus-source"
+import type { PolicyUser } from "@/models/users/schema"
+import type { ProjectWithShares } from "@/models/projects/schema"
 
 export class CorpusPolicy {
-  constructor(private user: User) {}
+  constructor(private user: PolicyUser) {}
 
-  /**
-   * Admin bypass: if the acting user is an admin, every action is allowed.
-   * Returns true to short-circuit; undefined to fall through to the action
-   * method (per playbook/api-layers.md bouncer contract).
-   */
-  before(u: User): boolean | undefined {
-    if (u.role === "admin") return true
-    return undefined
+  /** Owner, admin, any group share, or a public project. */
+  read(project: ProjectWithShares): boolean {
+    return canReadProject(this.user, project)
   }
 
   /**
-   * A corpus can be read if the user owns the project or the project is public.
+   * Owner, admin, or a `write` group share — AND the project must own its
+   * corpus. A derived project reads another project's corpus; mutating it here
+   * would silently write to a corpus the caller does not own. The structural
+   * condition is repeated in BufferPolicy, IngestPolicy and SessionPolicy: it
+   * is the write half of read-only consumption.
    */
-  read(project: Project): boolean {
-    return project.ownerId === this.user.id || project.isPublic
-  }
-
-  /**
-   * Only the project owner may mutate the corpus (add / remove ARKs,
-   * trigger ingestion, etc.).
-   */
-  mutate(project: Project): boolean {
-    return project.ownerId === this.user.id
+  mutate(project: ProjectWithShares): boolean {
+    return canWriteProject(this.user, project) && !isDerived(project)
   }
 }

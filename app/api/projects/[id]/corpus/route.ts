@@ -22,13 +22,15 @@
  *   cursor   — opaque value from a previous response's `nextCursor`
  *   limit    — page size 1–100 (default: CORPUS_SAMPLE_SIZE = 25)
  *
- * Authorization: project member (read) or admin (before() bypass).
+ * Authorization: read access on the project; admin resolves to owner — see
+ * lib/authz/project-access.ts. There is no before() bypass.
  */
 import { withAuth } from "@/app/api/_middleware"
 import { parseQuery } from "@/app/api/_helpers"
 import { ok, notFound } from "@/lib/api-response"
 import { z } from "zod"
 import { ProjectQueries } from "@/models/projects/queries"
+import { resolveCorpusProject } from "@/app/api/_corpus-source"
 import { CorpusPolicy } from "@/models/corpus/policy"
 import { CorpusQueries } from "@/models/corpus/queries"
 import type { CorpusSnapshot } from "@/models/corpus/schema"
@@ -91,6 +93,11 @@ export const GET = withAuth(async (req, user, bouncer, ctx: RouteCtx) => {
   if (!project) return notFound("Projet introuvable")
   await bouncer.with(CorpusPolicy).authorize("read", project)
 
+  // A derived project reads its source's corpus; a revoked grant is a 409, not
+  // an empty snapshot. See app/api/_corpus-source.ts.
+  const corpusId = resolveCorpusProject(project)
+  if (corpusId instanceof Response) return corpusId
+
   const versionRef = parsed.version ?? "head"
 
   // Build the filters object only when at least one filter field is present.
@@ -127,7 +134,7 @@ export const GET = withAuth(async (req, user, bouncer, ctx: RouteCtx) => {
     : undefined
 
   const snapshot = await CorpusQueries.snapshot(
-    projectId,
+    corpusId,
     typeof versionRef === "number" ? { seq: versionRef } : versionRef,
     { filters, cursor: parsed.cursor, limit: parsed.limit },
   )

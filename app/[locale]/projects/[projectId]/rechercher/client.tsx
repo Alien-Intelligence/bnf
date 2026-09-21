@@ -8,15 +8,14 @@
 // and the Atelier/Carnet disposition.
 
 import { useCallback, useEffect, useRef, useState } from "react"
-import { Link } from "@/i18n/navigation"
 import { useQueryClient } from "@tanstack/react-query"
 import { useTurnStream } from "@/hooks/api/turn-stream"
 import { useNotes, noteKeys } from "@/hooks/api/notes"
 import { memoryKeys } from "@/hooks/api/memory"
 import { sessionKeys } from "@/hooks/api/sessions"
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
-import { buttonVariants } from "@/components/ui/button"
 import { WorkspaceHeader } from "@/components/layouts/workspace/header"
+import { CardProjectCorpusRevoked } from "@/components/cards/projects/corpus-revoked"
+import { CardProjectCorpusNotIngested } from "@/components/cards/projects/corpus-not-ingested"
 import { LayoutSessionsSidebar } from "@/components/layouts/corpus/sessions-sidebar"
 import { CardNotesPicker } from "@/components/cards/notes/picker"
 import { LayoutResearchEspace } from "@/components/layouts/research/espace"
@@ -24,11 +23,19 @@ import { SheetCitationSource } from "@/components/sheets/citations/source"
 import { DialogOnboardingResearch } from "@/components/dialogs/onboarding/research"
 import { useMarkOnboardingSeen } from "@/hooks/api/onboarding"
 import { ONBOARDING_INTRO } from "@/models/onboarding/schema"
-import { SESSIONS_RAIL_WIDTH, AGENT_DEFAULT_MODEL, type AgentProvider } from "@/lib/constants"
+import {
+  SESSIONS_RAIL_WIDTH,
+  AGENT_DEFAULT_MODEL,
+  type AgentProvider,
+  type WorkspaceStep,
+} from "@/lib/constants"
 import type { NoteListItem } from "@/models/notes/schema"
-import type { AppSession } from "@/models/sessions/schema"
+import { SESSION_SCOPE, type AppSession } from "@/models/sessions/schema"
 import type { ParsedCitation } from "@/lib/citations/syntax"
-import { useTranslations } from "next-intl"
+import {
+  CORPUS_SOURCE_STATE,
+  type CorpusSourceState,
+} from "@/lib/authz/corpus-source"
 
 type Disposition = "atelier" | "carnet"
 
@@ -40,13 +47,23 @@ interface RechercherClientProps {
   initialSessionId: string
   initialSessions: AppSession[]
   initialNotes: NoteListItem[]
-  isIngested: boolean
-  clusterId: string
-  docCount: number
-  introSeen: boolean
+  initialIsIngested: boolean
+  /**
+   * Whether this project owns its corpus, reads a shared one, or has had that
+   * grant revoked. `revoked` is NOT "not ingested": the carnet stays open, and
+   * the fix is the corpus owner's, not the researcher's.
+   */
+  /** The steps this user has on this project — see LayoutWorkspaceStepNav. */
+  initialWorkspaceSteps: readonly WorkspaceStep[]
+  initialCorpusSourceState: CorpusSourceState
+  /** The corpus source's project name, when this project is derived. */
+  initialCorpusSourceName: string | null
+  initialClusterId: string
+  initialDocCount: number
+  initialIntroSeen: boolean
   /** Active agent provider (from env, server-rendered). Drives whether the
    *  research chat model selector is shown. */
-  agentProvider: AgentProvider
+  initialAgentProvider: AgentProvider
 }
 
 export function RechercherClient({
@@ -57,14 +74,15 @@ export function RechercherClient({
   initialSessionId,
   initialSessions,
   initialNotes,
-  isIngested,
-  clusterId,
-  docCount,
-  introSeen,
-  agentProvider,
+  initialIsIngested,
+  initialWorkspaceSteps,
+  initialCorpusSourceState,
+  initialCorpusSourceName,
+  initialClusterId,
+  initialDocCount,
+  initialIntroSeen,
+  initialAgentProvider,
 }: RechercherClientProps) {
-  const t = useTranslations("research")
-
   // ── Active session ────────────────────────────────────────────────────────
   const [activeSessionId, setActiveSessionId] = useState(initialSessionId)
 
@@ -72,7 +90,7 @@ export function RechercherClient({
   const [selectedModel, setSelectedModel] = useState<string>(AGENT_DEFAULT_MODEL)
   const stream = useTurnStream(
     activeSessionId,
-    agentProvider === "openrouter" ? selectedModel : undefined,
+    initialAgentProvider === "openrouter" ? selectedModel : undefined,
   )
 
   // ── Notes (live; seeded from the server) ───────────────────────────────────
@@ -109,11 +127,11 @@ export function RechercherClient({
   }
 
   // ── Onboarding intro — auto-open once per user; "?" reopens without resetting.
-  const [introOpen, setIntroOpen] = useState(!introSeen)
+  const [introOpen, setIntroOpen] = useState(!initialIntroSeen)
   const markIntroSeen = useMarkOnboardingSeen()
   const onIntroOpenChange = (open: boolean) => {
     setIntroOpen(open)
-    if (!open && !introSeen) {
+    if (!open && !initialIntroSeen) {
       markIntroSeen.mutate({ intro: ONBOARDING_INTRO.RESEARCH })
     }
   }
@@ -161,9 +179,9 @@ export function RechercherClient({
     const streaming = stream.isStreaming
     if (prevStreamingRef.current && !streaming) {
       void qc.invalidateQueries({ queryKey: noteKeys.list(projectId) })
-      void qc.invalidateQueries({ queryKey: memoryKeys.all(projectId, "research") })
+      void qc.invalidateQueries({ queryKey: memoryKeys.all(projectId, SESSION_SCOPE.RESEARCH) })
       // A session's first turn auto-names it server-side — pull the new title.
-      void qc.invalidateQueries({ queryKey: sessionKeys.list(projectId, "research") })
+      void qc.invalidateQueries({ queryKey: sessionKeys.list(projectId, SESSION_SCOPE.RESEARCH) })
     }
     prevStreamingRef.current = streaming
   }, [stream.isStreaming, projectId, qc])
@@ -173,25 +191,41 @@ export function RechercherClient({
     email: initialUser.email,
   }
 
-  if (!isIngested) {
+  // A revoked grant and a never-ingested corpus both block research, but for
+  // opposite reasons: one the researcher can fix from « Ingérer », the other
+  // only the corpus owner can. Offering the wrong action is worse than none.
+  if (initialCorpusSourceState === CORPUS_SOURCE_STATE.REVOKED) {
     return (
       <div className="flex h-screen flex-col">
-        <WorkspaceHeader user={user} projectId={projectId} />
+        <WorkspaceHeader
+          user={user}
+          projectId={projectId}
+          workspaceSteps={initialWorkspaceSteps}
+        />
         <div className="flex flex-1 items-center justify-center p-6">
-          <Card className="max-w-md">
-            <CardHeader>
-              <CardTitle>{t("notIngested.title")}</CardTitle>
-              <CardDescription>{t("notIngested.body")}</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <Link
-                href={`/projects/${projectId}/ingerer`}
-                className={buttonVariants()}
-              >
-                {t("notIngested.openIngest")}
-              </Link>
-            </CardContent>
-          </Card>
+          <CardProjectCorpusRevoked
+            projectId={projectId}
+            sourceName={initialCorpusSourceName}
+          />
+        </div>
+      </div>
+    )
+  }
+
+  if (!initialIsIngested) {
+    return (
+      <div className="flex h-screen flex-col">
+        <WorkspaceHeader
+          user={user}
+          projectId={projectId}
+          workspaceSteps={initialWorkspaceSteps}
+        />
+        <div className="flex flex-1 items-center justify-center p-6">
+          <CardProjectCorpusNotIngested
+            projectId={projectId}
+            sourceState={initialCorpusSourceState}
+            sourceName={initialCorpusSourceName}
+          />
         </div>
       </div>
     )
@@ -199,13 +233,17 @@ export function RechercherClient({
 
   return (
     <div className="flex h-screen flex-col">
-      <WorkspaceHeader user={user} projectId={projectId} />
+      <WorkspaceHeader
+          user={user}
+          projectId={projectId}
+          workspaceSteps={initialWorkspaceSteps}
+        />
       <div className="flex flex-1 overflow-hidden">
         {/* Rail — sessions + artefacts picker + project memory */}
         <div className="shrink-0 overflow-hidden" style={{ width: SESSIONS_RAIL_WIDTH }}>
           <LayoutSessionsSidebar
             projectId={projectId}
-            scope="research"
+            scope={SESSION_SCOPE.RESEARCH}
             activeSessionId={activeSessionId}
             onActiveSessionChange={setActiveSessionId}
             initialSessions={initialSessions}
@@ -235,12 +273,12 @@ export function RechercherClient({
             onCloseNote={closeNote}
             disposition={disposition}
             onDispositionChange={setDisposition}
-            clusterId={clusterId}
-            docCount={docCount}
+            clusterId={initialClusterId}
+            docCount={initialDocCount}
             onCitationClick={onCitationClick}
             onNoteLinkClick={openNote}
             onOpenHelp={() => setIntroOpen(true)}
-            agentProvider={agentProvider}
+            agentProvider={initialAgentProvider}
             selectedModel={selectedModel}
             onModelChange={setSelectedModel}
           />

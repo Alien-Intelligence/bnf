@@ -6,17 +6,21 @@ import { LayoutCarnet } from "@/components/layouts/research/carnet"
 import { SheetCitationSource } from "@/components/sheets/citations/source"
 import type { Note } from "@/models/notes/schema"
 import type { ParsedCitation } from "@/lib/citations/syntax"
+import type { WorkspaceStep } from "@/lib/constants"
 
 interface CarnetClientProps {
   projectId: string
   initialUser: { name?: string | null; email: string }
-  notes: Note[]
+  /** The steps this user has on this project — see LayoutWorkspaceStepNav. */
+  initialWorkspaceSteps: readonly WorkspaceStep[]
+  initialNotes: Note[]
 }
 
 export function CarnetClient({
   projectId,
   initialUser,
-  notes,
+  initialWorkspaceSteps,
+  initialNotes,
 }: CarnetClientProps) {
   const [selectedCitation, setSelectedCitation] =
     useState<ParsedCitation | null>(null)
@@ -28,10 +32,14 @@ export function CarnetClient({
 
   return (
     <div className="flex flex-col h-screen">
-      <WorkspaceHeader user={user} projectId={projectId} />
+      <WorkspaceHeader
+        user={user}
+        projectId={projectId}
+        workspaceSteps={initialWorkspaceSteps}
+      />
       <div className="flex-1 overflow-hidden">
         <LayoutCarnet
-          notes={notes}
+          notes={initialNotes}
           onCitationClick={setSelectedCitation}
         />
       </div>

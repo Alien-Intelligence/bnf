@@ -2,31 +2,28 @@ import "server-only"
 // models/ingest/policy.ts
 // Authorization policy for ingest operations.
 // Loaded by lib/bouncer.ts via `bouncer.with(IngestPolicy)`.
-import type { User, Project } from "@/lib/generated/prisma/client"
+import { canReadProject, canWriteProject } from "@/lib/authz/project-access"
+import { isDerived } from "@/lib/authz/corpus-source"
+import type { PolicyUser } from "@/models/users/schema"
+import type { ProjectWithShares } from "@/models/projects/schema"
 
 export class IngestPolicy {
-  constructor(private user: User) {}
+  constructor(private user: PolicyUser) {}
+
+  /** Anyone who can see the project may view its ingest jobs. */
+  view(project: ProjectWithShares): boolean {
+    return canReadProject(this.user, project)
+  }
 
   /**
-   * Admins bypass all per-resource checks.
-   * Returning `true` short-circuits the named-action check.
+   * Submitting indexes the corpus into the cluster — a corpus mutation in all
+   * but name, so it needs write access on a project that owns its corpus.
    */
-  before(u: User): boolean | undefined {
-    return u.role === "admin" ? true : undefined
+  submit(project: ProjectWithShares): boolean {
+    return canWriteProject(this.user, project) && !isDerived(project)
   }
 
-  /** Any member/owner who can see the project may view its ingest jobs. */
-  view(project: Project): boolean {
-    return project.ownerId === this.user.id || project.isPublic
-  }
-
-  /** Only the project owner may submit a new ingestion. */
-  submit(project: Project): boolean {
-    return project.ownerId === this.user.id
-  }
-
-  /** Only the project owner may cancel an in-flight ingestion. */
-  cancel(project: Project): boolean {
-    return project.ownerId === this.user.id
+  cancel(project: ProjectWithShares): boolean {
+    return canWriteProject(this.user, project) && !isDerived(project)
   }
 }

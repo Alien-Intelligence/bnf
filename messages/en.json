@@ -29,7 +29,8 @@
       "accounts": "Accounts",
       "feedback": "Feedback",
       "usage": "Usage",
-      "ocr": "OCR"
+      "ocr": "OCR",
+      "groups": "Groups"
     },
     "overview": {
       "eyebrow": "Administration",
@@ -241,12 +242,16 @@
     "list": {
       "openCorpus": "Open corpus",
       "openIngest": "Ingest",
-      "openResearch": "Research"
+      "openResearch": "Research",
+      "share": "Share",
+      "derive": "Create a workspace"
     },
     "tile": {
       "documents": "documents",
       "ingested": "Ingested",
-      "notIngested": "Not ingested"
+      "notIngested": "Not ingested",
+      "ownedBy": "Corpus by {name}",
+      "readsCorpus": "reads “{source}”"
     },
     "form": {
       "title": "New project",
@@ -257,6 +262,48 @@
       "subtitlePlaceholder": "Press and controversies",
       "submit": "Create project",
       "created": "Project “{name}” created"
+    },
+    "section": {
+      "mine": "My projects",
+      "mineEmpty": "You do not own any project yet.",
+      "shared": "Shared with me"
+    },
+    "access": {
+      "read": "Read-only",
+      "write": "Can edit"
+    },
+    "sharedCorpus": {
+      "revoked": "Corpus access revoked",
+      "short": "Shared corpus"
+    },
+    "share": {
+      "title": "Share “{name}”",
+      "description": "Give a group access to this project. With read access its members consult the corpus and build their own research workspaces; with edit access they can also change and ingest it. Only you can share or delete the project.",
+      "group": "Group",
+      "groupPlaceholder": "Choose a group",
+      "access": "Access",
+      "level": {
+        "read": "Read-only",
+        "write": "Can edit"
+      },
+      "grant": "Share",
+      "revoke": "Revoke access for {name}",
+      "empty": "This project is not shared with any group.",
+      "noGroups": "No group exists yet. Ask an administrator to create one.",
+      "allGroupsShared": "All of your groups already have access to this project.",
+      "groupsError": "Could not load the list of groups.",
+      "derived": "{count, plural, one {# research workspace depends on it} other {# research workspaces depend on it}}",
+      "changeAccess": "Change access for {name}"
+    },
+    "derive": {
+      "title": "Create a research workspace",
+      "description": "You will work on the corpus of “{source}”, built by {owner}. Your sessions, project memory and notes are your own; the corpus stays read-only.",
+      "defaultName": "Research — {source}",
+      "name": "Workspace name",
+      "subtitle": "Subtitle (optional)",
+      "subtitlePlaceholder": "Your research angle",
+      "submit": "Create workspace",
+      "created": "Workspace “{name}” created"
     }
   },
   "corpus": {
@@ -649,7 +696,8 @@
     "notIngested": {
       "title": "Corpus not ingested",
       "body": "The corpus must be ingested before you can run searches. Please start the ingestion.",
-      "openIngest": "Open ingestion"
+      "openIngest": "Open ingestion",
+      "sharedBody": "The corpus of “{source}” has not been ingested yet. Only the team that owns it can run that step; research becomes possible afterwards."
     },
     "espace": {
       "title": "Research workspace",
@@ -694,6 +742,11 @@
       "compiledHeader": "Research notebook · {count, plural, =0 {no notes} one {# note} other {# notes}}",
       "export": "Export as Markdown",
       "empty": "No notes in this notebook."
+    },
+    "revoked": {
+      "title": "Corpus access revoked",
+      "body": "The share that gave you access to the corpus of “{source}” has been removed. Your notes remain available in the carnet, but the corpus can no longer be queried. Contact the corpus owner to restore access.",
+      "openCarnet": "Open the carnet"
     }
   },
   "citations": {
@@ -922,5 +975,54 @@
     "success": "Thanks for your feedback",
     "error": "Failed to send feedback",
     "cancel": "Cancel"
+  },
+  "groups": {
+    "eyebrow": "Administration",
+    "title": "Groups",
+    "subtitle": "Groups are the unit of sharing: an admin creates them and manages their members, then each owner shares their projects with them.",
+    "new": "New group",
+    "empty": "No groups",
+    "emptyHint": "Create a first group to allow projects to be shared between users.",
+    "col": {
+      "name": "Name",
+      "members": "Members",
+      "shares": "Shared projects"
+    },
+    "row": {
+      "members": "Members",
+      "rename": "Rename group",
+      "delete": "Delete group"
+    },
+    "form": {
+      "title": "New group",
+      "description": "The name is shown everywhere; an identifier is derived from it automatically.",
+      "name": "Group name",
+      "namePlaceholder": "Research Department",
+      "submit": "Create group",
+      "created": "Group “{name}” created",
+      "renameTitle": "Rename group",
+      "renameDescription": "The identifier is re-derived from the new name.",
+      "renameSubmit": "Rename",
+      "renamed": "Group renamed to “{name}”"
+    },
+    "members": {
+      "description": "Add a member by email address. Removal is immediate: access to projects shared with this group is revoked on their next request.",
+      "emailLabel": "Member email address",
+      "emailPlaceholder": "first.last@bnf.fr",
+      "add": "Add",
+      "remove": "Remove {name} from the group",
+      "empty": "No members in this group"
+    },
+    "delete": {
+      "title": "Delete “{name}”?",
+      "description": "{members, plural, =0 {No members} one {# member} other {# members}} and {shares, plural, =0 {no project shares} one {# project share} other {# project shares}} will be deleted. Research workspaces created from those shares are kept, but lose access to the corpus.",
+      "confirm": "Delete group",
+      "done": "Group “{name}” deleted"
+    }
+  },
+  "brand": {
+    "alien": "Alien Intelligence",
+    "bnf": "BnF — National Library of France",
+    "bnfFull": "Bibliothèque nationale de France"
   }
 }

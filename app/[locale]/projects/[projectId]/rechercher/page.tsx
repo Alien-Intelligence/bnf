@@ -5,6 +5,13 @@
 
 import { notFound } from "next/navigation"
 import { requireSessionUser } from "@/lib/auth-helpers"
+import { canReadProject } from "@/lib/authz/project-access"
+import { workspaceStepsFor } from "@/lib/authz/workspace-steps"
+import {
+  CORPUS_SOURCE_STATE,
+  corpusProjectId,
+  corpusSourceState,
+} from "@/lib/authz/corpus-source"
 import { ProjectQueries } from "@/models/projects/queries"
 import { NoteQueries } from "@/models/notes/queries"
 import { CorpusQueries } from "@/models/corpus/queries"
@@ -12,6 +19,7 @@ import { SessionService } from "@/models/sessions/service"
 import { SessionQueries } from "@/models/sessions/queries"
 import { OnboardingQueries } from "@/models/onboarding/queries"
 import { ONBOARDING_INTRO } from "@/models/onboarding/schema"
+import { SESSION_SCOPE } from "@/models/sessions/schema"
 import { RAG_CLUSTER_ID } from "@/lib/constants"
 import { env } from "@/lib/env"
 import { RechercherClient } from "./client"
@@ -29,10 +37,18 @@ export default async function RechercherPage({
 
   const project = await ProjectQueries.get(projectId)
   if (!project) notFound()
-  if (project.ownerId !== user.id && !project.isPublic) notFound()
+  if (!canReadProject(user, project)) notFound()
+
+  // A derived project reads the source's corpus; its notes, memory and
+  // sessions stay local. See lib/authz/corpus-source.ts.
+  const corpusId = corpusProjectId(project)
+  const sourceState = corpusSourceState(project)
+  const revoked = sourceState === CORPUS_SOURCE_STATE.REVOKED
+
+  const workspaceSteps = workspaceStepsFor(user, project)
 
   const [session, initialNotes, seenIntros] = await Promise.all([
-    SessionService.ensureDefaultForScope(projectId, "research"),
+    SessionService.ensureDefaultForScope(projectId, SESSION_SCOPE.RESEARCH),
     NoteQueries.listForProject(projectId),
     OnboardingQueries.listSeen(user.id),
   ])
@@ -40,14 +56,25 @@ export default async function RechercherPage({
   // Loaded after ensureDefaultForScope so the just-created default session is in
   // the list. The doc count reflects what is actually indexed in the cluster —
   // the last successfully ingested version, not the (possibly newer) head.
+  const corpusProject =
+    corpusId === projectId
+      ? project
+      : await ProjectQueries.get(corpusId)
+
+  const ingestedVersionId = revoked
+    ? null
+    : (corpusProject?.ingestedVersionId ?? null)
+
   const [initialSessions, ingestedArks] = await Promise.all([
-    SessionQueries.listForProject(projectId, "research"),
-    project.ingestedVersionId
-      ? CorpusQueries.membershipArks(project.ingestedVersionId)
+    SessionQueries.listForProject(projectId, SESSION_SCOPE.RESEARCH),
+    ingestedVersionId
+      ? CorpusQueries.membershipArks(ingestedVersionId)
       : Promise.resolve([]),
   ])
 
-  const isIngested = project.ingestedVersionId !== null
+  // A revoked grant is not "not ingested": the client renders the two
+  // differently, so the state is passed through rather than flattened.
+  const isIngested = ingestedVersionId !== null
 
   // Open on the most-recently-active session (the list is updatedAt desc), not
   // the oldest. ensureDefaultForScope only guarantees one exists; its return is
@@ -63,11 +90,14 @@ export default async function RechercherPage({
       initialSessionId={initialSessionId}
       initialSessions={initialSessions}
       initialNotes={initialNotes}
-      isIngested={isIngested}
-      clusterId={RAG_CLUSTER_ID}
-      docCount={ingestedArks.length}
-      introSeen={seenIntros.includes(ONBOARDING_INTRO.RESEARCH)}
-      agentProvider={env.AGENT_PROVIDER}
+      initialIsIngested={isIngested}
+      initialWorkspaceSteps={workspaceSteps}
+      initialCorpusSourceState={sourceState}
+      initialCorpusSourceName={corpusProject?.name ?? null}
+      initialClusterId={RAG_CLUSTER_ID}
+      initialDocCount={ingestedArks.length}
+      initialIntroSeen={seenIntros.includes(ONBOARDING_INTRO.RESEARCH)}
+      initialAgentProvider={env.AGENT_PROVIDER}
     />
   )
 }

@@ -29,7 +29,44 @@ import { NoteService } from "@/models/notes/service"
 import { NoteQueries } from "@/models/notes/queries"
 import type { TurnScopedCtx } from "./registry-factory"
 import { AGENT_TOOLS } from "./constants"
-import { NOTE_NOT_INGESTED_ERROR, ingestedVersionId } from "./ingestion-guard"
+import { NOTE_NOT_INGESTED_ERROR, resolveIngestedCorpus } from "./ingestion-guard"
+
+/**
+ * Returned when the id names no note *in this project*. A note belonging to
+ * another project is reported the same way — the agent has no business learning
+ * that it exists. Structured output, never a throw: the model can recover by
+ * calling note_list, which only ever returns ids it may use
+ * (CLAUDE_ERROR_PATTERNS.md §15).
+ */
+export const NOTE_NOT_FOUND_ERROR = "note_not_found"
+
+/**
+ * The tool result for a write, naming any citation the corpus could not vouch
+ * for. A rejected ARK is not a failure — the note was written, and its body
+ * still contains the text — but the agent must be told, or it will believe it
+ * cited a source it actually invented (playbook/citations.md).
+ */
+function noteResult(
+  note: { id: string; title: string; citationCount: number },
+  rejected: string[],
+) {
+  const base = {
+    note_id: note.id,
+    title: note.title,
+    citation_count: note.citationCount,
+  }
+  if (rejected.length === 0) return base
+  return {
+    ...base,
+    invalid_citation: {
+      arks: rejected,
+      message:
+        "Ces ARK ne figurent dans aucune version du corpus : la citation a été " +
+        "conservée dans le texte mais n'a pas été indexée. Vérifie l'ARK avec " +
+        "rag_query ou retire la citation.",
+    },
+  }
+}
 
 // ---------------------------------------------------------------------------
 // note_list
@@ -64,9 +101,9 @@ export const noteGetTool = defineTool<
   inputSchema: z.object({
     id: z.string().uuid().describe("The note's UUID."),
   }),
-  handler: async (input, _ctx) => {
-    const note = await NoteQueries.get(input.id)
-    if (!note) return { error: "note_not_found" }
+  handler: async (input, ctx) => {
+    const note = await NoteQueries.getForProject(input.id, ctx.projectId)
+    if (!note) return { error: NOTE_NOT_FOUND_ERROR }
     return { note }
   },
 })
@@ -113,12 +150,14 @@ export const noteCreateTool = defineTool<
   handler: async (input, ctx) => {
     // Structural guard: a note must rest on the ingested corpus, never on
     // general knowledge before any retrieval exists (design item 4).
-    if (!(await ingestedVersionId(ctx.projectId))) {
-      return { error: NOTE_NOT_INGESTED_ERROR }
-    }
+    const corpus = await resolveIngestedCorpus(ctx, NOTE_NOT_INGESTED_ERROR)
+    if ("error" in corpus) return { error: corpus.error }
 
-    const note = await NoteService.create({
+    // The note is the project's own; its citations belong to the corpus it
+    // reads, which is the source's when this is a derived workspace.
+    const { note, rejected } = await NoteService.create({
       projectId: ctx.projectId,
+      corpusProjectId: ctx.corpusProjectId,
       appSessionId: ctx.appSessionId,
       title: input.title,
       bodyMd: input.body_md,
@@ -129,7 +168,7 @@ export const noteCreateTool = defineTool<
       data: { kind: "created", noteId: note.id, title: note.title },
     })
 
-    return { note_id: note.id, title: note.title, citation_count: note.citationCount }
+    return noteResult(note, rejected)
   },
 })
 
@@ -172,21 +211,28 @@ export const noteUpdateTool = defineTool<
       ),
   }),
   handler: async (input, ctx) => {
-    if (!(await ingestedVersionId(ctx.projectId))) {
-      return { error: NOTE_NOT_INGESTED_ERROR }
-    }
+    const corpus = await resolveIngestedCorpus(ctx, NOTE_NOT_INGESTED_ERROR)
+    if ("error" in corpus) return { error: corpus.error }
 
-    const note = await NoteService.update(input.id, {
+    // Scope before mutating. `input.id` came from the model and names any note
+    // in the database, not necessarily one this project owns.
+    const target = await NoteQueries.getForProject(input.id, ctx.projectId)
+    if (!target) return { error: NOTE_NOT_FOUND_ERROR }
+
+    const written = await NoteService.update(input.id, ctx.corpusProjectId, {
       title: input.title,
       bodyMd: input.body_md,
     })
+    // Deleted between the scope check and the write — rare, but the honest
+    // answer is the same one the scope check gives.
+    if (!written) return { error: NOTE_NOT_FOUND_ERROR }
 
     ctx.emit?.({
       type: "note_event",
-      data: { kind: "updated", noteId: note.id, title: note.title },
+      data: { kind: "updated", noteId: written.note.id, title: written.note.title },
     })
 
-    return { note_id: note.id, title: note.title, citation_count: note.citationCount }
+    return noteResult(written.note, written.rejected)
   },
 })
 
@@ -225,18 +271,24 @@ export const noteAppendTool = defineTool<
       ),
   }),
   handler: async (input, ctx) => {
-    if (!(await ingestedVersionId(ctx.projectId))) {
-      return { error: NOTE_NOT_INGESTED_ERROR }
-    }
+    const corpus = await resolveIngestedCorpus(ctx, NOTE_NOT_INGESTED_ERROR)
+    if ("error" in corpus) return { error: corpus.error }
 
-    const note = await NoteService.append(input.id, { bodyMd: input.body_md })
+    // Scope before mutating — see note_update.
+    const target = await NoteQueries.getForProject(input.id, ctx.projectId)
+    if (!target) return { error: NOTE_NOT_FOUND_ERROR }
+
+    const written = await NoteService.append(input.id, ctx.corpusProjectId, {
+      bodyMd: input.body_md,
+    })
+    if (!written) return { error: NOTE_NOT_FOUND_ERROR }
 
     ctx.emit?.({
       type: "note_event",
-      data: { kind: "updated", noteId: note.id, title: note.title },
+      data: { kind: "updated", noteId: written.note.id, title: written.note.title },
     })
 
-    return { note_id: note.id, title: note.title, citation_count: note.citationCount }
+    return noteResult(written.note, written.rejected)
   },
 })
 

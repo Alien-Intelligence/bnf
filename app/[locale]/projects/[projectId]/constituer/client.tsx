@@ -39,7 +39,7 @@ import { useMarkOnboardingSeen } from "@/hooks/api/onboarding"
 import { ONBOARDING_INTRO } from "@/models/onboarding/schema"
 import { SESSIONS_RAIL_WIDTH, AGENT_DEFAULT_MODEL, type AgentProvider } from "@/lib/constants"
 import type { CorpusSnapshot } from "@/models/corpus/schema"
-import type { AppSession } from "@/models/sessions/schema"
+import { SESSION_SCOPE, type AppSession } from "@/models/sessions/schema"
 
 interface Props {
   locale: string
@@ -162,7 +162,7 @@ export function ConstituerClient({
     ).length
     if (currentCount <= memoryEventCountRef.current) return
     memoryEventCountRef.current = currentCount
-    void qc.invalidateQueries({ queryKey: memoryKeys.all(projectId, "corpus") })
+    void qc.invalidateQueries({ queryKey: memoryKeys.all(projectId, SESSION_SCOPE.CORPUS) })
   }, [stream.domainEvents, projectId, qc])
 
   // ── Reconcile panels when a turn finishes ─────────────────────────────────────
@@ -176,13 +176,13 @@ export function ConstituerClient({
     const streaming = stream.isStreaming
     if (prevStreamingRef.current && !streaming) {
       void qc.invalidateQueries({ queryKey: corpusKeys.all(projectId) })
-      void qc.invalidateQueries({ queryKey: memoryKeys.all(projectId, "corpus") })
+      void qc.invalidateQueries({ queryKey: memoryKeys.all(projectId, SESSION_SCOPE.CORPUS) })
       // The buffer's live channel (buffer_event) can miss a mid-stream event, so
       // the tampon box/dialog could go stale (agent says it staged candidates,
       // the panel still shows the old count). Reconcile it on turn-finish too.
       void qc.invalidateQueries({ queryKey: bufferKeys.all(projectId) })
       // A session's first turn auto-names it server-side — pull the new title.
-      void qc.invalidateQueries({ queryKey: sessionKeys.list(projectId, "corpus") })
+      void qc.invalidateQueries({ queryKey: sessionKeys.list(projectId, SESSION_SCOPE.CORPUS) })
     }
     prevStreamingRef.current = streaming
   }, [stream.isStreaming, projectId, qc])
@@ -256,7 +256,7 @@ export function ConstituerClient({
         >
           <LayoutSessionsSidebar
             projectId={projectId}
-            scope="corpus"
+            scope={SESSION_SCOPE.CORPUS}
             activeSessionId={activeSessionId}
             onActiveSessionChange={setActiveSessionId}
             initialSessions={initialSessions}

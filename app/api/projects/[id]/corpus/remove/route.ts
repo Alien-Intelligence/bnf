@@ -10,7 +10,8 @@
  * Returns the new corpus snapshot with delta counters.
  * ARKs not currently in the corpus are silently skipped (no-op).
  *
- * Authorization: project owner (mutate) or admin (before() bypass).
+ * Authorization: project owner (mutate); admin resolves to owner — see
+ * lib/authz/project-access.ts. There is no before() bypass.
  *
  * Removing an ARK does NOT delete its Document row — membership change only
  * (corpus-versioning.md invariant: "Document rows live forever").

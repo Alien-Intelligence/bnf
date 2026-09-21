@@ -12,7 +12,8 @@
  * Returns `{ retried }` — how many rows were actually re-queued (a row that is
  * already resolved is left alone). Resolution then runs out-of-band.
  *
- * Authorization: project owner (mutate) or admin (before() bypass).
+ * Authorization: project owner (mutate); admin resolves to owner — see
+ * lib/authz/project-access.ts. There is no before() bypass.
  */
 import { withAuth } from "@/app/api/_middleware"
 import { parseBody } from "@/app/api/_helpers"

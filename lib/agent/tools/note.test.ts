@@ -29,12 +29,18 @@ let sessionId: string
 function ctxFor(): TurnScopedCtx {
   return {
     signal: new AbortController().signal,
+    request: new Request("http://localhost/test"),
     db: prisma,
     user: { id: userId } as TurnScopedCtx["user"],
     appSessionId: sessionId,
     projectId,
+    // This project owns its corpus, so the corpus id is its own and the grant
+    // question does not arise. Spelled out rather than cast away: a new field
+    // on TurnScopedCtx must be a decision here, not a silent undefined.
+    corpusProjectId: projectId,
+    corpusReachable: true,
     scope: "research",
-  } as unknown as TurnScopedCtx
+  }
 }
 
 before(async () => {

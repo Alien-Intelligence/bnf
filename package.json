@@ -7,10 +7,11 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --import tsx --conditions react-server --env-file-if-exists=.env.local --test \"{models,lib,components,app}/**/*.test.ts\"",
+    "test": "node --import tsx --conditions react-server --env-file-if-exists=.env.local --test \"{tests,lib,components,app}/**/*.test.ts\"",
     "e2e:buffer": "node --import tsx --conditions react-server --env-file-if-exists=.env.local scripts/e2e-buffer.ts",
     "e2e:buffer:ci": "node --import tsx --conditions react-server --env-file-if-exists=.env.local scripts/e2e-buffer-ci.ts",
     "e2e:spawn": "node --import tsx --conditions react-server --env-file-if-exists=.env.local scripts/e2e-spawn.ts",
+    "e2e:sharing": "node --import tsx --conditions react-server --env-file-if-exists=.env.local scripts/golden-sharing.ts",
     "smoke": "tsx --env-file-if-exists .env.local --conditions react-server scripts/smoke-test.ts",
     "fix:doc-types": "tsx --env-file-if-exists .env.local --conditions react-server scripts/fix-doc-types.ts",
     "e2e:sessions": "node --import tsx --conditions react-server --env-file-if-exists=.env.local scripts/e2e-sessions-2026-09-15.ts"

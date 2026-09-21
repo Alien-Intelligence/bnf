@@ -1,21 +1,20 @@
-import type { User, Project } from "@/lib/generated/prisma/client"
+import { canReadProject } from "@/lib/authz/project-access"
+import type { PolicyUser } from "@/models/users/schema"
+import type { ProjectWithShares } from "@/models/projects/schema"
 
 export class FeedbackPolicy {
-  constructor(private user: User) {}
+  constructor(private user: PolicyUser) {}
 
-  before(u: User): true | undefined {
-    return u.role === "admin" ? true : undefined
-  }
-
-  // Anyone who can see the project (owner or a public project) may leave
-  // feedback on its sessions, notes, and turns. Mirrors NotePolicy.list.
-  submit(project: Project): boolean {
-    return project.ownerId === this.user.id || project.isPublic
+  // Anyone who can see the project may leave feedback on its sessions, notes
+  // and turns — read access is the bar, not write: feedback is about the app,
+  // not the corpus.
+  submit(project: ProjectWithShares): boolean {
+    return canReadProject(this.user, project)
   }
 
   // Reading is scoped to the caller's OWN feedback (the query filters by
   // userId) — same visibility predicate as submit. Not a team-wide viewer.
-  read(project: Project): boolean {
+  read(project: ProjectWithShares): boolean {
     return this.submit(project)
   }
 }

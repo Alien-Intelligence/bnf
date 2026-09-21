@@ -68,22 +68,21 @@ export class AuthorizationError extends Error {
 
 export interface Bouncer {
   with<P extends object>(
-    PolicyClass: new (user: User) => P,
-  ): { authorize(action: keyof P & string, resource?: any): Promise<void> }
+    PolicyClass: new (user: PolicyUser) => P,
+  ): { authorize<A extends keyof P & string>(action: A, ...args: PolicyArgs<P, A>): Promise<void> }
 }
 
-export function bouncer(user: User): Bouncer {
+export function bouncer(user: PolicyUser): Bouncer {
   return {
     with(PolicyClass) {
-      const policy = new PolicyClass(user) as any
+      const policy = new PolicyClass(user) as Record<string, unknown>
       return {
-        async authorize(action, resource) {
-          if (policy.before?.(user) === true) return
+        async authorize(action, ...args) {
           const method = policy[action]
           if (typeof method !== "function") {
             throw new AuthorizationError(`No policy method "${String(action)}"`)
           }
-          const allowed = await method.call(policy, resource)
+          const allowed = await method.call(policy, ...args)
           if (!allowed) throw new AuthorizationError()
         },
       }
@@ -93,6 +92,16 @@ export function bouncer(user: User): Bouncer {
 ```
 
 Rules:
+- The bouncer takes a **`PolicyUser`** — the User row plus `groupIds`, resolved
+  once per request. A bare `User` does not compile, which is what forces every
+  policy through `lib/authz/project-access.ts`. See
+  [sharing.md](sharing.md).
+- There is **no `before()` admin bypass**. Admin is rule 2 inside
+  `projectAccessLevel`, so it lives in one place instead of eleven. Policies
+  that are not project-scoped (`GroupPolicy`, `UserPolicy`) carry their own
+  explicit admin check.
+- `authorize` is typed against the policy method's own parameters, so passing a
+  shares-less project is a compile error.
 - Policies live in `models/<model>/policy.ts`.
 - Every action that touches a resource is authorized.
 - Authorize **after** loading the resource, **before** calling the service.
@@ -106,42 +115,60 @@ One question per method: "is this user allowed to do this to this resource?"
 
 ```ts
 // models/projects/policy.ts
-import type { User } from "@/models/users/schema"
-import type { Project } from "./schema"
+import {
+  canReadProject,
+  canWriteProject,
+  isProjectOwner,
+} from "@/lib/authz/project-access"
+import { isDerived } from "@/lib/authz/corpus-source"
+import { USER_ROLE, type PolicyUser } from "@/models/users/schema"
+import type { ProjectWithShares } from "./schema"
 
 export class ProjectPolicy {
-  constructor(private user: User) {}
+  constructor(private user: PolicyUser) {}
 
-  before(user: User): boolean | undefined {
-    if (user.role === "admin") return true
-    return undefined
+  view(p: ProjectWithShares): boolean { return canReadProject(this.user, p) }
+  create(): boolean { return this.user.role !== USER_ROLE.GUEST }
+  edit(p: ProjectWithShares): boolean { return canWriteProject(this.user, p) }
+  delete(p: ProjectWithShares): boolean { return isProjectOwner(this.user, p) }
+  // Owner-only, and never a derived workspace — its owner does not own the
+  // corpus it reads. See sharing.md, "A grant is never re-grantable".
+  share(p: ProjectWithShares): boolean {
+    return isProjectOwner(this.user, p) && !isDerived(p)
   }
-
-  view(p: Project): boolean { return p.ownerId === this.user.id || p.isPublic }
-  create(): boolean { return this.user.role !== "guest" }
-  edit(p: Project): boolean { return p.ownerId === this.user.id }
-  delete(p: Project): boolean { return p.ownerId === this.user.id }
 }
 ```
 
 ```ts
 // models/corpus/policy.ts
-import type { User } from "@/models/users/schema"
-import type { Project } from "@/models/projects/schema"
+import { canReadProject, canWriteProject } from "@/lib/authz/project-access"
+import { isDerived } from "@/lib/authz/corpus-source"
+import type { PolicyUser } from "@/models/users/schema"
+import type { ProjectWithShares } from "@/models/projects/schema"
 
 export class CorpusPolicy {
-  constructor(private user: User) {}
-  before(u: User) { return u.role === "admin" ? true : undefined }
-  read(project: Project): boolean { return project.ownerId === this.user.id || project.isPublic }
-  mutate(project: Project): boolean { return project.ownerId === this.user.id }
+  constructor(private user: PolicyUser) {}
+
+  read(project: ProjectWithShares): boolean {
+    return canReadProject(this.user, project)
+  }
+
+  // The structural condition rides alongside the access check: a derived
+  // project reads another project's corpus, so mutating it here would write to
+  // a corpus the caller does not own. Repeated in BufferPolicy, IngestPolicy
+  // and SessionPolicy — see sharing.md.
+  mutate(project: ProjectWithShares): boolean {
+    return canWriteProject(this.user, project) && !isDerived(project)
+  }
 }
 ```
 
 Rules:
 - One class per file at `models/<model>/policy.ts`.
 - Methods return `boolean` — no side effects, no DB calls, no throws.
-- `before()` is the admin bypass — `true` short-circuits, `undefined` falls
-  through.
+- Admin is **not** a bypass here — it is rule 2 of the access table inside
+  `projectAccessLevel`. Policies that are not project-scoped (`GroupPolicy`,
+  `UserPolicy`) carry their own explicit admin check.
 - Method names match the action string passed to `authorize()`.
 - Policy methods take a *loaded* resource — they never fetch.
 
@@ -258,6 +285,13 @@ Auth, authorization, and business logic each in exactly one place.
 ```ts
 // ❌ Inline session check
 const session = await auth.api.getSession({ headers: req.headers })
+// One exemption, documented inline where it is used: the chat-sdk's
+// `buildTools` / `buildToolContext` / `system` callbacks receive a bare
+// Request, and the handler is module-scoped, so it cannot close over the
+// per-request user that `withAuth` resolved. The route is still wrapped in
+// `withAuth` and still authorizes before the SDK is reached; the callback
+// re-resolves the same session only to hydrate the tool context. See
+// app/api/sessions/[sid]/messages/route.ts.
 
 // ❌ Inline ownership guard
 if (project.ownerId !== user.id) return forbidden()

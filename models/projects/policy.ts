@@ -1,36 +1,53 @@
-import type { User } from "@/models/users/schema"
-import type { Project } from "./schema"
+import { isDerived } from "@/lib/authz/corpus-source"
+import {
+  canReadProject,
+  canWriteProject,
+  isProjectOwner,
+} from "@/lib/authz/project-access"
+import { USER_ROLE, type PolicyUser } from "@/models/users/schema"
+import type { ProjectWithShares } from "./schema"
 
 export class ProjectPolicy {
-  constructor(private user: User) {}
+  constructor(private user: PolicyUser) {}
 
-  /**
-   * Admin bypass: if the acting user is an admin, every action is allowed.
-   * Returns true to short-circuit; undefined to fall through to the action
-   * method (per playbook/api-layers.md bouncer contract).
-   */
-  before(u: User): boolean | undefined {
-    if (u.role === "admin") return true
-    return undefined
-  }
-
-  /** Owner or public projects are visible to any authenticated user. */
-  view(p: Project): boolean {
-    return p.ownerId === this.user.id || p.isPublic
+  /** Owner, admin, any group share, or a public project. */
+  view(p: ProjectWithShares): boolean {
+    return canReadProject(this.user, p)
   }
 
   /** Any authenticated non-guest user may create a project. */
   create(): boolean {
-    return this.user.role !== "guest"
+    return this.user.role !== USER_ROLE.GUEST
   }
 
-  /** Only the project owner may edit. */
-  edit(p: Project): boolean {
-    return p.ownerId === this.user.id
+  edit(p: ProjectWithShares): boolean {
+    return canWriteProject(this.user, p)
   }
 
-  /** Only the project owner may delete. */
-  delete(p: Project): boolean {
-    return p.ownerId === this.user.id
+  /**
+   * Owner-only, deliberately. A `write`-shared collaborator may mutate the
+   * corpus, run ingestion and write notes, but may not destroy the project.
+   */
+  delete(p: ProjectWithShares): boolean {
+    return isProjectOwner(this.user, p)
+  }
+
+  /**
+   * Owner-only, deliberately. Only the owner (or an admin, who resolves to
+   * `owner`) may widen access to a project — a write share is a licence to
+   * work inside it, not to re-grant it.
+   *
+   * And never a derived project, even for its owner. A derived workspace is
+   * owned by the *reader*, but its corpus belongs to the source. Sharing it
+   * would re-grant that corpus to a group the source's owner never granted
+   * anything to — the reads route through `corpusProjectId()` and are gated on
+   * the workspace's pinned share, not on the caller's access to the source. A
+   * read-only grant must not be launderable into an onward one.
+   *
+   * This mirrors `CorpusPolicy`: a derived project has no corpus of its own to
+   * give away, in access exactly as in mutation.
+   */
+  share(p: ProjectWithShares): boolean {
+    return isProjectOwner(this.user, p) && !isDerived(p)
   }
 }

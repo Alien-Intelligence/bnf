@@ -12,7 +12,8 @@
  * added but without digitized full text). The add is instant — ARKs are stubbed
  * synchronously and their BnF metadata is resolved out-of-band by the resolver.
  *
- * Authorization: project owner (mutate) or admin (before() bypass).
+ * Authorization: project owner (mutate); admin resolves to owner — see
+ * lib/authz/project-access.ts. There is no before() bypass.
  */
 import { withAuth } from "@/app/api/_middleware"
 import { parseBody } from "@/app/api/_helpers"
