@@ -1,7 +1,7 @@
 import { getTranslations } from "next-intl/server"
 import type { Metadata } from "next"
 import { requireSessionUser } from "@/lib/auth-helpers"
-import { ProjectQueries } from "@/models/projects/queries"
+import { listProjectsForUser } from "@/models/projects/service"
 import { ProjectsClient } from "./client"
 
 export async function generateMetadata(): Promise<Metadata> {
@@ -11,7 +11,7 @@ export async function generateMetadata(): Promise<Metadata> {
 
 export default async function ProjectsPage() {
   const user = await requireSessionUser("/projects")
-  const projects = await ProjectQueries.listVisibleForUserWithStats(user)
+  const projects = await listProjectsForUser(user)
 
   return (
     <ProjectsClient

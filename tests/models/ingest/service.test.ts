@@ -19,7 +19,7 @@ import {
   countNonWarningErrors,
   parseErrorEntries,
   splitSucceededArks,
-} from "./service"
+} from "@/models/ingest/service"
 
 const ARK1 = "ark:/12148/bpt6k000001"
 const ARK2 = "ark:/12148/bpt6k000002"

@@ -14,6 +14,7 @@
 // answers 400 and never reaches the policy — the 403 assertions below are only
 // meaningful with valid payloads.
 import { prisma } from "@/lib/db"
+import { markHeadIngested } from "@/lib/testing/mark-ingested"
 import { randomUUID } from "node:crypto"
 
 const BASE = process.env["APP_URL"] ?? "http://localhost:3001"
@@ -93,10 +94,10 @@ async function main() {
   const add = await a(`/api/projects/${source}/corpus/add`, { method: "POST", body: JSON.stringify({ arks: ["ark:/12148/bpt6k9999991"], reason: "golden path" }) })
   check(add.status === 200 || add.status === 201, "A can add to their own corpus", String(add.status))
 
-  // Ingestion needs the worker; the pointer is what every guard reads, so set it
-  // directly rather than standing up the whole pipeline for an authz check.
-  const withHead = await prisma.project.findUniqueOrThrow({ where: { id: source } })
-  await prisma.project.update({ where: { id: source }, data: { ingestedVersionId: withHead.headVersionId } })
+  // Every guard in this feature reads the ingest pointer, so the fixture needs
+  // one — but moving it by hand would leave the version `sealed`, a state the
+  // real pipeline never produces. markHeadIngested moves both halves.
+  await markHeadIngested(source)
 
   // 3. Before sharing, B sees nothing.
   console.log("\n3. before sharing, B cannot see the project")

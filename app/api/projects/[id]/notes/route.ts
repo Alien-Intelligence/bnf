@@ -11,6 +11,7 @@ import { ProjectQueries } from "@/models/projects/queries"
 import { NotePolicy } from "@/models/notes/policy"
 import { NoteQueries } from "@/models/notes/queries"
 import { NoteService } from "@/models/notes/service"
+import { corpusProjectId } from "@/lib/authz/corpus-source"
 import { createNoteSchema } from "@/models/notes/types"
 import type { NoteListItem, NoteWithCitations } from "@/models/notes/schema"
 
@@ -36,8 +37,11 @@ export const POST = withAuth(async (req, _user, bouncer, ctx: RouteCtx) => {
   if (!project) return notFound("Projet introuvable")
   await bouncer.with(NotePolicy).authorize("create", project)
 
-  const note = await NoteService.create({
+  // The note belongs to this project; its citations are validated against the
+  // corpus the project reads, which is the source's when it is derived.
+  const { note } = await NoteService.create({
     projectId,
+    corpusProjectId: corpusProjectId(project),
     appSessionId: parsed.appSessionId,
     title: parsed.title,
     bodyMd: parsed.bodyMd,

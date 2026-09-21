@@ -7,7 +7,6 @@
 
 import { useState } from "react"
 import { useTranslations } from "next-intl"
-import { Loader2, Trash2 } from "lucide-react"
 import {
   Dialog,
   DialogContent,
@@ -17,13 +16,7 @@ import {
 } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
+import { FormProjectShare } from "@/components/forms/projects/share"
 import { useGroups } from "@/hooks/api/groups"
 import {
   useProjectShares,
@@ -31,8 +24,9 @@ import {
   useUnshareProject,
 } from "@/hooks/api/projects"
 import { PROJECT_ACCESS } from "@/lib/authz/project-access"
-import type { ProjectAccess } from "@/lib/authz/project-access"
+import { CardProjectShareRow } from "@/components/cards/projects/share-row"
 import type { ProjectListItem } from "@/models/projects/schema"
+import type { ShareProjectInput } from "@/models/projects/types"
 
 interface DialogProjectShareProps {
   project: ProjectListItem
@@ -53,8 +47,9 @@ export function DialogProjectShare({
   const shareProject = useShareProject(project.id)
   const unshareProject = useUnshareProject(project.id)
 
-  const [groupId, setGroupId] = useState<string>("")
-  const [access, setAccess] = useState<ProjectAccess>(PROJECT_ACCESS.READ)
+  // Granting and revoking fail for different reasons and are read in different
+  // places, so each keeps its own message rather than overwriting the other's.
+  const [grantError, setGrantError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   // A group already granted access is changed through its own row, not added
@@ -62,14 +57,17 @@ export function DialogProjectShare({
   const sharedGroupIds = new Set((shares.data ?? []).map((s) => s.groupId))
   const available = (groups.data ?? []).filter((g) => !sharedGroupIds.has(g.id))
 
-  const onGrant = async () => {
-    if (!groupId) return
-    setError(null)
+  // Returns whether the grant landed, so the form knows whether to clear the
+  // selection. Swallowing the rejection AND resetting would wipe the owner's
+  // chosen group every time the server refused.
+  const onGrant = async (data: ShareProjectInput): Promise<boolean> => {
+    setGrantError(null)
     try {
-      await shareProject.mutateAsync({ groupId, access })
-      setGroupId("")
+      await shareProject.mutateAsync(data)
+      return true
     } catch (e) {
-      setError(e instanceof Error ? e.message : tCommon("error"))
+      setGrantError(e instanceof Error ? e.message : tCommon("error"))
+      return false
     }
   }
 
@@ -101,9 +99,22 @@ export function DialogProjectShare({
         </DialogHeader>
 
         <div className="flex flex-col gap-5">
-          {/* Grant */}
+          {/* Grant. A failed groups fetch must not read as "you have no
+              groups" — that sentence sends the owner to an administrator to
+              fix something that is not broken. */}
           {groups.isLoading ? (
             <Skeleton className="h-10 rounded-md" />
+          ) : groups.isError ? (
+            <div className="flex flex-col items-start gap-2">
+              <p className="text-sm text-destructive">{t("groupsError")}</p>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => groups.refetch()}
+              >
+                {tCommon("tryAgain")}
+              </Button>
+            </div>
           ) : available.length === 0 ? (
             <p className="text-sm text-muted-foreground">
               {(groups.data ?? []).length === 0
@@ -111,67 +122,11 @@ export function DialogProjectShare({
                 : t("allGroupsShared")}
             </p>
           ) : (
-            <div className="flex flex-wrap items-end gap-2">
-              <div className="min-w-40 flex-1 space-y-1.5">
-                <label className="text-sm font-medium">{t("group")}</label>
-                <Select
-                  value={groupId}
-                  onValueChange={(v) => setGroupId(v ?? "")}
-                >
-                  <SelectTrigger>
-                    {/* Base UI renders the raw value unless told how to label
-                        it — a bare SelectValue would show the group's uuid. */}
-                    <SelectValue placeholder={t("groupPlaceholder")}>
-                      {(value: string | null) =>
-                        available.find((g) => g.id === value)?.name ??
-                        t("groupPlaceholder")
-                      }
-                    </SelectValue>
-                  </SelectTrigger>
-                  <SelectContent>
-                    {available.map((g) => (
-                      <SelectItem key={g.id} value={g.id}>
-                        {g.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="w-36 space-y-1.5">
-                <label className="text-sm font-medium">{t("access")}</label>
-                <Select
-                  value={access}
-                  onValueChange={(v) => setAccess(v as ProjectAccess)}
-                >
-                  <SelectTrigger>
-                    <SelectValue>
-                      {(value: string | null) =>
-                        value === PROJECT_ACCESS.WRITE
-                          ? t("level.write")
-                          : t("level.read")
-                      }
-                    </SelectValue>
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value={PROJECT_ACCESS.READ}>
-                      {t("level.read")}
-                    </SelectItem>
-                    <SelectItem value={PROJECT_ACCESS.WRITE}>
-                      {t("level.write")}
-                    </SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <Button
-                onClick={onGrant}
-                disabled={!groupId || shareProject.isPending}
-              >
-                {shareProject.isPending && (
-                  <Loader2 className="size-4 animate-spin" />
-                )}
-                {t("grant")}
-              </Button>
-            </div>
+            <FormProjectShare
+              groups={available}
+              onSubmit={onGrant}
+              serverError={grantError}
+            />
           )}
 
           {/* Current grants */}
@@ -193,64 +148,13 @@ export function DialogProjectShare({
           ) : (
             <ul className="divide-y rounded-lg border">
               {shares.data?.map((share) => (
-                <li
+                <CardProjectShareRow
                   key={share.id}
-                  className="flex items-center justify-between gap-3 px-3 py-2"
-                >
-                  <div className="min-w-0">
-                    <div className="truncate text-sm font-medium">
-                      {share.group.name}
-                    </div>
-                    {/* Revoking costs these workspaces their corpus — say so
-                        before the owner clicks, not after. */}
-                    {share.derivedCount > 0 && (
-                      <div className="text-xs text-muted-foreground">
-                        {t("derived", { count: share.derivedCount })}
-                      </div>
-                    )}
-                  </div>
-                  <div className="flex shrink-0 items-center gap-1">
-                    {/* The level is editable in place: one row per (project,
-                        group) means changing it is an update, so requiring a
-                        revoke-then-re-share to widen access would be busywork
-                        that also breaks any workspace derived from the grant. */}
-                    <Select
-                      value={share.access}
-                      onValueChange={(v) => onChangeAccess(share.groupId, v)}
-                    >
-                      <SelectTrigger
-                        size="sm"
-                        className="w-36"
-                        aria-label={t("changeAccess", { name: share.group.name })}
-                      >
-                        <SelectValue>
-                          {(value: string | null) =>
-                            value === PROJECT_ACCESS.WRITE
-                              ? t("level.write")
-                              : t("level.read")
-                          }
-                        </SelectValue>
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value={PROJECT_ACCESS.READ}>
-                          {t("level.read")}
-                        </SelectItem>
-                        <SelectItem value={PROJECT_ACCESS.WRITE}>
-                          {t("level.write")}
-                        </SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      aria-label={t("revoke", { name: share.group.name })}
-                      disabled={unshareProject.isPending}
-                      onClick={() => onRevoke(share.groupId)}
-                    >
-                      <Trash2 className="size-3.5" />
-                    </Button>
-                  </div>
-                </li>
+                  share={share}
+                  onChangeAccess={onChangeAccess}
+                  onRevoke={onRevoke}
+                  revoking={unshareProject.isPending}
+                />
               ))}
             </ul>
           )}

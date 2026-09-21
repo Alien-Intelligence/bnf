@@ -12,15 +12,15 @@ interface CarnetClientProps {
   projectId: string
   initialUser: { name?: string | null; email: string }
   /** The steps this user has on this project — see LayoutWorkspaceStepNav. */
-  workspaceSteps: readonly WorkspaceStep[]
-  notes: Note[]
+  initialWorkspaceSteps: readonly WorkspaceStep[]
+  initialNotes: Note[]
 }
 
 export function CarnetClient({
   projectId,
   initialUser,
-  workspaceSteps,
-  notes,
+  initialWorkspaceSteps,
+  initialNotes,
 }: CarnetClientProps) {
   const [selectedCitation, setSelectedCitation] =
     useState<ParsedCitation | null>(null)
@@ -35,11 +35,11 @@ export function CarnetClient({
       <WorkspaceHeader
         user={user}
         projectId={projectId}
-        workspaceSteps={workspaceSteps}
+        workspaceSteps={initialWorkspaceSteps}
       />
       <div className="flex-1 overflow-hidden">
         <LayoutCarnet
-          notes={notes}
+          notes={initialNotes}
           onCitationClick={setSelectedCitation}
         />
       </div>

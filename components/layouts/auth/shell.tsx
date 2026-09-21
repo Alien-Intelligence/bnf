@@ -10,6 +10,7 @@ import type { ReactNode } from "react"
 
 export function LayoutAuthShell({ children }: { children: ReactNode }) {
   const t = useTranslations("auth.brand")
+  const tBrand = useTranslations("brand")
 
   return (
     <div className="grid min-h-screen lg:grid-cols-2">
@@ -17,7 +18,7 @@ export function LayoutAuthShell({ children }: { children: ReactNode }) {
         <div className="flex items-center gap-3">
           <Image
             src="/brand/logo-w.svg"
-            alt="Alien Intelligence"
+            alt={tBrand("alien")}
             width={1048}
             height={153}
             priority
@@ -26,7 +27,7 @@ export function LayoutAuthShell({ children }: { children: ReactNode }) {
           <div className="h-6 w-px bg-border" aria-hidden />
           <Image
             src="/brand/bnf-logo-w.png"
-            alt="BnF — Bibliothèque nationale de France"
+            alt={tBrand("bnf")}
             width={960}
             height={359}
             priority

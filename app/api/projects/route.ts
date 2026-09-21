@@ -4,7 +4,7 @@
  *
  * GET returns owned projects, projects shared into one of the caller's groups,
  * and public ones; each row carries the access level the caller holds. The
- * visibility filter lives in ProjectQueries.listVisibleForUserWithStats so it
+ * visibility filter lives in ProjectQueries.listVisibleRowsForUser so it
  * cannot drift from lib/authz/project-access.ts.
  *
  * Authorization: any authenticated non-guest may create (ProjectPolicy.create).
@@ -14,13 +14,13 @@ import { withAuth } from "@/app/api/_middleware"
 import { parseBody } from "@/app/api/_helpers"
 import { ok } from "@/lib/api-response"
 import { ProjectPolicy } from "@/models/projects/policy"
-import { ProjectQueries } from "@/models/projects/queries"
+import { listProjectsForUser } from "@/models/projects/service"
 import { ProjectService } from "@/models/projects/service"
 import { createProjectRequestSchema } from "@/models/projects/types"
 import type { Project, ProjectListItem } from "@/models/projects/schema"
 
 export const GET = withAuth(async (_req, user) => {
-  const projects = await ProjectQueries.listVisibleForUserWithStats(user)
+  const projects = await listProjectsForUser(user)
   return ok<ProjectListItem[]>(projects)
 })
 

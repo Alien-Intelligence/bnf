@@ -15,10 +15,12 @@ import { GroupQueries } from "@/models/groups/queries"
 import { GroupService } from "@/models/groups/service"
 import { renameGroupSchema } from "@/models/groups/types"
 import {
-  GroupSlugTakenError,
-  InvalidGroupNameError,
   type Group,
 } from "@/models/groups/schema"
+import {
+  GroupSlugTakenError,
+  InvalidGroupNameError,
+} from "@/models/groups/service"
 
 type RouteCtx = { params: Promise<{ gid: string }> }
 

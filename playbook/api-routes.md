@@ -168,6 +168,14 @@ if (project.ownerId !== user.id) return forbidden()
   source of truth; hooks import them, never redefine them.
 - Routes call `models/<model>/queries.ts` for reads and `service.ts` for
   writes — never construct Prisma queries inline.
+- **One exception, and it is a consequence of a stronger rule.** A read whose
+  *shape* depends on an authorization decision — the projects list, which
+  carries each row's access level, or a project's grants — goes through
+  `service.ts`, because `queries.ts` may hold no authorization logic
+  ([sharing.md](sharing.md), [models.md](models.md)). Something has to combine
+  the query with the predicate, and the only layer allowed to do both is the
+  service. The rule above is about not hand-rolling Prisma in a handler; that
+  still holds either way.
 - The `ok`/`notFound`/`unauthorized`/`forbidden` helpers in
   `lib/api-response.ts` are the only way to build a JSON response.
 - The SSE exemption is documented inline in

@@ -32,7 +32,7 @@ import {
 import { Badge } from "@/components/ui/badge"
 import { Button, buttonVariants } from "@/components/ui/button"
 import { BadgeProjectAccess } from "@/components/badges/projects/access"
-import { BadgeSharedCorpus } from "@/components/badges/projects/shared-corpus"
+import { BadgeProjectSharedCorpus } from "@/components/badges/projects/shared-corpus"
 import { ROUTES } from "@/lib/constants"
 import { PROJECT_ACCESS_LEVEL } from "@/lib/authz/project-access"
 import {
@@ -56,7 +56,11 @@ export function CardProjectTile({
   onShare,
   onDerive,
 }: CardProjectTileProps) {
-  const t = useTranslations("projects")
+  const t = useTranslations("projects.tile")
+  // The footer links and the header actions are the projects-list chrome, not
+  // the tile's own copy, so they keep their own scope rather than being reached
+  // through a shared parent namespace.
+  const tList = useTranslations("projects.list")
 
   // Two different questions, deliberately kept apart. `isMine` is a fact about
   // the row; `mayShare` is a permission, and an admin holds it on every project
@@ -92,13 +96,13 @@ export function CardProjectTile({
             {!isMine && (
               <span className="inline-flex items-center gap-1.5">
                 <User className="size-3 shrink-0" strokeWidth={1.8} />
-                {t("tile.ownedBy", { name: project.ownerName })}
+                {t("ownedBy", { name: project.ownerName })}
               </span>
             )}
             {derived && project.corpusSourceName && (
               <span className="inline-flex items-center gap-1.5">
                 <Database className="size-3 shrink-0" strokeWidth={1.8} />
-                {t("tile.readsCorpus", { source: project.corpusSourceName })}
+                {t("readsCorpus", { source: project.corpusSourceName })}
               </span>
             )}
           </CardDescription>
@@ -115,8 +119,8 @@ export function CardProjectTile({
               variant="ghost"
               size="sm"
               onClick={onShare}
-              aria-label={t("list.share")}
-              title={t("list.share")}
+              aria-label={tList("share")}
+              title={tList("share")}
             >
               <Share2 className="size-3.5" />
             </Button>
@@ -130,8 +134,8 @@ export function CardProjectTile({
                 variant="ghost"
                 size="sm"
                 onClick={onDerive}
-                aria-label={t("list.derive")}
-                title={t("list.derive")}
+                aria-label={tList("derive")}
+                title={tList("derive")}
               >
                 <Sparkles className="size-3.5" />
               </Button>
@@ -150,15 +154,15 @@ export function CardProjectTile({
               <span className="font-mono font-medium text-foreground">
                 {project.corpusSize.toLocaleString("fr-FR")}
               </span>
-              {t("tile.documents")}
+              {t("documents")}
             </span>
             <Badge variant={project.isIngested ? "default" : "outline"}>
-              {project.isIngested ? t("tile.ingested") : t("tile.notIngested")}
+              {project.isIngested ? t("ingested") : t("notIngested")}
             </Badge>
           </>
         )}
         <BadgeProjectAccess access={project.access} />
-        <BadgeSharedCorpus state={sourceState} />
+        <BadgeProjectSharedCorpus state={sourceState} />
       </CardContent>
 
       <CardFooter className="flex flex-wrap gap-2">
@@ -168,14 +172,14 @@ export function CardProjectTile({
               href={ROUTES.constituer(project.id)}
               className={buttonVariants({ variant: "default", size: "sm" })}
             >
-              {t("list.openCorpus")}
+              {tList("openCorpus")}
               <ArrowRight className="size-3.5" />
             </Link>
             <Link
               href={ROUTES.ingerer(project.id)}
               className={buttonVariants({ variant: "outline", size: "sm" })}
             >
-              {t("list.openIngest")}
+              {tList("openIngest")}
             </Link>
           </>
         )}
@@ -186,7 +190,7 @@ export function CardProjectTile({
             size: "sm",
           })}
         >
-          {t("list.openResearch")}
+          {tList("openResearch")}
           {!showCorpusSteps && <ArrowRight className="size-3.5" />}
         </Link>
       </CardFooter>

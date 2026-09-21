@@ -6,11 +6,12 @@
 // Query keys are defined once at the top; never inlined at the call site.
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
-import { apiFetch } from "@/lib/api-fetch"
+import { apiFetch, readError } from "@/lib/api-fetch"
+import { groupKeys } from "./groups"
 import type { Project, ProjectListItem } from "@/models/projects/schema"
-import type { ShareWithGroup } from "@/models/projects/sharing"
+import type { ShareWithGroup } from "@/models/projects/schema"
 import type {
-  CreateDerivedProjectRequest,
+  CreateDerivedProjectInput,
   CreateProjectRequest,
   ShareProjectInput,
 } from "@/models/projects/types"
@@ -21,23 +22,6 @@ export const projectKeys = {
   all: ["projects"] as const,
   list: ["projects", "list"] as const,
   shares: (projectId: string) => ["projects", projectId, "shares"] as const,
-}
-
-/**
- * Surfaces the server's message when there is one. The sharing API answers 422
- * with a French sentence the owner can act on; collapsing it into a generic
- * "erreur" would hide the one thing they need to know.
- */
-async function readError(res: Response, fallback: string): Promise<Error> {
-  try {
-    const body = (await res.json()) as { error?: unknown }
-    if (typeof body.error === "string" && body.error.length > 0) {
-      return new Error(body.error)
-    }
-  } catch {
-    // Non-JSON body (a proxy error page, say) — fall through to the fallback.
-  }
-  return new Error(`${fallback}: ${res.status}`)
 }
 
 // ── Read hooks ────────────────────────────────────────────────────────────────
@@ -99,6 +83,9 @@ export function useShareProject(projectId: string) {
     onSuccess: (data) => {
       qc.setQueryData(projectKeys.shares(projectId), data)
       qc.invalidateQueries({ queryKey: projectKeys.list })
+      // Granting adds a row to the target group's shares, and the admin Groups
+      // table renders that count from the groups list.
+      qc.invalidateQueries({ queryKey: groupKeys.list })
     },
   })
 }
@@ -117,6 +104,9 @@ export function useUnshareProject(projectId: string) {
     onSuccess: (data) => {
       qc.setQueryData(projectKeys.shares(projectId), data)
       qc.invalidateQueries({ queryKey: projectKeys.list })
+      // Revoking removes a row from the target group's shares, so the count in
+      // the admin Groups table is stale until the groups list is re-fetched.
+      qc.invalidateQueries({ queryKey: groupKeys.list })
     },
   })
 }
@@ -125,7 +115,7 @@ export function useUnshareProject(projectId: string) {
 
 export function useCreateDerivedProject() {
   const qc = useQueryClient()
-  return useMutation<Project, Error, CreateDerivedProjectRequest>({
+  return useMutation<Project, Error, CreateDerivedProjectInput>({
     mutationFn: async (body) => {
       const res = await apiFetch("/api/projects/derived", {
         method: "POST",

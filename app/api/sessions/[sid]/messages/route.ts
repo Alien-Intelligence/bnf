@@ -33,9 +33,15 @@ import {
   COMPACTION_CONTEXT_WINDOW_TOKENS,
 } from "@/lib/constants"
 import { summarizeForCompaction } from "@/lib/agent/compaction-summarizer"
+import { parseQuery } from "@/app/api/_helpers"
+import { streamQuerySchema } from "@/models/agents/types"
 import { AgentQueries } from "@/models/agents/queries"
 import { AgentPolicy } from "@/models/agents/policy"
-import { AgentService } from "@/models/agents/service"
+import {
+  AgentService,
+  sessionWithProject,
+  sessionWithProjectOrThrow,
+} from "@/models/agents/service"
 import { UserQueries } from "@/models/users/queries"
 import { resolveRequestLocale } from "@/lib/locale"
 import { canReachCorpus, corpusProjectId } from "@/lib/authz/corpus-source"
@@ -59,8 +65,18 @@ function sidFromUrl(req: Request): string {
   return decodeURIComponent(m[1])
 }
 
-/** Re-resolve the authenticated user for the tool context. The route wrapper
- *  has already authorized; this fetches the full Prisma user for handlers. */
+/**
+ * Re-resolve the authenticated user for the tool context.
+ *
+ * api-layers.md forbids an inline `auth.api.getSession` — `withAuth` is meant
+ * to be the only way a route obtains its user, and POST/GET/DELETE below all
+ * go through it. This is the documented exemption: the SDK's `buildTools` /
+ * `buildToolContext` / `system` callbacks are handed a bare Request, and
+ * `handler` is a module-scoped singleton shared across every request, so there
+ * is no seam through which the `withAuth` user could reach them. Authorization
+ * has already happened by the time these run; this only hydrates the full
+ * Prisma row the tool handlers need.
+ */
 async function resolveUser(req: Request) {
   const session = await auth.api.getSession({ headers: req.headers })
   if (!session) throw new Error("No authenticated session on chat request")
@@ -115,7 +131,7 @@ const handler = createChatHandler<TurnScopedCtx>({
     buildToolContext: async (req, signal) => {
       const sid = sidFromUrl(req)
       const [session, user] = await Promise.all([
-        AgentQueries.getAppSessionWithProjectOrThrow(sid),
+        sessionWithProjectOrThrow(sid),
         resolveUser(req),
       ])
       return buildTurnScopedCtx(
@@ -168,7 +184,7 @@ const handler = createChatHandler<TurnScopedCtx>({
 
 export const POST = withAuth(async (req, _user, bouncer, ctx: RouteCtx) => {
   const { sid } = await ctx.params
-  const session = await AgentQueries.getAppSessionWithProject(sid)
+  const session = await sessionWithProject(sid)
   if (!session) return notFound()
   await bouncer.with(AgentPolicy).authorize("post", { session, project: session.project })
   return handler.POST(req)
@@ -180,7 +196,14 @@ export const POST = withAuth(async (req, _user, bouncer, ctx: RouteCtx) => {
 
 export const GET = withAuth(async (req, _user, bouncer, ctx: RouteCtx) => {
   const { sid } = await ctx.params
-  const session = await AgentQueries.getAppSessionWithProject(sid)
+
+  // `fromSeq` reaches the SDK handler, not our own code, so a bad value would
+  // surface as an opaque failure inside it rather than a 400 here. Validating
+  // is cheap and api-routes.md admits no exceptions.
+  const query = parseQuery(req, streamQuerySchema)
+  if (query instanceof Response) return query
+
+  const session = await sessionWithProject(sid)
   if (!session) return notFound()
   await bouncer.with(AgentPolicy).authorize("stream", { session, project: session.project })
   return handler.GET(req)
@@ -192,7 +215,7 @@ export const GET = withAuth(async (req, _user, bouncer, ctx: RouteCtx) => {
 
 export const DELETE = withAuth(async (req, _user, bouncer, ctx: RouteCtx) => {
   const { sid } = await ctx.params
-  const session = await AgentQueries.getAppSessionWithProject(sid)
+  const session = await sessionWithProject(sid)
   if (!session) return notFound()
   await bouncer.with(AgentPolicy).authorize("cancel", { session, project: session.project })
 

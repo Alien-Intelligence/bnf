@@ -4,28 +4,31 @@
 // Admin console — Groups tab. Groups are the unit a project is shared with:
 // an admin creates them and manages membership; project owners then share into
 // them from their own project. Header/tabs/main wrapper come from the admin
-// layout. Loading / error / empty / data are distinct branches.
+// layout; the listing and its loading / error / empty / data branches come from
+// LayoutGroupsTable. This client owns only the heading and which modal is open.
 
 import { useState } from "react"
-import { Plus, Users } from "lucide-react"
+import { Plus } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { useGroups } from "@/hooks/api/groups"
-import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Skeleton } from "@/components/ui/skeleton"
-import { CardGroupRow } from "@/components/cards/groups/row"
+import { LayoutGroupsTable } from "@/components/layouts/groups/table"
 import { DialogGroupCreate } from "@/components/dialogs/groups/create"
 import { DialogGroupRename } from "@/components/dialogs/groups/rename"
 import { DialogGroupConfirmDelete } from "@/components/dialogs/groups/confirm-delete"
 import { SheetGroupMembers } from "@/components/sheets/groups/members"
-import { LayoutSharedEmptyState } from "@/components/layouts/shared/empty-state"
 import type { GroupListItem } from "@/models/groups/schema"
 
-export function AdminGroupsClient() {
-  const t = useTranslations("groups")
-  const tCommon = useTranslations("common")
+interface AdminGroupsClientProps {
+  initialGroups: GroupListItem[]
+}
 
-  const { data: groups, isLoading, isError, refetch } = useGroups()
+export function AdminGroupsClient({ initialGroups }: AdminGroupsClientProps) {
+  const t = useTranslations("groups")
+
+  const { data: groups, isLoading, isError, refetch } = useGroups({
+    initialData: initialGroups,
+  })
 
   const [createOpen, setCreateOpen] = useState(false)
   const [membersOf, setMembersOf] = useState<GroupListItem | null>(null)
@@ -46,58 +49,16 @@ export function AdminGroupsClient() {
         </Button>
       </div>
 
-      {isLoading ? (
-        <Skeleton className="h-64 rounded-xl" />
-      ) : isError ? (
-        <div className="flex flex-col items-start gap-2">
-          <p className="text-sm text-destructive">{tCommon("error")}</p>
-          <Button variant="outline" size="sm" onClick={() => refetch()}>
-            {tCommon("tryAgain")}
-          </Button>
-        </div>
-      ) : !groups || groups.length === 0 ? (
-        <LayoutSharedEmptyState
-          icon={Users}
-          title={t("empty")}
-          description={t("emptyHint")}
-          action={
-            <Button onClick={() => setCreateOpen(true)}>
-              <Plus className="size-4" />
-              {t("new")}
-            </Button>
-          }
-        />
-      ) : (
-        <Card>
-          <CardContent className="overflow-x-auto px-0">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b text-left text-muted-foreground">
-                  <th className="px-4 py-2 font-medium">{t("col.name")}</th>
-                  <th className="px-4 py-2 text-right font-medium">
-                    {t("col.members")}
-                  </th>
-                  <th className="px-4 py-2 text-right font-medium">
-                    {t("col.shares")}
-                  </th>
-                  <th className="px-4 py-2" />
-                </tr>
-              </thead>
-              <tbody>
-                {groups.map((group) => (
-                  <CardGroupRow
-                    key={group.id}
-                    group={group}
-                    onOpenMembers={() => setMembersOf(group)}
-                    onRename={() => setRenaming(group)}
-                    onDelete={() => setDeleting(group)}
-                  />
-                ))}
-              </tbody>
-            </table>
-          </CardContent>
-        </Card>
-      )}
+      <LayoutGroupsTable
+        groups={groups}
+        isLoading={isLoading}
+        isError={isError}
+        onRetry={() => refetch()}
+        onCreate={() => setCreateOpen(true)}
+        onOpenMembers={setMembersOf}
+        onRename={setRenaming}
+        onDelete={setDeleting}
+      />
 
       <DialogGroupCreate open={createOpen} onOpenChange={setCreateOpen} />
 

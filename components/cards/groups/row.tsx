@@ -23,7 +23,7 @@ export function CardGroupRow({
   onRename,
   onDelete,
 }: CardGroupRowProps) {
-  const t = useTranslations("groups")
+  const t = useTranslations("groups.row")
 
   return (
     <tr className="border-b last:border-0">
@@ -41,13 +41,13 @@ export function CardGroupRow({
         <div className="flex justify-end gap-1">
           <Button variant="outline" size="sm" onClick={onOpenMembers}>
             <Users className="size-3.5" />
-            {t("row.members")}
+            {t("members")}
           </Button>
           <Button
             variant="ghost"
             size="sm"
             onClick={onRename}
-            aria-label={t("row.rename")}
+            aria-label={t("rename")}
           >
             <Pencil className="size-3.5" />
           </Button>
@@ -55,7 +55,7 @@ export function CardGroupRow({
             variant="ghost"
             size="sm"
             onClick={onDelete}
-            aria-label={t("row.delete")}
+            aria-label={t("delete")}
           >
             <Trash2 className="size-3.5" />
           </Button>

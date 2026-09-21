@@ -50,3 +50,19 @@ export type ProjectListItem = Project & {
   corpusSourceName: string | null
 }
 
+
+/**
+ * A grant as the share dialog renders it: the level plus the group's name.
+ * A query shape, so it lives here beside the others rather than next to the
+ * service that happens to be its first caller.
+ */
+export const shareWithGroup = {
+  include: { group: { select: { id: true, name: true, slug: true } } },
+} satisfies Prisma.ProjectShareDefaultArgs
+
+export type ShareWithGroup = Prisma.ProjectShareGetPayload<
+  typeof shareWithGroup
+> & {
+  /** Derived projects reading this project's corpus through this grant. */
+  derivedCount: number
+}

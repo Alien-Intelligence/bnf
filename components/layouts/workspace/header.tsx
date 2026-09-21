@@ -66,6 +66,7 @@ export function WorkspaceHeader({
   workspaceSteps,
 }: WorkspaceHeaderProps) {
   const t = useTranslations("nav")
+  const tBrand = useTranslations("brand")
 
   return (
     <header className="relative z-20 flex h-14 shrink-0 items-center justify-between gap-4 border-b bg-background/85 px-4.5 backdrop-blur-md">
@@ -73,7 +74,7 @@ export function WorkspaceHeader({
       <div className="flex min-w-0 items-center gap-3">
         <Image
           src="/brand/logo-w.svg"
-          alt="Alien Intelligence"
+          alt={tBrand("alien")}
           width={1048}
           height={153}
           priority
@@ -82,8 +83,8 @@ export function WorkspaceHeader({
         <div className="h-6.5 w-px bg-border" aria-hidden />
         <Image
           src="/brand/bnf-logo-w.png"
-          alt="BnF — Bibliothèque nationale de France"
-          title="Bibliothèque nationale de France"
+          alt={tBrand("bnf")}
+          title={tBrand("bnfFull")}
           width={960}
           height={359}
           priority

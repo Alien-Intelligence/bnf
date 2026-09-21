@@ -291,6 +291,7 @@
       "empty": "This project is not shared with any group.",
       "noGroups": "No group exists yet. Ask an administrator to create one.",
       "allGroupsShared": "All of your groups already have access to this project.",
+      "groupsError": "Could not load the list of groups.",
       "derived": "{count, plural, one {# research workspace depends on it} other {# research workspaces depend on it}}",
       "changeAccess": "Change access for {name}"
     },
@@ -1006,6 +1007,7 @@
     },
     "members": {
       "description": "Add a member by email address. Removal is immediate: access to projects shared with this group is revoked on their next request.",
+      "emailLabel": "Member email address",
       "emailPlaceholder": "first.last@bnf.fr",
       "add": "Add",
       "remove": "Remove {name} from the group",
@@ -1017,5 +1019,10 @@
       "confirm": "Delete group",
       "done": "Group “{name}” deleted"
     }
+  },
+  "brand": {
+    "alien": "Alien Intelligence",
+    "bnf": "BnF — National Library of France",
+    "bnfFull": "Bibliothèque nationale de France"
   }
 }

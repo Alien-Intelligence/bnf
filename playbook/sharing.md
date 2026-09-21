@@ -201,10 +201,10 @@ mutate** (above) and none **to give away** (here). Both are `!isDerived(p)`
 next to the access check, for the same reason.
 
 This was live on this branch and every other check passed while it was open —
-the truth table, the eleven policies, the read path, and 33 e2e assertions.
-What caught it was asking who *else* can reach the data once a legitimate
-grant exists. `scripts/golden-sharing.ts` §6b now pins it with a third account
-that is granted nothing.
+the truth table, the eleven policies, and the read path. What caught it was
+asking who *else* can reach the data once a legitimate grant exists.
+`scripts/golden-sharing.ts` §6b now pins it with a third account that is
+granted nothing.
 
 ## Deletion
 
@@ -224,6 +224,35 @@ before every `advanceVersion`, so concurrent edits interleave but the version
 chain stays monotonic. No new machinery — see
 [corpus-versioning.md](corpus-versioning.md).
 
+## Forbidden patterns
+
+```ts
+// ❌ Re-deriving access instead of asking the one predicate
+if (project.ownerId === user.id || project.isPublic) { … }
+// → projectAccessLevel(user, project) — every rule, in one place
+
+// ❌ Loading a project without its shares, then authorizing on it
+const project = await prisma.project.findUnique({ where: { id } })
+await bouncer.with(ProjectPolicy).authorize("view", project)
+// → ProjectQueries.get(id) — the only loader an authorization path may use
+
+// ❌ An owner check alone on `share`
+share(p) { return isProjectOwner(this.user, p) }
+// → && !isDerived(p) — a derived workspace's owner does not own its corpus
+
+// ❌ Reading the corpus off the project you were handed
+const docs = await CorpusQueries.list(project.id)
+// → corpusProjectId(project) / resolveCorpusProject(project)
+
+// ❌ Letting a revoked grant fall through to an empty result
+if (!canReachCorpus(project)) return { documents: [] }
+// → 409 with CORPUS_ACCESS_REVOKED_MESSAGE; an empty list is a lie
+
+// ❌ A corpus mutation gated on write access alone
+mutate(p) { return canWriteProject(this.user, p) }
+// → && !isDerived(p) — there is no corpus of its own to mutate
+```
+
 ## Checklist
 
 - [ ] Access decided by `lib/authz/project-access.ts` — never re-derived.
@@ -236,3 +265,23 @@ chain stays monotonic. No new machinery — see
 - [ ] `owner`-only actions (delete, share) use `isProjectOwner`.
 - [ ] `share` also excludes derived projects — a grant is never re-grantable.
 - [ ] New reach over shared data tested from an account granted **nothing**.
+
+
+## Relation to other rules
+
+- [models.md](models.md): `models/groups/` and `models/projects/` both follow
+  the five-file structure; the grant layer lives in `projects/service.ts`
+  beside the lifecycle it widens, not in a sixth file.
+- [api-layers.md](api-layers.md): `PolicyUser` (User + `groupIds`) replaces
+  `User` through the bouncer and all eleven policies, and there is no
+  `before()` admin bypass any more — admin is rule 2 of the access table.
+- [api-routes.md](api-routes.md): `resolveCorpusProject` is the one call a
+  corpus route makes to get both the id and the reachability check, so neither
+  can be applied without the other.
+- [agent-streaming.md](agent-streaming.md): a revoked grant reaches the agent
+  as structured output (`CORPUS_ACCESS_REVOKED_ERROR`), never a throw.
+- [citations.md](citations.md): a derived workspace's citations validate
+  against the SOURCE's corpus — that is the corpus its notes are drawn from.
+- [corpus-versioning.md](corpus-versioning.md): concurrent writes from two
+  `write`-shared members are already safe; `advanceVersion` takes a per-project
+  advisory lock, so sharing needed no new machinery.

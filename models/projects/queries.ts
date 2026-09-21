@@ -1,13 +1,10 @@
 import "server-only"
 
 import { prisma } from "@/lib/db"
-import { projectAccessLevel } from "@/lib/authz/project-access"
-import { canReachCorpus } from "@/lib/authz/corpus-source"
-import { USER_ROLE, type PolicyUser } from "@/models/users/schema"
+import type { VisibilityScope } from "@/lib/authz/project-access"
 import {
   projectWithShares,
   type Project,
-  type ProjectListItem,
   type ProjectWithShares,
 } from "./schema"
 
@@ -29,30 +26,29 @@ export class ProjectQueries {
   }
 
   /**
-   * The projects-list payload: every project the user may see — owned, shared
-   * into one of their groups, or public — plus its head-version corpus size,
-   * whether it has been ingested, and the level the caller holds on it.
+   * Every project row the user may see — owned, shared into one of their
+   * groups, or public — with the owner's name and the corpus pointers a
+   * derived project reads from its source.
    *
-   * Two queries (projects, then a single grouped membership count over all head
-   * versions) — no N+1. An admin sees every project, which is what rule 2 of
-   * `projectAccessLevel` already implies for the per-row access level.
+   * Rows only, and the visibility filter arrives pre-decided as a
+   * `VisibilityScope` — this file never sees a user and so cannot re-derive who
+   * may see what. The access level and the reachability of a revoked corpus are
+   * likewise applied by `listProjectsForUser` in service.ts
+   * (playbook/models.md, playbook/sharing.md).
    */
-  static async listVisibleForUserWithStats(
-    user: PolicyUser,
-  ): Promise<ProjectListItem[]> {
-    const visibility =
-      user.role === USER_ROLE.ADMIN
-        ? {}
-        : {
-            OR: [
-              { ownerId: user.id },
-              { isPublic: true },
-              { shares: { some: { groupId: { in: user.groupIds } } } },
-            ],
-          }
+  static async listVisibleRows(scope: VisibilityScope) {
+    const where = scope.unrestricted
+      ? {}
+      : {
+          OR: [
+            { ownerId: scope.userId },
+            { isPublic: true },
+            { shares: { some: { groupId: { in: scope.groupIds } } } },
+          ],
+        }
 
-    const projects = await prisma.project.findMany({
-      where: visibility,
+    return prisma.project.findMany({
+      where,
       orderBy: { updatedAt: "desc" },
       include: {
         ...projectWithShares.include,
@@ -64,45 +60,31 @@ export class ProjectQueries {
         },
       },
     })
+  }
 
-    // A derived project's tile must show the corpus it actually reads, so the
-    // count is taken over the source's head, not its own empty placeholder.
-    const headIds = [
-      ...new Set(
-        projects
-          .map((p) => p.corpusSource?.headVersionId ?? p.headVersionId)
-          .filter((id): id is string => id !== null),
-      ),
-    ]
-
-    const counts =
-      headIds.length === 0
-        ? []
-        : await prisma.corpusMembership.groupBy({
-            by: ["versionId"],
-            where: { versionId: { in: headIds } },
-            _count: { ark: true },
-          })
-
-    const sizeByVersion = new Map(counts.map((c) => [c.versionId, c._count.ark]))
-
-    return projects.map(({ owner, corpusSource, ...p }) => {
-      // A revoked workspace can no longer reach the corpus it points at, so it
-      // reports nothing rather than the stats it used to have.
-      const reachable = canReachCorpus(p)
-      const headId = corpusSource?.headVersionId ?? p.headVersionId
-      const ingestedId = corpusSource?.ingestedVersionId ?? p.ingestedVersionId
-
-      return {
-        ...p,
-        corpusSize:
-          reachable && headId ? (sizeByVersion.get(headId) ?? 0) : 0,
-        isIngested: reachable && ingestedId !== null,
-        access: projectAccessLevel(user, p),
-        ownerName: owner.name,
-        corpusSourceName: corpusSource?.name ?? null,
-      }
+  /**
+   * Membership counts for a set of corpus versions, in one grouped query so the
+   * projects list stays two round trips rather than N+1.
+   */
+  static async membershipCountByVersion(
+    versionIds: string[],
+  ): Promise<Map<string, number>> {
+    if (versionIds.length === 0) return new Map()
+    const counts = await prisma.corpusMembership.groupBy({
+      by: ["versionId"],
+      where: { versionId: { in: versionIds } },
+      _count: { ark: true },
     })
+    return new Map(counts.map((c) => [c.versionId, c._count.ark]))
+  }
+
+  /** The ids of the projects reading this project's corpus. */
+  static async derivedIds(sourceProjectId: string): Promise<string[]> {
+    const rows = await prisma.project.findMany({
+      where: { corpusSourceId: sourceProjectId },
+      select: { id: true },
+    })
+    return rows.map((r) => r.id)
   }
 
   /**

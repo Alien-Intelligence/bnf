@@ -1,5 +1,8 @@
 import "server-only"
 import { prisma } from "@/lib/db"
+import { MemoryQueries } from "@/models/memory/queries"
+import { ProjectQueries } from "@/models/projects/queries"
+import { SESSION_SCOPE } from "@/models/sessions/schema"
 import {
   CORPUS_SOURCE_STATE,
   corpusProjectId,
@@ -10,7 +13,6 @@ import type { AppLocale } from "@/i18n/routing"
 import { renderCorpusPrompt } from "./corpus"
 import { renderResearchPrompt } from "./research"
 import type { AppSession } from "@/lib/generated/prisma/client"
-import type { MemorySnapshot } from "./shared"
 
 export class PromptBuilder {
   /**
@@ -50,33 +52,6 @@ export class PromptBuilder {
     })
   }
 
-  /**
-   * Invalidate the cached research prompt for a project whose corpus has just
-   * been ingested — and for every derived project that reads it.
-   *
-   * The research prompt embeds ÉTAT DU CORPUS, so a commit makes it stale: the
-   * agent would keep telling the librarian the corpus is not ingested and
-   * refuse to search. A derived workspace is affected by an ingestion it did
-   * not run, which is exactly the case a per-project invalidation misses.
-   *
-   * Only the `research` scope carries ingest status; corpus-scope prompts embed
-   * the head snapshot, which an ingestion does not move.
-   */
-  static async invalidateForIngestedCorpus(corpusProjectId: string): Promise<void> {
-    const derived = await prisma.project.findMany({
-      where: { corpusSourceId: corpusProjectId },
-      select: { id: true },
-    })
-
-    await prisma.appSession.updateMany({
-      where: {
-        projectId: { in: [corpusProjectId, ...derived.map((p) => p.id)] },
-        scope: "research",
-      },
-      data: { systemPrompt: null },
-    })
-  }
-
   private static async render(
     session: AppSession,
     locale: AppLocale,
@@ -87,22 +62,17 @@ export class PromptBuilder {
     // Memory is the project's own; the corpus belongs to the source when this
     // project is derived. Conflating the two is the modelling error this whole
     // feature is built to avoid — see lib/authz/corpus-source.ts.
-    const memory = await this.loadMemory(session.projectId, session.scope)
+    const memory = await MemoryQueries.snapshot(session.projectId, session.scope)
     const corpusId = corpusProjectId(project)
 
-    if (session.scope === "corpus") {
+    if (session.scope === SESSION_SCOPE.CORPUS) {
       const snapshot = await this.loadCorpusSnapshot(corpusId)
       return renderCorpusPrompt(project, memory, snapshot, locale)
     }
 
     const source = isDerived(project)
       ? {
-          name: (
-            await prisma.project.findUniqueOrThrow({
-              where: { id: corpusId },
-              select: { name: true },
-            })
-          ).name,
+          name: (await ProjectQueries.get(corpusId))?.name ?? "",
           state: corpusSourceState(project),
         }
       : null
@@ -115,30 +85,6 @@ export class PromptBuilder {
         : await this.loadIngestStatus(corpusId)
 
     return renderResearchPrompt(project, memory, ingestStatus, locale, source)
-  }
-
-  private static async loadMemory(
-    projectId: string,
-    scope: string,
-  ): Promise<MemorySnapshot> {
-    const items = await prisma.memoryItem.findMany({
-      where: { projectId, scope },
-      orderBy: [
-        { section: "asc" },
-        { position: "asc" },
-        { createdAt: "asc" },
-      ],
-    })
-    const sections = new Map<
-      string,
-      { title: string; items: { id: string; text: string; origin: string | null }[] }
-    >()
-    for (const it of items) {
-      const s = sections.get(it.section) ?? { title: it.section, items: [] }
-      s.items.push({ id: it.id, text: it.text, origin: it.origin ?? null })
-      sections.set(it.section, s)
-    }
-    return { sections: [...sections.values()] }
   }
 
   private static async loadIngestStatus(projectId: string) {

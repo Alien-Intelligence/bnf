@@ -4,12 +4,11 @@
 
 import { notFound } from "next/navigation"
 import { requireSessionUser } from "@/lib/auth-helpers"
-import { canReadProject, canWriteProject } from "@/lib/authz/project-access"
-import { CORPUS_SOURCE_STATE, corpusSourceState } from "@/lib/authz/corpus-source"
-import { RESEARCH_ONLY_STEPS, WORKSPACE_STEPS } from "@/lib/constants"
+import { canReadProject } from "@/lib/authz/project-access"
+import { workspaceStepsFor } from "@/lib/authz/workspace-steps"
 import { ProjectQueries } from "@/models/projects/queries"
-import { prisma } from "@/lib/db"
-import { CarnetClient } from "./carnet-client"
+import { NoteQueries } from "@/models/notes/queries"
+import { CarnetClient } from "./client"
 
 type RouteParams = { locale: string; projectId: string }
 
@@ -28,25 +27,14 @@ export default async function CarnetPage({
   if (!project) notFound()
   if (!canReadProject(user, project)) notFound()
 
-  // Mirrors the Rechercher page: the header must not offer steps this user
-  // would be bounced out of.
-  const workspaceSteps =
-    canWriteProject(user, project) &&
-    corpusSourceState(project) === CORPUS_SOURCE_STATE.OWN
-      ? WORKSPACE_STEPS
-      : RESEARCH_ONLY_STEPS
-
-  const notes = await prisma.note.findMany({
-    where: { projectId },
-    orderBy: { createdAt: "asc" },
-  })
+  const notes = await NoteQueries.listForProjectWithBodies(projectId)
 
   return (
     <CarnetClient
       projectId={projectId}
       initialUser={{ name: user.name, email: user.email }}
-      workspaceSteps={workspaceSteps}
-      notes={notes}
+      initialWorkspaceSteps={workspaceStepsFor(user, project)}
+      initialNotes={notes}
     />
   )
 }

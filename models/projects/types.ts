@@ -47,6 +47,6 @@ export const createDerivedProjectSchema = z.object({
   name: z.string().min(1).max(200),
   subtitle: z.string().max(300).optional(),
 })
-export type CreateDerivedProjectRequest = z.infer<
+export type CreateDerivedProjectInput = z.infer<
   typeof createDerivedProjectSchema
 >

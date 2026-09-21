@@ -5,7 +5,7 @@
 // Rendered at page level (playbook/componentization: conditional dialogs live
 // in the client, not nested in content components).
 
-import { useState } from "react"
+import { useEffect } from "react"
 import { useTranslations } from "next-intl"
 import {
   Dialog,
@@ -31,18 +31,27 @@ export function DialogGroupCreate({
   const t = useTranslations("groups.form")
   const createGroup = useCreateGroup()
   const { toast } = useToast()
-  const [error, setError] = useState<string | null>(null)
+
+  // The failure is read off the mutation rather than copied into local state:
+  // the host mounts this dialog persistently, so a second copy of the error
+  // would outlive the close and greet the admin on the next open.
+  const { reset: resetCreate } = createGroup
+  useEffect(() => {
+    // playbook/client-patterns: useEffect([open]) owns the reset — onOpenChange
+    // never fires for a programmatic open.
+    if (open) resetCreate()
+  }, [open, resetCreate])
 
   const onSubmit = async (data: CreateGroupInput) => {
-    setError(null)
     try {
       const group = await createGroup.mutateAsync(data)
       onOpenChange(false)
       toast(t("created", { name: group.name }))
-    } catch (e) {
+    } catch {
       // The API answers 409 with the reason (« un groupe portant l'identifiant
-      // … existe déjà »); showing it is the whole point of surfacing it.
-      setError(e instanceof Error ? e.message : null)
+      // … existe déjà »). mutateAsync already stored it on createGroup.error,
+      // which is rendered below; catching here only stops the rejection from
+      // escaping react-hook-form's handleSubmit.
     }
   }
 
@@ -53,12 +62,18 @@ export function DialogGroupCreate({
           <DialogTitle>{t("title")}</DialogTitle>
           <DialogDescription>{t("description")}</DialogDescription>
         </DialogHeader>
+        {/* The form owns its react-hook-form state, which the dialog cannot
+            reach into; keying it on `open` remounts it on every open so a name
+            abandoned mid-typing is not still sitting there next time. */}
         <FormGroupCreate
+          key={String(open)}
           onSubmit={onSubmit}
           onCancel={() => onOpenChange(false)}
           submitLabel={t("submit")}
         />
-        {error && <p className="text-sm text-destructive">{error}</p>}
+        {createGroup.error && (
+          <p className="text-sm text-destructive">{createGroup.error.message}</p>
+        )}
       </DialogContent>
     </Dialog>
   )

@@ -291,6 +291,7 @@
       "empty": "Ce projet n'est partagé avec aucun groupe.",
       "noGroups": "Aucun groupe n'existe encore. Demandez à un administrateur d'en créer un.",
       "allGroupsShared": "Tous vos groupes ont déjà accès à ce projet.",
+      "groupsError": "Impossible de charger la liste des groupes.",
       "derived": "{count, plural, one {# espace de recherche en dépend} other {# espaces de recherche en dépendent}}",
       "changeAccess": "Modifier l'accès de {name}"
     },
@@ -1006,6 +1007,7 @@
     },
     "members": {
       "description": "Ajoutez un membre par son adresse e-mail. Le retrait est immédiat : l'accès aux projets partagés avec ce groupe est révoqué dès la requête suivante.",
+      "emailLabel": "Adresse e-mail du membre",
       "emailPlaceholder": "prenom.nom@bnf.fr",
       "add": "Ajouter",
       "remove": "Retirer {name} du groupe",
@@ -1017,5 +1019,10 @@
       "confirm": "Supprimer le groupe",
       "done": "Groupe « {name} » supprimé"
     }
+  },
+  "brand": {
+    "alien": "Alien Intelligence",
+    "bnf": "BnF — Bibliothèque nationale de France",
+    "bnfFull": "Bibliothèque nationale de France"
   }
 }

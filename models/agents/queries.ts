@@ -5,25 +5,7 @@
 import "server-only"
 
 import { prisma } from "@/lib/db"
-import {
-  projectWithShares,
-  type ProjectWithShares,
-} from "@/models/projects/schema"
 import type { AppSession, TurnSnapshot } from "./schema"
-
-// ---------------------------------------------------------------------------
-// Composite type returned by getAppSessionWithProject
-// ---------------------------------------------------------------------------
-
-/**
- * AppSession with its parent Project pre-loaded — including the project's
- * shares, which lib/authz/project-access.ts reads. Used by route handlers that
- * must pass { session, project } to AgentPolicy methods; policy methods never
- * fetch, so the project must be loaded by the handler before authorize().
- */
-export type AppSessionWithProject = AppSession & {
-  project: ProjectWithShares
-}
 
 export class AgentQueries {
   /**
@@ -117,35 +99,6 @@ export class AgentQueries {
    */
   static async getAppSession(id: string): Promise<AppSession | null> {
     return prisma.appSession.findUnique({ where: { id } })
-  }
-
-  /**
-   * Fetches an AppSession together with its parent Project, or null if not
-   * found. Used by route handlers whose policy check requires both the session
-   * and the project (AgentPolicy methods take { session, project }).
-   */
-  static async getAppSessionWithProject(
-    id: string,
-  ): Promise<AppSessionWithProject | null> {
-    const row = await prisma.appSession.findUnique({
-      where: { id },
-      include: { project: projectWithShares },
-    })
-    return row
-  }
-
-  /**
-   * Like getAppSessionWithProject, but throws if not found. Used by the chat
-   * handler's per-turn callbacks, where the session was already loaded and
-   * authorized by the route.
-   */
-  static async getAppSessionWithProjectOrThrow(
-    id: string,
-  ): Promise<AppSessionWithProject> {
-    return prisma.appSession.findUniqueOrThrow({
-      where: { id },
-      include: { project: projectWithShares },
-    })
   }
 
   /**

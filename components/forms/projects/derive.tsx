@@ -24,10 +24,16 @@ import { createDerivedProjectSchema } from "@/models/projects/types"
 
 // The source id is supplied by the dialog, not typed by the user.
 const formSchema = createDerivedProjectSchema.omit({ sourceProjectId: true })
-type FormValues = z.infer<typeof formSchema>
+
+/**
+ * What this form submits. Exported so the hosting dialog types its handler off
+ * the schema too, rather than restating the field list by hand and drifting the
+ * day the schema gains a field.
+ */
+export type FormProjectDeriveValues = z.infer<typeof formSchema>
 
 interface FormProjectDeriveProps {
-  onSubmit: (data: FormValues) => Promise<void>
+  onSubmit: (data: FormProjectDeriveValues) => Promise<void>
   onCancel: () => void
   defaultName: string
 }
@@ -40,7 +46,7 @@ export function FormProjectDerive({
   const t = useTranslations("projects.derive")
   const tCommon = useTranslations("common")
 
-  const form = useForm<FormValues>({
+  const form = useForm<FormProjectDeriveValues>({
     resolver: zodResolver(formSchema),
     defaultValues: { name: defaultName, subtitle: "" },
   })

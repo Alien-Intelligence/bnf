@@ -105,3 +105,25 @@ export function isProjectOwner(
 ): boolean {
   return projectAccessLevel(user, project) === PROJECT_ACCESS_LEVEL.OWNER
 }
+
+/**
+ * The listing counterpart of the access table.
+ *
+ * `projectAccessLevel` answers "may this user reach THIS project", one row at a
+ * time. A list has to answer it for rows it has not loaded yet, so the same
+ * decision has to be expressible as a filter — and that filter must be derived
+ * HERE, not hand-written into a `where` clause somewhere else. `unrestricted`
+ * is rule 2 (admin); the identity form carries exactly the inputs rules 1, 4
+ * and 5 read.
+ *
+ * Queries take this value and apply it. They never see the user, so they cannot
+ * re-derive the answer — which is the whole point.
+ */
+export type VisibilityScope =
+  | { unrestricted: true }
+  | { unrestricted: false; userId: string; groupIds: string[] }
+
+export function visibilityScopeFor(user: PolicyUser): VisibilityScope {
+  if (user.role === USER_ROLE.ADMIN) return { unrestricted: true }
+  return { unrestricted: false, userId: user.id, groupIds: user.groupIds }
+}

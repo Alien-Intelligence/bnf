@@ -11,8 +11,8 @@ import { ProjectPolicy } from "@/models/projects/policy"
 import { ProjectQueries } from "@/models/projects/queries"
 import {
   ProjectSharingService,
-  type ShareWithGroup,
-} from "@/models/projects/sharing"
+} from "@/models/projects/service"
+import type { ShareWithGroup } from "@/models/projects/schema"
 
 type RouteCtx = { params: Promise<{ id: string; gid: string }> }
 

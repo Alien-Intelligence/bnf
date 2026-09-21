@@ -16,9 +16,10 @@ import {
   ProjectService,
   SourceIsDerivedError,
   SourceNotIngestedError,
-} from "./service"
-import { ProjectQueries } from "./queries"
-import { ProjectSharingService } from "./sharing"
+} from "@/models/projects/service"
+import { ProjectQueries } from "@/models/projects/queries"
+import { markHeadIngested } from "@/lib/testing/mark-ingested"
+import { ProjectSharingService } from "@/models/projects/service"
 import { PROJECT_ACCESS } from "@/lib/authz/project-access"
 import {
   CORPUS_SOURCE_STATE,
@@ -51,17 +52,6 @@ async function freshProject(label: string) {
   return p
 }
 
-/**
- * Mark a project ingested by sealing its head as the ingested version. Enough
- * for the derivation guard, which only reads `ingestedVersionId`.
- */
-async function markIngested(projectId: string) {
-  const p = await prisma.project.findUniqueOrThrow({ where: { id: projectId } })
-  await prisma.project.update({
-    where: { id: projectId },
-    data: { ingestedVersionId: p.headVersionId },
-  })
-}
 
 before(async () => {
   owner = await createTestUser()
@@ -87,7 +77,7 @@ after(async () => {
 
 test("createDerived refuses without a share on the source", async () => {
   const source = await freshProject("no grant")
-  await markIngested(source.id)
+  await markHeadIngested(source.id)
 
   const loaded = await ProjectQueries.get(source.id)
   await assert.rejects(
@@ -125,7 +115,7 @@ test("createDerived refuses a source that was never ingested", async () => {
 
 test("createDerived pins the workspace to the grant and keeps its own head", async () => {
   const source = await freshProject("derive ok")
-  await markIngested(source.id)
+  await markHeadIngested(source.id)
   const shares = await ProjectSharingService.share(
     (await ProjectQueries.get(source.id))!,
     owner.id,
@@ -151,7 +141,7 @@ test("createDerived pins the workspace to the grant and keeps its own head", asy
 
 test("createDerived refuses to derive from a derived project", async () => {
   const source = await freshProject("chain root")
-  await markIngested(source.id)
+  await markHeadIngested(source.id)
   await ProjectSharingService.share(
     (await ProjectQueries.get(source.id))!,
     owner.id,
@@ -181,7 +171,7 @@ test("createDerived refuses to derive from a derived project", async () => {
 
 test("revoking the share leaves the workspace intact in the revoked state", async () => {
   const source = await freshProject("revoke")
-  await markIngested(source.id)
+  await markHeadIngested(source.id)
   await ProjectSharingService.share(
     (await ProjectQueries.get(source.id))!,
     owner.id,
@@ -219,7 +209,7 @@ test("revoking the share leaves the workspace intact in the revoked state", asyn
 
 test("re-sharing re-attaches a workspace the revoke had orphaned", async () => {
   const source = await freshProject("re-share heals")
-  await markIngested(source.id)
+  await markHeadIngested(source.id)
   await ProjectSharingService.share(
     (await ProjectQueries.get(source.id))!,
     owner.id,
@@ -259,7 +249,7 @@ test("re-sharing re-attaches a workspace the revoke had orphaned", async () => {
 
 test("re-sharing to a group the workspace's owner is NOT in leaves it revoked", async () => {
   const source = await freshProject("re-share other group")
-  await markIngested(source.id)
+  await markHeadIngested(source.id)
   await ProjectSharingService.share(
     (await ProjectQueries.get(source.id))!,
     owner.id,
@@ -291,7 +281,7 @@ test("re-sharing to a group the workspace's owner is NOT in leaves it revoked", 
 
 test("a source cannot be deleted while a derived project reads it", async () => {
   const source = await freshProject("restrict")
-  await markIngested(source.id)
+  await markHeadIngested(source.id)
   await ProjectSharingService.share(
     (await ProjectQueries.get(source.id))!,
     owner.id,

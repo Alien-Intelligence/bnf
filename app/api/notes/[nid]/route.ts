@@ -14,6 +14,7 @@ import { NotePolicy } from "@/models/notes/policy"
 import { ProjectQueries } from "@/models/projects/queries"
 import { NoteQueries } from "@/models/notes/queries"
 import { NoteService } from "@/models/notes/service"
+import { corpusProjectId } from "@/lib/authz/corpus-source"
 import { updateNoteSchema } from "@/models/notes/types"
 import type { NoteWithCitations } from "@/models/notes/schema"
 
@@ -44,13 +45,17 @@ export const PUT = withAuth(async (req, _user, bouncer, ctx: RouteCtx) => {
   if (!project) return notFound("Projet introuvable")
   await bouncer.with(NotePolicy).authorize("update", project, note)
 
-  const updated = await NoteService.update(nid, {
+  // Citations are validated against the corpus the note's project reads —
+  // the source's when that project is a derived workspace.
+  const updated = await NoteService.update(nid, corpusProjectId(project), {
     title: parsed.title,
     bodyMd: parsed.bodyMd,
   })
+  // Deleted between the authorize() above and the write.
+  if (!updated) return notFound("Note introuvable")
 
   // Re-fetch to include fresh citations after the update.
-  const full = await NoteQueries.get(updated.id)
+  const full = await NoteQueries.get(updated.note.id)
   return ok<NoteWithCitations>(full!)
 })
 

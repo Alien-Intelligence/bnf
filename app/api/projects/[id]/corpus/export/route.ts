@@ -13,7 +13,8 @@
  * envelope rule (same exemption as the SSE stream and the admin CSV export) —
  * but NOT from query validation or authorization.
  *
- * Authorization: project member (read) or admin (before() bypass).
+ * Authorization: read access on the project; admin resolves to owner — see
+ * lib/authz/project-access.ts. There is no before() bypass.
  *
  * NOTE: we deliberately do NOT emit INTERMARC / interXMarc here. We only hold
  * Dublin-Core-level metadata; generating MARC from it would fabricate cataloguing

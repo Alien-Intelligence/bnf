@@ -6,7 +6,8 @@
 // Query keys are defined once at the top; never inlined at the call site.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { apiFetch } from "@/lib/api-fetch"
+import { apiFetch, readError } from "@/lib/api-fetch"
+import { projectKeys } from "./projects"
 import type { Group, GroupListItem, GroupWithMembers } from "@/models/groups/schema"
 import type {
   AddMemberInput,
@@ -20,24 +21,6 @@ export const groupKeys = {
   all: ["groups"] as const,
   list: ["groups", "list"] as const,
   members: (gid: string) => ["groups", gid, "members"] as const,
-}
-
-/**
- * Surfaces the server's message when there is one. The groups API answers 409
- * (name taken) and 422 (unknown email, unusable name) with a French sentence
- * the admin can act on; swallowing it into a generic "erreur" would hide the
- * one thing they need to know.
- */
-async function readError(res: Response, fallback: string): Promise<Error> {
-  try {
-    const body = (await res.json()) as { error?: unknown }
-    if (typeof body.error === "string" && body.error.length > 0) {
-      return new Error(body.error)
-    }
-  } catch {
-    // Non-JSON body (a proxy error page, say) — fall through to the fallback.
-  }
-  return new Error(`${fallback}: ${res.status}`)
 }
 
 // ── Read hooks ────────────────────────────────────────────────────────────────
@@ -106,8 +89,13 @@ export function useDeleteGroup() {
       if (!res.ok) throw await readError(res, "Failed to delete group")
       return res.json() as Promise<{ deleted: true }>
     },
-    // A deleted group cascades to its shares, so the projects list changes too.
-    onSuccess: () => qc.invalidateQueries({ queryKey: groupKeys.all }),
+    // A deleted group cascades to its shares, so the projects list and every
+    // project's share list change too. Invalidating only the groups tree
+    // leaves the owner reading a share the database has already dropped.
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: groupKeys.all })
+      qc.invalidateQueries({ queryKey: projectKeys.all })
+    },
   })
 }
 

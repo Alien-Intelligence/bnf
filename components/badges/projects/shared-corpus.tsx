@@ -1,7 +1,7 @@
 "use client"
 
 // components/badges/projects/shared-corpus.tsx
-// BadgeSharedCorpus — marks a project that reads another project's corpus.
+// BadgeProjectSharedCorpus — marks a project that reads another project's corpus.
 // Short by design: the source's NAME belongs on the tile's meta line, beside
 // the owner, where it has room to be read. A badge carrying a full project
 // title overflows a 400px card.
@@ -15,11 +15,13 @@ import { Badge } from "@/components/ui/badge"
 import { CORPUS_SOURCE_STATE } from "@/lib/authz/corpus-source"
 import type { CorpusSourceState } from "@/lib/authz/corpus-source"
 
-interface BadgeSharedCorpusProps {
+interface BadgeProjectSharedCorpusProps {
   state: CorpusSourceState
 }
 
-export function BadgeSharedCorpus({ state }: BadgeSharedCorpusProps) {
+export function BadgeProjectSharedCorpus({
+  state,
+}: BadgeProjectSharedCorpusProps) {
   const t = useTranslations("projects.sharedCorpus")
 
   if (state === CORPUS_SOURCE_STATE.OWN) return null

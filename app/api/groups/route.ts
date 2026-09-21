@@ -11,23 +11,23 @@ import { parseBody } from "@/app/api/_helpers"
 import { ok, conflict, unprocessable } from "@/lib/api-response"
 import { GroupPolicy } from "@/models/groups/policy"
 import { GroupQueries } from "@/models/groups/queries"
+import { visibilityScopeFor } from "@/lib/authz/project-access"
 import { GroupService } from "@/models/groups/service"
 import { createGroupSchema } from "@/models/groups/types"
 import {
-  GroupSlugTakenError,
-  InvalidGroupNameError,
   type Group,
   type GroupListItem,
 } from "@/models/groups/schema"
-import { USER_ROLE } from "@/models/users/schema"
+import {
+  GroupSlugTakenError,
+  InvalidGroupNameError,
+} from "@/models/groups/service"
 
-export const GET = withAuth(async (_req, user) => {
-  const groups =
-    user.role === USER_ROLE.ADMIN
-      ? await GroupQueries.list()
-      : await GroupQueries.listForUser(user.id)
-
-  return ok<GroupListItem[]>(groups)
+export const GET = withAuth(async (_req, user, bouncer) => {
+  await bouncer.with(GroupPolicy).authorize("list")
+  return ok<GroupListItem[]>(
+    await GroupQueries.listVisible(visibilityScopeFor(user)),
+  )
 })
 
 export const POST = withAuth(async (req, _user, bouncer) => {

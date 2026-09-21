@@ -22,7 +22,8 @@
  *   cursor   — opaque value from a previous response's `nextCursor`
  *   limit    — page size 1–100 (default: CORPUS_SAMPLE_SIZE = 25)
  *
- * Authorization: project member (read) or admin (before() bypass).
+ * Authorization: read access on the project; admin resolves to owner — see
+ * lib/authz/project-access.ts. There is no before() bypass.
  */
 import { withAuth } from "@/app/api/_middleware"
 import { parseQuery } from "@/app/api/_helpers"

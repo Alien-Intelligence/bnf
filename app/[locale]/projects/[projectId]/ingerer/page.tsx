@@ -13,6 +13,7 @@ import { ProjectQueries } from "@/models/projects/queries"
 import { IngestQueries } from "@/models/ingest/queries"
 import { IngestService } from "@/models/ingest/service"
 import { serializeIngestJob } from "@/models/ingest/types"
+import { ROUTES } from "@/lib/constants"
 import { IngererClient } from "./client"
 
 type RouteParams = { locale: string; projectId: string }
@@ -31,7 +32,7 @@ export default async function IngererPage({
   // Ingestion indexes the corpus into the cluster: write access, and only on a
   // project that owns its corpus.
   if (!canWriteProject(user, project)) notFound()
-  if (isDerived(project)) redirect({ href: `/projects/${projectId}/rechercher`, locale })
+  if (isDerived(project)) redirect({ href: ROUTES.rechercher(projectId), locale })
 
   const [deltaPreview, activeJob, recentJobs] = await Promise.all([
     IngestService.previewDelta(project),

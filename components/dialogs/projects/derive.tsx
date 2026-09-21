@@ -15,7 +15,10 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { FormProjectDerive } from "@/components/forms/projects/derive"
+import {
+  FormProjectDerive,
+  type FormProjectDeriveValues,
+} from "@/components/forms/projects/derive"
 import { useToast } from "@/components/ui/toast"
 import { useCreateDerivedProject } from "@/hooks/api/projects"
 import { ROUTES } from "@/lib/constants"
@@ -39,7 +42,7 @@ export function DialogProjectDerive({
   const { toast } = useToast()
   const [error, setError] = useState<string | null>(null)
 
-  const onSubmit = async (data: { name: string; subtitle?: string }) => {
+  const onSubmit = async (data: FormProjectDeriveValues) => {
     setError(null)
     try {
       const project = await createDerived.mutateAsync({

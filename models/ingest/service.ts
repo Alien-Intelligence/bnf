@@ -14,7 +14,9 @@ import "server-only"
 //     IngestService.submit() returns the existing job — no new row.
 import crypto from "node:crypto"
 import { prisma } from "@/lib/db"
-import { PromptBuilder } from "@/lib/agent/prompts/builder"
+import { CORPUS_VERSION_STATUS } from "@/models/corpus/schema"
+import { SessionQueries } from "@/models/sessions/queries"
+import { ProjectQueries } from "@/models/projects/queries"
 import { Prisma } from "@/lib/generated/prisma/client"
 import type { IngestJob, Project, User } from "@/lib/generated/prisma/client"
 import { CorpusQueries } from "@/models/corpus/queries"
@@ -143,6 +145,21 @@ export function splitSucceededArks(
   const failedSet = new Set(failed)
   const succeeded = addedArks.filter((a) => !failedSet.has(a))
   return { succeeded, failed }
+}
+
+/**
+ * An ingestion changes what the research agent can truthfully say about the
+ * corpus, so every research prompt built from the old state has to be dropped —
+ * including those of the workspaces derived from it, which read this corpus
+ * without owning it.
+ *
+ * Expressed with the two models' own queries rather than by reaching into
+ * `lib/agent/prompts/`: that module is the agents runtime, and `service.ts` may
+ * import queries, not another domain's internals (playbook/models.md).
+ */
+async function invalidateResearchPrompts(corpusProjectId: string): Promise<void> {
+  const derivedIds = await ProjectQueries.derivedIds(corpusProjectId)
+  await SessionQueries.clearResearchPrompts([corpusProjectId, ...derivedIds])
 }
 
 export class IngestService {
@@ -566,7 +583,7 @@ export class IngestService {
       }),
       prisma.corpusVersion.update({
         where: { id: job.targetVersionId },
-        data: { status: "ingested" },
+        data: { status: CORPUS_VERSION_STATUS.INGESTED },
       }),
       prisma.project.update({
         where: { id: job.projectId },
@@ -605,7 +622,7 @@ export class IngestService {
     // without this the agent keeps saying the corpus is not ingested and
     // refuses to search. Derived workspaces reading this corpus are affected by
     // an ingestion they did not run, so they are invalidated too.
-    await PromptBuilder.invalidateForIngestedCorpus(job.projectId)
+    await invalidateResearchPrompts(job.projectId)
   }
 
   /**
@@ -661,7 +678,7 @@ export class IngestService {
       // "Dernière ingestion vN" label. Only a whole-job failure leaves it behind.
       prisma.corpusVersion.update({
         where: { id: job.targetVersionId },
-        data: { status: "ingested" },
+        data: { status: CORPUS_VERSION_STATUS.INGESTED },
       }),
       prisma.project.update({
         where: { id: job.projectId },
@@ -720,7 +737,7 @@ export class IngestService {
     // without this the agent keeps saying the corpus is not ingested and
     // refuses to search. Derived workspaces reading this corpus are affected by
     // an ingestion they did not run, so they are invalidated too.
-    await PromptBuilder.invalidateForIngestedCorpus(job.projectId)
+    await invalidateResearchPrompts(job.projectId)
   }
 
   /**
@@ -898,7 +915,7 @@ export class IngestService {
       })
       await tx.corpusVersion.update({
         where: { id: targetVersionId },
-        data: { status: "ingested" },
+        data: { status: CORPUS_VERSION_STATUS.INGESTED },
       })
       await tx.project.update({
         where: { id: project.id },
@@ -908,7 +925,7 @@ export class IngestService {
 
     // Same reason as the commit path: the pointer moved, so the research
     // prompt's ÉTAT DU CORPUS is stale here and in every derived workspace.
-    await PromptBuilder.invalidateForIngestedCorpus(project.id)
+    await invalidateResearchPrompts(project.id)
 
     return job
   }

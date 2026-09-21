@@ -12,7 +12,12 @@ import { GroupPolicy } from "@/models/groups/policy"
 import { GroupQueries } from "@/models/groups/queries"
 import { GroupService } from "@/models/groups/service"
 import { addMemberSchema } from "@/models/groups/types"
-import { UserNotFoundError, type GroupWithMembers } from "@/models/groups/schema"
+import {
+  type GroupWithMembers,
+} from "@/models/groups/schema"
+import {
+  UserNotFoundError,
+} from "@/models/groups/service"
 
 type RouteCtx = { params: Promise<{ gid: string }> }
 

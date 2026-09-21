@@ -11,8 +11,9 @@
 import { prisma } from "@/lib/db"
 import { ProjectService } from "@/models/projects/service"
 import { ProjectQueries } from "@/models/projects/queries"
-import { ProjectSharingService } from "@/models/projects/sharing"
+import { ProjectSharingService } from "@/models/projects/service"
 import { PROJECT_ACCESS } from "@/lib/authz/project-access"
+import { markHeadIngested } from "@/lib/testing/mark-ingested"
 
 const BASE = process.env["APP_URL"] ?? "http://localhost:3001"
 const PW = "demo-sharing"
@@ -56,9 +57,10 @@ async function main() {
     })
   }
 
-  // The shared corpus. Marked ingested directly: every guard in this feature
-  // reads `ingestedVersionId`, and running a real ingestion here would cost
-  // real OCR spend for a scenario that never queries the passages.
+  // The shared corpus. Marked ingested through the test-support helper rather
+  // than a real run: every guard in this feature reads the ingest pointer, and
+  // an actual ingestion would cost real OCR spend for a scenario that never
+  // queries the passages.
   const existing = await prisma.project.findFirst({
     where: { ownerId: owner.id, name: "Exposition Universelle 1889" },
   })
@@ -69,10 +71,7 @@ async function main() {
       subtitle: "Presse et controverses",
       ownerId: owner.id,
     }))
-  await prisma.project.update({
-    where: { id: source.id },
-    data: { ingestedVersionId: source.headVersionId },
-  })
+  await markHeadIngested(source.id)
 
   await ProjectSharingService.share(
     (await ProjectQueries.get(source.id))!,

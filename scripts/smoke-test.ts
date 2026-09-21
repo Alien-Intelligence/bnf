@@ -34,6 +34,7 @@ import { prisma } from "@/lib/db"
 import { ProjectService } from "@/models/projects/service"
 import { DocumentService } from "@/models/documents/service"
 import { CorpusService } from "@/models/corpus/service"
+import { markHeadIngested } from "@/lib/testing/mark-ingested"
 import { CorpusQueries } from "@/models/corpus/queries"
 import type { User } from "@/models/users/schema"
 import { parseBnfDate, normalizeDocument, normalizeMany } from "@/lib/mcp/normalize"
@@ -631,14 +632,10 @@ async function testIngestNoOpShortCircuit(owner: User): Promise<void> {
     ownerId: owner.id,
   })
 
-  // Manually set ingestedVersionId = headVersionId so the delta is empty
-  const headVersionId = project.headVersionId
-  assert.ok(headVersionId !== null, "project must have a headVersionId after creation")
-
-  await prisma.project.update({
-    where: { id: project.id },
-    data: { ingestedVersionId: headVersionId },
-  })
+  // Put the head into the ingested state so the delta is empty. Through the
+  // test helper, not a bare pointer write: moving the pointer alone would leave
+  // the version `sealed`, a state the real pipeline never produces.
+  const headVersionId = await markHeadIngested(project.id)
 
   // Re-read so IngestService sees the updated ingestedVersionId
   const freshProject = await prisma.project.findUniqueOrThrow({
@@ -712,14 +709,24 @@ async function testNoteCitationsParsedAndPersisted(owner: User): Promise<void> {
 
   const ark1 = "ark:/12148/bpt6k5738219s"
   const ark2 = "ark:/12148/btv1b10500001g"
+  // Never added to the corpus — the shape a fabricated citation takes.
+  const arkUnknown = "ark:/12148/bpt6k9999999z"
+
+  // Citations are only indexed for ARKs the corpus actually holds
+  // (playbook/citations.md), so the corpus has to exist before the note does.
+  await CorpusService.addArks(project, owner, {
+    arks: [ark1, ark2],
+    reason: "smoke-note-citations",
+  })
 
   const bodyMd = [
     "Le Figaro évoque l'inauguration [[ark:/12148/bpt6k5738219s|Le Figaro, 7 mai 1889|42]].",
     "La Gazette de France en rend compte également [[ark:/12148/btv1b10500001g|Gazette de France|17]].",
   ].join("\n")
 
-  const note = await NoteService.create({
+  const { note, rejected } = await NoteService.create({
     projectId: project.id,
+    corpusProjectId: project.id,
     title: "Test note — citations smoke",
     bodyMd,
   })
@@ -728,6 +735,11 @@ async function testNoteCitationsParsedAndPersisted(owner: User): Promise<void> {
     note.citationCount,
     2,
     `note.citationCount must be 2, got ${note.citationCount}`,
+  )
+  assert.equal(
+    rejected.length,
+    0,
+    `Both ARKs are in the corpus, so none may be rejected; got ${rejected.join(", ")}`,
   )
 
   const citations = await prisma.citation.findMany({
@@ -749,17 +761,30 @@ async function testNoteCitationsParsedAndPersisted(owner: User): Promise<void> {
   assert.equal(citeB.ark, ark1, `Second citation (folio 42) must have ark=${ark1}`)
   assert.equal(citeB.folio, 42, `Second citation must have folio=42, got ${citeB.folio}`)
 
-  // --- note_append: add a paragraph with a 3rd citation, without resending body.
-  const appended = await NoteService.append(note.id, {
+  // --- note_append: add a paragraph citing an ARK the corpus does NOT hold.
+  // The text is kept; the citation is not indexed and comes back in `rejected`
+  // so the agent learns it invented a source (playbook/citations.md).
+  const appendResult = await NoteService.append(note.id, project.id, {
     bodyMd:
       "## Suite\n\nUn troisième témoignage le confirme " +
-      "[[ark:/12148/bpt6k9999999z|Le Temps, 8 mai 1889|3]].",
+      `[[${arkUnknown}|Le Temps, 8 mai 1889|3]].`,
   })
+  assert.ok(appendResult, "append must resolve the note it was given")
+  const appended = appendResult.note
 
   assert.equal(
     appended.citationCount,
-    3,
-    `After append, citationCount must be 3, got ${appended.citationCount}`,
+    2,
+    `An ARK outside the corpus must not be indexed: expected 2, got ${appended.citationCount}`,
+  )
+  assert.deepEqual(
+    appendResult.rejected,
+    [arkUnknown],
+    `The unknown ARK must be reported back, got ${appendResult.rejected.join(", ")}`,
+  )
+  assert.ok(
+    appended.body_md.includes(arkUnknown),
+    "The body keeps the offending citation text — only the projection drops it",
   )
   assert.ok(
     appended.body_md.includes(bodyMd) && appended.body_md.includes("## Suite"),
@@ -779,11 +804,12 @@ async function testNoteCitationsParsedAndPersisted(owner: User): Promise<void> {
   assert.equal(versions[0]!.body_md, bodyMd, "Snapshot must hold the pre-append body verbatim")
 
   const afterAppend = await prisma.citation.count({ where: { noteId: note.id } })
-  assert.equal(afterAppend, 3, `Expected 3 Citation rows after append, got ${afterAppend}`)
+  assert.equal(afterAppend, 2, `Expected 2 Citation rows after append, got ${afterAppend}`)
 
   // An empty append is a no-op: no new version, body unchanged.
-  const noop = await NoteService.append(note.id, { bodyMd: "   \n  " })
-  assert.equal(noop.body_md, appended.body_md, "Empty append must not change the body")
+  const noop = await NoteService.append(note.id, project.id, { bodyMd: "   \n  " })
+  assert.ok(noop, "append must resolve the note it was given")
+  assert.equal(noop.note.body_md, appended.body_md, "Empty append must not change the body")
   const versionsAfterNoop = await prisma.noteVersion.count({ where: { noteId: note.id } })
   assert.equal(versionsAfterNoop, 1, "Empty append must not create a NoteVersion")
 

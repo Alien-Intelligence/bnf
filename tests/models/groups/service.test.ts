@@ -10,14 +10,14 @@ import assert from "node:assert/strict"
 import { randomUUID } from "node:crypto"
 import { prisma } from "@/lib/db"
 import type { User } from "@/lib/generated/prisma/client"
-import { GroupService } from "./service"
-import { GroupQueries } from "./queries"
+import { GroupService } from "@/models/groups/service"
+import { GroupQueries } from "@/models/groups/queries"
 import {
   GroupSlugTakenError,
   InvalidGroupNameError,
   UserNotFoundError,
   slugifyGroupName,
-} from "./schema"
+} from "@/models/groups/service"
 import { PROJECT_ACCESS } from "@/lib/authz/project-access"
 import {
   createTestUser,

@@ -15,6 +15,7 @@ import {
   FormControl,
   FormField,
   FormItem,
+  FormLabel,
   FormMessage,
 } from "@/components/ui/form"
 import { Input } from "@/components/ui/input"
@@ -52,28 +53,33 @@ export function FormGroupAddMember({
   return (
     <Form {...form}>
       <form onSubmit={form.handleSubmit(submit)} className="space-y-2">
-        <div className="flex items-start gap-2">
-          <FormField
-            control={form.control}
-            name="email"
-            render={({ field }) => (
-              <FormItem className="flex-1">
+        <FormField
+          control={form.control}
+          name="email"
+          render={({ field }) => (
+            // The submit button sits inside the FormItem so the label stays
+            // above the pair and the server rejection stays below both, rather
+            // than the button drifting out of line with the input.
+            <FormItem>
+              <FormLabel>{t("emailLabel")}</FormLabel>
+              <div className="flex items-start gap-2">
                 <FormControl>
                   <Input
                     type="email"
                     placeholder={t("emailPlaceholder")}
+                    className="flex-1"
                     {...field}
                   />
                 </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-          <Button type="submit" disabled={form.formState.isSubmitting}>
-            <UserPlus className="size-4" />
-            {t("add")}
-          </Button>
-        </div>
+                <Button type="submit" disabled={form.formState.isSubmitting}>
+                  <UserPlus className="size-4" />
+                  {t("add")}
+                </Button>
+              </div>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
       </form>
     </Form>
   )

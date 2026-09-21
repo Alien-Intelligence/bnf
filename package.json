@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --import tsx --conditions react-server --env-file-if-exists=.env.local --test \"{models,lib,components,app}/**/*.test.ts\"",
+    "test": "node --import tsx --conditions react-server --env-file-if-exists=.env.local --test \"{tests,lib,components,app}/**/*.test.ts\"",
     "e2e:buffer": "node --import tsx --conditions react-server --env-file-if-exists=.env.local scripts/e2e-buffer.ts",
     "e2e:buffer:ci": "node --import tsx --conditions react-server --env-file-if-exists=.env.local scripts/e2e-buffer-ci.ts",
     "e2e:spawn": "node --import tsx --conditions react-server --env-file-if-exists=.env.local scripts/e2e-spawn.ts",

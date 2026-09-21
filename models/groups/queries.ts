@@ -1,6 +1,7 @@
 import "server-only"
 
 import { prisma } from "@/lib/db"
+import type { VisibilityScope } from "@/lib/authz/project-access"
 import {
   groupListItem,
   groupWithMembers,
@@ -15,11 +16,21 @@ export class GroupQueries {
     return prisma.group.findMany({ ...groupListItem, orderBy: { name: "asc" } })
   }
 
-  /** The groups a user belongs to, with counts. Non-admin listing. */
-  static async listForUser(userId: string): Promise<GroupListItem[]> {
+  /**
+   * The groups this user may see: all of them for an admin, and only their own
+   * otherwise — a project owner needs the list to know what they can share
+   * into, but must not learn the full org chart.
+   *
+   * The scope arrives pre-decided from `visibilityScopeFor` — one query, so a
+   * caller cannot pick the wrong one, and no role check in a file the policy
+   * layer never sees.
+   */
+  static async listVisible(scope: VisibilityScope): Promise<GroupListItem[]> {
     return prisma.group.findMany({
       ...groupListItem,
-      where: { members: { some: { userId } } },
+      where: scope.unrestricted
+        ? {}
+        : { members: { some: { userId: scope.userId } } },
       orderBy: { name: "asc" },
     })
   }

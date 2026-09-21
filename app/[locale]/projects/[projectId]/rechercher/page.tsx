@@ -5,7 +5,8 @@
 
 import { notFound } from "next/navigation"
 import { requireSessionUser } from "@/lib/auth-helpers"
-import { canReadProject, canWriteProject } from "@/lib/authz/project-access"
+import { canReadProject } from "@/lib/authz/project-access"
+import { workspaceStepsFor } from "@/lib/authz/workspace-steps"
 import {
   CORPUS_SOURCE_STATE,
   corpusProjectId,
@@ -18,11 +19,8 @@ import { SessionService } from "@/models/sessions/service"
 import { SessionQueries } from "@/models/sessions/queries"
 import { OnboardingQueries } from "@/models/onboarding/queries"
 import { ONBOARDING_INTRO } from "@/models/onboarding/schema"
-import {
-  RAG_CLUSTER_ID,
-  RESEARCH_ONLY_STEPS,
-  WORKSPACE_STEPS,
-} from "@/lib/constants"
+import { SESSION_SCOPE } from "@/models/sessions/schema"
+import { RAG_CLUSTER_ID } from "@/lib/constants"
 import { env } from "@/lib/env"
 import { RechercherClient } from "./client"
 
@@ -47,15 +45,10 @@ export default async function RechercherPage({
   const sourceState = corpusSourceState(project)
   const revoked = sourceState === CORPUS_SOURCE_STATE.REVOKED
 
-  // Constituer and Ingérer would 404 for a read-only member and redirect for a
-  // derived workspace; neither belongs in their header.
-  const workspaceSteps =
-    canWriteProject(user, project) && sourceState === CORPUS_SOURCE_STATE.OWN
-      ? WORKSPACE_STEPS
-      : RESEARCH_ONLY_STEPS
+  const workspaceSteps = workspaceStepsFor(user, project)
 
   const [session, initialNotes, seenIntros] = await Promise.all([
-    SessionService.ensureDefaultForScope(projectId, "research"),
+    SessionService.ensureDefaultForScope(projectId, SESSION_SCOPE.RESEARCH),
     NoteQueries.listForProject(projectId),
     OnboardingQueries.listSeen(user.id),
   ])
@@ -73,7 +66,7 @@ export default async function RechercherPage({
     : (corpusProject?.ingestedVersionId ?? null)
 
   const [initialSessions, ingestedArks] = await Promise.all([
-    SessionQueries.listForProject(projectId, "research"),
+    SessionQueries.listForProject(projectId, SESSION_SCOPE.RESEARCH),
     ingestedVersionId
       ? CorpusQueries.membershipArks(ingestedVersionId)
       : Promise.resolve([]),
@@ -97,14 +90,14 @@ export default async function RechercherPage({
       initialSessionId={initialSessionId}
       initialSessions={initialSessions}
       initialNotes={initialNotes}
-      isIngested={isIngested}
-      workspaceSteps={workspaceSteps}
-      corpusSourceState={sourceState}
-      corpusSourceName={corpusProject?.name ?? null}
-      clusterId={RAG_CLUSTER_ID}
-      docCount={ingestedArks.length}
-      introSeen={seenIntros.includes(ONBOARDING_INTRO.RESEARCH)}
-      agentProvider={env.AGENT_PROVIDER}
+      initialIsIngested={isIngested}
+      initialWorkspaceSteps={workspaceSteps}
+      initialCorpusSourceState={sourceState}
+      initialCorpusSourceName={corpusProject?.name ?? null}
+      initialClusterId={RAG_CLUSTER_ID}
+      initialDocCount={ingestedArks.length}
+      initialIntroSeen={seenIntros.includes(ONBOARDING_INTRO.RESEARCH)}
+      initialAgentProvider={env.AGENT_PROVIDER}
     />
   )
 }

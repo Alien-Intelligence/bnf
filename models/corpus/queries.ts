@@ -254,6 +254,24 @@ export class CorpusQueries {
   }
 
   /**
+   * Every ARK that has been in this project's corpus in ANY version.
+   *
+   * The validation set for citations (playbook/citations.md): a note may cite a
+   * document that a later version removed — the note was true when written, and
+   * its citation still resolves in the IIIF viewer. What it may not do is cite
+   * an ARK that was never in the corpus at all, which is the shape a fabricated
+   * citation takes. Deliberately broader than `membershipArks(versionId)`.
+   */
+  static async allArksInProject(projectId: string): Promise<string[]> {
+    const rows = await prisma.corpusMembership.findMany({
+      where: { projectId },
+      select: { ark: true },
+      distinct: ["ark"],
+    })
+    return rows.map((r) => r.ark)
+  }
+
+  /**
    * Returns the ARKs currently IN THE INDEX for a project (Document.indexedAt is
    * set). This is the per-document ground truth the ingestion delta is computed
    * against — NOT the coarse ingestedVersionId pointer, which can't express a

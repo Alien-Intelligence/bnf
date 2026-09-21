@@ -14,8 +14,8 @@ import { ProjectQueries } from "@/models/projects/queries"
 import {
   GroupNotFoundError,
   ProjectSharingService,
-  type ShareWithGroup,
-} from "@/models/projects/sharing"
+} from "@/models/projects/service"
+import type { ShareWithGroup } from "@/models/projects/schema"
 import { shareProjectSchema } from "@/models/projects/types"
 
 type RouteCtx = { params: Promise<{ id: string }> }
