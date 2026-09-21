@@ -248,6 +248,13 @@ project's corpus, documents and RAG dataset a read targets — never `ctx.projec
 directly. A revoked grant is an explicit, queryable state, never an empty
 corpus. See [playbook/sharing.md](playbook/sharing.md).
 
+### A grant is never re-grantable ✅
+Owning a derived workspace is not owning the corpus it reads. `ProjectPolicy.share`
+is `isProjectOwner(user, p) && !isDerived(p)` — otherwise a reader re-shares the
+workspace and hands out the **source's** corpus, because the derived read path is
+gated on the workspace's pinned share, not on the caller's access to the source.
+Admin is no exception. See [playbook/sharing.md](playbook/sharing.md).
+
 ### French is the default locale ✅
 All user-facing strings are translation keys in `messages/fr.json` and
 `messages/en.json` — both files updated in the same commit. The agent's

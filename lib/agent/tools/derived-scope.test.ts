@@ -13,6 +13,7 @@ import { SESSION_SCOPE } from "@/models/sessions/schema"
 import { CorpusPolicy } from "@/models/corpus/policy"
 import { BufferPolicy } from "@/models/buffer/policy"
 import { IngestPolicy } from "@/models/ingest/policy"
+import { ProjectPolicy } from "@/models/projects/policy"
 import { PROJECT_ACCESS } from "@/lib/authz/project-access"
 import {
   CORPUS_ACCESS_REVOKED_ERROR,
@@ -98,6 +99,34 @@ test("every corpus-mutating policy refuses a derived project, owner included", (
   // …while reading follows the ordinary access rules.
   assert.equal(new CorpusPolicy(user).read(derived), true)
   assert.equal(new IngestPolicy(user).view(derived), true)
+})
+
+test("a derived project's OWNER may not re-share it", () => {
+  // The escalation this closes: the reader owns the workspace but not the
+  // corpus it reads. If sharing were allowed, its members would reach the
+  // SOURCE's corpus through `corpusProjectId()` — the read gate gives them the
+  // workspace's pinned share, never a check against the source's owner. A
+  // read-only grant would become an onward grant of someone else's data.
+  assert.equal(new ProjectPolicy(user).share(project()), false)
+
+  // An ordinary project the same user owns is of course still shareable, so
+  // this refuses the derivation, not the user.
+  assert.equal(
+    new ProjectPolicy(user).share(project({ corpusSourceId: null, corpusSourceShareId: null })),
+    true,
+  )
+})
+
+test("not even an admin may re-share a derived project", () => {
+  // Admin resolves to `owner` everywhere else. It must not be the way round
+  // the rule above: the corpus still is not theirs to give.
+  const admin: PolicyUser = { ...user, id: "admin-1", role: "admin" }
+
+  assert.equal(new ProjectPolicy(admin).share(project()), false)
+  assert.equal(
+    new ProjectPolicy(admin).share(project({ corpusSourceId: null, corpusSourceShareId: null })),
+    true,
+  )
 })
 
 test("a write share does not let a member mutate a derived project's corpus", () => {

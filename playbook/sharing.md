@@ -177,6 +177,35 @@ Both layers are required; neither alone is sufficient.
    and Ingérer `redirect()` to Rechercher; the project exists and the user may
    see it, so `notFound()` would be a lie.
 
+## A grant is never re-grantable ⛔
+
+Owning a project and owning its corpus are the same thing exactly once — for an
+ordinary project. A **derived workspace is owned by the reader**, so the plain
+owner check hands them the one power that must never follow a `read` grant:
+
+```ts
+share(p: ProjectWithShares) {
+  return isProjectOwner(this.user, p) && !isDerived(p)
+}
+```
+
+⛔ **Forbidden**: gating `share` on ownership alone. The derived read path
+resolves through `corpusProjectId()` and is gated on the *workspace's* pinned
+share — never on whether the caller may reach the source. A share on the
+workspace therefore grants its members the **source's** corpus, from an owner
+who never authorised them. Admin is not an exception: it resolves to `owner`,
+and the corpus still is not theirs.
+
+The symmetry to hold on to: a derived project has no corpus of its own **to
+mutate** (above) and none **to give away** (here). Both are `!isDerived(p)`
+next to the access check, for the same reason.
+
+This was live on this branch and every other check passed while it was open —
+the truth table, the eleven policies, the read path, and 33 e2e assertions.
+What caught it was asking who *else* can reach the data once a legitimate
+grant exists. `scripts/golden-sharing.ts` §6b now pins it with a third account
+that is granted nothing.
+
 ## Deletion
 
 `Project.corpusSourceId` is `onDelete: Restrict`. A source cannot be deleted
@@ -205,3 +234,5 @@ chain stays monotonic. No new machinery — see
 - [ ] Corpus mutations refused at both the policy and the tool boundary.
 - [ ] A revoked grant renders its own state — never an empty result.
 - [ ] `owner`-only actions (delete, share) use `isProjectOwner`.
+- [ ] `share` also excludes derived projects — a grant is never re-grantable.
+- [ ] New reach over shared data tested from an account granted **nothing**.

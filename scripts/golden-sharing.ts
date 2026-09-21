@@ -60,8 +60,11 @@ async function main() {
   await prisma.user.update({ where: { id: admin.id }, data: { role: "admin" } })
   const A = await signUp("owner")
   const B = await signUp("reader")
+  // C is granted nothing by A, ever. They exist to prove that a grant to B
+  // cannot be re-granted onward (step 6b).
+  const C = await signUp("outsider")
 
-  const adminApi = api(admin), a = api(A), b = api(B)
+  const adminApi = api(admin), a = api(A), b = api(B), c = api(C)
 
   // 1. Admin creates a group and adds A and B.
   console.log("\n1. admin creates « Département Recherche » and adds A + B")
@@ -150,6 +153,38 @@ async function main() {
   const dDiff = await b(`/api/projects/${derived}/corpus/diff?from=1&to=1`)
   check(dDiff.status === 409, "diff on a derived project → 409", String(dDiff.status))
 
+  // 6b. B may not re-share the workspace. B owns it, but its corpus is A's, and
+  // the derived read path resolves through corpusProjectId() gated on the
+  // workspace's pinned share — never on the caller's access to the source. Were
+  // this allowed, B would hand A's corpus to a group A never granted anything
+  // to. Checked over HTTP because the hole was in the route's policy, not the
+  // read path: every other assertion in this file passed while it was open.
+  console.log("\n6b. B cannot launder their read grant into an onward one")
+  const outsiderGroupName = `Externe ${randomUUID().slice(0, 8)}`
+  const g2 = await adminApi("/api/groups", { method: "POST", body: JSON.stringify({ name: outsiderGroupName }) })
+  const outsiderGroup = (g2.body as { id: string }).id
+  for (const u of [B, C]) {
+    await adminApi(`/api/groups/${outsiderGroup}/members`, { method: "POST", body: JSON.stringify({ email: u.email }) })
+  }
+
+  const cBefore = await c(`/api/projects/${source}/corpus`)
+  check(cBefore.status === 403, "C has no access to A's source → 403", String(cBefore.status))
+
+  const launder = await b(`/api/projects/${derived}/shares`, { method: "POST", body: JSON.stringify({ groupId: outsiderGroup, access: "read" }) })
+  check(launder.status === 403, "B sharing their derived workspace → 403", String(launder.status))
+
+  const cAfter = await c(`/api/projects/${derived}/corpus`)
+  check(cAfter.status === 403, "C still cannot read A's corpus via the workspace → 403", String(cAfter.status))
+
+  const cList = await c("/api/projects")
+  check(!JSON.stringify(cList.body).includes(derived), "C's project list does not contain the workspace")
+
+  // An admin is not the way round it either: the corpus still is not theirs.
+  const adminLaunder = await adminApi(`/api/projects/${derived}/shares`, { method: "POST", body: JSON.stringify({ groupId: outsiderGroup, access: "read" }) })
+  check(adminLaunder.status === 403, "an admin sharing a derived workspace → 403", String(adminLaunder.status))
+
+  await prisma.group.deleteMany({ where: { id: outsiderGroup } })
+
   // A note in B's carnet, not A's.
   const note = await b(`/api/projects/${derived}/notes`, { method: "POST", body: JSON.stringify({ title: "Note de B", bodyMd: "Contenu" }) })
   check(note.status === 201, "B writes a note in their workspace → 201", String(note.status))
@@ -195,7 +230,7 @@ async function main() {
   await prisma.group.deleteMany({ where: { id: groupId } })
   const { cleanupProject } = await import("@/lib/testing/project-cleanup")
   for (const id of [...created].reverse()) await cleanupProject(id)
-  for (const u of [admin, A, B]) await prisma.user.deleteMany({ where: { id: u.id } })
+  for (const u of [admin, A, B, C]) await prisma.user.deleteMany({ where: { id: u.id } })
   process.exit(failures === 0 ? 0 : 1)
 }
 

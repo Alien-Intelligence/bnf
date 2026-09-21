@@ -62,12 +62,16 @@ export function CardProjectTile({
   // the row; `mayShare` is a permission, and an admin holds it on every project
   // without owning any of them.
   const isMine = project.ownerId === currentUserId
-  const mayShare = project.access === PROJECT_ACCESS_LEVEL.OWNER
-  const canWrite = mayShare || project.access === PROJECT_ACCESS_LEVEL.WRITE
+  const isOwner = project.access === PROJECT_ACCESS_LEVEL.OWNER
+  const canWrite = isOwner || project.access === PROJECT_ACCESS_LEVEL.WRITE
 
   const sourceState = corpusSourceState(project)
   const derived = isDerived(project)
   const revoked = sourceState === CORPUS_SOURCE_STATE.REVOKED
+  // Owning a derived workspace is not owning the corpus it reads. Sharing it
+  // would hand the source's corpus to a group its owner never granted — see
+  // ProjectPolicy.share, which refuses the same case server-side.
+  const mayShare = isOwner && !derived
   // Constituer and Ingérer mutate the corpus; a derived project has none of
   // its own, and a read-only member may not touch the one it points at.
   const showCorpusSteps = canWrite && !derived
@@ -102,7 +106,9 @@ export function CardProjectTile({
 
         {/* One secondary action, in the header rather than the step bar.
             Sharing and deriving are mutually exclusive by construction: the
-            first is owner-only, the second non-owner-only. */}
+            first is owner-only, the second non-owner-only. A derived workspace
+            offers neither — its owner may not re-grant a corpus that is not
+            theirs, and it cannot be derived from a second time. */}
         {mayShare && onShare ? (
           <CardAction>
             <Button

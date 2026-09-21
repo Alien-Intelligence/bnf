@@ -1,3 +1,4 @@
+import { isDerived } from "@/lib/authz/corpus-source"
 import {
   canReadProject,
   canWriteProject,
@@ -35,8 +36,18 @@ export class ProjectPolicy {
    * Owner-only, deliberately. Only the owner (or an admin, who resolves to
    * `owner`) may widen access to a project — a write share is a licence to
    * work inside it, not to re-grant it.
+   *
+   * And never a derived project, even for its owner. A derived workspace is
+   * owned by the *reader*, but its corpus belongs to the source. Sharing it
+   * would re-grant that corpus to a group the source's owner never granted
+   * anything to — the reads route through `corpusProjectId()` and are gated on
+   * the workspace's pinned share, not on the caller's access to the source. A
+   * read-only grant must not be launderable into an onward one.
+   *
+   * This mirrors `CorpusPolicy`: a derived project has no corpus of its own to
+   * give away, in access exactly as in mutation.
    */
   share(p: ProjectWithShares): boolean {
-    return isProjectOwner(this.user, p)
+    return isProjectOwner(this.user, p) && !isDerived(p)
   }
 }
