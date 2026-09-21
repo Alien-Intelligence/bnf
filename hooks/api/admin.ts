@@ -6,6 +6,7 @@
 
 import { useQuery } from "@tanstack/react-query"
 import { apiFetch } from "@/lib/api-fetch"
+import type { ProjectListItem } from "@/models/projects/schema"
 import type { AdminUsageResponse } from "@/app/api/admin/usage/route"
 import type { AdminOverviewResponse } from "@/app/api/admin/overview/route"
 import type { AdminAccountsResponse } from "@/app/api/admin/accounts/route"
@@ -20,6 +21,7 @@ export const adminKeys = {
   accounts: () => ["admin", "accounts"] as const,
   feedback: () => ["admin", "feedback"] as const,
   ocr: () => ["admin", "ocr"] as const,
+  projects: () => ["admin", "projects"] as const,
 }
 
 // ── Read hooks ────────────────────────────────────────────────────────────────
@@ -88,6 +90,27 @@ export function useAdminOcr() {
       if (!res.ok) throw new Error(`Failed to fetch OCR usage: ${res.status}`)
       return res.json() as Promise<AdminOcrResponse>
     },
+    staleTime: 60_000,
+  })
+}
+
+/**
+ * Every project in the instance, for the admin console's Projects tab.
+ *
+ * Seeded from the page so the admin lands on the table rather than a skeleton.
+ * Distinct from `useProjects`, which answers the narrower "what is mine"
+ * question the user-facing list asks — conflating the two is what put every
+ * researcher's workspace under « Partagés avec moi » in 0.17.0.
+ */
+export function useAdminProjects(opts: { initialData?: ProjectListItem[] } = {}) {
+  return useQuery<ProjectListItem[]>({
+    queryKey: adminKeys.projects(),
+    queryFn: async () => {
+      const res = await apiFetch("/api/admin/projects")
+      if (!res.ok) throw new Error(`Failed to fetch projects: ${res.status}`)
+      return res.json() as Promise<ProjectListItem[]>
+    },
+    ...(opts.initialData ? { initialData: opts.initialData } : {}),
     staleTime: 60_000,
   })
 }

@@ -18,7 +18,7 @@ export class GroupPolicy {
   /**
    * Any authenticated non-guest may list groups — a project owner needs the
    * list to know what they can share into. WHICH groups come back is the
-   * visibility scope's job (`visibilityScopeFor`), not this method's: an admin
+   * visibility scope's job (`adminVisibilityScope`), not this method's: an admin
    * gets all of them, everyone else only their own.
    */
   list(): boolean {

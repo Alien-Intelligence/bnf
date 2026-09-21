@@ -21,7 +21,7 @@ export class GroupQueries {
    * otherwise — a project owner needs the list to know what they can share
    * into, but must not learn the full org chart.
    *
-   * The scope arrives pre-decided from `visibilityScopeFor` — one query, so a
+   * The scope arrives pre-decided from `adminVisibilityScope` — one query, so a
    * caller cannot pick the wrong one, and no role check in a file the policy
    * layer never sees.
    */

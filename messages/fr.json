@@ -30,7 +30,8 @@
       "feedback": "Retours",
       "usage": "Utilisation",
       "ocr": "OCR",
-      "groups": "Groupes"
+      "groups": "Groupes",
+      "projects": "Projets"
     },
     "overview": {
       "eyebrow": "Administration",
@@ -137,6 +138,25 @@
       "noBudget": "—",
       "emptyProjects": "Aucune dépense OCR pour l'instant.",
       "emptyJobs": "Aucune ingestion payante pour l'instant."
+    },
+    "projects": {
+      "eyebrow": "ADMINISTRATION",
+      "title": "Tous les projets",
+      "subtitle": "Vue d'ensemble de l'instance. Les projets listés ici ne vous sont pas partagés : vous les voyez parce que vous êtes administrateur.",
+      "empty": "Aucun projet sur cette instance.",
+      "col": {
+        "name": "Projet",
+        "owner": "Propriétaire",
+        "docs": "Documents",
+        "state": "État",
+        "source": "Corpus lu"
+      },
+      "ingested": "Ingéré",
+      "notIngested": "Non ingéré",
+      "revoked": "Accès révoqué",
+      "open": "Ouvrir",
+      "you": "Vous",
+      "ownCorpus": "Le sien"
     }
   },
   "common": {
