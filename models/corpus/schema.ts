@@ -63,6 +63,13 @@ export const documentRow = {
     // drives the detail panel's "promote" (api_error) vs "not on Gallica"
     // (not_digitized) affordance. Null for digitized docs / upgraded notices.
     canonicalStatus: true,
+    // Indexation outcome, together with the fields above: whether this document
+    // actually made it into the RAG index, and the worker's reason when it did
+    // not. Both are needed — indexedAt alone cannot tell "failed" from "never
+    // sent". See classifyOutcome() in models/documents/schema.ts. Without these
+    // the corpus renders as complete whatever the last ingest run shed.
+    indexedAt: true,
+    indexError: true,
   },
 } satisfies Prisma.DocumentDefaultArgs
 
@@ -147,6 +154,28 @@ export type CorpusSnapshot = {
     sansTexte: number
     /** Not digitized → not ingested. */
     nonNumerise: number
+  }
+  /**
+   * Indexation outcome — what actually BECAME of each document, as opposed to
+   * `numerisation`, which is what the pre-flight classifier expected of it. A
+   * corpus can be entirely `ocr` by class and still be missing a third of its
+   * documents; this block is the only place that says so.
+   *
+   * Spans ALL members (an unresolved stub is legitimately `notIngested`), and
+   * the four buckets are mutually exclusive and total — they sum to the count of
+   * the filtered set with any outcome filter lifted. That lift is deliberate:
+   * selecting "non indexés" must not collapse the other three to zero, exactly
+   * as `undatedCount` ignores an active year range.
+   */
+  indexation: {
+    /** In the RAG index and retrievable (may still carry a warning). */
+    indexed: number
+    /** Sent to the worker, never came back indexed, reason recorded. */
+    failed: number
+    /** Never sent — nothing to index (notice, no scan, no text layer). */
+    excluded: number
+    /** Ingestable, but no ingest run has covered it yet. */
+    notIngested: number
   }
   sample: DocumentRow[]
   nextCursor?: string

@@ -38,15 +38,30 @@ export function CardCorpusSummary({ corpus }: Props) {
   const typeCount = Object.keys(corpus.facets.type).length
   const codes = langCodes(corpus.facets.lang)
 
+  // Documents the RAG index cannot return, whatever the reason. Summed from the
+  // three non-indexed buckets rather than `total - indexed`: the indexation
+  // counts deliberately ignore an active outcome filter (so the tile stays
+  // readable while you filter by it) and `total` does not, so subtracting the
+  // two would go negative the moment a librarian used the filter.
+  const unindexed =
+    corpus.indexation.failed +
+    corpus.indexation.excluded +
+    corpus.indexation.notIngested
+
   return (
     <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
       <CardSharedStat
         label={t("documents")}
         value={corpus.total.toLocaleString("fr-FR")}
         sub={
-          corpus.pendingCount > 0
-            ? t("pendingSub", { count: corpus.pendingCount })
-            : t("arkNotices")
+          // A corpus that is not fully in the index says so before anything
+          // else: the librarian searches this corpus and gets silence back for
+          // these documents, which is the one fact the tile previously hid.
+          unindexed > 0
+            ? t("unindexedSub", { count: unindexed })
+            : corpus.pendingCount > 0
+              ? t("pendingSub", { count: corpus.pendingCount })
+              : t("arkNotices")
         }
       />
       <CardSharedStat

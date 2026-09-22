@@ -386,7 +386,8 @@
       "languages": "Languages",
       "sources": "Sources",
       "empty": "No documents in the corpus",
-      "pendingSub": "{count} resolving"
+      "pendingSub": "{count} resolving",
+      "unindexedSub": "{count, number} not indexed"
     },
     "filters": {
       "title": "Filters and statistics",
@@ -441,6 +442,20 @@
         "sansTexteSub": "not ingested",
         "nonNumerise": "Not digitized",
         "nonNumeriseSub": "not ingested"
+      },
+      "indexation": {
+        "title": "Indexing",
+        "hint": "click to filter",
+        "searchable": "Searchable",
+        "unindexed": "Not indexed",
+        "indexed": "Indexed",
+        "indexedSub": "the agent can retrieve these",
+        "failed": "Failed",
+        "failedSub": "sent, never completed",
+        "notIngested": "Not yet indexed",
+        "notIngestedSub": "added since the last ingestion",
+        "excluded": "Not indexable",
+        "excludedSub": "no text to index"
       }
     },
     "documents": {
@@ -504,6 +519,20 @@
           "ingestSansTexte": "No text · not ingested",
           "ingestNonNumerise": "Not ingested",
           "unknown": "—"
+        }
+      },
+      "indexation": {
+        "states": {
+          "failed": "Indexing failed",
+          "excluded": "Not indexable",
+          "notIngested": "Not yet indexed"
+        },
+        "reasons": {
+          "noText": "No usable text in the document",
+          "ocrFailed": "Transcription did not complete",
+          "partialPages": "Too many pages failed for a reliable result",
+          "rateLimited": "BnF quota reached: document dropped",
+          "indexFailed": "Indexing failed after several attempts"
         }
       }
     },

@@ -32,6 +32,13 @@ export const corpusFiltersSchema = z.object({
    * not a stored column — see classifyIngestion() / the snapshot query.
    */
   ingest: z.string().optional(),
+  /**
+   * Comma-separated indexation outcomes:
+   * "indexed" | "failed" | "excluded" | "not_ingested". What BECAME of the
+   * document at ingestion — the outcome, not the pre-flight `ingest` class.
+   * Derived from indexedAt/indexError; see classifyOutcome().
+   */
+  outcome: z.string().optional(),
   /** Decade start (inclusive), e.g. 1880 */
   yearFrom: z.coerce.number().int().optional(),
   /** Decade end (inclusive), e.g. 1889 */
@@ -56,6 +63,7 @@ export function corpusFiltersToParams(filters: CorpusFilters): URLSearchParams {
   if (filters.source) p.set("source", filters.source)
   if (filters.session) p.set("session", filters.session)
   if (filters.ingest) p.set("ingest", filters.ingest)
+  if (filters.outcome) p.set("outcome", filters.outcome)
   if (filters.yearFrom !== undefined) p.set("yearFrom", String(filters.yearFrom))
   if (filters.yearTo !== undefined) p.set("yearTo", String(filters.yearTo))
   if (filters.undated !== undefined) p.set("undated", String(filters.undated))
@@ -83,7 +91,7 @@ export function corpusFiltersFromParams(params: URLSearchParams): CorpusFilters 
  */
 export function removeFromFilter(
   filters: CorpusFilters,
-  key: "type" | "lang" | "source" | "session" | "ingest",
+  key: "type" | "lang" | "source" | "session" | "ingest" | "outcome",
   value: string,
 ): CorpusFilters {
   const current = filters[key]
@@ -108,6 +116,7 @@ export function hasActiveFilters(filters: CorpusFilters): boolean {
     (!!filters.source && filters.source.length > 0) ||
     (!!filters.session && filters.session.length > 0) ||
     (!!filters.ingest && filters.ingest.length > 0) ||
+    (!!filters.outcome && filters.outcome.length > 0) ||
     filters.yearFrom !== undefined ||
     filters.yearTo !== undefined ||
     filters.undated === true ||

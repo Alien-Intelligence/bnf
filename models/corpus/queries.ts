@@ -9,6 +9,7 @@ import type { Prisma } from "@/lib/generated/prisma/client"
 import { CORPUS_SAMPLE_SIZE } from "@/lib/constants"
 import {
   DOCUMENT_RESOLVE_STATUS,
+  INDEXATION_OUTCOME,
   INGESTION_CLASS,
   INGESTION_IMAGE_LIKE_TYPES,
   classifyIngestion,
@@ -30,9 +31,74 @@ function ingestClassWhere(cls: string): Prisma.DocumentWhereInput | null {
     case INGESTION_CLASS.VISION:
       return { iiifManifestUrl: { not: null }, docType: { in: imageLike }, OR: noOcr }
     case INGESTION_CLASS.SANS_TEXTE:
-      return { iiifManifestUrl: { not: null }, docType: { notIn: imageLike }, OR: noOcr }
+      // `notIn` compiles to SQL NOT IN, which is null-hostile: a row with a
+      // NULL doc_type does not satisfy it. classifyIngestion() reads that same
+      // row as sans_texte — a null type is not image-like — so the two
+      // disagreed, and the filter quietly omitted documents the card counted.
+      // Verified against the dev database: `notIn` returns only non-null rows.
+      // Spell the null arm out. `in` (VISION, below) needs no such care: it
+      // excludes nulls, and so does the classifier.
+      return {
+        iiifManifestUrl: { not: null },
+        AND: [
+          { OR: [{ docType: null }, { docType: { notIn: imageLike } }] },
+          { OR: noOcr },
+        ],
+      }
     case INGESTION_CLASS.NON_NUMERISE:
       return { iiifManifestUrl: null }
+    default:
+      return null
+  }
+}
+
+// The set a document must fall in to read as `excluded` — never sent to the
+// index because there was nothing in it to index. The SQL mirror of the
+// `!isIngestableClass(cls) && confident` arm of classifyOutcome(), which is
+// itself a mirror of IngestService._partitionByIngestability(). All three move
+// together.
+//
+// `non_numerise` is always confident (nothing to resolve — there is no scan).
+// `sans_texte` is a verdict about a digitized document, so it only counts once
+// the row is RESOLVED: an unresolved stub may still turn out to carry OCR, and
+// calling it excluded would assert a permanent absence from a pending lookup.
+function excludedClassWhere(): Prisma.DocumentWhereInput {
+  const sansTexte = ingestClassWhere(INGESTION_CLASS.SANS_TEXTE)
+  const nonNumerise = ingestClassWhere(INGESTION_CLASS.NON_NUMERISE)
+  // Both classes are literals of INGESTION_CLASS, so ingestClassWhere never
+  // returns null here; the guard keeps that a type fact rather than a comment.
+  if (sansTexte === null || nonNumerise === null) {
+    throw new Error("excludedClassWhere: unknown ingestion class")
+  }
+  return {
+    OR: [
+      nonNumerise,
+      { ...sansTexte, resolveStatus: DOCUMENT_RESOLVE_STATUS.RESOLVED },
+    ],
+  }
+}
+
+/**
+ * Prisma WHERE fragment matching one indexation outcome — the SQL mirror of
+ * classifyOutcome(). Returns null for an unrecognised state so callers can
+ * filter it out, exactly as ingestClassWhere() does.
+ *
+ * The four fragments are mutually exclusive and cover the table, so OR-ing all
+ * four is the same set as no filter at all. That is what makes the outcome
+ * counts in snapshot() sum to `total`.
+ */
+function outcomeWhere(state: string): Prisma.DocumentWhereInput | null {
+  switch (state) {
+    case INDEXATION_OUTCOME.INDEXED:
+      // indexError may be set alongside — that is a warning on an indexed doc,
+      // not a failure. See indexationWarning().
+      return { indexedAt: { not: null } }
+    case INDEXATION_OUTCOME.FAILED:
+      return { indexedAt: null, indexError: { not: null } }
+    case INDEXATION_OUTCOME.EXCLUDED:
+      return { indexedAt: null, indexError: null, ...excludedClassWhere() }
+    case INDEXATION_OUTCOME.NOT_INGESTED:
+      return { indexedAt: null, indexError: null, NOT: excludedClassWhere() }
     default:
       return null
   }
@@ -64,6 +130,12 @@ export type CorpusFilterSet = {
   session?: string[]
   /** Ingestion classes: ocr | vision | sans_texte | non_numerise. */
   ingest?: string[]
+  /**
+   * Indexation outcomes: indexed | failed | excluded | not_ingested. What
+   * BECAME of each document at ingestion — distinct from `ingest`, which is the
+   * pre-flight ingestability class. See classifyOutcome().
+   */
+  outcome?: string[]
   yearFrom?: number
   yearTo?: number
   undated?: boolean
@@ -96,6 +168,15 @@ function buildCorpusWhere(
 ): {
   sharedWhere: Prisma.DocumentWhereInput
   resolvedWhere: Prisma.DocumentWhereInput
+  /**
+   * `sharedWhere` with the indexation-outcome clause dropped. The per-outcome
+   * counts in `snapshot()` are computed against this so they stay informative
+   * while an outcome filter is active — selecting "non indexés" must not
+   * collapse every other bucket to zero, exactly as `undatedCount` ignores the
+   * year range. Every OTHER filter still applies: the counts describe the set
+   * the librarian is looking at.
+   */
+  sharedWhereWithoutOutcome: Prisma.DocumentWhereInput
   /**
    * The individual filter clauses, exposed for the few snapshot counts that
    * apply a deliberately different subset (e.g. `undatedCount` ignores the year
@@ -169,18 +250,43 @@ function buildCorpusWhere(
       ? { resolveStatus: DOCUMENT_RESOLVE_STATUS.RESOLVED, OR: ingestPredicates }
       : null
 
+  // Indexation-outcome filter: an OR over the selected outcomes, each a SQL
+  // mirror of classifyOutcome(). Unlike the ingestion class this is NOT
+  // constrained to resolved rows — a stub that no ingest run has covered is
+  // legitimately `not_ingested`, and hiding it would under-report exactly the
+  // gap this filter exists to show.
+  const outcomePredicates =
+    filters?.outcome && filters.outcome.length > 0
+      ? filters.outcome
+          .map(outcomeWhere)
+          .filter((w): w is Prisma.DocumentWhereInput => w !== null)
+      : []
+  const outcomeFilterWhere: Prisma.DocumentWhereInput | null =
+    outcomePredicates.length > 0 ? { OR: outcomePredicates } : null
+
   const andClauses: Prisma.DocumentWhereInput[] = []
   if (filters?.q && filters.q.trim().length > 0) andClauses.push(fullTextWhere)
   if (ingestWhere) andClauses.push(ingestWhere)
+  if (outcomeFilterWhere) andClauses.push(outcomeFilterWhere)
 
-  const sharedWhere: Prisma.DocumentWhereInput = {
+  const base: Prisma.DocumentWhereInput = {
     membership: { some: { versionId } },
     ...typeWhere,
     ...langWhere,
     ...sourceWhere,
     ...sessionWhere,
     ...yearWhere,
+  }
+
+  const sharedWhere: Prisma.DocumentWhereInput = {
+    ...base,
     ...(andClauses.length > 0 ? { AND: andClauses } : {}),
+  }
+
+  const withoutOutcome = andClauses.filter((c) => c !== outcomeFilterWhere)
+  const sharedWhereWithoutOutcome: Prisma.DocumentWhereInput = {
+    ...base,
+    ...(withoutOutcome.length > 0 ? { AND: withoutOutcome } : {}),
   }
 
   const resolvedWhere: Prisma.DocumentWhereInput = {
@@ -191,6 +297,7 @@ function buildCorpusWhere(
   return {
     sharedWhere,
     resolvedWhere,
+    sharedWhereWithoutOutcome,
     parts: { typeWhere, langWhere, sourceWhere, fullTextWhere },
   }
 }
@@ -337,10 +444,8 @@ export class CorpusQueries {
     // `parts` exposes the individual clauses for the few counts below that apply
     // a deliberately different subset (undatedCount ignores the year range;
     // pending/failed honour only source).
-    const { sharedWhere, resolvedWhere, parts } = buildCorpusWhere(
-      versionId,
-      filters,
-    )
+    const { sharedWhere, resolvedWhere, sharedWhereWithoutOutcome, parts } =
+      buildCorpusWhere(versionId, filters)
     const { typeWhere, langWhere, sourceWhere, fullTextWhere } = parts
 
     // --- Decode cursor -------------------------------------------------------
@@ -369,6 +474,10 @@ export class CorpusQueries {
       sourceRows,
       sessionRows,
       resolvedRows,
+      indexedCount,
+      indexFailedCount,
+      excludedCount,
+      notIngestedCount,
     ] = await Promise.all([
       // Total within filtered set (includes pending/failed members when no
       // type/lang/year/q filter excludes them).
@@ -451,6 +560,26 @@ export class CorpusQueries {
           iiifManifestUrl: true,
         },
       }),
+
+      // --- Indexation outcome counts ----------------------------------------
+      // Four counts rather than one grouped pass: the outcome is a derived
+      // predicate over two nullable columns plus the ingestability class, not a
+      // stored column, so there is nothing to GROUP BY. They run against
+      // sharedWhereWithoutOutcome so an active outcome filter does not collapse
+      // the other three buckets to zero (see buildCorpusWhere). Mutually
+      // exclusive and total, so they sum to the unfiltered-by-outcome count.
+      ...(
+        [
+          INDEXATION_OUTCOME.INDEXED,
+          INDEXATION_OUTCOME.FAILED,
+          INDEXATION_OUTCOME.EXCLUDED,
+          INDEXATION_OUTCOME.NOT_INGESTED,
+        ] as const
+      ).map((state) =>
+        prisma.document.count({
+          where: { ...sharedWhereWithoutOutcome, ...outcomeWhere(state) },
+        }),
+      ),
     ])
 
     // --- Fold facet rows into Record<string, number> -------------------------
@@ -597,6 +726,12 @@ export class CorpusQueries {
       },
       sessions,
       numerisation,
+      indexation: {
+        indexed: indexedCount,
+        failed: indexFailedCount,
+        excluded: excludedCount,
+        notIngested: notIngestedCount,
+      },
       sample,
       ...(nextCursor !== undefined ? { nextCursor } : {}),
     }

@@ -10,9 +10,13 @@ import { useTranslations } from "next-intl"
 import { BadgeDocumentType } from "@/components/badges/documents/type-badge"
 import { BadgeDocumentLang } from "@/components/badges/documents/lang-badge"
 import { BadgeDocumentThumb } from "@/components/badges/documents/thumb"
+import { BadgeDocumentIndexation } from "@/components/badges/documents/indexation-badge"
 import { TYPE_DATASET_COLOR } from "@/lib/constants"
 import { cn } from "@/lib/utils"
-import { DOCUMENT_RESOLVE_STATUS } from "@/models/documents/schema"
+import {
+  DOCUMENT_RESOLVE_STATUS,
+  classifyOutcome,
+} from "@/models/documents/schema"
 import type { DocumentRow } from "@/models/corpus/schema"
 
 interface Props {
@@ -26,6 +30,19 @@ export function CardCorpusDocumentRow({ doc, onClick }: Props) {
   const meta = [doc.author, doc.dateLabel ?? doc.year, doc.source]
     .filter(Boolean)
     .join(" · ")
+
+  // What became of this document at the last ingestion. Derived here rather
+  // than sent down pre-computed: the row already carries every input, and one
+  // classifier shared with the query layer keeps the badge and the filter from
+  // ever disagreeing about which rows are missing from the index.
+  const outcome = classifyOutcome({
+    indexedAt: doc.indexedAt,
+    indexError: doc.indexError,
+    docType: doc.docType,
+    ocrAvailable: doc.ocrAvailable,
+    digitized: Boolean(doc.iiifManifestUrl),
+    resolveStatus: doc.resolveStatus,
+  })
 
   const isPending = doc.resolveStatus === DOCUMENT_RESOLVE_STATUS.PENDING
   const isFailed = doc.resolveStatus === DOCUMENT_RESOLVE_STATUS.FAILED
@@ -69,6 +86,7 @@ export function CardCorpusDocumentRow({ doc, onClick }: Props) {
         </span>
       </span>
 
+      <BadgeDocumentIndexation outcome={outcome} reason={doc.indexError} />
       {doc.lang && <BadgeDocumentLang code={doc.lang} />}
       {doc.docType && <BadgeDocumentType code={doc.docType} />}
 

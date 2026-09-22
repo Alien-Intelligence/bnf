@@ -28,8 +28,9 @@ import { z } from "zod"
 import { ProjectQueries } from "@/models/projects/queries"
 import { resolveCorpusProject } from "@/app/api/_corpus-source"
 import { CorpusPolicy } from "@/models/corpus/policy"
-import { CorpusQueries, type CorpusFilterSet } from "@/models/corpus/queries"
+import { CorpusQueries } from "@/models/corpus/queries"
 import { corpusFiltersSchema } from "@/models/corpus/types"
+import { corpusFiltersToFilterSet } from "@/app/api/_corpus-filters"
 import {
   DOCUMENT_RESOLVE_STATUS,
   classifyIngestion,
@@ -48,19 +49,6 @@ const exportQuerySchema = corpusFiltersSchema.extend({
     .optional(),
 })
 
-/**
- * Split a CSV query-string value into a trimmed, non-empty string array.
- * Returns undefined when absent or whitespace-only. Mirrors the helper in the
- * corpus snapshot route — the two routes parse the same filter vocabulary.
- */
-function splitCsv(value: string | undefined): string[] | undefined {
-  if (!value) return undefined
-  const parts = value
-    .split(",")
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0)
-  return parts.length > 0 ? parts : undefined
-}
 
 /** Stable CSV header — snake_case, locale-independent. */
 const EXPORT_HEADER = [
@@ -113,35 +101,7 @@ export const GET = withAuth(async (req, user, bouncer, ctx: RouteCtx) => {
 
   // Mirror the corpus snapshot route: build the filter set only when at least
   // one filter field is present; pass undefined otherwise.
-  const typeArr = splitCsv(parsed.type)
-  const langArr = splitCsv(parsed.lang)
-  const sourceArr = splitCsv(parsed.source)
-  const sessionArr = splitCsv(parsed.session)
-  const ingestArr = splitCsv(parsed.ingest)
-  const hasFilters =
-    typeArr !== undefined ||
-    langArr !== undefined ||
-    sourceArr !== undefined ||
-    sessionArr !== undefined ||
-    ingestArr !== undefined ||
-    parsed.yearFrom !== undefined ||
-    parsed.yearTo !== undefined ||
-    parsed.undated !== undefined ||
-    parsed.q !== undefined
-
-  const filters: CorpusFilterSet | undefined = hasFilters
-    ? {
-        type: typeArr,
-        lang: langArr,
-        source: sourceArr,
-        session: sessionArr,
-        ingest: ingestArr,
-        yearFrom: parsed.yearFrom,
-        yearTo: parsed.yearTo,
-        undated: parsed.undated,
-        q: parsed.q,
-      }
-    : undefined
+  const filters = corpusFiltersToFilterSet(parsed)
 
   const versionRef = parsed.version ?? "head"
   const { versionSeq, rows } = await CorpusQueries.exportRows(
