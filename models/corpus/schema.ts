@@ -177,6 +177,14 @@ export type CorpusSnapshot = {
     /** Ingestable, but no ingest run has covered it yet. */
     notIngested: number
   }
+  /**
+   * Whether the project pays for fallback OCR. Carried on the snapshot because
+   * it is an input to classifyOutcome(): with it on, a digitized Latin-script
+   * document with no OCR layer is `not_ingested` (it will be sent once the
+   * spend is confirmed) rather than `excluded`. A client that re-derived the
+   * outcome without it would contradict the counts computed beside it.
+   */
+  paidOcrEnabled: boolean
   sample: DocumentRow[]
   nextCursor?: string
 }
@@ -192,6 +200,8 @@ export type CorpusSnapshot = {
 export type CorpusListPage = {
   versionSeq: number
   total: number
+  /** See CorpusSnapshot.paidOcrEnabled — the same classifyOutcome() input. */
+  paidOcrEnabled: boolean
   documents: DocumentRow[]
   nextCursor?: string
 }

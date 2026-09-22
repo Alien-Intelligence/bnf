@@ -16,6 +16,7 @@ import "server-only"
 import { test, before, after } from "node:test"
 import assert from "node:assert/strict"
 import type { User } from "@/lib/generated/prisma/client"
+import { prisma } from "@/lib/db"
 import { CorpusQueries } from "@/models/corpus/queries"
 import {
   INDEXATION_OUTCOME,
@@ -90,12 +91,13 @@ const DOCS = [
   },
   {
     ark: "ark:/12148/bpt6k900005",
-    label: "excluded — digitized, resolved, no text layer",
+    label: "excluded — digitized, resolved, no text layer, non-Latin script",
     expect: INDEXATION_OUTCOME.EXCLUDED,
     data: {
       indexedAt: null,
       indexError: null,
       docType: "book",
+      lang: "grc",
       ocrAvailable: false,
       iiifManifestUrl: "https://gallica.bnf.fr/iiif/ark:/12148/bpt6k900005/manifest.json",
       resolveStatus: "resolved",
@@ -113,6 +115,7 @@ const DOCS = [
       indexedAt: null,
       indexError: null,
       docType: null,
+      lang: "grc",
       ocrAvailable: false,
       iiifManifestUrl: "https://gallica.bnf.fr/iiif/ark:/12148/bpt6k900006/manifest.json",
       resolveStatus: "resolved",
@@ -146,13 +149,73 @@ const DOCS = [
       resolveStatus: "pending",
     },
   },
+  {
+    // The paid-OCR lane, in SQL. With paid OCR on — the state of all 112
+    // production projects — a Latin-script scan with no text layer is NOT
+    // excluded: _partitionByIngestability sends it for paid transcription. It
+    // must therefore come back from the not_ingested filter, not the excluded
+    // one, or the panel tells a librarian 8 122 recoverable documents hold
+    // nothing to index.
+    ark: "ark:/12148/bpt6k900009",
+    label: "not_ingested — Latin-script scan, no text layer, paid OCR eligible",
+    expect: INDEXATION_OUTCOME.NOT_INGESTED,
+    data: {
+      indexedAt: null,
+      indexError: null,
+      docType: "book",
+      lang: "fr",
+      ocrAvailable: false,
+      iiifManifestUrl: "https://gallica.bnf.fr/iiif/ark:/12148/bpt6k900009/manifest.json",
+      resolveStatus: "resolved",
+    },
+  },
+  {
+    // The row that fell through BOTH buckets: `lang IN (…)` is NULL for a null
+    // lang, so the excluded arm was NULL and `NOT(arm)` was NULL too. It
+    // matched neither filter and vanished from the partition the header count
+    // is built on — 11 real documents across two dev projects. A null lang is
+    // presumed Latin, so the right answer is paid-OCR eligible: not_ingested.
+    ark: "ark:/12148/bpt6k900010",
+    label: "not_ingested — scan, no text layer, NULL lang (presumed Latin)",
+    expect: INDEXATION_OUTCOME.NOT_INGESTED,
+    data: {
+      indexedAt: null,
+      indexError: null,
+      docType: "book",
+      lang: null,
+      ocrAvailable: false,
+      iiifManifestUrl: "https://gallica.bnf.fr/iiif/ark:/12148/bpt6k900010/manifest.json",
+      resolveStatus: "resolved",
+    },
+  },
+  {
+    // Discriminates the excluded arm's AND merge. `sansTexte` carries its own
+    // AND (the docType and no-OCR conditions); spreading it and re-declaring
+    // `AND` for the language guard silently drops both, leaving "any resolved
+    // digitized document in a non-Latin language" — which still partitions
+    // cleanly, so neither the sum check nor any other row here would notice.
+    // This one has an OCR layer, so it is plainly ingestable, and only a
+    // predicate that kept the no-OCR condition keeps it out of `excluded`.
+    ark: "ark:/12148/bpt6k900011",
+    label: "not_ingested — non-Latin but HAS an OCR layer, so plainly ingestable",
+    expect: INDEXATION_OUTCOME.NOT_INGESTED,
+    data: {
+      indexedAt: null,
+      indexError: null,
+      docType: "book",
+      lang: "grc",
+      ocrAvailable: true,
+      iiifManifestUrl: "https://gallica.bnf.fr/iiif/ark:/12148/bpt6k900011/manifest.json",
+      resolveStatus: "resolved",
+    },
+  },
 ] as const
 
 const EXPECTED_COUNTS = {
   indexed: 2,
   failed: 1,
   excluded: 3,
-  notIngested: 2,
+  notIngested: 5,
 }
 
 before(async () => {
@@ -165,6 +228,14 @@ before(async () => {
   // would build every assertion below on a state the app can never produce.
   // The ingest lifecycle is skipped deliberately: reproducing a whole run per
   // case would test the worker rather than the classification of its outcome.
+  // Paid OCR ON, explicitly: it is the column default and the state of every
+  // production project, and it changes what `excluded` means. Leaving it
+  // implicit would make these expectations depend on a default elsewhere.
+  await prisma.project.update({
+    where: { id: projectId },
+    data: { paidOcrEnabled: true },
+  })
+
   await seedCorpusDocuments(
     projectId,
     DOCS.map((d) => ({ ark: d.ark, ...d.data })),
@@ -193,14 +264,18 @@ test("the SQL filter agrees with the classifier on every row", async () => {
     const row = page.documents.find((d) => d.ark === doc.ark)
     assert.ok(row, `${doc.label}: row missing`)
     assert.equal(
-      classifyOutcome({
-        indexedAt: row.indexedAt,
-        indexError: row.indexError,
-        docType: row.docType,
-        ocrAvailable: row.ocrAvailable,
-        digitized: Boolean(row.iiifManifestUrl),
-        resolveStatus: row.resolveStatus,
-      }),
+      classifyOutcome(
+        {
+          indexedAt: row.indexedAt,
+          indexError: row.indexError,
+          docType: row.docType,
+          ocrAvailable: row.ocrAvailable,
+          digitized: Boolean(row.iiifManifestUrl),
+          resolveStatus: row.resolveStatus,
+          lang: row.lang,
+        },
+        { paidOcrEnabled: page.paidOcrEnabled },
+      ),
       doc.expect,
       doc.label,
     )

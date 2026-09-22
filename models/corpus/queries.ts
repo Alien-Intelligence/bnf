@@ -12,6 +12,7 @@ import {
   INDEXATION_OUTCOME,
   INGESTION_CLASS,
   INGESTION_IMAGE_LIKE_TYPES,
+  NON_LATIN_SCRIPT_LANG_CODES,
   classifyIngestion,
 } from "@/models/documents/schema"
 
@@ -62,7 +63,7 @@ function ingestClassWhere(cls: string): Prisma.DocumentWhereInput | null {
 // `sans_texte` is a verdict about a digitized document, so it only counts once
 // the row is RESOLVED: an unresolved stub may still turn out to carry OCR, and
 // calling it excluded would assert a permanent absence from a pending lookup.
-function excludedClassWhere(): Prisma.DocumentWhereInput {
+function excludedClassWhere(paidOcrEnabled: boolean): Prisma.DocumentWhereInput {
   const sansTexte = ingestClassWhere(INGESTION_CLASS.SANS_TEXTE)
   const nonNumerise = ingestClassWhere(INGESTION_CLASS.NON_NUMERISE)
   // Both classes are literals of INGESTION_CLASS, so ingestClassWhere never
@@ -70,12 +71,48 @@ function excludedClassWhere(): Prisma.DocumentWhereInput {
   if (sansTexte === null || nonNumerise === null) {
     throw new Error("excludedClassWhere: unknown ingestion class")
   }
-  return {
-    OR: [
-      nonNumerise,
-      { ...sansTexte, resolveStatus: DOCUMENT_RESOLVE_STATUS.RESOLVED },
-    ],
-  }
+  // The paid-OCR carve-out, mirroring _partitionByIngestability: with paid OCR
+  // on, a Latin-script sans_texte document is NOT excluded — it goes to the
+  // paidOcr bucket and is sent once the spend is confirmed. Only the non-Latin
+  // ones (which Mistral mangles, see isLatinScriptLang) stay excluded. A null
+  // lang is presumed Latin, exactly as the classifier presumes it, so it must
+  // NOT match here — `in` already excludes nulls, which is the behaviour we
+  // want for once.
+  // `lang IS NOT NULL` before `lang IN (…)`, and it is load-bearing: IN yields
+  // NULL for a null lang, so the whole arm would be NULL, `NOT(arm)` would be
+  // NULL too, and the row would match NEITHER `excluded` nor `not_ingested` —
+  // silently dropping it out of a partition the header count depends on. The
+  // guard makes the arm FALSE instead, which is also the right answer: a null
+  // lang is presumed Latin (isLatinScriptLang), hence paid-OCR eligible, hence
+  // not excluded. Measured: 11 documents across two dev projects fell through
+  // this gap before the guard.
+  // NOTE the AND is MERGED, not replaced: `sansTexte` already carries its own
+  // AND array (the docType and no-OCR arms), and spreading then re-declaring
+  // `AND` would silently drop both, leaving "any resolved digitized document in
+  // a non-Latin language" — a much larger set that still partitions cleanly, so
+  // the sum check would not catch it.
+  const sansTexteAnd = Array.isArray(sansTexte.AND) ? sansTexte.AND : []
+  const sansTexteExcluded: Prisma.DocumentWhereInput = paidOcrEnabled
+    ? {
+        ...sansTexte,
+        resolveStatus: DOCUMENT_RESOLVE_STATUS.RESOLVED,
+        AND: [
+          ...sansTexteAnd,
+          // `lang IS NOT NULL` before `lang IN (…)`, and it is load-bearing: IN
+          // yields NULL for a null lang, so the arm would be NULL, `NOT(arm)`
+          // NULL too, and the row would match NEITHER `excluded` nor
+          // `not_ingested` — dropping out of a partition the header count
+          // depends on. FALSE is also the right answer: a null lang is presumed
+          // Latin (isLatinScriptLang), hence paid-OCR eligible, hence not
+          // excluded. Measured: 11 documents across two dev projects fell
+          // through this gap before the guard.
+          { lang: { not: null } },
+          { lang: { in: [...NON_LATIN_SCRIPT_LANG_CODES] } },
+        ],
+      }
+    : { ...sansTexte, resolveStatus: DOCUMENT_RESOLVE_STATUS.RESOLVED }
+
+  return { OR: [nonNumerise, sansTexteExcluded] }
 }
 
 /**
@@ -87,7 +124,10 @@ function excludedClassWhere(): Prisma.DocumentWhereInput {
  * four is the same set as no filter at all. That is what makes the outcome
  * counts in snapshot() sum to `total`.
  */
-function outcomeWhere(state: string): Prisma.DocumentWhereInput | null {
+function outcomeWhere(
+  state: string,
+  paidOcrEnabled: boolean,
+): Prisma.DocumentWhereInput | null {
   switch (state) {
     case INDEXATION_OUTCOME.INDEXED:
       // indexError may be set alongside — that is a warning on an indexed doc,
@@ -96,9 +136,17 @@ function outcomeWhere(state: string): Prisma.DocumentWhereInput | null {
     case INDEXATION_OUTCOME.FAILED:
       return { indexedAt: null, indexError: { not: null } }
     case INDEXATION_OUTCOME.EXCLUDED:
-      return { indexedAt: null, indexError: null, ...excludedClassWhere() }
+      return {
+        indexedAt: null,
+        indexError: null,
+        ...excludedClassWhere(paidOcrEnabled),
+      }
     case INDEXATION_OUTCOME.NOT_INGESTED:
-      return { indexedAt: null, indexError: null, NOT: excludedClassWhere() }
+      return {
+        indexedAt: null,
+        indexError: null,
+        NOT: excludedClassWhere(paidOcrEnabled),
+      }
     default:
       return null
   }
@@ -164,6 +212,7 @@ export type CorpusFilterSet = {
  */
 function buildCorpusWhere(
   versionId: string,
+  paidOcrEnabled: boolean,
   filters?: CorpusFilterSet,
 ): {
   sharedWhere: Prisma.DocumentWhereInput
@@ -258,7 +307,7 @@ function buildCorpusWhere(
   const outcomePredicates =
     filters?.outcome && filters.outcome.length > 0
       ? filters.outcome
-          .map(outcomeWhere)
+          .map((state) => outcomeWhere(state, paidOcrEnabled))
           .filter((w): w is Prisma.DocumentWhereInput => w !== null)
       : []
   const outcomeFilterWhere: Prisma.DocumentWhereInput | null =
@@ -303,6 +352,21 @@ function buildCorpusWhere(
 }
 
 export class CorpusQueries {
+  /**
+   * Whether the project pays for fallback OCR. It decides whether a digitized,
+   * OCR-less, Latin-script document counts as `excluded` ("nothing to index")
+   * or `not_ingested` ("nothing has covered it yet") — see classifyOutcome().
+   * Defaults to the column default when the project is gone, so a read never
+   * fails on a missing flag.
+   */
+  private static async paidOcrEnabled(projectId: string): Promise<boolean> {
+    const project = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { paidOcrEnabled: true },
+    })
+    return project?.paidOcrEnabled ?? true
+  }
+
   /**
    * Returns the current head version (with membership ARKs) for a project.
    * Looks up via Project.headVersionId so we never scan corpus_version for
@@ -434,6 +498,7 @@ export class CorpusQueries {
   ): Promise<CorpusSnapshot> {
     // --- Resolve the version --------------------------------------------------
     const version = await CorpusQueries.resolveVersion(projectId, ref)
+    const paidOcr = await CorpusQueries.paidOcrEnabled(projectId)
     const versionId = version.id
     const filters = opts?.filters
     const limit = opts?.limit ?? CORPUS_SAMPLE_SIZE
@@ -445,7 +510,7 @@ export class CorpusQueries {
     // a deliberately different subset (undatedCount ignores the year range;
     // pending/failed honour only source).
     const { sharedWhere, resolvedWhere, sharedWhereWithoutOutcome, parts } =
-      buildCorpusWhere(versionId, filters)
+      buildCorpusWhere(versionId, paidOcr, filters)
     const { typeWhere, langWhere, sourceWhere, fullTextWhere } = parts
 
     // --- Decode cursor -------------------------------------------------------
@@ -577,7 +642,7 @@ export class CorpusQueries {
         ] as const
       ).map((state) =>
         prisma.document.count({
-          where: { ...sharedWhereWithoutOutcome, ...outcomeWhere(state) },
+          where: { ...sharedWhereWithoutOutcome, ...outcomeWhere(state, paidOcr) },
         }),
       ),
     ])
@@ -726,6 +791,7 @@ export class CorpusQueries {
       },
       sessions,
       numerisation,
+      paidOcrEnabled: paidOcr,
       indexation: {
         indexed: indexedCount,
         failed: indexFailedCount,
@@ -784,9 +850,10 @@ export class CorpusQueries {
     opts?: { filters?: CorpusFilterSet; cursor?: string; limit?: number },
   ): Promise<CorpusListPage> {
     const version = await CorpusQueries.resolveVersion(projectId, ref)
+    const paidOcr = await CorpusQueries.paidOcrEnabled(projectId)
     const versionId = version.id
     const limit = opts?.limit ?? CORPUS_SAMPLE_SIZE
-    const { sharedWhere } = buildCorpusWhere(versionId, opts?.filters)
+    const { sharedWhere } = buildCorpusWhere(versionId, paidOcr, opts?.filters)
 
     // Decode cursor: "<versionSeq>:<lastArk>" — only lastArk is used here.
     let cursorArk: string | undefined
@@ -816,6 +883,7 @@ export class CorpusQueries {
     return {
       versionSeq: version.seq,
       total,
+      paidOcrEnabled: paidOcr,
       documents: rows.slice(0, limit),
       nextCursor,
     }
@@ -838,15 +906,16 @@ export class CorpusQueries {
     projectId: string,
     ref: "head" | "ingested" | { seq: number },
     filters?: CorpusFilterSet,
-  ): Promise<{ versionSeq: number; rows: DocumentRow[] }> {
+  ): Promise<{ versionSeq: number; rows: DocumentRow[]; paidOcrEnabled: boolean }> {
     const version = await CorpusQueries.resolveVersion(projectId, ref)
-    const { sharedWhere } = buildCorpusWhere(version.id, filters)
+    const paidOcr = await CorpusQueries.paidOcrEnabled(projectId)
+    const { sharedWhere } = buildCorpusWhere(version.id, paidOcr, filters)
     const rows = await prisma.document.findMany({
       where: sharedWhere,
       orderBy: { ark: "asc" },
       ...documentRow,
     })
-    return { versionSeq: version.seq, rows }
+    return { versionSeq: version.seq, rows, paidOcrEnabled: paidOcr }
   }
 
   /**
@@ -871,7 +940,8 @@ export class CorpusQueries {
     filters?: CorpusFilterSet,
   ): Promise<CorpusCrossFacets> {
     const version = await CorpusQueries.resolveVersion(projectId, ref)
-    const { resolvedWhere } = buildCorpusWhere(version.id, filters)
+    const paidOcr = await CorpusQueries.paidOcrEnabled(projectId)
+    const { resolvedWhere } = buildCorpusWhere(version.id, paidOcr, filters)
 
     const rows = await prisma.document.findMany({
       where: resolvedWhere,
@@ -929,7 +999,8 @@ export class CorpusQueries {
     filters?: CorpusFilterSet,
   ): Promise<string[]> {
     const version = await CorpusQueries.resolveVersion(projectId, ref)
-    const { sharedWhere } = buildCorpusWhere(version.id, filters)
+    const paidOcr = await CorpusQueries.paidOcrEnabled(projectId)
+    const { sharedWhere } = buildCorpusWhere(version.id, paidOcr, filters)
     const rows = await prisma.document.findMany({
       where: sharedWhere,
       select: { ark: true },

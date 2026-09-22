@@ -144,16 +144,20 @@ const corpusListFieldEnum = z.enum([
  * agent that read it as a failure would report a retrievable document missing —
  * the exact false absence this whole line of work exists to stop.
  */
-function agentDocumentView(doc: DocumentRow) {
+function agentDocumentView(doc: DocumentRow, paidOcrEnabled: boolean) {
   const { indexedAt: _indexedAt, indexError, ...rest } = doc
-  const outcome = classifyOutcome({
-    indexedAt: doc.indexedAt,
-    indexError: doc.indexError,
-    docType: doc.docType,
-    ocrAvailable: doc.ocrAvailable,
-    digitized: Boolean(doc.iiifManifestUrl),
-    resolveStatus: doc.resolveStatus,
-  })
+  const outcome = classifyOutcome(
+    {
+      indexedAt: doc.indexedAt,
+      indexError: doc.indexError,
+      docType: doc.docType,
+      ocrAvailable: doc.ocrAvailable,
+      digitized: Boolean(doc.iiifManifestUrl),
+      resolveStatus: doc.resolveStatus,
+      lang: doc.lang,
+    },
+    { paidOcrEnabled },
+  )
   return {
     ...rest,
     outcome,
@@ -234,7 +238,12 @@ export const corpusGetStateTool = defineTool<
       const { sample: _sample, ...rest } = snapshot
       return rest
     }
-    return { ...snapshot, sample: snapshot.sample.map(agentDocumentView) }
+    return {
+      ...snapshot,
+      sample: snapshot.sample.map((d) =>
+        agentDocumentView(d, snapshot.paidOcrEnabled),
+      ),
+    }
   },
 })
 
@@ -296,7 +305,9 @@ export const corpusListTool = defineTool<
     // Project each document down to the requested fields (token economy). `ark`
     // is always kept so the agent can act on / cite the document. When no
     // `fields` are given, return the full row.
-    const rows = page.documents.map(agentDocumentView)
+    const rows = page.documents.map((d) =>
+      agentDocumentView(d, page.paidOcrEnabled),
+    )
     const documents =
       input.fields && input.fields.length > 0
         ? rows.map((doc) => {

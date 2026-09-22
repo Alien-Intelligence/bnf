@@ -242,8 +242,9 @@ export function isIngestableClass(c: IngestionClass): boolean {
 // one, so the counts always sum to the corpus size.
 //
 // COUPLING: the `excluded` arm mirrors IngestService._partitionByIngestability()
-// — the same class test AND the same `confident` guard, so a document reads as
-// `excluded` here iff submit() would have dropped it into IngestJob.excludedArks.
+// — the same class test, the same `confident` guard AND the same paid-OCR
+// carve-out, so a document reads as `excluded` here iff submit() would have
+// dropped it into IngestJob.excludedArks rather than into `paidOcr`.
 // Change one and you must change the other; models/corpus/queries.ts carries the
 // SQL mirror of this function and is bound by the same rule.
 // ---------------------------------------------------------------------------
@@ -269,14 +270,18 @@ export type IndexationOutcome =
  * surfaces it separately, because "in the index, imperfectly" is a different
  * statement from "not in the index".
  */
-export function classifyOutcome(d: {
-  indexedAt: Date | null
-  indexError: string | null
-  docType: string | null
-  ocrAvailable: boolean | null
-  digitized: boolean
-  resolveStatus: string
-}): IndexationOutcome {
+export function classifyOutcome(
+  d: {
+    indexedAt: Date | null
+    indexError: string | null
+    docType: string | null
+    ocrAvailable: boolean | null
+    digitized: boolean
+    resolveStatus: string
+    lang: string | null
+  },
+  opts: { paidOcrEnabled: boolean },
+): IndexationOutcome {
   if (d.indexedAt !== null) return INDEXATION_OUTCOME.INDEXED
   if (d.indexError !== null) return INDEXATION_OUTCOME.FAILED
 
@@ -287,8 +292,25 @@ export function classifyOutcome(d: {
   const cls = classifyIngestion(d)
   const confident =
     !d.digitized || d.resolveStatus === DOCUMENT_RESOLVE_STATUS.RESOLVED
-  if (!isIngestableClass(cls) && confident) return INDEXATION_OUTCOME.EXCLUDED
-  return INDEXATION_OUTCOME.NOT_INGESTED
+  if (!confident) return INDEXATION_OUTCOME.NOT_INGESTED
+  if (isIngestableClass(cls)) return INDEXATION_OUTCOME.NOT_INGESTED
+
+  // The paid-OCR lane. _partitionByIngestability does NOT drop a digitized,
+  // OCR-less, Latin-script document into `excluded` when the project has paid
+  // OCR on: it splits into the `paidOcr` bucket and IS sent once the spend is
+  // confirmed. Calling it "nothing to index" would be a false statement about
+  // 8 122 documents in production — the precise kind of false absence this
+  // whole classification exists to stop. It is `not_ingested`: nothing has
+  // covered it yet, and something still can.
+  if (
+    opts.paidOcrEnabled &&
+    cls === INGESTION_CLASS.SANS_TEXTE &&
+    isLatinScriptLang(d.lang)
+  ) {
+    return INDEXATION_OUTCOME.NOT_INGESTED
+  }
+
+  return INDEXATION_OUTCOME.EXCLUDED
 }
 
 /**
@@ -388,8 +410,14 @@ export function indexationReasonKey(reason: string): string | null {
 // "non-Latin" — the genuinely non-Latin docs carry an explicit code. The
 // per-ingestion confirmation still gives the librarian the final say.
 
-/** ISO 639-1/2/3 codes whose primary script is NOT Latin. Lowercased. */
-const NON_LATIN_SCRIPT_LANGS = new Set<string>([
+/**
+ * ISO 639-1/2/3 codes whose primary script is NOT Latin. Lowercased.
+ *
+ * Exported as an array so models/corpus/queries.ts can build the equivalent SQL
+ * predicate for the paid-OCR carve-out — same reason INGESTION_IMAGE_LIKE_TYPES
+ * is. Keep the two in step.
+ */
+export const NON_LATIN_SCRIPT_LANG_CODES = [
   // Greek
   "el", "ell", "gre", "grc",
   // Hebrew / Yiddish
@@ -405,7 +433,9 @@ const NON_LATIN_SCRIPT_LANGS = new Set<string>([
   "hy", "hye", "arm", "ka", "kat", "geo", "th", "tha",
   "hi", "hin", "bn", "ben", "ta", "tam", "am", "amh",
   "sa", "san", "cop",
-])
+] as const
+
+const NON_LATIN_SCRIPT_LANGS = new Set<string>(NON_LATIN_SCRIPT_LANG_CODES)
 
 /**
  * Whether a document's language is written in Latin script — i.e. whether paid

@@ -16,15 +16,22 @@ import { cn } from "@/lib/utils"
 import {
   DOCUMENT_RESOLVE_STATUS,
   classifyOutcome,
+  indexationWarning,
 } from "@/models/documents/schema"
 import type { DocumentRow } from "@/models/corpus/schema"
 
 interface Props {
   doc: DocumentRow
+  /**
+   * From the snapshot. An input to classifyOutcome(), not a display flag —
+   * deriving the row's outcome without it would contradict the counts the
+   * panel shows beside it.
+   */
+  paidOcrEnabled: boolean
   onClick?: () => void
 }
 
-export function CardCorpusDocumentRow({ doc, onClick }: Props) {
+export function CardCorpusDocumentRow({ doc, paidOcrEnabled, onClick }: Props) {
   const t = useTranslations("corpus.documents")
 
   const meta = [doc.author, doc.dateLabel ?? doc.year, doc.source]
@@ -35,14 +42,24 @@ export function CardCorpusDocumentRow({ doc, onClick }: Props) {
   // than sent down pre-computed: the row already carries every input, and one
   // classifier shared with the query layer keeps the badge and the filter from
   // ever disagreeing about which rows are missing from the index.
-  const outcome = classifyOutcome({
-    indexedAt: doc.indexedAt,
-    indexError: doc.indexError,
-    docType: doc.docType,
-    ocrAvailable: doc.ocrAvailable,
-    digitized: Boolean(doc.iiifManifestUrl),
-    resolveStatus: doc.resolveStatus,
-  })
+  const outcome = classifyOutcome(
+    {
+      indexedAt: doc.indexedAt,
+      indexError: doc.indexError,
+      docType: doc.docType,
+      ocrAvailable: doc.ocrAvailable,
+      digitized: Boolean(doc.iiifManifestUrl),
+      resolveStatus: doc.resolveStatus,
+      lang: doc.lang,
+    },
+    { paidOcrEnabled },
+  )
+
+  // An indexed document can still carry a reason — a partial transcription the
+  // run flagged. "In the index, imperfectly" is a different statement from
+  // "not in the index", so it gets its own quiet mark rather than being folded
+  // into either the healthy state or the failure one.
+  const warning = indexationWarning(doc)
 
   const isPending = doc.resolveStatus === DOCUMENT_RESOLVE_STATUS.PENDING
   const isFailed = doc.resolveStatus === DOCUMENT_RESOLVE_STATUS.FAILED
@@ -86,7 +103,11 @@ export function CardCorpusDocumentRow({ doc, onClick }: Props) {
         </span>
       </span>
 
-      <BadgeDocumentIndexation outcome={outcome} reason={doc.indexError} />
+      <BadgeDocumentIndexation
+        outcome={outcome}
+        reason={doc.indexError}
+        warning={warning}
+      />
       {doc.lang && <BadgeDocumentLang code={doc.lang} />}
       {doc.docType && <BadgeDocumentType code={doc.docType} />}
 

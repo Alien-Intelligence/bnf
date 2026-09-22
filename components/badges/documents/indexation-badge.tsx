@@ -27,6 +27,13 @@ interface Props {
    * machine string stays reachable for a bug report without being UI copy.
    */
   reason?: string | null
+  /**
+   * Set when the document IS indexed but the run flagged it (a partial
+   * transcription). See indexationWarning(). Rendered as a quiet mark: the
+   * document is retrievable, so it must not look like a failure, but a
+   * librarian judging a citation is entitled to know the text is incomplete.
+   */
+  warning?: string | null
 }
 
 // `labelKey` is spelled out rather than interpolating the outcome value into
@@ -51,10 +58,22 @@ const VARIANT = {
   },
 } as const
 
-export function BadgeDocumentIndexation({ outcome, reason }: Props) {
+export function BadgeDocumentIndexation({ outcome, reason, warning }: Props) {
   const t = useTranslations("corpus.documents.indexation")
 
-  if (outcome === INDEXATION_OUTCOME.INDEXED) return null
+  if (outcome === INDEXATION_OUTCOME.INDEXED) {
+    if (!warning) return null
+    const key = indexationReasonKey(warning)
+    return (
+      <Badge
+        className="gap-1 border-0 bg-warning/10 font-normal text-warning"
+        title={key ? t(`reasons.${key}`) : warning}
+      >
+        <TriangleAlert className="size-3 shrink-0" aria-hidden />
+        {t("states.partial")}
+      </Badge>
+    )
+  }
 
   const variant = VARIANT[outcome]
   const Icon = variant.icon

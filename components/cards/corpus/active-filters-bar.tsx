@@ -54,6 +54,10 @@ interface ChipProps {
 }
 
 function ActiveChip({ label, onRemove }: ChipProps) {
+  // Scoped here rather than threaded from the parent: the remove button's
+  // accessible name is a user-visible string like any other, and a screen-reader
+  // user in the English locale was hearing French.
+  const t = useTranslations("corpus.filters")
   return (
     <Badge variant="secondary" className="flex items-center gap-1 font-normal">
       {label}
@@ -61,7 +65,7 @@ function ActiveChip({ label, onRemove }: ChipProps) {
         type="button"
         onClick={onRemove}
         className="ml-0.5 rounded-full hover:bg-foreground/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-        aria-label={`Supprimer le filtre ${label}`}
+        aria-label={t("active.remove", { label })}
       >
         <X className="h-3 w-3" />
       </button>

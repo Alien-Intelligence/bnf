@@ -104,6 +104,7 @@ export function LayoutCorpusDocumentList({
           <li key={doc.ark}>
             <CardCorpusDocumentRow
               doc={doc}
+              paidOcrEnabled={corpus.paidOcrEnabled}
               onClick={() =>
                 onSelectArk(selectedArk === doc.ark ? null : doc.ark)
               }

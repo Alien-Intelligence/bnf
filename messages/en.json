@@ -400,7 +400,8 @@
       "empty": "No facets to display",
       "active": {
         "title": "Active filters",
-        "clearAll": "Clear all filters"
+        "clearAll": "Clear all filters",
+        "remove": "Remove the {label} filter"
       },
       "histogram": {
         "title": "Chronological distribution",
@@ -525,7 +526,8 @@
         "states": {
           "failed": "Indexing failed",
           "excluded": "Not indexable",
-          "notIngested": "Not yet indexed"
+          "notIngested": "Not yet indexed",
+          "partial": "Partial text"
         },
         "reasons": {
           "noText": "No usable text in the document",

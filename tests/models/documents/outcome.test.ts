@@ -32,9 +32,18 @@ function ingestableDoc(over: Partial<Parameters<typeof classifyOutcome>[0]> = {}
     ocrAvailable: true,
     digitized: true,
     resolveStatus: DOCUMENT_RESOLVE_STATUS.RESOLVED,
+    lang: "fr",
     ...over,
   }
 }
+
+/**
+ * Paid OCR OFF unless a case says otherwise. The column defaults to true and
+ * all 112 production projects have it on, but pinning it per case keeps each
+ * assertion about one variable.
+ */
+const NO_PAID_OCR = { paidOcrEnabled: false }
+const PAID_OCR = { paidOcrEnabled: true }
 
 // ---------------------------------------------------------------------------
 // The four states
@@ -42,25 +51,25 @@ function ingestableDoc(over: Partial<Parameters<typeof classifyOutcome>[0]> = {}
 
 test("indexedAt set → indexed", () => {
   assert.equal(
-    classifyOutcome(ingestableDoc({ indexedAt: INDEXED_AT })),
+    classifyOutcome(ingestableDoc({ indexedAt: INDEXED_AT }), NO_PAID_OCR),
     INDEXATION_OUTCOME.INDEXED,
   )
 })
 
 test("never indexed with a recorded reason → failed", () => {
   assert.equal(
-    classifyOutcome(ingestableDoc({ indexError: "rate_limited" })),
+    classifyOutcome(ingestableDoc({ indexError: "rate_limited" }), NO_PAID_OCR),
     INDEXATION_OUTCOME.FAILED,
   )
 })
 
 test("ingestable, never sent, no error → not_ingested", () => {
-  assert.equal(classifyOutcome(ingestableDoc()), INDEXATION_OUTCOME.NOT_INGESTED)
+  assert.equal(classifyOutcome(ingestableDoc(), NO_PAID_OCR), INDEXATION_OUTCOME.NOT_INGESTED)
 })
 
 test("resolved digitized document with no text layer → excluded", () => {
   assert.equal(
-    classifyOutcome(ingestableDoc({ ocrAvailable: false })),
+    classifyOutcome(ingestableDoc({ ocrAvailable: false }), NO_PAID_OCR),
     INDEXATION_OUTCOME.EXCLUDED,
   )
 })
@@ -75,7 +84,7 @@ test("undigitized notice → excluded, resolution status irrelevant", () => {
     DOCUMENT_RESOLVE_STATUS.FAILED,
   ]) {
     assert.equal(
-      classifyOutcome(ingestableDoc({ digitized: false, resolveStatus })),
+      classifyOutcome(ingestableDoc({ digitized: false, resolveStatus }), NO_PAID_OCR),
       INDEXATION_OUTCOME.EXCLUDED,
       `resolveStatus ${resolveStatus}`,
     )
@@ -95,7 +104,7 @@ test("indexed WITH a warning is indexed, not failed", () => {
     indexedAt: INDEXED_AT,
     indexError: "page-fail-ratio 1/40 > 0.02",
   })
-  assert.equal(classifyOutcome(doc), INDEXATION_OUTCOME.INDEXED)
+  assert.equal(classifyOutcome(doc, NO_PAID_OCR), INDEXATION_OUTCOME.INDEXED)
   assert.equal(indexationWarning(doc), "page-fail-ratio 1/40 > 0.02")
 })
 
@@ -120,6 +129,7 @@ test("unresolved digitized stub is not_ingested, never excluded", () => {
         ocrAvailable: null,
         resolveStatus: DOCUMENT_RESOLVE_STATUS.PENDING,
       }),
+      NO_PAID_OCR,
     ),
     INDEXATION_OUTCOME.NOT_INGESTED,
   )
@@ -153,7 +163,7 @@ test("precedence: indexedAt beats indexError beats the ingestability class", () 
     },
   ]
   for (const c of cases) {
-    assert.equal(classifyOutcome(c.doc), c.expect, c.why)
+    assert.equal(classifyOutcome(c.doc, NO_PAID_OCR), c.expect, c.why)
   }
 })
 
@@ -170,14 +180,18 @@ test("every state is reachable, and the classifier is total", () => {
           for (const docType of ["book", "image", null]) {
             for (const resolveStatus of Object.values(DOCUMENT_RESOLVE_STATUS)) {
               seen.add(
-                classifyOutcome({
-                  indexedAt,
-                  indexError,
-                  docType,
-                  ocrAvailable,
-                  digitized,
-                  resolveStatus,
-                }),
+                classifyOutcome(
+                  {
+                    indexedAt,
+                    indexError,
+                    docType,
+                    ocrAvailable,
+                    digitized,
+                    resolveStatus,
+                    lang: "fr",
+                  },
+                  NO_PAID_OCR,
+                ),
               )
             }
           }
@@ -186,6 +200,56 @@ test("every state is reachable, and the classifier is total", () => {
     }
   }
   assert.deepEqual([...seen].sort(), [...Object.values(INDEXATION_OUTCOME)].sort())
+})
+
+// ---------------------------------------------------------------------------
+// The paid-OCR lane
+// ---------------------------------------------------------------------------
+
+test("paid OCR on: a Latin-script scan with no text layer is not_ingested", () => {
+  // _partitionByIngestability splits these into the `paidOcr` bucket, not
+  // `excluded` — they ARE sent once the librarian confirms the spend. Calling
+  // them "nothing to index" was a false statement about 8 122 production
+  // documents, and it is the exact false absence this classification exists to
+  // stop. All 112 production projects have paid OCR enabled.
+  assert.equal(
+    classifyOutcome(ingestableDoc({ ocrAvailable: false, lang: "fr" }), PAID_OCR),
+    INDEXATION_OUTCOME.NOT_INGESTED,
+  )
+})
+
+test("paid OCR on: a non-Latin scan with no text layer is still excluded", () => {
+  // Mistral mangles non-Latin script, so we neither offer nor charge for it —
+  // for these documents "nothing we can index" is true. Greek is the case that
+  // was verified when isLatinScriptLang was written.
+  assert.equal(
+    classifyOutcome(ingestableDoc({ ocrAvailable: false, lang: "grc" }), PAID_OCR),
+    INDEXATION_OUTCOME.EXCLUDED,
+  )
+})
+
+test("paid OCR on: an unknown lang is presumed Latin, as the classifier does", () => {
+  assert.equal(
+    classifyOutcome(ingestableDoc({ ocrAvailable: false, lang: null }), PAID_OCR),
+    INDEXATION_OUTCOME.NOT_INGESTED,
+  )
+})
+
+test("paid OCR off: the same scan is excluded", () => {
+  // Without paid OCR there is no lane that would ever send it.
+  assert.equal(
+    classifyOutcome(ingestableDoc({ ocrAvailable: false, lang: "fr" }), NO_PAID_OCR),
+    INDEXATION_OUTCOME.EXCLUDED,
+  )
+})
+
+test("paid OCR never rescues an undigitized notice", () => {
+  // There is no scan to transcribe, so the lane does not apply whatever the
+  // project pays for.
+  assert.equal(
+    classifyOutcome(ingestableDoc({ digitized: false, lang: "fr" }), PAID_OCR),
+    INDEXATION_OUTCOME.EXCLUDED,
+  )
 })
 
 // ---------------------------------------------------------------------------

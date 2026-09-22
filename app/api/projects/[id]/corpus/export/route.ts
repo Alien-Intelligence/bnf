@@ -34,6 +34,7 @@ import { corpusFiltersToFilterSet } from "@/app/api/_corpus-filters"
 import {
   DOCUMENT_RESOLVE_STATUS,
   classifyIngestion,
+  classifyOutcome,
 } from "@/models/documents/schema"
 import { GALLICA_IIIF_VIEWER_URL, CATALOGUE_RECORD_URL } from "@/lib/constants"
 import { toCsv } from "@/lib/csv"
@@ -63,6 +64,13 @@ const EXPORT_HEADER = [
   "pages",
   "ocr_available",
   "ingestion_class",
+  // What became of the document at ingestion, and the worker's reason when it
+  // did not make it. Without these the CSV cannot distinguish a document that
+  // failed from one that was never sent — and the filter above can now select
+  // exactly that distinction, so an export of ?outcome=failed would otherwise
+  // arrive with nothing saying which rows failed or why.
+  "indexation_outcome",
+  "index_error",
   "resolve_status",
   "document_url",
   "iiif_manifest_url",
@@ -104,7 +112,7 @@ export const GET = withAuth(async (req, user, bouncer, ctx: RouteCtx) => {
   const filters = corpusFiltersToFilterSet(parsed)
 
   const versionRef = parsed.version ?? "head"
-  const { versionSeq, rows } = await CorpusQueries.exportRows(
+  const { versionSeq, rows, paidOcrEnabled } = await CorpusQueries.exportRows(
     corpusId,
     typeof versionRef === "number" ? { seq: versionRef } : versionRef,
     filters,
@@ -124,6 +132,19 @@ export const GET = withAuth(async (req, user, bouncer, ctx: RouteCtx) => {
       r.pages,
       r.ocrAvailable,
       ingestionClass(r),
+      classifyOutcome(
+        {
+          indexedAt: r.indexedAt,
+          indexError: r.indexError,
+          docType: r.docType,
+          ocrAvailable: r.ocrAvailable,
+          digitized: Boolean(r.iiifManifestUrl),
+          resolveStatus: r.resolveStatus,
+          lang: r.lang,
+        },
+        { paidOcrEnabled },
+      ),
+      r.indexError,
       r.resolveStatus,
       documentUrl(r),
       r.iiifManifestUrl,
