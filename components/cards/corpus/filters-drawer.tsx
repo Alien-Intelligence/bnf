@@ -24,6 +24,7 @@ import { CardCorpusPeriodHistogram } from "./period-histogram"
 import { CardCorpusFullTextInput } from "./full-text-input"
 import { CardCorpusActiveFiltersBar } from "./active-filters-bar"
 import { CardCorpusNumerisationCard } from "./numerisation-card"
+import { CardCorpusIndexationCard } from "./indexation-card"
 
 // One bordered facet card in the 3-column statistics grid.
 function FacetCard({
@@ -158,6 +159,7 @@ export function CardCorpusFiltersDrawer({
   const sourceSelected = csvToSelected(filters.source)
   const sessionSelected = csvToSelected(filters.session)
   const ingestSelected = csvToSelected(filters.ingest)
+  const outcomeSelected = csvToSelected(filters.outcome)
 
   // Session facet record + title map, derived from the snapshot's `sessions`
   // array. The facet bars want a Record<id, count>; the active-filters chips
@@ -184,6 +186,7 @@ export function CardCorpusFiltersDrawer({
     sourceSelected.length +
     sessionSelected.length +
     ingestSelected.length +
+    outcomeSelected.length +
     (filters.yearFrom !== undefined || filters.yearTo !== undefined ? 1 : 0) +
     (filters.undated ? 1 : 0) +
     (filters.q && filters.q.trim().length > 0 ? 1 : 0)
@@ -219,6 +222,11 @@ export function CardCorpusFiltersDrawer({
   const handleIngestToggle = useCallback(
     (code: string) =>
       onChange({ ...filters, ingest: toggleInCsv(filters.ingest, code) }),
+    [filters, onChange],
+  )
+  const handleOutcomeToggle = useCallback(
+    (outcome: string) =>
+      onChange({ ...filters, outcome: toggleInCsv(filters.outcome, outcome) }),
     [filters, onChange],
   )
   const handleRangeSelect = useCallback(
@@ -414,6 +422,18 @@ export function CardCorpusFiltersDrawer({
               numerisation={corpus.numerisation}
               selected={ingestSelected}
               onToggle={handleIngestToggle}
+            />
+          )}
+
+          {/* Indexation card (clickable outcome filters). Rendered whenever the
+              corpus holds anything: "0 indexés sur 40" is the single most
+              useful thing the panel can say, and hiding the card until an
+              ingestion has run would hide exactly that. */}
+          {corpus.total > 0 && (
+            <CardCorpusIndexationCard
+              indexation={corpus.indexation}
+              selected={outcomeSelected}
+              onToggle={handleOutcomeToggle}
             />
           )}
         </div>

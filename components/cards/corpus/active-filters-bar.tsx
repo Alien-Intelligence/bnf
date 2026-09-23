@@ -14,6 +14,27 @@ import {
   emptyCorpusFilters,
   type CorpusFilters,
 } from "@/models/corpus/types"
+import {
+  INDEXATION_OUTCOME,
+  INGESTION_CLASS,
+} from "@/models/documents/schema"
+
+// Chip label keys, keyed off the domain enums rather than re-typed string
+// literals: a renamed outcome or ingestion class is then a type error here
+// instead of a chip that silently falls back to showing the raw code.
+const INGEST_LABEL_KEY: Record<string, string> = {
+  [INGESTION_CLASS.OCR]: "numerisation.ocr",
+  [INGESTION_CLASS.VISION]: "numerisation.vision",
+  [INGESTION_CLASS.SANS_TEXTE]: "numerisation.sansTexte",
+  [INGESTION_CLASS.NON_NUMERISE]: "numerisation.nonNumerise",
+}
+
+const OUTCOME_LABEL_KEY: Record<string, string> = {
+  [INDEXATION_OUTCOME.INDEXED]: "indexation.indexed",
+  [INDEXATION_OUTCOME.FAILED]: "indexation.failed",
+  [INDEXATION_OUTCOME.EXCLUDED]: "indexation.excluded",
+  [INDEXATION_OUTCOME.NOT_INGESTED]: "indexation.notIngested",
+}
 
 interface Props {
   filters: CorpusFilters
@@ -33,6 +54,10 @@ interface ChipProps {
 }
 
 function ActiveChip({ label, onRemove }: ChipProps) {
+  // Scoped here rather than threaded from the parent: the remove button's
+  // accessible name is a user-visible string like any other, and a screen-reader
+  // user in the English locale was hearing French.
+  const t = useTranslations("corpus.filters")
   return (
     <Badge variant="secondary" className="flex items-center gap-1 font-normal">
       {label}
@@ -40,7 +65,7 @@ function ActiveChip({ label, onRemove }: ChipProps) {
         type="button"
         onClick={onRemove}
         className="ml-0.5 rounded-full hover:bg-foreground/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-        aria-label={`Supprimer le filtre ${label}`}
+        aria-label={t("active.remove", { label })}
       >
         <X className="h-3 w-3" />
       </button>
@@ -94,20 +119,29 @@ export function CardCorpusActiveFiltersBar({
 
   // Ingestion classes — readable labels from the numérisation vocabulary.
   if (filters.ingest) {
-    const ingestLabelKey: Record<string, string> = {
-      ocr: "numerisation.ocr",
-      vision: "numerisation.vision",
-      sans_texte: "numerisation.sansTexte",
-      non_numerise: "numerisation.nonNumerise",
-    }
     filters.ingest.split(",").forEach((value) => {
       if (!value) return
-      const key = ingestLabelKey[value]
+      const key = INGEST_LABEL_KEY[value]
       chips.push(
         <ActiveChip
           key={`ingest:${value}`}
           label={key ? t(key) : value}
           onRemove={() => onChange(removeFromFilter(filters, "ingest", value))}
+        />,
+      )
+    })
+  }
+
+  // Indexation outcomes — readable labels from the indexation vocabulary.
+  if (filters.outcome) {
+    filters.outcome.split(",").forEach((value) => {
+      if (!value) return
+      const key = OUTCOME_LABEL_KEY[value]
+      chips.push(
+        <ActiveChip
+          key={`outcome:${value}`}
+          label={key ? t(key) : value}
+          onRemove={() => onChange(removeFromFilter(filters, "outcome", value))}
         />,
       )
     })

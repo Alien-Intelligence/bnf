@@ -63,6 +63,13 @@ export const documentRow = {
     // drives the detail panel's "promote" (api_error) vs "not on Gallica"
     // (not_digitized) affordance. Null for digitized docs / upgraded notices.
     canonicalStatus: true,
+    // Indexation outcome, together with the fields above: whether this document
+    // actually made it into the RAG index, and the worker's reason when it did
+    // not. Both are needed — indexedAt alone cannot tell "failed" from "never
+    // sent". See classifyOutcome() in models/documents/schema.ts. Without these
+    // the corpus renders as complete whatever the last ingest run shed.
+    indexedAt: true,
+    indexError: true,
   },
 } satisfies Prisma.DocumentDefaultArgs
 
@@ -148,6 +155,36 @@ export type CorpusSnapshot = {
     /** Not digitized → not ingested. */
     nonNumerise: number
   }
+  /**
+   * Indexation outcome — what actually BECAME of each document, as opposed to
+   * `numerisation`, which is what the pre-flight classifier expected of it. A
+   * corpus can be entirely `ocr` by class and still be missing a third of its
+   * documents; this block is the only place that says so.
+   *
+   * Spans ALL members (an unresolved stub is legitimately `notIngested`), and
+   * the four buckets are mutually exclusive and total — they sum to the count of
+   * the filtered set with any outcome filter lifted. That lift is deliberate:
+   * selecting "non indexés" must not collapse the other three to zero, exactly
+   * as `undatedCount` ignores an active year range.
+   */
+  indexation: {
+    /** In the RAG index and retrievable (may still carry a warning). */
+    indexed: number
+    /** Sent to the worker, never came back indexed, reason recorded. */
+    failed: number
+    /** Never sent — nothing to index (notice, no scan, no text layer). */
+    excluded: number
+    /** Ingestable, but no ingest run has covered it yet. */
+    notIngested: number
+  }
+  /**
+   * Whether the project pays for fallback OCR. Carried on the snapshot because
+   * it is an input to classifyOutcome(): with it on, a digitized Latin-script
+   * document with no OCR layer is `not_ingested` (it will be sent once the
+   * spend is confirmed) rather than `excluded`. A client that re-derived the
+   * outcome without it would contradict the counts computed beside it.
+   */
+  paidOcrEnabled: boolean
   sample: DocumentRow[]
   nextCursor?: string
 }
@@ -163,6 +200,8 @@ export type CorpusSnapshot = {
 export type CorpusListPage = {
   versionSeq: number
   total: number
+  /** See CorpusSnapshot.paidOcrEnabled — the same classifyOutcome() input. */
+  paidOcrEnabled: boolean
   documents: DocumentRow[]
   nextCursor?: string
 }

@@ -12,10 +12,15 @@
  *   lang     — comma-separated BCP-47 codes, e.g. "fr,la"
  *   source   — comma-separated source identifiers, e.g. "gallica,catalogue"
  *   session  — comma-separated AppSession ids; filters to docs those sessions added
+ *   ingest   — comma-separated ingestion classes, e.g. "ocr,vision". The
+ *              PRE-FLIGHT ingestability class — see classifyIngestion()
  *   yearFrom — decade start (inclusive), e.g. 1880
  *   yearTo   — decade end (inclusive), e.g. 1889
  *   undated  — when "true"/"1", filter to documents with year IS NULL
  *              (yearFrom/yearTo take precedence when both are present)
+ *   outcome  — comma-separated indexation outcomes, e.g. "failed,not_ingested".
+ *              What became of the document at ingestion, NOT whether it was
+ *              ingestable — see classifyOutcome() in models/documents/schema.ts
  *   q        — free-text search over title, author, excerpt (ILIKE, no pg_trgm)
  *
  *   Pagination:
@@ -33,9 +38,15 @@ import { ProjectQueries } from "@/models/projects/queries"
 import { resolveCorpusProject } from "@/app/api/_corpus-source"
 import { CorpusPolicy } from "@/models/corpus/policy"
 import { CorpusQueries } from "@/models/corpus/queries"
+import { corpusFiltersSchema } from "@/models/corpus/types"
+import { corpusFiltersToFilterSet } from "@/app/api/_corpus-filters"
 import type { CorpusSnapshot } from "@/models/corpus/schema"
 
-const corpusQuerySchema = z.object({
+// Extends the shared filter schema rather than restating it: `corpusFiltersSchema`
+// (models/corpus/types.ts) is the one definition of what a corpus filter is, and
+// the client serialises against it. The export route does the same. Only the
+// params that are NOT filters — version selection and pagination — are added here.
+const corpusQuerySchema = corpusFiltersSchema.extend({
   version: z
     .union([
       z.literal("head"),
@@ -43,44 +54,12 @@ const corpusQuerySchema = z.object({
       z.coerce.number().int().positive(),
     ])
     .optional(),
-  // --- Filters (mirror corpusFiltersSchema in models/corpus/types.ts) ---
-  /** Comma-separated doc-type codes */
-  type: z.string().optional(),
-  /** Comma-separated BCP-47 language codes */
-  lang: z.string().optional(),
-  /** Comma-separated source identifiers */
-  source: z.string().optional(),
-  /** Comma-separated AppSession ids — filter to docs a given session contributed */
-  session: z.string().optional(),
-  /** Comma-separated ingestion classes (ocr|vision|sans_texte|non_numerise) */
-  ingest: z.string().optional(),
-  /** Year range lower bound (inclusive) */
-  yearFrom: z.coerce.number().int().optional(),
-  /** Year range upper bound (inclusive) */
-  yearTo: z.coerce.number().int().optional(),
-  /** Filter to undated documents (year IS NULL). Ignored when yearFrom or yearTo is set. */
-  undated: z.coerce.boolean().optional(),
-  /** Free-text search on title / author / excerpt */
-  q: z.string().trim().min(1).optional(),
-  // --- Pagination ---
   /** Opaque cursor from a previous response's nextCursor field */
   cursor: z.string().optional(),
   /** Page size, 1–100. Defaults to CORPUS_SAMPLE_SIZE (25). */
   limit: z.coerce.number().int().min(1).max(100).optional(),
 })
 
-/**
- * Split a CSV query-string value into a trimmed, non-empty string array.
- * Returns undefined when the value is absent or contains only whitespace.
- */
-function splitCsv(value: string | undefined): string[] | undefined {
-  if (!value) return undefined
-  const parts = value
-    .split(",")
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0)
-  return parts.length > 0 ? parts : undefined
-}
 
 type RouteCtx = { params: Promise<{ id: string }> }
 
@@ -100,38 +79,7 @@ export const GET = withAuth(async (req, user, bouncer, ctx: RouteCtx) => {
 
   const versionRef = parsed.version ?? "head"
 
-  // Build the filters object only when at least one filter field is present.
-  // Passing an empty object vs. undefined makes no difference in the query
-  // layer, but being explicit keeps the call-site readable.
-  const typeArr = splitCsv(parsed.type)
-  const langArr = splitCsv(parsed.lang)
-  const sourceArr = splitCsv(parsed.source)
-  const sessionArr = splitCsv(parsed.session)
-  const ingestArr = splitCsv(parsed.ingest)
-  const hasFilters =
-    typeArr !== undefined ||
-    langArr !== undefined ||
-    sourceArr !== undefined ||
-    sessionArr !== undefined ||
-    ingestArr !== undefined ||
-    parsed.yearFrom !== undefined ||
-    parsed.yearTo !== undefined ||
-    parsed.undated !== undefined ||
-    parsed.q !== undefined
-
-  const filters = hasFilters
-    ? {
-        type: typeArr,
-        lang: langArr,
-        source: sourceArr,
-        session: sessionArr,
-        ingest: ingestArr,
-        yearFrom: parsed.yearFrom,
-        yearTo: parsed.yearTo,
-        undated: parsed.undated,
-        q: parsed.q,
-      }
-    : undefined
+  const filters = corpusFiltersToFilterSet(parsed)
 
   const snapshot = await CorpusQueries.snapshot(
     corpusId,

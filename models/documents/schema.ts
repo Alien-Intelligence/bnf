@@ -200,9 +200,199 @@ export function classifyIngestion(d: {
   return INGESTION_CLASS.SANS_TEXTE
 }
 
+/**
+ * Bucket → hue for the numérisation breakdown card.
+ *
+ * Colours live beside their vocabulary, as DOC_TYPE/LANG/SOURCE above do, and
+ * `satisfies` binds the map to the enum: adding a class without a colour is a
+ * type error rather than a bar that silently renders `background: undefined`.
+ */
+export const INGESTION_CLASS_COLOR = {
+  [INGESTION_CLASS.OCR]: "var(--info)",
+  [INGESTION_CLASS.VISION]: "var(--dataset-1)",
+  [INGESTION_CLASS.SANS_TEXTE]: "var(--warning)",
+  [INGESTION_CLASS.NON_NUMERISE]: "var(--neutral-500)",
+} satisfies Record<IngestionClass, string>
+
 /** Whether a classification will be sent to the index (text or vision). */
 export function isIngestableClass(c: IngestionClass): boolean {
   return c === INGESTION_CLASS.OCR || c === INGESTION_CLASS.VISION
+}
+
+// ---------------------------------------------------------------------------
+// Indexation outcome (Document.indexedAt + Document.indexError)
+//
+// classifyIngestion() above is a PRE-FLIGHT predicate — "would this document be
+// sent to the index". This is the OUTCOME — "what actually became of it". The
+// two answer different questions and conflating them is the mistake this exists
+// to stop: a corpus can be 100% `ocr` by class and still be missing a third of
+// its documents because the ingest run shed them.
+//
+//   indexed      — indexedAt is set. The document is in the RAG index and the
+//                  agent can retrieve it.
+//   failed       — sent to the worker, never came back indexed, and carries a
+//                  reason (rate_limited, page-fail-ratio, embed_failed, …).
+//   excluded     — never sent, because it is not ingestable. Not a failure:
+//                  a catalogue notice or a scan with no text layer has nothing
+//                  to index.
+//   not_ingested — eligible, but no ingest run has covered it yet (added after
+//                  the last run, or ingestion never run on this project).
+//
+// The four are mutually exclusive and total: every document lands in exactly
+// one, so the counts always sum to the corpus size.
+//
+// COUPLING: the `excluded` arm mirrors IngestService._partitionByIngestability()
+// — the same class test, the same `confident` guard AND the same paid-OCR
+// carve-out, so a document reads as `excluded` here iff submit() would have
+// dropped it into IngestJob.excludedArks rather than into `paidOcr`.
+// Change one and you must change the other; models/corpus/queries.ts carries the
+// SQL mirror of this function and is bound by the same rule.
+// ---------------------------------------------------------------------------
+
+export const INDEXATION_OUTCOME = {
+  INDEXED: "indexed",
+  FAILED: "failed",
+  EXCLUDED: "excluded",
+  NOT_INGESTED: "not_ingested",
+} as const
+
+export type IndexationOutcome =
+  (typeof INDEXATION_OUTCOME)[keyof typeof INDEXATION_OUTCOME]
+
+/**
+ * What became of this document at ingestion time.
+ *
+ * `digitized` is `Boolean(doc.iiifManifestUrl)`, as for {@link classifyIngestion}.
+ *
+ * A document indexed WITH a warning (`indexedAt` and `indexError` both set — the
+ * F13 partial-transcription annotation, see IngestService.commit) is `indexed`:
+ * it IS retrievable. The annotation is not lost — {@link indexationWarning}
+ * surfaces it separately, because "in the index, imperfectly" is a different
+ * statement from "not in the index".
+ */
+export function classifyOutcome(
+  d: {
+    indexedAt: Date | null
+    indexError: string | null
+    docType: string | null
+    ocrAvailable: boolean | null
+    digitized: boolean
+    resolveStatus: string
+    lang: string | null
+  },
+  opts: { paidOcrEnabled: boolean },
+): IndexationOutcome {
+  if (d.indexedAt !== null) return INDEXATION_OUTCOME.INDEXED
+  if (d.indexError !== null) return INDEXATION_OUTCOME.FAILED
+
+  // Never indexed and no error recorded — it was either never sent, or not yet
+  // sent. Only an ingestability verdict we are CONFIDENT in separates the two:
+  // an unresolved digitized stub might still turn out to carry OCR, so it is
+  // "not yet", never "never". Mirrors _partitionByIngestability's guard.
+  const cls = classifyIngestion(d)
+  const confident =
+    !d.digitized || d.resolveStatus === DOCUMENT_RESOLVE_STATUS.RESOLVED
+  if (!confident) return INDEXATION_OUTCOME.NOT_INGESTED
+  if (isIngestableClass(cls)) return INDEXATION_OUTCOME.NOT_INGESTED
+
+  // The paid-OCR lane. _partitionByIngestability does NOT drop a digitized,
+  // OCR-less, Latin-script document into `excluded` when the project has paid
+  // OCR on: it splits into the `paidOcr` bucket and IS sent once the spend is
+  // confirmed. Calling it "nothing to index" would be a false statement about
+  // 8 122 documents in production — the precise kind of false absence this
+  // whole classification exists to stop. It is `not_ingested`: nothing has
+  // covered it yet, and something still can.
+  if (
+    opts.paidOcrEnabled &&
+    cls === INGESTION_CLASS.SANS_TEXTE &&
+    isLatinScriptLang(d.lang)
+  ) {
+    return INDEXATION_OUTCOME.NOT_INGESTED
+  }
+
+  return INDEXATION_OUTCOME.EXCLUDED
+}
+
+/**
+ * Bucket → hue for the indexation breakdown card. Semantic, and deliberately
+ * consistent with INGESTION_CLASS_COLOR: the bucket a librarian may need to act
+ * on is `--warning`, an outright failure `--destructive`, a healthy bucket
+ * `--success`, and one that is merely inert (nothing to index) neutral.
+ */
+export const INDEXATION_OUTCOME_COLOR = {
+  [INDEXATION_OUTCOME.INDEXED]: "var(--success)",
+  [INDEXATION_OUTCOME.FAILED]: "var(--destructive)",
+  [INDEXATION_OUTCOME.NOT_INGESTED]: "var(--warning)",
+  [INDEXATION_OUTCOME.EXCLUDED]: "var(--neutral-500)",
+} satisfies Record<IndexationOutcome, string>
+
+/**
+ * The reason string carried by a document that IS indexed but was flagged during
+ * the run (partial transcription, low page yield). Null for every other state —
+ * on a `failed` document the reason is the failure itself, not a warning, and
+ * the caller reads `indexError` directly.
+ */
+export function indexationWarning(d: {
+  indexedAt: Date | null
+  indexError: string | null
+}): string | null {
+  return d.indexedAt !== null ? d.indexError : null
+}
+
+// ---------------------------------------------------------------------------
+// Failure reasons (Document.indexError), for librarian-facing copy
+//
+// The worker writes a machine reason, and it is NOT a bare token: a stage
+// appends its detail, so the column holds things like
+// "page-fail-ratio 3/4 > 0.5" or "embed_failed_after_retries: 429". The stable
+// part is the LEADING token — everything before the first space or colon — so
+// that is what we key on. Matching the whole string would silently fall through
+// to the raw text for every reason that carries detail, which is most of them.
+//
+// The vocabulary is open (worker-v2/src/stages/* adds to it freely), so an
+// unrecognised token falls back to the raw string rather than being dropped: a
+// reason we cannot name is still worth showing a librarian, and swallowing it
+// would hide an entire failure mode. Callers keep the raw string available
+// regardless — the label is a summary, not a replacement.
+// ---------------------------------------------------------------------------
+
+/**
+ * Worker reason token → i18n key suffix under `corpus.indexation.reasons`.
+ *
+ * Grouped by what the librarian needs to know (was there text to index? did the
+ * BnF throttle us? did transcription fail?) rather than by which pipeline stage
+ * raised it — `ocr_submit` vs `ocr_poll` is our plumbing, not their problem.
+ */
+const INDEXATION_REASON_KEY: Record<string, string> = {
+  // Nothing to index — the document carried no usable text or images.
+  assemble_no_text: "noText",
+  describe_no_pages: "noText",
+  ocr_submit_no_images: "noText",
+  embed_no_pages: "noText",
+  // Transcription did not complete.
+  ocr_timeout: "ocrFailed",
+  ocr_batch_failed: "ocrFailed",
+  ocr_submit_failed_after_retries: "ocrFailed",
+  ocr_poll_failed_after_retries: "ocrFailed",
+  describe_failed_after_retries: "ocrFailed",
+  assemble_failed_after_retries: "ocrFailed",
+  // Too many pages of the document failed for the result to be trustworthy.
+  "page-fail-ratio": "partialPages",
+  // BnF throttling shed the document.
+  rate_limited: "rateLimited",
+  // Indexing itself failed after the content was in hand.
+  embed_failed_after_retries: "indexFailed",
+  register_missing_artifacts: "indexFailed",
+}
+
+/**
+ * The i18n key suffix for a raw `indexError` string, or null when the reason is
+ * one we have no copy for — the caller then shows the raw string, which is the
+ * honest fallback.
+ */
+export function indexationReasonKey(reason: string): string | null {
+  const token = reason.split(/[\s:]/, 1)[0]
+  return INDEXATION_REASON_KEY[token] ?? null
 }
 
 // ---------------------------------------------------------------------------
@@ -220,8 +410,14 @@ export function isIngestableClass(c: IngestionClass): boolean {
 // "non-Latin" — the genuinely non-Latin docs carry an explicit code. The
 // per-ingestion confirmation still gives the librarian the final say.
 
-/** ISO 639-1/2/3 codes whose primary script is NOT Latin. Lowercased. */
-const NON_LATIN_SCRIPT_LANGS = new Set<string>([
+/**
+ * ISO 639-1/2/3 codes whose primary script is NOT Latin. Lowercased.
+ *
+ * Exported as an array so models/corpus/queries.ts can build the equivalent SQL
+ * predicate for the paid-OCR carve-out — same reason INGESTION_IMAGE_LIKE_TYPES
+ * is. Keep the two in step.
+ */
+export const NON_LATIN_SCRIPT_LANG_CODES = [
   // Greek
   "el", "ell", "gre", "grc",
   // Hebrew / Yiddish
@@ -237,7 +433,9 @@ const NON_LATIN_SCRIPT_LANGS = new Set<string>([
   "hy", "hye", "arm", "ka", "kat", "geo", "th", "tha",
   "hi", "hin", "bn", "ben", "ta", "tam", "am", "amh",
   "sa", "san", "cop",
-])
+] as const
+
+const NON_LATIN_SCRIPT_LANGS = new Set<string>(NON_LATIN_SCRIPT_LANG_CODES)
 
 /**
  * Whether a document's language is written in Latin script — i.e. whether paid

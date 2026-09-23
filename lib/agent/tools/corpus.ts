@@ -28,6 +28,8 @@ import { sourceFromArk } from "@/lib/mcp/vocab"
 import { CorpusQueries } from "@/models/corpus/queries"
 import { CorpusService } from "@/models/corpus/service"
 import { arkSchema } from "@/models/corpus/types"
+import { INDEXATION_OUTCOME, classifyOutcome } from "@/models/documents/schema"
+import type { DocumentRow } from "@/models/corpus/schema"
 import type { CorpusFilterSet } from "@/models/corpus/queries"
 import type { TurnScopedCtx } from "./registry-factory"
 import { AGENT_TOOLS } from "./constants"
@@ -39,6 +41,15 @@ import { AGENT_TOOLS } from "./constants"
 
 /** Numérisation / ingestion classes — the derived ingestability buckets. */
 const ingestClassEnum = z.enum(["ocr", "vision", "sans_texte", "non_numerise"])
+
+/**
+ * Indexation outcomes — what BECAME of a document at ingestion. Distinct from
+ * `ingestClassEnum`, which is the pre-flight expectation. This is the dimension
+ * that lets the agent tell "the corpus holds nothing on this subject" apart from
+ * "the corpus holds four documents on it that failed to index", which it
+ * previously could not and so reported as absence.
+ */
+const outcomeEnum = z.enum(["indexed", "failed", "excluded", "not_ingested"])
 
 /**
  * The metadata filter set the corpus agent passes to narrow a read or a bulk
@@ -66,6 +77,22 @@ const corpusFiltersSchema = z
       .optional()
       .describe(
         "Numérisation classes to keep: ocr | vision | sans_texte | non_numerise.",
+      ),
+    outcome: z
+      .array(outcomeEnum)
+      .optional()
+      .describe(
+        "Indexation outcome to keep — what became of the document when the " +
+          "corpus was last ingested. `indexed`: in the search index, you can " +
+          "retrieve it. `failed`: sent for indexing and broke (throttling, bad " +
+          "transcription); it is IN the corpus but NOT searchable. `excluded`: " +
+          "never sent because it has no text to index (a catalogue notice, an " +
+          "undigitized work). `not_ingested`: added since the last ingestion. " +
+          "Use this when a search over the corpus returns less than the corpus " +
+          "visibly contains: documents that are not `indexed` exist but cannot " +
+          "be found by rag_* tools, and saying they are absent would be wrong. " +
+          "This describes the past, not a judgement — never use it to decide " +
+          "which documents belong in a corpus.",
       ),
     yearFrom: z
       .number()
@@ -103,7 +130,42 @@ const corpusListFieldEnum = z.enum([
   "source",
   "pages",
   "resolveStatus",
+  "outcome",
 ])
+
+/**
+ * Project a corpus row into the shape the agent sees.
+ *
+ * `indexedAt` is a timestamp and `indexError` a worker string — neither is
+ * something to hand a model and hope it infers "this document is in the corpus
+ * but not searchable". They collapse into one derived `outcome` (the same
+ * classification the UI renders), and the raw reason rides along only on a
+ * genuine failure: on an indexed document `indexError` is a warning, and an
+ * agent that read it as a failure would report a retrievable document missing —
+ * the exact false absence this whole line of work exists to stop.
+ */
+function agentDocumentView(doc: DocumentRow, paidOcrEnabled: boolean) {
+  const { indexedAt: _indexedAt, indexError, ...rest } = doc
+  const outcome = classifyOutcome(
+    {
+      indexedAt: doc.indexedAt,
+      indexError: doc.indexError,
+      docType: doc.docType,
+      ocrAvailable: doc.ocrAvailable,
+      digitized: Boolean(doc.iiifManifestUrl),
+      resolveStatus: doc.resolveStatus,
+      lang: doc.lang,
+    },
+    { paidOcrEnabled },
+  )
+  return {
+    ...rest,
+    outcome,
+    ...(outcome === INDEXATION_OUTCOME.FAILED && indexError !== null
+      ? { indexError }
+      : {}),
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Helper
@@ -176,7 +238,12 @@ export const corpusGetStateTool = defineTool<
       const { sample: _sample, ...rest } = snapshot
       return rest
     }
-    return snapshot
+    return {
+      ...snapshot,
+      sample: snapshot.sample.map((d) =>
+        agentDocumentView(d, snapshot.paidOcrEnabled),
+      ),
+    }
   },
 })
 
@@ -238,16 +305,19 @@ export const corpusListTool = defineTool<
     // Project each document down to the requested fields (token economy). `ark`
     // is always kept so the agent can act on / cite the document. When no
     // `fields` are given, return the full row.
+    const rows = page.documents.map((d) =>
+      agentDocumentView(d, page.paidOcrEnabled),
+    )
     const documents =
       input.fields && input.fields.length > 0
-        ? page.documents.map((doc) => {
+        ? rows.map((doc) => {
             const picked: Record<string, unknown> = { ark: doc.ark }
             for (const f of input.fields as (keyof typeof doc)[]) {
               picked[f] = doc[f]
             }
             return picked
           })
-        : page.documents
+        : rows
 
     return {
       versionSeq: page.versionSeq,

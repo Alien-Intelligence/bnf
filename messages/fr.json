@@ -386,7 +386,8 @@
       "languages": "Langues",
       "sources": "Sources",
       "empty": "Aucun document dans le corpus",
-      "pendingSub": "{count} en cours de résolution"
+      "pendingSub": "{count} en cours de résolution",
+      "unindexedSub": "dont {count, number} non indexés"
     },
     "filters": {
       "title": "Filtres et statistiques",
@@ -399,7 +400,8 @@
       "empty": "Aucune facette à afficher",
       "active": {
         "title": "Filtres actifs",
-        "clearAll": "Effacer tous les filtres"
+        "clearAll": "Effacer tous les filtres",
+        "remove": "Supprimer le filtre {label}"
       },
       "histogram": {
         "title": "Distribution chronologique",
@@ -441,6 +443,20 @@
         "sansTexteSub": "non ingéré",
         "nonNumerise": "Non numérisés",
         "nonNumeriseSub": "non ingéré"
+      },
+      "indexation": {
+        "title": "Indexation",
+        "hint": "cliquez pour filtrer",
+        "searchable": "Interrogeables",
+        "unindexed": "Non indexés",
+        "indexed": "Indexés",
+        "indexedSub": "interrogeables par l'agent",
+        "failed": "En échec",
+        "failedSub": "envoyés, non aboutis",
+        "notIngested": "Pas encore indexés",
+        "notIngestedSub": "ajoutés depuis la dernière ingestion",
+        "excluded": "Non indexables",
+        "excludedSub": "aucun texte à indexer"
       }
     },
     "documents": {
@@ -504,6 +520,21 @@
           "ingestSansTexte": "Sans texte · non ingéré",
           "ingestNonNumerise": "Non ingéré",
           "unknown": "—"
+        }
+      },
+      "indexation": {
+        "states": {
+          "failed": "Échec d'indexation",
+          "excluded": "Non indexable",
+          "notIngested": "Pas encore indexé",
+          "partial": "Texte partiel"
+        },
+        "reasons": {
+          "noText": "Aucun texte exploitable dans le document",
+          "ocrFailed": "La transcription n'a pas abouti",
+          "partialPages": "Trop de pages en échec pour un résultat fiable",
+          "rateLimited": "Quota BnF atteint : document abandonné",
+          "indexFailed": "L'indexation a échoué après plusieurs tentatives"
         }
       }
     },
