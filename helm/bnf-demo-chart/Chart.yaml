@@ -1,6 +1,6 @@
 apiVersion: v2
 name: bnf-demo
-version: 0.18.0
+version: 0.18.1
 description: BnF Corpus Research — Alien Intelligence × BnF demo (Next.js app + ingest worker + BnF broker + Postgres)
 type: application
 # 0.9.0 — worker+broker hardening pass 2: pg-boss sliding-window fetch (the ~600/min
@@ -51,4 +51,11 @@ type: application
 # deployment.yaml hashes that ConfigMap into its checksum/config annotation, so any
 # version bump here restarts the app and worker too. An image-scoped release is not
 # a restart-scoped one.
-appVersion: "0.18.0"
+# 0.18.1 — app image only: the Prisma schema-engine is baked in for the runtime's
+# OpenSSL. The build stages had no libssl, so `npm ci` fetched the openssl-1.1.x engine
+# while the runtime (libssl3) wanted openssl-3.0.x, and `prisma migrate deploy` downloaded
+# it from binaries.prisma.sh into the writable layer on every pod start — Falco's
+# critical "drop and execute new binary", and a boot that crashed outright whenever that
+# CDN was unreachable. PRISMA_SCHEMA_ENGINE_BINARY now pins the baked engine. Worker and
+# broker sources are unchanged; their images are rebuilt only to keep the tags in step.
+appVersion: "0.18.1"
