@@ -12,9 +12,22 @@
 # See helm/DEPLOY.md for the full release loop.
 
 # ---------------------------------------------------------------------------
+# Stage 0: shared base
+# ---------------------------------------------------------------------------
+# Every stage must present the same OpenSSL to Prisma. `npm ci` downloads the
+# schema-engine for whatever OpenSSL it detects; on a bare node:24-slim there
+# is none, so it fetched the openssl-1.1.x build while the runtime (libssl3)
+# wanted openssl-3.0.x — and Prisma downloaded that one into the container's
+# writable layer on every start, tripping Falco's "drop and execute new
+# binary" rule.
+FROM node:24-slim AS base
+RUN apt-get update && apt-get install -y --no-install-recommends openssl \
+  && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
 # Stage 1: install dependencies
 # ---------------------------------------------------------------------------
-FROM node:24-slim AS deps
+FROM base AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
@@ -22,7 +35,7 @@ RUN npm ci
 # ---------------------------------------------------------------------------
 # Stage 2: build
 # ---------------------------------------------------------------------------
-FROM node:24-slim AS builder
+FROM base AS builder
 WORKDIR /app
 
 COPY --from=deps /app/node_modules ./node_modules
@@ -46,7 +59,7 @@ RUN npm run build
 # ---------------------------------------------------------------------------
 # Stage 3: production runtime
 # ---------------------------------------------------------------------------
-FROM node:24-slim AS runner
+FROM base AS runner
 WORKDIR /app
 
 # postgresql-client → pg_isready for the entrypoint's Postgres wait.
@@ -70,6 +83,12 @@ COPY --from=builder --chown=node:node /app/tsconfig.json ./tsconfig.json
 # lib/ carries the generated Prisma client (lib/generated) + any runtime imports.
 COPY --from=builder --chown=node:node /app/lib ./lib
 COPY --from=builder --chown=node:node /app/package.json ./package.json
+
+# Pin `prisma migrate deploy` to the engine baked into this image. With an
+# explicit path Prisma never downloads one at runtime: a platform mismatch
+# fails the build here rather than silently fetching a binary at pod start.
+ENV PRISMA_SCHEMA_ENGINE_BINARY=/app/node_modules/@prisma/engines/schema-engine-debian-openssl-3.0.x
+RUN test -x "$PRISMA_SCHEMA_ENGINE_BINARY"
 
 COPY --chown=node:node --chmod=0755 docker/entrypoint.sh /app/entrypoint.sh
 
