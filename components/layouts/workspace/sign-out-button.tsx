@@ -1,9 +1,10 @@
 "use client"
 
 import { useState } from "react"
-import { useRouter } from "next/navigation"
 import { useTranslations } from "next-intl"
+import { useRouter } from "@/i18n/navigation"
 import { apiFetch } from "@/lib/api-fetch"
+import { ROUTES } from "@/lib/constants"
 import { Button } from "@/components/ui/button"
 
 export function SignOutButton() {
@@ -13,12 +14,17 @@ export function SignOutButton() {
 
   async function handleSignOut() {
     setState("submitting")
-    const response = await apiFetch("/api/auth/sign-out", { method: "POST" })
+    // better-auth parses every POST body as JSON and answers 400 to an empty
+    // one, so the sign-out call has to carry an explicit `{}`.
+    const response = await apiFetch("/api/auth/sign-out", {
+      method: "POST",
+      body: JSON.stringify({}),
+    })
     if (!response.ok) {
       setState("error")
       return
     }
-    router.push("/sign-in")
+    router.replace(ROUTES.signIn)
   }
 
   return (
