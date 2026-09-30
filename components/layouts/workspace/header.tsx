@@ -2,8 +2,8 @@
 
 // components/layouts/workspace/header.tsx
 // WorkspaceHeader — the co-branded Alien Intelligence × BnF top bar shared by
-// every workspace screen. Left: Alien wordmark · divider · BnF logo · optional
-// project label. Centre: the step-nav (only on a project). Right: MCP status +
+// every workspace screen. Left: Alien wordmark · divider · BnF logo (together a
+// link back to the projects list) · optional project label. Centre: the step-nav (only on a project). Right: MCP status +
 // user menu. Mirrors design/BnF Corpus Research.dc.html header (lines 34-114).
 //
 // Client component: the step-nav needs the pathname and the user menu is
@@ -72,24 +72,30 @@ export function WorkspaceHeader({
     <header className="relative z-20 flex h-14 shrink-0 items-center justify-between gap-4 border-b bg-background/85 px-4.5 backdrop-blur-md">
       {/* Brand + project cluster */}
       <div className="flex min-w-0 items-center gap-3">
-        <Image
-          src="/brand/logo-w.svg"
-          alt={tBrand("alien")}
-          width={1048}
-          height={153}
-          priority
-          className="h-4.5 w-auto opacity-90"
-        />
-        <div className="h-6.5 w-px bg-border" aria-hidden />
-        <Image
-          src="/brand/bnf-logo-w.png"
-          alt={tBrand("bnf")}
-          title={tBrand("bnfFull")}
-          width={960}
-          height={359}
-          priority
-          className="h-5 w-auto opacity-90"
-        />
+        <Link
+          href={ROUTES.projects}
+          title={t("allProjects")}
+          aria-label={t("allProjects")}
+          className="flex items-center gap-3 rounded-md opacity-90 transition-opacity hover:opacity-100"
+        >
+          <Image
+            src="/brand/logo-w.svg"
+            alt={tBrand("alien")}
+            width={1048}
+            height={153}
+            priority
+            className="h-4.5 w-auto"
+          />
+          <div className="h-6.5 w-px bg-border" aria-hidden />
+          <Image
+            src="/brand/bnf-logo-w.png"
+            alt={tBrand("bnf")}
+            width={960}
+            height={359}
+            priority
+            className="h-5 w-auto"
+          />
+        </Link>
         {projectId && (
           <>
             <div className="h-6.5 w-px bg-border" aria-hidden />

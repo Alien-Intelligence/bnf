@@ -5,14 +5,14 @@
 // dropdown (no dropdown-menu primitive exists, and the prototype's picker is
 // itself hand-rolled — design/BnF Corpus Research.dc.html lines 47-88): trigger
 // shows the active project's name + subtitle; the panel lists the workspace's
-// projects (locale-aware links) and a "Nouveau projet" action that opens the
-// shared create dialog.
+// projects (locale-aware links), a "Tous les projets" link back to the projects
+// list, and a "Nouveau projet" action that opens the shared create dialog.
 //
 // Client component: owns open state, closes on outside-click / Escape, and
 // reads the project list via TanStack Query.
 
 import { useEffect, useRef, useState } from "react"
-import { Check, ChevronDown, Plus, Rows3 } from "lucide-react"
+import { Check, ChevronDown, LayoutGrid, Plus, Rows3 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { Link } from "@/i18n/navigation"
 import { useProjects } from "@/hooks/api/projects"
@@ -134,7 +134,16 @@ export function LayoutWorkspaceProjectSwitcher({ projectId }: Props) {
           </div>
 
           <div className="h-px bg-border mx-3" aria-hidden />
-          <div className="p-1.5">
+          <div className="flex flex-col gap-0.5 p-1.5">
+            <Link
+              href={ROUTES.projects}
+              role="menuitem"
+              onClick={() => setOpen(false)}
+              className="flex w-full items-center gap-2.5 rounded-md p-2 text-foreground transition-colors hover:bg-accent"
+            >
+              <LayoutGrid className="size-4 shrink-0 text-muted-foreground" />
+              <span className="text-[13px] font-semibold">{t("allProjects")}</span>
+            </Link>
             <button
               type="button"
               role="menuitem"
