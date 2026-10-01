@@ -24,12 +24,14 @@ import { Q } from "../domain/queues.js";
 import { keys } from "../domain/keys.js";
 import type {
   DocMeta,
+  DocOcrQuality,
   DocReady,
   EmbeddedDoc,
   OcrBatchRef,
   PreparedDoc,
   PreparedPage,
 } from "../domain/types.js";
+import type { AltoFolioQuality, BnfDocInfo } from "../bnf/types.js";
 import type { Describer, Embedder } from "../ports.js";
 import {
   FakeClusterSink,
@@ -110,9 +112,12 @@ test("assemble: emits one PreparedDoc with pages in folio order, lane text", asy
   const ds = new MemoryDocState();
   await readyRow(ds, "text", 3);
 
-  // ALTO bytes for folios 1,2,3 (pre-populated as the Monitor would have left them).
+  // ALTO text + WC sidecars for folios 1,2,3 (as the fetch stage leaves them),
+  // and the meta blob the OCR-quality artifact reads ocrRate from.
+  await blob.putJson(keys.metadata(ARK), metaBlob(0.9));
   for (const ordre of [1, 2, 3]) {
     await blob.putBytes(keys.alto(ARK, ordre), Buffer.from(`alto text f${ordre}`, "utf8"));
+    await putSidecar(blob, ordre, 0.95, 3);
   }
 
   const emitted = await collect<PreparedDoc>(q, Q.embed);
@@ -144,8 +149,11 @@ test("assemble: drops empty/missing ALTO folios", async () => {
   await readyRow(ds, "text", 3);
 
   // Folio 1 has text; folio 2 is empty (whitespace only); folio 3 is missing in S3.
+  await blob.putJson(keys.metadata(ARK), metaBlob(0.9));
   await blob.putBytes(keys.alto(ARK, 1), Buffer.from("real text", "utf8"));
+  await putSidecar(blob, 1, 0.95, 2);
   await blob.putBytes(keys.alto(ARK, 2), Buffer.from("   \n  ", "utf8"));
+  await putSidecar(blob, 2, null, 0);
   // (no key for folio 3)
 
   const emitted = await collect<PreparedDoc>(q, Q.embed);
@@ -196,6 +204,7 @@ test("describe: emits PreparedDoc (vision) with one page per image folio", async
   const blob = new MemoryBlobStore();
   const ds = new MemoryDocState();
   await readyRow(ds, "vision", 3);
+  await blob.putJson(keys.metadata(ARK), metaBlob(null, { ocrAvailable: false, docType: "estampe" }));
 
   for (const ordre of [1, 2, 3]) {
     await blob.putBytes(keys.image(ARK, ordre), Buffer.from(`IMG f${ordre}`));
@@ -225,6 +234,7 @@ test("describe: a folio missing in S3 is skipped, others survive", async () => {
   const blob = new MemoryBlobStore();
   const ds = new MemoryDocState();
   await readyRow(ds, "vision", 3);
+  await blob.putJson(keys.metadata(ARK), metaBlob(null, { ocrAvailable: false, docType: "estampe" }));
 
   // Folio 2 image is absent.
   await blob.putBytes(keys.image(ARK, 1), Buffer.from("IMG f1"));
@@ -246,6 +256,7 @@ test("describe: a Describer that throws on one folio drops it, others survive", 
   const blob = new MemoryBlobStore();
   const ds = new MemoryDocState();
   await readyRow(ds, "vision", 3);
+  await blob.putJson(keys.metadata(ARK), metaBlob(null, { ocrAvailable: false, docType: "estampe" }));
 
   for (const ordre of [1, 2, 3]) {
     await blob.putBytes(keys.image(ARK, ordre), Buffer.from(`IMG f${ordre}`));
@@ -410,6 +421,7 @@ test("ocr-poll: done on first poll → emits PreparedDoc, persisted at keys.page
   const ds = new MemoryDocState();
   const ocr = new FakeOcrEngine(); // default: done on first poll
   await readyRow(ds, "mistral", 3);
+  await blob.putJson(keys.metadata(ARK), metaBlob(null, { ocrAvailable: false }));
   // Prime the batch folios so pollBatch's done state returns pages for them.
   await ocr.submitBatch({ ark: ARK, folios: [1, 2, 3].map((ordre) => ({ ordre, image: Buffer.from("x") })) });
 
@@ -437,6 +449,7 @@ test("ocr-poll: pending then done re-enqueues and eventually emits", async () =>
   const ds = new MemoryDocState();
   const ocr = new FakeOcrEngine({ pendingPolls: 3 }); // pending on polls 1,2; done on 3
   await readyRow(ds, "mistral", 2);
+  await blob.putJson(keys.metadata(ARK), metaBlob(null, { ocrAvailable: false }));
   await ocr.submitBatch({ ark: ARK, folios: [1, 2].map((ordre) => ({ ordre, image: Buffer.from("x") })) });
 
   const emitted = await collect<PreparedDoc>(q, Q.embed);
@@ -511,6 +524,7 @@ test("ocr-poll: partial survivors → doc proceeds AND the drop is recorded (F13
   const ds = new MemoryDocState();
   const ocr = new FakeOcrEngine({ hallucinatedOrdres: [2], emptyOrdres: [3] });
   await readyRow(ds, "mistral", 3);
+  await blob.putJson(keys.metadata(ARK), metaBlob(null, { ocrAvailable: false }));
   await ocr.submitBatch({
     ark: ARK,
     folios: [1, 2, 3].map((ordre) => ({ ordre, image: Buffer.from("x") })),
@@ -1013,4 +1027,183 @@ test("register: old GLOBAL-key receipt (pre-F16 shape) is ignored — fresh per-
 
   const untouchedOld = await blob.getJson<{ datasetId: number; entryId: number }>(oldGlobalKey);
   assert.equal(untouchedOld?.entryId, 999, "the old global key is left untouched (no migration)");
+});
+
+// ── OCR-quality artifact at the three convergence points ─────────────────────
+//
+// Every lane's last stage before embed builds `ocr-quality/<slug>.json` from the
+// PreparedDoc it emits: ocrRate from the per-ARK meta blob, per-folio quality
+// from the ALTO sidecars (text lane) or a null quality (mistral / vision).
+
+/** A cached meta blob as MetadataStage persists it (keys.metadata). */
+function metaBlob(ocrRate: number | null, over: Partial<BnfDocInfo> = {}): BnfDocInfo {
+  return {
+    ark: ARK,
+    title: "Le Petit Journal",
+    creator: "BnF",
+    date: "1900",
+    docType: "texte",
+    subtype: null,
+    ocrAvailable: true,
+    ocrRate,
+    pageCount: 3,
+    iiifManifestUrl: null,
+    lang: "fre",
+    raw: { source: "iiif_manifest", metadata: [] },
+    ...over,
+  };
+}
+
+async function putSidecar(
+  blob: MemoryBlobStore,
+  ordre: number,
+  meanWc: number | null,
+  wordCount: number,
+): Promise<void> {
+  await blob.putJson(keys.altoQuality(ARK, ordre), {
+    v: 1,
+    wordCount,
+    scoredWordCount: meanWc === null ? 0 : wordCount,
+    meanWc,
+  } satisfies AltoFolioQuality);
+}
+
+test("assemble: writes the ocr-quality artifact (alto folios from the sidecars, ocrRate from the meta blob)", async () => {
+  const q = new MemoryQueue();
+  const blob = new MemoryBlobStore();
+  const ds = new MemoryDocState();
+  await readyRow(ds, "text", 2);
+  await blob.putJson(keys.metadata(ARK), metaBlob(0.7821));
+  // The probe's real numbers for bpt6k4625753w: f1 0.932 / 5106 words, f2 0.661 / 4016.
+  await blob.putBytes(keys.alto(ARK, 1), Buffer.from("texte folio 1", "utf8"));
+  await blob.putBytes(keys.alto(ARK, 2), Buffer.from("texte folio 2", "utf8"));
+  await putSidecar(blob, 1, 0.932, 5106);
+  await putSidecar(blob, 2, 0.661, 4016);
+
+  const emitted = await collect<PreparedDoc>(q, Q.embed);
+  const stage = new AssembleStage(deps(q, blob), ds);
+  await stage.start();
+  await q.send(Q.assemble, docReady("text", [1, 2]));
+  await q.idle();
+
+  assert.equal(emitted.length, 1, "the doc still flows to embed");
+  const artifact = await blob.getJson<DocOcrQuality>(keys.ocrQuality(ARK));
+  assert.ok(artifact, "ocr-quality artifact written");
+  assert.equal(artifact.v, 1);
+  assert.equal(artifact.ark, ARK);
+  assert.equal(artifact.lane, "text");
+  assert.equal(artifact.ocrRate, 0.7821);
+  assert.deepEqual(artifact.folios, [
+    { ordre: 1, ocrSource: "alto", ocrQuality: 0.932, wordCount: 5106 },
+    { ordre: 2, ocrSource: "alto", ocrQuality: 0.661, wordCount: 4016 },
+  ]);
+  assert.ok(!Number.isNaN(Date.parse(artifact.builtAt)), "builtAt is an ISO timestamp");
+});
+
+test("assemble: empty folios are dropped from the artifact — the same set as pages", async () => {
+  const q = new MemoryQueue();
+  const blob = new MemoryBlobStore();
+  const ds = new MemoryDocState();
+  await readyRow(ds, "text", 3);
+  await blob.putJson(keys.metadata(ARK), metaBlob(0.5));
+  await blob.putBytes(keys.alto(ARK, 1), Buffer.from("real text", "utf8"));
+  await blob.putBytes(keys.alto(ARK, 2), Buffer.from("   \n  ", "utf8"));
+  // folio 3 missing in S3 entirely
+  await putSidecar(blob, 1, 0.9, 2);
+  await putSidecar(blob, 2, null, 0);
+
+  const emitted = await collect<PreparedDoc>(q, Q.embed);
+  const stage = new AssembleStage(deps(q, blob), ds);
+  await stage.start();
+  await q.send(Q.assemble, docReady("text", [1, 2, 3]));
+  await q.idle();
+
+  assert.deepEqual(emitted[0]?.pages.map((p) => p.ordre), [1]);
+  const artifact = await blob.getJson<DocOcrQuality>(keys.ocrQuality(ARK));
+  assert.ok(artifact);
+  assert.deepEqual(artifact.folios.map((f) => f.ordre), [1], "only the prepared page is in the artifact");
+});
+
+test("assemble: a text page without its sidecar is an invariant break → the doc fails, no artifact", async () => {
+  const q = new MemoryQueue();
+  const blob = new MemoryBlobStore();
+  const ds = new MemoryDocState();
+  await readyRow(ds, "text", 1);
+  await blob.putJson(keys.metadata(ARK), metaBlob(0.5));
+  await blob.putBytes(keys.alto(ARK, 1), Buffer.from("text without a sidecar", "utf8"));
+
+  const emitted = await collect<PreparedDoc>(q, Q.embed);
+  const stage = new AssembleStage(deps(q, blob), ds);
+  await stage.start();
+  await q.send(Q.assemble, docReady("text", [1]));
+  await q.idle();
+
+  assert.equal(emitted.length, 0, "never emitted with an incomplete artifact");
+  assert.equal(await blob.getJson(keys.ocrQuality(ARK)), null, "no artifact");
+  const row = await ds.get(DOC_JOB_ID);
+  assert.equal(row?.status, "failed");
+  assert.match(row?.error ?? "", /assemble_failed_after_retries: .*sidecar/);
+});
+
+test("describe: artifact lane vision with null quality (fresh describe AND the cache-hit branch)", async () => {
+  const q = new MemoryQueue();
+  const blob = new MemoryBlobStore();
+  const ds = new MemoryDocState();
+  await readyRow(ds, "vision", 2);
+  await blob.putJson(keys.metadata(ARK), metaBlob(null, { ocrAvailable: false, docType: "estampe" }));
+  for (const ordre of [1, 2]) {
+    await blob.putBytes(keys.image(ARK, ordre), Buffer.from(`IMG f${ordre}`));
+  }
+
+  const emitted = await collect<PreparedDoc>(q, Q.embed);
+  const stage = new DescribeStage(deps(q, blob), new FakeDescriber(), ds, undefined);
+  await stage.start();
+  await q.send(Q.describe, docReady("vision", [1, 2]));
+  await q.idle();
+
+  assert.equal(emitted.length, 1);
+  const first = await blob.getJson<DocOcrQuality>(keys.ocrQuality(ARK));
+  assert.ok(first, "artifact written on a fresh describe");
+  assert.equal(first.lane, "vision");
+  assert.equal(first.ocrRate, null);
+  assert.deepEqual(first.folios, [
+    { ordre: 1, ocrSource: "vision", ocrQuality: null, wordCount: null },
+    { ordre: 2, ocrSource: "vision", ocrQuality: null, wordCount: null },
+  ]);
+
+  // Cache-hit branch: the pages are in S3, the artifact is not (a pre-release
+  // doc re-ingested) — it must still be built before emitting.
+  await blob.delete(keys.ocrQuality(ARK));
+  await q.send(Q.describe, docReady("vision", [1, 2]));
+  await q.idle();
+  assert.equal(emitted.length, 2, "cache-hit branch emitted");
+  const second = await blob.getJson<DocOcrQuality>(keys.ocrQuality(ARK));
+  assert.ok(second, "artifact rebuilt on the cache-hit branch");
+  assert.deepEqual(second.folios.map((f) => f.ordre), [1, 2]);
+});
+
+test("ocr-poll: artifact lane mistral, dropped pages excluded", async () => {
+  const q = new MemoryQueue();
+  const blob = new MemoryBlobStore();
+  const ds = new MemoryDocState();
+  const ocr = new FakeOcrEngine({ hallucinatedOrdres: [2] });
+  await readyRow(ds, "mistral", 3);
+  await blob.putJson(keys.metadata(ARK), metaBlob(null, { ocrAvailable: false }));
+  await ocr.submitBatch({ ark: ARK, folios: [1, 2, 3].map((ordre) => ({ ordre, image: Buffer.from("x") })) });
+  await blob.putJson(keys.ocrBatch(ARK), { batchId: `batch-${ARK}`, folios: [1, 2, 3] });
+
+  const emitted = await collect<PreparedDoc>(q, Q.embed);
+  const stage = new OcrPollStage(deps(q, blob), ocr, ds);
+  await stage.start();
+  await q.send(Q.ocrPoll, ocrRef([1, 2, 3]));
+  await q.idle();
+
+  assert.deepEqual(emitted[0]?.pages.map((p) => p.ordre), [1, 3]);
+  const artifact = await blob.getJson<DocOcrQuality>(keys.ocrQuality(ARK));
+  assert.ok(artifact);
+  assert.equal(artifact.lane, "mistral");
+  assert.deepEqual(artifact.folios, [
+    { ordre: 1, ocrSource: "mistral", ocrQuality: null, wordCount: null },
+    { ordre: 3, ocrSource: "mistral", ocrQuality: null, wordCount: null },
+  ]);
 });

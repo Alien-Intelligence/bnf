@@ -17,7 +17,8 @@ import { MemoryBlobStore } from "./core/blob.js";
 import { createMemoryLogger } from "./core/logger.js";
 import { MemoryDocState } from "./domain/doc-state-memory.js";
 import type { DocStatus } from "./domain/doc-state.js";
-import type { DocRef } from "./domain/types.js";
+import { keys } from "./domain/keys.js";
+import type { DocOcrQuality, DocRef } from "./domain/types.js";
 import {
   FakeBnfClient,
   FakeClusterSink,
@@ -29,6 +30,7 @@ import {
 
 interface Harness {
   queue: MemoryQueue;
+  blob: MemoryBlobStore;
   docState: MemoryDocState;
   cluster: FakeClusterSink;
   bnf: FakeBnfClient;
@@ -67,6 +69,7 @@ function harness(
 
   return {
     queue,
+    blob,
     docState,
     cluster,
     bnf,
@@ -103,6 +106,39 @@ test("one doc of each lane flows end to end to registration", async () => {
   // cached blob MetadataStage populated, at zero extra cost.
   assert.equal(h.bnf.calls.manifest, 3);
   assert.equal(h.ocr.submitted.length, 1); // one Mistral batch (the mistral doc)
+});
+
+test("every lane leaves an ocr-quality artifact behind once its doc completes", async () => {
+  const h = harness([
+    { ark: "ark:/12148/textdoc", ocrAvailable: true, docType: "texte", pageCount: 3, folioMeanWc: { 2: 0.661 } },
+    { ark: "ark:/12148/visiondoc", ocrAvailable: false, docType: "estampe", pageCount: 2 },
+    { ark: "ark:/12148/mistraldoc", ocrAvailable: false, docType: "texte", pageCount: 2 },
+  ]);
+  await h.seed([ref("textdoc"), ref("visiondoc"), ref("mistraldoc")]);
+  await h.queue.idle();
+  assert.equal((await h.docState.statusCounts()).done, 3);
+
+  const text = await h.blob.getJson<DocOcrQuality>(keys.ocrQuality("ark:/12148/textdoc"));
+  assert.ok(text, "text-lane artifact exists");
+  assert.equal(text.lane, "text");
+  // The fake manifest publishes "taux ocr: 100%" for an OCR doc → 1.
+  assert.equal(text.ocrRate, 1);
+  assert.deepEqual(
+    text.folios.map((f) => [f.ordre, f.ocrSource, f.ocrQuality]),
+    [[1, "alto", 1], [2, "alto", 0.661], [3, "alto", 1]],
+  );
+  assert.ok(text.folios.every((f) => typeof f.wordCount === "number" && f.wordCount > 0));
+
+  const vision = await h.blob.getJson<DocOcrQuality>(keys.ocrQuality("ark:/12148/visiondoc"));
+  assert.ok(vision);
+  assert.equal(vision.lane, "vision");
+  assert.equal(vision.ocrRate, null);
+  assert.ok(vision.folios.every((f) => f.ocrSource === "vision" && f.ocrQuality === null && f.wordCount === null));
+
+  const mistral = await h.blob.getJson<DocOcrQuality>(keys.ocrQuality("ark:/12148/mistraldoc"));
+  assert.ok(mistral);
+  assert.equal(mistral.lane, "mistral");
+  assert.ok(mistral.folios.every((f) => f.ocrSource === "mistral" && f.ocrQuality === null));
 });
 
 test("transient 5xx on a folio recovers after retries (doc still completes)", async () => {

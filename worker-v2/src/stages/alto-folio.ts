@@ -35,7 +35,7 @@ export interface EnsuredAltoFolio {
 }
 
 /** Structural check on a cached sidecar — a corrupt one is a miss, not a crash. */
-function isAltoFolioQuality(v: unknown): v is AltoFolioQuality {
+export function isAltoFolioQuality(v: unknown): v is AltoFolioQuality {
   if (v === null || typeof v !== "object") return false;
   const q = v as Record<string, unknown>;
   return (
