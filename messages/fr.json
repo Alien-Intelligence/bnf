@@ -230,7 +230,7 @@
       "passwordLabel": "Mot de passe",
       "submit": "Se connecter",
       "noAccount": "Pas encore de compte ?",
-      "errorGeneric": "Identifiants invalides",
+      "errorGeneric": "La connexion a échoué. Réessayez.",
       "errorInvalidCredentials": "Identifiants invalides",
       "forgotPassword": "Mot de passe oublié ?",
       "submitting": "Connexion en cours…",

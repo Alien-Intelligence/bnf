@@ -230,7 +230,7 @@
       "passwordLabel": "Password",
       "submit": "Sign in",
       "noAccount": "Don't have an account yet?",
-      "errorGeneric": "Invalid credentials",
+      "errorGeneric": "Sign-in failed. Please try again.",
       "errorInvalidCredentials": "Invalid credentials",
       "forgotPassword": "Forgot password?",
       "submitting": "Signing in…",
