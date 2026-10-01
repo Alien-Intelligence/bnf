@@ -3,10 +3,10 @@
 import { useState } from "react"
 import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
-import { useRouter } from "next/navigation"
 import { useTranslations } from "next-intl"
-import { Link } from "@/i18n/navigation"
+import { Link, useRouter } from "@/i18n/navigation"
 import { apiFetch } from "@/lib/api-fetch"
+import { ROUTES } from "@/lib/constants"
 import { signUpSchema, type SignUpInput } from "@/models/users/types"
 import {
   Form,
@@ -69,7 +69,8 @@ export function SignUpClient() {
       return
     }
 
-    router.push("/projects")
+    // Locale-aware, and `replace` so Back does not return to the form.
+    router.replace(ROUTES.projects)
   }
 
   return (
@@ -147,7 +148,7 @@ export function SignUpClient() {
         </CardContent>
         <CardFooter className="flex justify-center gap-1 text-sm text-muted-foreground">
           <span>{t("hasAccount")}</span>
-          <Link href="/sign-in" className="font-medium text-foreground underline">
+          <Link href={ROUTES.signIn} className="font-medium text-foreground underline">
             {tSignIn("title")}
           </Link>
         </CardFooter>

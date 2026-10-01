@@ -3,9 +3,8 @@
 import { useState } from "react"
 import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
-import { useRouter, useSearchParams } from "next/navigation"
-import { useTranslations } from "next-intl"
-import { Link } from "@/i18n/navigation"
+import { useLocale, useTranslations } from "next-intl"
+import { Link, getPathname, useRouter } from "@/i18n/navigation"
 import { apiFetch } from "@/lib/api-fetch"
 import { authClient } from "@/lib/auth-client"
 import { OAUTH_PROVIDER_ID, ROUTES } from "@/lib/constants"
@@ -29,11 +28,20 @@ import {
 } from "@/components/ui/card"
 import { LayoutAuthShell } from "@/components/layouts/auth/shell"
 
-export function SignInClient({ ssoEnabled }: { ssoEnabled: boolean }) {
+interface SignInClientProps {
+  ssoEnabled: boolean
+  /**
+   * Where to land after a successful sign-in. Already validated by the page
+   * (lib/auth-redirect.ts safeNextPath): always an in-app, locale-less path.
+   */
+  nextPath: string
+}
+
+export function SignInClient({ ssoEnabled, nextPath }: SignInClientProps) {
   const t = useTranslations("auth.signIn")
   const tSignUp = useTranslations("auth.signUp")
+  const locale = useLocale()
   const router = useRouter()
-  const searchParams = useSearchParams()
   const [serverError, setServerError] = useState<string | null>(null)
   const [ssoLoading, setSsoLoading] = useState(false)
 
@@ -46,11 +54,12 @@ export function SignInClient({ ssoEnabled }: { ssoEnabled: boolean }) {
     setServerError(null)
     setSsoLoading(true)
     // Better Auth redirects the browser to Authentik; callbackURL is where it
-    // lands after a successful round-trip. Respect ?next= like the email flow.
-    const next = searchParams.get("next") ?? ROUTES.projects
+    // lands after the round-trip. Same safe `next` as the email flow, with the
+    // locale prefix applied here because this is a full-page hop, not an i18n
+    // router navigation.
     const { error } = await authClient.signIn.oauth2({
       providerId: OAUTH_PROVIDER_ID,
-      callbackURL: next,
+      callbackURL: getPathname({ href: nextPath, locale }),
     })
     if (error) {
       setServerError(t("errorGeneric"))
@@ -85,8 +94,9 @@ export function SignInClient({ ssoEnabled }: { ssoEnabled: boolean }) {
       return
     }
 
-    const next = searchParams.get("next")
-    router.push(next ?? "/projects")
+    // `replace`, not `push`: Back should not return to a form the user has
+    // already got past.
+    router.replace(nextPath)
   }
 
   return (
@@ -177,7 +187,7 @@ export function SignInClient({ ssoEnabled }: { ssoEnabled: boolean }) {
         </CardContent>
         <CardFooter className="flex justify-center gap-1 text-sm text-muted-foreground">
           <span>{t("noAccount")}</span>
-          <Link href="/sign-up" className="font-medium text-foreground underline">
+          <Link href={ROUTES.signUp} className="font-medium text-foreground underline">
             {tSignUp("title")}
           </Link>
         </CardFooter>

@@ -80,6 +80,21 @@ export const RESEARCH_ONLY_STEPS = ["rechercher"] as const satisfies readonly Wo
  */
 export const OAUTH_PROVIDER_ID = "authentik"
 
+/**
+ * Query keys the auth pages read and write. `next` is the post-sign-in
+ * destination, always passed through `safeNextPath` (lib/auth-redirect.ts).
+ * Written by `requireSessionUser`, read by the sign-in page and the auth e2e
+ * script, so the spelling lives in one place.
+ */
+export const AUTH_QUERY = { NEXT: "next" } as const
+
+/**
+ * Longest `?next=` value accepted. A real in-app path is a few dozen
+ * characters; anything near this bound is a crafted payload, and the browser
+ * URL limit is the same order of magnitude.
+ */
+export const SAFE_NEXT_MAX_LENGTH = 2_048
+
 // ---------------------------------------------------------------------------
 // Layout geometry — prototype proportions (BnF Corpus Research.dc.html).
 // Kept here so no screen hard-codes a magic width/ratio in JSX.

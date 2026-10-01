@@ -1,33 +1,55 @@
 import "server-only"
+import { cache } from "react"
 import { headers } from "next/headers"
 import { notFound } from "next/navigation"
+import { getLocale } from "next-intl/server"
 import { auth } from "./auth"
-import { prisma } from "./db"
 import { redirect } from "@/i18n/navigation"
+import { AUTH_QUERY, ROUTES } from "@/lib/constants"
 import { GroupQueries } from "@/models/groups/queries"
+import { UserQueries } from "@/models/users/queries"
 import { USER_ROLE, type PolicyUser } from "@/models/users/schema"
 
 /**
- * Resolves the signed-in user as a PolicyUser — the User row plus the ids of
- * the groups they belong to — so server pages can call the same
- * lib/authz/project-access.ts predicates the API routes use.
+ * The signed-in user as a PolicyUser — the User row plus the ids of the groups
+ * they belong to — or null when there is no live session or no user row.
+ *
+ * Memoized per render with React `cache`: the project layout and the page it
+ * wraps both call this, and share one session + user + groups lookup. This is
+ * the read half of the auth check; it never redirects, so a layout can render
+ * from it without gating (Next 16 authentication guide, "Layouts and auth
+ * checks").
  */
-export async function requireSessionUser(nextPath?: string): Promise<PolicyUser> {
+export const findSessionUser = cache(async (): Promise<PolicyUser | null> => {
   const session = await auth.api.getSession({ headers: await headers() })
-  if (!session) {
-    const next = nextPath ? `?next=${encodeURIComponent(nextPath)}` : ""
-    return redirect({ href: `/sign-in${next}`, locale: "fr" })
-  }
+  if (!session) return null
 
   const [row, groupIds] = await Promise.all([
-    prisma.user.findUnique({ where: { id: session.user.id } }),
+    UserQueries.get(session.user.id),
     GroupQueries.groupIdsForUser(session.user.id),
   ])
-  if (!row) {
-    return redirect({ href: "/sign-in", locale: "fr" })
-  }
+  if (!row) return null
 
   return { ...row, groupIds }
+})
+
+/**
+ * Resolves the signed-in user as a PolicyUser so server pages can call the
+ * same lib/authz/project-access.ts predicates the API routes use. Without a
+ * session it redirects to sign-in in the request's locale, carrying the page's
+ * own path as `?next=` so sign-in can bring the user back.
+ */
+export async function requireSessionUser(nextPath?: string): Promise<PolicyUser> {
+  const user = await findSessionUser()
+  if (user) return user
+
+  const locale = await getLocale()
+  return redirect({
+    href: nextPath
+      ? { pathname: ROUTES.signIn, query: { [AUTH_QUERY.NEXT]: nextPath } }
+      : ROUTES.signIn,
+    locale,
+  })
 }
 
 /**

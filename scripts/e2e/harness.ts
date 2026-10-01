@@ -56,11 +56,13 @@ export function printVerdict(context: Record<string, string> = {}): void {
 }
 
 /** Fail fast if the dev server isn't reachable — otherwise every turn error
- *  looks like a bug. Any HTTP status counts as "up" (the route is auth-gated). */
-export async function requireServer(): Promise<void> {
-  const health = await fetch(`${BASE_URL}/api/health`, { method: "GET" }).catch(() => null)
+ *  looks like a bug. Any HTTP status counts as "up" (the route is auth-gated).
+ *  Scripts that target the app's own `APP_URL` (the auth e2e) pass their base
+ *  explicitly; the agent e2es keep the 3939 default. */
+export async function requireServer(baseUrl: string = BASE_URL): Promise<void> {
+  const health = await fetch(`${baseUrl}/api/health`, { method: "GET" }).catch(() => null)
   if (health === null) {
-    throw new Error(`dev server unreachable at ${BASE_URL} — start it with: PORT=3939 npm run dev`)
+    throw new Error(`dev server unreachable at ${baseUrl} — start it with: PORT=3939 npm run dev`)
   }
 }
 
