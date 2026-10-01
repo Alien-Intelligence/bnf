@@ -57,3 +57,29 @@ test("buildIndexChunks aligns embeddings by position and carries ark + folio", (
   assert.deepEqual(chunks[1]!.embedding, [0.3, 0.4]);
   assert.equal(chunks[1]!.metadata.folio, 9);
 });
+
+test("char_start/char_end slice the assembled markdown to exactly chunk_text", () => {
+  // Untrimmed page text on purpose: the markdown holds the trimmed text, so the
+  // chunk must too, or the offsets cannot line up with what is stored.
+  const raggedPages: PreparedPage[] = [
+    { ordre: 5, text: "Texte folio 5" },
+    { ordre: 9, text: "  Texte folio 9\nsur deux lignes \n" },
+    { ordre: 12, text: "Dernier" },
+  ];
+  const embeddings = [[0.1], [0.2], [0.3]];
+  const markdown = assembleMarkdown(raggedPages);
+  const chunks = buildIndexChunks("ark:/12148/btv1b8600001", meta, raggedPages, embeddings);
+
+  for (const [i, chunk] of chunks.entries()) {
+    const start = chunk.metadata.char_start;
+    const end = chunk.metadata.char_end;
+    assert.equal(typeof start, "number", `chunk ${i} has char_start`);
+    assert.equal(typeof end, "number", `chunk ${i} has char_end`);
+    assert.equal(chunk.chunk_text, raggedPages[i]!.text.trim(), `chunk ${i} text is trimmed`);
+    assert.equal(
+      markdown.slice(start as number, end as number),
+      chunk.chunk_text,
+      `chunk ${i} offsets slice the markdown to its text`,
+    );
+  }
+});

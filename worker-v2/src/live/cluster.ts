@@ -70,19 +70,40 @@ export interface LiveClusterSinkOptions {
   http?: ClusterHttp;
 }
 
+/** Heading that opens each page block in the assembled markdown. */
+function folioHeading(ordre: number): string {
+  return `## Folio ${ordre}\n\n`;
+}
+
+/** Separator between two page blocks in the assembled markdown. */
+const FOLIO_BLOCK_SEPARATOR = "\n\n";
+
 /**
  * Assemble a doc's pages into one markdown document, folio-headed. Pure —
  * exported for testing. Each page is prefixed with its folio so the stored
  * `original`/`processed` text stays navigable.
+ *
+ * Format consumed by the app's `lib/cluster/folio-text.ts` (splitEntryFolios,
+ * which the quote check relies on) — change both together, and keep the
+ * contract tests on both sides (`cluster.test.ts`, `folio-text.test.ts`) on the
+ * same literal sample.
  */
 export function assembleMarkdown(pages: PreparedPage[]): string {
-  return pages.map((p) => `## Folio ${p.ordre}\n\n${p.text.trim()}`).join("\n\n");
+  return pages
+    .map((p) => `${folioHeading(p.ordre)}${p.text.trim()}`)
+    .join(FOLIO_BLOCK_SEPARATOR);
 }
 
 /**
  * Build the per-page index chunks (one chunk per page). Pure — exported for
  * testing. Aligns each page with its embedding by position; the caller
  * guarantees `pages.length === embeddings.length`.
+ *
+ * `char_start` / `char_end` are the page body's offsets inside
+ * `assembleMarkdown(pages)`, computed with the same heading and separator, so
+ * `markdown.slice(char_start, char_end) === chunk_text` holds for every chunk.
+ * The chunk text is therefore the TRIMMED page text, as the markdown holds it.
+ * The app surfaces the pair as `RagPassage.charRange` for `rag_get_text`.
  */
 export function buildIndexChunks(
   ark: string,
@@ -90,16 +111,23 @@ export function buildIndexChunks(
   pages: PreparedPage[],
   embeddings: number[][],
 ): IndexChunk[] {
+  let offset = 0;
   return pages.map((p, i) => {
+    const text = p.text.trim();
+    const charStart = offset + folioHeading(p.ordre).length;
+    const charEnd = charStart + text.length;
+    offset = charEnd + FOLIO_BLOCK_SEPARATOR.length;
     const metadata: Record<string, unknown> = {
       ark,
       ark_slug: arkSlug(ark),
       doc_type: meta.docType ?? null,
       sub_type: meta.subtype ?? null,
       folio: p.ordre,
+      char_start: charStart,
+      char_end: charEnd,
     };
     return {
-      chunk_text: p.text,
+      chunk_text: text,
       chunk_index: i,
       embedding: embeddings[i]!,
       metadata,
