@@ -103,3 +103,41 @@ export interface EmbeddedDoc extends DocRef {
   embeddingsKey: string;
   pageCount: number;
 }
+
+// ---------------------------------------------------------------------------
+// OCR quality — the per-ARK artifact at keys.ocrQuality(ark)
+//
+// WIRE CONTRACT shared with the app: models/documents/types.ts
+// (workerOcrQualitySyncResponseSchema) validates exactly these shapes and
+// values. Change both sides together.
+// ---------------------------------------------------------------------------
+
+/**
+ * What produced a prepared page's text. Only `alto` pages carry a measured
+ * quality (the mean WC); Mistral's own confidence does not flag hallucinations
+ * and vision pages are descriptions, so both are recorded as a source with a
+ * null quality (plan D2/D3) — never flagged "low".
+ */
+export const OCR_SOURCE = { ALTO: "alto", MISTRAL: "mistral", VISION: "vision" } as const;
+export type OcrSource = (typeof OCR_SOURCE)[keyof typeof OCR_SOURCE];
+
+export interface FolioOcrQuality {
+  ordre: number;
+  ocrSource: OcrSource;
+  /** Mean ALTO word confidence in [0, 1]; null for non-ALTO sources, or ALTO without WC. */
+  ocrQuality: number | null;
+  /** ALTO word count; null for non-ALTO sources (a Mistral count is not comparable). */
+  wordCount: number | null;
+}
+
+export interface DocOcrQuality {
+  v: 1;
+  ark: string;
+  /** The manifest "Taux OCR" / 100; null when BnF publishes none. */
+  ocrRate: number | null;
+  lane: Lane;
+  /** One entry per PREPARED page (the same set as pages/<slug>.json), ordre-ascending. */
+  folios: FolioOcrQuality[];
+  /** ISO timestamp of the build. */
+  builtAt: string;
+}

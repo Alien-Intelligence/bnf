@@ -33,7 +33,7 @@ const FAKE_BROKER_DELAY_MS = 150; // between the two — the whole point of the 
 process.env.BNF_META_TIMEOUT_MS = SHORT_BUDGET_MS;
 process.env.BNF_PAGE_TIMEOUT_MS = LONG_BUDGET_MS;
 
-const { LiveBnfClient } = await import("./client.js");
+const { LiveBnfClient, docInfoFromManifest } = await import("./client.js");
 
 /** A fake broker (POST /fetch) that waits `delayMs` then returns an empty JSON
  *  body — good enough for getManifest's parser (parseV3Manifest tolerates a
@@ -90,4 +90,50 @@ test("getDocumentInfoViaOai keeps the SHORT budget — the F4 fix is scoped to t
   } finally {
     await broker.close();
   }
+});
+
+// ---------------------------------------------------------------------------
+// docInfoFromManifest — "Taux OCR" is kept as a number, not reduced to a boolean
+// ---------------------------------------------------------------------------
+
+const ARK = "ark:/12148/bpt6k4625753w";
+
+function manifestWith(metadata: Array<{ label: string; value: string }>) {
+  return { title: "L'Auto-vélo", metadata, totalPages: 8, canvases: [] };
+}
+
+test("docInfoFromManifest: a Taux OCR row yields ocrRate as a fraction AND ocrAvailable true", () => {
+  const info = docInfoFromManifest(
+    manifestWith([
+      { label: "Titre", value: "L'Auto-vélo" },
+      { label: "Taux OCR", value: "78.21 %" },
+    ]),
+    ARK,
+  );
+  assert.equal(info.ocrRate, 0.7821);
+  assert.equal(info.ocrAvailable, true);
+});
+
+test("docInfoFromManifest: no Taux OCR row → ocrRate null, ocrAvailable false", () => {
+  const info = docInfoFromManifest(
+    manifestWith([
+      { label: "Titre", value: "Carte de Paris" },
+      { label: "Type document", value: "Carte" },
+    ]),
+    ARK,
+  );
+  assert.equal(info.ocrRate, null);
+  assert.equal(info.ocrAvailable, false);
+});
+
+test("docInfoFromManifest: a Taux OCR row with an unparsable value keeps ocrAvailable true (the label is present) but ocrRate null", () => {
+  const info = docInfoFromManifest(
+    manifestWith([
+      { label: "Titre", value: "Un titre" },
+      { label: "Taux OCR", value: "n/a" },
+    ]),
+    ARK,
+  );
+  assert.equal(info.ocrAvailable, true, "lane routing semantics are unchanged: the label is present");
+  assert.equal(info.ocrRate, null);
 });

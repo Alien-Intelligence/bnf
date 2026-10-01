@@ -37,16 +37,19 @@ import { brokerGet, brokerUrl } from "./broker-client.js";
 import {
   arkToSlug,
   descriptionsHaveModeTexte,
+  emptyAltoFolio,
   ensureCanonicalArk,
   extractPageCountFromFormat,
   firstOrNull,
   metadataValue,
   oaiParser,
-  parseAltoText,
+  parseAlto,
+  parseOcrRate,
   parseV3Manifest,
   pickDcType,
   pickFirstLanguage,
   pickTypedocFromHeader,
+  TAUX_OCR_LABELS,
   textOf,
   typedocSubtype,
 } from "./parse.js";
@@ -222,6 +225,10 @@ function classifyStatus(
  *   • ocr      — presence of the `Taux OCR` pair (absent on manuscripts/maps/
  *                scores/image-serials → image lane; present → text lane). The
  *                manifest-native equivalent of OAI's "Avec mode texte" flag.
+ *                Its VALUE is kept too, as `ocrRate` ∈ [0,1] (parseOcrRate) —
+ *                the document-level OCR quality the app shows and the per-ARK
+ *                OCR-quality artifact records. An unparsable value leaves the
+ *                routing untouched (the row is present) and `ocrRate` null.
  *   • docType  — `Type document` (Livre/Carte/Manuscrit/Musique notée…) joined
  *                with the generic `Type` ("publication en série imprimée" =
  *                press). Kept raw+lowercased: classifyLane substring-matches it.
@@ -257,7 +264,9 @@ export function docInfoFromManifest(manifest: Manifest, canonicalArk: string): B
   const typeGeneric = metadataValue(manifest.metadata, ["type", "nature"]);
   const docType =
     [typeDocument, typeGeneric].filter(Boolean).join(" | ").toLowerCase() || null;
-  const ocrAvailable = metadataValue(manifest.metadata, ["taux ocr", "taux d'ocr"]) !== null;
+  const tauxOcr = metadataValue(manifest.metadata, TAUX_OCR_LABELS);
+  const ocrAvailable = tauxOcr !== null;
+  const ocrRate = parseOcrRate(tauxOcr);
   const pageCount = manifest.totalPages || null;
 
   const slug = arkToSlug(canonicalArk);
@@ -271,6 +280,7 @@ export function docInfoFromManifest(manifest: Manifest, canonicalArk: string): B
     docType,
     subtype: null,
     ocrAvailable,
+    ocrRate,
     pageCount,
     iiifManifestUrl,
     lang,
@@ -376,6 +386,8 @@ export class LiveBnfClient implements BnfClient {
       docType,
       subtype,
       ocrAvailable,
+      // OAI-PMH publishes no "Taux OCR" — only the presence flag above.
+      ocrRate: null,
       pageCount,
       iiifManifestUrl,
       lang,
@@ -424,9 +436,11 @@ export class LiveBnfClient implements BnfClient {
   // ---------------- fetchAltoFolio ----------------
 
   /**
-   * Fetch + parse ONE folio's ALTO text. A 404 means this folio genuinely has
-   * no OCR (blank page, plate) — that is NOT an error: return {text:"",
-   * empty:true}. Any other non-2xx is classified and thrown for the stage.
+   * Fetch + parse ONE folio's ALTO: text + the WC word-confidence quality. A 404
+   * means this folio genuinely has no OCR (blank page, plate) — that is NOT an
+   * error: return the empty folio ({text:"", empty:true, quality.wordCount:0}).
+   * Any other non-2xx is classified and thrown for the stage; a truncated or
+   * non-ALTO 200 body throws Transient("alto_parse_failed") from parseAlto.
    */
   async fetchAltoFolio(ark: string, ordre: number): Promise<AltoFolio> {
     const canonicalArk = ensureCanonicalArk(ark);
@@ -438,14 +452,24 @@ export class LiveBnfClient implements BnfClient {
       "application/xml, text/xml, */*",
       PAGE_TIMEOUT_MS,
     );
-    if (status === 404) return { text: "", empty: true };
+    if (status === 404) return emptyAltoFolio();
     const body = decodeBnfBytes(bytes, contentType);
     const err = classifyStatus(status, body, url);
     if (err) throw err;
-    if (!body || body.trim().length === 0) return { text: "", empty: true };
+    if (!body || body.trim().length === 0) return emptyAltoFolio();
 
-    const text = parseAltoText(body);
-    return { text, empty: text.trim() === "" };
+    const parsed = parseAlto(body);
+    return {
+      text: parsed.text,
+      empty: parsed.text.trim() === "",
+      quality: {
+        v: 1,
+        wordCount: parsed.wordCount,
+        scoredWordCount: parsed.scoredWordCount,
+        meanWc: parsed.meanWordConfidence,
+      },
+      invalidWcCount: parsed.invalidWcCount,
+    };
   }
 
   // ---------------- fetchImageFolio ----------------

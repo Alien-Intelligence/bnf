@@ -35,6 +35,7 @@ import { PipelineStage, type StageDeps } from "../core/stage.js";
 import type { RateGate, StageContext, StageOutcome } from "../core/types.js";
 import { classifyLane } from "../bnf/classify.js";
 import { docInfoFromManifest } from "../bnf/client.js";
+import { normalizeCachedDocInfo } from "../bnf/doc-info.js";
 import type { BnfClient, BnfDocInfo, Manifest } from "../bnf/types.js";
 import { PermanentBnfError } from "../bnf/errors.js";
 import { ensureCanonicalArk, isCatalogueNotice } from "../bnf/parse.js";
@@ -122,7 +123,10 @@ export class MetadataStage extends PipelineStage<DocRef, never> {
     try {
       // The metadata blob cache is the OUTERMOST cache — a hit here means zero
       // work at all (no manifest cache lookup, no gate acquire, no BnF call).
-      const cached = await this.blob.getJson<BnfDocInfo>(keys.metadata(doc.ark));
+      // Read through the normalizer: a pre-release blob lacks `ocrRate`, which
+      // is derived from its cached manifest metadata (bnf/doc-info.ts, D5).
+      const rawCached = await this.blob.getJson<unknown>(keys.metadata(doc.ark));
+      const cached = rawCached === null ? null : normalizeCachedDocInfo(rawCached);
       info = cached ?? (await this.resolveDocInfo(doc.ark));
       if (!cached) await this.blob.putJson(keys.metadata(doc.ark), info);
     } catch (e) {

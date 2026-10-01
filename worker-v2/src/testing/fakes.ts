@@ -6,6 +6,7 @@
  * BnF quota. The live clients (ported from V1) implement the same interfaces.
  */
 import { PermanentBnfError, TransientBnfError } from "../bnf/errors.js";
+import { emptyAltoFolio } from "../bnf/parse.js";
 import type { AltoFolio, BnfClient, BnfDocInfo, Manifest } from "../bnf/types.js";
 import type { ClusterSink, Describer, Embedder, OcrEngine, OcrBatchStatus } from "../ports.js";
 import type { PreparedPage } from "../domain/types.js";
@@ -47,6 +48,12 @@ export interface FakeDocSpec {
   title?: string | null;
   /** Folios (ordre) that have no ALTO text — fetched ok but empty. */
   emptyFolios?: number[];
+  /**
+   * Mean word confidence the fake reports per ALTO folio. Default 1 (a fully
+   * confident fake OCR, so every unrelated test reads "not low"); `null` models
+   * an ALTO without WC. The real client derives this from the XML (parseAlto).
+   */
+  folioMeanWc?: Record<number, number | null>;
   /** Image folios (ordre) served TRUNCATED (valid SOI, missing EOI) — the
    *  poisoned-transport shape the fetch stage must reject, never cache. */
   truncatedFolios?: number[];
@@ -95,6 +102,8 @@ export class FakeBnfClient implements BnfClient {
       docType: s.docType,
       subtype: null,
       ocrAvailable: s.ocrAvailable,
+      // The OAI path publishes no Taux OCR (client.ts getDocumentInfoViaOai).
+      ocrRate: null,
       pageCount: s.pageCount,
       iiifManifestUrl: null,
       lang: "fre",
@@ -128,8 +137,22 @@ export class FakeBnfClient implements BnfClient {
     this.calls.alto++;
     const s = this.spec(ark);
     this.faults.hit(`folio:${ark}:${ordre}`, s.folioFaults?.[ordre]);
-    if (s.emptyFolios?.includes(ordre)) return { text: "", empty: true };
-    return { text: `ALTO text of ${ark} folio ${ordre}`, empty: false };
+    if (s.emptyFolios?.includes(ordre)) return emptyAltoFolio();
+    const text = `ALTO text of ${ark} folio ${ordre}`;
+    const wordCount = text.split(/\s+/).length;
+    const override = s.folioMeanWc?.[ordre];
+    const meanWc = override === undefined ? 1 : override;
+    return {
+      text,
+      empty: false,
+      quality: {
+        v: 1,
+        wordCount,
+        scoredWordCount: meanWc === null ? 0 : wordCount,
+        meanWc,
+      },
+      invalidWcCount: 0,
+    };
   }
 
   async fetchImageFolio(ark: string, ordre: number, _size?: string): Promise<Buffer> {
