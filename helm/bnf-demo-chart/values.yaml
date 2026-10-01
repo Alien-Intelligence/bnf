@@ -242,6 +242,19 @@ worker:
     # rate gate (bnfGlobalRpm) MUST equal broker globalRpm or it self-throttles.
     bnfGlobalRpm: "1000"
     bnfFetchConcurrency: "128"
+    # OCR-quality backfill (ai-memories/tech/repos/bnf/feedback-2026-09-29, Track B).
+    # The app's periodic [ocr-sync] sweep asks the worker for every indexed ARK's
+    # ocr-quality artifact; the ones S3 lacks are built by this stage. A text
+    # document costs ONE Presentation-API (ALTO) call per indexed folio, once —
+    # the "alto" cache holds extracted text, not XML, so the word confidences
+    # cannot be recovered without a re-fetch. Image lanes cost nothing. The stage
+    # shares the worker's fetch rate gate (bnfGlobalRpm) FIFO with live ingests,
+    # so live runs keep their share. Raise the concurrency off-hours to drain the
+    # backlog faster; set enabled "false" to stop the BnF spend without a
+    # rollback (existing artifacts stay served). Progress: `npm run status` in
+    # the worker pod (ocrBackfill counts) and the app's [ocr-sync] log lines.
+    ocrBackfillEnabled: "true"
+    ocrBackfillConcurrency: "2"
     # In-flight doc-jobs. This is the knob that keeps the fetch gate FED: each job
     # runs fetch→embed→index serially in its slot, so at a low value the docs move
     # as a synchronized cohort — fetch bursts to the rate cap, then every job

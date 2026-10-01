@@ -10,6 +10,7 @@ import type { BlobStore, Logger, QueueClient, RateGate } from "./core/types.js";
 import type { StageDeps } from "./core/stage.js";
 import type { BnfClient } from "./bnf/types.js";
 import type { DocStateStore } from "./domain/doc-state.js";
+import type { OcrBackfillStore } from "./domain/ocr-backfill.js";
 import type { ClusterSink, Describer, Embedder, OcrEngine } from "./ports.js";
 
 import { MetadataStage } from "./stages/metadata.js";
@@ -22,6 +23,7 @@ import { OcrSubmitStage } from "./stages/ocr-submit.js";
 import { OcrPollStage } from "./stages/ocr-poll.js";
 import { EmbedStage } from "./stages/embed.js";
 import { RegisterStage } from "./stages/register.js";
+import { OcrQualityBackfillStage } from "./stages/ocr-quality-backfill.js";
 
 export interface PipelineDeps {
   queue: QueueClient;
@@ -33,6 +35,12 @@ export interface PipelineDeps {
   ocr: OcrEngine;
   embedder: Embedder;
   cluster: ClusterSink;
+  /**
+   * The OCR-quality backfill store. When given (and `config.ocrBackfillEnabled`
+   * is not false) the backfill stage is registered on `rates.fetch`, the SAME
+   * gate FetchStage holds. Omitted in the fake-mode integration run.
+   */
+  ocrBackfill?: OcrBackfillStore;
   /** Optional per-dispatch observability hook (also feeds the read-model). */
   onOutcome?: StageDeps["onOutcome"];
   /** Per-stage rate gates (undefined → unthrottled, e.g. in tests). */
@@ -59,6 +67,8 @@ export interface PipelineDeps {
     failRatio?: number;
     ocrMaxPolls?: number;
     ocrPollDelayMs?: number;
+    ocrBackfillEnabled?: boolean;
+    ocrBackfillConcurrency?: number;
   };
 }
 
@@ -111,6 +121,16 @@ export function buildPipeline(deps: PipelineDeps): Pipeline {
       ...(cfg.registerConcurrency !== undefined ? { concurrency: cfg.registerConcurrency } : {}),
     }),
   ];
+
+  // The backfill is not part of a run; it is registered only when wired AND
+  // enabled, so OCR_BACKFILL_ENABLED=false truly stops its BnF spend (D6).
+  if (deps.ocrBackfill && cfg.ocrBackfillEnabled !== false) {
+    stages.push(
+      new OcrQualityBackfillStage(base, deps.bnf, deps.ocrBackfill, rates.fetch, {
+        concurrency: cfg.ocrBackfillConcurrency ?? 2,
+      }),
+    );
+  }
 
   return new Pipeline(queue, stages, log);
 }

@@ -17,6 +17,7 @@ import { S3BlobStore } from "./core/blob.js";
 import { RateLimiter } from "./core/rate.js";
 import { createLogger } from "./core/logger.js";
 import { PgDocState } from "./domain/doc-state-pg.js";
+import { PgOcrBackfillStore } from "./domain/ocr-backfill-pg.js";
 import { PgRunStore } from "./domain/run-store-pg.js";
 import { LiveBnfClient } from "./bnf/client.js";
 import { LiveDescriber } from "./live/describer.js";
@@ -44,6 +45,7 @@ async function main(): Promise<void> {
   const docState = new PgDocState(pool);
   await docState.migrate();
   const runStore = new PgRunStore(pool);
+  const ocrBackfill = new PgOcrBackfillStore(pool);
 
   const blob = new S3BlobStore({ ...cfg.s3, prefix: cfg.s3Prefix });
 
@@ -68,6 +70,7 @@ async function main(): Promise<void> {
     ocr: new LiveOcrEngine(),
     embedder: new LiveEmbedder(),
     cluster: new LiveClusterSink(),
+    ocrBackfill,
     onOutcome: (e) => completion.noteOutcome({ kind: e.kind, payload: e.payload }),
     rates: { fetch: fetchRate, manifest: manifestRate },
     config: {
@@ -88,6 +91,8 @@ async function main(): Promise<void> {
       ocrSubmitConcurrency: cfg.ocrSubmitConcurrency,
       ocrPollConcurrency: cfg.ocrPollConcurrency,
       failRatio: cfg.failRatio,
+      ocrBackfillEnabled: cfg.ocrBackfillEnabled,
+      ocrBackfillConcurrency: cfg.ocrBackfillConcurrency,
     },
   });
 
@@ -113,6 +118,10 @@ async function main(): Promise<void> {
       log,
       fetchRatePerMin: cfg.fetchRatePerMin,
       manifestRatePerMin: cfg.manifestRatePerMin,
+      blob,
+      ocrBackfill,
+      ocrBackfillEnabled: cfg.ocrBackfillEnabled,
+      ocrBackfillRetryFailedAfterMs: cfg.ocrBackfillRetryFailedAfterMs,
     },
     cfg.httpPort,
   );
@@ -123,6 +132,8 @@ async function main(): Promise<void> {
     manifestRatePerMin: cfg.manifestRatePerMin,
     mistralEnabled: cfg.mistralEnabled,
     reconcilerIntervalMs: cfg.reconcilerIntervalMs,
+    ocrBackfillEnabled: cfg.ocrBackfillEnabled,
+    ocrBackfillConcurrency: cfg.ocrBackfillConcurrency,
   });
 
   let shuttingDown = false;

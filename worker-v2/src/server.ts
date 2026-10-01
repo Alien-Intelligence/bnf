@@ -1,26 +1,35 @@
 /**
  * Worker V2 HTTP ingress — the app↔worker control plane. A tiny Node `http`
- * server (no framework) exposing the four routes the app drives:
+ * server (no framework) exposing the five routes the app drives:
  *
  *   GET  /health             → liveness
  *   POST /ingest             → open a run + seed ARKs → { clusterJobId }
  *   GET  /progress/:runId    → buildProgress(runId) read-model (the Ingérer poll)
  *   POST /ingest/:runId/cancel → suppress the terminal callback (best-effort)
+ *   POST /ocr-quality/sync   → per-ARK OCR-quality artifacts; queues the
+ *                              backfill for the missing ones (live/ocr-quality-sync.ts)
  *
- * `POST /ingest` and the terminal callback are the only two wire contracts shared
- * with the app (see the Phase 0 wire doc); everything else is v2's own clean
+ * `POST /ingest`, `POST /ocr-quality/sync` and the terminal callback are the
+ * wire contracts shared with the app; everything else is v2's own clean
  * implementation. The server holds no behaviour — it parses, authorizes by HMAC at
  * the callback (app side), and delegates to the ingress + the read-model.
+ *
+ * Security posture: none of these routes authenticates its caller — they trust
+ * the cluster network (RUN.md, F22). /ocr-quality/sync is unauthenticated by the
+ * same design (plan D17): it can at most enqueue rate-gated, idempotent artifact
+ * builds, capped at one row per ARK.
  */
 import { createServer as createHttpServer, type Server } from "node:http";
 
 import { buildProgress } from "./observability.js";
-import type { QueueClient } from "./core/types.js";
+import type { BlobStore, QueueClient } from "./core/types.js";
 import type { Logger } from "./core/types.js";
 import type { DocStateStore } from "./domain/doc-state.js";
+import type { OcrBackfillStore } from "./domain/ocr-backfill.js";
 import type { RunStore } from "./domain/run.js";
 import type { CompletionMonitor } from "./live/completion-monitor.js";
 import { createRunAndSeed, parseIngestRequest } from "./live/ingress.js";
+import { parseOcrSyncRequest, syncOcrQuality } from "./live/ocr-quality-sync.js";
 
 export interface ServerDeps {
   runStore: RunStore;
@@ -32,6 +41,14 @@ export interface ServerDeps {
   fetchRatePerMin: number;
   /** IIIF manifest rate (manifests/min) for the read-model's metadata-row rate. */
   manifestRatePerMin: number;
+  /** The artifact store /ocr-quality/sync reads the per-ARK artifacts from. */
+  blob: BlobStore;
+  /** The backfill dedupe store (one queued build per ARK). */
+  ocrBackfill: OcrBackfillStore;
+  /** OCR_BACKFILL_ENABLED — false answers missing ARKs `unavailable: backfill_disabled`. */
+  ocrBackfillEnabled: boolean;
+  /** OCR_BACKFILL_RETRY_FAILED_AFTER_MS — a failed row older than this is re-queued. */
+  ocrBackfillRetryFailedAfterMs: number;
 }
 
 /** Read a request body to a string, capped to guard against unbounded uploads. */
@@ -98,6 +115,11 @@ async function handle(
     return;
   }
 
+  if (method === "POST" && path === "/ocr-quality/sync") {
+    await handleOcrSync(deps, req, res);
+    return;
+  }
+
   const progressMatch = method === "GET" && /^\/progress\/([^/]+)$/.exec(path);
   if (progressMatch) {
     await handleProgress(deps, decodeURIComponent(progressMatch[1]!), res);
@@ -156,6 +178,43 @@ async function handleIngest(
 
   // The app contract: { clusterJobId } — v2's runId IS the clusterJobId.
   sendJson(res, 200, { clusterJobId: runId });
+}
+
+async function handleOcrSync(
+  deps: ServerDeps,
+  req: import("node:http").IncomingMessage,
+  res: import("node:http").ServerResponse,
+): Promise<void> {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(await readBody(req));
+  } catch {
+    sendJson(res, 400, { error: "invalid JSON body" });
+    return;
+  }
+  const parsed = parseOcrSyncRequest(raw);
+  if (!parsed.ok) {
+    sendJson(res, 400, { error: parsed.error });
+    return;
+  }
+  const response = await syncOcrQuality(
+    {
+      blob: deps.blob,
+      backfill: deps.ocrBackfill,
+      queue: deps.queue,
+      log: deps.log,
+      backfillEnabled: deps.ocrBackfillEnabled,
+      retryFailedAfterMs: deps.ocrBackfillRetryFailedAfterMs,
+    },
+    parsed.value.arks,
+  );
+  deps.log.info("ocr_quality_sync", {
+    asked: parsed.value.arks.length,
+    documents: response.documents.length,
+    building: response.building.length,
+    unavailable: response.unavailable.length,
+  });
+  sendJson(res, 200, response);
 }
 
 async function handleProgress(

@@ -107,6 +107,13 @@ data:
   BNF_FETCH_CONCURRENCY: {{ .Values.worker.config.bnfFetchConcurrency | quote }}
   WORKER_CONCURRENCY: {{ .Values.worker.config.workerConcurrency | quote }}
 
+  # --- OCR-quality backfill ---
+  # Per-ARK OCR-quality artifacts for documents indexed before the feature. One
+  # Presentation (ALTO) call per indexed text folio, once, behind the shared
+  # fetch gate. See values.yaml's comment and helm/DEPLOY.md "OCR quality backfill".
+  OCR_BACKFILL_ENABLED: {{ .Values.worker.config.ocrBackfillEnabled | quote }}
+  OCR_BACKFILL_CONCURRENCY: {{ .Values.worker.config.ocrBackfillConcurrency | quote }}
+
   # --- Reconciliation sweep ---
   # The periodic re-drive of docs whose queue job vanished (pg-boss expiration, a
   # pod killed mid-delivery) + the re-check of every run the app still waits on.

@@ -17,6 +17,14 @@ function optionalInt(name: string, fallback: number): number {
   if (!Number.isFinite(n)) throw new Error(`${name} must be a number, got ${v}`);
   return Math.floor(n);
 }
+/** A positive-int var (≥ 1): a concurrency knob. 0 or less throws — turning a
+ *  stage off is the job of its boolean flag, not of a zero that would wedge
+ *  its queue consumer. */
+function optionalPositiveInt(name: string, fallback: number): number {
+  const n = optionalInt(name, fallback);
+  if (n < 1) throw new Error(`${name} must be >= 1, got ${n}`);
+  return n;
+}
 function optionalBool(name: string, fallback: boolean): boolean {
   const v = process.env[name];
   if (v == null || v.trim() === "") return fallback;
@@ -141,6 +149,20 @@ export interface WorkerConfig {
    * give-up item, ai-memories/tech/repos/bnf/ingest-hardening.
    */
   reconcilerMaxCallbackFailures: number;
+  /**
+   * OCR-quality backfill (ai-memories/tech/repos/bnf/feedback-2026-09-29, Track
+   * B). `enabled: false` leaves the stage unregistered AND makes
+   * /ocr-quality/sync answer missing ARKs `unavailable: backfill_disabled` —
+   * the switch that stops the BnF spend without a rollback; artifacts that
+   * already exist are still served.
+   */
+  ocrBackfillEnabled: boolean;
+  /** In-flight backfill docs. Each text doc costs one Presentation (ALTO) call
+   *  per indexed folio, once, through the SAME fetch gate live ingests use —
+   *  raise it off-hours to drain the backlog. */
+  ocrBackfillConcurrency: number;
+  /** A failed backfill row older than this is re-queued when the app asks again. */
+  ocrBackfillRetryFailedAfterMs: number;
 }
 
 export function loadConfig(): WorkerConfig {
@@ -177,5 +199,8 @@ export function loadConfig(): WorkerConfig {
     reconcilerIntervalMs: optionalInt("RECONCILER_INTERVAL_MS", 60_000),
     reconcilerMaxRequeues: optionalInt("RECONCILER_MAX_REQUEUES", 3),
     reconcilerMaxCallbackFailures: optionalInt("RECONCILER_MAX_CALLBACK_FAILURES", 120),
+    ocrBackfillEnabled: optionalBool("OCR_BACKFILL_ENABLED", true),
+    ocrBackfillConcurrency: optionalPositiveInt("OCR_BACKFILL_CONCURRENCY", 2),
+    ocrBackfillRetryFailedAfterMs: optionalInt("OCR_BACKFILL_RETRY_FAILED_AFTER_MS", 86_400_000),
   };
 }
