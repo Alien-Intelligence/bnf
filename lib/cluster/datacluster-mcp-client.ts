@@ -8,10 +8,12 @@ import "server-only"
 //   - tool results arrive as a JSON string inside `result.content[0].text`;
 //   - the response may be `application/json` or `text/event-stream` (SSE).
 //
-// It powers REAL RAG for the research agent (CLUSTER_MODE=real). The only two
-// tools the app needs are exposed here:
+// It powers REAL RAG for the research agent (CLUSTER_MODE=real). The tools the
+// app needs are exposed here:
 //   - listDatasets()          → resolve a project's dataset (slug `bnf-<id>`);
-//   - vectorSearchChunks(...)  → semantic search returning ARK+folio chunks.
+//   - vectorSearchChunks(...)  → semantic search returning ARK+folio chunks;
+//   - keywordSearch(...)       → entry-level hits with metadata filters;
+//   - getEntryContent(...)     → an entry's processed text, paginated or whole.
 //
 // Auth: opaque service Bearer token (CLUSTER_BEARER_TOKEN). The mcp-base layer
 // relays it upstream as the OAuth access token.
@@ -187,15 +189,25 @@ export interface KeywordSearchInput {
   metadataFilters?: Record<string, string | number | string[]>
 }
 
-/** Slice of an entry's processed text from `datacluster_get_entry_content`. */
+/**
+ * Slice of an entry's processed text from `datacluster_get_entry_content`.
+ *
+ * Only `text` is always present. In paginated mode (`char_limit > 0`) the MCP
+ * adds every pagination field, with `next_offset` null on the last page. In
+ * offset-only mode (`char_offset > 0`, `char_limit` 0) it adds `char_offset`,
+ * `total_length` and `has_more` but no `char_limit` / `next_offset`. In full
+ * mode (both 0) it returns the raw stored payload: `text` alone. See
+ * MCPs/mcp-datacluster/src/tools/get_entry_content.py. `toEntryContent` in
+ * real-rag.ts normalises the three shapes.
+ */
 export interface DataclusterEntryContent {
-  entry_id: number
+  entry_id?: number
   text: string
-  char_offset: number
-  char_limit: number
-  total_length: number
-  has_more: boolean
-  next_offset: number
+  char_offset?: number
+  char_limit?: number
+  total_length?: number
+  has_more?: boolean
+  next_offset?: number | null
 }
 
 export interface GetEntryContentInput {

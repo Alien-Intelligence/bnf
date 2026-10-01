@@ -11,12 +11,21 @@ import "server-only"
 // Remaining passages are sorted descending by score, then sliced to k.
 //
 // Parity with the real data-cluster MCP: this fake also serves keyword search
-// (entry-level) and full-text retrieval. Since fixtures have no entry ids, a
-// stable synthetic id is derived from each unique ARK (1-based, in first-seen
-// order) and shared across all three operations.
+// (entry-level), full-text retrieval and whole-document folio text. Since
+// fixtures have no entry ids, a stable synthetic id is derived from each unique
+// ARK (1-based, in first-seen order) and shared across all operations.
+//
+// Each ARK's fixtures are assembled ONCE into a document body in the exact
+// format worker-v2 stores (`## Folio <n>\n\n<text>` blocks joined by `\n\n`,
+// see lib/cluster/folio-text.ts), and every fixture's charRange is computed
+// from that body — so `getEntryContent` slices, `getDocumentFolios` splits and
+// `query` offsets all agree with each other, as they do on the real cluster.
 
-import { RAG_DEFAULT_K } from "@/lib/constants"
+import { RAG_DEFAULT_K, RAG_GET_TEXT_DEFAULT_CHAR_LIMIT } from "@/lib/constants"
+import { splitEntryFolios } from "./folio-text"
 import type {
+  DocumentFoliosRequest,
+  DocumentFoliosResult,
   RagEntryContent,
   RagEntryContentRequest,
   RagKeywordHit,
@@ -36,6 +45,68 @@ const ENTRY_ID_TO_ARK = new Map(ARK_ORDER.map((ark, i) => [i + 1, ark]))
 
 function entryIdForArk(ark: string): number {
   return ARK_TO_ENTRY_ID.get(ark) ?? 0
+}
+
+// --- Fake document bodies, worker-v2 format --------------------------------
+
+/** Mirror of worker-v2 assembleMarkdown's heading and separator. */
+function folioHeading(folio: number): string {
+  return `## Folio ${folio}\n\n`
+}
+const FOLIO_BLOCK_SEPARATOR = "\n\n"
+/** Snippets of one folio are separate paragraphs of that page. */
+const SNIPPET_SEPARATOR = "\n\n"
+
+/** Fixtures for one ARK, by folio then by fixture order (sort is stable). */
+function fixturesForArk(ark: string): RagFixture[] {
+  return RAG_FIXTURES.filter((f) => f.ark === ark).sort((a, b) => {
+    const fa = a.folio ?? Number.POSITIVE_INFINITY
+    const fb = b.folio ?? Number.POSITIVE_INFINITY
+    return fa - fb
+  })
+}
+
+/**
+ * Assemble one ARK's fixtures into a folio-headed body and record where each
+ * snippet landed. A fixture with no folio (an image-only document) has no
+ * page block in worker-v2 either; it gets no body and no range.
+ */
+function assembleEntryBody(ark: string): { body: string; ranges: Map<RagFixture, [number, number]> } {
+  const ranges = new Map<RagFixture, [number, number]>()
+  const blocks: string[] = []
+  let offset = 0
+  let currentFolio: number | null = null
+  let block = ""
+
+  const flush = () => {
+    if (currentFolio === null) return
+    blocks.push(block)
+    offset += block.length + FOLIO_BLOCK_SEPARATOR.length
+  }
+
+  for (const f of fixturesForArk(ark)) {
+    if (f.folio === null) continue
+    if (f.folio !== currentFolio) {
+      flush()
+      currentFolio = f.folio
+      block = folioHeading(f.folio)
+    } else {
+      block += SNIPPET_SEPARATOR
+    }
+    const start = offset + block.length
+    block += f.snippet
+    ranges.set(f, [start, start + f.snippet.length])
+  }
+  flush()
+
+  return { body: blocks.join(FOLIO_BLOCK_SEPARATOR), ranges }
+}
+
+const ENTRY_BODIES = new Map(ARK_ORDER.map((ark) => [ark, assembleEntryBody(ark)]))
+
+/** A fixture's charRange inside its ARK's body; null for folio-less fixtures. */
+function charRangeOf(f: RagFixture): [number, number] | null {
+  return ENTRY_BODIES.get(f.ark)?.ranges.get(f) ?? null
 }
 
 function scoreAgainstQuery(
@@ -77,13 +148,6 @@ function passesFilters(
   return true
 }
 
-/** Fixtures for one ARK, ordered by char offset — the fake "document body". */
-function fixturesForArk(ark: string): RagFixture[] {
-  return RAG_FIXTURES.filter((f) => f.ark === ark).sort(
-    (a, b) => a.charRange[0] - b.charRange[0],
-  )
-}
-
 export const FakeRagRunner = {
   async query(req: RagQueryRequest): Promise<RagQueryResponse> {
     const k = req.k ?? RAG_DEFAULT_K
@@ -102,7 +166,7 @@ export const FakeRagRunner = {
       folio: x.p.folio,
       snippet: x.p.snippet,
       score: x.s,
-      charRange: x.p.charRange,
+      charRange: charRangeOf(x.p),
       entryId: entryIdForArk(x.p.ark),
       title: x.p.title,
       year: x.p.year,
@@ -155,16 +219,11 @@ export const FakeRagRunner = {
     req: RagEntryContentRequest,
   ): Promise<RagEntryContent> {
     const ark = ENTRY_ID_TO_ARK.get(req.entryId)
-    // Concatenate this ARK's fixture snippets into a single "document body".
-    const body = ark
-      ? fixturesForArk(ark)
-          .map((f) => f.snippet)
-          .join("\n\n")
-      : ""
+    const body = ark ? (ENTRY_BODIES.get(ark)?.body ?? "") : ""
 
     const total = body.length
     const offset = Math.min(Math.max(req.charOffset ?? 0, 0), total)
-    const limit = req.charLimit ?? 4000
+    const limit = req.charLimit ?? RAG_GET_TEXT_DEFAULT_CHAR_LIMIT
     const end = limit === 0 ? total : Math.min(offset + limit, total)
     const text = body.slice(offset, end)
 
@@ -176,6 +235,16 @@ export const FakeRagRunner = {
       totalLength: total,
       hasMore: end < total,
       nextOffset: end,
+    }
+  },
+
+  async getDocumentFolios(req: DocumentFoliosRequest): Promise<DocumentFoliosResult> {
+    const entry = ENTRY_BODIES.get(req.ark)
+    if (!entry || entry.body.length === 0) return { status: "entry_not_found" }
+    return {
+      status: "found",
+      entryId: entryIdForArk(req.ark),
+      folios: splitEntryFolios(entry.body),
     }
   },
 }

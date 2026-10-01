@@ -24,9 +24,13 @@ import {
 } from "./datacluster-mcp-client"
 import type {
   DataclusterChunk,
+  DataclusterEntryContent,
   DataclusterKeywordHit,
 } from "./datacluster-mcp-client"
+import { splitEntryFolios } from "./folio-text"
 import type {
+  DocumentFoliosRequest,
+  DocumentFoliosResult,
   RagEntryContent,
   RagEntryContentRequest,
   RagKeywordHit,
@@ -41,6 +45,12 @@ import type {
 const MAX_DATASET_PAGES = 50
 
 const MODEL_VERSION = "datacluster-mcp"
+
+/**
+ * Keyword hits requested when resolving an ARK to its entry. One is the
+ * steady state; a few covers a re-ingest whose tombstone lagged (D13).
+ */
+const ARK_LOOKUP_LIMIT = 5
 
 /**
  * Resolve the project's numeric cluster dataset id, persisting it on first use.
@@ -90,9 +100,13 @@ async function resolveDatasetId(
  * Map a cluster chunk to a RagPassage. Returns null when the chunk carries no
  * ARK — it cannot serve as a citation source, so it is dropped (never cited
  * without an ARK; never an invented one). Folio is preserved when present and
- * left null otherwise (single-image documents may have no folio).
+ * left null otherwise (single-image documents may have no folio). The char
+ * range is set only when the chunk carries BOTH offsets (worker-v2 writes
+ * them together); a chunk indexed before offsets existed reports `null`, not
+ * a `[0, 0]` that would read as "the start of the document". Exported for
+ * testing.
  */
-function chunkToPassage(chunk: DataclusterChunk): RagPassage | null {
+export function chunkToPassage(chunk: DataclusterChunk): RagPassage | null {
   const { ark, folio, char_start, char_end, entry_id } = chunk.metadata
   if (typeof ark !== "string" || ark.length === 0) return null
 
@@ -101,12 +115,54 @@ function chunkToPassage(chunk: DataclusterChunk): RagPassage | null {
     folio: typeof folio === "number" ? folio : null,
     snippet: chunk.chunk_text,
     score: chunk.score,
-    charRange: [
-      typeof char_start === "number" ? char_start : 0,
-      typeof char_end === "number" ? char_end : 0,
-    ],
+    charRange:
+      typeof char_start === "number" && typeof char_end === "number"
+        ? [char_start, char_end]
+        : null,
     entryId: typeof entry_id === "number" ? entry_id : null,
   }
+}
+
+/**
+ * Normalise the three response modes of `datacluster_get_entry_content` into
+ * the app's `RagEntryContent` (see `DataclusterEntryContent` for the shapes).
+ * This is not a fallback for missing data: in full mode the text IS the rest
+ * of the document from offset 0, so its length is the total, nothing follows,
+ * and the next offset is its end — the documented semantics of that mode.
+ * `charOffset` / `charLimit` are echoed from the request when the wire omits
+ * them (full mode omits both; offset-only mode omits the limit). Exported for
+ * testing.
+ */
+export function toEntryContent(
+  data: DataclusterEntryContent,
+  req: { entryId: number; charOffset: number; charLimit: number },
+): RagEntryContent {
+  const charOffset = data.char_offset ?? req.charOffset
+  const end = charOffset + data.text.length
+  return {
+    entryId: data.entry_id ?? req.entryId,
+    text: data.text,
+    charOffset,
+    charLimit: data.char_limit ?? req.charLimit,
+    totalLength: data.total_length ?? end,
+    hasMore: data.has_more ?? false,
+    nextOffset: data.next_offset ?? end,
+  }
+}
+
+/**
+ * The live entry among the hits an ARK lookup returned: the highest id. A
+ * re-ingest deletes the stale entry and then creates the new one
+ * (worker-v2 LiveClusterSink.upsert), so when a tombstone lags the newest id
+ * is the one the index serves (D13). `null` when nothing matched. Exported
+ * for testing.
+ */
+export function pickLiveEntryId(hits: ReadonlyArray<{ entry_id: number }>): number | null {
+  let best: number | null = null
+  for (const h of hits) {
+    if (best === null || h.entry_id > best) best = h.entry_id
+  }
+  return best
 }
 
 /**
@@ -187,21 +243,42 @@ export const RealRagRunner = {
     // NB: get_entry_content is keyed by entry_id only (no dataset scope on the
     // wire). The agent only ever receives entry ids from this project's
     // dataset-scoped searches, so it cannot reach another project's entries.
+    //
+    // The MCP's own defaults for an omitted offset / limit are 0 and 0 (the
+    // whole document); resolving them here is what lets `toEntryContent` echo
+    // the request faithfully when the wire omits the fields.
+    const charOffset = req.charOffset ?? 0
+    const charLimit = req.charLimit ?? 0
     const client = new DataclusterMcpClient()
     const data = await client.getEntryContent({
       entryId: req.entryId,
-      charOffset: req.charOffset,
-      charLimit: req.charLimit,
+      charOffset,
+      charLimit,
     })
 
-    return {
-      entryId: data.entry_id,
-      text: data.text,
-      charOffset: data.char_offset,
-      charLimit: data.char_limit,
-      totalLength: data.total_length,
-      hasMore: data.has_more,
-      nextOffset: data.next_offset,
-    }
+    return toEntryContent(data, { entryId: req.entryId, charOffset, charLimit })
+  },
+
+  /**
+   * ARK → entry → whole processed text → per-folio map. The ARK is a string
+   * field of the entry metadata schema, which data-cluster registers as
+   * Meili-filterable, so an empty keyword query with `metadata_filters: {ark}`
+   * is the lookup. Scoped to the corpus project's dataset.
+   */
+  async getDocumentFolios(req: DocumentFoliosRequest): Promise<DocumentFoliosResult> {
+    const client = new DataclusterMcpClient({ signal: req.signal })
+    const datasetId = await resolveDatasetId(req.projectId, client)
+
+    const lookup = await client.keywordSearch({
+      query: "",
+      datasetIds: [datasetId],
+      metadataFilters: { ark: req.ark },
+      limit: ARK_LOOKUP_LIMIT,
+    })
+    const entryId = pickLiveEntryId(lookup.results)
+    if (entryId === null) return { status: "entry_not_found" }
+
+    const content = await client.getEntryContent({ entryId, charOffset: 0, charLimit: 0 })
+    return { status: "found", entryId, folios: splitEntryFolios(content.text) }
   },
 }

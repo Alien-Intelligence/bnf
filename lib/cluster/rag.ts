@@ -9,6 +9,8 @@ import "server-only"
 // All application code that needs RAG results imports ClusterRagClient from
 // this module — never FakeRagRunner / RealRagRunner directly.
 
+import type { DocumentFolios } from "./folio-text"
+
 // ---------------------------------------------------------------------------
 // Public types (shared by fake and real implementations)
 // ---------------------------------------------------------------------------
@@ -31,8 +33,13 @@ export interface RagPassage {
    * Character-offset range of the snippet within the entry's processed text
    * (start inclusive, end exclusive). Feed these to `rag_get_text` to pull the
    * surrounding context selectively.
+   *
+   * `null` when the chunk was indexed before worker-v2 wrote offsets
+   * (`char_start` / `char_end` in the chunk metadata); a re-ingest fills it.
+   * Never `[0, 0]` as a stand-in — the agent is told to treat the range as
+   * optional, not to read from offset 0.
    */
-  charRange: [number, number]
+  charRange: [number, number] | null
   /**
    * Cluster entry id this chunk belongs to (null if the cluster omitted it).
    * The handle for `rag_get_text` — chain search → full text with it.
@@ -132,6 +139,26 @@ export interface RagEntryContent {
   nextOffset: number
 }
 
+// --- Whole-document folio text --------------------------------------------
+
+export interface DocumentFoliosRequest {
+  /**
+   * The CORPUS project id (`ctx.corpusProjectId`, resolved through
+   * lib/authz/corpus-source.ts) — the dataset a derived workspace's citations
+   * point into is its source's. Never `ctx.projectId`.
+   */
+  projectId: string
+  /** The cited document's ARK, verbatim. */
+  ark: string
+  /** Bounds every cluster await; the caller composes its own budget into it. */
+  signal: AbortSignal
+}
+
+export type DocumentFoliosResult =
+  | { status: "found"; entryId: number; folios: DocumentFolios }
+  /** No cluster entry carries this ARK — not ingested, or dropped since. */
+  | { status: "entry_not_found" }
+
 // ---------------------------------------------------------------------------
 // Facade
 // ---------------------------------------------------------------------------
@@ -169,5 +196,20 @@ export const ClusterRagClient = {
     }
     const { FakeRagRunner } = await import("./fake-rag")
     return FakeRagRunner.getEntryContent(req)
+  },
+
+  /**
+   * The whole processed text of a cited document, split per folio — what the
+   * quote check compares a note's quotations against. One ARK → entry lookup
+   * plus one full-content fetch; errors propagate as the cluster client's
+   * typed `DataclusterMcp*Error`s (or an abort), and the caller decides.
+   */
+  async getDocumentFolios(req: DocumentFoliosRequest): Promise<DocumentFoliosResult> {
+    if (clusterMode() === "real") {
+      const { RealRagRunner } = await import("./real-rag")
+      return RealRagRunner.getDocumentFolios(req)
+    }
+    const { FakeRagRunner } = await import("./fake-rag")
+    return FakeRagRunner.getDocumentFolios(req)
   },
 }

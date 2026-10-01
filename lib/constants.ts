@@ -292,6 +292,14 @@ export const DATACLUSTER_LIST_PAGE_SIZE = 100
 /** Default number of passages requested per RAG query when the agent omits k. */
 export const RAG_DEFAULT_K = 12
 
+/**
+ * Characters `rag_get_text` returns when the agent omits `charLimit`. The
+ * upstream MCP's own default is the opposite (0 = the whole document), so the
+ * app applies its documented default itself rather than inherit a whole
+ * multi-hundred-folio volume into the turn.
+ */
+export const RAG_GET_TEXT_DEFAULT_CHAR_LIMIT = 4_000
+
 // ---------------------------------------------------------------------------
 // Background document metadata resolution (the Document table is the queue)
 // ---------------------------------------------------------------------------

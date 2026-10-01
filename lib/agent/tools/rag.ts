@@ -18,6 +18,7 @@ import "server-only"
 import { z } from "zod"
 import { defineTool } from "@alien/chat-sdk/claude"
 import { ClusterRagClient } from "@/lib/cluster/rag"
+import { RAG_GET_TEXT_DEFAULT_CHAR_LIMIT } from "@/lib/constants"
 import type { TurnScopedCtx } from "./registry-factory"
 import { AGENT_TOOLS } from "./constants"
 import { NOT_INGESTED_ERROR, resolveIngestedCorpus } from "./ingestion-guard"
@@ -172,8 +173,9 @@ export const ragGetTextTool = defineTool<
   description:
     "Retrieve the processed full text of a corpus entry, selectively, by " +
     "character range. Pass the entryId from a rag_query or rag_keyword_search " +
-    "result, and use a passage's char range to pull the surrounding context " +
-    "(e.g. charOffset slightly before its start). charLimit 0 returns the rest " +
+    "result and, when the passage carries one (charRange is null for documents " +
+    "indexed before offsets existed), use its char range to pull the surrounding " +
+    "context (e.g. charOffset slightly before its start). charLimit 0 returns the rest " +
     "of the document; keep slices to a few thousand characters. Returns text, " +
     "totalLength, hasMore and nextOffset for pagination.",
   inputSchema: z.object({
@@ -201,11 +203,13 @@ export const ragGetTextTool = defineTool<
       return { text: "", error: corpus.error }
     }
 
+    // The documented default is the app's to apply: left undefined, the
+    // upstream MCP reads it as 0 and returns the rest of the document.
     return ClusterRagClient.getEntryContent({
       projectId: ctx.corpusProjectId,
       entryId: input.entryId,
       charOffset: input.charOffset,
-      charLimit: input.charLimit,
+      charLimit: input.charLimit ?? RAG_GET_TEXT_DEFAULT_CHAR_LIMIT,
     })
   },
 })
