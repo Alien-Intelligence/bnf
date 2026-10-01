@@ -3,6 +3,13 @@ namespace: bnf
 # ===========================================================================
 # App (Next.js) — the Constituer / Ingérer / Rechercher workspace.
 # ===========================================================================
+# ONE replica by design. The app-side BnF MCP rate limiter (config.bnfMcpRate,
+# lib/mcp/rate-limit.ts) keeps its token buckets in process memory, so they are
+# exact only for a single pod. configmap.yaml divides every bnfMcpRate*Rpm by
+# this count (integer div, floor 1), so raising it keeps the FLEET under the
+# BnF quota by construction — at the price of each pod getting a smaller share.
+# Past 2–3 replicas, move the limiter to a shared store (Postgres/Redis)
+# instead of shrinking the per-pod share further.
 replicaCount: 1
 
 image:
@@ -59,6 +66,27 @@ config:
   # BnF MCP — corpus building (Constituer). URL is public; token is a secret.
   # Prod BnF gateway MCP (repointed from alpha at the 2026-07-22 data migration).
   bnfMcpUrl: https://bnf.mcp.alien.club/mcp
+
+  # App-side BnF MCP rate limiter (lib/mcp/rate-limit.ts) — per-minute token
+  # buckets for every BnF MCP call the app dispatches (parent turn, every
+  # sub-agent, corpus_search), one bucket per BnF API plus a global ceiling.
+  # Added after the 2026-09-30 catalogue SRU flood (2 548 calls in 2.5 h from
+  # one session; nothing on the MCP path throttled).
+  #
+  # The values are the INTERFACE key's quotas × 0.95, floored — the key Track D
+  # moves mcp-bnf to. Until Track D re-keys connectors 45–49, the MCP still holds
+  # the INGESTION key (catalogue 100/min), so these limits are deliberately
+  # stricter than today's subscription. Rendered into the ConfigMap divided by
+  # replicaCount (see the comment on replicaCount above). All values required:
+  # the app refuses to call BnF without them (no code defaults).
+  bnfMcpRate:
+    globalRpm: 475      # interface key global: 500/min
+    catalogueRpm: 47    # CATALOGUESERVICE-CONS: 50/min
+    gallicaSruRpm: 95   # Gallica SRU: 100/min
+    iiifRpm: 285        # Gallica-IIIF (legacy): 300/min
+    issuesRpm: 47       # date-périodique: 50/min
+    grapheRpm: 47       # data.bnf.fr SPARQL (graphe): 50/min
+    maxWaitMs: 15000    # bounded wait before a call is shed with « quota saturé »
 
   # Data-cluster MCP — research RAG (Rechercher), required when clusterMode=real.
   # The research agent's rag_query tool queries this over dataset `bnf-<projectId>`.

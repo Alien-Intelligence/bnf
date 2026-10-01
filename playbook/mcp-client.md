@@ -161,8 +161,45 @@ manage BnF rate state themselves. Running at the provisioned ceiling means
 occasional 429s — that's expected and absorbed. See the broker service and
 [ingestion-jobs.md](ingestion-jobs.md).
 
-For the agent's MCP path, the MCP server fronts BnF with its own limits; the
-chat-sdk's tool retry handles transient failures.
+### Agent MCP path — the app throttles it ✅
+
+mcp-bnf has **no** limiter, and neither does the platform proxy behind it: on
+2026-09-30 one corpus session fanned out to 7 sub-agents and made 2 548
+catalogue searches in 2.5 h, blowing the 100/min quota (346 × 429, 252 × 500).
+The app therefore rate-limits **every** BnF MCP call it dispatches, in
+`lib/mcp/rate-limit.ts`: one process-wide set of token buckets (global + one
+per BnF API: catalogue, Gallica SRU, Gallica-IIIF, date-périodique, graphe),
+set from the required `BNF_MCP_RATE_*` env (helm `config.bnfMcpRate`, the
+interface-key quotas × 0.95, divided by `replicaCount`). Two enforcement
+points share those buckets:
+
+- **(a) app-made calls** — `callBnfTool` acquires before `fetch`
+  (`corpus_search` and its zero-result probe).
+- **(b) SDK-dispatched raw `bnf__*` tools** — `withBnfRateLimit(registry)`
+  (`lib/mcp/rate-limited-registry.ts`) wraps `ToolRegistry.dispatch`. Every
+  chat-sdk dispatch site calls `.dispatch` on the registry it was handed, so
+  the decorator sees the model's raw calls in the parent turn AND in every
+  `spawn_research` child. `onToolStart` cannot do this: it is sync-only and
+  cannot veto.
+
+A call that cannot get its tokens within `BNF_MCP_RATE_MAX_WAIT_MS` is shed
+with a structured `{ success: false, rate_limited: true, api, error: « Quota
+BnF saturé … » }` tool result — never a throw out of the loop, never a call
+that reaches BnF. One acquire per MCP call: a model retry acquires again.
+
+**Rule: every `createToolRegistry(...)` built in app code MUST be wrapped with
+`withBnfRateLimit`.** The two call sites today are
+`lib/agent/tools/registry-factory.ts` and `lib/agent/tools/spawn.ts`.
+
+Not covered, on purpose: MCP `tools/list` discovery (never reaches BnF);
+other mcp-bnf clients sharing the platform connectors (none in prod besides
+this app); the upstream HTTP requests a tool makes internally — the limiter
+counts MCP calls, weighted by the upstream requests a call is known to make
+(`bnfMcpCallWeight`: a full-text read is manifest + one ALTO per page, the
+semantic helpers chain several SPARQL queries), and mcp-bnf's 1 h SRU cache
+keeps real upstream traffic at or below the counted traffic. The buckets are
+per replica; the chart divides the rates by `replicaCount` so a scale-out
+stays under quota by construction (see `values.yaml`).
 
 ## Auth
 

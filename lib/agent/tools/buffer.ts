@@ -28,8 +28,13 @@ import { kickCanonicalize } from "@/lib/documents/canonicalizer"
 import { kickResolve } from "@/lib/documents/resolver"
 import { requireMcpEnv } from "@/lib/env"
 import { callBnfTool } from "@/lib/mcp/call"
-import { BnfMcpError, BnfMcpQueryRefusedError } from "@/lib/mcp/errors"
+import {
+  BnfMcpError,
+  BnfMcpQueryRefusedError,
+  BnfMcpQuotaSaturatedError,
+} from "@/lib/mcp/errors"
 import { parseBnfDate } from "@/lib/mcp/normalize"
+import { quotaSaturatedResult } from "@/lib/mcp/rate-limit"
 import { BNF_SEARCH_TOOL } from "@/lib/mcp/tools"
 import { GALLICA_SEARCHABLE_DOC_TYPE, sourceFromArk } from "@/lib/mcp/vocab"
 import { BufferQueries, type BufferFilterSet } from "@/models/buffer/queries"
@@ -971,6 +976,12 @@ export const corpusSearchTool = defineTool<
             "Ce n'est pas un résultat vide — corrige la requête et relance.",
           problems: err.problems,
         }
+      }
+      // The app's own limiter shed the call before it left the process
+      // (incident 2026-09-30): the quota is shared by every agent of the
+      // application, so the agent is told to slow down, not to retry harder.
+      if (err instanceof BnfMcpQuotaSaturatedError) {
+        return quotaSaturatedResult({ api: err.api, waitedMs: err.waitedMs })
       }
       const message = err instanceof BnfMcpError ? err.message : String(err)
       return { success: false, error: `La recherche BnF a échoué : ${message}` }

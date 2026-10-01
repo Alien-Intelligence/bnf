@@ -20,8 +20,10 @@ import {
   BnfMcpAuthError,
   BnfMcpError,
   BnfMcpQueryRefusedError,
+  BnfMcpQuotaSaturatedError,
   BnfMcpRateLimitError,
 } from "./errors"
+import { acquireBnfMcp } from "./rate-limit"
 
 interface JsonRpcOk<T> {
   jsonrpc: "2.0"
@@ -132,6 +134,14 @@ export async function callBnfTool<T>(
   args: Record<string, unknown>,
   signal?: AbortSignal,
 ): Promise<T> {
+  // Enforcement point (a) of the app-side BnF rate limiter (lib/mcp/rate-limit.ts):
+  // take this call's tokens BEFORE anything leaves the process. A shed call is a
+  // typed, non-retryable-right-now failure the caller coerces into a structured
+  // tool result; it never reached BnF. An abort during the wait rejects exactly
+  // like an aborted fetch would.
+  const grant = await acquireBnfMcp(toolName, args, signal)
+  if (!grant.ok) throw new BnfMcpQuotaSaturatedError(grant.api, grant.waitedMs)
+
   const res = await fetch(url, {
     method: "POST",
     headers: {

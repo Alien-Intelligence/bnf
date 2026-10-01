@@ -12,6 +12,17 @@ data:
   APP_URL: {{ .Values.config.publicUrl | quote }}
   CLUSTER_MODE: {{ .Values.config.clusterMode | quote }}
   BNF_MCP_URL: {{ .Values.config.bnfMcpUrl | quote }}
+  # App-side BnF MCP rate limiter (lib/mcp/rate-limit.ts). The buckets are
+  # per-process, so each replica gets an integer share of the configured rate
+  # (floor 1) and the fleet stays under the BnF quota by construction. The
+  # wait budget is per call and is not divided.
+  BNF_MCP_RATE_GLOBAL_RPM: {{ div .Values.config.bnfMcpRate.globalRpm (max 1 .Values.replicaCount) | max 1 | quote }}
+  BNF_MCP_RATE_CATALOGUE_RPM: {{ div .Values.config.bnfMcpRate.catalogueRpm (max 1 .Values.replicaCount) | max 1 | quote }}
+  BNF_MCP_RATE_GALLICA_SRU_RPM: {{ div .Values.config.bnfMcpRate.gallicaSruRpm (max 1 .Values.replicaCount) | max 1 | quote }}
+  BNF_MCP_RATE_IIIF_RPM: {{ div .Values.config.bnfMcpRate.iiifRpm (max 1 .Values.replicaCount) | max 1 | quote }}
+  BNF_MCP_RATE_ISSUES_RPM: {{ div .Values.config.bnfMcpRate.issuesRpm (max 1 .Values.replicaCount) | max 1 | quote }}
+  BNF_MCP_RATE_GRAPHE_RPM: {{ div .Values.config.bnfMcpRate.grapheRpm (max 1 .Values.replicaCount) | max 1 | quote }}
+  BNF_MCP_RATE_MAX_WAIT_MS: {{ .Values.config.bnfMcpRate.maxWaitMs | quote }}
   DATACLUSTER_MCP_URL: {{ .Values.config.dataclusterMcpUrl | quote }}
   OTEL_SERVICE_NAME: {{ .Values.config.otelServiceName | quote }}
   {{- with .Values.config.agentProvider }}

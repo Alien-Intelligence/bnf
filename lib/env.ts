@@ -170,3 +170,51 @@ export function requireClusterEnv(): z.infer<typeof clusterEnvSchema> {
   _clusterEnv = parsed.data
   return _clusterEnv
 }
+
+// ---------------------------------------------------------------------------
+// Lazy BnF MCP rate-limit env — required on the first BnF MCP call the app
+// dispatches (lib/mcp/rate-limit.ts). Per-minute token-bucket rates for each
+// BnF API behind mcp-bnf, plus the bounded wait before a call is shed. NO
+// defaults (CLAUDE_ERROR_PATTERNS §10): the helm chart renders every value from
+// `config.bnfMcpRate`, divided by the replica count; locally they come from
+// .env.local (see .env.example). A missing value fails the first agent turn
+// that reaches BnF with a message naming the variable — never silently
+// unthrottled (incident 2026-09-30).
+// ---------------------------------------------------------------------------
+
+const bnfRateEnvSchema = z.object({
+  BNF_MCP_RATE_GLOBAL_RPM: z.coerce.number().int().positive(),
+  BNF_MCP_RATE_CATALOGUE_RPM: z.coerce.number().int().positive(),
+  BNF_MCP_RATE_GALLICA_SRU_RPM: z.coerce.number().int().positive(),
+  BNF_MCP_RATE_IIIF_RPM: z.coerce.number().int().positive(),
+  BNF_MCP_RATE_ISSUES_RPM: z.coerce.number().int().positive(),
+  BNF_MCP_RATE_GRAPHE_RPM: z.coerce.number().int().positive(),
+  BNF_MCP_RATE_MAX_WAIT_MS: z.coerce.number().int().positive(),
+})
+
+export type BnfRateEnv = z.infer<typeof bnfRateEnvSchema>
+
+let _bnfRateEnv: BnfRateEnv | null = null
+
+/**
+ * Returns the validated BnF MCP rate-limit env object.
+ * Throws on first call if any BNF_MCP_RATE_* value is absent / invalid, naming
+ * the offending key(s). Subsequent calls return the cached object.
+ */
+export function requireBnfRateEnv(): BnfRateEnv {
+  if (_bnfRateEnv !== null) return _bnfRateEnv
+
+  const parsed = bnfRateEnvSchema.safeParse(process.env)
+  if (!parsed.success) {
+    const missing = parsed.error.issues.map((i) => i.path.join(".")).join(", ")
+    throw new Error(
+      `BnF MCP rate-limit env not configured: ${missing}. ` +
+        `Set the seven BNF_MCP_RATE_* variables in .env.local (see .env.example) — ` +
+        `in the chart they come from config.bnfMcpRate. The app refuses to call ` +
+        `BnF unthrottled.`,
+    )
+  }
+
+  _bnfRateEnv = parsed.data
+  return _bnfRateEnv
+}

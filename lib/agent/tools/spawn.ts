@@ -45,6 +45,7 @@ import {
 } from "@/lib/constants"
 import { prisma } from "@/lib/db"
 import { resolveRequestLocale } from "@/lib/locale"
+import { withBnfRateLimit } from "@/lib/mcp/rate-limited-registry"
 import { BUFFER_STATUS } from "@/models/buffer/schema"
 import { AgentQueries } from "@/models/agents/queries"
 import { AgentService } from "@/models/agents/service"
@@ -176,8 +177,14 @@ export const spawnResearchTool = defineTool<
 
       // Child registry: the scoped allow-list + the same BnF MCP the parent has
       // (corpus sweeps need it; research does not, but attaching is harmless).
+      // Wrapped with the BnF rate limiter like the parent registry: a child's
+      // raw bnf__* calls draw on the SAME process-wide buckets, which is what
+      // makes 7 children + a parent share one catalogue quota (incident
+      // 2026-09-30). Never build a registry in app code without this wrap.
       const mcpServers = scope === "corpus" ? await resolveMcpServers(childController.signal) : []
-      const childRegistry = createToolRegistry<TurnScopedCtx>({ tools: childTools, mcpServers })
+      const childRegistry = withBnfRateLimit(
+        createToolRegistry<TurnScopedCtx>({ tools: childTools, mcpServers }),
+      )
 
       // Child context: same project/session (so buffer/RAG writes land in this
       // project), child signal, and the parent emit so the child's buffer_event

@@ -2,6 +2,7 @@ import "server-only"
 
 import { createToolRegistry, type ToolContext } from "@alien/chat-sdk/claude"
 import { prisma } from "@/lib/db"
+import { withBnfRateLimit } from "@/lib/mcp/rate-limited-registry"
 import { resolveMcpServers } from "./mcp-servers"
 import { toolsForScope } from "./index"
 import type { User } from "@/lib/generated/prisma/client"
@@ -118,8 +119,15 @@ export async function buildTurnScopedRegistry(scope: "corpus" | "research", sign
   // awaits the persistence adapter's recordToolStart → tool → recordToolEnd in
   // order (see @alien/chat-sdk/server runtime). The Prisma adapter
   // (lib/agent/persistence/prisma-adapter.ts) writes the ToolCall rows.
-  return createToolRegistry<TurnScopedCtx>({
-    tools: toolsForScope(scope),
-    mcpServers,
-  })
+  //
+  // `withBnfRateLimit` is NOT optional: the raw `bnf__*` MCP tools are
+  // dispatched by the SDK, and this decorator is the only place that throttles
+  // them against the shared BnF quota (incident 2026-09-30; see
+  // lib/mcp/rate-limit.ts and playbook/mcp-client.md).
+  return withBnfRateLimit(
+    createToolRegistry<TurnScopedCtx>({
+      tools: toolsForScope(scope),
+      mcpServers,
+    }),
+  )
 }
