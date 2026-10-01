@@ -68,3 +68,197 @@ test("corpus child default can search + stage; research child default can read R
   assert.ok(defaultAllowlist("corpus").includes(AGENT_TOOLS.bufferAdd), "corpus child can stage")
   assert.ok(defaultAllowlist("research").includes(AGENT_TOOLS.ragQuery), "research child can query RAG")
 })
+
+// ---------------------------------------------------------------------------
+// Fan-out caps (incident 2026-09-30): session b275569f… ran 7 children in
+// parallel and d1073498… ran 17 in one session, all sharing one BnF quota. The
+// caps are enforced in runSpawn with injected deps, so they are tested with a
+// fake runner and no LLM. DB-backed for the per-session count, which is durable
+// (tool_call rows), so a reload cannot reset it.
+// ---------------------------------------------------------------------------
+
+import { before, after } from "node:test"
+import { randomUUID } from "node:crypto"
+import type { ChatEvent } from "@alien/chat-sdk/events"
+import { prisma } from "@/lib/db"
+import type { Project, User } from "@/lib/generated/prisma/client"
+import { SPAWN_MAX_CONCURRENT_PER_TURN, SPAWN_MAX_PER_SESSION } from "@/lib/constants"
+import { MESSAGE_ROLE, MESSAGE_STATUS, TOOL_CALL_STATUS } from "@/models/messages/schema"
+import { SESSION_SCOPE } from "@/models/sessions/schema"
+import {
+  createTestProject,
+  createTestSession,
+  createTestUser,
+  deleteTestUser,
+} from "@/lib/testing/fixtures"
+import { cleanupProject } from "@/lib/testing/project-cleanup"
+import { runSpawn, type SpawnDeps, type SpawnFailure, type SpawnRunner } from "./spawn"
+import type { TurnScopedCtx } from "./registry-factory"
+
+let user: User
+let project: Project
+
+before(async () => {
+  user = await createTestUser()
+  project = await createTestProject(user.id, "spawn caps")
+})
+
+after(async () => {
+  await cleanupProject(project.id)
+  await deleteTestUser(user.id)
+})
+
+type Emitted = { type: string; data: unknown }
+
+function makeCtx(appSessionId: string, emitted: Emitted[]): TurnScopedCtx {
+  return {
+    signal: new AbortController().signal,
+    request: new Request("http://localhost/test"),
+    emit: (e) => emitted.push(e),
+    db: prisma,
+    user,
+    appSessionId,
+    projectId: project.id,
+    corpusProjectId: project.id,
+    corpusReachable: true,
+    scope: "corpus",
+  }
+}
+
+/** Omit that distributes over a union, so each ChatEvent variant keeps its own fields. */
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never
+
+function stamp(e: DistributiveOmit<ChatEvent, "at">): ChatEvent {
+  return { at: Date.now(), ...e }
+}
+
+function deps(runner: SpawnRunner, timeoutMs = 5_000): SpawnDeps {
+  return {
+    runner,
+    timeoutMs,
+    buildSystem: async () => "SYSTEM",
+    resolveMcpServers: async () => [],
+  }
+}
+
+/** Seed `n` spawn_research tool_call rows on one assistant message of the session. */
+async function seedSpawnCalls(appSessionId: string, n: number): Promise<void> {
+  const message = await prisma.message.create({
+    data: {
+      id: randomUUID(),
+      appSessionId,
+      seq: 1,
+      role: MESSAGE_ROLE.ASSISTANT,
+      status: MESSAGE_STATUS.DONE,
+    },
+  })
+  await prisma.toolCall.createMany({
+    data: Array.from({ length: n }, () => ({
+      id: randomUUID(),
+      messageId: message.id,
+      tool: AGENT_TOOLS.spawnResearch,
+      input: {},
+      status: TOOL_CALL_STATUS.OK,
+    })),
+  })
+}
+
+test("at most SPAWN_MAX_CONCURRENT_PER_TURN children run at once; the extra one is refused without a subagent_event", async () => {
+  const sid = await createTestSession(project.id, SESSION_SCOPE.CORPUS)
+  const emitted: Emitted[] = []
+  const ctx = makeCtx(sid, emitted)
+
+  let release!: () => void
+  const released = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  let started = 0
+  const runner: SpawnRunner = async function* () {
+    started += 1
+    await released
+    yield stamp({ type: "text-delta", text: "fini" })
+  }
+
+  const launches = SPAWN_MAX_CONCURRENT_PER_TURN + 1
+  const runs = Array.from({ length: launches }, () =>
+    runSpawn({ task: "balaie" }, ctx, deps(runner)),
+  )
+  // Let every launch pass its cap check before releasing the children.
+  await new Promise((resolve) => setImmediate(resolve))
+  release()
+  const results = await Promise.all(runs)
+
+  const refused = results.filter(
+    (r): r is SpawnFailure => "refused" in r && r.refused === "spawn_limit",
+  )
+  assert.equal(refused.length, 1, "exactly one launch over the cap is refused")
+  assert.equal(refused[0].success, false, "a refusal is marked as a failure for the chip")
+  assert.match(String(refused[0].error), /sous-agents en cours/)
+  assert.equal(started, SPAWN_MAX_CONCURRENT_PER_TURN, "the others all ran")
+  const starts = emitted.filter((e) => e.type === "subagent_event" && (e.data as { kind: string }).kind === "start")
+  assert.equal(starts.length, SPAWN_MAX_CONCURRENT_PER_TURN, "no start event for the refused spawn")
+})
+
+test("the durable per-session count refuses the spawn past SPAWN_MAX_PER_SESSION", async () => {
+  const sid = await createTestSession(project.id, SESSION_SCOPE.CORPUS)
+  // The runtime persists the CURRENT call's tool_call row before the handler
+  // runs, so "12 earlier spawns + this one" is 13 rows.
+  await seedSpawnCalls(sid, SPAWN_MAX_PER_SESSION + 1)
+  const emitted: Emitted[] = []
+  let started = 0
+  const runner: SpawnRunner = async function* () {
+    started += 1
+    yield stamp({ type: "text-delta", text: "fini" })
+  }
+  const result = await runSpawn({ task: "balaie" }, makeCtx(sid, emitted), deps(runner))
+  assert.ok("refused" in result && result.refused === "spawn_limit")
+  assert.match(result.error, /par session/)
+  assert.equal(started, 0)
+  assert.equal(emitted.length, 0)
+})
+
+test("exactly SPAWN_MAX_PER_SESSION rows (the current call included) still runs", async () => {
+  const sid = await createTestSession(project.id, SESSION_SCOPE.CORPUS)
+  await seedSpawnCalls(sid, SPAWN_MAX_PER_SESSION)
+  let started = 0
+  const runner: SpawnRunner = async function* () {
+    started += 1
+    yield stamp({ type: "text-delta", text: "fini" })
+  }
+  const result = await runSpawn({ task: "balaie" }, makeCtx(sid, []), deps(runner))
+  assert.equal("summary" in result && result.summary, "fini")
+  assert.equal(started, 1)
+})
+
+test("a slot is freed when the run ends, even when the runner throws", async () => {
+  const sid = await createTestSession(project.id, SESSION_SCOPE.CORPUS)
+  const ctx = makeCtx(sid, [])
+  const throwing: SpawnRunner = async function* () {
+    yield stamp({ type: "text-delta", text: "" })
+    throw new Error("boom")
+  }
+  const failed = await runSpawn({ task: "balaie" }, ctx, deps(throwing))
+  assert.ok("success" in failed && failed.success === false)
+  assert.match(failed.error, /boom/)
+
+  // Fill the cap with blocked children, then confirm the slot the failed run
+  // held is not leaked: exactly SPAWN_MAX_CONCURRENT_PER_TURN run.
+  let release!: () => void
+  const released = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  let started = 0
+  const blocking: SpawnRunner = async function* () {
+    started += 1
+    await released
+    yield stamp({ type: "text-delta", text: "ok" })
+  }
+  const runs = Array.from({ length: SPAWN_MAX_CONCURRENT_PER_TURN }, () =>
+    runSpawn({ task: "balaie" }, ctx, deps(blocking)),
+  )
+  await new Promise((resolve) => setImmediate(resolve))
+  release()
+  const results = await Promise.all(runs)
+  assert.equal(started, SPAWN_MAX_CONCURRENT_PER_TURN)
+  assert.ok(results.every((r) => !("refused" in r)), "no refusal: the thrown run released its slot")
+})

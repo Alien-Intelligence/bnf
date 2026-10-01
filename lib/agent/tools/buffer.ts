@@ -19,8 +19,8 @@ import { z } from "zod"
 import { defineTool } from "@alien/chat-sdk/claude"
 import {
   BUFFER_SAMPLE_SIZE,
-  BUFFER_SEARCH_MAX_PAGE_SIZE,
-  BUFFER_SEARCH_PAGE_SIZE,
+  BUFFER_SEARCH_DEFAULT_PAGE_SIZE_BY_SOURCE,
+  BUFFER_SEARCH_MAX_PAGE_SIZE_BY_SOURCE,
   CORPUS_REASON_MAX_LEN,
 } from "@/lib/constants"
 import { prisma } from "@/lib/db"
@@ -717,6 +717,96 @@ async function zeroResultDiagnostic(
 }
 
 const searchSourceEnum = z.enum(["gallica", "catalogue"])
+type SearchSource = z.infer<typeof searchSourceEnum>
+
+/** The criteria part of a corpus_search input — what the pure helpers below read. */
+export type CorpusSearchCriteria = {
+  source: SearchSource
+  cql?: string
+  query?: string
+  title?: string
+  creator?: string
+  /** Alias of `creator` — the incident agent's spelling (catalogue vocabulary). */
+  author?: string
+  subject?: string
+  date?: string
+  doc_type?: string
+  language?: string
+}
+
+/** Every criterion that satisfies "give at least one", in the order the message lists them. */
+const SEARCH_CRITERIA = ["cql", "query", "title", "creator", "author", "subject", "date"] as const
+
+/**
+ * Problems with the criteria themselves — none given, or `creator` and its alias
+ * `author` both given. Returned in French for the agent; an empty list means
+ * the input is usable. Pure, so the incident's "subject stripped → no criterion
+ * → retry storm" (root cause 5) is pinned by a unit test.
+ */
+export function searchCriterionProblems(input: CorpusSearchCriteria): string[] {
+  const problems: string[] = []
+  if (!SEARCH_CRITERIA.some((k) => input[k] !== undefined && input[k] !== "")) {
+    problems.push(
+      `Fournissez au moins un critère de recherche : ${SEARCH_CRITERIA.join(", ")}.`,
+    )
+  }
+  if (input.creator !== undefined && input.author !== undefined) {
+    problems.push("`author` est un alias de `creator` : donne l'un ou l'autre, pas les deux.")
+  }
+  return problems
+}
+
+/**
+ * The page size to request from the chosen source: the agent's value, checked
+ * against that source's ceiling, or the source's default. Never clamped
+ * silently — a value above the ceiling is a problem the agent can fix.
+ */
+export function resolveSearchPageSize(
+  source: SearchSource,
+  requested: number | undefined,
+): { ok: true; pageSize: number } | { ok: false; problems: string[] } {
+  const max = BUFFER_SEARCH_MAX_PAGE_SIZE_BY_SOURCE[source]
+  if (requested === undefined) return { ok: true, pageSize: BUFFER_SEARCH_DEFAULT_PAGE_SIZE_BY_SOURCE[source] }
+  if (requested > max) {
+    return { ok: false, problems: [`${source} : ${max} résultats maximum par page (demandé : ${requested}).`] }
+  }
+  return { ok: true, pageSize: requested }
+}
+
+/**
+ * The mcp-bnf `tools/call` arguments for the chosen source. The catalogue names
+ * the author index `author` (bib.author) where Gallica says `creator`
+ * (dc.creator); `subject` exists on both (bib.subject / dc.subject). `cql` is
+ * exclusive: mixing it with the simple criteria would AND two queries the
+ * librarian never asked to combine. Only provided fields are sent.
+ */
+export function buildSearchArgs(
+  input: CorpusSearchCriteria & { start_record?: number },
+  pageSize: number,
+): Record<string, unknown> {
+  const args: Record<string, unknown> = {
+    response_format: "json",
+    start_record: input.start_record ?? 1,
+    maximum_records: pageSize,
+  }
+  if (input.cql) {
+    args.cql = input.cql
+    return args
+  }
+  if (input.query) args.query = input.query
+  if (input.title) args.title = input.title
+  if (input.subject) args.subject = input.subject
+  if (input.date) args.date = input.date
+  if (input.language) args.language = input.language
+  const person = input.creator ?? input.author
+  if (input.source === "gallica") {
+    if (person) args.creator = person
+    if (input.doc_type) args.doc_type = input.doc_type
+  } else if (person) {
+    args.author = person
+  }
+  return args
+}
 
 export const corpusSearchTool = defineTool<
   z.ZodObject<{
@@ -725,6 +815,8 @@ export const corpusSearchTool = defineTool<
     query: z.ZodOptional<z.ZodString>
     title: z.ZodOptional<z.ZodString>
     creator: z.ZodOptional<z.ZodString>
+    author: z.ZodOptional<z.ZodString>
+    subject: z.ZodOptional<z.ZodString>
     date: z.ZodOptional<z.ZodString>
     doc_type: z.ZodOptional<z.ZodString>
     language: z.ZodOptional<z.ZodString>
@@ -741,7 +833,7 @@ export const corpusSearchTool = defineTool<
     "visible buffer (so the librarian can curate them) instead of returning a long " +
     "list into the conversation. Pick `source`: \"gallica\" for digitised full-text " +
     "documents, \"catalogue\" for bibliographic records. Give at least one of " +
-    "query / title / creator / date. It returns a COMPACT summary — total available, " +
+    "query / title / creator / subject / date. It returns a COMPACT summary — total available, " +
     "how many were added to the buffer, the buffer size, and a small sample — NOT " +
     "the full result list; inspect the staged candidates with buffer_stats / " +
     "buffer_list. To gather more, call again with `start_record` advanced by the " +
@@ -788,6 +880,21 @@ export const corpusSearchTool = defineTool<
       .min(1)
       .optional()
       .describe("Match on author/creator (mapped to author for the catalogue)."),
+    author: z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .describe("Alias of creator (the catalogue's name for it). Give one or the other, not both."),
+    subject: z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .describe(
+        "Subject heading (Rameau / dc.subject): bib.subject on the catalogue, dc.subject on " +
+          "Gallica. The catalogue's subject index is far more selective than `query`.",
+      ),
     date: z
       .string()
       .trim()
@@ -823,19 +930,27 @@ export const corpusSearchTool = defineTool<
       .number()
       .int()
       .min(1)
-      .max(BUFFER_SEARCH_MAX_PAGE_SIZE)
+      .max(BUFFER_SEARCH_MAX_PAGE_SIZE_BY_SOURCE.catalogue)
       .optional()
-      .describe(`Page size (1–${BUFFER_SEARCH_MAX_PAGE_SIZE}, default ${BUFFER_SEARCH_PAGE_SIZE}).`),
+      .describe(
+        `Page size: gallica ≤ ${BUFFER_SEARCH_MAX_PAGE_SIZE_BY_SOURCE.gallica}, catalogue ≤ ` +
+          `${BUFFER_SEARCH_MAX_PAGE_SIZE_BY_SOURCE.catalogue}; default ` +
+          `${BUFFER_SEARCH_DEFAULT_PAGE_SIZE_BY_SOURCE.gallica} / ` +
+          `${BUFFER_SEARCH_DEFAULT_PAGE_SIZE_BY_SOURCE.catalogue}. Use LARGE catalogue pages: ` +
+          "each call costs BnF quota, and a 3 000-record sweep is 3 calls at 1000, not 60 at 50.",
+      ),
   }),
   handler: async (input, ctx) => {
-    // At least one search term (kept out of the Zod schema so the failure is a
-    // clean tool result the agent can react to, not a hard validation throw).
-    if (!input.cql && !input.query && !input.title && !input.creator && !input.date) {
-      return {
-        success: false,
-        error: "Fournissez au moins un critère de recherche : query, title, creator ou date.",
-      }
+    // Criteria and page size are checked here, not in the Zod schema, so a
+    // failure is a clean tool result the agent can react to — never a hard
+    // validation throw, never a silent clamp (incident 2026-09-30, root causes
+    // 3 and 5).
+    const criterionProblems = searchCriterionProblems(input)
+    if (criterionProblems.length > 0) {
+      return { success: false, invalid_params: true, problems: criterionProblems }
     }
+    const page = resolveSearchPageSize(input.source, input.maximum_records)
+    if (!page.ok) return { success: false, invalid_params: true, problems: page.problems }
 
     let mcpEnv: { BNF_MCP_URL: string; BNF_MCP_TOKEN: string }
     try {
@@ -849,25 +964,7 @@ export const corpusSearchTool = defineTool<
     }
 
     const projectId = await projectIdFromSession(ctx.appSessionId)
-    const pageSize = input.maximum_records ?? BUFFER_SEARCH_PAGE_SIZE
-    const startRecord = input.start_record ?? 1
-
-    // Build the per-source MCP args (catalogue has no creator/doc_type: creator
-    // maps to `author`, doc_type is dropped). Only send provided fields.
-    const common: Record<string, unknown> = {
-      response_format: "json",
-      start_record: startRecord,
-      maximum_records: pageSize,
-    }
-    // `cql` is exclusive: mixing it with the simple criteria would AND two
-    // queries the librarian never asked to combine.
-    if (input.cql) common.cql = input.cql
-    else if (input.query) common.query = input.query
-    if (!input.cql) {
-      if (input.title) common.title = input.title
-      if (input.date) common.date = input.date
-      if (input.language) common.language = input.language
-    }
+    const args = buildSearchArgs(input, page.pageSize)
 
     let candidates: BufferCandidateInput[]
     let pagination: BnfSearchPagination
@@ -878,11 +975,6 @@ export const corpusSearchTool = defineTool<
     let diagnostics: BnfDiagnostic[] = []
     try {
       if (input.source === "gallica") {
-        const args = { ...common }
-        if (!input.cql) {
-          if (input.creator) args.creator = input.creator
-          if (input.doc_type) args.doc_type = input.doc_type
-        }
         const payload = await callBnfTool<GallicaPayload>(
           mcpEnv.BNF_MCP_URL,
           mcpEnv.BNF_MCP_TOKEN,
@@ -917,8 +1009,6 @@ export const corpusSearchTool = defineTool<
           ]
         })
       } else {
-        const args = { ...common }
-        if (!input.cql && input.creator) args.author = input.creator
         const payload = await callBnfTool<CataloguePayload>(
           mcpEnv.BNF_MCP_URL,
           mcpEnv.BNF_MCP_TOKEN,
@@ -995,7 +1085,15 @@ export const corpusSearchTool = defineTool<
       // to judge a result set, and the only form that can be re-run verbatim.
       // Falls back to the raw criteria when talking to a pre-0.4.0 MCP.
       originQuery:
-        executedCql ?? input.cql ?? input.query ?? input.title ?? input.creator ?? input.date ?? null,
+        executedCql ??
+        input.cql ??
+        input.query ??
+        input.title ??
+        input.creator ??
+        input.author ??
+        input.subject ??
+        input.date ??
+        null,
       candidates,
     })
 

@@ -183,14 +183,21 @@ export const BUFFER_PANEL_LIMIT = 100
 export const BUFFER_AUTO_COMMIT_MAX = 200
 
 /**
- * Default page size for a `corpus_search` call (hits written to the buffer per
- * call). The BnF MCP caps `maximum_records` at 50; the agent paginates with
- * `start_record` to gather more, deliberately, keeping any single page — and the
- * returned summary — bounded (CLAUDE_ERROR_PATTERNS §14).
+ * Per-source page ceilings for a `corpus_search` call — the BnF's own: Gallica
+ * SRU serves ≤ 50 records per page, the catalogue ≤ 1000
+ * (bnf_search_catalogue `maximum_records`). See incident 2026-09-30: a flat 50
+ * cap made a 3 000-record catalogue sweep cost 60 calls instead of 3, each one
+ * drawing on the shared catalogue quota. A request above the chosen source's
+ * ceiling is refused with a structured result, never silently clamped.
  */
-export const BUFFER_SEARCH_PAGE_SIZE = 20
-/** Hard ceiling the BnF SRU search tools enforce on `maximum_records`. */
-export const BUFFER_SEARCH_MAX_PAGE_SIZE = 50
+export const BUFFER_SEARCH_MAX_PAGE_SIZE_BY_SOURCE = { gallica: 50, catalogue: 1000 } as const
+/**
+ * Default page size per source when the agent omits `maximum_records`. The
+ * catalogue default is deliberately large: each call costs BnF quota, and the
+ * returned summary stays compact whatever the page size (CLAUDE_ERROR_PATTERNS
+ * §14 — the page, not the context, is what grows).
+ */
+export const BUFFER_SEARCH_DEFAULT_PAGE_SIZE_BY_SOURCE = { gallica: 50, catalogue: 500 } as const
 
 /**
  * The seq assigned to the first (empty) CorpusVersion created by
@@ -472,11 +479,29 @@ export const SPAWN_MAX_TOOL_TURNS = 40
  * throws / never hangs the parent turn — §14/§15). */
 export const SPAWN_TIMEOUT_MS = 240_000
 
-/** Cap on concurrent/total sub-agent tokens is implicit via the two bounds
- * above; the child text returned to the parent is truncated to this many chars
- * so a verbose child cannot re-flood the parent context (the whole point of
+/** The child text returned to the parent is truncated to this many chars so a
+ * verbose child cannot re-flood the parent context (the whole point of
  * isolation). */
 export const SPAWN_SUMMARY_MAX_CHARS = 8_000
+
+/**
+ * Fan-out caps (incident 2026-09-30, Decision 20 of the Track E plan). Session
+ * b275569f… ran 7 children in parallel against one BnF quota and made 2 548
+ * catalogue calls in 2.5 h.
+ *
+ * Concurrency: 3 children + the parent = 4 searchers sharing 47 catalogue
+ * calls/min (≈ 12/min each), which is already the limiter's floor — a higher
+ * concurrency only adds queueing, it does not go faster. Counted in-process per
+ * appSessionId (a session runs one turn at a time), decremented in `finally`.
+ */
+export const SPAWN_MAX_CONCURRENT_PER_TURN = 3
+/**
+ * Total `spawn_research` calls per session, counted from the durable tool_call
+ * rows so a reload cannot reset it. 12 covers the largest legitimate prod
+ * session seen; the 17 spawns of session d1073498… were retries of failed
+ * sweeps, which is the pattern this stops.
+ */
+export const SPAWN_MAX_PER_SESSION = 12
 
 // ---------------------------------------------------------------------------
 // Session auto-naming
