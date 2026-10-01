@@ -21,6 +21,7 @@ import { createMemoryLogger } from "../core/logger.js";
 import { keys } from "../domain/keys.js";
 import { Q } from "../domain/queues.js";
 import type { FolioItem, FolioResult } from "../domain/types.js";
+import type { AltoFolioQuality } from "../bnf/types.js";
 import { FakeBnfClient, type FakeDocSpec } from "../testing/fakes.js";
 import { FetchStage } from "./fetch.js";
 
@@ -207,4 +208,75 @@ test("a poisoned cache entry (no EOI) is deleted and re-fetched, then re-cached 
   assert.ok(bytes && bytes[0] === 0xff && bytes[1] === 0xd8, "re-cached with SOI");
   assert.ok(bytes.subarray(-32).includes(Buffer.from([0xff, 0xd9])), "re-cached with EOI");
   assert.equal(h.emitted[0]?.ok, true, "folio succeeds after self-repair");
+});
+
+// --- ALTO quality sidecar (OCR quality per folio, plan D15) ----------------
+//
+// A text folio is cached only when BOTH keys.alto (the extracted text) AND
+// keys.altoQuality (the WC sidecar) exist. The S3 "alto" cache holds plain
+// text, not XML, so the word confidences of a pre-release entry cannot be
+// recovered without ONE fresh BnF call — these cases pin that it happens
+// exactly once, and never again once the sidecar is there.
+
+test("alto: text cached but quality sidecar missing → ONE fetchAltoFolio call, both keys written", async () => {
+  const h = await setup(altoSpec());
+  // Pre-release cache shape: the extracted text is there, no sidecar.
+  await h.blob.putBytes(keys.alto(ARK, 3), Buffer.from("texte déjà en cache", "utf8"));
+  assert.equal(await h.blob.has(keys.altoQuality(ARK, 3)), false);
+
+  await h.seed(folio("alto", 3));
+  await h.q.idle();
+
+  assert.equal(h.bnf.calls.alto, 1, "a text-only cache entry is a miss: re-fetched once for its WC");
+  assert.ok(await h.blob.has(keys.alto(ARK, 3)), "text key present");
+  const quality = await h.blob.getJson<AltoFolioQuality>(keys.altoQuality(ARK, 3));
+  assert.ok(quality, "quality sidecar written");
+  assert.equal(quality.v, 1);
+  assert.equal(typeof quality.wordCount, "number");
+  assert.equal(h.emitted.length, 1);
+  assert.equal(h.emitted[0]?.ok, true);
+});
+
+test("alto: text AND sidecar cached → zero BnF calls", async () => {
+  const h = await setup(altoSpec());
+  await h.blob.putBytes(keys.alto(ARK, 4), Buffer.from("texte en cache", "utf8"));
+  await h.blob.putJson(keys.altoQuality(ARK, 4), {
+    v: 1,
+    wordCount: 3,
+    scoredWordCount: 3,
+    meanWc: 0.93,
+  } satisfies AltoFolioQuality);
+
+  await h.seed(folio("alto", 4));
+  await h.q.idle();
+
+  assert.equal(h.bnf.calls.alto, 0, "a complete cache entry costs no BnF quota");
+  assert.equal(h.emitted.length, 1);
+  assert.equal(h.emitted[0]?.ok, true);
+  assert.equal(h.emitted[0]?.empty, false);
+});
+
+test("alto: 404 (empty) folio → sidecar {wordCount 0, meanWc null} and empty:true", async () => {
+  const h = await setup(altoSpec({ emptyFolios: [5] }));
+  await h.seed(folio("alto", 5));
+  await h.q.idle();
+
+  assert.equal(h.emitted.length, 1);
+  assert.equal(h.emitted[0]?.empty, true);
+  const quality = await h.blob.getJson<AltoFolioQuality>(keys.altoQuality(ARK, 5));
+  assert.deepEqual(quality, { v: 1, wordCount: 0, scoredWordCount: 0, meanWc: null });
+  const text = await h.blob.getBytes(keys.alto(ARK, 5));
+  assert.ok(text !== null && text.length === 0, "empty text still cached so the next run is a hit");
+});
+
+test("alto: a fresh fetch writes the sidecar from the parsed WC (mean carried from the client)", async () => {
+  const h = await setup(altoSpec({ folioMeanWc: { 6: 0.661 } }));
+  await h.seed(folio("alto", 6));
+  await h.q.idle();
+
+  const quality = await h.blob.getJson<AltoFolioQuality>(keys.altoQuality(ARK, 6));
+  assert.ok(quality);
+  assert.equal(quality.meanWc, 0.661);
+  assert.ok(quality.wordCount > 0);
+  assert.equal(quality.scoredWordCount, quality.wordCount);
 });

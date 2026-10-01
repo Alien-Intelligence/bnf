@@ -29,8 +29,27 @@ export const keys = {
   metadata: (ark: string) => `meta/${arkSlug(ark)}.json`,
   /** IIIF manifest JSON (canvas list / total pages). */
   manifest: (ark: string) => `manifest/${arkSlug(ark)}.json`,
-  /** One folio's ALTO XML. */
+  /**
+   * One folio's EXTRACTED ALTO TEXT — plain UTF-8 text, NOT the ALTO XML. The
+   * `.xml` name is historical (bug B1, ai-memories/tech/repos/bnf/
+   * feedback-2026-09-29); renaming the key would orphan every cached folio, so
+   * the name stays and this comment tells the truth. Because the XML is not
+   * kept, the WC word confidences cannot be recovered from this key — see
+   * `altoQuality`, written alongside it at fetch time.
+   */
   alto: (ark: string, ordre: number) => `alto/${arkSlug(ark)}/f${ordre}.xml`,
+  /**
+   * One folio's ALTO word-confidence sidecar (AltoFolioQuality JSON): the mean
+   * WC + word counts parsed from the XML the `alto` key does not keep. A text
+   * folio counts as cached only when BOTH keys exist (stages/alto-folio.ts).
+   */
+  altoQuality: (ark: string, ordre: number) => `alto-quality/${arkSlug(ark)}/f${ordre}.json`,
+  /**
+   * Per-ARK OCR-quality artifact (DocOcrQuality JSON): the document's Taux OCR
+   * plus one entry per prepared page, built at every lane's convergence point
+   * (stages/ocr-quality.ts) and served to the app by POST /ocr-quality/sync.
+   */
+  ocrQuality: (ark: string) => `ocr-quality/${arkSlug(ark)}.json`,
   /** One folio's image bytes. */
   image: (ark: string, ordre: number) => `image/${arkSlug(ark)}/f${ordre}.jpg`,
   /** Per-doc assembled text pages (text lane) / OCR pages (mistral) / descriptions (vision). */

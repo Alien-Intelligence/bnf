@@ -27,6 +27,7 @@ import type { BnfClient } from "../bnf/types.js";
 import { keys } from "../domain/keys.js";
 import { Q } from "../domain/queues.js";
 import type { FolioItem, FolioResult } from "../domain/types.js";
+import { ensureAltoFolio } from "./alto-folio.js";
 
 export interface FetchOpts {
   /** IIIF size token for image folios (V1: "max" — never "!2000,2000", which 400s). */
@@ -90,15 +91,17 @@ export class FetchStage extends PipelineStage<FolioItem, FolioResult> {
     }
   }
 
+  /**
+   * Text + WC-sidecar as one cached unit (stages/alto-folio.ts, D15). No
+   * `beforeFetch`: the stage base already acquired this delivery's rate token.
+   */
   private async fetchAlto(item: FolioItem): Promise<StageOutcome<FolioResult>> {
-    const key = keys.alto(item.ark, item.ordre);
-    const cached = await this.blob.getBytes(key);
-    if (!cached) {
-      const folio = await this.bnf.fetchAltoFolio(item.ark, item.ordre);
-      await this.blob.putBytes(key, Buffer.from(folio.text, "utf8"), "text/plain; charset=utf-8");
-      return this.ok(item, folio.empty);
-    }
-    return this.ok(item, cached.length === 0);
+    const folio = await ensureAltoFolio(
+      { bnf: this.bnf, blob: this.blob, log: this.log },
+      item.ark,
+      item.ordre,
+    );
+    return this.ok(item, folio.text.trim() === "");
   }
 
   private async fetchImage(item: FolioItem): Promise<StageOutcome<FolioResult>> {
