@@ -19,7 +19,7 @@ import { SessionQueries } from "@/models/sessions/queries"
 import { OnboardingQueries } from "@/models/onboarding/queries"
 import { ONBOARDING_INTRO } from "@/models/onboarding/schema"
 import { SESSION_SCOPE } from "@/models/sessions/schema"
-import { RAG_CLUSTER_ID } from "@/lib/constants"
+import { RAG_CLUSTER_ID, ROUTES } from "@/lib/constants"
 import { env } from "@/lib/env"
 import { RechercherClient } from "./client"
 
@@ -32,7 +32,7 @@ export default async function RechercherPage({
 }) {
   const { locale, projectId } = await params
 
-  const user = await requireSessionUser(`/projects/${projectId}/rechercher`)
+  const user = await requireSessionUser(ROUTES.rechercher(projectId))
 
   const project = await ProjectQueries.get(projectId)
   if (!project) notFound()

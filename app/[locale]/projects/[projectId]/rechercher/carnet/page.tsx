@@ -2,6 +2,7 @@
 // Server component. Loads all notes with their full body for the Carnet view.
 // Passes to CarnetClient which owns citation-click interactivity.
 
+import { ROUTES } from "@/lib/constants"
 import { notFound } from "next/navigation"
 import { requireSessionUser } from "@/lib/auth-helpers"
 import { canReadProject } from "@/lib/authz/project-access"
@@ -18,9 +19,7 @@ export default async function CarnetPage({
 }) {
   const { projectId } = await params
 
-  const user = await requireSessionUser(
-    `/projects/${projectId}/rechercher/carnet`,
-  )
+  const user = await requireSessionUser(ROUTES.carnet(projectId))
 
   const project = await ProjectQueries.get(projectId)
   if (!project) notFound()

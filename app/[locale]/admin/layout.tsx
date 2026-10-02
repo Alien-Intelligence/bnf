@@ -5,6 +5,7 @@
 // client renders only its own content. A non-admin hits notFound() here (404,
 // not a visible 403) before any tab code runs.
 
+import { ROUTES } from "@/lib/constants"
 import type { ReactNode } from "react"
 import { requireAdminUser } from "@/lib/auth-helpers"
 import { LayoutWorkspaceHeader } from "@/components/layouts/workspace/header"
@@ -16,7 +17,7 @@ export default async function AdminLayout({
 }: {
   children: ReactNode
 }) {
-  const user = await requireAdminUser("/admin")
+  const user = await requireAdminUser(ROUTES.admin)
 
   return (
     <div className="flex min-h-screen flex-col">

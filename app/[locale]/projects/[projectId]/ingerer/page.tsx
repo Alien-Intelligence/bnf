@@ -25,7 +25,7 @@ export default async function IngererPage({
 }) {
   const { locale, projectId } = await params
 
-  const user = await requireSessionUser(`/projects/${projectId}/ingerer`)
+  const user = await requireSessionUser(ROUTES.ingerer(projectId))
 
   const project = await ProjectQueries.get(projectId)
   if (!project) notFound()

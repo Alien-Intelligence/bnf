@@ -24,6 +24,7 @@ export const ROUTES = {
   adminProjects: "/admin/projects",
   signIn: "/sign-in",
   signUp: "/sign-up",
+  forgotPassword: "/forgot-password",
 } as const
 
 /**

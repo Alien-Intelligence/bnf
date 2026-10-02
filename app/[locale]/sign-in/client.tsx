@@ -181,7 +181,7 @@ export function SignInClient({
               />
               <div className="flex justify-end">
                 <Link
-                  href="/forgot-password"
+                  href={ROUTES.forgotPassword}
                   className="text-xs text-muted-foreground hover:text-foreground"
                 >
                   {t("forgotPassword")}

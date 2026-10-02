@@ -29,7 +29,7 @@ export default async function ConstituerPage({
 }) {
   const { locale, projectId } = await params
 
-  const user = await requireSessionUser(`/projects/${projectId}/constituer`)
+  const user = await requireSessionUser(ROUTES.constituer(projectId))
 
   const project = await ProjectQueries.get(projectId)
   if (!project) notFound()

@@ -1,3 +1,4 @@
+import { ROUTES } from "@/lib/constants"
 import { getTranslations } from "next-intl/server"
 import type { Metadata } from "next"
 import { requireSessionUser } from "@/lib/auth-helpers"
@@ -11,7 +12,7 @@ export async function generateMetadata(): Promise<Metadata> {
 }
 
 export default async function ProjectsPage() {
-  const user = await requireSessionUser("/projects")
+  const user = await requireSessionUser(ROUTES.projects)
   const projects = await listProjectsForUser(user)
 
   return (
