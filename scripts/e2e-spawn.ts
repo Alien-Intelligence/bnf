@@ -149,14 +149,18 @@ async function main(): Promise<void> {
 
   // The spawn result the parent received is a DISTILLED summary, not a transcript.
   const okSpawn = spawnCalls.find((c) => c.status === "ok")
-  const spawnOut = outputData(okSpawn)
-  check(
-    "S5 spawn_research returned a distilled result (summary + counts)",
-    typeof spawnOut["summary"] === "string" && String(spawnOut["summary"]).length > 0,
-    `keys: ${Object.keys(spawnOut).join(", ") || "none"}; buffered_added=${String(
-      spawnOut["buffered_added"] ?? "?",
-    )}`,
-  )
+  if (okSpawn === undefined) {
+    check("S5 spawn_research returned a distilled result (summary + counts)", false, "no successful spawn_research call")
+  } else {
+    const spawnOut = outputData(okSpawn)
+    check(
+      "S5 spawn_research returned a distilled result (summary + counts)",
+      typeof spawnOut["summary"] === "string" && String(spawnOut["summary"]).length > 0,
+      `keys: ${Object.keys(spawnOut).join(", ") || "none"}; buffered_added=${String(
+        spawnOut["buffered_added"] ?? "?",
+      )}`,
+    )
+  }
 
   check(
     "S6 a subagent_event reached the live stream",

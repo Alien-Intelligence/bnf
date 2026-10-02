@@ -27,6 +27,7 @@ import { toolsForScope } from "@/lib/agent/tools"
 import { AGENT_TOOLS } from "@/lib/agent/tools/constants"
 import { noteCreateTool } from "@/lib/agent/tools/note"
 import { SESSION_SCOPE } from "@/models/sessions/schema"
+import { TOOL_CALL_STATUS } from "@/models/messages/schema"
 import { BUFFER_STATUS } from "@/models/buffer/schema"
 import { ProjectService } from "@/models/projects/service"
 import { cleanupProject } from "@/lib/testing/project-cleanup"
@@ -300,8 +301,11 @@ async function main(): Promise<void> {
   // the same turn. If the agent only previewed, or only used discard, that is
   // also acceptable — the point is that no filter-removal happened WITHOUT a
   // preview having been produced.
-  const removedOutputs = removeCalls.filter((c) => outputData(c)["status"] === "removed")
-  const dryRunOutputs = removeCalls.filter((c) => outputData(c)["status"] === "dry_run")
+  // Only a successful call has a result object to read (outputData throws on a
+  // failed tool's text rather than reading it as "no status").
+  const okRemoveCalls = removeCalls.filter((c) => c.status === TOOL_CALL_STATUS.OK)
+  const removedOutputs = okRemoveCalls.filter((c) => outputData(c)["status"] === "removed")
+  const dryRunOutputs = okRemoveCalls.filter((c) => outputData(c)["status"] === "dry_run")
   check(
     "B6c a destructive remove_by_filter was previewed with a dry-run first",
     removedOutputs.length === 0 || dryRunOutputs.length > 0,
@@ -467,11 +471,12 @@ async function main(): Promise<void> {
   )
   // The clear must report it actually dropped the freshly-staged candidates —
   // proof it cleared a POPULATED buffer, not a no-op on an already-empty one.
-  const clearedOk = clearCalls.some((c) => Number(outputData(c)["cleared"] ?? 0) > 0)
+  const okClearCalls = clearCalls.filter((c) => c.status === TOOL_CALL_STATUS.OK)
+  const clearedOk = okClearCalls.some((c) => Number(outputData(c)["cleared"] ?? 0) > 0)
   check(
     "B13c buffer_clear reported dropping the staged candidates (cleared > 0)",
     clearedOk,
-    `clear outputs: ${clearCalls.map((c) => JSON.stringify(outputData(c))).join(" | ") || "none"}`,
+    `clear outputs: ${okClearCalls.map((c) => JSON.stringify(outputData(c))).join(" | ") || "none"}`,
   )
 
   const candidatesAfterClear = await prisma.bufferItem.count({
