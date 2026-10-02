@@ -184,3 +184,14 @@ for (const row of ROWS) {
     assert.deepEqual(await reasonsFor(row.md), row.expect)
   })
 }
+
+test("ocrLow is derived from the threshold: only the Crystal Palace page is low", () => {
+  assert.deepEqual(
+    QUOTE_FIXTURE_OCR.filter((o) => o.ocrLow).map((o) => [o.ark, o.folio]),
+    [[QUOTE_ARK_LOW_OCR, 2]],
+  )
+  assert.deepEqual(
+    QUOTE_FIXTURE_DOCUMENTS.map((d) => d.ark),
+    [QUOTE_ARK_POPULAIRE, QUOTE_ARK_LOW_OCR, QUOTE_ARK_FORET, QUOTE_ARK_EAUX_FORETS],
+  )
+})

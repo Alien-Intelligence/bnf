@@ -21,6 +21,7 @@
 // "figaro", …), so the existing fake queries keep their results;
 // rag-fixtures-quotes.test.ts pins that.
 
+import { OCR_LOW_QUALITY_THRESHOLD } from "@/lib/constants"
 import type { RagFixture } from "./rag-fixtures"
 
 /** Le Populaire, 1937 — the casino de Boulogne-sur-Mer fire, folios 1–3. */
@@ -37,8 +38,19 @@ const LOW_OCR_TITLE = "Hebdomadaire régional, octobre 1937"
 const FORET_TITLE = "Revue régionale, août 1937"
 const EAUX_FORETS_TITLE = "Revue des eaux et forêts, 1937"
 
-// synthetic text modelled on prod session e15fd202 (2026-09-28)
-export const QUOTE_FIXTURES: RagFixture[] = [
+/** The label every fixture below carries (plan D12): none of it is real OCR. */
+export const QUOTE_FIXTURE_PROVENANCE = "synthetic text modelled on prod session e15fd202 (2026-09-28)"
+
+/**
+ * A quote-harness page: a fake-cluster fixture, plus the per-folio OCR quality
+ * Track B will put on passages (mean ALTO word confidence) and its provenance.
+ */
+export type QuoteFixture = RagFixture & {
+  ocrQuality: number
+  provenance: typeof QUOTE_FIXTURE_PROVENANCE
+}
+
+export const QUOTE_FIXTURES: QuoteFixture[] = [
   // ── Le Populaire — folio 1: the fire, and the mayor's first statement ────
   {
     ark: QUOTE_ARK_POPULAIRE,
@@ -55,6 +67,8 @@ export const QUOTE_FIXTURES: RagFixture[] = [
       "conclusions de l'enquête avant de prendre la moindre décision. »",
     title: POPULAIRE_TITLE,
     year: 1937,
+    ocrQuality: 0.93,
+    provenance: QUOTE_FIXTURE_PROVENANCE,
     topics: ["incendie", "casino", "boulogne", "maire de boulogne"],
   },
   // ── Le Populaire — folio 2: the causes, contradicted four paragraphs on ──
@@ -79,6 +93,8 @@ export const QUOTE_FIXTURES: RagFixture[] = [
       "a provoqué le sinistre. Le commissaire central a fait poser les scellés sur le tableau électrique.",
     title: POPULAIRE_TITLE,
     year: 1937,
+    ocrQuality: 0.93,
+    provenance: QUOTE_FIXTURE_PROVENANCE,
     topics: ["incendie", "casino", "boulogne", "court-circuit", "sapeurs"],
   },
   // ── Le Populaire — folio 3: the mayor's conclusion, two pages later ──────
@@ -97,6 +113,8 @@ export const QUOTE_FIXTURES: RagFixture[] = [
       "intégrale des accords de juin et la révision des barèmes de manutention.",
     title: POPULAIRE_TITLE,
     year: 1937,
+    ocrQuality: 0.93,
+    provenance: QUOTE_FIXTURE_PROVENANCE,
     topics: ["casino", "boulogne", "maire de boulogne", "conseil municipal"],
   },
   // ── Low-OCR weekly — folio 2: the Crystal Palace, badly recognised ───────
@@ -115,6 +133,8 @@ export const QUOTE_FIXTURES: RagFixture[] = [
       "témo:n de la grande fête de l'ind.strie\nde 1851, ne sera pas rebât:.",
     title: LOW_OCR_TITLE,
     year: 1937,
+    ocrQuality: 0.61,
+    provenance: QUOTE_FIXTURE_PROVENANCE,
     topics: ["incendie", "crystal", "palace", "palais de cristal", "londres"],
   },
   // ── Forest fire — folio 3: one `ma:son` slip in the key sentence ─────────
@@ -131,6 +151,8 @@ export const QUOTE_FIXTURES: RagFixture[] = [
       "pendant deux jours. Les habitants des hameaux ont été évacués vers la côte.",
     title: FORET_TITLE,
     year: 1937,
+    ocrQuality: 0.9,
+    provenance: QUOTE_FIXTURE_PROVENANCE,
     topics: ["incendie", "forêt", "maures", "sapeurs", "maison forestière"],
   },
   // ── Revue des eaux et forêts — folio 577: regulatory prose ───────────────
@@ -153,24 +175,22 @@ export const QUOTE_FIXTURES: RagFixture[] = [
       "l'intérieur et à moins de deux cents mètres des bois et forêts.",
     title: EAUX_FORETS_TITLE,
     year: 1937,
+    ocrQuality: 0.95,
+    provenance: QUOTE_FIXTURE_PROVENANCE,
     topics: ["forêt", "incendie", "eaux et forêts", "cantonnements", "sapeurs"],
   },
 ]
 
-/** The fixture documents, for seeding a project's corpus (one row per ARK). */
+/** The fixture documents, for seeding a project's corpus: one row per ARK. */
 export const QUOTE_FIXTURE_DOCUMENTS: ReadonlyArray<{ ark: string; title: string; year: number }> = [
-  { ark: QUOTE_ARK_POPULAIRE, title: POPULAIRE_TITLE, year: 1937 },
-  { ark: QUOTE_ARK_LOW_OCR, title: LOW_OCR_TITLE, year: 1937 },
-  { ark: QUOTE_ARK_FORET, title: FORET_TITLE, year: 1937 },
-  { ark: QUOTE_ARK_EAUX_FORETS, title: EAUX_FORETS_TITLE, year: 1937 },
+  ...new Map(QUOTE_FIXTURES.map((f) => [f.ark, { ark: f.ark, title: f.title, year: f.year }])).values(),
 ]
 
 /**
  * Per-folio OCR quality of the fixture pages, in the vocabulary Track B adds
- * to RAG passages (`ocrQuality`, mean ALTO word confidence; `ocrLow` below the
- * 0.80 threshold). `RagPassage` has no such fields on this branch, so the
- * values are carried here; the quote harness reads them to know which folio
- * is low. When Track B's passage fields land, they are filled from the same
+ * to RAG passages: `ocrQuality` and `ocrLow` (below OCR_LOW_QUALITY_THRESHOLD).
+ * `RagPassage` has no such fields on this branch, so the harness reads them
+ * here to know which folio is low; on Track B they are seeded from the same
  * values.
  */
 export const QUOTE_FIXTURE_OCR: ReadonlyArray<{
@@ -178,14 +198,12 @@ export const QUOTE_FIXTURE_OCR: ReadonlyArray<{
   folio: number
   ocrQuality: number
   ocrLow: boolean
-}> = [
-  { ark: QUOTE_ARK_POPULAIRE, folio: 1, ocrQuality: 0.93, ocrLow: false },
-  { ark: QUOTE_ARK_POPULAIRE, folio: 2, ocrQuality: 0.93, ocrLow: false },
-  { ark: QUOTE_ARK_POPULAIRE, folio: 3, ocrQuality: 0.93, ocrLow: false },
-  { ark: QUOTE_ARK_LOW_OCR, folio: 2, ocrQuality: 0.61, ocrLow: true },
-  { ark: QUOTE_ARK_FORET, folio: 3, ocrQuality: 0.9, ocrLow: false },
-  { ark: QUOTE_ARK_EAUX_FORETS, folio: 577, ocrQuality: 0.95, ocrLow: false },
-]
+}> = QUOTE_FIXTURES.map((f) => ({
+  ark: f.ark,
+  folio: f.folio,
+  ocrQuality: f.ocrQuality,
+  ocrLow: f.ocrQuality < OCR_LOW_QUALITY_THRESHOLD,
+}))
 
 /**
  * What a reader would "restore" from the low-OCR page. None of these strings
