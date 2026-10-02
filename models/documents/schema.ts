@@ -396,6 +396,12 @@ const INDEXATION_REASON_KEY: Record<string, string> = {
   // Indexing itself failed after the content was in hand.
   embed_failed_after_retries: "indexFailed",
   register_missing_artifacts: "indexFailed",
+  // The per-ARK OCR-quality artifact could not be built (worker-v2
+  // stages/ocr-quality.ts): a terminal pipeline failure, not a BnF one.
+  ocr_quality_no_metadata: "indexFailed",
+  ocr_quality_missing_sidecar: "indexFailed",
+  ocr_quality_corrupt_sidecar: "indexFailed",
+  ocr_quality_corrupt_metadata: "indexFailed",
 }
 
 /**

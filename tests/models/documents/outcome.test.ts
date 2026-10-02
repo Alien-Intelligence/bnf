@@ -279,3 +279,16 @@ test("an unknown reason returns null so the caller can show the raw string", () 
   // Swallowing it would hide a whole failure mode behind a blank badge.
   assert.equal(indexationReasonKey("some_future_stage_failed: detail"), null)
 })
+
+test("indexationReasonKey: the worker's OCR-quality artifact failures read as indexing failures", () => {
+  // worker-v2 fails a doc terminally with `<code>: <detail>` when its per-ARK
+  // OCR-quality artifact cannot be built (stages/ocr-quality.ts).
+  for (const code of [
+    "ocr_quality_no_metadata",
+    "ocr_quality_missing_sidecar",
+    "ocr_quality_corrupt_sidecar",
+    "ocr_quality_corrupt_metadata",
+  ]) {
+    assert.equal(indexationReasonKey(`${code}: ark:/12148/bpt6k1 f2`), "indexFailed", code)
+  }
+})
