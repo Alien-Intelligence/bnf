@@ -26,6 +26,12 @@ import { prisma } from "@/lib/db"
 import { toolsForScope } from "@/lib/agent/tools"
 import { AGENT_TOOLS } from "@/lib/agent/tools/constants"
 import { noteCreateTool } from "@/lib/agent/tools/note"
+import { bufferCommitTool } from "@/lib/agent/tools/buffer"
+import type { TurnScopedCtx } from "@/lib/agent/tools/registry-factory"
+import { PROJECT_ACCESS } from "@/lib/authz/project-access"
+import { GroupService } from "@/models/groups/service"
+import { ProjectQueries } from "@/models/projects/queries"
+import { ProjectSharingService } from "@/models/projects/service"
 import { SESSION_SCOPE } from "@/models/sessions/schema"
 import { BUFFER_STATUS } from "@/models/buffer/schema"
 import { ProjectService } from "@/models/projects/service"
@@ -515,14 +521,17 @@ async function main(): Promise<void> {
   // Deterministic proof of the guard: invoke the note_create handler directly.
   // The live turn below depends on the model choosing to attempt a note, which
   // it may (correctly) decline to do — that would leave the guard unexercised.
-  const guardCtx = {
+  const guardCtx: TurnScopedCtx = {
     signal: new AbortController().signal,
+    request: new Request(`${BASE_URL}/e2e`),
     db: prisma,
-    user,
+    user: { ...user, groupIds: [] },
     appSessionId: researchSession.id,
     projectId: project.id,
-    scope: "research" as const,
-  } as unknown as Parameters<typeof noteCreateTool.handler>[1]
+    corpusProjectId: project.id,
+    corpusReachable: true,
+    scope: "research",
+  }
   const guardResult = (await noteCreateTool.handler(
     { title: "E2E guard probe", body_md: "Ceci ne doit pas être écrit." },
     guardCtx,
@@ -571,10 +580,163 @@ async function main(): Promise<void> {
       : `leaked: ${corpusToolLeakInResearch.map((c) => c.tool).join(", ")}`,
   )
 
+  // =========================================================================
+  section("PHASE D — corpus buffer v2: press lane, filters, explained counts")
+  // =========================================================================
+  // A fresh corpus session (own history) on the same project. Every check
+  // reads durable tool_call / buffer_item rows, as the phases above do.
+  const pressSession = await prisma.appSession.create({
+    data: {
+      id: randomUUID(),
+      projectId: project.id,
+      scope: SESSION_SCOPE.CORPUS,
+      title: "E2E press session",
+      status: "active",
+    },
+  })
+  const pressHistory: ChatMessage[] = []
+  const say = async (label: string, prompt: string) => {
+    const before = (await toolCalls(pressSession.id)).length
+    pressHistory.push({ role: "user", content: prompt })
+    console.log(`\n> ${label}: ${prompt}`)
+    const turn = await runTurn(pressSession.id, cookie, pressHistory)
+    pressHistory.push({ role: "assistant", content: turn.text })
+    console.log(`< (${Math.round(turn.elapsedMs / 1000)}s) ${turn.text.slice(0, 300)}`)
+    const calls = (await toolCalls(pressSession.id)).slice(before)
+    console.log(`  tools: ${trace(calls)}`)
+    return calls
+  }
+
+  // --- D1: a press request stages ISSUES with their metadata -----------------
+  const pressCalls = await say(
+    "TURN D1 (press)",
+    "Je veux constituer un corpus de la presse de 1937 qui parle d'incendies de forêt : " +
+      "rassemble les numéros de journaux concernés. Une seule page suffit pour commencer.",
+  )
+  const pressSearches = named(pressCalls, AGENT_TOOLS.corpusSearch)
+  check(
+    "B16 a press request searches issues: corpus_search with collapsing:false + doc_type:fascicule",
+    pressSearches.some((c) => {
+      const input = c.input as Record<string, unknown>
+      return input["collapsing"] === false && input["doc_type"] === "fascicule"
+    }),
+    `corpus_search inputs: ${pressSearches.map((c) => JSON.stringify(c.input)).join(" | ") || "none"}`,
+  )
+  const pressRows = await prisma.bufferItem.findMany({
+    where: { projectId: project.id, status: BUFFER_STATUS.CANDIDATE },
+    select: { ark: true, title: true, arkKind: true },
+  })
+  const issues = pressRows.filter((r) => r.arkKind === "periodical_issue")
+  check(
+    "B18 the staged press rows are periodical issues with a title",
+    issues.length > 0 && issues.every((r) => r.title !== null),
+    `candidates=${pressRows.length} periodical_issue=${issues.length} untitled=${issues.filter((r) => r.title === null).length}`,
+  )
+
+  // --- D2: field-scoped exclusion, previewed first ---------------------------
+  const colonial = ["Alger", "Oran", "Constantine", "Maroc", "Casablanca", "Tanger", "Tunis"]
+  const filterCalls = await say(
+    "TURN D2 (filter)",
+    "Retire du tampon les journaux d'Algérie et du Maroc (titres contenant Alger, Oran, Constantine, " +
+      "Maroc, Casablanca, Tanger ou Tunis) : montre-moi d'abord l'aperçu, puis applique sans me redemander.",
+  )
+  const removals = named(filterCalls, AGENT_TOOLS.bufferRemoveByFilter)
+  const usesTitle = removals.some((c) => {
+    const filters = (c.input as Record<string, unknown>)["filters"] as Record<string, unknown> | undefined
+    const not = filters?.["not"] as Record<string, unknown> | undefined
+    return Array.isArray(filters?.["title"]) || Array.isArray(not?.["title"])
+  })
+  const previewedFirst =
+    removals.findIndex((c) => outputData(c)["status"] === "dry_run") >= 0 &&
+    removals.findIndex((c) => outputData(c)["status"] === "dry_run") <
+      removals.findIndex((c) => outputData(c)["status"] === "removed")
+  const stillColonial = (
+    await prisma.bufferItem.findMany({
+      where: { projectId: project.id, status: BUFFER_STATUS.CANDIDATE },
+      select: { title: true },
+    })
+  ).filter((r) => colonial.some((w) => (r.title ?? "").toLowerCase().includes(w.toLowerCase())))
+  check(
+    "B19 the filter request ran remove_by_filter on title (dry run, then removal) and the matches are gone",
+    usesTitle && previewedFirst && stillColonial.length === 0,
+    `title filter=${usesTitle} previewedFirst=${previewedFirst} colonial candidates left=${stillColonial.length}; ` +
+      `outputs: ${removals.map((c) => String(outputData(c)["status"])).join(",") || "none"}`,
+  )
+
+  // --- D3: commit, then report the total only after re-reading ---------------
+  const commitTurn = await say(
+    "TURN D3 (commit)",
+    "Ajoute ces numéros au corpus, puis dis-moi combien de documents compte le corpus.",
+  )
+  const pressCommits = named(commitTurn, AGENT_TOOLS.bufferCommit)
+  const provisionalAt = commitTurn.findIndex(
+    (c) => c.tool === AGENT_TOOLS.bufferCommit && outputData(c)["totalIsProvisional"] === true,
+  )
+  const rereadAfter =
+    provisionalAt >= 0 && commitTurn.slice(provisionalAt + 1).some((c) => c.tool === AGENT_TOOLS.corpusGetState)
+  check(
+    "B21 after a provisional commit the agent re-read corpus_get_state before answering",
+    pressCommits.some((c) => c.status === "ok") && (provisionalAt < 0 || rereadAfter),
+    `commits=${pressCommits.length} provisional=${provisionalAt >= 0} reread=${rereadAfter}`,
+  )
+
+  // --- D4: the same search again — explained, not "retried" ------------------
+  const rerunCalls = await say(
+    "TURN D4 (re-run)",
+    "Relance exactement la même recherche de presse que tout à l'heure, première page.",
+  )
+  const rerun = named(rerunCalls, AGENT_TOOLS.corpusSearch)
+  check(
+    "B20 re-running a committed search reports alreadyInCorpus with an explanation, and no buffer_clear",
+    rerun.some((c) => Number(outputData(c)["alreadyInCorpus"] ?? 0) > 0 && typeof outputData(c)["explanation"] === "string") &&
+      named(rerunCalls, AGENT_TOOLS.bufferClear).length === 0,
+    `outputs: ${rerun.map((c) => `alreadyInCorpus=${String(outputData(c)["alreadyInCorpus"])}`).join(" | ") || "none"}; ` +
+      `clears=${named(rerunCalls, AGENT_TOOLS.bufferClear).length}`,
+  )
+
+  const rawSearch = (await toolCalls(pressSession.id)).filter((c) => c.tool.startsWith("bnf__bnf_search_"))
+  check(
+    "B17 no raw bnf__bnf_search_* call in the whole press session",
+    rawSearch.length === 0,
+    rawSearch.length === 0 ? "none" : rawSearch.map((c) => c.tool).join(", "),
+  )
+
+  // --- C4: the policy gate, deterministic (no LLM) ---------------------------
+  const readerEmail = `e2e-reader-${randomUUID()}@bnf-e2e.local`
+  const reader = await prisma.user.create({
+    data: { id: randomUUID(), email: readerEmail, name: "E2E reader", emailVerified: true },
+  })
+  const group = await GroupService.create(`E2E reader group ${randomUUID()}`)
+  const shared = await ProjectQueries.get(project.id)
+  if (!shared) throw new Error(`project ${project.id} vanished mid-run`)
+  await ProjectSharingService.share(shared, user.id, { groupId: group.id, access: PROJECT_ACCESS.READ })
+  const versionsBeforeC4 = await prisma.corpusVersion.count({ where: { projectId: project.id } })
+  const readerCtx: TurnScopedCtx = {
+    signal: new AbortController().signal,
+    request: new Request(`${BASE_URL}/e2e`),
+    db: prisma,
+    user: { ...reader, groupIds: [group.id] },
+    appSessionId: pressSession.id,
+    projectId: project.id,
+    corpusProjectId: project.id,
+    corpusReachable: true,
+    scope: "corpus",
+  }
+  const refused = (await bufferCommitTool.handler({ reason: "lecture seule" }, readerCtx)) as Record<string, unknown>
+  const versionsAfterC4 = await prisma.corpusVersion.count({ where: { projectId: project.id } })
+  check(
+    "C4 a read-share member's buffer_commit is refused as a structured result and commits nothing",
+    refused["forbidden"] === true && refused["success"] === false && versionsAfterC4 === versionsBeforeC4,
+    `result=${JSON.stringify(refused).slice(0, 160)} versions ${versionsBeforeC4}→${versionsAfterC4}`,
+  )
+  await prisma.group.deleteMany({ where: { id: group.id } })
+  await prisma.user.deleteMany({ where: { id: reader.id } })
+
   printVerdict({
     project: project.id,
     corpusSession: corpusSession.id,
     researchSession: researchSession.id,
+    pressSession: pressSession.id,
   })
 
   if (CLEANUP) {
