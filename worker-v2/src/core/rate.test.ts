@@ -158,3 +158,24 @@ test("constructor rejects ratePerMin <= 0", () => {
   assert.throws(() => new RateLimiter({ ratePerMin: 0 }), /ratePerMin must be > 0/);
   assert.throws(() => new RateLimiter({ ratePerMin: -5 }), /ratePerMin must be > 0/);
 });
+
+test("acquire(signal): an aborted waiter rejects with the signal's reason and gives up its place", async () => {
+  const limiter = new RateLimiter({ ratePerMin: 60, burst: 1 });
+  await limiter.acquire(); // empty the bucket
+  const controller = new AbortController();
+  const waiting = limiter.acquire(controller.signal);
+  controller.abort(new Error("deadline"));
+  await assert.rejects(waiting, /deadline/);
+  assert.equal(limiter.pendingWaiters(), 0, "the aborted waiter left the queue");
+  limiter.stop();
+});
+
+test("acquire(signal): an already-aborted signal rejects at once", async () => {
+  const limiter = new RateLimiter({ ratePerMin: 60, burst: 1 });
+  const controller = new AbortController();
+  controller.abort(new Error("too late"));
+  await assert.rejects(limiter.acquire(controller.signal), /too late/);
+  assert.equal(limiter.available() >= 1, true, "no token was consumed");
+  limiter.stop();
+});
+

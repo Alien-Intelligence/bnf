@@ -23,7 +23,7 @@ import { OcrSubmitStage } from "./stages/ocr-submit.js";
 import { OcrPollStage } from "./stages/ocr-poll.js";
 import { EmbedStage } from "./stages/embed.js";
 import { RegisterStage } from "./stages/register.js";
-import { OcrQualityBackfillStage } from "./stages/ocr-quality-backfill.js";
+import { OCR_BACKFILL_RATE_WAIT_MS, OcrQualityBackfillStage } from "./stages/ocr-quality-backfill.js";
 
 export interface PipelineDeps {
   queue: QueueClient;
@@ -125,9 +125,13 @@ export function buildPipeline(deps: PipelineDeps): Pipeline {
   // The backfill is not part of a run; it is registered only when wired AND
   // enabled, so OCR_BACKFILL_ENABLED=false truly stops its BnF spend (D6).
   if (deps.ocrBackfill && cfg.ocrBackfillEnabled !== false) {
+    if (!rates.fetch) {
+      throw new Error("buildPipeline: the OCR backfill stage requires rates.fetch (the shared fetch gate)");
+    }
     stages.push(
       new OcrQualityBackfillStage(base, deps.bnf, deps.ocrBackfill, rates.fetch, {
         concurrency: cfg.ocrBackfillConcurrency ?? 2,
+        rateWaitMs: OCR_BACKFILL_RATE_WAIT_MS,
       }),
     );
   }

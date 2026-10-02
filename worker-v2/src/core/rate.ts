@@ -71,12 +71,32 @@ export class RateLimiter implements RateGate {
     return Math.ceil((1 - this.tokens) / this.refillPerMs);
   }
 
-  /** Acquire one token, waiting (FIFO) if the bucket is empty. */
-  acquire(): Promise<void> {
+  /** Waiters currently queued — for tests/introspection. */
+  pendingWaiters(): number {
+    return this.waiters.length;
+  }
+
+  /**
+   * Acquire one token, waiting (FIFO) if the bucket is empty. An abort of
+   * `signal` rejects with its reason and removes the waiter, so an abandoned
+   * wait never consumes a token later.
+   */
+  acquire(signal?: AbortSignal): Promise<void> {
     if (this.stopped) return Promise.reject(new Error("RateLimiter stopped"));
+    if (signal?.aborted) return Promise.reject(signal.reason);
     if (this.waiters.length === 0 && this.tryAcquire()) return Promise.resolve();
-    return new Promise<void>((resolve) => {
-      this.waiters.push(resolve);
+    return new Promise<void>((resolve, reject) => {
+      const onAbort = (): void => {
+        const i = this.waiters.indexOf(grant);
+        if (i >= 0) this.waiters.splice(i, 1);
+        reject(signal?.reason);
+      };
+      const grant = (): void => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve();
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+      this.waiters.push(grant);
       this.schedule();
     });
   }

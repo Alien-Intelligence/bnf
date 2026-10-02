@@ -30,16 +30,20 @@ interface Harness {
   /** Rate-gate acquisitions — one per BnF fetch, zero per cache hit. */
   acquires: () => number;
   seed: () => Promise<void>;
+  lines: Array<Record<string, unknown>>;
 }
 
-async function setup(spec: FakeDocSpec): Promise<Harness> {
+async function setup(
+  spec: FakeDocSpec,
+  opts: { rate?: RateGate; blob?: MemoryBlobStore; rateWaitMs?: number } = {},
+): Promise<Harness> {
   const q = new MemoryQueue();
-  const blob = new MemoryBlobStore();
-  const { logger } = createMemoryLogger();
+  const blob = opts.blob ?? new MemoryBlobStore();
+  const { logger, lines } = createMemoryLogger();
   const bnf = new FakeBnfClient().add(spec);
   const store = new MemoryOcrBackfillStore();
   let acquired = 0;
-  const rate: RateGate = {
+  const rate: RateGate = opts.rate ?? {
     ratePerMin: 1000,
     acquire: async () => {
       acquired += 1;
@@ -47,6 +51,7 @@ async function setup(spec: FakeDocSpec): Promise<Harness> {
   };
   const stage = new OcrQualityBackfillStage({ queue: q, blob, log: logger }, bnf, store, rate, {
     concurrency: 1,
+    rateWaitMs: opts.rateWaitMs ?? 1_000,
   });
   await stage.start();
   return {
@@ -55,6 +60,7 @@ async function setup(spec: FakeDocSpec): Promise<Harness> {
     bnf,
     store,
     acquires: () => acquired,
+    lines,
     seed: async () => {
       // The sync endpoint records the row before sending (one row per ARK).
       await store.request(ARK, { retryFailedAfterMs: 1, maxAttempts: 5, queuedStaleAfterMs: 1 });
@@ -207,6 +213,7 @@ test("no pages artifact → row failed no_pages_artifact, terminal (no retry sto
   const row = await h.store.get(ARK);
   assert.equal(row?.state, "failed");
   assert.equal(row?.error, "no_pages_artifact");
+  assert.equal(row?.permanent, true, "a missing pages artifact never appears by retrying");
   const counts = await h.q.counts(Q.ocrQualityBackfill);
   assert.equal(counts.completed, 1, "terminal fail completes the message");
   assert.equal(counts.failed, 0);
@@ -242,6 +249,7 @@ test("transient ALTO error on the last attempt → row failed build_failed, side
   assert.equal(row?.state, "failed");
   assert.match(row?.error ?? "", /^build_failed: /);
   assert.equal(row?.attempts, 1);
+  assert.equal(row?.permanent, false, "a transient failure stays retryable");
 });
 
 test("permanent BnF error on a folio → row failed immediately, no retry", async () => {
@@ -255,6 +263,84 @@ test("permanent BnF error on a folio → row failed immediately, no retry", asyn
   const row = await h.store.get(ARK);
   assert.equal(row?.state, "failed");
   assert.match(row?.error ?? "", /^build_failed: /);
+  assert.equal(row?.permanent, true);
   const counts = await h.q.counts(Q.ocrQualityBackfill);
   assert.equal(counts.completed, 1);
 });
+
+test("a corrupt artifact in S3 is rebuilt, not taken as done", async () => {
+  const h = await setup(textSpec());
+  await primeTextDoc(h.blob, [1, 2]);
+  await h.blob.putJson(keys.ocrQuality(ARK), { v: 1, ark: ARK, lane: "text", folios: "nope" });
+
+  await h.seed();
+  await h.q.idle();
+
+  const artifact = await h.blob.getJson<DocOcrQuality>(keys.ocrQuality(ARK));
+  assert.deepEqual(artifact?.folios.map((f) => f.ordre), [1, 2], "a valid artifact replaced it");
+  assert.equal((await h.store.get(ARK))?.state, "done");
+  assert.ok(h.lines.some((l) => l.event === "ocr_quality_artifact_corrupt"));
+});
+
+test("a corrupt meta blob → row failed corrupt_metadata, permanent, terminal", async () => {
+  const h = await setup(textSpec());
+  await primeTextDoc(h.blob, [1, 2]);
+  await h.blob.putJson(keys.metadata(ARK), { ark: ARK, ocrAvailable: "yes", raw: {} });
+
+  await h.seed();
+  await h.q.idle();
+
+  const row = await h.store.get(ARK);
+  assert.equal(row?.state, "failed");
+  assert.match(row?.error ?? "", /^corrupt_metadata: /);
+  assert.equal(row?.permanent, true);
+  assert.equal(h.bnf.calls.alto, 0);
+  assert.equal((await h.q.counts(Q.ocrQualityBackfill)).completed, 1);
+});
+
+test("a rate-gate wait past its deadline is transient: retried, then failed retryable", async () => {
+  let waits = 0;
+  const neverGrants: RateGate = {
+    ratePerMin: 1,
+    acquire: (signal?: AbortSignal) =>
+      new Promise<void>((_resolve, reject) => {
+        waits += 1;
+        signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+      }),
+  };
+  const h = await setup(textSpec(), { rate: neverGrants, rateWaitMs: 5 });
+  await primeTextDoc(h.blob, [1, 2]);
+
+  await h.seed();
+  await h.q.idle();
+
+  assert.equal(h.bnf.calls.alto, 0, "no BnF call without a token");
+  const row = await h.store.get(ARK);
+  assert.equal(row?.state, "failed");
+  assert.match(row?.error ?? "", /rate_gate_timeout/);
+  assert.equal(row?.permanent, false);
+  assert.equal(waits, 4, "one bounded wait per delivery: retried to exhaustion");
+  assert.equal((await h.q.counts(Q.ocrQualityBackfill)).completed, 1, "the last attempt records the failure");
+});
+
+test("an unclassified error (S3 down) is retried, logged, and ends retryable", async () => {
+  class FailingArtifactWrites extends MemoryBlobStore {
+    override async putJson(key: string, value: unknown): Promise<void> {
+      if (key === keys.ocrQuality(ARK)) throw new Error("S3 down");
+      await super.putJson(key, value);
+    }
+  }
+  const h = await setup(textSpec(), { blob: new FailingArtifactWrites() });
+  await primeTextDoc(h.blob, [1, 2]);
+
+  await h.seed();
+  await h.q.idle();
+
+  const row = await h.store.get(ARK);
+  assert.equal(row?.state, "failed");
+  assert.match(row?.error ?? "", /^build_failed: .*S3 down/);
+  assert.equal(row?.permanent, false);
+  assert.ok(h.lines.some((l) => l.event === "ocr_backfill_unclassified_error"));
+  assert.equal(h.bnf.calls.alto, 2, "the sidecars written on the first delivery are reused");
+});
+

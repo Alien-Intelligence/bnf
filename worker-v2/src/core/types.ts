@@ -148,7 +148,11 @@ export interface StageContext {
 
 /** A rate gate (token bucket). The framework's only pacing primitive. */
 export interface RateGate {
-  /** Resolve when a token is available; reject/throw only on shutdown. */
-  acquire(): Promise<void>;
+  /**
+   * Resolve when a token is available; reject on shutdown, or with
+   * `signal.reason` when `signal` aborts first — the waiter then gives up its
+   * place and consumes no token (a caller's deadline, see ocr-quality-backfill).
+   */
+  acquire(signal?: AbortSignal): Promise<void>;
   readonly ratePerMin: number;
 }
