@@ -1,6 +1,14 @@
 import "server-only"
 import { prisma } from "@/lib/db"
-import type { Note, NoteWithCitations, NoteListItem, NoteVersionListItem } from "./schema"
+import {
+  citationRefs,
+  type CitationUsage,
+  type NoteDetail,
+  type NoteFolioOcr,
+  type NoteWithCitations,
+  type NoteListItem,
+  type NoteVersionListItem,
+} from "./schema"
 
 export class NoteQueries {
   static async listForProject(projectId: string): Promise<NoteListItem[]> {
@@ -26,6 +34,55 @@ export class NoteQueries {
   }
 
   /**
+   * A note with its citations AND the stored OCR quality of every cited folio
+   * — what every note view renders (pill markers, the low-OCR banner, the
+   * exports). Null when no note has this id. Two Prisma calls in the owning
+   * model (playbook/models.md, "a join across models").
+   */
+  static async getDetail(id: string): Promise<NoteDetail | null> {
+    const note = await prisma.note.findUnique({ where: { id }, include: { citations: true } })
+    if (!note) return null
+    return { ...note, folioOcr: await NoteQueries.folioOcrFor(note.citations) }
+  }
+
+  /**
+   * Every note of the project as a NoteDetail, oldest first — the standalone
+   * Carnet. One folio-quality query covers all the notes' citations.
+   */
+  static async listDetailsForProject(projectId: string): Promise<NoteDetail[]> {
+    const notes = await prisma.note.findMany({
+      where: { projectId },
+      orderBy: { createdAt: "asc" },
+      include: { citations: true },
+    })
+    const rows = await NoteQueries.folioOcrFor(notes.flatMap((n) => n.citations))
+    return notes.map((note) => {
+      const refs = citationRefs(note.citations)
+      return {
+        ...note,
+        folioOcr: rows.filter((r) =>
+          refs.some((ref) => ref.ark === r.ark && ref.folios.includes(r.folio)),
+        ),
+      }
+    })
+  }
+
+  /**
+   * The stored quality of the cited (ark, folio) pairs — read ONLY through
+   * Citation rows, which hold corpus-validated ARKs (plan D8). PK-scoped.
+   */
+  private static async folioOcrFor(
+    citations: Array<{ ark: string; folio: number | null }>,
+  ): Promise<NoteFolioOcr[]> {
+    const refs = citationRefs(citations)
+    if (refs.length === 0) return []
+    return prisma.documentFolio.findMany({
+      where: { OR: refs.map(({ ark, folios }) => ({ ark, folio: { in: folios } })) },
+      select: { ark: true, folio: true, ocrSource: true, ocrQuality: true, wordCount: true },
+    })
+  }
+
+  /**
    * A note, but only if it belongs to `projectId`.
    *
    * `get` above is for the HTTP routes, which load the note and then put it
@@ -46,18 +103,6 @@ export class NoteQueries {
     }) as Promise<NoteWithCitations | null>
   }
 
-  /**
-   * Every note in the project with its full body, oldest first — the Carnet
-   * reads the notebook front to back, so it needs the bodies `listForProject`
-   * deliberately omits and the chronological order a rail listing does not use.
-   */
-  static async listForProjectWithBodies(projectId: string): Promise<Note[]> {
-    return prisma.note.findMany({
-      where: { projectId },
-      orderBy: { createdAt: "asc" },
-    })
-  }
-
   static async listVersions(noteId: string): Promise<NoteVersionListItem[]> {
     return prisma.noteVersion.findMany({
       where: { noteId },
@@ -66,10 +111,7 @@ export class NoteQueries {
     })
   }
 
-  static async citationsForArk(
-    projectId: string,
-    ark: string,
-  ): Promise<{ noteId: string; folio: number | null; label: string | null; noteTitle: string }[]> {
+  static async citationsForArk(projectId: string, ark: string): Promise<CitationUsage[]> {
     const rows = await prisma.citation.findMany({
       where: { ark, note: { projectId } },
       select: {

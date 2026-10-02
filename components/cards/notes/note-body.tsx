@@ -14,8 +14,11 @@ import {
 } from "@/lib/citations/syntax"
 import type { ParsedCitation } from "@/lib/citations/syntax"
 import { iiifImageUrl } from "@/lib/citations/external"
+import { folioOcrKey, indexFolioOcr, lowOcrCitations } from "@/lib/citations/ocr"
 import { NOTE_IMAGE_IIIF_SIZE } from "@/lib/constants"
-import { CitationPill } from "./citation-pill"
+import { toFolioOcrView, type DocumentFolioRow } from "@/models/documents/schema"
+import { BadgeArkCitation } from "@/components/badges/citations/ark"
+import { CardNoteLowOcrBanner } from "./low-ocr-banner"
 import { NoteLinkPill } from "./note-link-pill"
 
 // Fragment tags that carry a citation / image embed through markdown rendering.
@@ -29,6 +32,12 @@ const NOTE_HREF_PREFIX = "#note-"
 
 interface NoteBodyProps {
   body: string
+  /**
+   * The stored OCR quality of the note's cited folios (NoteDetail.folioOcr).
+   * Required, with no default, so no note view can forget it: a low folio
+   * marks its pill and the note shows the BnF disclaimer banner once.
+   */
+  folioOcr: DocumentFolioRow[]
   onCitationClick: (c: ParsedCitation) => void
   /** Open another note from a `[[note:<id>|<label>]]` cross-reference. When
    *  omitted, note links render as non-navigating pills. */
@@ -94,7 +103,7 @@ const MD_COMPONENTS: Components = {
     </code>
   ),
   // `a` and `img` are supplied per-instance in NoteBody: `a` maps `#cite-<n>`
-  // hrefs to <CitationPill> (else a normal external link), `img` maps `#img-<n>`
+  // hrefs to <BadgeArkCitation> (else a normal external link), `img` maps `#img-<n>`
   // srcs to a folio <figure>.
   hr: () => <hr className="my-5 border-border" />,
   table: ({ children }) => (
@@ -116,10 +125,16 @@ const MD_COMPONENTS: Components = {
 
 export function NoteBody({
   body,
+  folioOcr,
   onCitationClick,
   onNoteLinkClick,
   knownNoteIds,
 }: NoteBodyProps) {
+  // The cited folios' OCR quality, keyed by (ark, folio), and the text
+  // citations that point at a low folio. Image embeds never count (D11).
+  const ocrIndex = useMemo(() => indexFolioOcr(folioOcr.map(toFolioOcrView)), [folioOcr])
+  const hasLowOcr = useMemo(() => lowOcrCitations(body, ocrIndex).length > 0, [body, ocrIndex])
+
   // Image embeds, text citations, and note links in left-to-right order. The
   // rewrite below numbers its `#img-<n>` / `#cite-<n>` / `#note-<n>` carriers in
   // the same order, so index n maps straight back to the matching parsed token.
@@ -155,7 +170,13 @@ export function NoteBody({
         if (href?.startsWith(CITE_HREF_PREFIX)) {
           const citation = citations[Number(href.slice(CITE_HREF_PREFIX.length))]
           if (citation) {
-            return <CitationPill citation={citation} onClick={onCitationClick} />
+            return (
+              <BadgeArkCitation
+                citation={citation}
+                ocr={ocrIndex.get(folioOcrKey(citation.ark, citation.folio))}
+                onClick={onCitationClick}
+              />
+            )
           }
         }
         if (href?.startsWith(NOTE_HREF_PREFIX)) {
@@ -218,11 +239,12 @@ export function NoteBody({
         return null
       },
     }),
-    [citations, images, noteLinks, knownNoteIds, onCitationClick, onNoteLinkClick],
+    [citations, images, noteLinks, knownNoteIds, ocrIndex, onCitationClick, onNoteLinkClick],
   )
 
   return (
     <div className="max-w-none text-neutral-200">
+      {hasLowOcr ? <CardNoteLowOcrBanner /> : null}
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[rehypeSanitize]}

@@ -8,11 +8,17 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet"
 import { Separator } from "@/components/ui/separator"
-import { ArrowUpRight, BookOpen, Eye } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { Skeleton } from "@/components/ui/skeleton"
+import { ArrowUpRight, BookOpen, Eye, TriangleAlert } from "lucide-react"
 import { iiifImageUrl, gallicaItemUrl, gallicaViewerUrl } from "@/lib/citations/external"
 // gallicaViewerUrl → IIIF (view3if) viewer; gallicaItemUrl → classic Gallica item page.
-import { useCitationsForArk, type CitationUsage } from "@/hooks/api/citations"
+import { ocrPercent } from "@/lib/citations/ocr"
+import { useCitationsForArk } from "@/hooks/api/citations"
+import { useDocumentOcr } from "@/hooks/api/documents"
 import { cn } from "@/lib/utils"
+import { OCR_SOURCE, type DocumentOcrView } from "@/models/documents/schema"
+import type { CitationUsage } from "@/models/notes/schema"
 import { useTranslations } from "next-intl"
 
 interface SheetCitationSourceProps {
@@ -33,7 +39,10 @@ export function SheetCitationSource({
   onOpenChange,
 }: SheetCitationSourceProps) {
   const t = useTranslations("citations.panel")
-  const { data: usages } = useCitationsForArk(projectId, ark)
+  const tCommon = useTranslations("common")
+  const usagesQuery = useCitationsForArk(projectId, ark)
+  const ocrQuery = useDocumentOcr(projectId, ark)
+  const usages = usagesQuery.data
 
   // The exact-folio surfaces are inlined inside `hasFolio` guards below so TS
   // narrows `folio` to a number. Folio is mandatory on a citation, but the
@@ -86,6 +95,17 @@ export function SheetCitationSource({
             </div>
           ) : null}
 
+          {/* OCR quality of the cited folio + the document's "Taux OCR" */}
+          {ark ? (
+            <SectionCitationOcr
+              ocr={ocrQuery.data}
+              isLoading={ocrQuery.isLoading}
+              isError={ocrQuery.isError}
+              onRetry={() => void ocrQuery.refetch()}
+              folio={folio}
+            />
+          ) : null}
+
           {/* ARK box */}
           {ark ? (
             <div className="rounded-md border bg-input/20 px-3 py-2.5">
@@ -125,8 +145,27 @@ export function SheetCitationSource({
             </div>
           </div>
 
-          {/* Other notes citing this ARK */}
-          {otherNotes.length > 0 ? (
+          {/* Other notes citing this ARK. Found bug B4: its loading and error
+              states used to be dropped — an error read as "no other note". */}
+          {usagesQuery.isLoading ? (
+            <>
+              <Separator />
+              <div className="space-y-2">
+                <Skeleton className="h-4 w-1/3" />
+                <Skeleton className="h-4 w-2/3" />
+              </div>
+            </>
+          ) : usagesQuery.isError ? (
+            <>
+              <Separator />
+              <div className="flex items-center gap-3 text-sm text-muted-foreground">
+                <span className="min-w-0 flex-1">{t("usagesLoadError")}</span>
+                <Button variant="outline" size="sm" onClick={() => void usagesQuery.refetch()}>
+                  {tCommon("tryAgain")}
+                </Button>
+              </div>
+            </>
+          ) : otherNotes.length > 0 ? (
             <>
               <Separator />
               <div>
@@ -144,6 +183,74 @@ export function SheetCitationSource({
         </div>
       </SheetContent>
     </Sheet>
+  )
+}
+
+// The "Qualité OCR" block (feedback 2026-09-29 #7): what produced the cited
+// folio's text and, for BnF ALTO, its measured quality — with the low marker
+// when it is below the threshold — plus the document's "Taux OCR". A folio with
+// no stored quality (not synced yet, being built, or unavailable) says so; that
+// is distinct from "not low".
+function SectionCitationOcr({
+  ocr,
+  isLoading,
+  isError,
+  onRetry,
+  folio,
+}: {
+  ocr: DocumentOcrView | undefined
+  isLoading: boolean
+  isError: boolean
+  onRetry: () => void
+  folio: number | null
+}) {
+  const t = useTranslations("citations.ocr")
+  const tCommon = useTranslations("common")
+
+  if (isLoading) {
+    return (
+      <div className="space-y-1.5">
+        <Skeleton className="h-3 w-24" />
+        <Skeleton className="h-4 w-3/4" />
+      </div>
+    )
+  }
+  if (isError || ocr === undefined) {
+    return (
+      <div className="flex items-center gap-3 text-[12.5px] text-muted-foreground">
+        <span className="min-w-0 flex-1">{t("loadError")}</span>
+        <Button variant="outline" size="sm" onClick={onRetry}>
+          {tCommon("tryAgain")}
+        </Button>
+      </div>
+    )
+  }
+
+  const view = folio === null ? undefined : ocr.folios.find((f) => f.folio === folio)
+  const folioLine = (() => {
+    if (view === undefined) return t("unavailable")
+    if (view.ocrSource === OCR_SOURCE.MISTRAL) return t("folioMistral")
+    if (view.ocrSource === OCR_SOURCE.VISION) return t("folioVision")
+    if (view.ocrQuality === null || view.wordCount === null) return t("folioAltoUnscored")
+    return t("folioAlto", { quality: ocrPercent(view.ocrQuality), words: view.wordCount })
+  })()
+
+  return (
+    <div>
+      <div className="mono-eyebrow mb-1.5 text-neutral-600">{t("sheetTitle")}</div>
+      <p className="text-[12.5px] text-foreground">{folioLine}</p>
+      {view?.low ? (
+        <p className="mt-1.5 flex items-center gap-1.5 text-[12px] text-warning">
+          <TriangleAlert className="size-3.5 shrink-0" strokeWidth={1.8} aria-hidden />
+          {t("lowFolio")}
+        </p>
+      ) : null}
+      {ocr.ocrRate !== null ? (
+        <p className="mt-1.5 text-[11.5px] text-muted-foreground">
+          {t("docRate", { rate: ocrPercent(ocr.ocrRate) })}
+        </p>
+      ) : null}
+    </div>
   )
 }
 

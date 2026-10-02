@@ -792,7 +792,10 @@
       "projectEyebrow": "Research project",
       "compiledHeader": "Research notebook · {count, plural, =0 {no notes} one {# note} other {# notes}}",
       "export": "Export as Markdown",
-      "empty": "No notes in this notebook."
+      "empty": "No notes in this notebook.",
+      "loadError": "Could not load this note.",
+      "exportBlocked": "Some notes could not be loaded: reload them before exporting.",
+      "retryLoad": "Reload the notes"
     },
     "revoked": {
       "title": "Corpus access revoked",
@@ -811,7 +814,23 @@
       "iiifViewerSub": "Open the exact page in the viewer",
       "gallicaViewer": "View on Gallica",
       "gallicaViewerSub": "The document in the Gallica viewer",
-      "usages": "Used in other notes"
+      "usages": "Used in other notes",
+      "usagesLoadError": "Could not load the other notes citing this document."
+    },
+    "ocr": {
+      "disclaimer": "The legibility of some original documents can limit text recognition. The tool may therefore, in some cases, have mistranscribed or misinterpreted some of the quotations in these notes. The link to the source document lets you check their accuracy.",
+      "bannerLabel": "Text recognition quality warning",
+      "lowPill": "Low OCR quality on this folio ({quality} %) — check the quotation against the source",
+      "exportLowMarker": "(low OCR quality)",
+      "sheetTitle": "OCR quality",
+      "folioAlto": "Folio OCR quality: {quality} % ({words, number} words)",
+      "folioAltoUnscored": "BnF OCR text — quality not measured",
+      "folioMistral": "Automatic transcription (Mistral) — quality not measured",
+      "folioVision": "Generated image description — no OCR text",
+      "lowFolio": "Low quality — check the quotation against the source",
+      "unavailable": "OCR quality not available",
+      "docRate": "Document OCR rate: {rate} %",
+      "loadError": "Could not load the OCR quality."
     }
   },
   "ingest": {

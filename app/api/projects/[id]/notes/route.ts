@@ -13,7 +13,7 @@ import { NoteQueries } from "@/models/notes/queries"
 import { NoteService } from "@/models/notes/service"
 import { corpusProjectId } from "@/lib/authz/corpus-source"
 import { createNoteSchema } from "@/models/notes/types"
-import type { NoteListItem, NoteWithCitations } from "@/models/notes/schema"
+import type { NoteDetail, NoteListItem } from "@/models/notes/schema"
 
 type RouteCtx = { params: Promise<{ id: string }> }
 
@@ -47,7 +47,10 @@ export const POST = withAuth(async (req, _user, bouncer, ctx: RouteCtx) => {
     bodyMd: parsed.bodyMd,
   })
 
-  // Return the full note with citations so the client can prime the detail cache.
-  const full = await NoteQueries.get(note.id)
-  return ok<NoteWithCitations>(full!, 201)
+  // Return the full note (citations + their folios' OCR quality) so the client
+  // can prime the detail cache with the same shape GET /api/notes/:nid answers.
+  const full = await NoteQueries.getDetail(note.id)
+  // Deleted between the write and the re-read.
+  if (!full) return notFound("Note introuvable")
+  return ok<NoteDetail>(full, 201)
 })

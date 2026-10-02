@@ -11,7 +11,7 @@
 // shows notes the user has OPENED, as closable tabs — the design's tab model.
 
 import { useMemo } from "react"
-import { ArrowLeft, Download, FileText, HelpCircle, NotebookText, PenLine, X } from "lucide-react"
+import { ArrowLeft, Download, FileText, HelpCircle, NotebookText, PenLine, RotateCw, X } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { LayoutCorpusChat } from "@/components/layouts/corpus/chat"
 import { NoteBody } from "@/components/cards/notes/note-body"
@@ -27,7 +27,8 @@ import {
 } from "@/lib/notes/export"
 import { formatRelativeFr } from "@/lib/format"
 import { cn } from "@/lib/utils"
-import type { NoteListItem } from "@/models/notes/schema"
+import type { NoteDetail, NoteListItem } from "@/models/notes/schema"
+import { useNoteExportCopy } from "@/lib/notes/export-copy"
 import type { ParsedCitation } from "@/lib/citations/syntax"
 import type { UseTurnStreamResult } from "@/hooks/api/turn-stream"
 import type { AgentProvider } from "@/lib/constants"
@@ -324,6 +325,7 @@ function NoteReader({
   knownNoteIds: ReadonlySet<string>
 }) {
   const t = useTranslations("research.atelier")
+  const exportCopy = useNoteExportCopy()
   const { data: note, isLoading, isError, refetch } = useNote(noteId)
 
   if (isLoading) {
@@ -369,7 +371,7 @@ function NoteReader({
               onClick={() =>
                 downloadMarkdown(
                   filenameFromTitle(note.title, "note"),
-                  noteToMarkdown(note),
+                  noteToMarkdown(note, exportCopy),
                 )
               }
               className="h-7 gap-1.5 text-[11.5px]"
@@ -385,6 +387,7 @@ function NoteReader({
         </div>
         <NoteBody
           body={note.body_md ?? ""}
+          folioOcr={note.folioOcr}
           onCitationClick={onCitationClick}
           onNoteLinkClick={onNoteLinkClick}
           knownNoteIds={knownNoteIds}
@@ -408,14 +411,20 @@ function ReaderCarnet({
   knownNoteIds: ReadonlySet<string>
 }) {
   const t = useTranslations("research.carnet")
+  const exportCopy = useNoteExportCopy()
   const results = useNoteDetails(notes.map((n) => n.id))
 
-  const loaded = results
-    .map((r) => r.data)
-    .filter((n): n is NonNullable<typeof n> => Boolean(n))
-
+  // Found bug B5: the export used to stitch whatever had loaded, silently
+  // dropping notes still loading or that failed to load. It now waits for
+  // EVERY note; a failed one blocks it with an explicit retry instead.
+  const details = results.map((r) => r.data)
+  const failed = results.filter((r) => r.isError)
+  const retryFailed = () => {
+    for (const r of failed) void r.refetch()
+  }
   const onExport = () => {
-    downloadMarkdown("carnet-de-recherche.md", notesToMarkdown(loaded))
+    if (!details.every((d): d is NoteDetail => d !== undefined)) return
+    downloadMarkdown("carnet-de-recherche.md", notesToMarkdown(details, exportCopy))
   }
 
   // Clicking a TOC row OR an inline note-link pill scrolls its stitched section
@@ -435,16 +444,29 @@ function ReaderCarnet({
           <NotebookText className="size-3.5" strokeWidth={1.8} aria-hidden />
           {t("compiledHeader", { count: notes.length })}
         </span>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={onExport}
-          disabled={loaded.length === 0}
-          className="h-7 gap-1.5 text-[11.5px]"
-        >
-          <Download className="size-3.5" strokeWidth={1.8} />
-          {t("export")}
-        </Button>
+        {failed.length > 0 ? (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={retryFailed}
+            title={t("exportBlocked")}
+            className="h-7 gap-1.5 border-destructive/40 text-[11.5px] text-destructive"
+          >
+            <RotateCw className="size-3.5" strokeWidth={1.8} />
+            {t("retryLoad")}
+          </Button>
+        ) : (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onExport}
+            disabled={notes.length === 0 || details.some((d) => d === undefined)}
+            className="h-7 gap-1.5 text-[11.5px]"
+          >
+            <Download className="size-3.5" strokeWidth={1.8} />
+            {t("export")}
+          </Button>
+        )}
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-10 pb-20 pt-8">
@@ -490,6 +512,8 @@ function ReaderCarnet({
                 fallbackTitle={notes[i].title}
                 note={r.data}
                 isLoading={r.isLoading}
+                isError={r.isError}
+                onRetry={() => void r.refetch()}
                 onCitationClick={onCitationClick}
                 onNoteLinkClick={scrollToSection}
                 knownNoteIds={knownNoteIds}
@@ -514,6 +538,8 @@ function CarnetSection({
   fallbackTitle,
   note,
   isLoading,
+  isError,
+  onRetry,
   onCitationClick,
   onNoteLinkClick,
   knownNoteIds,
@@ -521,12 +547,16 @@ function CarnetSection({
   sectionId: string
   index: number
   fallbackTitle: string
-  note: { title: string; body_md: string | null; updatedAt: Date | string } | undefined
+  note: NoteDetail | undefined
   isLoading: boolean
+  isError: boolean
+  onRetry: () => void
   onCitationClick: (c: ParsedCitation) => void
   onNoteLinkClick: (noteId: string) => void
   knownNoteIds: ReadonlySet<string>
 }) {
+  const t = useTranslations("research.carnet")
+  const tCommon = useTranslations("common")
   return (
     <section id={sectionId} className={cn("scroll-mt-6", index > 0 && "mt-9 border-t pt-7")}>
       <div className="mb-1 flex items-baseline gap-2.5">
@@ -541,9 +571,18 @@ function CarnetSection({
           <Skeleton className="h-4 w-full" />
           <Skeleton className="h-4 w-4/5" />
         </div>
+      ) : isError || note === undefined ? (
+        // A failed note is said so, never rendered as an empty body.
+        <div className="flex items-center gap-3 rounded-md border border-destructive/30 bg-destructive/5 px-3.5 py-3 text-sm text-muted-foreground">
+          <span className="min-w-0 flex-1">{t("loadError")}</span>
+          <Button variant="outline" size="sm" onClick={onRetry} className="h-7 text-[11.5px]">
+            {tCommon("tryAgain")}
+          </Button>
+        </div>
       ) : (
         <NoteBody
-          body={note?.body_md ?? ""}
+          body={note.body_md ?? ""}
+          folioOcr={note.folioOcr}
           onCitationClick={onCitationClick}
           onNoteLinkClick={onNoteLinkClick}
           knownNoteIds={knownNoteIds}

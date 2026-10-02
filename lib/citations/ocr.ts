@@ -13,6 +13,11 @@ import type { FolioOcrView } from "@/models/documents/schema"
 
 import { parseCitations, type ParsedCitation } from "./syntax"
 
+/** A [0, 1] quality or rate as the whole percentage the UI shows (0.661 → 66). */
+export function ocrPercent(fraction: number): number {
+  return Math.round(fraction * 100)
+}
+
 /** Map key of one (ark, folio). */
 export function folioOcrKey(ark: string, folio: number): string {
   return `${ark}#${folio}`

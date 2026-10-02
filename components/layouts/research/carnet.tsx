@@ -4,39 +4,43 @@ import { useMemo } from "react"
 import { CarnetEntry } from "@/components/cards/notes/carnet-entry"
 import { Separator } from "@/components/ui/separator"
 import { Button } from "@/components/ui/button"
+import { Skeleton } from "@/components/ui/skeleton"
 import { Download } from "lucide-react"
 import { useTranslations } from "next-intl"
 import type { ParsedCitation } from "@/lib/citations/syntax"
 import { notesToMarkdown, downloadMarkdown } from "@/lib/notes/export"
-
-interface Note {
-  id: string
-  title: string
-  body_md: string | null
-  createdAt: Date | string
-}
+import { useNoteExportCopy } from "@/lib/notes/export-copy"
+import type { NoteDetail } from "@/models/notes/schema"
 
 interface LayoutCarnetProps {
-  notes: Note[]
+  /** Every note of the carnet, oldest first; undefined until all of them are loaded. */
+  notes: NoteDetail[] | undefined
+  /** At least one note failed to load — the carnet says so and offers a retry. */
+  isError: boolean
+  onRetry: () => void
   onCitationClick: (c: ParsedCitation) => void
 }
 
-export function LayoutCarnet({ notes, onCitationClick }: LayoutCarnetProps) {
+export function LayoutCarnet({ notes, isError, onRetry, onCitationClick }: LayoutCarnetProps) {
   const t = useTranslations("research.carnet")
+  const tCommon = useTranslations("common")
+  const exportCopy = useNoteExportCopy()
 
   // Ids present in this carnet — a note-link pill greys out when its target is
   // absent, and scrolls to the entry's anchor when present (no view switch).
-  const knownNoteIds = useMemo(() => new Set(notes.map((n) => n.id)), [notes])
+  const knownNoteIds = useMemo(() => new Set((notes ?? []).map((n) => n.id)), [notes])
   const scrollToEntry = (noteId: string) => {
     document.getElementById(noteId)?.scrollIntoView({ behavior: "smooth", block: "start" })
   }
+
+  const isLoading = notes === undefined && !isError
 
   return (
     <div className="flex h-full">
       {/* Sidebar TOC */}
       <aside className="w-64 shrink-0 border-r overflow-y-auto p-4 space-y-1">
         <p className="mono-eyebrow mb-3 block">{t("title")}</p>
-        {notes.map((note) => (
+        {(notes ?? []).map((note) => (
           <a
             key={note.id}
             href={`#${note.id}`}
@@ -55,15 +59,34 @@ export function LayoutCarnet({ notes, onCitationClick }: LayoutCarnetProps) {
             <Button
               variant="outline"
               size="sm"
-              onClick={() => downloadMarkdown("carnet-de-recherche.md", notesToMarkdown(notes))}
-              disabled={notes.length === 0}
+              onClick={() => {
+                if (notes === undefined) return
+                downloadMarkdown("carnet-de-recherche.md", notesToMarkdown(notes, exportCopy))
+              }}
+              // Only a complete carnet is exported (found bug B5's rule): never
+              // while a note is loading or failed to load.
+              disabled={notes === undefined || notes.length === 0 || isError}
             >
               <Download className="mr-2 h-4 w-4" />
               {t("export")}
             </Button>
           </div>
 
-          {notes.length === 0 ? (
+          {isLoading ? (
+            <div className="space-y-3">
+              <Skeleton className="h-6 w-1/2" />
+              <Skeleton className="h-4 w-full" />
+              <Skeleton className="h-4 w-5/6" />
+              <Skeleton className="h-4 w-2/3" />
+            </div>
+          ) : isError || notes === undefined ? (
+            <div className="flex flex-col items-center gap-3 py-16 text-center">
+              <p className="text-sm text-destructive">{t("exportBlocked")}</p>
+              <Button variant="outline" size="sm" onClick={onRetry}>
+                {tCommon("tryAgain")}
+              </Button>
+            </div>
+          ) : notes.length === 0 ? (
             <p className="text-muted-foreground text-sm">{t("empty")}</p>
           ) : (
             <div className="space-y-8">

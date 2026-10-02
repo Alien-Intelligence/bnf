@@ -44,6 +44,9 @@ import {
   TYPE_DATASET_COLOR,
 } from "@/lib/constants"
 import { usePromoteNotice, useRemoveFromCorpus, useRetryResolve } from "@/hooks/api/corpus"
+import { useDocumentOcr } from "@/hooks/api/documents"
+import { Skeleton } from "@/components/ui/skeleton"
+import { ocrPercent } from "@/lib/citations/ocr"
 import {
   DOC_TYPE,
   DOCUMENT_CANONICAL_STATUS,
@@ -68,6 +71,52 @@ function Field({ label, value }: { label: string; value: string }) {
     <div className="flex flex-col gap-1">
       <span className="mono-eyebrow">{label}</span>
       <span className="text-[12.5px] text-foreground">{value}</span>
+    </div>
+  )
+}
+
+// The OCR field: the text-layer label plus, once the document is ingested and
+// synced, its "Taux OCR" (feedback 2026-09-29 #7) — with its own loading and
+// error states, so a failed lookup never reads as "no rate".
+function FieldOcr({
+  label,
+  value,
+  ocrRate,
+  isLoading,
+  isError,
+  onRetry,
+}: {
+  label: string
+  value: string
+  ocrRate: number | null | undefined
+  isLoading: boolean
+  isError: boolean
+  onRetry: () => void
+}) {
+  const t = useTranslations("citations.ocr")
+  const tCommon = useTranslations("common")
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="mono-eyebrow">{label}</span>
+      <span className="text-[12.5px] text-foreground">{value}</span>
+      {isLoading ? (
+        <Skeleton className="h-3.5 w-28" />
+      ) : isError ? (
+        <span className="flex items-center gap-2 text-[11px] text-muted-foreground">
+          {t("loadError")}
+          <button
+            type="button"
+            onClick={onRetry}
+            className="text-brand-teal underline underline-offset-2 hover:text-brand-teal/80"
+          >
+            {tCommon("tryAgain")}
+          </button>
+        </span>
+      ) : ocrRate !== null && ocrRate !== undefined ? (
+        <span className="text-[11px] text-muted-foreground">
+          {t("docRate", { rate: ocrPercent(ocrRate) })}
+        </span>
+      ) : null}
     </div>
   )
 }
@@ -128,6 +177,8 @@ export function SheetDocumentDetail({ doc, projectId, open, onOpenChange }: Prop
   const ark = doc?.ark
   const isFailed = doc?.resolveStatus === DOCUMENT_RESOLVE_STATUS.FAILED
   const retryMutate = retry.mutate
+  // The document's "Taux OCR" (from the OCR-quality sync) — only while open.
+  const ocrQuery = useDocumentOcr(projectId, open && ark !== undefined ? ark : null)
   useEffect(() => {
     if (!open || !ark || !isFailed) return
     if (autoRetried.current.has(ark)) return
@@ -305,7 +356,14 @@ export function SheetDocumentDetail({ doc, projectId, open, onOpenChange }: Prop
                       : t("detail.values.notDigitized")
                   }
                 />
-                <Field label={t("detail.fields.ocr")} value={ocrLabel} />
+                <FieldOcr
+                  label={t("detail.fields.ocr")}
+                  value={ocrLabel}
+                  ocrRate={ocrQuery.data?.ocrRate}
+                  isLoading={ocrQuery.isLoading}
+                  isError={ocrQuery.isError}
+                  onRetry={() => void ocrQuery.refetch()}
+                />
                 <Field label={t("detail.fields.ingestion")} value={ingestionLabel} />
               </div>
 

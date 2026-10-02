@@ -1,6 +1,7 @@
 // app/[locale]/projects/[projectId]/rechercher/carnet/page.tsx
-// Server component. Loads all notes with their full body for the Carnet view.
-// Passes to CarnetClient which owns citation-click interactivity.
+// Server component. Loads all notes with their full body, citations and the
+// OCR quality of their cited folios (NoteDetail) for the Carnet view. Passes
+// them to CarnetClient, which seeds the per-note query cache with them.
 
 import { notFound } from "next/navigation"
 import { requireSessionUser } from "@/lib/auth-helpers"
@@ -27,7 +28,7 @@ export default async function CarnetPage({
   if (!project) notFound()
   if (!canReadProject(user, project)) notFound()
 
-  const notes = await NoteQueries.listForProjectWithBodies(projectId)
+  const notes = await NoteQueries.listDetailsForProject(projectId)
 
   return (
     <CarnetClient

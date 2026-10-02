@@ -7,7 +7,7 @@
 
 import { useQuery, useQueries, useMutation, useQueryClient } from "@tanstack/react-query"
 import { apiFetch } from "@/lib/api-fetch"
-import type { NoteListItem, NoteWithCitations, NoteVersionListItem } from "@/models/notes/schema"
+import type { NoteDetail, NoteListItem, NoteVersionListItem } from "@/models/notes/schema"
 import type { CreateNoteInput, UpdateNoteInput } from "@/models/notes/types"
 
 // ── Query keys ────────────────────────────────────────────────────────────────
@@ -48,33 +48,41 @@ export function useNoteVersions(noteId: string | null) {
   })
 }
 
+/** GET /api/notes/:nid — the note with its citations and their folios' OCR quality. */
+async function fetchNoteDetail(noteId: string): Promise<NoteDetail> {
+  const res = await apiFetch(`/api/notes/${noteId}`)
+  if (!res.ok) throw new Error(`Failed to fetch note: ${res.status}`)
+  return res.json() as Promise<NoteDetail>
+}
+
 export function useNote(noteId: string | null) {
-  return useQuery<NoteWithCitations>({
+  return useQuery<NoteDetail>({
     queryKey: noteId ? noteKeys.detail(noteId) : ["notes", "detail", null],
-    queryFn: async () => {
-      const res = await apiFetch(`/api/notes/${noteId!}`)
-      if (!res.ok) throw new Error(`Failed to fetch note: ${res.status}`)
-      return res.json() as Promise<NoteWithCitations>
+    queryFn: () => {
+      if (noteId === null) throw new Error("useNote: queryFn ran without a note id")
+      return fetchNoteDetail(noteId)
     },
-    enabled: !!noteId,
+    enabled: noteId !== null,
   })
 }
 
 /**
- * Fetch the full body (+ citations) of several notes at once — the in-page
- * Carnet stitches every note into one document. Shares the per-note detail
- * cache with {@link useNote}, so notes already opened in the Atelier resolve
- * instantly. Order follows `noteIds`.
+ * Fetch the full body (+ citations and their folios' OCR quality) of several
+ * notes at once — the Carnet stitches every note into one document. Shares the
+ * per-note detail cache with {@link useNote}, so notes already opened in the
+ * Atelier resolve instantly. Order follows `noteIds`.
+ *
+ * `initialData` seeds each note's cache entry from server-loaded details (the
+ * standalone Carnet page, found bug B8): the page renders at once and the
+ * queries still refetch, instead of the page freezing its props.
  */
-export function useNoteDetails(noteIds: string[]) {
+export function useNoteDetails(noteIds: string[], opts: { initialData?: NoteDetail[] } = {}) {
+  const seeded = new Map((opts.initialData ?? []).map((n) => [n.id, n]))
   return useQueries({
     queries: noteIds.map((id) => ({
       queryKey: noteKeys.detail(id),
-      queryFn: async () => {
-        const res = await apiFetch(`/api/notes/${id}`)
-        if (!res.ok) throw new Error(`Failed to fetch note: ${res.status}`)
-        return res.json() as Promise<NoteWithCitations>
-      },
+      queryFn: () => fetchNoteDetail(id),
+      initialData: seeded.get(id),
     })),
   })
 }
@@ -83,14 +91,14 @@ export function useNoteDetails(noteIds: string[]) {
 
 export function useCreateNote(projectId: string) {
   const qc = useQueryClient()
-  return useMutation<NoteWithCitations, Error, CreateNoteInput>({
+  return useMutation<NoteDetail, Error, CreateNoteInput>({
     mutationFn: async (body) => {
       const res = await apiFetch(`/api/projects/${projectId}/notes`, {
         method: "POST",
         body: JSON.stringify(body),
       })
       if (!res.ok) throw new Error(`Failed to create note: ${res.status}`)
-      return res.json() as Promise<NoteWithCitations>
+      return res.json() as Promise<NoteDetail>
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: noteKeys.list(projectId) }),
   })
@@ -98,14 +106,14 @@ export function useCreateNote(projectId: string) {
 
 export function useUpdateNote(noteId: string) {
   const qc = useQueryClient()
-  return useMutation<NoteWithCitations, Error, UpdateNoteInput & { projectId: string }>({
+  return useMutation<NoteDetail, Error, UpdateNoteInput & { projectId: string }>({
     mutationFn: async ({ projectId: _projectId, ...body }) => {
       const res = await apiFetch(`/api/notes/${noteId}`, {
         method: "PUT",
         body: JSON.stringify(body),
       })
       if (!res.ok) throw new Error(`Failed to update note: ${res.status}`)
-      return res.json() as Promise<NoteWithCitations>
+      return res.json() as Promise<NoteDetail>
     },
     onSuccess: (_data, { projectId }) => {
       qc.invalidateQueries({ queryKey: noteKeys.list(projectId) })

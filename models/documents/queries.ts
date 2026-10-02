@@ -147,9 +147,11 @@ export class DocumentQueries {
 
   /**
    * Whether `ark` is an INDEXED document of the corpus owned by
-   * `corpusProjectId` — the D8 gate for a direct per-ARK OCR read
-   * (documents/ocr route, doc_get, rag_get_text). Callers resolve
-   * `corpusProjectId` through lib/authz/corpus-source.ts, never ctx.projectId.
+   * `corpusProjectId` — the D8 gate before rag_get_text reads an ARK's OCR
+   * quality (only indexed documents have retrievable text). The documents/ocr
+   * route and doc_get gate on the Document row itself (getByArk). Callers
+   * resolve `corpusProjectId` through lib/authz/corpus-source.ts, never
+   * ctx.projectId.
    */
   static async isIndexedInCorpus(corpusProjectId: string, ark: string): Promise<boolean> {
     const row = await prisma.document.findFirst({

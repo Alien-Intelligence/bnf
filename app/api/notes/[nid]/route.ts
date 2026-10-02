@@ -1,6 +1,7 @@
 /**
- * GET    /api/notes/:nid  — fetch a single note with its citations
- * PUT    /api/notes/:nid  — update title and/or body
+ * GET    /api/notes/:nid  — fetch a single note with its citations and the
+ *                           OCR quality of its cited folios (NoteDetail)
+ * PUT    /api/notes/:nid  — update title and/or body; answers the NoteDetail
  * DELETE /api/notes/:nid  — delete note and all its citations + versions
  *
  * Authorization: read access on the project (read) / write access on it
@@ -16,21 +17,21 @@ import { NoteQueries } from "@/models/notes/queries"
 import { NoteService } from "@/models/notes/service"
 import { corpusProjectId } from "@/lib/authz/corpus-source"
 import { updateNoteSchema } from "@/models/notes/types"
-import type { NoteWithCitations } from "@/models/notes/schema"
+import type { NoteDetail } from "@/models/notes/schema"
 
 type RouteCtx = { params: Promise<{ nid: string }> }
 
 export const GET = withAuth(async (req, _user, bouncer, ctx: RouteCtx) => {
   const { nid } = await ctx.params
 
-  const note = await NoteQueries.get(nid)
+  const note = await NoteQueries.getDetail(nid)
   if (!note) return notFound("Note introuvable")
 
   const project = await ProjectQueries.get(note.projectId)
   if (!project) return notFound("Projet introuvable")
   await bouncer.with(NotePolicy).authorize("read", project)
 
-  return ok<NoteWithCitations>(note)
+  return ok<NoteDetail>(note)
 })
 
 export const PUT = withAuth(async (req, _user, bouncer, ctx: RouteCtx) => {
@@ -54,9 +55,11 @@ export const PUT = withAuth(async (req, _user, bouncer, ctx: RouteCtx) => {
   // Deleted between the authorize() above and the write.
   if (!updated) return notFound("Note introuvable")
 
-  // Re-fetch to include fresh citations after the update.
-  const full = await NoteQueries.get(updated.note.id)
-  return ok<NoteWithCitations>(full!)
+  // Re-fetch to include fresh citations (and their folios' OCR quality).
+  const full = await NoteQueries.getDetail(updated.note.id)
+  // Deleted between the write and the re-read.
+  if (!full) return notFound("Note introuvable")
+  return ok<NoteDetail>(full)
 })
 
 export const DELETE = withAuth(async (req, _user, bouncer, ctx: RouteCtx) => {
