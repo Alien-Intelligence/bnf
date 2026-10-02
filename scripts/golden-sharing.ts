@@ -61,6 +61,7 @@ async function signUp(label: string): Promise<Session> {
   if (!res.ok) throw new Error(`sign-up ${label}: ${res.status} ${await res.text()}`)
   const cookie = (res.headers.getSetCookie() ?? []).map((c) => c.split(";")[0]).join("; ")
   const user = await prisma.user.findUniqueOrThrow({ where: { email } })
+  created.users.push(user.id)
   return { cookie, id: user.id, email }
 }
 
@@ -80,7 +81,15 @@ function api(s: Session) {
   }
 }
 
-const created: string[] = []
+/**
+ * Everything this run creates, recorded the moment it exists, so run()'s
+ * `finally` tears it all down — a failed check or a thrown step included.
+ */
+const created: { users: string[]; groups: string[]; projects: string[] } = {
+  users: [],
+  groups: [],
+  projects: [],
+}
 
 async function main() {
   const admin = await signUp("admin")
@@ -99,6 +108,7 @@ async function main() {
   const g = await adminApi("/api/groups", { method: "POST", body: JSON.stringify({ name: groupName }) })
   check(g.status === 201, "POST /api/groups → 201", String(g.status))
   const groupId = (g.body as { id: string }).id
+  created.groups.push(groupId)
 
   const nonAdmin = await a("/api/groups", { method: "POST", body: JSON.stringify({ name: "Interdit" }) })
   check(nonAdmin.status === 403, "a non-admin cannot create a group → 403", String(nonAdmin.status))
@@ -115,7 +125,7 @@ async function main() {
   const p = await a("/api/projects", { method: "POST", body: JSON.stringify({ name: `Corpus A ${randomUUID().slice(0, 8)}` }) })
   check(p.status === 201, "POST /api/projects → 201", String(p.status))
   const source = (p.body as { id: string; headVersionId: string }).id
-  created.push(source)
+  created.projects.push(source)
 
   const add = await a(`/api/projects/${source}/corpus/add`, { method: "POST", body: JSON.stringify({ arks: [SOURCE_ARK], reason: "golden path" }) })
   check(add.status === 200 || add.status === 201, "A can add to their own corpus", String(add.status))
@@ -159,7 +169,7 @@ async function main() {
   const d = await b("/api/projects/derived", { method: "POST", body: JSON.stringify({ sourceProjectId: source, name: "Espace de B" }) })
   check(d.status === 201, "POST /api/projects/derived → 201", `${d.status} ${JSON.stringify(d.body).slice(0, 160)}`)
   const derived = (d.body as { id: string }).id
-  created.push(derived)
+  created.projects.push(derived)
 
   const dRow = await prisma.project.findUniqueOrThrow({ where: { id: derived } })
   check(dRow.corpusSourceId === source, "corpusSourceId points at A's project")
@@ -190,6 +200,7 @@ async function main() {
   const outsiderGroupName = `Externe ${randomUUID().slice(0, 8)}`
   const g2 = await adminApi("/api/groups", { method: "POST", body: JSON.stringify({ name: outsiderGroupName }) })
   const outsiderGroup = (g2.body as { id: string }).id
+  created.groups.push(outsiderGroup)
   for (const u of [B, C]) {
     await adminApi(`/api/groups/${outsiderGroup}/members`, { method: "POST", body: JSON.stringify({ email: u.email }) })
   }
@@ -339,11 +350,7 @@ async function main() {
 
   console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECK(S) FAILED`}`)
 
-  // Teardown (the OCR fixture rows are removed in run()'s `finally`)
-  await prisma.group.deleteMany({ where: { id: groupId } })
-  const { cleanupProject } = await import("@/lib/testing/project-cleanup")
-  for (const id of [...created].reverse()) await cleanupProject(id)
-  for (const u of [admin, A, B, C]) await prisma.user.deleteMany({ where: { id: u.id } })
+  // Teardown happens in run()'s `finally` (teardown()).
   return failures === 0 ? 0 : 1
 }
 
@@ -400,11 +407,20 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v)
 }
 
+/** Remove everything the run created: OCR rows, projects (newest first), groups, accounts. */
+async function teardown(): Promise<void> {
+  await cleanupOcrFixtures()
+  const { cleanupProject } = await import("@/lib/testing/project-cleanup")
+  for (const id of [...created.projects].reverse()) await cleanupProject(id)
+  await prisma.group.deleteMany({ where: { id: { in: created.groups } } })
+  await prisma.user.deleteMany({ where: { id: { in: created.users } } })
+}
+
 async function run(): Promise<number> {
   try {
     return await main()
   } finally {
-    await cleanupOcrFixtures()
+    await teardown()
   }
 }
 
