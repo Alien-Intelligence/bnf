@@ -9,7 +9,6 @@
 // Only the *new* grant is a form. Changing the level of a grant that already
 // exists is a select that fires immediately, and lives in the dialog.
 
-import { useEffect } from "react"
 import { useForm, useWatch } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useTranslations } from "next-intl"
@@ -29,8 +28,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { SelectProjectAccessOption } from "@/components/selects/projects/access-option"
 import { Button } from "@/components/ui/button"
-import { PROJECT_ACCESS } from "@/lib/authz/project-access"
+import { PROJECT_ACCESS, type ProjectAccess } from "@/lib/authz/project-access"
 import {
   shareProjectSchema,
   type ShareProjectInput,
@@ -44,16 +44,17 @@ interface FormProjectShareProps {
    * update, and that is what the existing row's own select is for.
    */
   groups: GroupListItem[]
-  /** Resolves true when the grant landed, false when the server refused. */
-  onSubmit: (data: ShareProjectInput) => Promise<boolean>
-  /** Server-side rejection (422 names the reason), shown under the group field. */
-  serverError: string | null
+  /**
+   * Resolves when the grant landed. Rejects with an Error whose message is
+   * already the user-facing sentence (the dialog maps API failures to
+   * translations); the form shows it under the group field.
+   */
+  onSubmit: (data: ShareProjectInput) => Promise<void>
 }
 
 export function FormProjectShare({
   groups,
   onSubmit,
-  serverError,
 }: FormProjectShareProps) {
   const t = useTranslations("projects.share")
 
@@ -69,15 +70,6 @@ export function FormProjectShare({
     defaultValues: { groupId: "", access: PROJECT_ACCESS.READ },
   })
 
-  const { setError } = form
-  useEffect(() => {
-    // The server is the only place that knows whether the grant is allowed, so
-    // its rejection is surfaced on the field the owner would change to retry.
-    if (serverError) {
-      setError("groupId", { type: "server", message: serverError })
-    }
-  }, [serverError, setError])
-
   // Picking a group is the whole gate — `access` always carries a valid value.
   // Disabling until one is chosen keeps the schema as the single validator
   // while sparing the owner a "groupId: invalid uuid" they cannot act on.
@@ -86,12 +78,20 @@ export function FormProjectShare({
   const selectedGroupId = useWatch({ control: form.control, name: "groupId" })
 
   const submit = async (data: ShareProjectInput) => {
-    // Only on success: the granted group leaves `groups`, so a kept selection
-    // would point at a row that has moved to the list below. After a refusal
-    // the selection is exactly what the owner wants to correct and retry.
-    if (await onSubmit(data)) {
-      form.reset({ groupId: "", access: data.access })
+    try {
+      await onSubmit(data)
+    } catch (e) {
+      // The rejection is the reason, on the field the owner would change to
+      // retry; the selection stays so they can correct it.
+      form.setError("groupId", {
+        type: "server",
+        message: e instanceof Error ? e.message : String(e),
+      })
+      return
     }
+    // Only on success: the granted group leaves `groups`, so a kept selection
+    // would point at a row that has moved to the list below.
+    form.reset({ groupId: "", access: data.access })
   }
 
   return (
@@ -146,29 +146,14 @@ export function FormProjectShare({
                   <FormControl>
                     <SelectTrigger>
                       <SelectValue>
-                        {(value: string | null) =>
-                          value === PROJECT_ACCESS.WRITE
-                            ? t("level.write")
-                            : t("level.read")
-                        }
+                        {(value: ProjectAccess) => t(`level.${value}`)}
                       </SelectValue>
                     </SelectTrigger>
                   </FormControl>
                   <SelectContent>
-                    {/* What each level allows, on the option itself: the
-                        difference used to live only in a paragraph above. */}
-                    <SelectItem value={PROJECT_ACCESS.READ}>
-                      <AccessOption
-                        label={t("level.read")}
-                        hint={t("levelHint.read")}
-                      />
-                    </SelectItem>
-                    <SelectItem value={PROJECT_ACCESS.WRITE}>
-                      <AccessOption
-                        label={t("level.write")}
-                        hint={t("levelHint.write")}
-                      />
-                    </SelectItem>
+                    {/* What each level allows, on the option itself. */}
+                    <SelectProjectAccessOption access={PROJECT_ACCESS.READ} />
+                    <SelectProjectAccessOption access={PROJECT_ACCESS.WRITE} />
                   </SelectContent>
                 </Select>
                 <FormMessage />
@@ -194,12 +179,3 @@ export function FormProjectShare({
   )
 }
 
-/** A level and what it allows, as one select option. */
-function AccessOption({ label, hint }: { label: string; hint: string }) {
-  return (
-    <span className="flex max-w-64 flex-col whitespace-normal">
-      <span>{label}</span>
-      <span className="text-xs text-muted-foreground">{hint}</span>
-    </span>
-  )
-}

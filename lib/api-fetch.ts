@@ -26,22 +26,39 @@ export async function apiFetch(
 }
 
 /**
+ * A non-2xx answer from the app's API: the HTTP status, plus the server's own
+ * message when it sent one. Components that must show the user something in
+ * their locale map `status` to a translation key instead of rendering
+ * `message`, which is the server's (French) sentence or a developer fallback.
+ */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message)
+    this.name = "ApiError"
+  }
+}
+
+/**
  * Surfaces the server's message when there is one. The API answers 409 (name
  * taken) and 422 (unknown email, unusable name, refused share) with a French
  * sentence the user can act on; swallowing it into a generic "erreur" would
- * hide the one thing they need to know.
+ * hide the one thing they need to know. Always an ApiError, so callers that
+ * need the status can read it.
  */
 export async function readError(
   res: Response,
   fallback: string,
-): Promise<Error> {
+): Promise<ApiError> {
   try {
     const body = (await res.json()) as { error?: unknown }
     if (typeof body.error === "string" && body.error.length > 0) {
-      return new Error(body.error)
+      return new ApiError(body.error, res.status)
     }
   } catch {
     // Non-JSON body (a proxy error page, say) — fall through to the fallback.
   }
-  return new Error(`${fallback}: ${res.status}`)
+  return new ApiError(`${fallback}: ${res.status}`, res.status)
 }

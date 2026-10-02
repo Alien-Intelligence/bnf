@@ -57,6 +57,7 @@ export function LayoutWorkspaceProjectShell({
         <DialogProjectShare
           projectId={project.id}
           projectName={project.name}
+          viewerIsAdmin={viewer.isAdmin}
           open={shareOpen}
           onOpenChange={setShareOpen}
         />

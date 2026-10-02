@@ -326,13 +326,13 @@
         "read": "Consult the corpus and run their own research",
         "write": "Also: change the corpus and run ingestion"
       },
-      "ownerNote": "Only you can share or delete this project.",
+      "ownerNote": "Only the project's owner, or an administrator, can share or delete it.",
       "grant": "Share",
       "granted": "“{group}” now has access to the project ({level}).",
       "currentHeading": "Groups with access ({count})",
       "memberCount": "{count, plural, one {# member} other {# members}}",
       "revoke": "Revoke access for {name}",
-      "revokeConfirm": "Revoke access for “{name}”? {count, plural, one {# research workspace built on this share will lose} other {# research workspaces built on this share will lose}} access to the corpus.",
+      "revokeConfirm": "{count, plural, one {# research workspace built on this share will lose} other {# research workspaces built on this share will lose}} access to the corpus.",
       "revokeConfirmAction": "Revoke access",
       "revoked": "Access for “{name}” revoked.",
       "empty": "No group has access to this project yet.",
@@ -340,7 +340,17 @@
       "allGroupsShared": "All of your groups already have access to this project.",
       "groupsError": "Could not load the list of groups.",
       "derived": "{count, plural, one {# research workspace depends on it} other {# research workspaces depend on it}}",
-      "changeAccess": "Change access for {name}"
+      "changeAccess": "Change access for {name}",
+      "revokeTitle": "Revoke access for “{name}”?",
+      "createGroup": "Create a group",
+      "errors": {
+        "forbidden": "You cannot share this project.",
+        "projectGone": "This project no longer exists.",
+        "groupGone": "This group no longer exists. Choose another one.",
+        "generic": "The operation failed. Please try again."
+      },
+      "currentHeadingUnknown": "Groups with access",
+      "grantsError": "Could not load the groups with access."
     },
     "derive": {
       "title": "Create a research workspace",

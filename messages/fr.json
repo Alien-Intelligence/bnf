@@ -326,13 +326,13 @@
         "read": "Consulter le corpus et mener ses propres recherches",
         "write": "En plus : modifier le corpus et lancer l'ingestion"
       },
-      "ownerNote": "Vous seul pouvez partager ou supprimer ce projet.",
+      "ownerNote": "Seul le propriétaire du projet, ou un administrateur, peut le partager ou le supprimer.",
       "grant": "Partager",
       "granted": "« {group} » a maintenant accès au projet ({level}).",
       "currentHeading": "Groupes ayant accès ({count})",
       "memberCount": "{count, plural, one {# membre} other {# membres}}",
       "revoke": "Retirer l'accès de {name}",
-      "revokeConfirm": "Retirer l'accès de « {name} » ? {count, plural, one {# espace de recherche construit sur ce partage perdra} other {# espaces de recherche construits sur ce partage perdront}} l'accès au corpus.",
+      "revokeConfirm": "{count, plural, one {# espace de recherche construit sur ce partage perdra} other {# espaces de recherche construits sur ce partage perdront}} l'accès au corpus.",
       "revokeConfirmAction": "Retirer l'accès",
       "revoked": "Accès de « {name} » retiré.",
       "empty": "Aucun groupe n'a encore accès à ce projet.",
@@ -340,7 +340,17 @@
       "allGroupsShared": "Tous vos groupes ont déjà accès à ce projet.",
       "groupsError": "Impossible de charger la liste des groupes.",
       "derived": "{count, plural, one {# espace de recherche en dépend} other {# espaces de recherche en dépendent}}",
-      "changeAccess": "Modifier l'accès de {name}"
+      "changeAccess": "Modifier l'accès de {name}",
+      "revokeTitle": "Retirer l'accès de « {name} » ?",
+      "createGroup": "Créer un groupe",
+      "errors": {
+        "forbidden": "Vous ne pouvez pas partager ce projet.",
+        "projectGone": "Ce projet n'existe plus.",
+        "groupGone": "Ce groupe n'existe plus. Choisissez-en un autre.",
+        "generic": "L'opération a échoué. Réessayez."
+      },
+      "currentHeadingUnknown": "Groupes ayant accès",
+      "grantsError": "Impossible de charger les groupes ayant accès."
     },
     "derive": {
       "title": "Créer un espace de recherche",

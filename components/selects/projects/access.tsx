@@ -12,19 +12,19 @@ import { useTranslations } from "next-intl"
 import {
   Select,
   SelectContent,
-  SelectItem,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { PROJECT_ACCESS } from "@/lib/authz/project-access"
+import { PROJECT_ACCESS, type ProjectAccess } from "@/lib/authz/project-access"
+import { shareProjectSchema } from "@/models/projects/types"
+import { SelectProjectAccessOption } from "./access-option"
 
 interface SelectProjectAccessProps {
-  /** The stored level. Prisma types it as a plain string. */
-  value: string
-  onValueChange: (value: string | null) => void
+  value: ProjectAccess
+  onValueChange: (value: ProjectAccess) => void
   /** Names the group this grant belongs to, for the accessible label. */
   groupName: string
-  disabled?: boolean
+  disabled: boolean
 }
 
 export function SelectProjectAccess({
@@ -36,7 +36,13 @@ export function SelectProjectAccess({
   const t = useTranslations("projects.share")
 
   return (
-    <Select value={value} onValueChange={onValueChange} disabled={disabled}>
+    <Select
+      value={value}
+      // The two options are the only values the select can produce; anything
+      // else is a bug and the schema says so instead of dropping it.
+      onValueChange={(v) => onValueChange(shareProjectSchema.shape.access.parse(v))}
+      disabled={disabled}
+    >
       {/* Base UI renders the raw value unless given a labelling function —
           without this the trigger would read "read" / "write". */}
       <SelectTrigger
@@ -45,14 +51,12 @@ export function SelectProjectAccess({
         aria-label={t("changeAccess", { name: groupName })}
       >
         <SelectValue>
-          {(v: string | null) =>
-            v === PROJECT_ACCESS.WRITE ? t("level.write") : t("level.read")
-          }
+          {(v: ProjectAccess) => t(`level.${v}`)}
         </SelectValue>
       </SelectTrigger>
       <SelectContent>
-        <SelectItem value={PROJECT_ACCESS.READ}>{t("level.read")}</SelectItem>
-        <SelectItem value={PROJECT_ACCESS.WRITE}>{t("level.write")}</SelectItem>
+        <SelectProjectAccessOption access={PROJECT_ACCESS.READ} />
+        <SelectProjectAccessOption access={PROJECT_ACCESS.WRITE} />
       </SelectContent>
     </Select>
   )

@@ -138,6 +138,7 @@ export function ProjectsClient({
         <DialogProjectShare
           projectId={sharing.id}
           projectName={sharing.name}
+          viewerIsAdmin={viewer.isAdmin}
           open
           onOpenChange={(open) => {
             if (!open) setSharing(null)
