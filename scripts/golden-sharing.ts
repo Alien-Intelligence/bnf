@@ -19,6 +19,10 @@ import { randomUUID } from "node:crypto"
 
 const BASE = process.env["APP_URL"] ?? "http://localhost:3001"
 const PW = "TestPassword123!"
+/** In A's corpus (added in step 2) — its OCR quality is seeded in step 6c. */
+const OCR_ARK_IN_CORPUS = "ark:/12148/bpt6k9999991"
+/** Never in any golden corpus — a stored quality B must not be able to read. */
+const OCR_ARK_OUTSIDE = "ark:/12148/bpt6k9999998"
 
 type Session = { cookie: string; id: string; email: string }
 
@@ -192,6 +196,48 @@ async function main() {
   const aNotes = await a(`/api/projects/${source}/notes`)
   check((aNotes.body as unknown[]).length === 0, "A's carnet is untouched")
 
+  // 6c. OCR quality (feedback 2026-09-29 #7). The DocumentOcr / DocumentFolio
+  // tables are global per ARK, so every read is gated on the reader's corpus:
+  // through a derived workspace B sees the SOURCE corpus' documents, nothing
+  // else; an outsider sees nothing; a note's folio quality rides on its
+  // corpus-validated citations.
+  console.log("\n6c. OCR quality reads respect the derived-corpus gate")
+  const now = new Date()
+  // A crashed earlier run (or the app's own sync) may have left rows behind.
+  await prisma.documentOcr.deleteMany({ where: { ark: { in: [OCR_ARK_IN_CORPUS, OCR_ARK_OUTSIDE] } } })
+  for (const ark of [OCR_ARK_IN_CORPUS, OCR_ARK_OUTSIDE]) {
+    await prisma.documentOcr.create({
+      data: {
+        ark,
+        status: "available",
+        ocrRate: 0.7821,
+        checkedAt: now,
+        syncedAt: now,
+        folios: { create: [{ folio: 1, ocrSource: "alto", ocrQuality: 0.661, wordCount: 4016 }] },
+      },
+    })
+  }
+  const ocrIn = await b(`/api/projects/${derived}/documents/ocr?ark=${encodeURIComponent(OCR_ARK_IN_CORPUS)}`)
+  const ocrInBody = ocrIn.body as { status: string; folios: { folio: number; low: boolean }[] }
+  check(ocrIn.status === 200 && ocrInBody.status === "available", "B reads a source-corpus document's OCR quality → 200", String(ocrIn.status))
+  check(ocrInBody.folios?.[0]?.low === true, "f1 (0.661) reads as low")
+  const ocrOut = await b(`/api/projects/${derived}/documents/ocr?ark=${encodeURIComponent(OCR_ARK_OUTSIDE)}`)
+  check(ocrOut.status === 404, "an ARK outside the corpus → 404 even though its quality is stored", String(ocrOut.status))
+  const ocrC = await c(`/api/projects/${derived}/documents/ocr?ark=${encodeURIComponent(OCR_ARK_IN_CORPUS)}`)
+  check(ocrC.status === 403, "C cannot read it through the workspace → 403", String(ocrC.status))
+
+  const ocrNote = await b(`/api/projects/${derived}/notes`, {
+    method: "POST",
+    body: JSON.stringify({ title: "Note OCR", bodyMd: `Citation [[${OCR_ARK_IN_CORPUS}|Source|1]] et [[${OCR_ARK_OUTSIDE}|Hors corpus|1]]` }),
+  })
+  const ocrNoteBody = ocrNote.body as { id: string; folioOcr: { ark: string; folio: number }[] }
+  check(ocrNote.status === 201, "B writes a note citing it → 201", String(ocrNote.status))
+  check(
+    ocrNoteBody.folioOcr?.length === 1 && ocrNoteBody.folioOcr[0].ark === OCR_ARK_IN_CORPUS,
+    "the note detail carries the cited folio's quality, never the out-of-corpus ARK's",
+    JSON.stringify(ocrNoteBody.folioOcr),
+  )
+
   // 7. A revokes.
   console.log("\n7. A revokes the share")
   const rev = await a(`/api/projects/${source}/shares/${groupId}`, { method: "DELETE" })
@@ -199,14 +245,22 @@ async function main() {
 
   const after = await prisma.project.findUniqueOrThrow({ where: { id: derived } })
   check(after.corpusSourceId === source && after.corpusSourceShareId === null, "the workspace is in the revoked state")
-  check(await prisma.note.count({ where: { projectId: derived } }) === 1, "B's note survives")
+  check(await prisma.note.count({ where: { projectId: derived } }) === 2, "B's notes survive")
 
   const revCorpus = await b(`/api/projects/${derived}/corpus`)
   check(revCorpus.status === 409, "the derived corpus → 409 revoked, not an empty list", String(revCorpus.status))
   const bSource = await b(`/api/projects/${source}/corpus`)
   check(bSource.status === 403, "B loses access to the source itself → 403", String(bSource.status))
   const bCarnet = await b(`/api/projects/${derived}/notes`)
-  check(bCarnet.status === 200 && (bCarnet.body as unknown[]).length === 1, "B's carnet is still readable")
+  check(bCarnet.status === 200 && (bCarnet.body as unknown[]).length === 2, "B's carnet is still readable")
+  const revOcr = await b(`/api/projects/${derived}/documents/ocr?ark=${encodeURIComponent(OCR_ARK_IN_CORPUS)}`)
+  check(revOcr.status === 409, "the OCR quality through a revoked grant → 409", String(revOcr.status))
+  const revNote = await b(`/api/notes/${ocrNoteBody.id}`)
+  check(
+    revNote.status === 200 && (revNote.body as { folioOcr: unknown[] }).folioOcr.length === 1,
+    "B's note still reads with its folio quality",
+    String(revNote.status),
+  )
 
   // 8. A re-shares at write.
   console.log("\n8. A re-shares at write")
@@ -245,6 +299,7 @@ async function main() {
   console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECK(S) FAILED`}`)
 
   // Teardown
+  await prisma.documentOcr.deleteMany({ where: { ark: { in: [OCR_ARK_IN_CORPUS, OCR_ARK_OUTSIDE] } } })
   await prisma.group.deleteMany({ where: { id: groupId } })
   const { cleanupProject } = await import("@/lib/testing/project-cleanup")
   for (const id of [...created].reverse()) await cleanupProject(id)
