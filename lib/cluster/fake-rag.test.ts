@@ -87,7 +87,7 @@ test("an aborted signal stops the fake as it stops the real client", async () =>
   const controller = new AbortController()
   controller.abort()
   await assert.rejects(
-    FakeRagRunner.query({ projectId: PROJECT, query: "figaro", signal: controller.signal }),
+    FakeRagRunner.query({ projectId: PROJECT, query: "figaro", k: 5, signal: controller.signal }),
     (err: unknown) => err instanceof Error && err.name === "AbortError",
   )
 })

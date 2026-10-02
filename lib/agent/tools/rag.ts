@@ -18,7 +18,16 @@ import "server-only"
 import { z } from "zod"
 import { defineTool } from "@alien/chat-sdk/claude"
 import { ClusterRagClient } from "@/lib/cluster/rag"
-import { RAG_GET_TEXT_DEFAULT_CHAR_LIMIT } from "@/lib/constants"
+import {
+  RAG_DEFAULT_K,
+  RAG_GET_TEXT_DEFAULT_CHAR_LIMIT,
+  RAG_GET_TEXT_MAX_CHAR_LIMIT,
+  RAG_KEYWORD_DEFAULT_LIMIT,
+  RAG_KEYWORD_MAX_LIMIT,
+  RAG_QUERY_MAX_CHARS,
+  RAG_QUERY_MAX_K,
+  RAG_QUERY_MIN_CHARS,
+} from "@/lib/constants"
 import type { TurnScopedCtx } from "./registry-factory"
 import { AGENT_TOOLS } from "./constants"
 import { NOT_INGESTED_ERROR, resolveIngestedCorpus } from "./ingestion-guard"
@@ -56,16 +65,16 @@ export const ragQueryTool = defineTool<
     query: z
       .string()
       .trim()
-      .min(3)
-      .max(500)
+      .min(RAG_QUERY_MIN_CHARS)
+      .max(RAG_QUERY_MAX_CHARS)
       .describe("The semantic search query. One focused concept per call."),
     k: z
       .number()
       .int()
       .min(1)
-      .max(50)
+      .max(RAG_QUERY_MAX_K)
       .optional()
-      .describe("Number of passages to retrieve (1–50, default decided by the cluster)."),
+      .describe(`Number of passages to retrieve (1–${RAG_QUERY_MAX_K}, default ${RAG_DEFAULT_K}).`),
     filters: z
       .object({
         type: z.array(z.string()).optional().describe("Restrict to these document types."),
@@ -89,7 +98,7 @@ export const ragQueryTool = defineTool<
     const result = await ClusterRagClient.query({
       projectId: ctx.corpusProjectId,
       query: input.query,
-      k: input.k,
+      k: input.k ?? RAG_DEFAULT_K,
       signal: ctx.signal,
     })
     // The cluster's vector search filters by dataset / entry / score only:
@@ -132,15 +141,17 @@ export const ragKeywordSearchTool = defineTool<
     query: z
       .string()
       .trim()
-      .max(500)
+      .max(RAG_QUERY_MAX_CHARS)
       .describe("Keyword query. May be terms, a name, or a title fragment."),
     limit: z
       .number()
       .int()
       .min(1)
-      .max(100)
+      .max(RAG_KEYWORD_MAX_LIMIT)
       .optional()
-      .describe("Maximum number of entry hits to return (1–100, default 20)."),
+      .describe(
+        `Maximum number of entry hits to return (1–${RAG_KEYWORD_MAX_LIMIT}, default ${RAG_KEYWORD_DEFAULT_LIMIT}).`,
+      ),
     filters: z
       .object({
         type: z.string().optional().describe("Restrict to this document type (e.g. \"press\", \"book\")."),
@@ -159,7 +170,7 @@ export const ragKeywordSearchTool = defineTool<
     return ClusterRagClient.keywordSearch({
       projectId: ctx.corpusProjectId,
       query: input.query,
-      limit: input.limit,
+      limit: input.limit ?? RAG_KEYWORD_DEFAULT_LIMIT,
       filters: input.filters,
       signal: ctx.signal,
     })
@@ -202,9 +213,11 @@ export const ragGetTextTool = defineTool<
       .number()
       .int()
       .min(0)
-      .max(20000)
+      .max(RAG_GET_TEXT_MAX_CHAR_LIMIT)
       .optional()
-      .describe("Characters to return; 0 = the rest of the document (default 4000)."),
+      .describe(
+        `Characters to return; 0 = the rest of the document (default ${RAG_GET_TEXT_DEFAULT_CHAR_LIMIT}).`,
+      ),
   }),
   handler: async (input, ctx) => {
     const corpus = await resolveIngestedCorpus(ctx, NOT_INGESTED_ERROR)

@@ -11,7 +11,7 @@ import assert from "node:assert/strict"
 import { prisma } from "@/lib/db"
 import { ClusterRagClient } from "@/lib/cluster/rag"
 import type { RagEntryContentRequest } from "@/lib/cluster/rag"
-import { RAG_GET_TEXT_DEFAULT_CHAR_LIMIT } from "@/lib/constants"
+import { RAG_DEFAULT_K, RAG_GET_TEXT_DEFAULT_CHAR_LIMIT, RAG_KEYWORD_DEFAULT_LIMIT } from "@/lib/constants"
 import { ragGetTextTool, ragKeywordSearchTool, ragQueryTool } from "./rag"
 import type { TurnScopedCtx } from "./registry-factory"
 import {
@@ -157,4 +157,30 @@ test("rag_query does not pass filters it cannot apply, and reports them as ignor
   assert.ok(seen.every((req) => !("filters" in req)), "the facade request carries no filters")
   assert.deepEqual(withFilters, { passages: [], total: 0, modelVersion: "test", ignoredFilters: ["yearFrom", "lang"] })
   assert.deepEqual(without, { passages: [], total: 0, modelVersion: "test" })
+})
+
+test("rag_query and rag_keyword_search resolve their defaults once, in the handler", async () => {
+  const originalQuery = ClusterRagClient.query
+  const originalKeyword = ClusterRagClient.keywordSearch
+  const ks: number[] = []
+  const limits: number[] = []
+  ClusterRagClient.query = async (req) => {
+    ks.push(req.k)
+    return { passages: [], total: 0, modelVersion: "test" }
+  }
+  ClusterRagClient.keywordSearch = async (req) => {
+    limits.push(req.limit)
+    return { hits: [], total: 0 }
+  }
+  try {
+    await ragQueryTool.handler({ query: "incendie" }, ctxFor())
+    await ragQueryTool.handler({ query: "incendie", k: 7 }, ctxFor())
+    await ragKeywordSearchTool.handler({ query: "incendie" }, ctxFor())
+    await ragKeywordSearchTool.handler({ query: "incendie", limit: 3 }, ctxFor())
+  } finally {
+    ClusterRagClient.query = originalQuery
+    ClusterRagClient.keywordSearch = originalKeyword
+  }
+  assert.deepEqual(ks, [RAG_DEFAULT_K, 7])
+  assert.deepEqual(limits, [RAG_KEYWORD_DEFAULT_LIMIT, 3])
 })

@@ -64,8 +64,8 @@ export interface RagQueryRequest {
   projectId: string
   /** Free-text query issued by the research agent. */
   query: string
-  /** Maximum number of passages to return (default: RAG_DEFAULT_K). */
-  k?: number
+  /** Passages to return (the rag_query handler applies RAG_DEFAULT_K). */
+  k: number
   // No filters: the cluster's vector search filters by dataset / entry / score
   // only. Facet filtering is keyword search's (RagKeywordRequest.filters).
   /** Bounds every cluster await (the turn's signal). */
@@ -87,8 +87,8 @@ export interface RagKeywordRequest {
   projectId: string
   /** Free-text query — typo-tolerant. May be empty when filtering only. */
   query: string
-  /** Maximum number of entry hits to return (default: 20). */
-  limit?: number
+  /** Entry hits to return (the handler applies RAG_KEYWORD_DEFAULT_LIMIT). */
+  limit: number
   /** Exact-match facet filters on the corpus metadata. */
   filters?: {
     type?: string

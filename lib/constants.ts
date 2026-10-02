@@ -317,6 +317,20 @@ export const OCR_LOW_QUALITY_THRESHOLD = 0.8
  */
 export const RAG_GET_TEXT_DEFAULT_CHAR_LIMIT = 4_000
 
+/** Longest slice rag_get_text serves in one call (a few thousand is the advice). */
+export const RAG_GET_TEXT_MAX_CHAR_LIMIT = 20_000
+
+/** Shortest / longest query text the rag tools accept. */
+export const RAG_QUERY_MIN_CHARS = 3
+export const RAG_QUERY_MAX_CHARS = 500
+
+/** Most passages one rag_query may ask for. */
+export const RAG_QUERY_MAX_K = 50
+
+/** Entry hits rag_keyword_search returns when the agent does not say, and at most. */
+export const RAG_KEYWORD_DEFAULT_LIMIT = 20
+export const RAG_KEYWORD_MAX_LIMIT = 100
+
 // ---------------------------------------------------------------------------
 // Quote integrity — the note-write quote check (lib/citations/quote-check.ts)
 // and the prompt rules it backs (feedback-2026-09-29 #7 / #8).

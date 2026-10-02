@@ -15,7 +15,6 @@ import "server-only"
 import {
   DATACLUSTER_DATASET_SLUG_PREFIX,
   DATACLUSTER_LIST_PAGE_SIZE,
-  RAG_DEFAULT_K,
 } from "@/lib/constants"
 import { prisma } from "@/lib/db"
 import {
@@ -134,7 +133,7 @@ export const RealRagRunner = {
     // rag_query tool reports any it was given as ignored).
     const data = await client.vectorSearchChunks({
       query: req.query,
-      limit: req.k ?? RAG_DEFAULT_K,
+      limit: req.k,
       datasetIds: [datasetId],
     })
 

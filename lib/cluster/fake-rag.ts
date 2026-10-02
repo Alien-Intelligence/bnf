@@ -25,10 +25,7 @@ import "server-only"
 // Since fixtures have no entry ids, a stable synthetic id is derived from each
 // unique ARK (1-based, in first-seen order) and shared across all operations.
 
-import {
-  FAKE_RAG_MODEL_VERSION,
-  RAG_DEFAULT_K,
-} from "@/lib/constants"
+import { FAKE_RAG_MODEL_VERSION } from "@/lib/constants"
 import { DataclusterMcpNotFoundError } from "./datacluster-mcp-client"
 import type { DataclusterChunk, DataclusterEntryContent } from "./datacluster-mcp-client"
 import { assembleEntryText, codePointLength, sliceCodePoints, splitEntryFolios } from "./folio-text"
@@ -157,7 +154,7 @@ function scoreAgainstQuery(
 export const FakeRagRunner = {
   async query(req: RagQueryRequest): Promise<RagQueryResponse> {
     req.signal.throwIfAborted()
-    const k = req.k ?? RAG_DEFAULT_K
+    const k = req.k
 
     const scored = RAG_FIXTURES
       .map((p) => ({
@@ -181,7 +178,7 @@ export const FakeRagRunner = {
 
   async keywordSearch(req: RagKeywordRequest): Promise<RagKeywordResponse> {
     req.signal.throwIfAborted()
-    const limit = req.limit ?? 20
+    const limit = req.limit
 
     // Score per fixture, then collapse to the best-scoring chunk per ARK so the
     // result is entry-level (mirrors the real keyword search granularity).
