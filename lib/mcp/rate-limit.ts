@@ -337,6 +337,16 @@ function getLimiter(): BnfRateLimiter {
 }
 
 /**
+ * Build the process-wide limiter now, so a missing or invalid BNF_MCP_RATE_*
+ * value throws (naming the variable) where the caller can fail the turn
+ * cleanly — when the registry is built — instead of inside a tool dispatch,
+ * where a throw would abort the model's tool loop mid-turn (§15).
+ */
+export function assertBnfRateLimiterConfigured(): void {
+  getLimiter()
+}
+
+/**
  * TEST ONLY. Replace the process-wide limiter with one built from `config`
  * (and its injected clock). Named so a production call site is obvious in
  * review — nothing outside a `*.test.ts` may import this.

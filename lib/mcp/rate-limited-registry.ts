@@ -13,8 +13,8 @@
 import "server-only"
 
 import type { ToolContext, ToolRegistry } from "@alien/chat-sdk/claude"
-import { acquireBnfMcp, quotaSaturatedResult } from "./rate-limit"
-import { bnfToolFromPrefixed } from "./tools"
+import { acquireBnfMcp, assertBnfRateLimiterConfigured, quotaSaturatedResult } from "./rate-limit"
+import { BNF_MCP_SERVER_NAME, bnfToolFromPrefixed } from "./tools"
 
 /**
  * Wrap a registry so every `bnf__<tool>` dispatch first takes its tokens from
@@ -23,15 +23,27 @@ import { bnfToolFromPrefixed } from "./tools"
  * (CLAUDE_ERROR_PATTERNS §15). Custom app tools pass straight through: the
  * ones that call BnF themselves (`corpus_search`) acquire inside `callBnfTool`.
  *
- * An abort during the wait is coerced into an error result exactly as the
- * underlying SDK dispatch coerces an aborted MCP transport (verified in
- * @alien/chat-sdk dist/claude/index.js `callMcpServerTool`: it catches and
- * returns `isError: true`), so the turn runtime sees one behaviour whichever
- * layer the cancellation lands in.
+ * When the registry carries the BnF MCP server, the limiter's required config
+ * is validated HERE, at build time: a missing BNF_MCP_RATE_* value fails the
+ * turn before the model runs, with the variable named, rather than throwing out
+ * of `dispatch` mid-loop. Without the server, no `bnf__*` tool is advertised to
+ * the model, so nothing is validated (the MCP stays optional, as in
+ * resolveMcpServers).
+ *
+ * `dispatch` never throws (CLAUDE_ERROR_PATTERNS §15). An abort during the wait
+ * is coerced into an error result exactly as the underlying SDK dispatch
+ * coerces an aborted MCP transport (verified in @alien/chat-sdk
+ * dist/claude/index.js `callMcpServerTool`: it catches and returns
+ * `isError: true`), so the turn runtime sees one behaviour whichever layer the
+ * cancellation lands in. Any other limiter failure is logged and returned to
+ * the model as an error result; the call is not sent.
  */
 export function withBnfRateLimit<TCtx extends ToolContext>(
   registry: ToolRegistry<TCtx>,
 ): ToolRegistry<TCtx> {
+  if (registry.mcpServers.some((s) => s.name === BNF_MCP_SERVER_NAME)) {
+    assertBnfRateLimiterConfigured()
+  }
   return {
     customTools: registry.customTools,
     mcpServers: registry.mcpServers,
@@ -43,10 +55,14 @@ export function withBnfRateLimit<TCtx extends ToolContext>(
         try {
           grant = await acquireBnfMcp(tool, input, ctx.signal)
         } catch (err) {
-          if (!ctx.signal.aborted) throw err
+          const message = err instanceof Error ? err.message : String(err)
+          if (ctx.signal.aborted) {
+            return { isError: true, content: `Tool "${toolName}" aborted: ${message}` }
+          }
+          console.error(`[bnf-rate] limiter failed for ${toolName} — call not sent:`, err)
           return {
             isError: true,
-            content: `Tool "${toolName}" aborted: ${err instanceof Error ? err.message : String(err)}`,
+            content: `Tool "${toolName}" failed before reaching BnF (rate limiter): ${message}`,
           }
         }
         if (!grant.ok) {
