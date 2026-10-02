@@ -212,6 +212,23 @@ export const BUFFER_CLASSIFIER_VERSION = 1
  *  86 765 prod rows at the first boot, then the version gate makes it a no-op. */
 export const BUFFER_RECLASSIFY_BATCH_SIZE = 1_000
 
+// Background enrichment of BARE buffer rows (buffer_add stages ARKs only) —
+// lib/buffer/enricher.ts. Cost: a same-project Document is copied for free;
+// anything else is one broker-routed OAI-PMH GetRecord (Gallica) or catalogue
+// SRU query per ARK, on the broker's `external` bucket (120/min, shared) —
+// about 8–9 minutes per 1 000 ARKs. Never the 40/min manifest bucket, which is
+// the ingestion bottleneck.
+
+/** ARKs resolved per enrichment batch (one bounded client fan-out). */
+export const BUFFER_ENRICH_BATCH_SIZE = 30
+/** Batches per drain pass — a pass touches at most 600 rows, so one kick can
+ *  never spin unboundedly (CLAUDE_ERROR_PATTERNS §14); the rest waits for the
+ *  next kick or the periodic sweep. */
+export const BUFFER_ENRICH_DRAIN_MAX_BATCHES = 20
+/** Attempts per row before it is marked failed (a BnF "unknown ARK" is failed
+ *  at once). Transient failures are retried by the next pass, never in-loop. */
+export const BUFFER_ENRICH_MAX_ATTEMPTS = 3
+
 /**
  * The seq assigned to the first (empty) CorpusVersion created by
  * ProjectService.create(). Invariant 1: every project always has a head.
@@ -344,6 +361,10 @@ export const RESOLVE_DRAIN_MAX_BATCHES = 50
  * RESOLVE_MAX_ATTEMPTS. 3 min: prompt recovery without hammering BnF.
  */
 export const RESOLVE_SWEEP_INTERVAL_MS = 3 * 60 * 1_000
+
+/** Periodic sweep for buffer rows a restart or a transient outage left
+ *  pending enrichment (lib/buffer/enricher.ts) — same cadence as the resolver. */
+export const BUFFER_ENRICH_SWEEP_INTERVAL_MS = RESOLVE_SWEEP_INTERVAL_MS
 
 /**
  * How often the comprehension panel re-fetches the corpus snapshot while

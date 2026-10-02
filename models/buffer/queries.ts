@@ -176,6 +176,22 @@ export class BufferQueries {
     return Object.fromEntries(used.map((p, i) => [p.dimension, counts[i]]))
   }
 
+  /**
+   * The whole candidate set's enrichment state, whatever the filters: how many
+   * candidates are still waiting for background metadata (`unresolved`, which
+   * no filter on title/type/date can see yet) and how many the drain gave up on
+   * (`unresolvedFailed`). Every buffer read returns it, so the agent checks it
+   * before filtering.
+   */
+  static async enrichCounts(projectId: string): Promise<{ unresolved: number; unresolvedFailed: number }> {
+    const where = { projectId, status: BUFFER_STATUS.CANDIDATE }
+    const [unresolved, unresolvedFailed] = await Promise.all([
+      prisma.bufferItem.count({ where: { ...where, enrichStatus: BUFFER_ENRICH_STATUS.PENDING } }),
+      prisma.bufferItem.count({ where: { ...where, enrichStatus: BUFFER_ENRICH_STATUS.FAILED } }),
+    ])
+    return { unresolved, unresolvedFailed }
+  }
+
   /** Count of candidates matching the filters. */
   static async count(projectId: string, filters: BufferFilterSet = {}): Promise<number> {
     return prisma.bufferItem.count({ where: BufferQueries.where(projectId, filters) })

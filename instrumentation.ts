@@ -32,8 +32,25 @@ export async function register() {
     console.error("[instrumentation] buffer reclassify failed:", err)
   })
 
-  const { RESOLVE_SWEEP_INTERVAL_MS, CANONICALIZE_SWEEP_INTERVAL_MS } =
-    await import("@/lib/constants")
+  const {
+    RESOLVE_SWEEP_INTERVAL_MS,
+    CANONICALIZE_SWEEP_INTERVAL_MS,
+    BUFFER_ENRICH_SWEEP_INTERVAL_MS,
+  } = await import("@/lib/constants")
+
+  // Background enrichment of bare buffer rows (buffer_add stages ARKs only):
+  // a boot resume for rows a restart left pending, then a periodic sweep —
+  // the resolver's pattern. Each pass is bounded and each failure counts an
+  // attempt, so a genuinely unknown ARK still terminates. Fire-and-forget.
+  const { resumePendingBufferEnrich } = await import("@/lib/buffer/enricher")
+  void resumePendingBufferEnrich().catch((err) => {
+    console.error("[instrumentation] boot buffer-enrich resume failed:", err)
+  })
+  setInterval(() => {
+    void resumePendingBufferEnrich().catch((err) => {
+      console.error("[instrumentation] periodic buffer-enrich sweep failed:", err)
+    })
+  }, BUFFER_ENRICH_SWEEP_INTERVAL_MS)
   setInterval(() => {
     void resumePendingResolves().catch((err) => {
       console.error("[instrumentation] periodic resolver sweep failed:", err)

@@ -27,6 +27,7 @@ import {
 } from "@/lib/constants"
 import { kickCanonicalize } from "@/lib/documents/canonicalizer"
 import { kickResolve } from "@/lib/documents/resolver"
+import { kickBufferEnrich } from "@/lib/buffer/enricher"
 import { requireMcpEnv } from "@/lib/env"
 import { callBnfTool } from "@/lib/mcp/call"
 import {
@@ -215,12 +216,11 @@ export const bufferListTool = defineTool<
       .describe(`Page size (1–200, default ${BUFFER_SAMPLE_SIZE}).`),
   }),
   handler: async (input, ctx) => {
-    const { total, rows } = await BufferQueries.list(
-      ctx.projectId,
-      input.filters,
-      input.limit ?? BUFFER_SAMPLE_SIZE,
-    )
-    return { total, candidates: rows }
+    const [{ total, rows }, enrich] = await Promise.all([
+      BufferQueries.list(ctx.projectId, input.filters, input.limit ?? BUFFER_SAMPLE_SIZE),
+      BufferQueries.enrichCounts(ctx.projectId),
+    ])
+    return { total, ...enrich, candidates: rows }
   },
 })
 
@@ -258,8 +258,11 @@ export const bufferStatsTool = defineTool<
   handler: async (input, ctx) => {
     const projectId = ctx.projectId
     const filters = input.filters
-    const snapshot = await BufferQueries.snapshot(projectId, filters, 0)
-    const stats = { total: snapshot.total, facets: snapshot.facets }
+    const [snapshot, enrich] = await Promise.all([
+      BufferQueries.snapshot(projectId, filters, 0),
+      BufferQueries.enrichCounts(projectId),
+    ])
+    const stats = { total: snapshot.total, ...enrich, facets: snapshot.facets }
 
     if (!input.cross_facets) return stats
 
@@ -338,12 +341,14 @@ export const bufferAddTool = defineTool<
 >({
   name: AGENT_TOOLS.bufferAdd,
   description:
-    "Manually add one or more ARKs to the research buffer as candidates (without a " +
-    "search). Use this only when the librarian gives you specific ARKs to stage; " +
-    "the normal way candidates enter the buffer is corpus_search. Deduplicated by " +
-    "ARK. Metadata is left empty (no background resolution — the buffer is " +
-    "pre-commit scratch); it fills in only if a later corpus_search surfaces the " +
-    "same ARK. Returns `added` (new candidates) and `total` (buffer size).",
+    "Stage specific ARKs the librarian names as buffer candidates, without a search. " +
+    "Their metadata (title, date, type, kind) is resolved in the BACKGROUND — about 1 " +
+    "minute per 100 ARKs, one BnF lookup per ARK — and filters cannot see a candidate " +
+    "until it is resolved: check buffer_stats `unresolved` before filtering. Whenever a " +
+    "search can produce the same documents, use corpus_search instead (for the press, " +
+    "`doc_type: \"fascicule\"` + `collapsing: false`): it stages them WITH their metadata " +
+    "at once. A previously discarded ARK named here is staged again. Returns `added`, " +
+    "`alreadyInCorpus`, `unresolved` and `total` (buffer size).",
   inputSchema: z.object({
     arks: z
       .array(arkSchema)
@@ -363,10 +368,21 @@ export const bufferAddTool = defineTool<
       restageDiscarded: true,
       candidates: input.arks.map((ark) => ({ ark })),
     })
+    // Bare ARKs: their metadata is resolved out of band, never inline.
+    if (result.unresolved > 0) kickBufferEnrich(projectId)
     const total = await emitBuffer(ctx, projectId, "added", result.added)
     return {
       requested: result.requested,
       ...stagingCounts(input.arks.length, result),
+      ...(result.unresolved > 0
+        ? {
+            enrichment: "background",
+            enrichment_note:
+              `${result.unresolved} candidat(s) sans métadonnées : résolution en arrière-plan ` +
+              "(environ 1 minute pour 100 ARK). Les filtres ne s'appliquent à eux qu'une fois " +
+              "résolus — vérifie `buffer_stats.unresolved` avant de filtrer.",
+          }
+        : {}),
       total,
     }
   },

@@ -437,6 +437,34 @@ export class BnfDirectClient {
     })
   }
 
+  /**
+   * Resolve ARKs STAGED in the research buffer (buffer_add enrichment,
+   * lib/buffer/enricher.ts). Same bounded concurrency and per-attempt timeouts
+   * as resolveArks, but Gallica ARKs always go through the ungated OAI-PMH
+   * record (oai.bnf.fr, broker `external` bucket) regardless of viaPartner():
+   *   - the IIIF manifest path is skipped on purpose — its 40/min bucket is
+   *     the ingestion bottleneck, and staging must never starve ingestion;
+   *   - OAI carries `gallica_typedoc` (periodiques:fascicules, …), the only
+   *     metadata-level press discriminator, which the manifest lacks.
+   * Catalogue ARKs use the catalogue SRU, as resolveArk does.
+   */
+  async resolveArksForStaging(
+    arks: string[],
+  ): Promise<Array<BnfMcpResolveResult | BnfMcpResolveError>> {
+    const settled: Settled<BnfMcpDocumentDetail>[] = await withConcurrency(
+      arks,
+      (ark) =>
+        sourceFromArk(ark) === "catalogue" ? this.resolveCatalogue(ark) : this.resolveGallicaViaOai(ark),
+      BNF_DIRECT_CONCURRENCY,
+    )
+    return arks.map((ark, i) => {
+      const s = settled[i]
+      return s.ok
+        ? { ark, ok: true as const, document: s.value }
+        : { ark, ok: false as const, error: s.error }
+    })
+  }
+
   /** Resolve one ARK to BnfMcpDocumentDetail (the shape normalize.ts consumes). */
   async resolveArk(ark: string): Promise<BnfMcpDocumentDetail> {
     return sourceFromArk(ark) === "catalogue"

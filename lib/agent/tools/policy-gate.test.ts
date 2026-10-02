@@ -117,8 +117,10 @@ type ToolCall = (c: TurnScopedCtx) => unknown
 /** The mutating calls of the gate table, each with the scope its tool lives in. */
 const MUTATIONS: Array<[string, "corpus" | "research", ToolCall]> = [
   [AGENT_TOOLS.corpusSearch, "corpus", (c) => corpusSearchTool.handler({ source: "gallica", query: "incendie" }, c)],
-  [AGENT_TOOLS.bufferAdd, "corpus", (c) => bufferAddTool.handler({ arks: [ARK(50)] }, c)],
-  [AGENT_TOOLS.bufferDiscard, "corpus", (c) => bufferDiscardTool.handler({ arks: [ARK(1), ARK(50)] }, c)],
+  // ARK(2) is already a titled candidate: the owner's call refreshes it and
+  // schedules no background enrichment (after() has no request scope here).
+  [AGENT_TOOLS.bufferAdd, "corpus", (c) => bufferAddTool.handler({ arks: [ARK(2)] }, c)],
+  [AGENT_TOOLS.bufferDiscard, "corpus", (c) => bufferDiscardTool.handler({ arks: [ARK(1)] }, c)],
   [
     AGENT_TOOLS.bufferRemoveByFilter,
     "corpus",

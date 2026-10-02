@@ -142,8 +142,9 @@ export type BufferMetadataFromDocument = {
 /** Rameau headings use `--` internally, never `;`, so " ; " is a safe joiner. */
 export const BUFFER_SUBJECTS_SEPARATOR = " ; "
 
-/** A non-empty trimmed string field of an untyped payload, or null. */
-function stringField(payload: unknown, key: string): string | null {
+/** A non-empty trimmed string field of an untyped payload (a resolved
+ *  record's preserved raw metadata), or null. */
+export function stringField(payload: unknown, key: string): string | null {
   if (typeof payload !== "object" || payload === null) return null
   const value = (payload as Record<string, unknown>)[key]
   if (typeof value !== "string") return null

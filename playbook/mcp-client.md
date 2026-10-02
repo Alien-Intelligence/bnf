@@ -32,6 +32,7 @@ The ingest worker is a third egress (IIIF manifest/ALTO/image via
 |---|---|---|
 | Resolve ARK → metadata (corpus add) | `BnfDirectClient.resolveArks` → broker → `oai.bnf.fr` / `catalogue.bnf.fr` | ✅ |
 | `cb…` notice → digitized `bpt6k…` ARK | `BnfDirectClient.canonicalizeArks` → broker → `data.bnf.fr` SPARQL + catalogue SRU | ✅ |
+| Stage bare ARK → metadata (buffer_add) | `BnfDirectClient.resolveArksForStaging` → broker → `oai.bnf.fr` / catalogue SRU (never the manifest: its bucket is ingestion's) | ✅ |
 | Worker ingest (manifest/ALTO/image) | `worker/src/prepare/bnf-api.ts` → broker → `openapiproext.bnf.fr` | ✅ |
 | Agent search / browse / read | chat-sdk `mcpServers` → **BnF MCP server** | ❌ (separate egress) |
 | User-facing Gallica links / `<img>` | derived URLs (`lib/constants.ts`) → public `gallica.bnf.fr`, in the browser | ❌ (by design) |
