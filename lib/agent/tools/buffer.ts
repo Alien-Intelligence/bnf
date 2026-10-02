@@ -59,6 +59,7 @@ import { BUFFER_ARK_KIND_VALUES } from "@/models/buffer/schema"
 import { arkSchema, type BufferCandidateInput } from "@/models/buffer/types"
 import type { TurnScopedCtx } from "./registry-factory"
 import { authorizeProjectTool } from "./authorize"
+import { EMPTY_FILTER_REFUSAL, toolRefusal } from "./failure"
 import { AGENT_TOOLS } from "./constants"
 import { provisionalTotal } from "./provisional-total"
 
@@ -279,6 +280,11 @@ export const bufferStatsTool = defineTool<
 // buffer_remove_by_filter
 // ---------------------------------------------------------------------------
 
+/** The model-readable reason an empty remove-by-filter is refused. */
+const BUFFER_EMPTY_FILTER_ERROR =
+  "Filtre vide refusé : il retirerait tout le tampon. Précise un critère, " +
+  "ou utilise buffer_clear pour vider le tampon explicitement."
+
 export const bufferRemoveByFilterTool = defineTool<
   z.ZodObject<{
     filters: typeof bufferFilterSchema
@@ -299,7 +305,7 @@ export const bufferRemoveByFilterTool = defineTool<
     "first with dry_run=true (the default) — it returns `matched` (how many would " +
     "be removed) and a sample of their ARKs WITHOUT changing anything; show the " +
     "librarian that count, then call again with dry_run=false to commit the " +
-    "removal. An empty filter is refused (status \"empty_filter\") — it would drop " +
+    "removal. An empty filter is refused (`success: false, refused: \"empty_filter\"`) — it would drop " +
     "the whole buffer; use buffer_clear for that, explicitly. Removed candidates " +
     "are discarded from the buffer, NOT the corpus (the buffer is pre-commit).",
   inputSchema: z.object({
@@ -322,6 +328,9 @@ export const bufferRemoveByFilterTool = defineTool<
       filters: input.filters,
       dryRun,
     })
+    if (result.status === "empty_filter") {
+      return toolRefusal(EMPTY_FILTER_REFUSAL, BUFFER_EMPTY_FILTER_ERROR)
+    }
 
     if (result.status === "removed" && result.removed > 0) {
       await emitBuffer(ctx, projectId, "removed", result.removed)
@@ -1328,7 +1337,8 @@ export const corpusSearchTool = defineTool<
     let mcpEnv: { BNF_MCP_URL: string; BNF_MCP_TOKEN: string }
     try {
       mcpEnv = requireMcpEnv()
-    } catch {
+    } catch (err) {
+      console.error("[corpus_search] BnF MCP env not configured:", err)
       return {
         success: false,
         error:

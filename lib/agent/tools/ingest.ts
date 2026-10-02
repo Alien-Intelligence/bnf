@@ -7,6 +7,7 @@ import { AGENT_TOOLS } from "./constants"
 import { IngestPolicy } from "@/models/ingest/policy"
 import { IngestService } from "@/models/ingest/service"
 import { authorizeProjectTool } from "./authorize"
+import { toolFailure } from "./failure"
 
 const inputSchema = z.object({
   target_version: z.number().int().positive().optional().describe(
@@ -20,6 +21,7 @@ export const ingestSubmitTool = defineTool<typeof inputSchema, TurnScopedCtx>({
     "Submit an ingestion job for the head corpus version. " +
     "Processing is asynchronous (extract → chunk → embed → index). " +
     "Returns the job id immediately — the user can navigate away and check progress later. " +
+    "`added_count` / `removed_count` are null until the job has computed its delta. " +
     "Call this only after the librarian has confirmed the corpus is ready to ingest.",
   inputSchema,
   handler: async (input, ctx) => {
@@ -37,7 +39,8 @@ export const ingestSubmitTool = defineTool<typeof inputSchema, TurnScopedCtx>({
       // Defensive: submit() only returns non-`job` when confirmPaidOcr was set,
       // which we never do — but never silently swallow an unexpected outcome.
       if (outcome.kind !== "job") {
-        return { error: `unexpected_submit_outcome: ${outcome.kind}` }
+        console.error(`[ingest_submit] unexpected submit outcome: ${outcome.kind}`)
+        return toolFailure(`L'ingestion n'a pas été lancée (issue inattendue : ${outcome.kind}).`)
       }
       const job = outcome.job
       ctx.emit?.({
@@ -47,11 +50,15 @@ export const ingestSubmitTool = defineTool<typeof inputSchema, TurnScopedCtx>({
       return {
         job_id: job.id,
         status: job.status,
-        added_count: job.addedCount ?? 0,
-        removed_count: job.removedCount ?? 0,
+        added_count: job.addedCount,
+        removed_count: job.removedCount,
       }
-    } catch (e) {
-      return { error: e instanceof Error ? e.message : "ingest_failed" }
+    } catch (err) {
+      // A tool never throws out of the loop (CLAUDE_ERROR_PATTERNS §15): the
+      // failure is logged here and handed to the model as a structured result.
+      const message = err instanceof Error ? err.message : String(err)
+      console.error("[ingest_submit] submit failed:", err)
+      return toolFailure(`L'ingestion n'a pas pu être lancée : ${message}`)
     }
   },
 })

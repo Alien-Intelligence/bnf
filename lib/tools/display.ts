@@ -1,6 +1,7 @@
 // lib/tools/display.ts
 // Pure, client-safe helpers for rendering agent tool calls in the chat panel.
 // No server imports — used by the chat tool renderers (components/badges/tools).
+import { EMPTY_FILTER_REFUSAL } from "@/lib/agent/tools/failure"
 
 /** Whether a tool name is an MCP tool (server-prefixed: "bnf__bnf_search…"). */
 export function toolSource(toolName: string): "custom" | "mcp" {
@@ -205,7 +206,8 @@ export function isCorpusRemoveByFilterTool(toolName: string): boolean {
 
 /**
  * The settled outcome of a corpus_remove_by_filter call, parsed from its result
- * JSON. Mirrors `CorpusRemoveByFilterResult` (models/corpus/service.ts). Returns
+ * JSON: the tool's empty-filter refusal, or a `CorpusRemoveByFilterResult`
+ * outcome (models/corpus/service.ts). Returns
  * null while the result is not yet available (still running) or unparseable —
  * the pill then shows its running/neutral state.
  */
@@ -216,8 +218,10 @@ export type RemoveByFilterView =
   | null
 
 export function corpusRemoveByFilterView(result: string): RemoveByFilterView {
+  // The refusal is a `{ success: false, refused: "empty_filter" }` tool failure
+  // (lib/agent/tools/failure.ts); the outcomes carry `status`.
+  if (pickString(result, ["refused"]) === EMPTY_FILTER_REFUSAL) return { status: "empty_filter" }
   const status = pickString(result, ["status"])
-  if (status === "empty_filter") return { status: "empty_filter" }
   if (status === "dry_run") {
     return { status: "dry_run", matched: pickNumber(result, ["matched"]) ?? 0 }
   }

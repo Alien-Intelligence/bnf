@@ -31,6 +31,7 @@ import { NoteQueries } from "@/models/notes/queries"
 import type { TurnScopedCtx } from "./registry-factory"
 import { authorizeProjectTool } from "./authorize"
 import { AGENT_TOOLS } from "./constants"
+import { toolFailure } from "./failure"
 import { NOTE_NOT_INGESTED_ERROR, resolveIngestedCorpus } from "./ingestion-guard"
 
 /**
@@ -105,7 +106,7 @@ export const noteGetTool = defineTool<
   }),
   handler: async (input, ctx) => {
     const note = await NoteQueries.getForProject(input.id, ctx.projectId)
-    if (!note) return { error: NOTE_NOT_FOUND_ERROR }
+    if (!note) return toolFailure(NOTE_NOT_FOUND_ERROR)
     return { note }
   },
 })
@@ -156,7 +157,7 @@ export const noteCreateTool = defineTool<
     // Structural guard: a note must rest on the ingested corpus, never on
     // general knowledge before any retrieval exists (design item 4).
     const corpus = await resolveIngestedCorpus(ctx, NOTE_NOT_INGESTED_ERROR)
-    if ("error" in corpus) return { error: corpus.error }
+    if ("error" in corpus) return toolFailure(corpus.error)
 
     // The note is the project's own; its citations belong to the corpus it
     // reads, which is the source's when this is a derived workspace.
@@ -217,12 +218,12 @@ export const noteUpdateTool = defineTool<
   }),
   handler: async (input, ctx) => {
     const corpus = await resolveIngestedCorpus(ctx, NOTE_NOT_INGESTED_ERROR)
-    if ("error" in corpus) return { error: corpus.error }
+    if ("error" in corpus) return toolFailure(corpus.error)
 
     // Scope before mutating. `input.id` came from the model and names any note
     // in the database, not necessarily one this project owns.
     const target = await NoteQueries.getForProject(input.id, ctx.projectId)
-    if (!target) return { error: NOTE_NOT_FOUND_ERROR }
+    if (!target) return toolFailure(NOTE_NOT_FOUND_ERROR)
     const gate = await authorizeProjectTool(ctx, NotePolicy, "update", target)
     if (!gate.ok) return gate.result
 
@@ -232,7 +233,7 @@ export const noteUpdateTool = defineTool<
     })
     // Deleted between the scope check and the write — rare, but the honest
     // answer is the same one the scope check gives.
-    if (!written) return { error: NOTE_NOT_FOUND_ERROR }
+    if (!written) return toolFailure(NOTE_NOT_FOUND_ERROR)
 
     ctx.emit?.({
       type: "note_event",
@@ -279,18 +280,18 @@ export const noteAppendTool = defineTool<
   }),
   handler: async (input, ctx) => {
     const corpus = await resolveIngestedCorpus(ctx, NOTE_NOT_INGESTED_ERROR)
-    if ("error" in corpus) return { error: corpus.error }
+    if ("error" in corpus) return toolFailure(corpus.error)
 
     // Scope before mutating — see note_update.
     const target = await NoteQueries.getForProject(input.id, ctx.projectId)
-    if (!target) return { error: NOTE_NOT_FOUND_ERROR }
+    if (!target) return toolFailure(NOTE_NOT_FOUND_ERROR)
     const gate = await authorizeProjectTool(ctx, NotePolicy, "update", target)
     if (!gate.ok) return gate.result
 
     const written = await NoteService.append(input.id, ctx.corpusProjectId, {
       bodyMd: input.body_md,
     })
-    if (!written) return { error: NOTE_NOT_FOUND_ERROR }
+    if (!written) return toolFailure(NOTE_NOT_FOUND_ERROR)
 
     ctx.emit?.({
       type: "note_event",

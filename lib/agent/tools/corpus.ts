@@ -34,6 +34,7 @@ import { ARK_KIND_VALUES, INDEXATION_OUTCOME, classifyOutcome } from "@/models/d
 import type { DocumentRow } from "@/models/corpus/schema"
 import type { TurnScopedCtx } from "./registry-factory"
 import { authorizeProjectTool } from "./authorize"
+import { EMPTY_FILTER_REFUSAL, toolRefusal } from "./failure"
 import { AGENT_TOOLS } from "./constants"
 import { provisionalTotal } from "./provisional-total"
 
@@ -526,6 +527,11 @@ export const corpusRemoveTool = defineTool<
 // corpus_remove_by_filter
 // ---------------------------------------------------------------------------
 
+/** The model-readable reason an empty remove-by-filter is refused. */
+const CORPUS_EMPTY_FILTER_ERROR =
+  "Filtre vide refusé : " +
+  "il retirerait tout le corpus. Précise au moins un critère."
+
 export const corpusRemoveByFilterTool = defineTool<
   z.ZodObject<{
     filters: typeof corpusFiltersSchema
@@ -545,7 +551,7 @@ export const corpusRemoveByFilterTool = defineTool<
     "(how many would be removed) and a sample of their ARKs WITHOUT changing " +
     "anything. Show the librarian that count, get confirmation, THEN call again " +
     "with dry_run=false to commit (which seals a new corpus version). An empty " +
-    "filter is refused (status \"empty_filter\") — it would match the whole " +
+    "filter is refused (`success: false, refused: \"empty_filter\"`) — it would match the whole " +
     "corpus; narrow it instead. Removing a document drops its membership only; " +
     "it is never deleted from the database.",
   inputSchema: z.object({
@@ -580,6 +586,9 @@ export const corpusRemoveByFilterTool = defineTool<
       reason: input.reason,
       dryRun,
     })
+    if (result.status === "empty_filter") {
+      return toolRefusal(EMPTY_FILTER_REFUSAL, CORPUS_EMPTY_FILTER_ERROR)
+    }
 
     // Only a committed removal emits a corpus_event and advances a version.
     if (result.status === "removed" && result.removed > 0) {
