@@ -107,6 +107,18 @@ export const BRAND_ASSET = {
 export const OAUTH_PROVIDER_ID = LOGIN_METHOD.AUTHENTIK
 
 /**
+ * What the app asks Authentik for at SSO sign-in. `openid` makes it OIDC and
+ * yields the id_token that sign-out sends back as `id_token_hint`;
+ * `offline_access` + offline access type + consent prompt yield a refresh
+ * token. Changing these changes what sign-out can do.
+ */
+export const AUTHENTIK_OAUTH = {
+  SCOPES: ["openid", "email", "profile", "offline_access"],
+  ACCESS_TYPE: "offline",
+  PROMPT: "consent",
+} as const
+
+/**
  * Query keys the auth pages read and write. `next` is the post-sign-in
  * destination, always passed through `safeNextPath` (lib/auth-redirect.ts);
  * written by `requireSessionUser`, read by the sign-in page. `signedOut`

@@ -5,7 +5,7 @@ import { prismaAdapter } from "better-auth/adapters/prisma"
 import { genericOAuth } from "better-auth/plugins"
 import { prisma } from "./db"
 import { authentik, env } from "./env"
-import { OAUTH_PROVIDER_ID } from "./constants"
+import { AUTHENTIK_OAUTH, OAUTH_PROVIDER_ID } from "./constants"
 import { loginMethodFromAuthPath } from "./auth-login-method"
 import { authentikDiscoveryUrl } from "./auth-sso"
 
@@ -23,9 +23,9 @@ const oauthPlugins = authentik
             clientId: authentik.clientId,
             clientSecret: authentik.clientSecret,
             discoveryUrl: authentikDiscoveryUrl(authentik),
-            scopes: ["openid", "email", "profile", "offline_access"],
-            accessType: "offline",
-            prompt: "consent",
+            scopes: [...AUTHENTIK_OAUTH.SCOPES],
+            accessType: AUTHENTIK_OAUTH.ACCESS_TYPE,
+            prompt: AUTHENTIK_OAUTH.PROMPT,
           },
         ],
       }),
