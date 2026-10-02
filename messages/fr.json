@@ -187,7 +187,10 @@
     "steps": "Étapes du projet",
     "signedInAs": "Connecté en tant que {name}",
     "language": "Langue",
-    "admin": "Administration"
+    "admin": "Administration",
+    "projectMeta": "{count} · {subtitle}",
+    "projectsError": "Impossible de charger vos projets.",
+    "projectsEmpty": "Aucun projet dans votre liste."
   },
   "health": {
     "aria": "État des services",

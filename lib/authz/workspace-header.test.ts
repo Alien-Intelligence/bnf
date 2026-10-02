@@ -9,7 +9,11 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import { Prisma } from "@/lib/generated/prisma/client"
 
-import { workspaceHeaderProject } from "./workspace-header"
+import {
+  mayOpenAdminConsole,
+  workspaceHeaderProject,
+  workspaceHeaderViewer,
+} from "./workspace-header"
 import { PROJECT_ACCESS } from "./project-access"
 import { RESEARCH_ONLY_STEPS, WORKSPACE_STEPS } from "@/lib/constants"
 import { USER_ROLE, type PolicyUser } from "@/models/users/schema"
@@ -74,8 +78,8 @@ test("a write-share member: full steps, but no share button", () => {
     member,
     project({ shares: [{ id: "s1", groupId: GROUP, access: PROJECT_ACCESS.WRITE }] }),
   )
-  assert.equal(h.mayShare, false)
-  assert.deepEqual(h.steps, WORKSPACE_STEPS)
+  assert.equal(h?.mayShare, false)
+  assert.deepEqual(h?.steps, WORKSPACE_STEPS)
 })
 
 test("a read-share member: research only, no share button", () => {
@@ -83,8 +87,8 @@ test("a read-share member: research only, no share button", () => {
     member,
     project({ shares: [{ id: "s1", groupId: GROUP, access: PROJECT_ACCESS.READ }] }),
   )
-  assert.equal(h.mayShare, false)
-  assert.deepEqual(h.steps, RESEARCH_ONLY_STEPS)
+  assert.equal(h?.mayShare, false)
+  assert.deepEqual(h?.steps, RESEARCH_ONLY_STEPS)
 })
 
 test("the owner of a derived workspace: research only, and may NOT re-share the corpus", () => {
@@ -92,12 +96,12 @@ test("the owner of a derived workspace: research only, and may NOT re-share the 
     member,
     project({ ownerId: member.id, corpusSourceId: "source-1", corpusSourceShareId: "s1" }),
   )
-  assert.equal(h.mayShare, false)
-  assert.deepEqual(h.steps, RESEARCH_ONLY_STEPS)
+  assert.equal(h?.mayShare, false)
+  assert.deepEqual(h?.steps, RESEARCH_ONLY_STEPS)
 })
 
 test("an admin on a foreign own-corpus project resolves to owner: may share", () => {
-  assert.equal(workspaceHeaderProject(admin, project()).mayShare, true)
+  assert.equal(workspaceHeaderProject(admin, project())?.mayShare, true)
 })
 
 test("an admin on a derived project still may not share it", () => {
@@ -105,5 +109,26 @@ test("an admin on a derived project still may not share it", () => {
     admin,
     project({ corpusSourceId: "source-1", corpusSourceShareId: "s1" }),
   )
-  assert.equal(h.mayShare, false)
+  assert.equal(h?.mayShare, false)
+})
+
+test("an account granted nothing gets no project header at all: no name, no steps, no share", () => {
+  const stranger = user({ id: "stranger", groupIds: ["group-b"] })
+  assert.equal(
+    workspaceHeaderProject(
+      stranger,
+      project({ shares: [{ id: "s1", groupId: GROUP, access: PROJECT_ACCESS.READ }] }),
+    ),
+    null,
+  )
+})
+
+test("the viewer: the admin console link follows the console's own rule", () => {
+  assert.deepEqual(workspaceHeaderViewer(admin), {
+    name: admin.name,
+    email: admin.email,
+    isAdmin: true,
+  })
+  assert.equal(workspaceHeaderViewer(member).isAdmin, false)
+  assert.equal(mayOpenAdminConsole({ role: USER_ROLE.GUEST }), false)
 })

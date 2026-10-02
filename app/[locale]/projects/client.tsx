@@ -26,17 +26,18 @@ import { LayoutSharedEmptyState } from "@/components/layouts/shared/empty-state"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import type { ProjectListItem } from "@/models/projects/schema"
+import type { WorkspaceHeaderViewer } from "@/lib/authz/workspace-header"
 
 interface ProjectsClientProps {
   initialProjects: ProjectListItem[]
-  user: { id: string; name: string; email: string }
-  isAdmin: boolean
+  userId: string
+  viewer: WorkspaceHeaderViewer
 }
 
 export function ProjectsClient({
   initialProjects,
-  user,
-  isAdmin,
+  userId,
+  viewer,
 }: ProjectsClientProps) {
   const t = useTranslations("projects")
   const [createOpen, setCreateOpen] = useState(false)
@@ -47,8 +48,8 @@ export function ProjectsClient({
     initialData: initialProjects,
   })
 
-  const owned = (projects ?? []).filter((p) => p.ownerId === user.id)
-  const shared = (projects ?? []).filter((p) => p.ownerId !== user.id)
+  const owned = (projects ?? []).filter((p) => p.ownerId === userId)
+  const shared = (projects ?? []).filter((p) => p.ownerId !== userId)
 
   const grid = (items: ProjectListItem[]) => (
     <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
@@ -56,7 +57,7 @@ export function ProjectsClient({
         <CardProjectTile
           key={project.id}
           project={project}
-          currentUserId={user.id}
+          currentUserId={userId}
           onShare={() => setSharing(project)}
           onDerive={() => setDeriving(project)}
         />
@@ -66,11 +67,7 @@ export function ProjectsClient({
 
   return (
     <div className="flex min-h-screen flex-col">
-      <LayoutWorkspaceHeader
-        user={{ name: user.name, email: user.email }}
-        isAdmin={isAdmin}
-        project={null}
-      />
+      <LayoutWorkspaceHeader viewer={viewer} project={null} />
 
       <main className="mx-auto w-full max-w-7xl px-6 py-12">
         <div className="mb-8 flex items-end justify-between gap-4">

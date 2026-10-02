@@ -1,8 +1,8 @@
 // app/[locale]/projects/[projectId]/layout.tsx
 // Shell for every project step (Constituer, Ingérer, Rechercher, Carnet): it
-// loads what the header needs and renders the header ONCE, so the share
-// button, the « Projets » crumb and the admin link are decided here from
-// server data instead of being threaded through six client mounts (which is
+// loads what the header needs and hands it to the client shell, which renders
+// the header ONCE (and the dialogs it opens), so the share button, the
+// « Projets » crumb and the admin link are decided here from server data instead of being threaded through six client mounts (which is
 // how the admin link went missing on every project page).
 //
 // It never gates. A layout does not re-render on navigation and cannot see
@@ -15,11 +15,12 @@
 
 import type { ReactNode } from "react"
 import { findSessionUser } from "@/lib/auth-helpers"
-import { canReadProject } from "@/lib/authz/project-access"
-import { workspaceHeaderProject } from "@/lib/authz/workspace-header"
+import {
+  workspaceHeaderProject,
+  workspaceHeaderViewer,
+} from "@/lib/authz/workspace-header"
 import { ProjectQueries } from "@/models/projects/queries"
-import { USER_ROLE } from "@/models/users/schema"
-import { LayoutWorkspaceHeader } from "@/components/layouts/workspace/header"
+import { LayoutWorkspaceProjectShell } from "@/components/layouts/workspace/project-shell"
 
 export default async function ProjectLayout({
   children,
@@ -36,16 +37,14 @@ export default async function ProjectLayout({
   if (!user) return children
 
   const project = await ProjectQueries.get(projectId)
-  if (!project || !canReadProject(user, project)) return children
+  if (!project) return children
+  // null when the user may not read the project (canReadProject).
+  const headerProject = workspaceHeaderProject(user, project)
+  if (!headerProject) return children
 
   return (
-    <div className="flex h-screen flex-col">
-      <LayoutWorkspaceHeader
-        user={{ name: user.name, email: user.email }}
-        isAdmin={user.role === USER_ROLE.ADMIN}
-        project={workspaceHeaderProject(user, project)}
-      />
-      <div className="flex min-h-0 flex-1 flex-col">{children}</div>
-    </div>
+    <LayoutWorkspaceProjectShell viewer={workspaceHeaderViewer(user)} project={headerProject}>
+      {children}
+    </LayoutWorkspaceProjectShell>
   )
 }

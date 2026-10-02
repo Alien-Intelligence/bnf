@@ -8,7 +8,8 @@ import { redirect } from "@/i18n/navigation"
 import { AUTH_QUERY, ROUTES } from "@/lib/constants"
 import { GroupQueries } from "@/models/groups/queries"
 import { UserQueries } from "@/models/users/queries"
-import { USER_ROLE, type PolicyUser } from "@/models/users/schema"
+import { mayOpenAdminConsole } from "@/lib/authz/workspace-header"
+import type { PolicyUser } from "@/models/users/schema"
 
 /**
  * A live session whose user row does not exist. The session table's foreign
@@ -72,7 +73,7 @@ export async function requireSessionUser(nextPath?: string): Promise<PolicyUser>
  */
 export async function requireAdminUser(nextPath?: string): Promise<PolicyUser> {
   const user = await requireSessionUser(nextPath)
-  if (user.role !== USER_ROLE.ADMIN) {
+  if (!mayOpenAdminConsole(user)) {
     notFound()
   }
   return user
