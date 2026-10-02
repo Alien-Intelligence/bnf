@@ -8,7 +8,14 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 
-import { OCR_SOURCE, OCR_SYNC_STATUS } from "@/models/documents/schema"
+import {
+  OCR_ACCESS,
+  OCR_SOURCE,
+  OCR_SYNC_STATUS,
+  type DocumentFolioRow,
+  type DocumentOcrStatusRow,
+  type NoteOcrRows,
+} from "@/models/documents/schema"
 
 import { noteToMarkdown, notesToMarkdown, type ExportCopy } from "./export"
 
@@ -18,6 +25,11 @@ const COPY: ExportCopy = { disclaimer: "AVERTISSEMENT BNF", lowMarker: "(qualit�
 const F1 = { ark: ARK, folio: 1, ocrSource: OCR_SOURCE.ALTO, ocrQuality: 0.932, wordCount: 5106 }
 const F2 = { ark: ARK, folio: 2, ocrSource: OCR_SOURCE.ALTO, ocrQuality: 0.661, wordCount: 4016 }
 const SYNCED = [{ ark: ARK, status: OCR_SYNC_STATUS.AVAILABLE }]
+
+/** A note's OCR rows as NoteService.details serves them when the read succeeded. */
+function rows(folioOcr: DocumentFolioRow[], documentOcr: DocumentOcrStatusRow[]): NoteOcrRows {
+  return { access: OCR_ACCESS.OK, folioOcr, documentOcr }
+}
 
 const BODY = `Le vélo [[${ARK}|L'Auto-vélo, 2 juillet 1910|1]] et la course [[${ARK}|L'Auto-vélo|2]].`
 
@@ -29,20 +41,26 @@ const PLAIN_EXPORT =
 
 test("noteToMarkdown: no low citation → byte-identical to the 0.18.1 export", () => {
   // f2 is cited but its synced document has no row for it: not low, not marked.
-  const note = { title: "Le Tour", body_md: BODY, folioOcr: [F1], documentOcr: SYNCED }
+  const note = { title: "Le Tour", body_md: BODY, ocr: rows([F1], SYNCED) }
   assert.equal(noteToMarkdown(note, COPY), PLAIN_EXPORT)
 })
 
 test("noteToMarkdown: quality not synced yet → byte-identical too (unknown is never marked)", () => {
   assert.equal(
-    noteToMarkdown({ title: "Le Tour", body_md: BODY, folioOcr: [], documentOcr: [] }, COPY),
+    noteToMarkdown({ title: "Le Tour", body_md: BODY, ocr: rows([], []) }, COPY),
     PLAIN_EXPORT,
   )
 })
 
+test("noteToMarkdown: OCR not readable (revoked grant, failed read) → byte-identical, nothing claimed", () => {
+  for (const access of [OCR_ACCESS.CORPUS_REVOKED, OCR_ACCESS.CHECK_FAILED] as const) {
+    assert.equal(noteToMarkdown({ title: "Le Tour", body_md: BODY, ocr: { access } }, COPY), PLAIN_EXPORT)
+  }
+})
+
 test("noteToMarkdown: f2 low → disclaimer under the title, marker after the f2 link only", () => {
   const md = noteToMarkdown(
-    { title: "Le Tour", body_md: BODY, folioOcr: [F1, F2], documentOcr: SYNCED },
+    { title: "Le Tour", body_md: BODY, ocr: rows([F1, F2], SYNCED) },
     COPY,
   )
   assert.equal(
@@ -57,7 +75,7 @@ test("noteToMarkdown: f2 low → disclaimer under the title, marker after the f2
 test("noteToMarkdown: an image embed of a low folio never triggers it (D11)", () => {
   assert.equal(
     noteToMarkdown(
-      { title: "Image", body_md: `![[${ARK}|Une|2]]`, folioOcr: [F2], documentOcr: SYNCED },
+      { title: "Image", body_md: `![[${ARK}|Une|2]]`, ocr: rows([F2], SYNCED) },
       COPY,
     ),
     "# Image\n\n" +
@@ -69,9 +87,9 @@ test("noteToMarkdown: an image embed of a low folio never triggers it (D11)", ()
 test("notesToMarkdown: one disclaimer per affected note section", () => {
   const md = notesToMarkdown(
     [
-      { title: "A", body_md: `[[${ARK}|A|2]]`, folioOcr: [F2], documentOcr: SYNCED },
-      { title: "B", body_md: `[[${ARK}|B|1]]`, folioOcr: [F1], documentOcr: SYNCED },
-      { title: "C", body_md: `[[${ARK}|C|2]] [[${ARK}|C|f2]]`, folioOcr: [F2], documentOcr: SYNCED },
+      { title: "A", body_md: `[[${ARK}|A|2]]`, ocr: rows([F2], SYNCED) },
+      { title: "B", body_md: `[[${ARK}|B|1]]`, ocr: rows([F1], SYNCED) },
+      { title: "C", body_md: `[[${ARK}|C|2]] [[${ARK}|C|f2]]`, ocr: rows([F2], SYNCED) },
     ],
     COPY,
   )
@@ -92,8 +110,8 @@ test("notesToMarkdown: nothing low → byte-identical to the 0.18.1 export", () 
   assert.equal(
     notesToMarkdown(
       [
-        { title: "A", body_md: `[[${ARK}|A|1]]`, folioOcr: [F1], documentOcr: SYNCED },
-        { title: "B", body_md: null, folioOcr: [], documentOcr: [] },
+        { title: "A", body_md: `[[${ARK}|A|1]]`, ocr: rows([F1], SYNCED) },
+        { title: "B", body_md: null, ocr: rows([], []) },
       ],
       COPY,
     ),

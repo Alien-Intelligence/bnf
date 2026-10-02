@@ -28,7 +28,7 @@ import { z } from "zod"
 import { defineTool } from "@alien/chat-sdk/claude"
 import { ClusterRagClient } from "@/lib/cluster/rag"
 import type { TurnScopedCtx } from "./registry-factory"
-import { AGENT_TOOLS } from "./constants"
+import { AGENT_TOOLS, DOCUMENT_OCR_STATUS_LEGEND, FOLIO_OCR_STATE_LEGEND } from "./constants"
 import { NOT_INGESTED_ERROR, resolveIngestedCorpus } from "./ingestion-guard"
 import { withDeadline } from "@/lib/async/deadline"
 import { foliosInSlice } from "@/lib/citations/ocr"
@@ -68,9 +68,9 @@ export const ragQueryTool = defineTool<
   description:
     "Search the ingested corpus by semantic similarity. " +
     "Returns passages with ARK, folio, snippet, and relevance score. " +
-    "Each passage also carries its folio's OCR quality: ocrState (recorded | " +
-    "not_synced | not_recorded | no_folio — only `recorded` means the quality is " +
-    "known; any other state is UNKNOWN, never 'good'), ocrQuality (mean word " +
+    "Each passage also carries its folio's OCR quality: ocrState " +
+    `(${FOLIO_OCR_STATE_LEGEND} — only \`recorded\` means the quality is known; any ` +
+    "other state is UNKNOWN, never 'good'), ocrQuality (mean word " +
     "confidence 0–1, null when not measured), ocrSource (alto | mistral | vision) " +
     "and ocrLow (true = the folio's text is poorly recognised — an ocrNotice then " +
     "explains it). " +
@@ -118,9 +118,8 @@ export const ragQueryTool = defineTool<
     })
     // Passages come from this corpus' own dataset; the read is gated on it too.
     const index = await loadOcrIndex(
-      ctx.corpusProjectId,
+      ctx,
       result.passages.flatMap((p) => (p.folio === null ? [] : [{ ark: p.ark, folio: p.folio }])),
-      ctx.signal,
     )
     return { ...result, ...annotatePassages(result.passages, index) }
   },
@@ -152,11 +151,11 @@ export const ragKeywordSearchTool = defineTool<
     "when you need to FILTER by document type, language or source — filtering " +
     "lives here, not on rag_query. Use the returned entryId with rag_get_text " +
     "to read the surrounding full text. " +
-    "Each hit also carries its document's OCR quality: ocrStatus (available | " +
-    "building | unavailable | quarantined | pending — only `available` means the " +
-    "low-folio list is known; otherwise the quality is UNKNOWN, never 'good'), " +
+    "Each hit also carries its document's OCR quality: ocrStatus " +
+    `(${DOCUMENT_OCR_STATUS_LEGEND}), ` +
     "ocrRate (the BnF \"Taux OCR\", 0–1) and ocrLowFolios / ocrLowFolioCount (the " +
-    "folios whose text is poorly recognised). " +
+    "folios whose text is poorly recognised) — both null unless ocrStatus is " +
+    "`available`: unknown, never 'none'. " +
     "Returns an empty hits array (with an error field) when nothing is ingested.",
   inputSchema: z.object({
     query: z
@@ -226,7 +225,8 @@ export const ragGetTextTool = defineTool<
     "totalLength, hasMore and nextOffset for pagination. " +
     "Also pass the ARK of that SAME search result (required): the result then " +
     "carries ocr.folios — the OCR quality (ocrState, ocrQuality, ocrSource, " +
-    "ocrLow) of each folio whose \"## Folio N\" heading falls inside the slice — " +
+    "ocrLow — the same fields as rag_query) of each folio whose \"## Folio N\" " +
+    "heading falls inside the slice — " +
     "and ocr.leadingFolioKnown (false when the slice starts mid-folio; that " +
     "folio's quality is then unknown). The cluster cannot confirm that the " +
     "entryId belongs to that ARK (entryArkVerified: false): the quality reported " +
@@ -277,9 +277,8 @@ export const ragGetTextTool = defineTool<
     })
     const { folios } = foliosInSlice(content.text)
     const index = await loadOcrIndex(
-      ctx.corpusProjectId,
+      ctx,
       folios.map((folio) => ({ ark: input.ark, folio })),
-      ctx.signal,
     )
     return {
       ...content,

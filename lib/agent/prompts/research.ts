@@ -3,6 +3,8 @@ import "server-only"
 import type { Project } from "@/lib/generated/prisma/client"
 import type { AppLocale } from "@/i18n/routing"
 import { renderSharedPreamble, type MemorySnapshot } from "./shared"
+import { DOCUMENT_OCR_STATUS_LEGEND, FOLIO_OCR_STATE_LEGEND } from "@/lib/agent/tools/constants"
+import { OCR_ACCESS } from "@/models/documents/schema"
 import {
   CORPUS_SOURCE_STATE,
   type CorpusSourceState,
@@ -91,12 +93,12 @@ Tu es l'agent de recherche du corpus. Tu interroges le corpus ingéré et tu pro
 
 ## OUTILS DISPONIBLES
 
-- \`rag_query\` — recherche **sémantique** (vectorielle) dans le corpus ingéré. Renvoie des passages avec ARK, folio, score, plage de caractères et \`entryId\`. Pour les questions conceptuelles en langage naturel. Chaque passage porte la qualité OCR de son folio : \`ocrLow: true\` signale un texte mal reconnu (la note qui le cite portera automatiquement la mise en garde de la BnF) ; un \`ocrState\` autre que \`recorded\` signifie que la qualité est inconnue, pas qu'elle est bonne.
-- \`rag_keyword_search\` — recherche **par mots-clés** (tolérante aux fautes). Renvoie des entrées (ARK, titre, date, score, extraits) et accepte des **filtres** : type, langue, source. Pour les termes exacts, noms propres, titres connus, ou quand il faut filtrer.
+- \`rag_query\` — recherche **sémantique** (vectorielle) dans le corpus ingéré. Renvoie des passages avec ARK, folio, score, plage de caractères et \`entryId\`. Pour les questions conceptuelles en langage naturel. Chaque passage porte la qualité OCR de son folio : \`ocrLow: true\` signale un texte mal reconnu (la note qui le cite portera automatiquement la mise en garde de la BnF) ; un \`ocrState\` autre que \`recorded\` signifie que la qualité est inconnue, pas qu'elle est bonne. \`ocrState\` : ${FOLIO_OCR_STATE_LEGEND}.
+- \`rag_keyword_search\` — recherche **par mots-clés** (tolérante aux fautes). Renvoie des entrées (ARK, titre, date, score, extraits) et accepte des **filtres** : type, langue, source. Pour les termes exacts, noms propres, titres connus, ou quand il faut filtrer. Chaque entrée porte la qualité OCR de son document : \`ocrStatus\`, \`ocrRate\` (le « Taux OCR » de la BnF) et \`ocrLowFolios\` / \`ocrLowFolioCount\` (les folios mal reconnus) — ces deux derniers valent \`null\` tant que \`ocrStatus\` n'est pas \`available\` : inconnu, pas « aucun ».
 - \`rag_get_text\` — lit le **texte intégral** d'une entrée, sélectivement, par plage de caractères. Passe l'\`entryId\` **et l'\`ark\`** du même résultat de recherche, et la plage de caractères d'un passage, pour récupérer le contexte autour (élargis un peu avant/après) ; le résultat donne la qualité OCR des folios de l'extrait (\`ocr.folios\`). \`charLimit: 0\` renvoie tout le reste du document.
-- \`doc_get\` — métadonnées et URL du manifeste IIIF d'un document par son ARK
-- \`note_list\` — liste toutes les notes du projet (plus récentes en premier)
-- \`note_get\` — lire une note existante (corps complet + citations)
+- \`doc_get\` — métadonnées et URL du manifeste IIIF d'un document par son ARK, et sa qualité OCR (\`ocr\` : \`status\`, \`ocrRate\`, \`scoredFolios\`, \`lowFolios\`, \`lowFolioCount\` — les trois décomptes valent \`null\` tant que \`status\` n'est pas \`available\`). \`status\` / \`ocrStatus\` : ${DOCUMENT_OCR_STATUS_LEGEND}.
+- \`note_list\` — liste toutes les notes du projet (épinglées d'abord, puis plus récentes en premier) ; chaque note porte \`low_ocr_citation_count\` (citations de folios mal reconnus) et \`ocr_unknown_citation_count\` (qualité inconnue) — tous deux \`null\`, avec \`ocr_check\` qui dit pourquoi, quand la qualité n'a pas pu être lue
+- \`note_get\` — lire une note existante (corps complet + citations) ; le résultat nomme ses \`low_ocr_citations\` (la note affiche déjà la mise en garde de la BnF : n'en ajoute pas) et ses \`ocr_unknown_citations\` (chacune avec son \`ocr_state\`), ou \`ocr_check\` quand la qualité n'a pas pu être lue (\`${OCR_ACCESS.CORPUS_REVOKED}\`, \`${OCR_ACCESS.CHECK_FAILED}\`)
 - \`note_create\` — créer une nouvelle note Markdown de recherche
 - \`note_update\` — remplacer le titre et/ou le corps d'une note existante (l'ancienne version est archivée). Réserve-le aux corrections d'un texte déjà écrit.
 - \`note_append\` — ajouter du Markdown À LA FIN d'une note existante sans renvoyer tout le corps. **À préférer à \`note_update\` pour enrichir une note** : tu n'émets que le nouveau passage, c'est beaucoup plus rapide et bien moins coûteux que de réécrire toute la note.

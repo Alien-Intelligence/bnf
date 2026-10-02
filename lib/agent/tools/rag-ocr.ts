@@ -6,15 +6,14 @@
  * recognised: `ocrLow` is computed by code (isLowOcr, lib/ocr/quality.ts) and a
  * factual notice rides along whenever anything in a result is low. And it must
  * never mistake "not known" for "fine": every folio carries an explicit
- * `ocrState` (the four states of lib/ocr/quality.ts):
- *   recorded     — ocrSource / ocrQuality / ocrLow are the stored values;
- *   not_synced   — the document's quality is not stored yet (or not
- *                  obtainable); ocrSource and ocrQuality are null;
- *   not_recorded — the document is synced but this folio has no stored row;
- *   no_folio     — the passage itself carries no folio.
+ * `ocrState` (FOLIO_OCR_STATE, models/documents/schema.ts; its meanings as
+ * the model reads them are FOLIO_OCR_STATE_MEANING in ./constants). Only
+ * `recorded` carries ocrSource / ocrQuality; every other state leaves them
+ * null, and ocrLow false.
  *
  * Gating (plan D8): every read takes the turn's corpus project and only ever
- * returns rows for Documents of that corpus (DocumentQueries). Every database
+ * returns rows for Documents of that corpus (DocumentQueries); a reader whose
+ * corpus grant was revoked reads nothing (OCR_INDEX_REVOKED). Every database
  * await is bounded by OCR_DB_TIMEOUT_MS and tied to the turn's signal; a
  * failure throws, and the chat-sdk turns it into an isError tool result — the
  * model sees the failure instead of a silently unannotated result. The note
@@ -23,23 +22,28 @@
 import "server-only"
 
 import { withDeadline } from "@/lib/async/deadline"
-import { citationOcrSummary, foliosInSlice } from "@/lib/citations/ocr"
+import { classifyFolioRefs, foliosInSlice } from "@/lib/citations/ocr"
 import { parseCitations } from "@/lib/citations/syntax"
 import type { RagKeywordHit, RagPassage } from "@/lib/cluster/rag"
 import { OCR_DB_TIMEOUT_MS, RAG_OCR_LOW_FOLIOS_MAX } from "@/lib/constants"
 import {
+  OCR_INDEX_REVOKED,
   buildOcrIndex,
-  folioOcrKey,
   folioOcrState,
   toDocumentOcrView,
   type FolioOcrState,
   type OcrIndex,
+  type OcrReader,
+  type UnknownFolioOcrState,
 } from "@/lib/ocr/quality"
 import { DocumentQueries } from "@/models/documents/queries"
 import {
+  DOCUMENT_OCR_STATUS,
+  FOLIO_OCR_STATE,
   OCR_SOURCE,
   type DocumentOcrStatus,
   type DocumentOcrView,
+  type FolioOcrStateKind,
   type FolioRef,
   type OcrSource,
 } from "@/models/documents/schema"
@@ -48,8 +52,8 @@ import { RAG_KEYWORD_OCR_LOW_NOTICE, RAG_OCR_LOW_NOTICE } from "./constants"
 
 /** The OCR fields one folio contributes to a tool result. */
 export type FolioOcrFields = {
-  /** Which of the four states the folio is in (see the header). */
-  ocrState: FolioOcrState["kind"]
+  /** The folio's state (FOLIO_OCR_STATE — see the header). */
+  ocrState: FolioOcrStateKind
   /** Mean ALTO word confidence in [0, 1]; null unless recorded and scored. */
   ocrQuality: number | null
   /** What produced the text; null unless recorded. */
@@ -59,7 +63,7 @@ export type FolioOcrFields = {
 }
 
 function folioFields(state: FolioOcrState): FolioOcrFields {
-  if (state.kind === "recorded") {
+  if (state.kind === FOLIO_OCR_STATE.RECORDED) {
     return {
       ocrState: state.kind,
       ocrQuality: state.view.ocrQuality,
@@ -96,19 +100,33 @@ export function annotatePassages(
 // doc_get / rag_keyword_search — a document's OCR summary
 // ---------------------------------------------------------------------------
 
+/**
+ * A document's OCR summary. The folio counts are only TRUE when the document
+ * is `available` (its folio list is complete): under any other status they are
+ * null — unknown, never 0 — and `status` says why (DOCUMENT_OCR_STATUS_MEANING).
+ */
 export type DocOcrSummary = {
   status: DocumentOcrStatus
   /** The manifest "Taux OCR" / 100; null when BnF publishes none or not synced. */
   ocrRate: number | null
-  /** Folios carrying a measured quality. */
-  scoredFolios: number
-  /** Low folio numbers, ascending, capped at RAG_OCR_LOW_FOLIOS_MAX. */
-  lowFolios: number[]
-  /** Exact number of low folios (lowFolios may be capped). */
-  lowFolioCount: number
+  /** Folios carrying a measured quality; null unless available. */
+  scoredFolios: number | null
+  /** Low folio numbers, ascending, capped at RAG_OCR_LOW_FOLIOS_MAX; null unless available. */
+  lowFolios: number[] | null
+  /** Exact number of low folios (lowFolios may be capped); null unless available. */
+  lowFolioCount: number | null
 }
 
 export function docOcrSummary(view: DocumentOcrView): DocOcrSummary {
+  if (view.status !== DOCUMENT_OCR_STATUS.AVAILABLE) {
+    return {
+      status: view.status,
+      ocrRate: view.ocrRate,
+      scoredFolios: null,
+      lowFolios: null,
+      lowFolioCount: null,
+    }
+  }
   const low = view.folios.filter((f) => f.low).map((f) => f.folio).sort((a, b) => a - b)
   return {
     status: view.status,
@@ -122,11 +140,13 @@ export function docOcrSummary(view: DocumentOcrView): DocOcrSummary {
 }
 
 export type OcrAnnotatedKeywordHit = RagKeywordHit & {
-  /** The document's sync status: only `available` means the folio list is complete. */
+  /** The document's sync status: only `available` means the folio list is known. */
   ocrStatus: DocumentOcrStatus
   ocrRate: number | null
-  ocrLowFolios: number[]
-  ocrLowFolioCount: number
+  /** null unless ocrStatus is `available` (unknown, never "none"). */
+  ocrLowFolios: number[] | null
+  /** null unless ocrStatus is `available` (unknown, never 0). */
+  ocrLowFolioCount: number | null
 }
 
 export function annotateKeywordHits(
@@ -145,7 +165,10 @@ export function annotateKeywordHits(
   })
   return {
     hits: annotated,
-    ...noticeIf(annotated.some((h) => h.ocrLowFolioCount > 0), RAG_KEYWORD_OCR_LOW_NOTICE),
+    ...noticeIf(
+      annotated.some((h) => h.ocrLowFolioCount !== null && h.ocrLowFolioCount > 0),
+      RAG_KEYWORD_OCR_LOW_NOTICE,
+    ),
   }
 }
 
@@ -183,11 +206,11 @@ export function annotateTextSlice(
 /** A cited folio measured below the threshold (a low folio is always scored). */
 export type LowOcrCitation = { ark: string; folio: number; ocr_quality: number }
 
-/** A cited folio whose quality is not available — never to be read as "not low". */
+/** A cited folio whose quality is not known — never to be read as "not low". */
 export type UnknownOcrCitation = {
   ark: string
   folio: number
-  ocr_state: "not_synced" | "not_recorded"
+  ocr_state: UnknownFolioOcrState["kind"]
 }
 
 export type NoteOcrReport = {
@@ -196,31 +219,30 @@ export type NoteOcrReport = {
 }
 
 /**
- * The note's text citations split into low and unknown, one entry per
- * (ark, folio), in body order. `rejected` are the ARKs the corpus could not
- * vouch for (NoteService): they have no Citation row and are never reported.
- * Image embeds are excluded (D11, citationOcrSummary).
+ * Some cited folios split into low and unknown (classifyFolioRefs — the one
+ * classifier), one entry per (ark, folio), in first-seen order. The refs are
+ * a note's Citation rows (a read) or its body's corpus-vouched text citations
+ * (a write, noteCitationRefs).
  */
-export function noteOcrReport(body: string, index: OcrIndex, rejected: string[]): NoteOcrReport {
-  const excluded = new Set(rejected)
-  const { low, unknown } = citationOcrSummary(body, index)
-  const report: NoteOcrReport = { low: [], unknown: [] }
-  const seen = new Set<string>()
-  for (const c of [...low, ...unknown]) {
-    const key = folioOcrKey(c.ark, c.folio)
-    if (excluded.has(c.ark) || seen.has(key)) continue
-    seen.add(key)
-    const state = folioOcrState(index, c.ark, c.folio)
-    if (state.kind === "recorded" && state.view.ocrQuality !== null) {
-      report.low.push({ ark: c.ark, folio: c.folio, ocr_quality: state.view.ocrQuality })
-    } else if (state.kind === "not_synced" || state.kind === "not_recorded") {
-      report.unknown.push({ ark: c.ark, folio: c.folio, ocr_state: state.kind })
-    }
+export function noteOcrReport(
+  refs: Array<{ ark: string; folio: number | null }>,
+  index: OcrIndex,
+): NoteOcrReport {
+  const { low, unknown } = classifyFolioRefs(refs, index)
+  return {
+    low: low.flatMap((f) =>
+      f.view.ocrQuality === null ? [] : [{ ark: f.ark, folio: f.folio, ocr_quality: f.view.ocrQuality }],
+    ),
+    unknown: unknown.map((f) => ({ ark: f.ark, folio: f.folio, ocr_state: f.state.kind })),
   }
-  return report
 }
 
-/** The text citations of a body that the corpus vouched for, as folio refs. */
+/**
+ * The text citations of a body that the corpus vouched for, as folio refs.
+ * `rejected` are the ARKs the corpus could not vouch for (NoteService): they
+ * have no Citation row and are never looked up. Image embeds are not text
+ * citations (D11).
+ */
 export function noteCitationRefs(body: string, rejected: string[]): FolioRef[] {
   const excluded = new Set(rejected)
   return parseCitations(body)
@@ -232,16 +254,17 @@ export function noteCitationRefs(body: string, rejected: string[]): FolioRef[] {
 // Loaders — corpus-gated, bounded, tied to the turn's signal
 // ---------------------------------------------------------------------------
 
-/** The stored quality of the given folios on the turn's corpus, as an OcrIndex. */
-export async function loadOcrIndex(
-  corpusProjectId: string,
-  refs: FolioRef[],
-  signal: AbortSignal,
-): Promise<OcrIndex> {
-  const rows = await withDeadline(DocumentQueries.ocrIndexRows(corpusProjectId, refs), {
+/**
+ * The stored quality of the given folios on the reader's corpus, as an
+ * OcrIndex — OCR_INDEX_REVOKED, without any read, when the reader's corpus
+ * grant was revoked.
+ */
+export async function loadOcrIndex(reader: OcrReader, refs: FolioRef[]): Promise<OcrIndex> {
+  if (!reader.corpusReachable) return OCR_INDEX_REVOKED
+  const rows = await withDeadline(DocumentQueries.ocrIndexRows(reader.corpusProjectId, refs), {
     label: "OCR quality read",
     ms: OCR_DB_TIMEOUT_MS,
-    signal,
+    signal: reader.signal,
   })
   return buildOcrIndex(rows.folios, rows.documents)
 }

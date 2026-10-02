@@ -10,7 +10,8 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 
 import type { Citation, NoteWithCitations } from "@/models/notes/schema"
-import { attachNoteOcr, citationRefs } from "@/models/notes/service"
+import { OCR_ACCESS } from "@/models/documents/schema"
+import { attachNoteOcr, citationRefs, NoteService } from "@/models/notes/service"
 
 const A = "ark:/12148/bpt6k000001"
 const B = "ark:/12148/bpt6k000002"
@@ -74,13 +75,30 @@ test("attachNoteOcr: only the note's own cited folios and documents", () => {
       { ark: C, status: "building" },
     ],
   }
-  const detail = attachNoteOcr(note([citation(A, 2), citation(C, 1)]), rows)
+  const { ocr } = attachNoteOcr(note([citation(A, 2), citation(C, 1)]), rows)
+  assert.equal(ocr.access, OCR_ACCESS.OK)
+  if (ocr.access !== OCR_ACCESS.OK) return
   assert.deepEqual(
-    detail.folioOcr.map((f) => [f.ark, f.folio]),
+    ocr.folioOcr.map((f) => [f.ark, f.folio]),
     [[A, 2]],
   )
   assert.deepEqual(
-    detail.documentOcr.map((d) => d.ark).sort(),
+    ocr.documentOcr.map((d) => d.ark).sort(),
     [A, C],
+  )
+})
+
+test("NoteService.details: a revoked reader gets every note, OCR corpus_revoked, with no read", async () => {
+  // An unreachable reader never touches the database: a bogus corpus id and an
+  // aborted signal would both fail any read that happened.
+  const notes = [note([citation(A, 2)]), note([citation(B, 7)])]
+  const details = await NoteService.details(notes, {
+    corpusProjectId: "no-such-project",
+    corpusReachable: false,
+    signal: AbortSignal.abort(),
+  })
+  assert.deepEqual(
+    details.map((d) => [d.id, d.ocr]),
+    notes.map((n) => [n.id, { access: OCR_ACCESS.CORPUS_REVOKED }]),
   )
 })

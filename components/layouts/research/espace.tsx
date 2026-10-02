@@ -386,8 +386,7 @@ function NoteReader({
         </div>
         <NoteBody
           body={note.body_md ?? ""}
-          folioOcr={note.folioOcr}
-          documentOcr={note.documentOcr}
+          ocr={note.ocr}
           onCitationClick={onCitationClick}
           onNoteLinkClick={onNoteLinkClick}
           knownNoteIds={knownNoteIds}
@@ -608,8 +607,7 @@ function CarnetSectionBody({
   return (
     <NoteBody
       body={state.note.body_md ?? ""}
-      folioOcr={state.note.folioOcr}
-      documentOcr={state.note.documentOcr}
+      ocr={state.note.ocr}
       onCitationClick={onCitationClick}
       onNoteLinkClick={onNoteLinkClick}
       knownNoteIds={knownNoteIds}

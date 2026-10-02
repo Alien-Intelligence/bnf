@@ -7,8 +7,9 @@
 // Its folio's OCR state (feedback 2026-09-29 #7, lib/ocr/quality.ts):
 //   - recorded and low → a warning marker inside the pill, a warning border
 //     tint, the TooltipCitationLowOcr explanation and an aria-label saying so;
-//   - not synced / not recorded → no visual marker (plan D3: only a measured
-//     low quality is flagged) but the aria-label says the quality is not
+//   - any unknown state (isOcrUnknown: pending, unavailable, not recorded,
+//     revoked, check failed) → no visual marker (plan D3: only a measured low
+//     quality is flagged) but the aria-label says the quality is not
 //     available, so "unknown" is never announced as "fine";
 //   - recorded and not low, or a mistral/vision page → the plain pill.
 
@@ -17,7 +18,8 @@ import { useTranslations } from "next-intl"
 import { Badge } from "@/components/ui/badge"
 import { TooltipCitationLowOcr } from "@/components/tooltips/citations/low-ocr"
 import type { ParsedCitation } from "@/lib/citations/syntax"
-import { ocrPercent, type FolioOcrState } from "@/lib/ocr/quality"
+import { isOcrUnknown, ocrPercent, type FolioOcrState } from "@/lib/ocr/quality"
+import { FOLIO_OCR_STATE } from "@/models/documents/schema"
 import { cn } from "@/lib/utils"
 
 interface BadgeArkCitationProps {
@@ -29,7 +31,7 @@ interface BadgeArkCitationProps {
 
 /** The measured quality as a percentage when the folio is low, else null. */
 function lowPercent(ocr: FolioOcrState): number | null {
-  if (ocr.kind !== "recorded" || !ocr.view.low || ocr.view.ocrQuality === null) return null
+  if (ocr.kind !== FOLIO_OCR_STATE.RECORDED || !ocr.view.low || ocr.view.ocrQuality === null) return null
   return ocrPercent(ocr.view.ocrQuality)
 }
 
@@ -37,7 +39,7 @@ export function BadgeArkCitation({ citation, ocr, onClick }: BadgeArkCitationPro
   const t = useTranslations("citations.ocr")
   const lowQuality = lowPercent(ocr)
   const text = `${citation.label} · f${citation.folio}`
-  const unknown = ocr.kind === "not_synced" || ocr.kind === "not_recorded"
+  const unknown = isOcrUnknown(ocr)
 
   let ariaLabel: string | undefined
   if (lowQuality !== null) ariaLabel = `${text} — ${t("lowPill", { quality: lowQuality })}`

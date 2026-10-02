@@ -16,8 +16,8 @@ import type { ParsedCitation } from "@/lib/citations/syntax"
 import { iiifImageUrl } from "@/lib/citations/external"
 import { citationOcrSummary } from "@/lib/citations/ocr"
 import { NOTE_IMAGE_IIIF_SIZE } from "@/lib/constants"
-import { buildOcrIndex, folioOcrState } from "@/lib/ocr/quality"
-import type { DocumentFolioRow, DocumentOcrStatusRow } from "@/models/documents/schema"
+import { folioOcrState, noteOcrIndex } from "@/lib/ocr/quality"
+import type { NoteOcrRows } from "@/models/documents/schema"
 import { BadgeArkCitation } from "@/components/badges/citations/ark"
 import { CardNoteLowOcrBanner } from "./low-ocr-banner"
 import { NoteLinkPill } from "./note-link-pill"
@@ -34,17 +34,13 @@ const NOTE_HREF_PREFIX = "#note-"
 interface NoteBodyProps {
   body: string
   /**
-   * The stored OCR quality of the note's cited folios (NoteDetail.folioOcr).
-   * Required, with no default, so no note view can forget it: a low folio
-   * marks its pill and the note shows the BnF disclaimer banner once.
+   * The note's OCR rows (NoteDetail.ocr): the stored quality of its cited
+   * folios and the sync status of the documents it cites — or why they are not
+   * given (revoked grant, failed read). Required, with no default, so no note
+   * view can forget it: a low folio marks its pill and the note shows the BnF
+   * disclaimer banner once; an unknown one is never shown as fine.
    */
-  folioOcr: DocumentFolioRow[]
-  /**
-   * The sync status of the documents the note cites (NoteDetail.documentOcr),
-   * so a folio whose quality is not available yet is told apart from one that
-   * is measured and fine. Required for the same reason.
-   */
-  documentOcr: DocumentOcrStatusRow[]
+  ocr: NoteOcrRows
   onCitationClick: (c: ParsedCitation) => void
   /** Open another note from a `[[note:<id>|<label>]]` cross-reference. When
    *  omitted, note links render as non-navigating pills. */
@@ -132,15 +128,14 @@ const MD_COMPONENTS: Components = {
 
 export function NoteBody({
   body,
-  folioOcr,
-  documentOcr,
+  ocr,
   onCitationClick,
   onNoteLinkClick,
   knownNoteIds,
 }: NoteBodyProps) {
   // The cited folios' OCR quality, keyed by (ark, folio), and the text
   // citations that point at a low folio. Image embeds never count (D11).
-  const ocrIndex = useMemo(() => buildOcrIndex(folioOcr, documentOcr), [folioOcr, documentOcr])
+  const ocrIndex = useMemo(() => noteOcrIndex(ocr), [ocr])
   const hasLowOcr = useMemo(() => citationOcrSummary(body, ocrIndex).low.length > 0, [body, ocrIndex])
 
   // Image embeds, text citations, and note links in left-to-right order. The

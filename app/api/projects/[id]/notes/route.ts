@@ -11,7 +11,7 @@ import { ProjectQueries } from "@/models/projects/queries"
 import { NotePolicy } from "@/models/notes/policy"
 import { NoteQueries } from "@/models/notes/queries"
 import { NoteService } from "@/models/notes/service"
-import { resolveCorpusProject } from "@/app/api/_corpus-source"
+import { noteOcrReader, resolveCorpusProject } from "@/app/api/_corpus-source"
 import { createNoteSchema } from "@/models/notes/types"
 import type { NoteDetail, NoteListItem } from "@/models/notes/schema"
 
@@ -53,8 +53,10 @@ export const POST = withAuth(async (req, _user, bouncer, ctx: RouteCtx) => {
 
   // Return the full note (citations + their folios' OCR quality) so the client
   // can prime the detail cache with the same shape GET /api/notes/:nid answers.
+  // The note is committed: a failed OCR read is answered as check_failed
+  // inside the NoteDetail (NoteService.details), never as a failed create.
   const full = await NoteQueries.get(note.id)
   // Deleted between the write and the re-read.
   if (!full) return notFound("Note introuvable")
-  return ok<NoteDetail>(await NoteService.detail(full, corpusId), 201)
+  return ok<NoteDetail>(await NoteService.detail(full, noteOcrReader(project, req.signal)), 201)
 })

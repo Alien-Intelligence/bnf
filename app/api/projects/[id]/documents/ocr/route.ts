@@ -11,12 +11,16 @@
  * derived): an ARK outside that corpus is a 404 — the table is never an oracle
  * for another project's corpus. A revoked grant is the usual 409.
  *
+ * Both reads are bounded (OCR_DB_TIMEOUT_MS) and tied to the request's signal.
+ *
  * Authorization: read access on the project (DocumentPolicy.view).
  */
 import { withAuth } from "@/app/api/_middleware"
 import { parseQuery } from "@/app/api/_helpers"
 import { resolveCorpusProject } from "@/app/api/_corpus-source"
 import { ok, notFound } from "@/lib/api-response"
+import { withDeadline } from "@/lib/async/deadline"
+import { OCR_DB_TIMEOUT_MS } from "@/lib/constants"
 import { DocumentPolicy } from "@/models/documents/policy"
 import { DocumentQueries } from "@/models/documents/queries"
 import { toDocumentOcrView } from "@/lib/ocr/quality"
@@ -38,9 +42,16 @@ export const GET = withAuth(async (req, _user, bouncer, ctx: RouteCtx) => {
   const corpusId = resolveCorpusProject(project)
   if (corpusId instanceof Response) return corpusId
 
-  const doc = await DocumentQueries.getByArk(corpusId, parsed.ark)
+  const bound = { ms: OCR_DB_TIMEOUT_MS, signal: req.signal }
+  const doc = await withDeadline(DocumentQueries.getByArk(corpusId, parsed.ark), {
+    label: "document OCR route: corpus check",
+    ...bound,
+  })
   if (!doc) return notFound("Document introuvable dans ce corpus")
 
-  const row = await DocumentQueries.ocrForArk(corpusId, parsed.ark)
+  const row = await withDeadline(DocumentQueries.ocrForArk(corpusId, parsed.ark), {
+    label: "document OCR route: quality read",
+    ...bound,
+  })
   return ok<DocumentOcrView>(toDocumentOcrView(parsed.ark, row))
 })

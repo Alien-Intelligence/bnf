@@ -26,17 +26,24 @@ import {
 import { citationOcrSummary, foliosInSlice } from "@/lib/citations/ocr"
 import { workerOcrQualitySyncResponseSchema } from "@/lib/cluster/ocr-quality"
 import {
+  CorruptOcrRowError,
+  OCR_INDEX_CHECK_FAILED,
+  OCR_INDEX_REVOKED,
   buildOcrIndex,
   folioOcrKey,
   folioOcrState,
+  isOcrUnknown,
+  noteOcrIndex,
   isLowOcr,
   ocrPercent,
   toDocumentOcrView,
   toFolioOcrView,
 } from "@/lib/ocr/quality"
 import {
+  DOCUMENT_OCR_STATUS,
+  FOLIO_OCR_STATE,
+  OCR_ACCESS,
   OCR_SOURCE,
-  OCR_STATUS_PENDING,
   OCR_SYNC_STATUS,
   type DocumentFolioRow,
 } from "@/models/documents/schema"
@@ -274,7 +281,7 @@ test("planOcrSyncWrites: an empty response plans nothing", () => {
 test("toDocumentOcrView: no row is pending, with no folios", () => {
   assert.deepEqual(toDocumentOcrView(ARK, null), {
     ark: ARK,
-    status: OCR_STATUS_PENDING,
+    status: DOCUMENT_OCR_STATUS.PENDING,
     ocrRate: null,
     reason: null,
     folios: [],
@@ -325,26 +332,84 @@ const GOLDEN_INDEX = buildOcrIndex(
 )
 
 test("buildOcrIndex: folios keyed by (ark, folio)", () => {
+  assert.equal(GOLDEN_INDEX.access, OCR_ACCESS.OK)
+  if (GOLDEN_INDEX.access !== OCR_ACCESS.OK) return
   assert.equal(GOLDEN_INDEX.folios.get(folioOcrKey(ARK_GOLDEN, 2))?.ocrQuality, 0.661)
   assert.equal(GOLDEN_INDEX.folios.get(folioOcrKey(ARK_GOLDEN, 3)), undefined)
 })
 
-test("buildOcrIndex: an unknown stored status is a corrupt row and throws", () => {
-  assert.throws(() => buildOcrIndex([], [{ ark: ARK, status: "done" }]), /done/)
+test("buildOcrIndex: an unknown stored status raises CorruptOcrRowError naming the row", () => {
+  assert.throws(
+    () => buildOcrIndex([], [{ ark: ARK, status: "done" }]),
+    (err: unknown) =>
+      err instanceof CorruptOcrRowError &&
+      err.table === "document_ocr" &&
+      err.ark === ARK &&
+      err.column === "status" &&
+      err.value === "done",
+  )
 })
 
-test("folioOcrState: the four states are never collapsed", () => {
-  assert.deepEqual(folioOcrState(GOLDEN_INDEX, ARK_GOLDEN, null), { kind: "no_folio" })
-  assert.equal(folioOcrState(GOLDEN_INDEX, ARK_GOLDEN, 2).kind, "recorded")
-  assert.deepEqual(folioOcrState(GOLDEN_INDEX, ARK_GOLDEN, 9), { kind: "not_recorded" })
+test("toFolioOcrView: an unknown stored source raises CorruptOcrRowError", () => {
+  assert.throws(
+    () => buildOcrIndex([folioRow({ ocrSource: "tesseract" })], []),
+    (err: unknown) =>
+      err instanceof CorruptOcrRowError && err.table === "document_folio" && err.column === "ocr_source",
+  )
+})
+
+test("folioOcrState: every state is distinct — not yet, never, not obtained, no folio", () => {
+  assert.deepEqual(folioOcrState(GOLDEN_INDEX, ARK_GOLDEN, null), { kind: FOLIO_OCR_STATE.NO_FOLIO })
+  assert.equal(folioOcrState(GOLDEN_INDEX, ARK_GOLDEN, 2).kind, FOLIO_OCR_STATE.RECORDED)
+  assert.deepEqual(folioOcrState(GOLDEN_INDEX, ARK_GOLDEN, 9), { kind: FOLIO_OCR_STATE.NOT_RECORDED })
   assert.deepEqual(folioOcrState(GOLDEN_INDEX, ARK, 1), {
-    kind: "not_synced",
-    status: OCR_SYNC_STATUS.BUILDING,
+    kind: FOLIO_OCR_STATE.PENDING,
+    status: DOCUMENT_OCR_STATUS.BUILDING,
   })
   assert.deepEqual(folioOcrState(GOLDEN_INDEX, "ark:/12148/bpt6k000001", 1), {
-    kind: "not_synced",
-    status: OCR_STATUS_PENDING,
+    kind: FOLIO_OCR_STATE.PENDING,
+    status: DOCUMENT_OCR_STATUS.PENDING,
   })
+  const blocked = buildOcrIndex(
+    [],
+    [
+      { ark: ARK, status: OCR_SYNC_STATUS.UNAVAILABLE },
+      { ark: ARK_GOLDEN, status: OCR_SYNC_STATUS.QUARANTINED },
+    ],
+  )
+  assert.deepEqual(folioOcrState(blocked, ARK, 1), {
+    kind: FOLIO_OCR_STATE.UNAVAILABLE,
+    status: DOCUMENT_OCR_STATUS.UNAVAILABLE,
+  })
+  assert.deepEqual(folioOcrState(blocked, ARK_GOLDEN, 1), {
+    kind: FOLIO_OCR_STATE.UNAVAILABLE,
+    status: DOCUMENT_OCR_STATUS.QUARANTINED,
+  })
+})
+
+test("folioOcrState: a revoked or failed index yields its own state, whatever is stored", () => {
+  assert.deepEqual(folioOcrState(OCR_INDEX_REVOKED, ARK_GOLDEN, 2), { kind: FOLIO_OCR_STATE.CORPUS_REVOKED })
+  assert.deepEqual(folioOcrState(OCR_INDEX_CHECK_FAILED, ARK_GOLDEN, 2), { kind: FOLIO_OCR_STATE.CHECK_FAILED })
+  // A reference without a folio cites no page, revoked or not.
+  assert.deepEqual(folioOcrState(OCR_INDEX_REVOKED, ARK_GOLDEN, null), { kind: FOLIO_OCR_STATE.NO_FOLIO })
+  assert.equal(noteOcrIndex({ access: OCR_ACCESS.CORPUS_REVOKED }), OCR_INDEX_REVOKED)
+  assert.equal(noteOcrIndex({ access: OCR_ACCESS.CHECK_FAILED }), OCR_INDEX_CHECK_FAILED)
+})
+
+test("isOcrUnknown: everything but recorded and no_folio", () => {
+  const unknown = Object.values(FOLIO_OCR_STATE).filter(
+    (k) => k !== FOLIO_OCR_STATE.RECORDED && k !== FOLIO_OCR_STATE.NO_FOLIO,
+  )
+  assert.deepEqual(unknown.sort(), [
+    FOLIO_OCR_STATE.CHECK_FAILED,
+    FOLIO_OCR_STATE.CORPUS_REVOKED,
+    FOLIO_OCR_STATE.NOT_RECORDED,
+    FOLIO_OCR_STATE.PENDING,
+    FOLIO_OCR_STATE.UNAVAILABLE,
+  ].sort())
+  assert.equal(isOcrUnknown({ kind: FOLIO_OCR_STATE.NO_FOLIO }), false)
+  assert.equal(isOcrUnknown({ kind: FOLIO_OCR_STATE.CORPUS_REVOKED }), true)
+  assert.equal(isOcrUnknown({ kind: FOLIO_OCR_STATE.NOT_RECORDED }), true)
 })
 
 test("citationOcrSummary: f2 (0.661) is low, f1 (0.932) is neither low nor unknown", () => {

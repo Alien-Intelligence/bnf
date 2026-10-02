@@ -12,7 +12,7 @@ import type {
   NoteDeleted,
   NoteDetail,
   NoteListItem,
-  NoteVersionListItem,
+  NoteVersionList,
 } from "@/models/notes/schema"
 import type { CreateNoteInput, UpdateNoteInput } from "@/models/notes/types"
 
@@ -51,13 +51,13 @@ export function useNotes(
 }
 
 export function useNoteVersions(noteId: string | null) {
-  return useQuery<{ versions: NoteVersionListItem[] }>({
+  return useQuery<NoteVersionList>({
     queryKey: noteKeys.versions(noteId),
     queryFn: async () => {
       if (noteId === null) throw new Error("useNoteVersions: queryFn ran without a note id")
       const res = await apiFetch(NOTE_VERSIONS_ENDPOINT(noteId))
       if (!res.ok) throw new Error(`Failed to fetch note versions: ${res.status}`)
-      return res.json() as Promise<{ versions: NoteVersionListItem[] }>
+      return res.json() as Promise<NoteVersionList>
     },
     enabled: noteId !== null,
   })
@@ -86,18 +86,12 @@ export function useNote(noteId: string | null) {
  * notes at once — the Carnet stitches every note into one document. Shares the
  * per-note detail cache with {@link useNote}, so notes already opened in the
  * Atelier resolve instantly. Order follows `noteIds`.
- *
- * `initialData` seeds each note's cache entry from server-loaded details (the
- * standalone Carnet page, found bug B8): the page renders at once and the
- * queries still refetch, instead of the page freezing its props.
  */
-export function useNoteDetails(noteIds: string[], opts: { initialData?: NoteDetail[] } = {}) {
-  const seeded = new Map((opts.initialData ?? []).map((n) => [n.id, n]))
+export function useNoteDetails(noteIds: string[]) {
   return useQueries({
     queries: noteIds.map((id) => ({
       queryKey: noteKeys.detail(id),
       queryFn: () => fetchNoteDetail(id),
-      initialData: seeded.get(id),
     })),
   })
 }

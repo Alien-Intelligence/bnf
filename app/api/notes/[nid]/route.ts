@@ -15,8 +15,7 @@ import { NotePolicy } from "@/models/notes/policy"
 import { ProjectQueries } from "@/models/projects/queries"
 import { NoteQueries } from "@/models/notes/queries"
 import { NoteService } from "@/models/notes/service"
-import { corpusProjectId } from "@/lib/authz/corpus-source"
-import { resolveCorpusProject } from "@/app/api/_corpus-source"
+import { noteOcrReader, resolveCorpusProject } from "@/app/api/_corpus-source"
 import { updateNoteSchema } from "@/models/notes/types"
 import type { NoteDeleted, NoteDetail } from "@/models/notes/schema"
 
@@ -33,9 +32,10 @@ export const GET = withAuth(async (req, _user, bouncer, ctx: RouteCtx) => {
   await bouncer.with(NotePolicy).authorize("read", project)
 
   // Authorized: now add the cited folios' OCR quality, read on the corpus the
-  // note's citations were validated against. A revoked derived workspace keeps
-  // reading its own notes (and the quality of the folios they already cite).
-  return ok<NoteDetail>(await NoteService.detail(note, corpusProjectId(project)))
+  // note's citations were validated against — bounded, tied to the request,
+  // and non-fatal. A revoked derived workspace keeps reading its own notes;
+  // their OCR is then an explicit corpus_revoked state, never the source's rows.
+  return ok<NoteDetail>(await NoteService.detail(note, noteOcrReader(project, req.signal)))
 })
 
 export const PUT = withAuth(async (req, _user, bouncer, ctx: RouteCtx) => {
@@ -63,11 +63,13 @@ export const PUT = withAuth(async (req, _user, bouncer, ctx: RouteCtx) => {
   // Deleted between the authorize() above and the write.
   if (!updated) return notFound("Note introuvable")
 
-  // Re-fetch to include fresh citations (and their folios' OCR quality).
+  // Re-fetch to include fresh citations (and their folios' OCR quality). The
+  // write is committed: a failed OCR read is answered as check_failed inside
+  // the NoteDetail (NoteService.details), never as a failed update.
   const full = await NoteQueries.get(updated.note.id)
   // Deleted between the write and the re-read.
   if (!full) return notFound("Note introuvable")
-  return ok<NoteDetail>(await NoteService.detail(full, corpusId))
+  return ok<NoteDetail>(await NoteService.detail(full, noteOcrReader(project, req.signal)))
 })
 
 export const DELETE = withAuth(async (req, _user, bouncer, ctx: RouteCtx) => {

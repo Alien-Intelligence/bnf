@@ -843,7 +843,12 @@
       "docRate": "Taux OCR du document : {rate} %",
       "loadError": "Impossible de charger la qualité OCR.",
       "pillUnavailable": "qualité OCR non disponible pour ce folio",
-      "folioNotRecorded": "Qualité OCR non enregistrée pour ce folio"
+      "folioNotRecorded": "Aucune qualité OCR pour ce folio : il ne fait pas partie des pages traitées du document",
+      "statusPending": "Qualité OCR : en attente de synchronisation",
+      "statusBuilding": "Qualité OCR : calcul en cours",
+      "statusUnavailable": "Qualité OCR non disponible pour ce document",
+      "statusQuarantined": "Qualité OCR non disponible (synchronisation suspendue)",
+      "corpusRevoked": "Qualité OCR non lue : l'accès au corpus partagé a été révoqué"
     }
   },
   "ingest": {

@@ -48,7 +48,7 @@ import { useDocumentOcr } from "@/hooks/api/documents"
 import { Skeleton } from "@/components/ui/skeleton"
 import { CardSharedLoadError } from "@/components/cards/shared/load-error"
 import { ocrPercent } from "@/lib/ocr/quality"
-import { OCR_STATUS_PENDING, OCR_SYNC_STATUS, type DocumentOcrView } from "@/models/documents/schema"
+import { DOCUMENT_OCR_STATUS, type DocumentOcrView } from "@/models/documents/schema"
 import {
   DOC_TYPE,
   DOCUMENT_CANONICAL_STATUS,
@@ -130,10 +130,10 @@ function ocrStatusLine(
   ocr: DocumentOcrView,
   t: (key: string, values?: Record<string, string | number>) => string,
 ): string {
-  if (ocr.status === OCR_STATUS_PENDING) return t("pending")
-  if (ocr.status === OCR_SYNC_STATUS.BUILDING) return t("building")
-  if (ocr.status === OCR_SYNC_STATUS.UNAVAILABLE) return t("unavailable")
-  if (ocr.status === OCR_SYNC_STATUS.QUARANTINED) return t("quarantined")
+  if (ocr.status === DOCUMENT_OCR_STATUS.PENDING) return t("pending")
+  if (ocr.status === DOCUMENT_OCR_STATUS.BUILDING) return t("building")
+  if (ocr.status === DOCUMENT_OCR_STATUS.UNAVAILABLE) return t("unavailable")
+  if (ocr.status === DOCUMENT_OCR_STATUS.QUARANTINED) return t("quarantined")
   if (ocr.ocrRate === null) return t("noRate")
   return t("docRate", { rate: ocrPercent(ocr.ocrRate) })
 }

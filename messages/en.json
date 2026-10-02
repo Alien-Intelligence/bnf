@@ -843,7 +843,12 @@
       "docRate": "Document OCR rate: {rate} %",
       "loadError": "Could not load the OCR quality.",
       "pillUnavailable": "OCR quality not available for this folio",
-      "folioNotRecorded": "No OCR quality recorded for this folio"
+      "folioNotRecorded": "No OCR quality for this folio: it is not one of the document's processed pages",
+      "statusPending": "OCR quality: waiting for synchronisation",
+      "statusBuilding": "OCR quality: being computed",
+      "statusUnavailable": "OCR quality not available for this document",
+      "statusQuarantined": "OCR quality not available (synchronisation suspended)",
+      "corpusRevoked": "OCR quality not read: access to the shared corpus was revoked"
     }
   },
   "ingest": {

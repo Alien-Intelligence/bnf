@@ -8,7 +8,7 @@ import { ok, notFound } from "@/lib/api-response"
 import { NotePolicy } from "@/models/notes/policy"
 import { ProjectQueries } from "@/models/projects/queries"
 import { NoteQueries } from "@/models/notes/queries"
-import type { NoteVersionListItem } from "@/models/notes/schema"
+import type { NoteVersionList } from "@/models/notes/schema"
 
 type RouteCtx = { params: Promise<{ nid: string }> }
 
@@ -23,5 +23,5 @@ export const GET = withAuth(async (_req, _user, bouncer, ctx: RouteCtx) => {
   await bouncer.with(NotePolicy).authorize("read", project)
 
   const versions = await NoteQueries.listVersions(nid)
-  return ok<{ versions: NoteVersionListItem[] }>({ versions })
+  return ok<NoteVersionList>({ versions })
 })

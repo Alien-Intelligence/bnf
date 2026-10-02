@@ -9,7 +9,7 @@ import {
 } from "@/components/layouts/research/carnet"
 import { SheetCitationSource } from "@/components/sheets/citations/source"
 import { useNoteDetails, useNotes } from "@/hooks/api/notes"
-import type { NoteDetail, NoteListItem } from "@/models/notes/schema"
+import type { NoteListItem } from "@/models/notes/schema"
 import type { ParsedCitation } from "@/lib/citations/syntax"
 import type { WorkspaceStep } from "@/lib/constants"
 
@@ -20,8 +20,6 @@ interface CarnetClientProps {
   initialWorkspaceSteps: readonly WorkspaceStep[]
   /** The project's notes (the carnet's note set), seeding useNotes. */
   initialNoteList: NoteListItem[]
-  /** Every note's body + citations + OCR quality, seeding the per-note cache. */
-  initialNoteDetails: NoteDetail[]
 }
 
 export function CarnetClient({
@@ -29,14 +27,13 @@ export function CarnetClient({
   initialUser,
   initialWorkspaceSteps,
   initialNoteList,
-  initialNoteDetails,
 }: CarnetClientProps) {
   const [selectedCitation, setSelectedCitation] =
     useState<ParsedCitation | null>(null)
 
   // Found bug B8: the carnet used to render frozen server props. The note SET
-  // comes from the notes list query and each body from the per-note cache,
-  // both seeded with the server-loaded data, so a note added or deleted later
+  // comes from the notes list query (seeded with the server-loaded list) and
+  // each body from the per-note detail query, so a note added or deleted later
   // (in the Atelier, by the agent) shows up here too. The carnet reads front
   // to back, so the list is ordered by creation date.
   const list = useNotes(projectId, { initialData: initialNoteList })
@@ -47,10 +44,7 @@ export function CarnetClient({
       ),
     [list.data],
   )
-  const results = useNoteDetails(
-    ordered.map((n) => n.id),
-    { initialData: initialNoteDetails },
-  )
+  const results = useNoteDetails(ordered.map((n) => n.id))
   const entries = ordered.map((n, i) => {
     const r = results[i]
     // A background refetch that fails while data is in hand keeps showing it:

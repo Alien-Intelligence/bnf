@@ -1,14 +1,18 @@
 import "server-only"
 import { prisma } from "@/lib/db"
 import type { Note, Prisma } from "@/lib/generated/prisma/client"
+import { withDeadline } from "@/lib/async/deadline"
 import { parseCitations } from "@/lib/citations/syntax"
-import { folioOcrKey } from "@/lib/ocr/quality"
+import { OCR_DB_TIMEOUT_MS } from "@/lib/constants"
+import { buildOcrIndex, folioOcrKey, type OcrReader } from "@/lib/ocr/quality"
 import { CorpusQueries } from "@/models/corpus/queries"
 import { DocumentQueries } from "@/models/documents/queries"
-import type {
-  DocumentFolioRow,
-  DocumentOcrStatusRow,
-  FolioRef,
+import {
+  OCR_ACCESS,
+  type DocumentFolioRow,
+  type DocumentOcrStatusRow,
+  type FolioRef,
+  type NoteOcrRows,
 } from "@/models/documents/schema"
 import type { Citation, NoteDetail, NoteWithCitations } from "./schema"
 
@@ -43,9 +47,20 @@ export function attachNoteOcr(
   const arks = new Set(refs.map((r) => r.ark))
   return {
     ...note,
-    folioOcr: rows.folios.filter((f) => cited.has(folioOcrKey(f.ark, f.folio))),
-    documentOcr: rows.documents.filter((d) => arks.has(d.ark)),
+    ocr: {
+      access: OCR_ACCESS.OK,
+      folioOcr: rows.folios.filter((f) => cited.has(folioOcrKey(f.ark, f.folio))),
+      documentOcr: rows.documents.filter((d) => arks.has(d.ark)),
+    },
   }
+}
+
+/** Every note with the same non-ok OCR state (revoked grant, failed read). */
+function withoutOcr(
+  notes: NoteWithCitations[],
+  ocr: Exclude<NoteOcrRows, { access: typeof OCR_ACCESS.OK }>,
+): NoteDetail[] {
+  return notes.map((n) => ({ ...n, ocr }))
 }
 
 /**
@@ -62,25 +77,42 @@ export type NoteWriteResult = { note: Note; rejected: string[] }
 
 export class NoteService {
   /**
-   * A loaded (and already authorized) note as a NoteDetail: its citations plus
-   * the OCR quality of the cited folios, read on `corpusProjectId` — the corpus
-   * the note's citations were validated against (plan D8).
+   * Loaded (and already authorized) notes as NoteDetails, with ONE OCR read
+   * for all of them on `reader.corpusProjectId` — the corpus the notes'
+   * citations were validated against (plan D8).
+   *
+   * The notes are always served; only their `ocr` varies:
+   *   - a revoked derived workspace reads no source OCR row → corpus_revoked;
+   *   - a failed or timed-out read (or a corrupt stored row) is logged and
+   *     answered as check_failed — the quality is unknown, the note is not
+   *     lost. The caller's own abort is not a failed read: it propagates.
+   * The rows are validated here (buildOcrIndex), so a client never receives a
+   * row its own index would refuse.
    */
-  static async detail(note: NoteWithCitations, corpusProjectId: string): Promise<NoteDetail> {
-    const rows = await DocumentQueries.ocrIndexRows(corpusProjectId, citationRefs(note.citations))
-    return attachNoteOcr(note, rows)
+  static async details(notes: NoteWithCitations[], reader: OcrReader): Promise<NoteDetail[]> {
+    if (!reader.corpusReachable) return withoutOcr(notes, { access: OCR_ACCESS.CORPUS_REVOKED })
+    try {
+      const rows = await withDeadline(
+        DocumentQueries.ocrIndexRows(
+          reader.corpusProjectId,
+          citationRefs(notes.flatMap((n) => n.citations)),
+        ),
+        { label: "note OCR quality read", ms: OCR_DB_TIMEOUT_MS, signal: reader.signal },
+      )
+      // Validate the rows (CorruptOcrRowError) before any client indexes them.
+      buildOcrIndex(rows.folios, rows.documents)
+      return notes.map((n) => attachNoteOcr(n, rows))
+    } catch (err) {
+      if (reader.signal.aborted) throw err
+      console.error("[notes] OCR-quality read for a note detail failed:", err)
+      return withoutOcr(notes, { access: OCR_ACCESS.CHECK_FAILED })
+    }
   }
 
-  /** Several notes of one corpus as NoteDetails, with ONE OCR read for all of them. */
-  static async details(
-    notes: NoteWithCitations[],
-    corpusProjectId: string,
-  ): Promise<NoteDetail[]> {
-    const rows = await DocumentQueries.ocrIndexRows(
-      corpusProjectId,
-      citationRefs(notes.flatMap((n) => n.citations)),
-    )
-    return notes.map((n) => attachNoteOcr(n, rows))
+  /** One loaded (and already authorized) note as a NoteDetail — see details(). */
+  static async detail(note: NoteWithCitations, reader: OcrReader): Promise<NoteDetail> {
+    const [detail] = await NoteService.details([note], reader)
+    return detail
   }
 
   /**

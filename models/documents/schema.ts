@@ -519,11 +519,49 @@ export const OCR_SYNC_REASON = {
 } as const
 
 /**
- * The status a reader sees for an ARK with NO DocumentOcr row yet. Never
- * stored: the absence of the row is the state. Distinct from "not low".
+ * The status a READER sees for a document: the stored statuses plus `pending`
+ * — an ARK with NO DocumentOcr row yet (never stored: the absence of the row
+ * is the state). Distinct from "not low".
  */
-export const OCR_STATUS_PENDING = "pending" as const
-export type DocumentOcrStatus = OcrSyncStatus | typeof OCR_STATUS_PENDING
+export const DOCUMENT_OCR_STATUS = {
+  ...OCR_SYNC_STATUS,
+  PENDING: "pending",
+} as const
+export type DocumentOcrStatus = (typeof DOCUMENT_OCR_STATUS)[keyof typeof DOCUMENT_OCR_STATUS]
+
+/**
+ * What a reader knows of ONE cited (or retrieved) folio's OCR quality. Every
+ * reader — tools, pills, banner, side panel, exports — uses this vocabulary,
+ * and the model-facing descriptions and prompt are built from it.
+ *   recorded       — the stored quality (low, not low, or unscored);
+ *   pending        — the document's quality is not synced YET (no row, building);
+ *   unavailable    — the document's quality cannot be obtained (unavailable,
+ *                    quarantined) — not "yet";
+ *   not_recorded   — the document is synced but this folio has no stored row:
+ *                    it was not a prepared page — permanent;
+ *   no_folio       — the reference carries no folio;
+ *   corpus_revoked — the reader's grant on the corpus was revoked: its
+ *                    Document and OCR rows are no longer read;
+ *   check_failed   — reading the quality failed (it is not known, not "good").
+ */
+export const FOLIO_OCR_STATE = {
+  RECORDED: "recorded",
+  PENDING: "pending",
+  UNAVAILABLE: "unavailable",
+  NOT_RECORDED: "not_recorded",
+  NO_FOLIO: "no_folio",
+  CORPUS_REVOKED: "corpus_revoked",
+  CHECK_FAILED: "check_failed",
+} as const
+export type FolioOcrStateKind = (typeof FOLIO_OCR_STATE)[keyof typeof FOLIO_OCR_STATE]
+
+/** Whether a reader may read OCR rows at all, or why not. */
+export const OCR_ACCESS = {
+  OK: "ok",
+  CORPUS_REVOKED: "corpus_revoked",
+  CHECK_FAILED: "check_failed",
+} as const
+export type OcrAccess = (typeof OCR_ACCESS)[keyof typeof OCR_ACCESS]
 
 /** One (ark, folio) whose stored quality a reader wants. */
 export type FolioRef = { ark: string; folio: number }
@@ -570,6 +608,16 @@ export type FolioOcrView = {
   /** isLowOcr(ocrQuality) — lib/ocr/quality.ts. */
   low: boolean
 }
+
+/**
+ * A note's OCR rows as the note views receive them (NoteDetail.ocr): the
+ * stored quality of its cited folios and the sync status of the cited
+ * documents — or why they are not given (a revoked grant, a failed read).
+ */
+export type NoteOcrRows =
+  | { access: typeof OCR_ACCESS.OK; folioOcr: DocumentFolioRow[]; documentOcr: DocumentOcrStatusRow[] }
+  | { access: typeof OCR_ACCESS.CORPUS_REVOKED }
+  | { access: typeof OCR_ACCESS.CHECK_FAILED }
 
 /** A document's OCR summary — GET /api/projects/[id]/documents/ocr and doc_get. */
 export type DocumentOcrView = {

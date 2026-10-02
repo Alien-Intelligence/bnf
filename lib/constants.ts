@@ -479,6 +479,13 @@ export const OCR_SYNC_EXCHANGE_BACKOFF_MAX_MS = 60 * 60 * 1_000
 export const OCR_DB_TIMEOUT_MS = 10_000
 
 /**
+ * Ceiling on one database await on an agent tool-call path outside the OCR
+ * reads (the ingested-corpus guard, the note reads of the note tools): the
+ * await is raced against it and the turn's signal (lib/async/deadline.ts).
+ */
+export const TOOL_DB_TIMEOUT_MS = 10_000
+
+/**
  * Sanity cap on the folios one worker artifact may carry — above any worker
  * MAX_OCR_PAGES. A response beyond it is a contract break, not a big document.
  */

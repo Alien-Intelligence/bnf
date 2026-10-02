@@ -11,15 +11,27 @@ import assert from "node:assert/strict"
 
 import { OCR_LOW_QUALITY_THRESHOLD, RAG_OCR_LOW_FOLIOS_MAX } from "@/lib/constants"
 import type { RagKeywordHit, RagPassage } from "@/lib/cluster/rag"
-import { buildOcrIndex, ocrPercent, toDocumentOcrView } from "@/lib/ocr/quality"
+import { OCR_INDEX_CHECK_FAILED, OCR_INDEX_REVOKED, buildOcrIndex, toDocumentOcrView } from "@/lib/ocr/quality"
+import { parseCitations } from "@/lib/citations/syntax"
 import {
+  DOCUMENT_OCR_STATUS,
+  FOLIO_OCR_STATE,
   OCR_SOURCE,
-  OCR_STATUS_PENDING,
   OCR_SYNC_STATUS,
   type DocumentFolioRow,
 } from "@/models/documents/schema"
 
-import { NOTE_LOW_OCR_NOTICE, RAG_KEYWORD_OCR_LOW_NOTICE, RAG_OCR_LOW_NOTICE } from "./constants"
+import {
+  DOCUMENT_OCR_STATUS_LEGEND,
+  DOCUMENT_OCR_STATUS_MEANING,
+  FOLIO_OCR_STATE_LEGEND,
+  FOLIO_OCR_STATE_MEANING,
+  NOTE_LOW_OCR_NOTICE,
+  NOTE_OCR_UNKNOWN_NOTICE,
+  RAG_KEYWORD_OCR_LOW_NOTICE,
+  RAG_OCR_LOW_NOTICE,
+  ocrLowNotices,
+} from "./constants"
 import {
   annotateKeywordHits,
   annotatePassages,
@@ -32,6 +44,8 @@ const ARK = "ark:/12148/bpt6k4625753w"
 const ARK_VISION = "ark:/12148/btv1b100524476"
 const ARK_UNSYNCED = "ark:/12148/bpt6k000001"
 const ARK_BUILDING = "ark:/12148/bpt6k000002"
+const ARK_UNAVAILABLE = "ark:/12148/bpt6k000003"
+const ARK_QUARANTINED = "ark:/12148/bpt6k000004"
 
 function row(over: Partial<DocumentFolioRow>): DocumentFolioRow {
   return { ark: ARK, folio: 1, ocrSource: OCR_SOURCE.ALTO, ocrQuality: 0.9, wordCount: 10, ...over }
@@ -49,6 +63,8 @@ const INDEX = buildOcrIndex(
     { ark: ARK, status: OCR_SYNC_STATUS.AVAILABLE },
     { ark: ARK_VISION, status: OCR_SYNC_STATUS.AVAILABLE },
     { ark: ARK_BUILDING, status: OCR_SYNC_STATUS.BUILDING },
+    { ark: ARK_UNAVAILABLE, status: OCR_SYNC_STATUS.UNAVAILABLE },
+    { ark: ARK_QUARANTINED, status: OCR_SYNC_STATUS.QUARANTINED },
   ],
 )
 
@@ -79,12 +95,14 @@ test("annotatePassages: the passage itself is kept as is", () => {
   assert.deepEqual(rest, p)
 })
 
-test("annotatePassages: no folio, not synced, building and not recorded are four different states", () => {
+test("annotatePassages: not yet, never-for-this-folio, not obtained and no folio stay apart", () => {
   const { passages, ocrNotice } = annotatePassages(
     [
       passage({ folio: null }),
       passage({ ark: ARK_UNSYNCED, folio: 3 }),
       passage({ ark: ARK_BUILDING, folio: 3 }),
+      passage({ ark: ARK_UNAVAILABLE, folio: 3 }),
+      passage({ ark: ARK_QUARANTINED, folio: 3 }),
       passage({ folio: 99 }),
       passage({ ark: ARK_VISION, folio: 1 }),
     ],
@@ -93,14 +111,32 @@ test("annotatePassages: no folio, not synced, building and not recorded are four
   assert.deepEqual(
     passages.map((p) => [p.ocrState, p.ocrSource, p.ocrLow]),
     [
-      ["no_folio", null, false],
-      ["not_synced", null, false],
-      ["not_synced", null, false],
-      ["not_recorded", null, false],
-      ["recorded", "vision", false],
+      [FOLIO_OCR_STATE.NO_FOLIO, null, false],
+      [FOLIO_OCR_STATE.PENDING, null, false],
+      [FOLIO_OCR_STATE.PENDING, null, false],
+      [FOLIO_OCR_STATE.UNAVAILABLE, null, false],
+      [FOLIO_OCR_STATE.UNAVAILABLE, null, false],
+      [FOLIO_OCR_STATE.NOT_RECORDED, null, false],
+      [FOLIO_OCR_STATE.RECORDED, "vision", false],
     ],
   )
   assert.equal(ocrNotice, undefined)
+})
+
+test("annotatePassages: a revoked or failed index marks every folio so, never as recorded", () => {
+  for (const [index, kind] of [
+    [OCR_INDEX_REVOKED, FOLIO_OCR_STATE.CORPUS_REVOKED],
+    [OCR_INDEX_CHECK_FAILED, FOLIO_OCR_STATE.CHECK_FAILED],
+  ] as const) {
+    const { passages } = annotatePassages([passage({ folio: 2 }), passage({ folio: null })], index)
+    assert.deepEqual(
+      passages.map((p) => [p.ocrState, p.ocrQuality, p.ocrLow]),
+      [
+        [kind, null, false],
+        [FOLIO_OCR_STATE.NO_FOLIO, null, false],
+      ],
+    )
+  }
 })
 
 test("annotatePassages: the threshold itself is not low → no notice", () => {
@@ -134,7 +170,8 @@ test("annotateKeywordHits: status, ocrRate, sorted low folios and their count", 
     hits.map((h) => [h.ocrStatus, h.ocrRate, h.ocrLowFolios, h.ocrLowFolioCount]),
     [
       [OCR_SYNC_STATUS.AVAILABLE, 0.7821, [2, 9], 2],
-      [OCR_STATUS_PENDING, null, [], 0],
+      // Not synced: the counts are UNKNOWN (null), never "no low folio" (0).
+      [DOCUMENT_OCR_STATUS.PENDING, null, null, null],
     ],
   )
   // Keyword hits have no ocrLow field: their notice names the fields they DO have.
@@ -150,8 +187,8 @@ test("annotateKeywordHits: low folios capped at RAG_OCR_LOW_FOLIOS_MAX, count st
     [ARK, toDocumentOcrView(ARK, { ark: ARK, status: OCR_SYNC_STATUS.AVAILABLE, ocrRate: null, reason: null, folios: many })],
   ])
   const [annotated] = annotateKeywordHits([hit(ARK)], docIndex).hits
-  assert.equal(annotated.ocrLowFolios.length, RAG_OCR_LOW_FOLIOS_MAX)
-  assert.deepEqual(annotated.ocrLowFolios.slice(0, 3), [1, 2, 3])
+  assert.equal(annotated.ocrLowFolios?.length, RAG_OCR_LOW_FOLIOS_MAX)
+  assert.deepEqual(annotated.ocrLowFolios?.slice(0, 3), [1, 2, 3])
   assert.equal(annotated.ocrLowFolioCount, RAG_OCR_LOW_FOLIOS_MAX + 5)
 })
 
@@ -168,6 +205,28 @@ test("docOcrSummary: scored folios exclude unscored and non-ALTO ones", () => {
     ),
     { status: OCR_SYNC_STATUS.AVAILABLE, ocrRate: 0.7821, scoredFolios: 3, lowFolios: [2], lowFolioCount: 1 },
   )
+})
+
+test("docOcrSummary: counts are null unless available — a building row's old folios do not count", () => {
+  // A `building` row that was once available still holds folios: its counts
+  // would be stale, so they are unknown until the new artifact lands.
+  for (const status of [
+    OCR_SYNC_STATUS.BUILDING,
+    OCR_SYNC_STATUS.UNAVAILABLE,
+    OCR_SYNC_STATUS.QUARANTINED,
+  ]) {
+    assert.deepEqual(
+      docOcrSummary(toDocumentOcrView(ARK, { ark: ARK, status, ocrRate: 0.5, reason: null, folios: [F2] })),
+      { status, ocrRate: 0.5, scoredFolios: null, lowFolios: null, lowFolioCount: null },
+    )
+  }
+  assert.deepEqual(docOcrSummary(toDocumentOcrView(ARK, null)), {
+    status: DOCUMENT_OCR_STATUS.PENDING,
+    ocrRate: null,
+    scoredFolios: null,
+    lowFolios: null,
+    lowFolioCount: null,
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -187,11 +246,11 @@ test("annotateTextSlice: the folios whose heading is in the slice, leading folio
   assert.equal(ocrNotice, RAG_OCR_LOW_NOTICE)
 })
 
-test("annotateTextSlice: an unsynced folio heading → not_synced", () => {
+test("annotateTextSlice: an unsynced folio heading → pending", () => {
   const { ocr, ocrNotice } = annotateTextSlice("## Folio 1\n\nx", ARK_UNSYNCED, INDEX)
   assert.deepEqual(ocr, {
     leadingFolioKnown: true,
-    folios: [{ folio: 1, ocrState: "not_synced", ocrQuality: null, ocrSource: null, ocrLow: false }],
+    folios: [{ folio: 1, ocrState: FOLIO_OCR_STATE.PENDING, ocrQuality: null, ocrSource: null, ocrLow: false }],
   })
   assert.equal(ocrNotice, undefined)
 })
@@ -200,37 +259,84 @@ test("annotateTextSlice: an unsynced folio heading → not_synced", () => {
 // note results
 // ---------------------------------------------------------------------------
 
+/** The corpus-vouched text citations of a body (no ARK rejected), as note writes report them. */
+function refs(body: string) {
+  return parseCitations(body)
+}
+
 test("noteOcrReport: low and unknown citations, deduped, with their quality / state", () => {
   const body =
     `[[${ARK}|A|2]] puis [[${ARK}|A|f2]] et [[${ARK}|A|1]] ` +
-    `[[${ARK_VISION}|V|1]] [[${ARK_UNSYNCED}|U|5]] [[${ARK}|absent|99]]`
-  assert.deepEqual(noteOcrReport(body, INDEX, []), {
+    `[[${ARK_VISION}|V|1]] [[${ARK_UNSYNCED}|U|5]] [[${ARK}|absent|99]] [[${ARK_QUARANTINED}|Q|1]]`
+  assert.deepEqual(noteOcrReport(refs(body), INDEX), {
     low: [{ ark: ARK, folio: 2, ocr_quality: 0.661 }],
     unknown: [
-      { ark: ARK_UNSYNCED, folio: 5, ocr_state: "not_synced" },
-      { ark: ARK, folio: 99, ocr_state: "not_recorded" },
+      { ark: ARK_UNSYNCED, folio: 5, ocr_state: FOLIO_OCR_STATE.PENDING },
+      { ark: ARK, folio: 99, ocr_state: FOLIO_OCR_STATE.NOT_RECORDED },
+      { ark: ARK_QUARANTINED, folio: 1, ocr_state: FOLIO_OCR_STATE.UNAVAILABLE },
     ],
   })
 })
 
 test("noteOcrReport: an image embed of a low folio cited nowhere else is excluded (D11)", () => {
   // f2 is low; it appears ONLY as an image embed here, so nothing is reported.
-  assert.deepEqual(noteOcrReport(`![[${ARK}|Une|2]] [[${ARK}|A|1]]`, INDEX, []), {
+  assert.deepEqual(noteOcrReport(refs(`![[${ARK}|Une|2]] [[${ARK}|A|1]]`), INDEX), {
     low: [],
     unknown: [],
   })
 })
 
-test("noteOcrReport: a rejected (not-in-corpus) ARK is never reported", () => {
-  assert.deepEqual(noteOcrReport(`[[${ARK}|A|2]] [[${ARK_UNSYNCED}|U|1]]`, INDEX, [ARK, ARK_UNSYNCED]), {
-    low: [],
-    unknown: [],
-  })
+test("noteOcrReport: Citation rows (a note read) — a row without a folio is skipped", () => {
+  assert.deepEqual(
+    noteOcrReport(
+      [
+        { ark: ARK, folio: 2 },
+        { ark: ARK, folio: null },
+      ],
+      INDEX,
+    ),
+    { low: [{ ark: ARK, folio: 2, ocr_quality: 0.661 }], unknown: [] },
+  )
 })
 
-test("the notices derive their percentage from the threshold constant", () => {
-  const pct = `${ocrPercent(OCR_LOW_QUALITY_THRESHOLD)} %`
-  assert.ok(RAG_OCR_LOW_NOTICE.includes(pct))
-  assert.ok(RAG_KEYWORD_OCR_LOW_NOTICE.includes(pct))
-  assert.ok(NOTE_LOW_OCR_NOTICE.includes(pct))
+// ---------------------------------------------------------------------------
+// The model-facing wording
+// ---------------------------------------------------------------------------
+
+test("the low notices are built from the threshold they are given", () => {
+  // A builder fed another threshold must say that percentage and not the
+  // production one: a hard-coded "80 %" fails here.
+  const half = ocrLowNotices(0.5)
+  for (const notice of [half.rag, half.keyword, half.note]) {
+    assert.ok(notice.includes("50 %"), notice)
+    assert.ok(!notice.includes("80 %"), notice)
+  }
+  const prod = ocrLowNotices(OCR_LOW_QUALITY_THRESHOLD)
+  assert.deepEqual([prod.rag, prod.keyword, prod.note], [RAG_OCR_LOW_NOTICE, RAG_KEYWORD_OCR_LOW_NOTICE, NOTE_LOW_OCR_NOTICE])
+})
+
+test("every folio state and document status has its meaning in the legends", () => {
+  for (const kind of Object.values(FOLIO_OCR_STATE)) {
+    assert.ok(FOLIO_OCR_STATE_LEGEND.includes(`\`${kind}\` — ${FOLIO_OCR_STATE_MEANING[kind]}`), kind)
+  }
+  for (const status of Object.values(DOCUMENT_OCR_STATUS)) {
+    assert.ok(
+      DOCUMENT_OCR_STATUS_LEGEND.includes(`\`${status}\` — ${DOCUMENT_OCR_STATUS_MEANING[status]}`),
+      status,
+    )
+  }
+})
+
+test("not_recorded is said to be permanent, and only pending/building are 'not yet'", () => {
+  assert.match(FOLIO_OCR_STATE_MEANING[FOLIO_OCR_STATE.NOT_RECORDED], /définitivement/)
+  assert.doesNotMatch(FOLIO_OCR_STATE_MEANING[FOLIO_OCR_STATE.NOT_RECORDED], /pas encore/)
+  assert.doesNotMatch(FOLIO_OCR_STATE_MEANING[FOLIO_OCR_STATE.UNAVAILABLE], /pas encore/)
+  assert.match(FOLIO_OCR_STATE_MEANING[FOLIO_OCR_STATE.PENDING], /pas encore/)
+  for (const status of [DOCUMENT_OCR_STATUS.UNAVAILABLE, DOCUMENT_OCR_STATUS.QUARANTINED]) {
+    assert.doesNotMatch(DOCUMENT_OCR_STATUS_MEANING[status], /pas encore/)
+  }
+  // The unknown-citations notice explains each state a note can report.
+  for (const kind of [FOLIO_OCR_STATE.PENDING, FOLIO_OCR_STATE.UNAVAILABLE, FOLIO_OCR_STATE.NOT_RECORDED]) {
+    assert.ok(NOTE_OCR_UNKNOWN_NOTICE.includes(`\`${kind}\``), kind)
+  }
 })

@@ -1,5 +1,6 @@
 import "server-only"
 import { prisma } from "@/lib/db"
+import type { Prisma } from "@/lib/generated/prisma/client"
 import {
   type CitationUsage,
   type NoteWithCitations,
@@ -7,11 +8,20 @@ import {
   type NoteVersionListItem,
 } from "./schema"
 
+/**
+ * The note-list order — pinned first, then most recently updated — of every
+ * read that lists notes (the note list, note_list): written once.
+ */
+const NOTE_LIST_ORDER: Prisma.NoteOrderByWithRelationInput[] = [
+  { pinned: "desc" },
+  { updatedAt: "desc" },
+]
+
 export class NoteQueries {
   static async listForProject(projectId: string): Promise<NoteListItem[]> {
     return prisma.note.findMany({
       where: { projectId },
-      orderBy: [{ pinned: "desc" }, { updatedAt: "desc" }],
+      orderBy: NOTE_LIST_ORDER,
       select: {
         id: true,
         title: true,
@@ -31,14 +41,14 @@ export class NoteQueries {
   }
 
   /**
-   * Every note of the project with its citations, oldest first — the
-   * standalone Carnet reads the notebook front to back (NoteService.details
-   * adds the cited folios' OCR quality).
+   * Every note of the project with its citations, in the note-list order (the
+   * order of listForProject) — note_list's one read. NoteService.details adds
+   * the cited folios' OCR quality.
    */
   static async listWithCitationsForProject(projectId: string): Promise<NoteWithCitations[]> {
     return prisma.note.findMany({
       where: { projectId },
-      orderBy: { createdAt: "asc" },
+      orderBy: NOTE_LIST_ORDER,
       include: { citations: true },
     })
   }

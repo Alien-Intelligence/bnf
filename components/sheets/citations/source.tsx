@@ -17,7 +17,13 @@ import { buildOcrIndex, folioOcrState, ocrPercent, type FolioOcrState } from "@/
 import { useCitationsForArk } from "@/hooks/api/citations"
 import { useDocumentOcr } from "@/hooks/api/documents"
 import { cn } from "@/lib/utils"
-import { OCR_SOURCE, OCR_STATUS_PENDING, type DocumentOcrView } from "@/models/documents/schema"
+import {
+  DOCUMENT_OCR_STATUS,
+  FOLIO_OCR_STATE,
+  OCR_SOURCE,
+  type DocumentOcrStatus,
+  type DocumentOcrView,
+} from "@/models/documents/schema"
 import type { CitationUsage } from "@/models/notes/schema"
 import { useTranslations } from "next-intl"
 
@@ -99,7 +105,6 @@ export function SheetCitationSource({
           {ark ? (
             <SectionCitationOcr
               ocr={ocrQuery.data}
-              isLoading={ocrQuery.isLoading}
               isError={ocrQuery.isError}
               onRetry={() => void ocrQuery.refetch()}
               folio={folio}
@@ -213,24 +218,29 @@ function SectionCitationUsages({
 // The "Qualité OCR" block (feedback 2026-09-29 #7): the cited folio's OCR
 // state (lib/ocr/quality.ts) — what produced its text and, for BnF ALTO, its
 // measured quality with the low marker — plus the document's "Taux OCR". A
-// folio whose quality is not available (document not synced, or no row for
-// that folio) says so in its own words: never read as "not low".
+// folio whose quality is not known says why in its own words (not yet,
+// suspended, never for this folio…): never read as "not low".
+//
+// error → loading → content. "Loading" is any state without data and without
+// an error — a fetch in flight, or a query disabled while the sheet animates
+// closed — so a closing sheet never flashes a false error.
 function SectionCitationOcr({
   ocr,
-  isLoading,
   isError,
   onRetry,
   folio,
 }: {
   ocr: DocumentOcrView | undefined
-  isLoading: boolean
   isError: boolean
   onRetry: () => void
   folio: number | null
 }) {
   const t = useTranslations("citations.ocr")
 
-  if (isLoading) {
+  if (isError) {
+    return <CardSharedLoadError layout="inline" message={t("loadError")} onRetry={onRetry} />
+  }
+  if (ocr === undefined) {
     return (
       <div className="space-y-1.5">
         <Skeleton className="h-3 w-24" />
@@ -238,16 +248,13 @@ function SectionCitationOcr({
       </div>
     )
   }
-  if (isError || ocr === undefined) {
-    return <CardSharedLoadError layout="inline" message={t("loadError")} onRetry={onRetry} />
-  }
 
   const index = buildOcrIndex(
     ocr.folios,
-    ocr.status === OCR_STATUS_PENDING ? [] : [{ ark: ocr.ark, status: ocr.status }],
+    ocr.status === DOCUMENT_OCR_STATUS.PENDING ? [] : [{ ark: ocr.ark, status: ocr.status }],
   )
   const state = folioOcrState(index, ocr.ark, folio)
-  const low = state.kind === "recorded" && state.view.low
+  const low = state.kind === FOLIO_OCR_STATE.RECORDED && state.view.low
 
   return (
     <div>
@@ -268,13 +275,26 @@ function SectionCitationOcr({
   )
 }
 
-/** The one-line description of a folio's OCR state. */
+/** The message key of each document status under which a folio's quality is unknown. */
+const STATUS_LINE_KEY: Record<Exclude<DocumentOcrStatus, typeof DOCUMENT_OCR_STATUS.AVAILABLE>, string> = {
+  [DOCUMENT_OCR_STATUS.PENDING]: "statusPending",
+  [DOCUMENT_OCR_STATUS.BUILDING]: "statusBuilding",
+  [DOCUMENT_OCR_STATUS.UNAVAILABLE]: "statusUnavailable",
+  [DOCUMENT_OCR_STATUS.QUARANTINED]: "statusQuarantined",
+}
+
+/** The one-line description of a folio's OCR state, distinct for every state. */
 function folioOcrLine(
   state: FolioOcrState,
   t: (key: string, values?: Record<string, string | number>) => string,
 ): string {
-  if (state.kind === "no_folio" || state.kind === "not_synced") return t("unavailable")
-  if (state.kind === "not_recorded") return t("folioNotRecorded")
+  if (state.kind === FOLIO_OCR_STATE.NO_FOLIO) return t("unavailable")
+  if (state.kind === FOLIO_OCR_STATE.PENDING || state.kind === FOLIO_OCR_STATE.UNAVAILABLE) {
+    return t(STATUS_LINE_KEY[state.status])
+  }
+  if (state.kind === FOLIO_OCR_STATE.NOT_RECORDED) return t("folioNotRecorded")
+  if (state.kind === FOLIO_OCR_STATE.CORPUS_REVOKED) return t("corpusRevoked")
+  if (state.kind === FOLIO_OCR_STATE.CHECK_FAILED) return t("loadError")
   const { view } = state
   if (view.ocrSource === OCR_SOURCE.MISTRAL) return t("folioMistral")
   if (view.ocrSource === OCR_SOURCE.VISION) return t("folioVision")

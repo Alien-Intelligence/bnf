@@ -17,10 +17,12 @@ import { prisma } from "@/lib/db"
 import { markHeadIngested } from "@/lib/testing/mark-ingested"
 import { randomUUID } from "node:crypto"
 import {
+  DOCUMENT_OCR_STATUS,
+  OCR_ACCESS,
   OCR_SOURCE,
-  OCR_STATUS_PENDING,
   OCR_SYNC_STATUS,
   type DocumentOcrView,
+  type OcrAccess,
 } from "@/models/documents/schema"
 import type { NoteDetail } from "@/models/notes/schema"
 
@@ -263,7 +265,9 @@ async function main() {
   check(ocrNoteDetail !== null, "the answer is a NoteDetail", JSON.stringify(ocrNote.body).slice(0, 200))
   if (ocrNoteDetail !== null) {
     check(
-      ocrNoteDetail.folioOcr.length === 1 && ocrNoteDetail.folioOcr[0].ark === SOURCE_ARK,
+      ocrNoteDetail.access === OCR_ACCESS.OK &&
+        ocrNoteDetail.folioOcr.length === 1 &&
+        ocrNoteDetail.folioOcr[0].ark === SOURCE_ARK,
       "the note detail carries the cited folio's quality, never the out-of-corpus ARK's",
       JSON.stringify(ocrNoteDetail.folioOcr),
     )
@@ -290,9 +294,12 @@ async function main() {
     const revNote = await b(`/api/notes/${ocrNoteDetail.id}`)
     const revDetail = readNoteDetailOcr(revNote.body)
     check(
-      revNote.status === 200 && revDetail !== null && revDetail.folioOcr.length === 1,
-      "B's note still reads with its folio quality",
-      String(revNote.status),
+      revNote.status === 200 &&
+        revDetail !== null &&
+        revDetail.access === OCR_ACCESS.CORPUS_REVOKED &&
+        revDetail.folioOcr.length === 0,
+      "B's note still reads, its OCR an explicit revoked state — no source OCR row",
+      `${revNote.status} ${JSON.stringify(revNote.body).slice(0, 200)}`,
     )
   }
 
@@ -360,7 +367,7 @@ function readDocumentOcrView(body: unknown): DocumentOcrView | null {
     if (quality === undefined || words === undefined) return null
     folios.push({ ark: f.ark, folio: f.folio, ocrSource: source, ocrQuality: quality, wordCount: words, low: f.low })
   }
-  const status = [...Object.values(OCR_SYNC_STATUS), OCR_STATUS_PENDING].find((v) => v === body.status)
+  const status = Object.values(DOCUMENT_OCR_STATUS).find((v) => v === body.status)
   if (status === undefined) return null
   const rate = body.ocrRate === null || typeof body.ocrRate === "number" ? body.ocrRate : undefined
   const reason = body.reason === null || typeof body.reason === "string" ? body.reason : undefined
@@ -368,16 +375,25 @@ function readDocumentOcrView(body: unknown): DocumentOcrView | null {
   return { ark: body.ark, status, ocrRate: rate, reason, folios }
 }
 
-/** The OCR part of a NoteDetail body (its id and cited folios), shape-checked; null on drift. */
-function readNoteDetailOcr(body: unknown): Pick<NoteDetail, "id"> & { folioOcr: Array<{ ark: string; folio: number }> } | null {
-  if (!isRecord(body) || typeof body.id !== "string") return null
-  if (!Array.isArray(body.folioOcr) || !Array.isArray(body.documentOcr)) return null
+/**
+ * The OCR part of a NoteDetail body (its id, OCR access and cited folios),
+ * shape-checked; null on drift. `folioOcr` is empty unless the access is ok.
+ */
+function readNoteDetailOcr(
+  body: unknown,
+): (Pick<NoteDetail, "id"> & { access: OcrAccess; folioOcr: Array<{ ark: string; folio: number }> }) | null {
+  if (!isRecord(body) || typeof body.id !== "string" || !isRecord(body.ocr)) return null
+  const ocr = body.ocr
+  const access = Object.values(OCR_ACCESS).find((v) => v === ocr.access)
+  if (access === undefined) return null
+  if (access !== OCR_ACCESS.OK) return { id: body.id, access, folioOcr: [] }
+  if (!Array.isArray(ocr.folioOcr) || !Array.isArray(ocr.documentOcr)) return null
   const folioOcr: Array<{ ark: string; folio: number }> = []
-  for (const f of body.folioOcr) {
+  for (const f of ocr.folioOcr) {
     if (!isRecord(f) || typeof f.ark !== "string" || typeof f.folio !== "number") return null
     folioOcr.push({ ark: f.ark, folio: f.folio })
   }
-  return { id: body.id, folioOcr }
+  return { id: body.id, access, folioOcr }
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {

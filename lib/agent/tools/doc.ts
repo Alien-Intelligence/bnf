@@ -18,7 +18,7 @@ import { OCR_DB_TIMEOUT_MS } from "@/lib/constants"
 import { arkSchema } from "@/lib/validation/ark"
 import { DocumentQueries } from "@/models/documents/queries"
 import type { TurnScopedCtx } from "./registry-factory"
-import { AGENT_TOOLS, ARK_NOT_IN_CORPUS_ERROR } from "./constants"
+import { AGENT_TOOLS, ARK_NOT_IN_CORPUS_ERROR, DOCUMENT_OCR_STATUS_LEGEND } from "./constants"
 import { CORPUS_ACCESS_REVOKED_ERROR } from "./ingestion-guard"
 import { loadDocOcrSummary } from "./rag-ocr"
 
@@ -34,9 +34,10 @@ export const docGetTool = defineTool<
   description:
     "Fetch a corpus document's metadata (title, author, year, type, language, source, " +
     "excerpt) and its IIIF manifest URL by ARK, plus its OCR quality summary " +
-    "(ocr: status — only `available` means the quality is known, any other status " +
-    "means UNKNOWN, never 'good' —, ocrRate = the BnF \"Taux OCR\" 0–1, scoredFolios, " +
-    "and the lowFolios / lowFolioCount whose text is poorly recognised). " +
+    `(ocr: status — ${DOCUMENT_OCR_STATUS_LEGEND} —, ocrRate = the BnF ` +
+    "\"Taux OCR\" 0–1, scoredFolios, and the lowFolios / lowFolioCount whose text " +
+    "is poorly recognised; the three counts are null unless status is `available`: " +
+    "unknown, never 'none'). " +
     "Only documents already in this project's corpus can be retrieved — " +
     "pass an ARK from rag_query results or from the user's own reference. " +
     "Returns an error if the ARK is not in the corpus.",

@@ -33,8 +33,7 @@ export function CarnetEntry({
       <p className="text-xs text-muted-foreground mb-4">{dateStr}</p>
       <NoteBody
         body={note.body_md ?? ""}
-        folioOcr={note.folioOcr}
-        documentOcr={note.documentOcr}
+        ocr={note.ocr}
         onCitationClick={onCitationClick}
         onNoteLinkClick={onNoteLinkClick}
         knownNoteIds={knownNoteIds}

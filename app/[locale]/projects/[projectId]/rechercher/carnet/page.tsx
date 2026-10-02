@@ -1,8 +1,10 @@
 // app/[locale]/projects/[projectId]/rechercher/carnet/page.tsx
-// Server component. Loads the project's note list and every note with its full
-// body, citations and the OCR quality of its cited folios (NoteDetail). Passes
-// both to CarnetClient, which seeds the note-list and per-note query caches
-// with them (found bug B8: the carnet reconciles with later changes).
+// Server component. Loads the project's note list (a query — a page reads
+// through queries only, playbook/api-layers.md) and passes it to CarnetClient,
+// which seeds the note-list cache with it and fetches each note's detail (body,
+// citations, OCR quality — NoteDetail) through GET /api/notes/:nid, the one
+// place that enrichment is served (found bug B8: the carnet reconciles with
+// later changes).
 
 import { notFound } from "next/navigation"
 import { requireSessionUser } from "@/lib/auth-helpers"
@@ -10,8 +12,6 @@ import { canReadProject } from "@/lib/authz/project-access"
 import { workspaceStepsFor } from "@/lib/authz/workspace-steps"
 import { ProjectQueries } from "@/models/projects/queries"
 import { NoteQueries } from "@/models/notes/queries"
-import { NoteService } from "@/models/notes/service"
-import { corpusProjectId } from "@/lib/authz/corpus-source"
 import { ROUTES } from "@/lib/constants"
 import { CarnetClient } from "./client"
 
@@ -30,12 +30,7 @@ export default async function CarnetPage({
   if (!project) notFound()
   if (!canReadProject(user, project)) notFound()
 
-  const [noteList, details] = await Promise.all([
-    NoteQueries.listForProject(projectId),
-    NoteQueries.listWithCitationsForProject(projectId).then((notes) =>
-      NoteService.details(notes, corpusProjectId(project)),
-    ),
-  ])
+  const noteList = await NoteQueries.listForProject(projectId)
 
   return (
     <CarnetClient
@@ -43,7 +38,6 @@ export default async function CarnetPage({
       initialUser={{ name: user.name, email: user.email }}
       initialWorkspaceSteps={workspaceStepsFor(user, project)}
       initialNoteList={noteList}
-      initialNoteDetails={details}
     />
   )
 }

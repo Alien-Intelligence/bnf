@@ -24,7 +24,12 @@ import {
   NOTE_OCR_CHECK_FAILED_NOTICE,
   NOTE_OCR_UNKNOWN_NOTICE,
 } from "./constants"
-import { OCR_SOURCE, OCR_SYNC_STATUS } from "@/models/documents/schema"
+import {
+  FOLIO_OCR_STATE,
+  OCR_ACCESS,
+  OCR_SOURCE,
+  OCR_SYNC_STATUS,
+} from "@/models/documents/schema"
 import { NOTE_NOT_INGESTED_ERROR } from "./ingestion-guard"
 import type { TurnScopedCtx } from "./registry-factory"
 import {
@@ -134,7 +139,7 @@ test("note_create succeeds once the project has an ingested version", async () =
 // --- OCR quality in the note results (feedback 2026-09-29 #7) -------------
 
 const WRITTEN = { id: "00000000-0000-4000-8000-000000000001", title: "Note", citationCount: 2 }
-const NOTHING: NoteOcrOutcome = { kind: "checked", report: { low: [], unknown: [] } }
+const NOTHING: NoteOcrOutcome = { kind: OCR_ACCESS.OK, report: { low: [], unknown: [] } }
 
 test("noteResult with nothing to say about OCR is byte-identical to before", () => {
   assert.equal(
@@ -145,8 +150,8 @@ test("noteResult with nothing to say about OCR is byte-identical to before", () 
 
 test("noteResult reports low and unknown citations with their notices", () => {
   const low = [{ ark: "ark:/12148/bpt6k4625753w", folio: 2, ocr_quality: 0.661 }]
-  const unknown = [{ ark: "ark:/12148/bpt6k4625753w", folio: 5, ocr_state: "not_synced" as const }]
-  assert.deepEqual(noteResult(WRITTEN, [], { kind: "checked", report: { low, unknown } }), {
+  const unknown = [{ ark: "ark:/12148/bpt6k4625753w", folio: 5, ocr_state: FOLIO_OCR_STATE.PENDING }]
+  assert.deepEqual(noteResult(WRITTEN, [], { kind: OCR_ACCESS.OK, report: { low, unknown } }), {
     note_id: WRITTEN.id,
     title: WRITTEN.title,
     citation_count: 2,
@@ -156,9 +161,12 @@ test("noteResult reports low and unknown citations with their notices", () => {
 })
 
 test("noteResult after a failed OCR check still reports the write, never an error", () => {
-  const result = noteResult(WRITTEN, [], { kind: "check_failed" })
+  const result = noteResult(WRITTEN, [], { kind: OCR_ACCESS.CHECK_FAILED })
   assert.equal(result.note_id, WRITTEN.id)
-  assert.deepEqual(result.ocr_check, { status: "failed", message: NOTE_OCR_CHECK_FAILED_NOTICE })
+  assert.deepEqual(result.ocr_check, {
+    status: OCR_ACCESS.CHECK_FAILED,
+    message: NOTE_OCR_CHECK_FAILED_NOTICE,
+  })
 })
 
 // --- Handlers against stored DocumentFolio rows ----------------------------
@@ -210,7 +218,7 @@ test("note_create reports the stored low folio and the unrecorded one", async ()
     message: NOTE_LOW_OCR_NOTICE,
   })
   assert.deepEqual(result["ocr_unknown_citations"], {
-    citations: [{ ark: OCR_ARK, folio: 7, ocr_state: "not_recorded" }],
+    citations: [{ ark: OCR_ARK, folio: 7, ocr_state: FOLIO_OCR_STATE.NOT_RECORDED }],
     message: NOTE_OCR_UNKNOWN_NOTICE,
   })
 })
@@ -222,6 +230,10 @@ test("note_get and note_list carry the same OCR state", async () => {
     citations: [{ ark: OCR_ARK, folio: 2, ocr_quality: 0.661 }],
     message: NOTE_LOW_OCR_NOTICE,
   })
+  assert.deepEqual(got["ocr_unknown_citations"], {
+    citations: [{ ark: OCR_ARK, folio: 7, ocr_state: FOLIO_OCR_STATE.NOT_RECORDED }],
+    message: NOTE_OCR_UNKNOWN_NOTICE,
+  })
   const listed = (await noteListTool.handler({}, ctxFor())) as {
     notes: Array<{ id: string; low_ocr_citation_count: number; ocr_unknown_citation_count: number }>
   }
@@ -232,14 +244,18 @@ test("note_get and note_list carry the same OCR state", async () => {
 })
 
 test("a committed note_create whose OCR check fails is still a success, never isError", async () => {
-  const aborted = new AbortController()
-  aborted.abort()
+  // The turn is aborted AFTER the write (its note_event is the first thing
+  // emitted once the note is committed): the OCR read then fails.
+  const turn = new AbortController()
   const before = await prisma.note.count({ where: { projectId } })
   const result = (await noteCreateTool.handler(
     { title: "Note OCR check failed", body_md: `[[${OCR_ARK}|Source|2]]` },
-    { ...ctxFor(), signal: aborted.signal },
+    { ...ctxFor(), signal: turn.signal, emit: () => turn.abort() },
   )) as Record<string, unknown>
   assert.equal(await prisma.note.count({ where: { projectId } }), before + 1, "the note is written")
   assert.ok(typeof result["note_id"] === "string")
-  assert.deepEqual(result["ocr_check"], { status: "failed", message: NOTE_OCR_CHECK_FAILED_NOTICE })
+  assert.deepEqual(result["ocr_check"], {
+    status: OCR_ACCESS.CHECK_FAILED,
+    message: NOTE_OCR_CHECK_FAILED_NOTICE,
+  })
 })

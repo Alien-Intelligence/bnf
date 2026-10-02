@@ -25,18 +25,18 @@ import {
 } from "@/lib/citations/syntax"
 import { gallicaItemUrl, iiifImageUrl } from "@/lib/citations/external"
 import { citationOcrSummary } from "@/lib/citations/ocr"
-import { buildOcrIndex, folioOcrState, type OcrIndex } from "@/lib/ocr/quality"
-import type { DocumentFolioRow, DocumentOcrStatusRow } from "@/models/documents/schema"
+import { folioOcrState, noteOcrIndex, type OcrIndex } from "@/lib/ocr/quality"
+import { FOLIO_OCR_STATE, type NoteOcrRows } from "@/models/documents/schema"
 
 /**
- * A note as the exports need it: its body, the stored quality of its cited
- * folios and the sync status of the documents it cites (NoteDetail).
+ * A note as the exports need it: its body and its OCR rows (NoteDetail.ocr).
+ * A note whose OCR could not be read (revoked grant, failed read) exports
+ * without any low marker — its quality is not claimed either way (plan D3).
  */
 type ExportableNote = {
   title: string
   body_md: string | null
-  folioOcr: DocumentFolioRow[]
-  documentOcr: DocumentOcrStatusRow[]
+  ocr: NoteOcrRows
 }
 
 /** The translated low-OCR strings, in the UI's current locale (`citations.ocr`). */
@@ -80,7 +80,9 @@ function toPortableMarkdown(
       // Only a MEASURED low folio is marked; a folio whose quality is not
       // available is not claimed either way (plan D3).
       const state = folioOcrState(index, ark, f)
-      return state.kind === "recorded" && state.view.low ? `${link} ${copy.lowMarker}` : link
+      return state.kind === FOLIO_OCR_STATE.RECORDED && state.view.low
+        ? `${link} ${copy.lowMarker}`
+        : link
     })
     .replace(NOTELINK_REGEX, (_m, _id: string, label: string) => {
       return `**${escapeLinkText(unescapeCitationText(label))}**`
@@ -93,7 +95,7 @@ function toPortableMarkdown(
  */
 function noteSection(note: ExportableNote, heading: string, copy: ExportCopy): string {
   const body = note.body_md ?? ""
-  const index = buildOcrIndex(note.folioOcr, note.documentOcr)
+  const index = noteOcrIndex(note.ocr)
   const disclaimer =
     citationOcrSummary(body, index).low.length > 0 ? `> ${copy.disclaimer}\n\n` : ""
   return `${heading} ${note.title}\n\n${disclaimer}${toPortableMarkdown(body, index, copy)}\n`

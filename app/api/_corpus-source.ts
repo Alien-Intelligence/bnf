@@ -16,6 +16,7 @@
  */
 import { conflict } from "@/lib/api-response"
 import { canReachCorpus, corpusProjectId } from "@/lib/authz/corpus-source"
+import type { OcrReader } from "@/lib/ocr/quality"
 
 /** The message the UI and the agent both surface for a revoked grant. */
 export const CORPUS_ACCESS_REVOKED_MESSAGE =
@@ -32,4 +33,18 @@ export function resolveCorpusProject(
 ): string | Response {
   if (!canReachCorpus(project)) return conflict(CORPUS_ACCESS_REVOKED_MESSAGE)
   return corpusProjectId(project)
+}
+
+/**
+ * The OCR reader of a request on `project`'s notes: the corpus its citations
+ * come from, whether the grant still holds (a revoked derived workspace reads
+ * its own notes, never the source's OCR rows — NoteService.details answers
+ * corpus_revoked), and the request's signal for the bounded reads.
+ */
+export function noteOcrReader(project: CorpusSourceFields, signal: AbortSignal): OcrReader {
+  return {
+    corpusProjectId: corpusProjectId(project),
+    corpusReachable: canReachCorpus(project),
+    signal,
+  }
 }

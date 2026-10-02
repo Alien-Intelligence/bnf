@@ -9,36 +9,65 @@
  * helpers only classify citations and slices against an OcrIndex.
  */
 import { PROCESSED_TEXT_FOLIO_HEADING } from "@/lib/constants"
-import { folioOcrState, type OcrIndex } from "@/lib/ocr/quality"
+import {
+  folioOcrKey,
+  folioOcrState,
+  isOcrUnknown,
+  type OcrIndex,
+  type UnknownFolioOcrState,
+} from "@/lib/ocr/quality"
+import { FOLIO_OCR_STATE, type FolioOcrView } from "@/models/documents/schema"
 
-import { parseCitations, type ParsedCitation } from "./syntax"
+import { parseCitations } from "./syntax"
+
+/** A cited folio measured below the threshold, with its stored view. */
+export type LowFolio = { ark: string; folio: number; view: FolioOcrView }
+/** A cited folio whose quality is not known to the reader, with why. */
+export type UnknownFolio = { ark: string; folio: number; state: UnknownFolioOcrState }
 
 /**
- * The TEXT citations of a note body, split by what is known of their folio's
- * OCR (image embeds `![[…]]` are excluded, plan D11 — they show the page image
- * and carry no transcription):
+ * THE classifier of cited folios (one implementation for the pills, the
+ * banner, the exports and every agent tool): each (ark, folio) once, in
+ * first-seen order, split by what is known of its OCR —
  *   low     — measured below the threshold: pill marker, banner, export marker;
- *   unknown — the folio's quality is not available (document not synced, or
- *             no stored row for that folio). Never shown as "not low": the
- *             agent and the side panel say "non disponible".
+ *   unknown — the quality is not known to the reader (isOcrUnknown: pending,
+ *             unavailable, not recorded, revoked, check failed). Never shown
+ *             or reported as "not low".
  * Everything else (measured and not low, or a recorded mistral/vision page)
- * is in neither list.
+ * is in neither list. A reference without a folio cites no page: skipped.
+ */
+export function classifyFolioRefs(
+  refs: Array<{ ark: string; folio: number | null }>,
+  index: OcrIndex,
+): { low: LowFolio[]; unknown: UnknownFolio[] } {
+  const low: LowFolio[] = []
+  const unknown: UnknownFolio[] = []
+  const seen = new Set<string>()
+  for (const { ark, folio } of refs) {
+    if (folio === null) continue
+    const key = folioOcrKey(ark, folio)
+    if (seen.has(key)) continue
+    seen.add(key)
+    const state = folioOcrState(index, ark, folio)
+    if (state.kind === FOLIO_OCR_STATE.RECORDED) {
+      if (state.view.low) low.push({ ark, folio, view: state.view })
+    } else if (isOcrUnknown(state)) {
+      unknown.push({ ark, folio, state })
+    }
+  }
+  return { low, unknown }
+}
+
+/**
+ * The TEXT citations of a note body, classified (classifyFolioRefs). Image
+ * embeds `![[…]]` are not text citations (plan D11 — they show the page image
+ * and carry no transcription): parseCitations never returns them.
  */
 export function citationOcrSummary(
   body: string,
   index: OcrIndex,
-): { low: ParsedCitation[]; unknown: ParsedCitation[] } {
-  const low: ParsedCitation[] = []
-  const unknown: ParsedCitation[] = []
-  for (const c of parseCitations(body)) {
-    const state = folioOcrState(index, c.ark, c.folio)
-    if (state.kind === "recorded") {
-      if (state.view.low) low.push(c)
-    } else {
-      unknown.push(c)
-    }
-  }
-  return { low, unknown }
+): { low: LowFolio[]; unknown: UnknownFolio[] } {
+  return classifyFolioRefs(parseCitations(body), index)
 }
 
 /**
