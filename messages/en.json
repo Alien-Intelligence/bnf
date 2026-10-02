@@ -107,7 +107,8 @@
     "role": {
       "admin": "Admin",
       "member": "Member",
-      "guest": "Guest"
+      "guest": "Guest",
+      "unknown": "Unknown"
     },
     "ocr": {
       "eyebrow": "Administration",

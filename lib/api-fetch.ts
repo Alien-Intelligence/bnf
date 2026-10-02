@@ -9,13 +9,21 @@
  * apiFetch has answered, so the two belong in the same place.
  */
 
+/**
+ * An app path with NEXT_PUBLIC_BASE_PATH prepended — for the rare call that
+ * is a navigation rather than a fetch (a file download). Absolute URLs pass
+ * through. An unset base path is the app served at the root, not a default.
+ */
+export function apiUrl(input: string): string {
+  const basePath = process.env["NEXT_PUBLIC_BASE_PATH"] ?? ""
+  return input.startsWith("/") ? `${basePath}${input}` : input
+}
+
 export async function apiFetch(
   input: string,
   init?: RequestInit,
 ): Promise<Response> {
-  const basePath = process.env["NEXT_PUBLIC_BASE_PATH"] ?? ""
-  const url = input.startsWith("/") ? `${basePath}${input}` : input
-  return fetch(url, {
+  return fetch(apiUrl(input), {
     credentials: "include",
     ...init,
     headers: {
