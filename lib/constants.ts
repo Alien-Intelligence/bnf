@@ -770,3 +770,17 @@ export function IIIF_MANIFEST_URL(ark: string): string {
  */
 export const MEMORY_CROSS_SCOPE_MAX_ITEMS = 20
 export const MEMORY_CROSS_SCOPE_MAX_CHARS = 3_000
+
+// ---------------------------------------------------------------------------
+// System-prompt cache revision
+// ---------------------------------------------------------------------------
+
+/**
+ * The revision of the rendered system prompts. AppSession caches its rendered
+ * prompt (systemPrompt + promptLocale + promptRevision); a cached prompt is
+ * served only when its revision equals this one, so a prompt-text change
+ * reaches EXISTING sessions on their next turn instead of never.
+ * Bump on ANY change to lib/agent/prompts/*; the fingerprint test enforces it
+ * (lib/agent/prompts/revision.test.ts).
+ */
+export const PROMPT_REVISION = "2026-10-01.corpus-buffer-v2"

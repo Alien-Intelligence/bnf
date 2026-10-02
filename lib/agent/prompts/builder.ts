@@ -1,4 +1,5 @@
 import "server-only"
+import { PROMPT_REVISION } from "@/lib/constants"
 import { prisma } from "@/lib/db"
 import { MemoryQueries } from "@/models/memory/queries"
 import { ProjectQueries } from "@/models/projects/queries"
@@ -17,20 +18,28 @@ import type { AppSession } from "@/lib/generated/prisma/client"
 export class PromptBuilder {
   /**
    * The cached prompt is only valid for the locale it was rendered in
-   * (`promptLocale`): a turn made under the other UI locale rebuilds it, so a
-   * session follows the user when they switch FR ⇄ EN mid-project.
+   * (`promptLocale`) AND the prompt revision it was rendered at
+   * (`promptRevision`): a turn made under the other UI locale rebuilds it, so a
+   * session follows the user when they switch FR ⇄ EN mid-project, and a
+   * prompt-text change (a new PROMPT_REVISION) reaches existing sessions on
+   * their next turn — without the revision check a cached prompt was served
+   * forever (found bug B5).
    */
   static async buildForSession(
     session: AppSession,
     locale: AppLocale,
   ): Promise<string> {
-    if (session.systemPrompt && session.promptLocale === locale) {
+    if (
+      session.systemPrompt &&
+      session.promptLocale === locale &&
+      session.promptRevision === PROMPT_REVISION
+    ) {
       return session.systemPrompt
     }
     const built = await this.render(session, locale)
     await prisma.appSession.update({
       where: { id: session.id },
-      data: { systemPrompt: built, promptLocale: locale },
+      data: { systemPrompt: built, promptLocale: locale, promptRevision: PROMPT_REVISION },
     })
     return built
   }
@@ -45,7 +54,7 @@ export class PromptBuilder {
   static async invalidateProject(projectId: string): Promise<void> {
     await prisma.appSession.updateMany({
       where: { projectId },
-      data: { systemPrompt: null },
+      data: { systemPrompt: null, promptRevision: null },
     })
   }
 
