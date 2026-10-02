@@ -152,13 +152,14 @@ export const RAG_LOOKUP_STATUS = {
   FOUND: "found",
   /** No entry of the corpus project's dataset carries this ARK. */
   ENTRY_NOT_FOUND: "entry_not_found",
-  /** The ARK has entries in the dataset, but not the requested entry id. */
+  /** The requested entry id is not the ARK's live entry in the dataset. */
   ENTRY_NOT_IN_CORPUS: "entry_not_in_corpus",
 } as const
 
 export type RagEntryContentResult =
   | { status: typeof RAG_LOOKUP_STATUS.FOUND; content: RagEntryContent }
-  | { status: typeof RAG_LOOKUP_STATUS.ENTRY_NOT_IN_CORPUS; liveEntryIds: number[] }
+  /** The requested id is not the ARK's live entry; `liveEntryId` is (null: the ARK has none). */
+  | { status: typeof RAG_LOOKUP_STATUS.ENTRY_NOT_IN_CORPUS; liveEntryId: number | null }
 
 export interface RagEntryContent {
   entryId: number

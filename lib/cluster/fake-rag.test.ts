@@ -95,11 +95,11 @@ test("an entry id the ARK does not own is refused as not in the corpus, as on th
   const other = await FakeRagRunner.getEntryContent({
     projectId: PROJECT, ark: ARK, entryId: entryId + 1, charOffset: 0, charLimit: 0, signal: signal(),
   })
-  assert.deepEqual(other, { status: RAG_LOOKUP_STATUS.ENTRY_NOT_IN_CORPUS, liveEntryIds: [entryId] })
+  assert.deepEqual(other, { status: RAG_LOOKUP_STATUS.ENTRY_NOT_IN_CORPUS, liveEntryId: entryId })
   const unknownArk = await FakeRagRunner.getEntryContent({
     projectId: PROJECT, ark: "ark:/12148/bpt6k0000000", entryId, charOffset: 0, charLimit: 0, signal: signal(),
   })
-  assert.deepEqual(unknownArk, { status: RAG_LOOKUP_STATUS.ENTRY_NOT_IN_CORPUS, liveEntryIds: [] })
+  assert.deepEqual(unknownArk, { status: RAG_LOOKUP_STATUS.ENTRY_NOT_IN_CORPUS, liveEntryId: null })
 })
 
 test("an aborted signal stops the fake as it stops the real client", async () => {

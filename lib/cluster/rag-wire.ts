@@ -210,9 +210,9 @@ function incomplete(
  * the corpus project's dataset, so every hit must carry exactly this ARK and
  * a positive integer entry id — anything else means the filter was not
  * applied, and trusting it would read another document. `total` is the
- * cluster's own count of matches: when it exceeds the hits returned, the
- * lookup is incomplete (more live entries for one ARK than its limit) and the
- * newest entry cannot be known, so that is a protocol error too.
+ * cluster's own count of matches and the hits are every page the caller
+ * fetched: a count that disagrees with them means the set is incomplete, and
+ * the live entry cannot be told — a protocol error, never a guess.
  */
 export function liveEntryIds(
   hits: ReadonlyArray<{ entry_id: unknown; metadata?: { ark?: unknown } }>,
@@ -222,12 +222,12 @@ export function liveEntryIds(
   if (total === undefined) {
     throw new DataclusterMcpProtocolError(`ARK lookup for ${ark} returned no pagination.total`)
   }
-  if (total > hits.length) {
+  if (total !== hits.length) {
     throw new DataclusterMcpProtocolError(
-      `ARK lookup for ${ark} matched ${total} entries but returned ${hits.length}: the live entry cannot be told`,
+      `ARK lookup for ${ark} counted ${total} entries but its pages held ${hits.length}: the live entry cannot be told`,
     )
   }
-  return hits.map((h) => {
+  const ids = hits.map((h) => {
     if (h.metadata?.ark !== ark) {
       throw new DataclusterMcpProtocolError(
         `ARK lookup for ${ark} returned an entry of ${JSON.stringify(h.metadata?.ark)}`,
@@ -240,6 +240,10 @@ export function liveEntryIds(
     }
     return h.entry_id
   })
+  if (new Set(ids).size !== ids.length) {
+    throw new DataclusterMcpProtocolError(`ARK lookup for ${ark} returned the same entry twice across pages`)
+  }
+  return ids
 }
 
 /**

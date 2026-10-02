@@ -211,7 +211,7 @@ test("rag_get_text refuses an entry id the ARK lookup does not vouch for in this
   const original = ClusterRagClient.getEntryContent
   ClusterRagClient.getEntryContent = async () => ({
     status: RAG_LOOKUP_STATUS.ENTRY_NOT_IN_CORPUS,
-    liveEntryIds: [12],
+    liveEntryId: 12,
   })
   let out: unknown
   try {
@@ -219,7 +219,8 @@ test("rag_get_text refuses an entry id the ARK lookup does not vouch for in this
   } finally {
     ClusterRagClient.getEntryContent = original
   }
-  assert.deepEqual(out, { success: false, error: entryNotInCorpusError(ARK, 99) })
+  assert.deepEqual(out, { success: false, error: entryNotInCorpusError(ARK, 99, 12) })
+  assert.match(entryNotInCorpusError(ARK, 99, 12), /entrée actuelle est 12/, "the refusal names the live id")
   assert.equal(toolCallErrored(false, out), true)
 })
 

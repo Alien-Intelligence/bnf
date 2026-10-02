@@ -244,9 +244,9 @@ export const FakeRagRunner = {
 
   async getEntryContent(req: RagEntryContentRequest): Promise<RagEntryContentResult> {
     req.signal.throwIfAborted()
-    const ids = liveIdsFor(req.ark)
-    if (!ids.includes(req.entryId)) {
-      return { status: RAG_LOOKUP_STATUS.ENTRY_NOT_IN_CORPUS, liveEntryIds: ids }
+    const liveEntryId = pickLiveEntryId(liveIdsFor(req.ark))
+    if (liveEntryId !== req.entryId) {
+      return { status: RAG_LOOKUP_STATUS.ENTRY_NOT_IN_CORPUS, liveEntryId }
     }
     const ark = ENTRY_ID_TO_ARK.get(req.entryId)
     if (ark === undefined) {

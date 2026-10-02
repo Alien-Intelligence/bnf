@@ -46,10 +46,11 @@ const MAX_DATASET_PAGES = 50
 const MODEL_VERSION = "datacluster-mcp"
 
 /**
- * Keyword hits requested when resolving an ARK to its entry. One is the
- * steady state; a few covers a re-ingest whose tombstone lagged (D13).
+ * Keyword hits requested per page when resolving an ARK to its entries. One
+ * entry is the steady state; more than a page only after many lagging
+ * re-ingests, which the lookup pages through.
  */
-const ARK_LOOKUP_LIMIT = 5
+const ARK_LOOKUP_PAGE_SIZE = 20
 
 /**
  * Resolve the project's numeric cluster dataset id, persisting it on first use.
@@ -191,14 +192,16 @@ export const RealRagRunner = {
 
   async getEntryContent(req: RagEntryContentRequest): Promise<RagEntryContentResult> {
     // get_entry_content is keyed by entry_id only, and entry ids are
-    // cluster-wide: the id is read only if the ARK lookup in THIS corpus
-    // project's dataset returns it for the stated ARK. Offset and limit are
+    // cluster-wide: the id is read only if it is the live entry the ARK lookup
+    // in THIS corpus project's dataset returns for the stated ARK. Offset and limit are
     // explicit on the request: the tool handler owns the defaults.
     const client = new DataclusterMcpClient({ signal: req.signal })
     const datasetId = await resolveDatasetId(req.projectId, client, req.signal)
-    const ids = await lookupLiveEntryIds(client, datasetId, req.ark)
-    if (!ids.includes(req.entryId)) {
-      return { status: RAG_LOOKUP_STATUS.ENTRY_NOT_IN_CORPUS, liveEntryIds: ids }
+    // Only the LIVE entry: a lagging tombstone's id would serve stale text
+    // that the quote check (which reads the live entry) would then contradict.
+    const liveEntryId = pickLiveEntryId(await lookupLiveEntryIds(client, datasetId, req.ark))
+    if (liveEntryId !== req.entryId) {
+      return { status: RAG_LOOKUP_STATUS.ENTRY_NOT_IN_CORPUS, liveEntryId }
     }
     const data = await client.getEntryContent({
       entryId: req.entryId,
@@ -226,18 +229,29 @@ export const RealRagRunner = {
 /**
  * The entry ids of `ark` in the dataset. The ARK is a string field of the
  * entry metadata schema, which data-cluster registers as Meili-filterable, so
- * an empty keyword query with `metadata_filters: {ark}` is the lookup.
+ * an empty keyword query with `metadata_filters: {ark}` is the lookup. It
+ * pages until it holds every match the cluster counted: an ARK may have
+ * several entries (re-ingests whose tombstones lag), and the live one can only
+ * be told from the complete set.
  */
 async function lookupLiveEntryIds(
   client: DataclusterMcpClient,
   datasetId: number,
   ark: string,
 ): Promise<number[]> {
-  const lookup = await client.keywordSearch({
-    query: "",
-    datasetIds: [datasetId],
-    metadataFilters: { ark },
-    limit: ARK_LOOKUP_LIMIT,
-  })
-  return liveEntryIds(lookup.results, lookup.pagination?.total, ark)
+  const hits: DataclusterKeywordHit[] = []
+  let total: number | undefined
+  do {
+    const page = await client.keywordSearch({
+      query: "",
+      datasetIds: [datasetId],
+      metadataFilters: { ark },
+      limit: ARK_LOOKUP_PAGE_SIZE,
+      offset: hits.length,
+    })
+    total = page.pagination?.total
+    if (page.results.length === 0) break
+    hits.push(...page.results)
+  } while (total !== undefined && hits.length < total)
+  return liveEntryIds(hits, total, ark)
 }

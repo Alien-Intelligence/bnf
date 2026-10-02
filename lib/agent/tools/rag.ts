@@ -184,15 +184,17 @@ export const ragKeywordSearchTool = defineTool<
 // ---------------------------------------------------------------------------
 
 /**
- * Refusal when the entry id does not belong to the stated ARK in the corpus
- * project's dataset — the agent copied the wrong pair, or invented an id.
+ * Refusal when the entry id is not the stated ARK's live entry in the corpus
+ * project's dataset — the agent copied the wrong pair, an outdated id, or
+ * invented one. It names the live id so the agent can retry at once.
  */
-export function entryNotInCorpusError(ark: string, entryId: number): string {
-  return (
-    `L'entrée ${entryId} n'est pas une entrée du document ${ark} dans ce corpus : ` +
-    `reprends l'entryId ET l'ark tels qu'un même résultat de ${AGENT_TOOLS.ragQuery} ou ` +
-    `${AGENT_TOOLS.ragKeywordSearch} les a donnés.`
-  )
+export function entryNotInCorpusError(ark: string, entryId: number, liveEntryId: number | null): string {
+  return liveEntryId === null
+    ? `Le document ${ark} n'a aucune entrée dans ce corpus : l'entrée ${entryId} ne peut pas être lue. ` +
+        `Reprends un ark et un entryId tels qu'un même résultat de ${AGENT_TOOLS.ragQuery} ou ` +
+        `${AGENT_TOOLS.ragKeywordSearch} les a donnés.`
+    : `L'entrée ${entryId} n'est pas l'entrée actuelle du document ${ark} dans ce corpus : ` +
+        `son entrée actuelle est ${liveEntryId}. Relance ${AGENT_TOOLS.ragGetText} avec entryId ${liveEntryId}.`
 }
 
 const ragGetTextInputSchema = z.object({
@@ -252,7 +254,7 @@ export const ragGetTextTool = defineTool<typeof ragGetTextInputSchema, TurnScope
       signal: ctx.signal,
     })
     if (result.status === RAG_LOOKUP_STATUS.ENTRY_NOT_IN_CORPUS) {
-      return refusal(entryNotInCorpusError(input.ark, input.entryId))
+      return refusal(entryNotInCorpusError(input.ark, input.entryId, result.liveEntryId))
     }
     return result.content
   },

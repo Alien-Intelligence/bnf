@@ -142,9 +142,10 @@ test("liveEntryIds refuses a hit of another ARK or an invalid entry id", () => {
   assert.throws(() => liveEntryIds([{ entry_id: 0, metadata: { ark: ARK } }], 1, ARK), DataclusterMcpProtocolError)
 })
 
-test("liveEntryIds refuses an incomplete lookup (total beyond the hits) or one with no total", () => {
+test("liveEntryIds refuses an incomplete or duplicated lookup, or one with no total", () => {
   const hit = { entry_id: 12, metadata: { ark: ARK } }
-  assert.throws(() => liveEntryIds([hit], 6, ARK), /matched 6 entries but returned 1/)
+  assert.throws(() => liveEntryIds([hit], 6, ARK), /counted 6 entries but its pages held 1/)
+  assert.throws(() => liveEntryIds([hit, hit], 2, ARK), /same entry twice/)
   assert.throws(() => liveEntryIds([hit], undefined, ARK), /no pagination.total/)
 })
 
