@@ -60,15 +60,15 @@ async function probeConnectivity(now: number): Promise<Connectivity> {
   // real cluster, so it is healthy by definition).
   let dataclusterDown = false
   if (clusterMode() === CLUSTER_MODE.REAL) {
+    let env: ReturnType<typeof requireClusterEnv> | null = null
     try {
-      const env = requireClusterEnv()
-      dataclusterDown = !(await reachable(
-        env.DATACLUSTER_MCP_URL,
-        env.CLUSTER_BEARER_TOKEN,
-      ))
-    } catch {
-      dataclusterDown = false
+      env = requireClusterEnv()
+    } catch (err) {
+      // Real mode without the data-cluster env cannot reach the cluster: the
+      // lane is down (red), and the reason is logged — never a green lane.
+      console.error("[health] data-cluster env missing in real mode:", err instanceof Error ? err.message : err)
     }
+    dataclusterDown = env === null || !(await reachable(env.DATACLUSTER_MCP_URL, env.CLUSTER_BEARER_TOKEN))
   }
 
   const value: Connectivity = { bnfMcpDown, dataclusterDown }
