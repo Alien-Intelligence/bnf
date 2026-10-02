@@ -20,22 +20,24 @@ import "server-only"
 //     worker's (trimmed page text, ark / folio / offsets / entry_id metadata);
 //   - entry slices are cut like mcp-datacluster's get_entry_content (by code
 //     point, per mode) and mapped by `toEntryContent`;
-//   - the ARK lookup goes through `pickLiveEntryId`, the split through
-//     `splitEntryFolios`;
-//   - an unknown entry id is a DataclusterMcpNotFoundError, as on the wire.
+//   - the ARK lookup goes through `liveEntryIds` / `pickLiveEntryId`, the split
+//     through `splitEntryText`; rag_get_text reads only an entry id the ARK
+//     lookup returns, exactly as the real runner;
+//   - a failing entry read is a DataclusterMcpToolError, as on the wire.
 // Since fixtures have no entry ids, a stable synthetic id is derived from each
 // unique ARK (1-based, in first-seen order) and shared across all operations.
 
 import { FAKE_RAG_MODEL_VERSION } from "@/lib/constants"
-import { DataclusterMcpNotFoundError } from "./datacluster-mcp-client"
+import { DataclusterMcpToolError } from "./datacluster-mcp-client"
 import type { DataclusterChunk, DataclusterEntryContent } from "./datacluster-mcp-client"
-import { assembleEntryText, codePointLength, sliceCodePoints, splitEntryFolios } from "./folio-text"
-import { chunkToPassage, pickLiveEntryId, toEntryContent } from "./rag-wire"
+import { assembleEntryText, codePointLength, sliceCodePoints } from "./folio-text"
+import { chunkToPassage, liveEntryIds, pickLiveEntryId, splitEntryText, toEntryContent } from "./rag-wire"
+import { RAG_LOOKUP_STATUS } from "./rag"
 import type {
   DocumentFoliosRequest,
   DocumentFoliosResult,
-  RagEntryContent,
   RagEntryContentRequest,
+  RagEntryContentResult,
   RagKeywordHit,
   RagKeywordRequest,
   RagKeywordResponse,
@@ -222,23 +224,32 @@ export const FakeRagRunner = {
     return { hits, total: bestByArk.size }
   },
 
-  async getEntryContent(req: RagEntryContentRequest): Promise<RagEntryContent> {
+  async getEntryContent(req: RagEntryContentRequest): Promise<RagEntryContentResult> {
     req.signal.throwIfAborted()
+    const ids = liveIdsFor(req.ark)
+    if (!ids.includes(req.entryId)) {
+      return { status: RAG_LOOKUP_STATUS.ENTRY_NOT_IN_CORPUS, liveEntryIds: ids }
+    }
     const ark = ENTRY_ID_TO_ARK.get(req.entryId)
     if (ark === undefined) {
-      throw new DataclusterMcpNotFoundError(`fake cluster: no entry ${req.entryId}`)
+      // What the wire returns when get_entry_content fails on an id: the
+      // MCP's RuntimeError, surfaced as a tool-level error.
+      throw new DataclusterMcpToolError(`fake cluster: no entry ${req.entryId}`)
     }
     const payload = entryContentPayload(bodyOf(ark).text, req.entryId, req.charOffset, req.charLimit)
-    return toEntryContent(payload, req)
+    return { status: RAG_LOOKUP_STATUS.FOUND, content: toEntryContent(payload, req) }
   },
 
   async getDocumentFolios(req: DocumentFoliosRequest): Promise<DocumentFoliosResult> {
     req.signal.throwIfAborted()
-    const hits = ARK_TO_ENTRY_ID.has(req.ark)
-      ? [{ entry_id: entryIdForArk(req.ark), metadata: { ark: req.ark } }]
-      : []
-    const entryId = pickLiveEntryId(hits, req.ark)
-    if (entryId === null) return { status: "entry_not_found" }
-    return { status: "found", entryId, folios: splitEntryFolios(bodyOf(req.ark).text) }
+    const entryId = pickLiveEntryId(liveIdsFor(req.ark))
+    if (entryId === null) return { status: RAG_LOOKUP_STATUS.ENTRY_NOT_FOUND }
+    return { status: RAG_LOOKUP_STATUS.FOUND, entryId, folios: splitEntryText(entryId, req.ark, bodyOf(req.ark).text) }
   },
+}
+
+/** The ARK lookup, as the real runner does it: the dataset's entries for `ark`. */
+function liveIdsFor(ark: string): number[] {
+  const hits = ARK_TO_ENTRY_ID.has(ark) ? [{ entry_id: entryIdForArk(ark), metadata: { ark } }] : []
+  return liveEntryIds(hits, hits.length, ark)
 }

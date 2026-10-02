@@ -9,10 +9,10 @@ import "server-only"
 import { test, before, after } from "node:test"
 import assert from "node:assert/strict"
 import { prisma } from "@/lib/db"
-import { ClusterRagClient } from "@/lib/cluster/rag"
+import { ClusterRagClient, RAG_LOOKUP_STATUS } from "@/lib/cluster/rag"
 import type { RagEntryContentRequest } from "@/lib/cluster/rag"
 import { RAG_DEFAULT_K, RAG_GET_TEXT_DEFAULT_CHAR_LIMIT, RAG_KEYWORD_DEFAULT_LIMIT } from "@/lib/constants"
-import { ragGetTextTool, ragKeywordSearchTool, ragQueryTool } from "./rag"
+import { entryNotInCorpusError, ragGetTextTool, ragKeywordSearchTool, ragQueryTool } from "./rag"
 import { toolCallErrored } from "@/lib/tools/display"
 import type { TurnScopedCtx } from "./registry-factory"
 import {
@@ -67,24 +67,32 @@ after(async () => {
   await deleteTestUser(userId)
 })
 
+const ARK = "ark:/12148/bpt6k2839841"
+
 /** Replace the facade's getEntryContent for one call, capturing the request. */
-async function captureGetText(input: Parameters<typeof ragGetTextTool.handler>[0], signal?: AbortSignal) {
+async function captureGetText(
+  input: Omit<Parameters<typeof ragGetTextTool.handler>[0], "ark">,
+  signal?: AbortSignal,
+) {
   const original = ClusterRagClient.getEntryContent
   const seen: RagEntryContentRequest[] = []
   ClusterRagClient.getEntryContent = async (req) => {
     seen.push(req)
     return {
-      entryId: req.entryId,
-      text: "",
-      charOffset: req.charOffset,
-      charLimit: req.charLimit,
-      totalLength: 0,
-      hasMore: false,
-      nextOffset: 0,
+      status: RAG_LOOKUP_STATUS.FOUND,
+      content: {
+        entryId: req.entryId,
+        text: "",
+        charOffset: req.charOffset,
+        charLimit: req.charLimit,
+        totalLength: 0,
+        hasMore: false,
+        nextOffset: 0,
+      },
     }
   }
   try {
-    await ragGetTextTool.handler(input, ctxFor(signal))
+    await ragGetTextTool.handler({ ark: ARK, ...input }, ctxFor(signal))
   } finally {
     ClusterRagClient.getEntryContent = original
   }
@@ -110,6 +118,7 @@ test("rag_get_text reads the CORPUS project with the turn's signal", async () =>
   const controller = new AbortController()
   const req = await captureGetText({ entryId: 3 }, controller.signal)
   assert.equal(req.projectId, projectId, "corpus project, not the workspace")
+  assert.equal(req.ark, ARK, "the ARK the entry must belong to is passed on")
   assert.notEqual(req.projectId, derivedId)
   assert.equal(req.signal, controller.signal)
 })
@@ -196,4 +205,28 @@ test("a rag tool refusal is recorded as a failed call, not an ok one", async () 
   } finally {
     await cleanupProject(bare.id)
   }
+})
+
+test("rag_get_text refuses an entry id the ARK lookup does not vouch for in this corpus", async () => {
+  const original = ClusterRagClient.getEntryContent
+  ClusterRagClient.getEntryContent = async () => ({
+    status: RAG_LOOKUP_STATUS.ENTRY_NOT_IN_CORPUS,
+    liveEntryIds: [12],
+  })
+  let out: unknown
+  try {
+    out = await ragGetTextTool.handler({ ark: ARK, entryId: 99 }, ctxFor())
+  } finally {
+    ClusterRagClient.getEntryContent = original
+  }
+  assert.deepEqual(out, { success: false, error: entryNotInCorpusError(ARK, 99) })
+  assert.equal(toolCallErrored(false, out), true)
+})
+
+test("rag_get_text's schema requires an ARK and a positive entry id", () => {
+  const schema = ragGetTextTool.inputSchema
+  assert.equal(schema.safeParse({ entryId: 3 }).success, false, "ark is required")
+  assert.equal(schema.safeParse({ ark: ARK, entryId: 0 }).success, false)
+  assert.equal(schema.safeParse({ ark: ARK, entryId: -4 }).success, false)
+  assert.equal(schema.safeParse({ ark: ARK, entryId: 3 }).success, true)
 })

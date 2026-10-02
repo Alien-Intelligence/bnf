@@ -5,7 +5,7 @@ import "server-only"
 
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { ClusterRagClient } from "@/lib/cluster/rag"
+import { ClusterRagClient, RAG_LOOKUP_STATUS } from "@/lib/cluster/rag"
 import type { DocumentFoliosRequest, DocumentFoliosResult } from "@/lib/cluster/rag"
 import { DataclusterMcpError } from "@/lib/cluster/datacluster-mcp-client"
 import { QUOTE_CHECK_MAX_SOURCES } from "@/lib/constants"
@@ -57,7 +57,7 @@ async function withFacade<T>(
 }
 
 const found = (folios: Array<[number, string]>): DocumentFoliosResult => ({
-  status: "found",
+  status: RAG_LOOKUP_STATUS.FOUND,
   entryId: 1,
   folios: new Map(folios),
 })
@@ -179,7 +179,7 @@ test("more than QUOTE_CHECK_MAX_SOURCES ARKs: the overflow is unverifiable / too
 
 test("entry_not_found and folio_absent are reported as unverifiable with their cause", async () => {
   const res = await withFacade(
-    async (req) => (req.ark === arkN(1) ? { status: "entry_not_found" } : found([[2, FOLIO_TEXT]])),
+    async (req) => (req.ark === arkN(1) ? { status: RAG_LOOKUP_STATUS.ENTRY_NOT_FOUND } : found([[2, FOLIO_TEXT]])),
     () => checkNoteQuotes(args({ bodyMd: `« ${QUOTE} » ${cite(arkN(1), 2)}\n\n« ${QUOTE} » ${cite(arkN(2), 9)}` })),
   )
   assert.equal(res.status, QUOTE_CHECK_STATUS.PARTIAL)

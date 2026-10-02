@@ -6,7 +6,7 @@ import "server-only"
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { DataclusterMcpProtocolError } from "./datacluster-mcp-client"
-import { chunkToPassage, pickLiveEntryId, toEntryContent } from "./rag-wire"
+import { chunkToPassage, liveEntryIds, pickLiveEntryId, toEntryContent } from "./rag-wire"
 
 const ARK = "ark:/12148/bpt6k822781z"
 
@@ -123,18 +123,27 @@ test("toEntryContent: offset-only mode needs char_offset, total_length and has_m
   )
 })
 
-test("pickLiveEntryId takes the highest entry id (the newest after a re-ingest)", () => {
+test("liveEntryIds returns the ARK's entry ids; pickLiveEntryId takes the highest (newest after a re-ingest)", () => {
   const hit = (entry_id: number) => ({ entry_id, metadata: { ark: ARK } })
-  assert.equal(pickLiveEntryId([hit(12), hit(40), hit(7)], ARK), 40)
-  assert.equal(pickLiveEntryId([], ARK), null)
+  const ids = liveEntryIds([hit(12), hit(40), hit(7)], 3, ARK)
+  assert.deepEqual(ids, [12, 40, 7])
+  assert.equal(pickLiveEntryId(ids), 40)
+  assert.deepEqual(liveEntryIds([], 0, ARK), [])
+  assert.equal(pickLiveEntryId([]), null)
 })
 
-test("pickLiveEntryId refuses a hit of another ARK or an invalid entry id", () => {
+test("liveEntryIds refuses a hit of another ARK or an invalid entry id", () => {
   assert.throws(
-    () => pickLiveEntryId([{ entry_id: 3, metadata: { ark: "ark:/12148/bpt6k0000000" } }], ARK),
+    () => liveEntryIds([{ entry_id: 3, metadata: { ark: "ark:/12148/bpt6k0000000" } }], 1, ARK),
     DataclusterMcpProtocolError,
   )
-  assert.throws(() => pickLiveEntryId([{ entry_id: 3 }], ARK), DataclusterMcpProtocolError)
-  assert.throws(() => pickLiveEntryId([{ entry_id: "3", metadata: { ark: ARK } }], ARK), DataclusterMcpProtocolError)
-  assert.throws(() => pickLiveEntryId([{ entry_id: 0, metadata: { ark: ARK } }], ARK), DataclusterMcpProtocolError)
+  assert.throws(() => liveEntryIds([{ entry_id: 3 }], 1, ARK), DataclusterMcpProtocolError)
+  assert.throws(() => liveEntryIds([{ entry_id: "3", metadata: { ark: ARK } }], 1, ARK), DataclusterMcpProtocolError)
+  assert.throws(() => liveEntryIds([{ entry_id: 0, metadata: { ark: ARK } }], 1, ARK), DataclusterMcpProtocolError)
+})
+
+test("liveEntryIds refuses an incomplete lookup (total beyond the hits) or one with no total", () => {
+  const hit = { entry_id: 12, metadata: { ark: ARK } }
+  assert.throws(() => liveEntryIds([hit], 6, ARK), /matched 6 entries but returned 1/)
+  assert.throws(() => liveEntryIds([hit], undefined, ARK), /no pagination.total/)
 })

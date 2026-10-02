@@ -76,7 +76,7 @@ export interface RagQueryResponse {
   passages: RagPassage[]
   /** Total number of passages the search matched. */
   total: number
-  /** Version tag of the embedding model used (or "fake-rag-v1" in fake mode). */
+  /** Version tag of the embedding model used (FAKE_RAG_MODEL_VERSION in fake mode). */
   modelVersion: string
 }
 
@@ -125,7 +125,15 @@ export interface RagKeywordResponse {
 // --- Full-text retrieval (selective, paginated) ----------------------------
 
 export interface RagEntryContentRequest {
+  /** The CORPUS project id — the dataset the entry must belong to. */
   projectId: string
+  /**
+   * The ARK of the search result the entry id came from. The runner reads the
+   * entry only if the ARK lookup in the corpus project's dataset returns this
+   * id for it: entry ids are cluster-wide, so a model-supplied id alone could
+   * name another project's (another client's) document.
+   */
+  ark: string
   /** Cluster entry id, obtained from a search result. */
   entryId: number
   /** Start offset into the processed text, in code points. */
@@ -138,6 +146,19 @@ export interface RagEntryContentRequest {
   /** Bounds every cluster await (the turn's signal). */
   signal: AbortSignal
 }
+
+/** Outcomes of a facade read that resolves an ARK to its entry. */
+export const RAG_LOOKUP_STATUS = {
+  FOUND: "found",
+  /** No entry of the corpus project's dataset carries this ARK. */
+  ENTRY_NOT_FOUND: "entry_not_found",
+  /** The ARK has entries in the dataset, but not the requested entry id. */
+  ENTRY_NOT_IN_CORPUS: "entry_not_in_corpus",
+} as const
+
+export type RagEntryContentResult =
+  | { status: typeof RAG_LOOKUP_STATUS.FOUND; content: RagEntryContent }
+  | { status: typeof RAG_LOOKUP_STATUS.ENTRY_NOT_IN_CORPUS; liveEntryIds: number[] }
 
 export interface RagEntryContent {
   entryId: number
@@ -165,9 +186,9 @@ export interface DocumentFoliosRequest {
 }
 
 export type DocumentFoliosResult =
-  | { status: "found"; entryId: number; folios: DocumentFolios }
+  | { status: typeof RAG_LOOKUP_STATUS.FOUND; entryId: number; folios: DocumentFolios }
   /** No cluster entry carries this ARK — not ingested, or dropped since. */
-  | { status: "entry_not_found" }
+  | { status: typeof RAG_LOOKUP_STATUS.ENTRY_NOT_FOUND }
 
 // ---------------------------------------------------------------------------
 // Facade
@@ -195,8 +216,11 @@ export const ClusterRagClient = {
     return FakeRagRunner.keywordSearch(req)
   },
 
-  /** Selective full-text retrieval by entry id and character range. */
-  async getEntryContent(req: RagEntryContentRequest): Promise<RagEntryContent> {
+  /**
+   * Selective full-text retrieval by entry id and character range — only for
+   * an entry the ARK lookup in the corpus project's dataset vouches for.
+   */
+  async getEntryContent(req: RagEntryContentRequest): Promise<RagEntryContentResult> {
     if (clusterMode() === CLUSTER_MODE.REAL) {
       const { RealRagRunner } = await import("./real-rag")
       return RealRagRunner.getEntryContent(req)

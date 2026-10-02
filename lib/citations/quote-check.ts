@@ -34,7 +34,7 @@ import "server-only"
 import { QUOTE_CHECK_CONCURRENCY, QUOTE_CHECK_MAX_SOURCES, QUOTE_MIN_CHECKED_WORDS, QUOTE_WARNING_EXCERPT_CHARS, OCR_CORRECTION_MARKING } from "@/lib/constants"
 import { QUOTE_WARNING_DETAIL } from "@/lib/agent/prompts/quote-warnings"
 import { DataclusterMcpError } from "@/lib/cluster/datacluster-mcp-client"
-import { ClusterRagClient } from "@/lib/cluster/rag"
+import { ClusterRagClient, RAG_LOOKUP_STATUS } from "@/lib/cluster/rag"
 import type { DocumentFolios } from "@/lib/cluster/folio-text"
 import {
   QUOTE_CHECK_STATUS,
@@ -167,7 +167,7 @@ async function fetchDocument(
       ClusterRagClient.getDocumentFolios({ projectId: args.corpusProjectId, ark, signal: signals.any }),
       signals.any,
     )
-    if (result.status === "entry_not_found") {
+    if (result.status === RAG_LOOKUP_STATUS.ENTRY_NOT_FOUND) {
       return { kind: "unverifiable", cause: QUOTE_UNVERIFIABLE_CAUSE.ENTRY_NOT_FOUND }
     }
     const low = args.lowOcrFolios

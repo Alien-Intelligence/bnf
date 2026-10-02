@@ -12,7 +12,8 @@ import "server-only"
 
 import { DataclusterMcpProtocolError } from "./datacluster-mcp-client"
 import type { DataclusterChunk, DataclusterEntryContent } from "./datacluster-mcp-client"
-import { codePointLength } from "./folio-text"
+import { EntryFolioFormatError, codePointLength, splitEntryFolios } from "./folio-text"
+import type { DocumentFolios } from "./folio-text"
 import type { RagEntryContent, RagPassage } from "./rag"
 
 /**
@@ -137,33 +138,69 @@ function incomplete(
 }
 
 /**
- * The live entry for `ark` among the hits of an ARK lookup: the highest id. A
- * re-ingest deletes the stale entry and then creates the new one
- * (worker-v2 LiveClusterSink.upsert), so when a tombstone lags the newest id
- * is the one the index serves (D13). `null` when nothing matched.
+ * The entry ids an ARK lookup proves belong to `ark` in the dataset searched.
  *
- * Every hit must carry exactly this ARK and a positive integer entry id: the
- * lookup is an exact `metadata_filters: {ark}` match, so anything else means
- * the filter was not applied, and taking its entry would check quotes against
- * another document.
+ * The lookup is an exact `metadata_filters: {ark}` keyword search scoped to
+ * the corpus project's dataset, so every hit must carry exactly this ARK and
+ * a positive integer entry id — anything else means the filter was not
+ * applied, and trusting it would read another document. `total` is the
+ * cluster's own count of matches: when it exceeds the hits returned, the
+ * lookup is incomplete (more live entries for one ARK than its limit) and the
+ * newest entry cannot be known, so that is a protocol error too.
  */
-export function pickLiveEntryId(
+export function liveEntryIds(
   hits: ReadonlyArray<{ entry_id: unknown; metadata?: { ark?: unknown } }>,
+  total: number | undefined,
   ark: string,
-): number | null {
-  let best: number | null = null
-  for (const h of hits) {
+): number[] {
+  if (total === undefined) {
+    throw new DataclusterMcpProtocolError(`ARK lookup for ${ark} returned no pagination.total`)
+  }
+  if (total > hits.length) {
+    throw new DataclusterMcpProtocolError(
+      `ARK lookup for ${ark} matched ${total} entries but returned ${hits.length}: the live entry cannot be told`,
+    )
+  }
+  return hits.map((h) => {
     if (h.metadata?.ark !== ark) {
       throw new DataclusterMcpProtocolError(
         `ARK lookup for ${ark} returned an entry of ${JSON.stringify(h.metadata?.ark)}`,
       )
     }
-    if (typeof h.entry_id !== "number" || !Number.isInteger(h.entry_id) || h.entry_id <= 0) {
+    if (typeof h.entry_id !== "number" || !Number.isSafeInteger(h.entry_id) || h.entry_id <= 0) {
       throw new DataclusterMcpProtocolError(
         `ARK lookup for ${ark} returned an invalid entry id ${JSON.stringify(h.entry_id)}`,
       )
     }
-    if (best === null || h.entry_id > best) best = h.entry_id
+    return h.entry_id
+  })
+}
+
+/**
+ * The live entry among an ARK's entry ids: the highest. A re-ingest deletes
+ * the stale entry and then creates the new one (worker-v2
+ * LiveClusterSink.upsert), so when a tombstone lags the newest id is the one
+ * the index serves (D13). `null` when the ARK has no entry.
+ */
+export function pickLiveEntryId(ids: readonly number[]): number | null {
+  return ids.length === 0 ? null : Math.max(...ids)
+}
+
+/**
+ * An entry's processed text split per folio. Text that is not in the worker's
+ * folio format is a protocol error of the cluster (the quote check makes that
+ * ARK unverifiable), the same in both runners.
+ */
+export function splitEntryText(entryId: number, ark: string, text: string): DocumentFolios {
+  try {
+    return splitEntryFolios(text)
+  } catch (err) {
+    if (err instanceof EntryFolioFormatError) {
+      throw new DataclusterMcpProtocolError(
+        `entry ${entryId} (${ark}) is not in the worker's folio format: ${err.message}`,
+        err,
+      )
+    }
+    throw err
   }
-  return best
 }

@@ -9,6 +9,7 @@ import "server-only"
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { FakeRagRunner } from "./fake-rag"
+import { RAG_LOOKUP_STATUS } from "./rag"
 import { RAG_FIXTURES } from "./rag-fixtures"
 import {
   FORBIDDEN_COMPLETIONS,
@@ -62,8 +63,8 @@ test("every fixture folio is served whole by getDocumentFolios and has exactly o
     assert.notEqual(f.folio, null)
     if (f.folio === null) continue
     const doc = await FakeRagRunner.getDocumentFolios({ projectId: PROJECT, ark: f.ark, signal: new AbortController().signal })
-    assert.equal(doc.status, "found")
-    if (doc.status !== "found") continue
+    assert.equal(doc.status, RAG_LOOKUP_STATUS.FOUND)
+    if (doc.status !== RAG_LOOKUP_STATUS.FOUND) continue
     assert.equal(doc.folios.get(f.folio), f.snippet)
     const ocr = QUOTE_FIXTURE_OCR.filter((o) => o.ark === f.ark && o.folio === f.folio)
     assert.equal(ocr.length, 1, `${f.ark} f${f.folio}`)
@@ -96,8 +97,8 @@ async function reasonsFor(md: string): Promise<Array<QuoteWarningReason | "ok">>
   const [q] = extractQuotes(md)
   assert.ok(q?.citation, "the row quotes one cited span")
   const doc = await FakeRagRunner.getDocumentFolios({ projectId: PROJECT, ark: q.citation.ark, signal: new AbortController().signal })
-  assert.equal(doc.status, "found")
-  if (doc.status !== "found") return []
+  assert.equal(doc.status, RAG_LOOKUP_STATUS.FOUND)
+  if (doc.status !== RAG_LOOKUP_STATUS.FOUND) return []
   return verifyQuote(q, tokenizeFolios(doc.folios), {
     citedFolio: q.citation.folio,
     marking: OCR_CORRECTION_MARKING_MODE.BRACKETED_WORD,

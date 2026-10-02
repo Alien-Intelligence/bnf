@@ -17,19 +17,21 @@ import {
   DATACLUSTER_LIST_PAGE_SIZE,
 } from "@/lib/constants"
 import { prisma } from "@/lib/db"
+import { raceAbort } from "@/lib/mcp/abort"
 import {
   DataclusterMcpClient,
+  DataclusterMcpError,
   DataclusterMcpNotFoundError,
   DataclusterMcpProtocolError,
 } from "./datacluster-mcp-client"
 import type { DataclusterKeywordHit } from "./datacluster-mcp-client"
-import { EntryFolioFormatError, splitEntryFolios } from "./folio-text"
-import { chunkToPassage, pickLiveEntryId, toEntryContent } from "./rag-wire"
+import { chunkToPassage, liveEntryIds, pickLiveEntryId, splitEntryText, toEntryContent } from "./rag-wire"
+import { RAG_LOOKUP_STATUS } from "./rag"
 import type {
   DocumentFoliosRequest,
   DocumentFoliosResult,
-  RagEntryContent,
   RagEntryContentRequest,
+  RagEntryContentResult,
   RagKeywordHit,
   RagKeywordRequest,
   RagKeywordResponse,
@@ -56,18 +58,24 @@ const ARK_LOOKUP_LIMIT = 5
  * dataset list matching slug `bnf-<projectId>`, writes the id back to the
  * project, and returns it.
  *
- * Throws DataclusterMcpNotFoundError if the project has no dataset in the
- * cluster — an inconsistency, since the rag_query tool only calls us after an
- * ingestion has been committed.
+ * Throws DataclusterMcpNotFoundError when the walk completed and no dataset
+ * has the slug — an inconsistency, since the rag tools only call us after an
+ * ingestion has been committed — and a plain DataclusterMcpError when it gave
+ * up after MAX_DATASET_PAGES without reaching the end (the dataset may exist).
+ * The database awaits are raced against the caller's signal.
  */
 async function resolveDatasetId(
   projectId: string,
   client: DataclusterMcpClient,
+  signal: AbortSignal,
 ): Promise<number> {
-  const project = await prisma.project.findUniqueOrThrow({
-    where: { id: projectId },
-    select: { clusterDatasetId: true },
-  })
+  const project = await raceAbort(
+    prisma.project.findUniqueOrThrow({
+      where: { id: projectId },
+      select: { clusterDatasetId: true },
+    }),
+    signal,
+  )
   if (project.clusterDatasetId !== null) return project.clusterDatasetId
 
   const slug = `${DATACLUSTER_DATASET_SLUG_PREFIX}${projectId}`
@@ -77,19 +85,27 @@ async function resolveDatasetId(
     const datasets = await client.listDatasets(DATACLUSTER_LIST_PAGE_SIZE, offset)
     const match = datasets.find((d) => d.slug === slug)
     if (match) {
-      await prisma.project.update({
-        where: { id: projectId },
-        data: { clusterDatasetId: match.id },
-      })
+      await raceAbort(
+        prisma.project.update({
+          where: { id: projectId },
+          data: { clusterDatasetId: match.id },
+        }),
+        signal,
+      )
       return match.id
     }
-    // Short page → no more datasets to walk.
-    if (datasets.length < DATACLUSTER_LIST_PAGE_SIZE) break
+    // Short page → the walk reached the end: the dataset does not exist.
+    if (datasets.length < DATACLUSTER_LIST_PAGE_SIZE) {
+      throw new DataclusterMcpNotFoundError(
+        `No data-cluster dataset found for project ${projectId} (slug "${slug}"). ` +
+          `The corpus may not have finished ingesting into the cluster.`,
+      )
+    }
   }
 
-  throw new DataclusterMcpNotFoundError(
-    `No data-cluster dataset found for project ${projectId} (slug "${slug}"). ` +
-      `The corpus may not have finished ingesting into the cluster.`,
+  throw new DataclusterMcpError(
+    `Gave up resolving the data-cluster dataset of project ${projectId} (slug "${slug}") after ` +
+      `${MAX_DATASET_PAGES} pages of ${DATACLUSTER_LIST_PAGE_SIZE} datasets without reaching the end of the list`,
   )
 }
 
@@ -126,7 +142,7 @@ function keywordHitToRag(hit: DataclusterKeywordHit): RagKeywordHit | null {
 export const RealRagRunner = {
   async query(req: RagQueryRequest): Promise<RagQueryResponse> {
     const client = new DataclusterMcpClient({ signal: req.signal })
-    const datasetId = await resolveDatasetId(req.projectId, client)
+    const datasetId = await resolveDatasetId(req.projectId, client, req.signal)
 
     // The cluster's vector search filters by dataset_ids / entry_ids /
     // score_threshold only, so the request carries no facet filters (the
@@ -150,7 +166,7 @@ export const RealRagRunner = {
 
   async keywordSearch(req: RagKeywordRequest): Promise<RagKeywordResponse> {
     const client = new DataclusterMcpClient({ signal: req.signal })
-    const datasetId = await resolveDatasetId(req.projectId, client)
+    const datasetId = await resolveDatasetId(req.projectId, client, req.signal)
 
     const data = await client.keywordSearch({
       query: req.query,
@@ -173,51 +189,55 @@ export const RealRagRunner = {
     return { hits, total }
   },
 
-  async getEntryContent(req: RagEntryContentRequest): Promise<RagEntryContent> {
-    // NB: get_entry_content is keyed by entry_id only (no dataset scope on the
-    // wire). The agent only ever receives entry ids from this project's
-    // dataset-scoped searches, so it cannot reach another project's entries.
-    // Offset and limit are explicit on the request: the tool handler owns the
-    // default, never the MCP (whose omitted limit means the whole document).
+  async getEntryContent(req: RagEntryContentRequest): Promise<RagEntryContentResult> {
+    // get_entry_content is keyed by entry_id only, and entry ids are
+    // cluster-wide: the id is read only if the ARK lookup in THIS corpus
+    // project's dataset returns it for the stated ARK. Offset and limit are
+    // explicit on the request: the tool handler owns the defaults.
     const client = new DataclusterMcpClient({ signal: req.signal })
+    const datasetId = await resolveDatasetId(req.projectId, client, req.signal)
+    const ids = await lookupLiveEntryIds(client, datasetId, req.ark)
+    if (!ids.includes(req.entryId)) {
+      return { status: RAG_LOOKUP_STATUS.ENTRY_NOT_IN_CORPUS, liveEntryIds: ids }
+    }
     const data = await client.getEntryContent({
       entryId: req.entryId,
       charOffset: req.charOffset,
       charLimit: req.charLimit,
     })
-    return toEntryContent(data, req)
+    return { status: RAG_LOOKUP_STATUS.FOUND, content: toEntryContent(data, req) }
   },
 
   /**
-   * ARK → entry → whole processed text → per-folio map. The ARK is a string
-   * field of the entry metadata schema, which data-cluster registers as
-   * Meili-filterable, so an empty keyword query with `metadata_filters: {ark}`
-   * is the lookup. Scoped to the corpus project's dataset.
+   * ARK → entry → whole processed text → per-folio map, scoped to the corpus
+   * project's dataset (see lookupLiveEntryIds).
    */
   async getDocumentFolios(req: DocumentFoliosRequest): Promise<DocumentFoliosResult> {
     const client = new DataclusterMcpClient({ signal: req.signal })
-    const datasetId = await resolveDatasetId(req.projectId, client)
-
-    const lookup = await client.keywordSearch({
-      query: "",
-      datasetIds: [datasetId],
-      metadataFilters: { ark: req.ark },
-      limit: ARK_LOOKUP_LIMIT,
-    })
-    const entryId = pickLiveEntryId(lookup.results, req.ark)
-    if (entryId === null) return { status: "entry_not_found" }
+    const datasetId = await resolveDatasetId(req.projectId, client, req.signal)
+    const entryId = pickLiveEntryId(await lookupLiveEntryIds(client, datasetId, req.ark))
+    if (entryId === null) return { status: RAG_LOOKUP_STATUS.ENTRY_NOT_FOUND }
 
     const content = await client.getEntryContent({ entryId, charOffset: 0, charLimit: 0 })
-    try {
-      return { status: "found", entryId, folios: splitEntryFolios(content.text) }
-    } catch (err) {
-      if (err instanceof EntryFolioFormatError) {
-        throw new DataclusterMcpProtocolError(
-          `entry ${entryId} (${req.ark}) is not in the worker's folio format: ${err.message}`,
-          err,
-        )
-      }
-      throw err
-    }
+    return { status: RAG_LOOKUP_STATUS.FOUND, entryId, folios: splitEntryText(entryId, req.ark, content.text) }
   },
+}
+
+/**
+ * The entry ids of `ark` in the dataset. The ARK is a string field of the
+ * entry metadata schema, which data-cluster registers as Meili-filterable, so
+ * an empty keyword query with `metadata_filters: {ark}` is the lookup.
+ */
+async function lookupLiveEntryIds(
+  client: DataclusterMcpClient,
+  datasetId: number,
+  ark: string,
+): Promise<number[]> {
+  const lookup = await client.keywordSearch({
+    query: "",
+    datasetIds: [datasetId],
+    metadataFilters: { ark },
+    limit: ARK_LOOKUP_LIMIT,
+  })
+  return liveEntryIds(lookup.results, lookup.pagination?.total, ark)
 }

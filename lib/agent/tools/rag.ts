@@ -17,7 +17,8 @@ import "server-only"
 
 import { z } from "zod"
 import { defineTool } from "@alien/chat-sdk/claude"
-import { ClusterRagClient } from "@/lib/cluster/rag"
+import { ClusterRagClient, RAG_LOOKUP_STATUS } from "@/lib/cluster/rag"
+import { arkSchema } from "@/models/corpus/types"
 import {
   RAG_DEFAULT_K,
   RAG_GET_TEXT_DEFAULT_CHAR_LIMIT,
@@ -182,44 +183,57 @@ export const ragKeywordSearchTool = defineTool<
 // rag_get_text
 // ---------------------------------------------------------------------------
 
-export const ragGetTextTool = defineTool<
-  z.ZodObject<{
-    entryId: z.ZodNumber
-    charOffset: z.ZodOptional<z.ZodNumber>
-    charLimit: z.ZodOptional<z.ZodNumber>
-  }>,
-  TurnScopedCtx
->({
+/**
+ * Refusal when the entry id does not belong to the stated ARK in the corpus
+ * project's dataset — the agent copied the wrong pair, or invented an id.
+ */
+export function entryNotInCorpusError(ark: string, entryId: number): string {
+  return (
+    `L'entrée ${entryId} n'est pas une entrée du document ${ark} dans ce corpus : ` +
+    `reprends l'entryId ET l'ark tels qu'un même résultat de ${AGENT_TOOLS.ragQuery} ou ` +
+    `${AGENT_TOOLS.ragKeywordSearch} les a donnés.`
+  )
+}
+
+const ragGetTextInputSchema = z.object({
+  ark: arkSchema.describe(
+    "The ARK of the SAME search result the entryId comes from, verbatim. The entry is read " +
+      "only if it belongs to this ARK in the project's corpus.",
+  ),
+  entryId: z
+    .number()
+    .int()
+    .positive()
+    .describe("Cluster entry id, taken verbatim from a search result. Never invented."),
+  charOffset: z
+    .number()
+    .int()
+    .min(0)
+    .optional()
+    .describe("Start offset into the processed text (default 0)."),
+  charLimit: z
+    .number()
+    .int()
+    .min(0)
+    .max(RAG_GET_TEXT_MAX_CHAR_LIMIT)
+    .optional()
+    .describe(
+      `Characters to return; 0 = the rest of the document (default ${RAG_GET_TEXT_DEFAULT_CHAR_LIMIT}).`,
+    ),
+})
+
+export const ragGetTextTool = defineTool<typeof ragGetTextInputSchema, TurnScopedCtx>({
   name: AGENT_TOOLS.ragGetText,
   description:
     "Retrieve the processed full text of a corpus entry, selectively, by " +
-    "character range. Pass the entryId from a rag_query or rag_keyword_search " +
-    "result and, when the passage carries one (charRange is null for documents " +
-    "indexed before offsets existed), use its char range to pull the surrounding " +
-    "context (e.g. charOffset slightly before its start). charLimit 0 returns the rest " +
-    "of the document; keep slices to a few thousand characters. Returns text, " +
-    "totalLength, hasMore and nextOffset for pagination.",
-  inputSchema: z.object({
-    entryId: z
-      .number()
-      .int()
-      .describe("Cluster entry id, taken verbatim from a search result. Never invented."),
-    charOffset: z
-      .number()
-      .int()
-      .min(0)
-      .optional()
-      .describe("Start offset into the processed text (default 0)."),
-    charLimit: z
-      .number()
-      .int()
-      .min(0)
-      .max(RAG_GET_TEXT_MAX_CHAR_LIMIT)
-      .optional()
-      .describe(
-        `Characters to return; 0 = the rest of the document (default ${RAG_GET_TEXT_DEFAULT_CHAR_LIMIT}).`,
-      ),
-  }),
+    "character range. Pass the entryId AND the ark of the same rag_query or " +
+    "rag_keyword_search result — an id that is not that document's entry in this " +
+    "corpus is refused. When the passage carries one (charRange is null for " +
+    "documents indexed before offsets existed), use its char range to pull the " +
+    "surrounding context (e.g. charOffset slightly before its start). charLimit 0 " +
+    "returns the rest of the document; keep slices to a few thousand characters. " +
+    "Returns text, totalLength, hasMore and nextOffset for pagination.",
+  inputSchema: ragGetTextInputSchema,
   handler: async (input, ctx) => {
     const corpus = await resolveIngestedCorpus(ctx, NOT_INGESTED_ERROR)
     if ("error" in corpus) {
@@ -229,13 +243,18 @@ export const ragGetTextTool = defineTool<
     // The defaults are applied HERE and nowhere else: the facade and both
     // runners take explicit values. Left undefined, the upstream MCP would read
     // the limit as 0 and return the rest of the document.
-    return ClusterRagClient.getEntryContent({
+    const result = await ClusterRagClient.getEntryContent({
       projectId: ctx.corpusProjectId,
+      ark: input.ark,
       entryId: input.entryId,
       charOffset: input.charOffset ?? 0,
       charLimit: input.charLimit ?? RAG_GET_TEXT_DEFAULT_CHAR_LIMIT,
       signal: ctx.signal,
     })
+    if (result.status === RAG_LOOKUP_STATUS.ENTRY_NOT_IN_CORPUS) {
+      return refusal(entryNotInCorpusError(input.ark, input.entryId))
+    }
+    return result.content
   },
 })
 
