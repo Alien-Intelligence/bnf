@@ -125,10 +125,11 @@ export const ENTRY_FOLIO_HEADING_RE = /(?:^|(?<=\n\n))## Folio (\d+)\n\n/g
  * heading's cannot be a boundary the worker wrote — it is page text and stays
  * inside the current folio.
  *
- * Throws EntryFolioFormatError on text that carries no heading at all, or that
- * does not open with one: that is not an entry the worker wrote, and an empty
- * or truncated map would let a caller silently check quotes against the wrong
- * text (CLAUDE_ERROR_PATTERNS §9).
+ * Text before the first heading — the title-and-metadata header that entries
+ * from the pre-worker-v2 pipeline open with — belongs to no folio and is
+ * dropped. Throws EntryFolioFormatError on text that carries no heading at
+ * all: that is not an entry the worker wrote, and an empty map would let a
+ * caller silently check quotes against nothing (CLAUDE_ERROR_PATTERNS §9).
  */
 export function splitEntryFolios(text: string): DocumentFolios {
   const headings: Array<{ folio: number; start: number; bodyStart: number }> = []
@@ -147,12 +148,9 @@ export function splitEntryFolios(text: string): DocumentFolios {
         "by worker-v2 (see assembleMarkdown)",
     )
   }
-  if (first.start !== 0) {
-    throw new EntryFolioFormatError(
-      "processed entry text must open with a `## Folio <n>` heading; " +
-        `found ${first.start} characters before the first one`,
-    )
-  }
+  // Text before the first heading is a document header (entries written by the
+  // pre-worker-v2 pipeline open with `# <title>` and a metadata block). It is
+  // no page's text, so it belongs to no folio and is not returned.
 
   const folios = new Map<number, string>()
   for (const [i, h] of headings.entries()) {

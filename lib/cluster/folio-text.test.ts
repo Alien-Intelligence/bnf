@@ -86,8 +86,12 @@ test("heading-free text throws a typed format error — not an entry this app wr
   assert.throws(() => splitEntryFolios(""), EntryFolioFormatError)
 })
 
-test("text that does not open with a heading throws a typed format error", () => {
-  assert.throws(() => splitEntryFolios("préambule\n\n## Folio 1\n\nTexte"), EntryFolioFormatError)
+test("a legacy document header before the first heading belongs to no folio", () => {
+  // The shape of entries written by the pre-worker-v2 pipeline (seen on the
+  // dev cluster, entry 97): a title and a metadata block, then the folios.
+  const md =
+    "# Viaduc de Garabit\n\n**Date :** 1883  \n**Pages :** 1\n\n## Folio 1\n\n### Type visuel\nphotographie"
+  assert.deepEqual([...splitEntryFolios(md).entries()], [[1, "### Type visuel\nphotographie"]])
 })
 
 test("an empty page body yields an empty string, not an absent key", () => {
