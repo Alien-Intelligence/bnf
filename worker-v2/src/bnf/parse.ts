@@ -42,7 +42,10 @@ export const oaiParser = new XMLParser({
   trimValues: true,
 });
 
-/** ALTO parser: preserves @_CONTENT on String tags and TextLine structure. */
+/** ALTO parser: preserves @_CONTENT on String tags and TextLine structure.
+ *  Every container the walk iterates is always-array: a SINGLE child element
+ *  otherwise arrives as an object, and the walk (Array.isArray guards) would
+ *  silently skip it — a lone ComposedBlock used to drop all its words. */
 const altoParser = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: "@_",
@@ -50,6 +53,7 @@ const altoParser = new XMLParser({
     name === "String" ||
     name === "TextLine" ||
     name === "TextBlock" ||
+    name === "ComposedBlock" ||
     name === "Page",
   parseAttributeValue: false,
   parseTagValue: false,

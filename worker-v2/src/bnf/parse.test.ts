@@ -170,6 +170,22 @@ test("parseAlto: a body with no <alto> root (e.g. an HTML error page served as 2
   );
 });
 
+test("parseAlto: a lone ComposedBlock's words are read and scored (not dropped as an empty page)", () => {
+  // fast-xml-parser turns a SINGLE child element into an object, not an array;
+  // ComposedBlock was missing from the parser's isArray list, so a TextBlock
+  // or PrintSpace holding exactly one ComposedBlock lost every word in it and
+  // the folio read as confidently empty.
+  const xml = `<alto><Layout><Page><PrintSpace>
+    <ComposedBlock><TextBlock><TextLine>
+      <String CONTENT="Paris" WC="0.5"/><String CONTENT="1889" WC="1"/>
+    </TextLine></TextBlock></ComposedBlock>
+  </PrintSpace></Page></Layout></alto>`;
+  const r = parseAlto(xml);
+  assert.equal(r.text, "Paris 1889");
+  assert.equal(r.wordCount, 2);
+  assert.equal(r.meanWordConfidence, 0.75);
+});
+
 // ---------------------------------------------------------------------------
 // parseOcrRate — the manifest "Taux OCR" row as a [0,1] score
 // ---------------------------------------------------------------------------
