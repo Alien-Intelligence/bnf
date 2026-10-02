@@ -8,6 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
+import { MemoryOcrBackfillStore } from "../domain/ocr-backfill-memory.js";
 import { buildPipeline } from "../build.js";
 import { MemoryQueue } from "../core/queue-memory.js";
 import { MemoryBlobStore } from "../core/blob.js";
@@ -54,6 +55,14 @@ function buildHarness(specs: FakeDocSpec[]) {
     ocr: new FakeOcrEngine(),
     embedder: new FakeEmbedder(),
     cluster: new FakeClusterSink(),
+    // The backfill is not part of a run; disabled here (its wiring is tested
+    // in integration.test.ts).
+    ocrBackfill: {
+      store: new MemoryOcrBackfillStore(),
+      enabled: false,
+      concurrency: 1,
+      policy: { retryFailedAfterMs: 60_000, maxAttempts: 5, queuedStaleAfterMs: 6 * 60 * 60 * 1_000 },
+    },
     onOutcome: (e) => completion.noteOutcome({ kind: e.kind, payload: e.payload }),
     config: { mistralEnabled: true, maxPages: 200 },
   });

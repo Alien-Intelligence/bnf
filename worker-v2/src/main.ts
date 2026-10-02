@@ -10,14 +10,21 @@
  */
 import { Pool } from "pg";
 
-import { loadConfig } from "./config.js";
+import { loadConfig, PG_STATEMENT_TIMEOUT_MS } from "./config.js";
 import { buildPipeline } from "./build.js";
 import { PgBossQueue } from "./core/queue-pgboss.js";
 import { S3BlobStore } from "./core/blob.js";
 import { RateLimiter } from "./core/rate.js";
 import { createLogger } from "./core/logger.js";
 import { PgDocState } from "./domain/doc-state-pg.js";
+import {
+  OCR_BACKFILL_MAX_ATTEMPTS,
+  OCR_BACKFILL_QUEUED_STALE_MS,
+  validateOcrBackfillPolicy,
+  type OcrBackfillWiring,
+} from "./domain/ocr-backfill.js";
 import { PgOcrBackfillStore } from "./domain/ocr-backfill-pg.js";
+import { OCR_SYNC_DEADLINE_MS } from "./live/ocr-quality-sync.js";
 import { PgRunStore } from "./domain/run-store-pg.js";
 import { LiveBnfClient } from "./bnf/client.js";
 import { LiveDescriber } from "./live/describer.js";
@@ -36,16 +43,24 @@ async function main(): Promise<void> {
   const queue = new PgBossQueue(cfg.databaseUrl);
   await queue.start();
 
-  // statement_timeout: pg has NO query timeout by default, so a lock wait or a bad
-  // plan parks whatever awaited it — a stage handler until pg-boss expires the job,
-  // or (new in this slice) the reconciliation sweep, forever. Every query this pool
-  // runs is small OLTP work measured in milliseconds, so 30s only ever fires on
-  // something genuinely stuck (CLAUDE_ERROR_PATTERNS §14).
-  const pool = new Pool({ connectionString: cfg.databaseUrl, statement_timeout: 30_000 });
+  // statement_timeout: see PG_STATEMENT_TIMEOUT_MS — a stuck query must not park
+  // a stage handler until pg-boss expires the job, nor the reconciliation sweep.
+  const pool = new Pool({ connectionString: cfg.databaseUrl, statement_timeout: PG_STATEMENT_TIMEOUT_MS });
   const docState = new PgDocState(pool);
   await docState.migrate();
   const runStore = new PgRunStore(pool);
-  const ocrBackfill = new PgOcrBackfillStore(pool);
+  // ONE wiring object for the backfill, handed to both the pipeline (stage) and
+  // the server (endpoint) so their enable decision cannot diverge.
+  const ocrBackfill: OcrBackfillWiring = {
+    store: new PgOcrBackfillStore(pool),
+    enabled: cfg.ocrBackfill.enabled,
+    concurrency: cfg.ocrBackfill.concurrency,
+    policy: validateOcrBackfillPolicy({
+      retryFailedAfterMs: cfg.ocrBackfill.retryFailedAfterMs,
+      maxAttempts: OCR_BACKFILL_MAX_ATTEMPTS,
+      queuedStaleAfterMs: OCR_BACKFILL_QUEUED_STALE_MS,
+    }),
+  };
 
   const blob = new S3BlobStore({ ...cfg.s3, prefix: cfg.s3Prefix });
 
@@ -91,8 +106,6 @@ async function main(): Promise<void> {
       ocrSubmitConcurrency: cfg.ocrSubmitConcurrency,
       ocrPollConcurrency: cfg.ocrPollConcurrency,
       failRatio: cfg.failRatio,
-      ocrBackfillEnabled: cfg.ocrBackfillEnabled,
-      ocrBackfillConcurrency: cfg.ocrBackfillConcurrency,
     },
   });
 
@@ -120,8 +133,7 @@ async function main(): Promise<void> {
       manifestRatePerMin: cfg.manifestRatePerMin,
       blob,
       ocrBackfill,
-      ocrBackfillEnabled: cfg.ocrBackfillEnabled,
-      ocrBackfillRetryFailedAfterMs: cfg.ocrBackfillRetryFailedAfterMs,
+      ocrSyncDeadlineMs: OCR_SYNC_DEADLINE_MS,
     },
     cfg.httpPort,
   );
@@ -132,8 +144,9 @@ async function main(): Promise<void> {
     manifestRatePerMin: cfg.manifestRatePerMin,
     mistralEnabled: cfg.mistralEnabled,
     reconcilerIntervalMs: cfg.reconcilerIntervalMs,
-    ocrBackfillEnabled: cfg.ocrBackfillEnabled,
-    ocrBackfillConcurrency: cfg.ocrBackfillConcurrency,
+    ocrBackfillEnabled: cfg.ocrBackfill.enabled,
+    ocrBackfillConcurrency: cfg.ocrBackfill.concurrency,
+    ocrBackfillRetryFailedAfterMs: cfg.ocrBackfill.retryFailedAfterMs,
   });
 
   let shuttingDown = false;

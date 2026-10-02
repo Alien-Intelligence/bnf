@@ -10,7 +10,7 @@ import type { BlobStore, Logger, QueueClient, RateGate } from "./core/types.js";
 import type { StageDeps } from "./core/stage.js";
 import type { BnfClient } from "./bnf/types.js";
 import type { DocStateStore } from "./domain/doc-state.js";
-import type { OcrBackfillStore } from "./domain/ocr-backfill.js";
+import type { OcrBackfillWiring } from "./domain/ocr-backfill.js";
 import type { ClusterSink, Describer, Embedder, OcrEngine } from "./ports.js";
 
 import { MetadataStage } from "./stages/metadata.js";
@@ -36,11 +36,11 @@ export interface PipelineDeps {
   embedder: Embedder;
   cluster: ClusterSink;
   /**
-   * The OCR-quality backfill store. When given (and `config.ocrBackfillEnabled`
-   * is not false) the backfill stage is registered on `rates.fetch`, the SAME
-   * gate FetchStage holds. Omitted in the fake-mode integration run.
+   * The OCR-quality backfill as main.ts wired it — the SAME object the HTTP
+   * server gets. The stage is registered exactly when `enabled`, on
+   * `rates.fetch` (required then), the SAME gate FetchStage holds.
    */
-  ocrBackfill?: OcrBackfillStore;
+  ocrBackfill: OcrBackfillWiring;
   /** Optional per-dispatch observability hook (also feeds the read-model). */
   onOutcome?: StageDeps["onOutcome"];
   /** Per-stage rate gates (undefined → unthrottled, e.g. in tests). */
@@ -67,8 +67,6 @@ export interface PipelineDeps {
     failRatio?: number;
     ocrMaxPolls?: number;
     ocrPollDelayMs?: number;
-    ocrBackfillEnabled?: boolean;
-    ocrBackfillConcurrency?: number;
   };
 }
 
@@ -122,15 +120,17 @@ export function buildPipeline(deps: PipelineDeps): Pipeline {
     }),
   ];
 
-  // The backfill is not part of a run; it is registered only when wired AND
-  // enabled, so OCR_BACKFILL_ENABLED=false truly stops its BnF spend (D6).
-  if (deps.ocrBackfill && cfg.ocrBackfillEnabled !== false) {
+  // The backfill is not part of a run. It is registered exactly when the wiring
+  // says enabled — the same flag the endpoint obeys — so OCR_BACKFILL_ENABLED=
+  // false truly stops its BnF spend (D6) and an enabled endpoint always has a
+  // consumer for what it enqueues.
+  if (deps.ocrBackfill.enabled) {
     if (!rates.fetch) {
       throw new Error("buildPipeline: the OCR backfill stage requires rates.fetch (the shared fetch gate)");
     }
     stages.push(
-      new OcrQualityBackfillStage(base, deps.bnf, deps.ocrBackfill, rates.fetch, {
-        concurrency: cfg.ocrBackfillConcurrency ?? 2,
+      new OcrQualityBackfillStage(base, deps.bnf, deps.ocrBackfill.store, rates.fetch, {
+        concurrency: deps.ocrBackfill.concurrency,
         rateWaitMs: OCR_BACKFILL_RATE_WAIT_MS,
       }),
     );

@@ -185,3 +185,18 @@ export interface OcrBackfillStore {
   get(ark: string): Promise<OcrBackfillRow | null>;
   counts(): Promise<OcrBackfillCounts>;
 }
+
+/**
+ * Everything the backfill needs, built ONCE from config (main.ts) and handed to
+ * both buildPipeline (registers the stage iff `enabled`) and the HTTP server
+ * (enqueues iff `enabled`) — so the endpoint can never queue a build no stage
+ * consumes, and the stage never runs when the endpoint is told not to spend.
+ */
+export interface OcrBackfillWiring {
+  store: OcrBackfillStore;
+  /** OCR_BACKFILL_ENABLED. */
+  enabled: boolean;
+  policy: OcrBackfillPolicy;
+  /** OCR_BACKFILL_CONCURRENCY — in-flight backfill documents (≥ 1). */
+  concurrency: number;
+}

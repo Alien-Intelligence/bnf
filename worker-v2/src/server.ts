@@ -25,15 +25,16 @@ import { buildProgress } from "./observability.js";
 import type { BlobStore, QueueClient } from "./core/types.js";
 import type { Logger } from "./core/types.js";
 import type { DocStateStore } from "./domain/doc-state.js";
-import {
-  OCR_BACKFILL_MAX_ATTEMPTS,
-  OCR_BACKFILL_QUEUED_STALE_MS,
-  type OcrBackfillStore,
-} from "./domain/ocr-backfill.js";
+import type { OcrBackfillWiring } from "./domain/ocr-backfill.js";
 import type { RunStore } from "./domain/run.js";
 import type { CompletionMonitor } from "./live/completion-monitor.js";
 import { createRunAndSeed, parseIngestRequest } from "./live/ingress.js";
-import { parseOcrSyncRequest, syncOcrQuality } from "./live/ocr-quality-sync.js";
+import {
+  OCR_SYNC_BODY_READ_MS,
+  OCR_SYNC_MAX_BODY_BYTES,
+  parseOcrSyncRequest,
+  syncOcrQuality,
+} from "./live/ocr-quality-sync.js";
 
 export interface ServerDeps {
   runStore: RunStore;
@@ -47,34 +48,94 @@ export interface ServerDeps {
   manifestRatePerMin: number;
   /** The artifact store /ocr-quality/sync reads the per-ARK artifacts from. */
   blob: BlobStore;
-  /** The backfill dedupe store (one queued build per ARK). */
-  ocrBackfill: OcrBackfillStore;
-  /** OCR_BACKFILL_ENABLED — false answers missing ARKs `unavailable: backfill_disabled`. */
-  ocrBackfillEnabled: boolean;
-  /** OCR_BACKFILL_RETRY_FAILED_AFTER_MS — a failed row older than this is re-queued. */
-  ocrBackfillRetryFailedAfterMs: number;
+  /**
+   * The OCR-quality backfill as main.ts wired it — the SAME object
+   * buildPipeline used to decide whether the backfill stage runs, so the
+   * endpoint enqueues exactly when a consumer exists.
+   */
+  ocrBackfill: OcrBackfillWiring;
+  /** Wall-clock ceiling of one /ocr-quality/sync request (OCR_SYNC_DEADLINE_MS). */
+  ocrSyncDeadlineMs: number;
 }
 
-/** Read a request body to a string, capped to guard against unbounded uploads. */
+/** The /ingest body cap: a full corpus delta (thousands of ARKs with metadata). */
+const INGEST_MAX_BODY_BYTES = 8 * 1024 * 1024;
+/** Time allowed to receive an /ingest body. */
+const INGEST_BODY_READ_MS = 30_000;
+
+type BodyRead =
+  | { ok: true; text: string }
+  | { ok: false; reason: "too_large" | "timeout" | "stream_error"; detail: string };
+
+/**
+ * Read a request body to a string, bounded in size AND time. A refusal says
+ * why — oversize (413), too slow (408), a broken stream (400) — instead of one
+ * catch-all, and the caller logs it.
+ */
 function readBody(
   req: import("node:http").IncomingMessage,
-  maxBytes = 8 * 1024 * 1024,
-): Promise<string> {
-  return new Promise((resolve, reject) => {
+  opts: { maxBytes: number; timeoutMs: number },
+): Promise<BodyRead> {
+  return new Promise((resolve) => {
     const chunks: Buffer[] = [];
     let size = 0;
-    req.on("data", (c: Buffer) => {
+    let settled = false;
+    const finish = (r: BodyRead): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      req.removeListener("data", onData);
+      resolve(r);
+    };
+    const timer = setTimeout(
+      () => finish({ ok: false, reason: "timeout", detail: `body not received within ${opts.timeoutMs}ms` }),
+      opts.timeoutMs,
+    );
+    const onData = (c: Buffer): void => {
       size += c.length;
-      if (size > maxBytes) {
-        reject(new Error("request body too large"));
-        req.destroy();
+      if (size > opts.maxBytes) {
+        // Stop buffering; the response closes the connection (sendRefusal).
+        finish({ ok: false, reason: "too_large", detail: `body exceeds ${opts.maxBytes} bytes` });
         return;
       }
       chunks.push(c);
-    });
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-    req.on("error", reject);
+    };
+    req.on("data", onData);
+    req.on("end", () => finish({ ok: true, text: Buffer.concat(chunks).toString("utf8") }));
+    req.on("error", (e) => finish({ ok: false, reason: "stream_error", detail: e.message }));
   });
+}
+
+const REFUSAL_STATUS = { too_large: 413, timeout: 408, stream_error: 400 } as const;
+
+/**
+ * Read and JSON-parse a body for `route`, or answer the refusal (logged) and
+ * return null. An oversize or unfinished body closes the connection: the rest
+ * of it is never read.
+ */
+async function readJsonBody(
+  deps: ServerDeps,
+  route: string,
+  req: import("node:http").IncomingMessage,
+  res: import("node:http").ServerResponse,
+  opts: { maxBytes: number; timeoutMs: number },
+): Promise<{ value: unknown } | null> {
+  const read = await readBody(req, opts);
+  if (!read.ok) {
+    deps.log.warn("http_body_rejected", { route, reason: read.reason, detail: read.detail });
+    res.setHeader("connection", "close");
+    sendJson(res, REFUSAL_STATUS[read.reason], { error: read.detail });
+    res.once("finish", () => req.destroy());
+    return null;
+  }
+  try {
+    return { value: JSON.parse(read.text) };
+  } catch (e) {
+    const detail = e instanceof Error ? e.message : String(e);
+    deps.log.warn("http_body_rejected", { route, reason: "invalid_json", detail });
+    sendJson(res, 400, { error: `invalid JSON body: ${detail}` });
+    return null;
+  }
 }
 
 function sendJson(
@@ -144,16 +205,13 @@ async function handleIngest(
   req: import("node:http").IncomingMessage,
   res: import("node:http").ServerResponse,
 ): Promise<void> {
-  let raw: unknown;
-  try {
-    const text = await readBody(req);
-    raw = JSON.parse(text);
-  } catch {
-    sendJson(res, 400, { error: "invalid JSON body" });
-    return;
-  }
+  const body = await readJsonBody(deps, "/ingest", req, res, {
+    maxBytes: INGEST_MAX_BODY_BYTES,
+    timeoutMs: INGEST_BODY_READ_MS,
+  });
+  if (body === null) return;
 
-  const parsed = parseIngestRequest(raw);
+  const parsed = parseIngestRequest(body.value);
   if (!parsed.ok) {
     sendJson(res, 400, { error: parsed.error });
     return;
@@ -189,40 +247,57 @@ async function handleOcrSync(
   req: import("node:http").IncomingMessage,
   res: import("node:http").ServerResponse,
 ): Promise<void> {
-  let raw: unknown;
-  try {
-    raw = JSON.parse(await readBody(req));
-  } catch {
-    sendJson(res, 400, { error: "invalid JSON body" });
-    return;
-  }
-  const parsed = parseOcrSyncRequest(raw);
+  const body = await readJsonBody(deps, "/ocr-quality/sync", req, res, {
+    maxBytes: OCR_SYNC_MAX_BODY_BYTES,
+    timeoutMs: OCR_SYNC_BODY_READ_MS,
+  });
+  if (body === null) return;
+  const parsed = parseOcrSyncRequest(body.value);
   if (!parsed.ok) {
+    deps.log.warn("ocr_quality_sync_bad_request", { error: parsed.error });
     sendJson(res, 400, { error: parsed.error });
     return;
   }
-  const response = await syncOcrQuality(
-    {
-      blob: deps.blob,
-      backfill: deps.ocrBackfill,
-      queue: deps.queue,
-      log: deps.log,
-      backfillEnabled: deps.ocrBackfillEnabled,
-      policy: {
-        retryFailedAfterMs: deps.ocrBackfillRetryFailedAfterMs,
-        maxAttempts: OCR_BACKFILL_MAX_ATTEMPTS,
-        queuedStaleAfterMs: OCR_BACKFILL_QUEUED_STALE_MS,
-      },
-    },
-    parsed.value.arks,
+  const { arks } = parsed.value;
+  const work = syncOcrQuality(
+    { blob: deps.blob, queue: deps.queue, log: deps.log, backfill: deps.ocrBackfill },
+    arks,
   );
+  const outcome = await withDeadline(work, deps.ocrSyncDeadlineMs);
+  if (outcome.kind === "deadline") {
+    // The work keeps running to completion (each step is bounded on its own) —
+    // its result is just not awaited. The app retries the batch next sweep.
+    work.catch((e: unknown) =>
+      deps.log.error("ocr_quality_sync_late_failure", { error: e instanceof Error ? e.message : String(e) }),
+    );
+    deps.log.warn("ocr_quality_sync_deadline", { asked: arks.length, deadlineMs: deps.ocrSyncDeadlineMs });
+    sendJson(res, 503, { error: `sync did not finish within ${deps.ocrSyncDeadlineMs}ms` });
+    return;
+  }
+  const response = outcome.value;
   deps.log.info("ocr_quality_sync", {
-    asked: parsed.value.arks.length,
+    asked: arks.length,
     documents: response.documents.length,
     building: response.building.length,
     unavailable: response.unavailable.length,
   });
   sendJson(res, 200, response);
+}
+
+/** Race `work` against a timer; the timer is always cleared. */
+async function withDeadline<T>(
+  work: Promise<T>,
+  ms: number,
+): Promise<{ kind: "done"; value: T } | { kind: "deadline" }> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<{ kind: "deadline" }>((resolve) => {
+    timer = setTimeout(() => resolve({ kind: "deadline" }), ms);
+  });
+  try {
+    return await Promise.race([work.then((value) => ({ kind: "done" as const, value })), deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function handleProgress(

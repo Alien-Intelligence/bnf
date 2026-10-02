@@ -17,14 +17,6 @@ function optionalInt(name: string, fallback: number): number {
   if (!Number.isFinite(n)) throw new Error(`${name} must be a number, got ${v}`);
   return Math.floor(n);
 }
-/** A positive-int var (≥ 1): a concurrency knob. 0 or less throws — turning a
- *  stage off is the job of its boolean flag, not of a zero that would wedge
- *  its queue consumer. */
-function optionalPositiveInt(name: string, fallback: number): number {
-  const n = optionalInt(name, fallback);
-  if (n < 1) throw new Error(`${name} must be >= 1, got ${n}`);
-  return n;
-}
 function optionalBool(name: string, fallback: boolean): boolean {
   const v = process.env[name];
   if (v == null || v.trim() === "") return fallback;
@@ -149,20 +141,84 @@ export interface WorkerConfig {
    * give-up item, ai-memories/tech/repos/bnf/ingest-hardening.
    */
   reconcilerMaxCallbackFailures: number;
+  /** The OCR-quality backfill knobs — see OcrBackfillConfig / loadOcrBackfillConfig. */
+  ocrBackfill: OcrBackfillConfig;
+}
+
+/**
+ * statement_timeout for every pg Pool the worker opens (main.ts, status.ts): pg
+ * has NO query timeout by default, so a lock wait or a bad plan parks whatever
+ * awaited it. Every query is small OLTP work measured in milliseconds, so 30 s
+ * only ever fires on something genuinely stuck (CLAUDE_ERROR_PATTERNS §14).
+ */
+export const PG_STATEMENT_TIMEOUT_MS = 30_000;
+
+/**
+ * OCR-quality backfill (ai-memories/tech/repos/bnf/feedback-2026-09-29, Track B).
+ * The defaults are explicit, named and documented in RUN.md, helm/DEPLOY.md and
+ * values.yaml — the plan (D6) fixes them; nothing else in the worker restates
+ * them.
+ */
+export interface OcrBackfillConfig {
   /**
-   * OCR-quality backfill (ai-memories/tech/repos/bnf/feedback-2026-09-29, Track
-   * B). `enabled: false` leaves the stage unregistered AND makes
-   * /ocr-quality/sync answer missing ARKs `unavailable: backfill_disabled` —
-   * the switch that stops the BnF spend without a rollback; artifacts that
+   * OCR_BACKFILL_ENABLED (default true). False leaves the stage unregistered AND
+   * makes /ocr-quality/sync answer missing ARKs `unavailable: backfill_disabled`
+   * — the switch that stops the BnF spend without a rollback; artifacts that
    * already exist are still served.
    */
-  ocrBackfillEnabled: boolean;
-  /** In-flight backfill docs. Each text doc costs one Presentation (ALTO) call
-   *  per indexed folio, once, through the SAME fetch gate live ingests use —
-   *  raise it off-hours to drain the backlog. */
-  ocrBackfillConcurrency: number;
-  /** A failed backfill row older than this is re-queued when the app asks again. */
-  ocrBackfillRetryFailedAfterMs: number;
+  enabled: boolean;
+  /**
+   * OCR_BACKFILL_CONCURRENCY (default 2, plan D6): in-flight backfill docs. Each
+   * text doc costs one Presentation (ALTO) call per indexed folio, once, through
+   * the SAME fetch gate live ingests use — raise it off-hours to drain the
+   * backlog. Must be a positive integer: turning the stage off is `enabled`'s
+   * job, not a zero that would wedge its queue consumer.
+   */
+  concurrency: number;
+  /**
+   * OCR_BACKFILL_RETRY_FAILED_AFTER_MS (default 24 h): the BASE backoff before a
+   * transiently failed build is retried; it doubles per attempt
+   * (domain/ocr-backfill.ts). Positive integer milliseconds.
+   */
+  retryFailedAfterMs: number;
+}
+
+export const DEFAULT_OCR_BACKFILL_ENABLED = true;
+export const DEFAULT_OCR_BACKFILL_CONCURRENCY = 2;
+export const DEFAULT_OCR_BACKFILL_RETRY_FAILED_AFTER_MS = 24 * 60 * 60 * 1_000;
+
+/** A strict positive integer from env, or `fallback` when unset/blank; anything else throws. */
+function positiveIntFrom(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
+  const v = env[name];
+  if (v == null || v.trim() === "") return fallback;
+  const n = Number(v.trim());
+  if (!Number.isSafeInteger(n) || n < 1) {
+    throw new Error(`${name} must be a positive integer, got ${JSON.stringify(v)}`);
+  }
+  return n;
+}
+
+/** A strict "true" / "false" from env, or `fallback` when unset/blank; anything else throws. */
+function boolFrom(env: NodeJS.ProcessEnv, name: string, fallback: boolean): boolean {
+  const v = env[name];
+  if (v == null || v.trim() === "") return fallback;
+  const t = v.trim().toLowerCase();
+  if (t === "true") return true;
+  if (t === "false") return false;
+  throw new Error(`${name} must be "true" or "false", got ${JSON.stringify(v)}`);
+}
+
+/** The OCR backfill knobs, validated. Pure (takes the env) so it is unit-tested. */
+export function loadOcrBackfillConfig(env: NodeJS.ProcessEnv): OcrBackfillConfig {
+  return {
+    enabled: boolFrom(env, "OCR_BACKFILL_ENABLED", DEFAULT_OCR_BACKFILL_ENABLED),
+    concurrency: positiveIntFrom(env, "OCR_BACKFILL_CONCURRENCY", DEFAULT_OCR_BACKFILL_CONCURRENCY),
+    retryFailedAfterMs: positiveIntFrom(
+      env,
+      "OCR_BACKFILL_RETRY_FAILED_AFTER_MS",
+      DEFAULT_OCR_BACKFILL_RETRY_FAILED_AFTER_MS,
+    ),
+  };
 }
 
 export function loadConfig(): WorkerConfig {
@@ -199,8 +255,6 @@ export function loadConfig(): WorkerConfig {
     reconcilerIntervalMs: optionalInt("RECONCILER_INTERVAL_MS", 60_000),
     reconcilerMaxRequeues: optionalInt("RECONCILER_MAX_REQUEUES", 3),
     reconcilerMaxCallbackFailures: optionalInt("RECONCILER_MAX_CALLBACK_FAILURES", 120),
-    ocrBackfillEnabled: optionalBool("OCR_BACKFILL_ENABLED", true),
-    ocrBackfillConcurrency: optionalPositiveInt("OCR_BACKFILL_CONCURRENCY", 2),
-    ocrBackfillRetryFailedAfterMs: optionalInt("OCR_BACKFILL_RETRY_FAILED_AFTER_MS", 86_400_000),
+    ocrBackfill: loadOcrBackfillConfig(process.env),
   };
 }

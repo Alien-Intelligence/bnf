@@ -12,6 +12,7 @@ import { MemoryBlobStore } from "./core/blob.js";
 import { MemoryDocState } from "./domain/doc-state-memory.js";
 import { MemoryRunStore } from "./domain/run-store-memory.js";
 import { MemoryOcrBackfillStore } from "./domain/ocr-backfill-memory.js";
+import type { OcrBackfillPolicy, OcrBackfillStore } from "./domain/ocr-backfill.js";
 import { createMemoryLogger } from "./core/logger.js";
 import { keys } from "./domain/keys.js";
 import { Q } from "./domain/queues.js";
@@ -20,21 +21,34 @@ import { TerminalEmitter } from "./live/progress-callback.js";
 import { CompletionMonitor } from "./live/completion-monitor.js";
 import { startServer, type ServerDeps } from "./server.js";
 
-const RETRY_FAILED_AFTER_MS = 60_000;
+const POLICY: OcrBackfillPolicy = {
+  retryFailedAfterMs: 60_000,
+  maxAttempts: 5,
+  queuedStaleAfterMs: 6 * 60 * 60 * 1_000,
+};
 
-async function bootServer(opts: { ocrBackfillEnabled?: boolean; now?: () => number } = {}): Promise<{
+async function bootServer(
+  opts: {
+    ocrBackfillEnabled?: boolean;
+    now?: () => number;
+    queue?: MemoryQueue;
+    store?: OcrBackfillStore;
+    syncDeadlineMs?: number;
+  } = {},
+): Promise<{
   base: string;
   deps: ServerDeps;
   blob: MemoryBlobStore;
-  ocrBackfill: MemoryOcrBackfillStore;
+  ocrBackfill: OcrBackfillStore;
+  lines: Array<Record<string, unknown>>;
   close: () => Promise<void>;
 }> {
-  const queue = new MemoryQueue();
+  const queue = opts.queue ?? new MemoryQueue();
   const docState = new MemoryDocState();
   const runStore = new MemoryRunStore();
   const blob = new MemoryBlobStore();
-  const ocrBackfill = new MemoryOcrBackfillStore(opts.now ? { now: opts.now } : {});
-  const { logger } = createMemoryLogger();
+  const ocrBackfill = opts.store ?? new MemoryOcrBackfillStore(opts.now ? { now: opts.now } : {});
+  const { logger, lines } = createMemoryLogger();
   const emitter = new TerminalEmitter(docState, runStore, logger, {
     // Terminal POSTs in these tests just succeed; the callback path itself is
     // covered in progress-callback.test.ts.
@@ -45,9 +59,13 @@ async function bootServer(opts: { ocrBackfillEnabled?: boolean; now?: () => numb
     runStore, docState, queue, completion, log: logger,
     fetchRatePerMin: 300, manifestRatePerMin: 42,
     blob,
-    ocrBackfill,
-    ocrBackfillEnabled: opts.ocrBackfillEnabled ?? true,
-    ocrBackfillRetryFailedAfterMs: RETRY_FAILED_AFTER_MS,
+    ocrBackfill: {
+      store: ocrBackfill,
+      enabled: opts.ocrBackfillEnabled ?? true,
+      policy: POLICY,
+      concurrency: 1,
+    },
+    ocrSyncDeadlineMs: opts.syncDeadlineMs ?? 10_000,
   };
   const server = await startServer(deps, 0);
   const { port } = server.address() as AddressInfo;
@@ -56,6 +74,7 @@ async function bootServer(opts: { ocrBackfillEnabled?: boolean; now?: () => numb
     deps,
     blob,
     ocrBackfill,
+    lines,
     close: () => new Promise<void>((r) => server.close(() => r())),
   };
 }
@@ -181,6 +200,8 @@ test("unknown route → 404", async () => {
 
 const ARK_A = "ark:/12148/bpt6k4625753w";
 const ARK_B = "ark:/12148/bpt6k1234567z";
+const ARK_C = "ark:/12148/btv1b100524476";
+const ARK_D = "ark:/12148/btv1b10052448n";
 
 function artifactFor(ark: string): DocOcrQuality {
   return {
@@ -237,11 +258,7 @@ test("POST /ocr-quality/sync: a recently failed row is unavailable with its reas
   let clock = 1_000_000;
   const { base, deps, ocrBackfill, close } = await bootServer({ now: () => clock });
   try {
-    await ocrBackfill.request(ARK_B, {
-      retryFailedAfterMs: RETRY_FAILED_AFTER_MS,
-      maxAttempts: 5,
-      queuedStaleAfterMs: 6 * 60 * 60 * 1_000,
-    });
+    await ocrBackfill.request(ARK_B, POLICY);
     await ocrBackfill.markFailed(ARK_B, "build_failed: 503", { permanent: false });
 
     const fresh = (await (await sync(base, { arks: [ARK_B] })).json()) as SyncResponse;
@@ -249,7 +266,7 @@ test("POST /ocr-quality/sync: a recently failed row is unavailable with its reas
     assert.deepEqual(fresh.building, []);
     assert.equal((await deps.queue.counts(Q.ocrQualityBackfill)).queued, 0, "a fresh failure is not re-driven");
 
-    clock += RETRY_FAILED_AFTER_MS + 1;
+    clock += POLICY.retryFailedAfterMs + 1;
     const later = (await (await sync(base, { arks: [ARK_B] })).json()) as SyncResponse;
     assert.deepEqual(later.building, [ARK_B]);
     assert.deepEqual(later.unavailable, []);
@@ -260,33 +277,192 @@ test("POST /ocr-quality/sync: a recently failed row is unavailable with its reas
   }
 });
 
-test("POST /ocr-quality/sync: bad bodies → 400 (not JSON, no arks, > max, non-canonical ARK)", async () => {
+function answered(body: SyncResponse): string[] {
+  return [...body.documents.map((d) => d.ark), ...body.building, ...body.unavailable.map((u) => u.ark)].sort();
+}
+
+test("POST /ocr-quality/sync: bad bodies → 400 (not JSON, no arks, unknown key, > max, duplicate, non-canonical ARK)", async () => {
   const { base, deps, close } = await bootServer();
   try {
     assert.equal((await sync(base, "{ not json")).status, 400);
     assert.equal((await sync(base, { arks: [] })).status, 400);
     assert.equal((await sync(base, { nope: true })).status, 400);
+    assert.equal((await sync(base, { arks: [ARK_A], extra: 1 })).status, 400, "unknown keys are refused");
     const tooMany = Array.from({ length: 101 }, (_, i) => `ark:/12148/bpt6k${i}`);
     assert.equal((await sync(base, { arks: tooMany })).status, 400);
-    assert.equal((await sync(base, { arks: ["https://gallica.bnf.fr/ark:/12148/x"] })).status, 400);
-    assert.equal((await sync(base, { arks: [42] })).status, 400);
+    assert.equal((await sync(base, { arks: [ARK_A, ARK_A] })).status, 400, "duplicates are refused");
+    for (const bad of [
+      "https://gallica.bnf.fr/ark:/12148/x",
+      ` ${ARK_A} `,
+      "ark:/12148/",
+      `${ARK_A}/f3`,
+      "ark:/99999/bpt6k1",
+      42,
+    ]) {
+      assert.equal((await sync(base, { arks: [bad] })).status, 400, `rejected verbatim, never rewritten: ${String(bad)}`);
+    }
     assert.equal((await deps.queue.counts(Q.ocrQualityBackfill)).queued, 0, "nothing queued by a rejected request");
   } finally {
     await close();
   }
 });
 
-test("POST /ocr-quality/sync with the backfill disabled: a missing ARK is unavailable:backfill_disabled, nothing queued, no row", async () => {
-  const { base, deps, blob, ocrBackfill, close } = await bootServer({ ocrBackfillEnabled: false });
+test("POST /ocr-quality/sync: exactly 100 ARKs is accepted and every ARK is answered exactly once", async () => {
+  const { base, close } = await bootServer();
   try {
-    await blob.putJson(keys.ocrQuality(ARK_A), artifactFor(ARK_A));
-    const body = (await (await sync(base, { arks: [ARK_A, ARK_B] })).json()) as SyncResponse;
-    assert.deepEqual(body.documents, [artifactFor(ARK_A)], "existing artifacts are still served");
-    assert.deepEqual(body.unavailable, [{ ark: ARK_B, reason: "backfill_disabled" }]);
-    assert.deepEqual(body.building, []);
-    assert.equal((await deps.queue.counts(Q.ocrQualityBackfill)).queued, 0);
-    assert.equal(await ocrBackfill.get(ARK_B), null, "no backfill row is opened");
+    const arks = Array.from({ length: 100 }, (_, i) => `ark:/12148/bpt6k${i}`);
+    const res = await sync(base, { arks });
+    assert.equal(res.status, 200);
+    assert.deepEqual(answered((await res.json()) as SyncResponse), [...arks].sort());
   } finally {
     await close();
   }
 });
+
+test("POST /ocr-quality/sync: an oversize body → 413, logged", async () => {
+  const { base, lines, close } = await bootServer();
+  try {
+    const res = await sync(base, `{"arks":["${"x".repeat(64 * 1024)}"]}`);
+    assert.equal(res.status, 413);
+    assert.ok(lines.some((l) => l.event === "http_body_rejected" && l.reason === "too_large"));
+  } finally {
+    await close();
+  }
+});
+
+test("POST /ocr-quality/sync: a corrupt artifact (wrong shape OR not JSON) is rebuilt per ARK, never a batch 500", async () => {
+  const { base, deps, blob, lines, close } = await bootServer();
+  try {
+    await blob.putJson(keys.ocrQuality(ARK_A), { ...artifactFor(ARK_A), lane: "telepathy" });
+    await blob.putBytes(keys.ocrQuality(ARK_B), Buffer.from("{ truncated", "utf8"));
+    await blob.putJson(keys.ocrQuality(ARK_C), artifactFor(ARK_C));
+    const res = await sync(base, { arks: [ARK_A, ARK_B, ARK_C] });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as SyncResponse;
+    assert.deepEqual(body.documents.map((d) => d.ark), [ARK_C]);
+    assert.deepEqual(body.building.sort(), [ARK_A, ARK_B].sort());
+    assert.equal((await deps.queue.counts(Q.ocrQualityBackfill)).queued, 2);
+    assert.equal(lines.filter((l) => l.event === "ocr_quality_artifact_corrupt").length, 2);
+  } finally {
+    await close();
+  }
+});
+
+test("POST /ocr-quality/sync: an artifact whose folio entries break the contract is corrupt", async () => {
+  const { base, blob, close } = await bootServer();
+  try {
+    const bad = artifactFor(ARK_A);
+    bad.folios[1] = { ordre: 2, ocrSource: "alto", ocrQuality: 1.5, wordCount: 10 };
+    await blob.putJson(keys.ocrQuality(ARK_A), bad);
+    const body = (await (await sync(base, { arks: [ARK_A] })).json()) as SyncResponse;
+    assert.deepEqual(body.documents, []);
+    assert.deepEqual(body.building, [ARK_A]);
+  } finally {
+    await close();
+  }
+});
+
+test("POST /ocr-quality/sync: a failed queue send releases the claim — retryable failure, other ARKs still answered", async () => {
+  class FailingSend extends MemoryQueue {
+    override async send<T>(queue: string, payload: T): Promise<void> {
+      if (queue === Q.ocrQualityBackfill) throw new Error("pg-boss down");
+      await super.send(queue, payload);
+    }
+  }
+  const { base, blob, ocrBackfill, lines, close } = await bootServer({ queue: new FailingSend() });
+  try {
+    await blob.putJson(keys.ocrQuality(ARK_A), artifactFor(ARK_A));
+    const body = (await (await sync(base, { arks: [ARK_A, ARK_B] })).json()) as SyncResponse;
+    assert.deepEqual(body.documents.map((d) => d.ark), [ARK_A]);
+    assert.deepEqual(body.building, []);
+    assert.equal(body.unavailable.length, 1);
+    assert.equal(body.unavailable[0]?.ark, ARK_B);
+    assert.match(body.unavailable[0]?.reason ?? "", /^enqueue_failed: .*pg-boss down/);
+    const row = await ocrBackfill.get(ARK_B);
+    assert.equal(row?.state, "failed", "never stranded as queued");
+    assert.equal(row?.permanent, false);
+    assert.ok(lines.some((l) => l.event === "ocr_quality_enqueue_failed"));
+  } finally {
+    await close();
+  }
+});
+
+test("POST /ocr-quality/sync: a done row whose artifact vanished is re-queued", async () => {
+  const { base, deps, ocrBackfill, close } = await bootServer();
+  try {
+    await ocrBackfill.request(ARK_B, POLICY);
+    await ocrBackfill.markDone(ARK_B);
+    const body = (await (await sync(base, { arks: [ARK_B] })).json()) as SyncResponse;
+    assert.deepEqual(body.building, [ARK_B]);
+    assert.equal((await deps.queue.counts(Q.ocrQualityBackfill)).queued, 1);
+  } finally {
+    await close();
+  }
+});
+
+test("POST /ocr-quality/sync: past its deadline the request answers 503 (the app retries), logged", async () => {
+  const slow: OcrBackfillStore = new (class extends MemoryOcrBackfillStore {
+    override async request(ark: string, policy: OcrBackfillPolicy) {
+      await new Promise((r) => setTimeout(r, 200));
+      return super.request(ark, policy);
+    }
+  })();
+  const { base, lines, close } = await bootServer({ store: slow, syncDeadlineMs: 20 });
+  try {
+    const res = await sync(base, { arks: [ARK_B] });
+    assert.equal(res.status, 503);
+    assert.ok(lines.some((l) => l.event === "ocr_quality_sync_deadline"));
+  } finally {
+    await close();
+  }
+});
+
+test("POST /ocr-quality/sync with the backfill disabled: missing → backfill_disabled; a stored failure and a corrupt artifact keep their own reasons; nothing queued", async () => {
+  const store = new MemoryOcrBackfillStore();
+  const { base, deps, blob, close } = await bootServer({ ocrBackfillEnabled: false, store });
+  try {
+    await blob.putJson(keys.ocrQuality(ARK_A), artifactFor(ARK_A));
+    await store.request(ARK_C, POLICY);
+    await store.markFailed(ARK_C, "no_pages_artifact", { permanent: true });
+    await blob.putJson(keys.ocrQuality(ARK_D), { v: 1 });
+
+    const body = (await (await sync(base, { arks: [ARK_A, ARK_B, ARK_C, ARK_D] })).json()) as SyncResponse;
+    assert.deepEqual(body.documents, [artifactFor(ARK_A)], "existing artifacts are still served");
+    assert.deepEqual(body.building, []);
+    assert.deepEqual(
+      [...body.unavailable].sort((x, y) => x.ark.localeCompare(y.ark)),
+      [
+        { ark: ARK_B, reason: "backfill_disabled" },
+        { ark: ARK_C, reason: "no_pages_artifact" },
+        { ark: ARK_D, reason: "artifact_corrupt" },
+      ].sort((x, y) => x.ark.localeCompare(y.ark)),
+    );
+    assert.equal((await deps.queue.counts(Q.ocrQualityBackfill)).queued, 0);
+    assert.equal(await store.get(ARK_B), null, "no backfill row is opened");
+  } finally {
+    await close();
+  }
+});
+
+test("POST /ingest: an oversize body → 413 and a body that is not JSON → 400, both logged", async () => {
+  const { base, lines, close } = await bootServer();
+  try {
+    const big = await fetch(`${base}/ingest`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: `{"pad":"${"x".repeat(9 * 1024 * 1024)}"}`,
+    });
+    assert.equal(big.status, 413);
+    const junk = await fetch(`${base}/ingest`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{ nope",
+    });
+    assert.equal(junk.status, 400);
+    assert.ok(lines.some((l) => l.event === "http_body_rejected" && l.reason === "too_large"));
+    assert.ok(lines.some((l) => l.event === "http_body_rejected" && l.reason === "invalid_json"));
+  } finally {
+    await close();
+  }
+});
+
