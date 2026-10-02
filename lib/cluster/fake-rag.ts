@@ -127,6 +127,23 @@ function entryContentPayload(
   return { text }
 }
 
+// --- Facet filters (keyword search) -------------------------------------------
+
+/**
+ * Exact-match facet filters, as the real keyword search applies them through
+ * `metadata_filters` (real-rag.ts toMetadataFilters): every given facet must
+ * equal the fixture's.
+ */
+function matchesFacets(f: RagFixture, filters: RagKeywordRequest["filters"]): boolean {
+  if (filters === undefined) return true
+  return (
+    (filters.type === undefined || filters.type === f.docType) &&
+    (filters.subtype === undefined || filters.subtype === f.subtype) &&
+    (filters.lang === undefined || filters.lang === f.lang) &&
+    (filters.source === undefined || filters.source === f.source)
+  )
+}
+
 // --- Lexical scoring ---------------------------------------------------------
 
 /** Added per fixture topic that appears in the query. */
@@ -194,6 +211,7 @@ export const FakeRagRunner = {
     // result is entry-level (mirrors the real keyword search granularity).
     const bestByArk = new Map<string, { score: number; snippets: string[] }>()
     for (const f of RAG_FIXTURES) {
+      if (!matchesFacets(f, req.filters)) continue
       const s = scoreAgainstQuery(req.query, f.topics, f.snippet)
       if (s <= 0) continue
       const cur = bestByArk.get(f.ark)

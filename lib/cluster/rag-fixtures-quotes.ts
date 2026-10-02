@@ -18,10 +18,12 @@
 // between paragraphs, ALTO-lane pages join every line with a single `\n`.
 //
 // Topics are disjoint from the 1889 seed set (no "exposition", "inauguration",
-// "figaro", …), so the existing fake queries keep their results;
-// rag-fixtures-quotes.test.ts pins that.
+// "figaro", …), so the existing fake queries keep their results:
+// rag-fixtures-quotes.test.ts checks that no 1889 topic surfaces these pages,
+// and fake-rag.test.ts pins the 1889 outputs (fake-rag-1889.snapshot.json).
 
 import { OCR_LOW_QUALITY_THRESHOLD } from "@/lib/constants"
+import { FIXTURE_SOURCE } from "./fixture-source"
 import type { RagFixture } from "./rag-fixtures"
 
 /** Le Populaire, 1937 — the casino de Boulogne-sur-Mer fire, folios 1–3. */
@@ -67,6 +69,10 @@ export const QUOTE_FIXTURES: QuoteFixture[] = [
       "conclusions de l'enquête avant de prendre la moindre décision. »",
     title: POPULAIRE_TITLE,
     year: 1937,
+    docType: "press",
+    lang: "fr",
+    source: FIXTURE_SOURCE,
+    subtype: null,
     ocrQuality: 0.93,
     provenance: QUOTE_FIXTURE_PROVENANCE,
     topics: ["incendie", "casino", "boulogne", "maire de boulogne"],
@@ -93,6 +99,10 @@ export const QUOTE_FIXTURES: QuoteFixture[] = [
       "a provoqué le sinistre. Le commissaire central a fait poser les scellés sur le tableau électrique.",
     title: POPULAIRE_TITLE,
     year: 1937,
+    docType: "press",
+    lang: "fr",
+    source: FIXTURE_SOURCE,
+    subtype: null,
     ocrQuality: 0.93,
     provenance: QUOTE_FIXTURE_PROVENANCE,
     topics: ["incendie", "casino", "boulogne", "court-circuit", "sapeurs"],
@@ -113,6 +123,10 @@ export const QUOTE_FIXTURES: QuoteFixture[] = [
       "intégrale des accords de juin et la révision des barèmes de manutention.",
     title: POPULAIRE_TITLE,
     year: 1937,
+    docType: "press",
+    lang: "fr",
+    source: FIXTURE_SOURCE,
+    subtype: null,
     ocrQuality: 0.93,
     provenance: QUOTE_FIXTURE_PROVENANCE,
     topics: ["casino", "boulogne", "maire de boulogne", "conseil municipal"],
@@ -133,6 +147,10 @@ export const QUOTE_FIXTURES: QuoteFixture[] = [
       "témo:n de la grande fête de l'ind.strie\nde 1851, ne sera pas rebât:.",
     title: LOW_OCR_TITLE,
     year: 1937,
+    docType: "press",
+    lang: "fr",
+    source: FIXTURE_SOURCE,
+    subtype: null,
     ocrQuality: 0.61,
     provenance: QUOTE_FIXTURE_PROVENANCE,
     topics: ["incendie", "crystal", "palace", "palais de cristal", "londres"],
@@ -151,6 +169,10 @@ export const QUOTE_FIXTURES: QuoteFixture[] = [
       "pendant deux jours. Les habitants des hameaux ont été évacués vers la côte.",
     title: FORET_TITLE,
     year: 1937,
+    docType: "press",
+    lang: "fr",
+    source: FIXTURE_SOURCE,
+    subtype: null,
     ocrQuality: 0.9,
     provenance: QUOTE_FIXTURE_PROVENANCE,
     topics: ["incendie", "forêt", "maures", "sapeurs", "maison forestière"],
@@ -175,6 +197,10 @@ export const QUOTE_FIXTURES: QuoteFixture[] = [
       "l'intérieur et à moins de deux cents mètres des bois et forêts.",
     title: EAUX_FORETS_TITLE,
     year: 1937,
+    docType: "press",
+    lang: "fr",
+    source: FIXTURE_SOURCE,
+    subtype: null,
     ocrQuality: 0.95,
     provenance: QUOTE_FIXTURE_PROVENANCE,
     topics: ["forêt", "incendie", "eaux et forêts", "cantonnements", "sapeurs"],

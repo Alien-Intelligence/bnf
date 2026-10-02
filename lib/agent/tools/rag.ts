@@ -79,11 +79,11 @@ export const ragQueryTool = defineTool<
       .describe(`Number of passages to retrieve (1–${RAG_QUERY_MAX_K}, default ${RAG_DEFAULT_K}).`),
     filters: z
       .object({
-        type: z.array(z.string()).optional().describe("Restrict to these document types."),
-        lang: z.array(z.string()).optional().describe("Restrict to these language codes."),
-        source: z.array(z.string()).optional().describe("Restrict to these source identifiers."),
-        yearFrom: z.number().int().optional().describe("Earliest publication year (inclusive)."),
-        yearTo: z.number().int().optional().describe("Latest publication year (inclusive)."),
+        type: z.array(z.string()).optional().describe("Not applied (see filters)."),
+        lang: z.array(z.string()).optional().describe("Not applied (see filters)."),
+        source: z.array(z.string()).optional().describe("Not applied (see filters)."),
+        yearFrom: z.number().int().optional().describe("Not applied (see filters)."),
+        yearTo: z.number().int().optional().describe("Not applied (see filters)."),
       })
       .optional()
       .describe(
@@ -156,9 +156,9 @@ export const ragKeywordSearchTool = defineTool<
       ),
     filters: z
       .object({
-        type: z.string().optional().describe("Restrict to this document type (e.g. \"press\", \"book\")."),
-        lang: z.string().optional().describe("Restrict to this language code (e.g. \"fr\")."),
-        source: z.string().optional().describe("Restrict to this source (e.g. \"gallica\")."),
+        type: z.string().min(1).optional().describe("Restrict to this document type (e.g. \"press\", \"book\")."),
+        lang: z.string().min(1).optional().describe("Restrict to this language code (e.g. \"fr\")."),
+        source: z.string().min(1).optional().describe("Restrict to this source (e.g. \"gallica\")."),
       })
       .optional()
       .describe("Exact-match facet filters applied before ranking."),

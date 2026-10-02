@@ -11,6 +11,7 @@ import { FakeRagRunner } from "./fake-rag"
 import { RAG_LOOKUP_STATUS } from "./rag"
 import type { RagEntryContent, RagEntryContentResult } from "./rag"
 import { RAG_FIXTURES } from "./rag-fixtures"
+import FAKE_1889_SNAPSHOT from "./fake-rag-1889.snapshot.json"
 import { codePointLength, sliceCodePoints, splitEntryFolios } from "./folio-text"
 
 // Le Figaro, 6 mai 1889 — two fixtures, folios 1 and 2, first ARK in the file.
@@ -133,4 +134,52 @@ test("keywordSearch total counts every matching entry, not just the returned pag
   assert.ok(all.hits.length > 1, "the query matches several entries")
   assert.equal(one.hits.length, 1)
   assert.equal(one.total, all.hits.length)
+})
+
+test("fixtures are whole pages: one per (ark, folio), stored trimmed", () => {
+  const keys = RAG_FIXTURES.map((f) => `${f.ark}#${f.folio}`)
+  assert.equal(new Set(keys).size, keys.length, "a duplicate (ark, folio) would merge two pages under one heading")
+  for (const f of RAG_FIXTURES) {
+    assert.equal(f.snippet, f.snippet.trim(), `${f.ark} f${f.folio} is trimmed, as the worker stores pages`)
+    assert.ok(Number.isSafeInteger(f.folio) && f.folio >= 1, `${f.ark} folio ${f.folio}`)
+  }
+})
+
+test("the 1889 seed set's fake outputs are pinned (the quote fixtures must not move them)", async () => {
+  const snapshot: Record<string, { query: string[]; keyword: string[]; keywordTotal: number }> = FAKE_1889_SNAPSHOT
+  for (const [query, expected] of Object.entries(snapshot)) {
+    const q = await FakeRagRunner.query({ projectId: PROJECT, query, k: 12, signal: signal() })
+    const k = await FakeRagRunner.keywordSearch({ projectId: PROJECT, query, limit: 5, signal: signal() })
+    assert.deepEqual(
+      {
+        query: q.passages.map((p) => `${p.ark}#${p.folio}@${p.score.toFixed(2)}`),
+        keyword: k.hits.map((h) => `${h.ark}@${h.score.toFixed(2)}`),
+        keywordTotal: k.total,
+      },
+      expected,
+      query,
+    )
+  }
+})
+
+test("keywordSearch applies exact-match facet filters, as the real metadata_filters do", async () => {
+  const all = await FakeRagRunner.keywordSearch({ projectId: PROJECT, query: "exposition", limit: 100, signal: signal() })
+  const books = await FakeRagRunner.keywordSearch({
+    projectId: PROJECT,
+    query: "exposition",
+    limit: 100,
+    filters: { type: "book" },
+    signal: signal(),
+  })
+  assert.ok(books.hits.length > 0 && books.hits.length < all.hits.length)
+  const bookArks = new Set(RAG_FIXTURES.filter((f) => f.docType === "book").map((f) => f.ark))
+  assert.ok(books.hits.every((h) => bookArks.has(h.ark)))
+  const none = await FakeRagRunner.keywordSearch({
+    projectId: PROJECT,
+    query: "exposition",
+    limit: 100,
+    filters: { lang: "de" },
+    signal: signal(),
+  })
+  assert.deepEqual(none.hits, [])
 })

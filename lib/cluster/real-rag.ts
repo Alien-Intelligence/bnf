@@ -118,10 +118,10 @@ function toMetadataFilters(
 ): Record<string, string> | undefined {
   if (!filters) return undefined
   const out: Record<string, string> = {}
-  if (filters.type) out.docType = filters.type
-  if (filters.subtype) out.subtype = filters.subtype
-  if (filters.lang) out.lang = filters.lang
-  if (filters.source) out.source = filters.source
+  if (filters.type !== undefined) out.docType = filters.type
+  if (filters.subtype !== undefined) out.subtype = filters.subtype
+  if (filters.lang !== undefined) out.lang = filters.lang
+  if (filters.source !== undefined) out.source = filters.source
   return Object.keys(out).length > 0 ? out : undefined
 }
 

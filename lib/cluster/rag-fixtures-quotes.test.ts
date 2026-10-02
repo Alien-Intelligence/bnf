@@ -60,8 +60,6 @@ test("the harness requests reach their fixture documents", async () => {
 
 test("every fixture folio is served whole by getDocumentFolios and has exactly one OCR row", async () => {
   for (const f of QUOTE_FIXTURES) {
-    assert.notEqual(f.folio, null)
-    if (f.folio === null) continue
     const doc = await FakeRagRunner.getDocumentFolios({ projectId: PROJECT, ark: f.ark, signal: new AbortController().signal })
     assert.equal(doc.status, RAG_LOOKUP_STATUS.FOUND)
     if (doc.status !== RAG_LOOKUP_STATUS.FOUND) continue
