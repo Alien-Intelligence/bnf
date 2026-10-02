@@ -8,6 +8,7 @@ import { requireSessionUser } from "@/lib/auth-helpers"
 import { canReadProject } from "@/lib/authz/project-access"
 import {
   CORPUS_SOURCE_STATE,
+  CorpusSourceMissingError,
   corpusProjectId,
   corpusSourceState,
 } from "@/lib/authz/corpus-source"
@@ -57,10 +58,9 @@ export default async function RechercherPage({
     corpusId === projectId
       ? project
       : await ProjectQueries.get(corpusId)
+  if (!corpusProject) throw new CorpusSourceMissingError(projectId, corpusId)
 
-  const ingestedVersionId = revoked
-    ? null
-    : (corpusProject?.ingestedVersionId ?? null)
+  const ingestedVersionId = revoked ? null : corpusProject.ingestedVersionId
 
   const [initialSessions, ingestedArks] = await Promise.all([
     SessionQueries.listForProject(projectId, SESSION_SCOPE.RESEARCH),
@@ -88,7 +88,7 @@ export default async function RechercherPage({
       initialNotes={initialNotes}
       initialIsIngested={isIngested}
       initialCorpusSourceState={sourceState}
-      initialCorpusSourceName={corpusProject?.name ?? null}
+      initialCorpusSourceName={corpusProject.name}
       initialClusterId={RAG_CLUSTER_ID}
       initialDocCount={ingestedArks.length}
       initialIntroSeen={seenIntros.includes(ONBOARDING_INTRO.RESEARCH)}

@@ -8,6 +8,8 @@
 // and the Atelier/Carnet disposition.
 
 import { useCallback, useEffect, useRef, useState } from "react"
+import { useTranslations } from "next-intl"
+import { useToast } from "@/components/ui/toast"
 import { useQueryClient } from "@tanstack/react-query"
 import { useTurnStream } from "@/hooks/api/turn-stream"
 import { useNotes, noteKeys } from "@/hooks/api/notes"
@@ -87,7 +89,15 @@ export function RechercherClient({
   )
 
   // ── Notes (live; seeded from the server) ───────────────────────────────────
-  const { data: notes } = useNotes(projectId, { initialData: initialNotes })
+  const notesQuery = useNotes(projectId, { initialData: initialNotes })
+  // Seeded from the server, so there is always a list to show; a failed
+  // refresh keeps the last one and says so instead of passing for "no notes".
+  const notes = notesQuery.data ?? initialNotes
+  const { toast } = useToast()
+  const tEspace = useTranslations("research.espace")
+  useEffect(() => {
+    if (notesQuery.isError) toast(tEspace("notesRefreshError"))
+  }, [notesQuery.isError, toast, tEspace])
 
   // ── Reader state — open tabs, active tab, disposition ───────────────────────
   // Seed the reader with the most recent note so the espace isn't empty when a
@@ -238,7 +248,7 @@ export function RechercherClient({
             projectName={projectName}
             stream={stream}
             appSessionId={activeSessionId}
-            notes={notes ?? []}
+            notes={notes}
             openNoteIds={openNoteIds}
             activeNoteId={activeNoteId}
             onActivateNote={setActiveNoteId}

@@ -808,7 +808,8 @@
       "emptyReaderTalk": "Talk to the assistant on the left to generate a research note.",
       "emptyReaderTalkSub": "Ask your question; the assistant writes the note, cites its sources, and opens it here.",
       "openSource": "Research assistant",
-      "openSubtitle": "Queries the corpus · cites its sources"
+      "openSubtitle": "Queries the corpus · cites its sources",
+      "notesRefreshError": "Could not refresh the notes list; the last version is still shown."
     },
     "artefacts": {
       "title": "Research artifacts",

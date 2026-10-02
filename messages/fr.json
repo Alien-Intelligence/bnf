@@ -808,7 +808,8 @@
       "emptyReaderTalk": "Parlez à l'assistant à gauche pour générer une note de recherche.",
       "emptyReaderTalkSub": "Posez votre question ; l'assistant rédige la note, cite ses sources et l'ouvre ici.",
       "openSource": "Assistant de recherche",
-      "openSubtitle": "Interroge le corpus · cite ses sources"
+      "openSubtitle": "Interroge le corpus · cite ses sources",
+      "notesRefreshError": "Impossible d'actualiser la liste des notes ; la dernière version reste affichée."
     },
     "artefacts": {
       "title": "Artefacts de recherche",
