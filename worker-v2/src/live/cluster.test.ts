@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 
 import { bnfDatasetSlug } from "./vendor/dataset.js";
 import type { DocMeta, PreparedPage } from "../domain/types.js";
-import { assembleMarkdown, buildIndexChunks } from "./cluster.js";
+import { assembleMarkdown, buildIndexChunks, codePointLength } from "./cluster.js";
 
 const meta: DocMeta = {
   title: "Plan de Paris",
@@ -58,28 +58,58 @@ test("buildIndexChunks aligns embeddings by position and carries ark + folio", (
   assert.equal(chunks[1]!.metadata.folio, 9);
 });
 
-test("char_start/char_end slice the assembled markdown to exactly chunk_text", () => {
-  // Untrimmed page text on purpose: the markdown holds the trimmed text, so the
-  // chunk must too, or the offsets cannot line up with what is stored.
-  const raggedPages: PreparedPage[] = [
-    { ordre: 5, text: "Texte folio 5" },
-    { ordre: 9, text: "  Texte folio 9\nsur deux lignes \n" },
-    { ordre: 12, text: "Dernier" },
-  ];
-  const embeddings = [[0.1], [0.2], [0.3]];
-  const markdown = assembleMarkdown(raggedPages);
-  const chunks = buildIndexChunks("ark:/12148/btv1b8600001", meta, raggedPages, embeddings);
+// --- CONTRACT (keep identical to lib/cluster/folio-text.test.ts) ----------
+// The app splits this markdown and slices it with these offsets; the consumer
+// of the offsets slices a Python `str`, so they are Unicode code points. The
+// sample carries an astral-plane character and a whitespace-only page.
+const CONTRACT_PAGES: PreparedPage[] = [
+  { ordre: 5, text: "Texte folio 5" },
+  { ordre: 9, text: "  Le 𝔊 gothique — Œuvre\nsur deux lignes \n" },
+  { ordre: 10, text: "   " },
+  { ordre: 12, text: "Dernier 😀 mot" },
+];
+const CONTRACT_MARKDOWN =
+  "## Folio 5\n\nTexte folio 5\n\n## Folio 9\n\nLe 𝔊 gothique — Œuvre\nsur deux lignes" +
+  "\n\n## Folio 10\n\n\n\n## Folio 12\n\nDernier 😀 mot";
+/** `[char_start, char_end]` per page, in Unicode code points (Python `str` indices). */
+const CONTRACT_OFFSETS: Array<[number, number]> = [
+  [12, 25],
+  [39, 76],
+  [91, 91],
+  [106, 119],
+];
+// ---------------------------------------------------------------------------
 
+test("CONTRACT: assembleMarkdown writes the literal sample", () => {
+  assert.equal(assembleMarkdown(CONTRACT_PAGES), CONTRACT_MARKDOWN);
+  assert.equal(codePointLength(CONTRACT_MARKDOWN), 119);
+  assert.equal(CONTRACT_MARKDOWN.length, 121, "two astral characters: UTF-16 length differs");
+});
+
+test("CONTRACT: char_start/char_end are the literal code-point offsets of each trimmed page", () => {
+  const embeddings = CONTRACT_PAGES.map((_, i) => [i / 10]);
+  const chunks = buildIndexChunks("ark:/12148/btv1b8600001", meta, CONTRACT_PAGES, embeddings);
+  assert.equal(chunks.length, CONTRACT_PAGES.length);
+  assert.deepEqual(
+    chunks.map((c) => [c.metadata.char_start, c.metadata.char_end]),
+    CONTRACT_OFFSETS,
+  );
+  const codePoints = Array.from(CONTRACT_MARKDOWN);
   for (const [i, chunk] of chunks.entries()) {
-    const start = chunk.metadata.char_start;
-    const end = chunk.metadata.char_end;
-    assert.equal(typeof start, "number", `chunk ${i} has char_start`);
-    assert.equal(typeof end, "number", `chunk ${i} has char_end`);
-    assert.equal(chunk.chunk_text, raggedPages[i]!.text.trim(), `chunk ${i} text is trimmed`);
+    const page = CONTRACT_PAGES[i];
+    assert.ok(page, `page ${i} exists`);
+    assert.equal(chunk.chunk_text, page.text.trim(), `chunk ${i} text is trimmed`);
     assert.equal(
-      markdown.slice(start as number, end as number),
+      codePoints.slice(chunk.metadata.char_start, chunk.metadata.char_end).join(""),
       chunk.chunk_text,
-      `chunk ${i} offsets slice the markdown to its text`,
+      `chunk ${i} offsets slice the markdown (by code point) to its text`,
     );
   }
+});
+
+test("buildIndexChunks refuses a page/embedding count mismatch", () => {
+  assert.throws(
+    () => buildIndexChunks("ark:/12148/btv1b8600001", meta, CONTRACT_PAGES, [[0.1]]),
+    /4 pages but 1 embeddings/,
+  );
 });

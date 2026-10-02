@@ -58,12 +58,32 @@ interface CreateEntryResponse {
   id?: number;
 }
 
+/**
+ * Metadata written on every page chunk. The app reads it back through the
+ * data-cluster MCP (`lib/cluster/real-rag.ts` chunkToPassage).
+ *
+ * `char_start` / `char_end` are the page text's range inside the entry's
+ * processed markdown, in UNICODE CODE POINTS: the consumer slices a Python
+ * `str` (mcp-datacluster get_entry_content.py), so a JS UTF-16 length would
+ * drift by one per astral-plane character. The app pins the same literal
+ * sample in lib/cluster/folio-text.test.ts.
+ */
+export interface IndexChunkMetadata {
+  ark: string;
+  ark_slug: string;
+  doc_type: string | null;
+  sub_type: string | null;
+  folio: number;
+  char_start: number;
+  char_end: number;
+}
+
 /** One chunk to index — the shape the cluster's /chunks endpoint expects. */
 export interface IndexChunk {
   chunk_text: string;
   chunk_index: number;
   embedding: number[];
-  metadata: Record<string, unknown>;
+  metadata: IndexChunkMetadata;
 }
 
 export interface LiveClusterSinkOptions {
@@ -77,6 +97,23 @@ function folioHeading(ordre: number): string {
 
 /** Separator between two page blocks in the assembled markdown. */
 const FOLIO_BLOCK_SEPARATOR = "\n\n";
+
+/**
+ * Length in Unicode code points — the unit of `char_start` / `char_end` (see
+ * IndexChunkMetadata). A surrogate pair is one code point; a lone surrogate
+ * counts as one, as in a Python `str`.
+ */
+export function codePointLength(s: string): number {
+  let n = 0;
+  for (let i = 0; i < s.length; i++, n++) {
+    const unit = s.charCodeAt(i);
+    if (unit >= 0xd800 && unit <= 0xdbff && i + 1 < s.length) {
+      const nextUnit = s.charCodeAt(i + 1);
+      if (nextUnit >= 0xdc00 && nextUnit <= 0xdfff) i++;
+    }
+  }
+  return n;
+}
 
 /**
  * Assemble a doc's pages into one markdown document, folio-headed. Pure —
@@ -100,8 +137,9 @@ export function assembleMarkdown(pages: PreparedPage[]): string {
  * guarantees `pages.length === embeddings.length`.
  *
  * `char_start` / `char_end` are the page body's offsets inside
- * `assembleMarkdown(pages)`, computed with the same heading and separator, so
- * `markdown.slice(char_start, char_end) === chunk_text` holds for every chunk.
+ * `assembleMarkdown(pages)` in Unicode code points, computed with the same
+ * heading and separator, so a code-point slice of the markdown (Python's
+ * `markdown[char_start:char_end]`) equals `chunk_text` for every chunk.
  * The chunk text is therefore the TRIMMED page text, as the markdown holds it.
  * The app surfaces the pair as `RagPassage.charRange` for `rag_get_text`.
  */
@@ -111,13 +149,21 @@ export function buildIndexChunks(
   pages: PreparedPage[],
   embeddings: number[][],
 ): IndexChunk[] {
+  if (pages.length !== embeddings.length) {
+    // A page/vector misalignment would corrupt citations — fail loudly.
+    throw new Error(
+      `buildIndexChunks: ${pages.length} pages but ${embeddings.length} embeddings for ${ark}`,
+    );
+  }
   let offset = 0;
   return pages.map((p, i) => {
+    const embedding = embeddings[i];
+    if (embedding === undefined) throw new Error(`buildIndexChunks: no embedding for page ${i} of ${ark}`);
     const text = p.text.trim();
-    const charStart = offset + folioHeading(p.ordre).length;
-    const charEnd = charStart + text.length;
-    offset = charEnd + FOLIO_BLOCK_SEPARATOR.length;
-    const metadata: Record<string, unknown> = {
+    const charStart = offset + codePointLength(folioHeading(p.ordre));
+    const charEnd = charStart + codePointLength(text);
+    offset = charEnd + codePointLength(FOLIO_BLOCK_SEPARATOR);
+    const metadata: IndexChunkMetadata = {
       ark,
       ark_slug: arkSlug(ark),
       doc_type: meta.docType ?? null,
@@ -129,7 +175,7 @@ export function buildIndexChunks(
     return {
       chunk_text: text,
       chunk_index: i,
-      embedding: embeddings[i]!,
+      embedding,
       metadata,
     };
   });
