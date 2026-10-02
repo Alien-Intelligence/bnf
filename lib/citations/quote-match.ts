@@ -17,7 +17,9 @@
  *     most max(1, ceil(QUOTE_FUZZY_WORD_RATIO × words)) per segment — D14);
  *   - a 2→1 merge: one quote word equal to two adjacent source words joined
  *     (the ALTO line split, `répu` / `blique`);
- *   - `[illisible]` standing for 1..QUOTE_ILLEGIBLE_MAX_WORDS source words.
+ *   - `[illisible]` standing for 1..QUOTE_ILLEGIBLE_MAX_WORDS source words;
+ *   - for a segment's FIRST word only, the part of a source token after a
+ *     French elided prefix (`qu'un` → `un`): a quote may open mid-token.
  * Candidate starts are the positions where the first token can match; the
  * earliest that aligns within the fuzzy budget wins, exact matches preferred.
  */
@@ -124,6 +126,19 @@ function boundedLevenshtein(a: string, b: string, max: number): number {
   return prev[b.length]
 }
 
+/**
+ * French elision: `qu'un`, `l'imprudence`, `d'abord` are one source token, but
+ * a quotation may open right after the apostrophe (« il n'est plus qu'« un
+ * amas » »). The part after an elided prefix may therefore stand for the whole
+ * token — at the START of a segment only: inside a quote, dropping `l'` is a
+ * change to the text.
+ */
+const ELIDED_PREFIX = /^(?:l|d|j|m|n|s|t|c|qu|jusqu|lorsqu|puisqu|quoiqu)'(.+)$/u
+
+function afterElision(sourceWord: string): string | null {
+  return ELIDED_PREFIX.exec(sourceWord)?.[1] ?? null
+}
+
 function isFuzzyMatch(quoteWord: string, sourceWord: string): boolean {
   if (quoteWord.length < FUZZY_MIN_LETTERS) return false
   return boundedLevenshtein(quoteWord, sourceWord, QUOTE_FUZZY_MAX_EDIT) <= QUOTE_FUZZY_MAX_EDIT
@@ -185,7 +200,7 @@ function alignAt(seg: QuoteSegment, doc: SourceToken[], start: number, budget: n
       for (let k = 1; k <= QUOTE_ILLEGIBLE_MAX_WORDS && j + k <= n; k++) consider(k, false, false)
     } else {
       const s = doc[j].norm
-      if (q.norm === s) consider(1, false, q.bracketed)
+      if (q.norm === s || (i === 0 && q.norm === afterElision(s))) consider(1, false, q.bracketed)
       else {
         if (j + 1 < n && q.norm === s + doc[j + 1].norm) consider(2, false, q.bracketed)
         if (isFuzzyMatch(q.norm, s)) consider(1, true, q.bracketed)
@@ -204,7 +219,7 @@ function canStartAt(seg: QuoteSegment, doc: SourceToken[], j: number): boolean {
   const q = seg.tokens[0]
   if (q.kind === "illegible") return true
   const s = doc[j].norm
-  if (q.norm === s) return true
+  if (q.norm === s || q.norm === afterElision(s)) return true
   if (j + 1 < doc.length && q.norm === s + doc[j + 1].norm) return true
   return isFuzzyMatch(q.norm, s)
 }

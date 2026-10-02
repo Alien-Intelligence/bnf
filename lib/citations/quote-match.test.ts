@@ -172,6 +172,25 @@ const ROWS: Row[] = [
     expect: [QUOTE_WARNING_REASON.NONSTANDARD_ELISION_MARKER],
   },
   {
+    label: "a quote that opens right after an elided qu' passes (« … qu'« un amas … »)",
+    md: `« un amas de ruines fumantes » ${CITE(2)}`,
+    cited: 2,
+    expect: "ok",
+    fuzzy: 0,
+  },
+  {
+    label: "a segment after […] may also open after an elided article",
+    md: `« Les premiers témoins accusent […] imprudence du personnel des cuisines » ${CITE(1)}`,
+    cited: 1,
+    expect: "ok",
+  },
+  {
+    label: "dropping an elided article INSIDE a quote is still a change",
+    md: `« Les premiers témoins accusent imprudence du personnel des cuisines » ${CITE(1)}`,
+    cited: 1,
+    expect: [QUOTE_WARNING_REASON.UNMARKED_CORRECTION],
+  },
+  {
     label: "a quote that runs across the page break without an elision passes",
     md: `« un court-circuit a provoqué le sinistre le Palais de Cr#stal » ${CITE(1)}`,
     cited: 1,
