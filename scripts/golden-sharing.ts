@@ -18,6 +18,9 @@ import { markHeadIngested } from "@/lib/testing/mark-ingested"
 import { randomUUID } from "node:crypto"
 import { z } from "zod"
 import type { ShareWithGroup } from "@/models/projects/schema"
+import { PROJECT_ACCESS, PROJECT_ACCESS_LEVEL } from "@/lib/authz/project-access"
+import { SESSION_SCOPE } from "@/models/sessions/schema"
+import { USER_ROLE } from "@/models/users/schema"
 
 const BASE = process.env["APP_URL"] ?? "http://localhost:3001"
 const PW = "TestPassword123!"
@@ -65,7 +68,7 @@ const grantsReachSchema = z.array(
 
 async function main() {
   const admin = await signUp("admin")
-  await prisma.user.update({ where: { id: admin.id }, data: { role: "admin" } })
+  await prisma.user.update({ where: { id: admin.id }, data: { role: USER_ROLE.ADMIN } })
   const A = await signUp("owner")
   const B = await signUp("reader")
   // C is granted nothing by A, ever. They exist to prove that a grant to B
@@ -115,7 +118,7 @@ async function main() {
 
   // 4. A shares at read.
   console.log("\n4. A shares the project with the group at read")
-  const sh = await a(`/api/projects/${source}/shares`, { method: "POST", body: JSON.stringify({ groupId, access: "read" }) })
+  const sh = await a(`/api/projects/${source}/shares`, { method: "POST", body: JSON.stringify({ groupId, access: PROJECT_ACCESS.READ }) })
   check(sh.status === 201, "POST shares → 201", String(sh.status))
 
   // The share dialog shows how many people a grant reaches (feedback #5): the
@@ -125,14 +128,14 @@ async function main() {
   const grant = grantsReachSchema.parse(grants.body).find((x) => x.groupId === groupId)
   check(grant?.group._count.members === 2, "GET shares → the grant carries group._count.members = 2", JSON.stringify(grant?.group ?? null))
 
-  const bShare = await b(`/api/projects/${source}/shares`, { method: "POST", body: JSON.stringify({ groupId, access: "write" }) })
+  const bShare = await b(`/api/projects/${source}/shares`, { method: "POST", body: JSON.stringify({ groupId, access: PROJECT_ACCESS.WRITE }) })
   check(bShare.status === 403, "a read-shared member cannot re-share → 403", String(bShare.status))
 
   // 5. B sees it read-only.
   console.log("\n5. B sees it under « Partagés avec moi », read-only")
   const bList = await b("/api/projects")
   const row = (bList.body as { id: string; access: string; ownerName: string }[]).find((x) => x.id === source)
-  check(row?.access === "read", "the row carries access=read", String(row?.access))
+  check(row?.access === PROJECT_ACCESS_LEVEL.READ, "the row carries access=read", String(row?.access))
   check(!!row?.ownerName, "the row carries the owner's name", row?.ownerName)
 
   const bRead = await b(`/api/projects/${source}/corpus`)
@@ -161,9 +164,9 @@ async function main() {
 
   const dAdd = await b(`/api/projects/${derived}/corpus/add`, { method: "POST", body: JSON.stringify({ arks: ["ark:/12148/bpt6k9999993"], reason: "golden path" }) })
   check(dAdd.status === 403, "B cannot mutate their own derived corpus → 403", String(dAdd.status))
-  const dSess = await b(`/api/projects/${derived}/sessions`, { method: "POST", body: JSON.stringify({ scope: "corpus" }) })
+  const dSess = await b(`/api/projects/${derived}/sessions`, { method: "POST", body: JSON.stringify({ scope: SESSION_SCOPE.CORPUS }) })
   check(dSess.status === 403, "a corpus session on a derived project → 403", String(dSess.status))
-  const dSessR = await b(`/api/projects/${derived}/sessions`, { method: "POST", body: JSON.stringify({ scope: "research" }) })
+  const dSessR = await b(`/api/projects/${derived}/sessions`, { method: "POST", body: JSON.stringify({ scope: SESSION_SCOPE.RESEARCH }) })
   check(dSessR.status === 201, "a research session → 201", String(dSessR.status))
   const dDiff = await b(`/api/projects/${derived}/corpus/diff?from=1&to=1`)
   check(dDiff.status === 409, "diff on a derived project → 409", String(dDiff.status))
@@ -185,7 +188,7 @@ async function main() {
   const cBefore = await c(`/api/projects/${source}/corpus`)
   check(cBefore.status === 403, "C has no access to A's source → 403", String(cBefore.status))
 
-  const launder = await b(`/api/projects/${derived}/shares`, { method: "POST", body: JSON.stringify({ groupId: outsiderGroup, access: "read" }) })
+  const launder = await b(`/api/projects/${derived}/shares`, { method: "POST", body: JSON.stringify({ groupId: outsiderGroup, access: PROJECT_ACCESS.READ }) })
   check(launder.status === 403, "B sharing their derived workspace → 403", String(launder.status))
 
   const cAfter = await c(`/api/projects/${derived}/corpus`)
@@ -195,7 +198,7 @@ async function main() {
   check(!JSON.stringify(cList.body).includes(derived), "C's project list does not contain the workspace")
 
   // An admin is not the way round it either: the corpus still is not theirs.
-  const adminLaunder = await adminApi(`/api/projects/${derived}/shares`, { method: "POST", body: JSON.stringify({ groupId: outsiderGroup, access: "read" }) })
+  const adminLaunder = await adminApi(`/api/projects/${derived}/shares`, { method: "POST", body: JSON.stringify({ groupId: outsiderGroup, access: PROJECT_ACCESS.READ }) })
   check(adminLaunder.status === 403, "an admin sharing a derived workspace → 403", String(adminLaunder.status))
 
   await prisma.group.deleteMany({ where: { id: outsiderGroup } })
@@ -224,7 +227,7 @@ async function main() {
 
   // 8. A re-shares at write.
   console.log("\n8. A re-shares at write")
-  const sh2 = await a(`/api/projects/${source}/shares`, { method: "POST", body: JSON.stringify({ groupId, access: "write" }) })
+  const sh2 = await a(`/api/projects/${source}/shares`, { method: "POST", body: JSON.stringify({ groupId, access: PROJECT_ACCESS.WRITE }) })
   check(sh2.status === 201, "re-share → 201", String(sh2.status))
   check((sh2.body as unknown[]).length === 1, "one grant per (project, group), updated not duplicated")
 

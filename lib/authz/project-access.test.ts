@@ -20,7 +20,7 @@ import {
   adminVisibilityScope,
 } from "./project-access"
 import { ProjectPolicy } from "@/models/projects/policy"
-import type { PolicyUser } from "@/models/users/schema"
+import { USER_ROLE, type PolicyUser } from "@/models/users/schema"
 import type { ProjectWithShares } from "@/models/projects/schema"
 
 const OWNER_ID = "user-owner"
@@ -38,7 +38,7 @@ function user(
     image: null,
     createdAt: new Date(0),
     updatedAt: new Date(0),
-    role: "member",
+    role: USER_ROLE.MEMBER,
     alienUserId: null,
     groupIds: [],
     ...overrides,
@@ -92,7 +92,7 @@ const CASES: Array<{
   },
   {
     name: "an admin resolves to owner on someone else's private project",
-    user: user({ id: OTHER_ID, role: "admin" }),
+    user: user({ id: OTHER_ID, role: USER_ROLE.ADMIN }),
     project: project(),
     level: PROJECT_ACCESS_LEVEL.OWNER,
   },
@@ -241,7 +241,7 @@ test("personalVisibilityScope is never widened for an admin", () => {
   // scope, so every project in the instance appeared under « Partagés avec moi »
   // — a heading asserting a share that never happened. An admin may OPEN any
   // project (rule 2); that is not the same as every project being theirs.
-  const admin = user({ id: OWNER_ID, role: "admin", groupIds: [GROUP_A] })
+  const admin = user({ id: OWNER_ID, role: USER_ROLE.ADMIN, groupIds: [GROUP_A] })
 
   const scope = personalVisibilityScope(admin)
   assert.equal(scope.unrestricted, false)
@@ -263,7 +263,7 @@ test("personalVisibilityScope carries the inputs rules 1, 4 and 5 read", () => {
 })
 
 test("adminVisibilityScope is unrestricted for an admin only", () => {
-  const admin = user({ id: OWNER_ID, role: "admin" })
+  const admin = user({ id: OWNER_ID, role: USER_ROLE.ADMIN })
   assert.deepEqual(adminVisibilityScope(admin), { unrestricted: true })
 
   // A non-admin reaching an admin listing still sees only their own rows, so a
@@ -278,7 +278,7 @@ test("adminVisibilityScope is unrestricted for an admin only", () => {
 })
 
 test("ProjectPolicy.listAll is admin-only and distinct from view", () => {
-  const admin = user({ id: "someone", role: "admin" })
+  const admin = user({ id: "someone", role: USER_ROLE.ADMIN })
   const member = user({ id: "someone-else" })
   const foreign = project({ ownerId: "a-third-party" })
 
