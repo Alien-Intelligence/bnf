@@ -18,9 +18,14 @@ import type { ShareWithGroup } from "@/models/projects/schema"
 interface CardProjectShareRowProps {
   share: ShareWithGroup
   onChangeAccess: (groupId: string, value: string | null) => void
-  onRevoke: (groupId: string) => void
+  /** Revoke, or ask first when derived workspaces depend on the grant (the dialog decides). */
+  onRevoke: () => void
   /** True while a revoke is in flight. */
-  revoking?: boolean
+  revoking: boolean
+  /** The row is asking the owner to confirm a revoke that severs derived workspaces. */
+  confirming: boolean
+  onConfirmRevoke: () => void
+  onCancelRevoke: () => void
 }
 
 export function CardProjectShareRow({
@@ -28,13 +33,40 @@ export function CardProjectShareRow({
   onChangeAccess,
   onRevoke,
   revoking,
+  confirming,
+  onConfirmRevoke,
+  onCancelRevoke,
 }: CardProjectShareRowProps) {
   const t = useTranslations("projects.share")
+  const tCommon = useTranslations("common")
+
+  // Revoking this grant costs its derived workspaces their corpus: the row
+  // turns into the question, with the count, before anything is severed.
+  if (confirming) {
+    return (
+      <li role="alert" className="flex flex-col gap-2 px-3 py-2">
+        <p className="text-sm text-destructive">
+          {t("revokeConfirm", { name: share.group.name, count: share.derivedCount })}
+        </p>
+        <div className="flex justify-end gap-2">
+          <Button variant="outline" size="sm" onClick={onCancelRevoke} disabled={revoking}>
+            {tCommon("cancel")}
+          </Button>
+          <Button variant="destructive" size="sm" onClick={onConfirmRevoke} disabled={revoking}>
+            {t("revokeConfirmAction")}
+          </Button>
+        </div>
+      </li>
+    )
+  }
 
   return (
     <li className="flex items-center justify-between gap-3 px-3 py-2">
       <div className="min-w-0">
         <div className="truncate text-sm font-medium">{share.group.name}</div>
+        <div className="text-xs text-muted-foreground">
+          {t("memberCount", { count: share.group._count.members })}
+        </div>
         {/* Revoking costs these workspaces their corpus — say so before the
             owner clicks, not after. */}
         {share.derivedCount > 0 && (
@@ -56,7 +88,7 @@ export function CardProjectShareRow({
           size="sm"
           disabled={revoking}
           aria-label={t("revoke", { name: share.group.name })}
-          onClick={() => onRevoke(share.groupId)}
+          onClick={onRevoke}
         >
           <Trash2 className="size-3.5" />
         </Button>

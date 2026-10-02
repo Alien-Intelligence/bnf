@@ -57,6 +57,11 @@ export function FormProjectShare({
 }: FormProjectShareProps) {
   const t = useTranslations("projects.share")
 
+  // How many people a grant reaches, next to the name: a group is chosen for
+  // who is in it, and the list never said.
+  const groupOption = (g: GroupListItem): string =>
+    t("groupOption", { name: g.name, count: g._count.members })
+
   const form = useForm<ShareProjectInput>({
     resolver: zodResolver(shareProjectSchema),
     // Read is the conservative default: widening a grant is one click on the
@@ -104,21 +109,24 @@ export function FormProjectShare({
                   onValueChange={(v) => field.onChange(v ?? "")}
                 >
                   <FormControl>
-                    <SelectTrigger>
+                    {/* Full width of its field, not the primitive's w-fit: a
+                        long « name · N membres » must clip, not run under the
+                        level select beside it. */}
+                    <SelectTrigger className="w-full min-w-0">
                       {/* Base UI renders the raw value unless told how to label
                           it — a bare SelectValue would show the group's uuid. */}
-                      <SelectValue placeholder={t("groupPlaceholder")}>
-                        {(value: string | null) =>
-                          groups.find((g) => g.id === value)?.name ??
-                          t("groupPlaceholder")
-                        }
+                      <SelectValue className="min-w-0" placeholder={t("groupPlaceholder")}>
+                        {(value: string | null) => {
+                          const group = groups.find((g) => g.id === value)
+                          return group ? groupOption(group) : t("groupPlaceholder")
+                        }}
                       </SelectValue>
                     </SelectTrigger>
                   </FormControl>
                   <SelectContent>
                     {groups.map((g) => (
                       <SelectItem key={g.id} value={g.id}>
-                        {g.name}
+                        {groupOption(g)}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -147,11 +155,19 @@ export function FormProjectShare({
                     </SelectTrigger>
                   </FormControl>
                   <SelectContent>
+                    {/* What each level allows, on the option itself: the
+                        difference used to live only in a paragraph above. */}
                     <SelectItem value={PROJECT_ACCESS.READ}>
-                      {t("level.read")}
+                      <AccessOption
+                        label={t("level.read")}
+                        hint={t("levelHint.read")}
+                      />
                     </SelectItem>
                     <SelectItem value={PROJECT_ACCESS.WRITE}>
-                      {t("level.write")}
+                      <AccessOption
+                        label={t("level.write")}
+                        hint={t("levelHint.write")}
+                      />
                     </SelectItem>
                   </SelectContent>
                 </Select>
@@ -170,7 +186,20 @@ export function FormProjectShare({
             {t("grant")}
           </Button>
         </div>
+        {/* Not a FormDescription: that primitive describes one field, and
+            this sentence is about the project, not the group or the level. */}
+        <p className="mt-2 text-xs text-muted-foreground">{t("ownerNote")}</p>
       </form>
     </Form>
+  )
+}
+
+/** A level and what it allows, as one select option. */
+function AccessOption({ label, hint }: { label: string; hint: string }) {
+  return (
+    <span className="flex max-w-64 flex-col whitespace-normal">
+      <span>{label}</span>
+      <span className="text-xs text-muted-foreground">{hint}</span>
+    </span>
   )
 }

@@ -57,7 +57,17 @@ export type ProjectListItem = Project & {
  * service that happens to be its first caller.
  */
 export const shareWithGroup = {
-  include: { group: { select: { id: true, name: true, slug: true } } },
+  include: {
+    group: {
+      select: {
+        id: true,
+        name: true,
+        slug: true,
+        // How many people the grant reaches, shown in the share dialog.
+        _count: { select: { members: true } },
+      },
+    },
+  },
 } satisfies Prisma.ProjectShareDefaultArgs
 
 export type ShareWithGroup = Prisma.ProjectShareGetPayload<
