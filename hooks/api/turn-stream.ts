@@ -21,6 +21,7 @@ import type { AgentPart, ChatTurn } from "@alien/chat-sdk"
 import { apiFetch } from "@/lib/api-fetch"
 import { CHAT_STREAM_REVEAL_MS, LOCALE_HEADER } from "@/lib/constants"
 import { toolCallErrored } from "@/lib/tools/display"
+import type { SubagentEventData } from "@/lib/tools/subagent-runs"
 
 // ---------------------------------------------------------------------------
 // Public types (unchanged — the UI depends on these)
@@ -63,10 +64,11 @@ export type StreamDomainEvent =
       data: { kind: "added" | "removed" | "committed" | "cleared"; count: number; total: number }
     }
   | {
+      // A spawn_research run: one `start`, then exactly one terminal event
+      // (done / error / timeout / aborted) with the same runId — folded into one
+      // row by reduceSubagentRuns (lib/tools/subagent-runs.ts).
       type: "subagent_event"
-      data:
-        | { kind: "start"; scope: "corpus" | "research" }
-        | { kind: "done"; scope: "corpus" | "research"; toolCalls: number; buffered?: number }
+      data: SubagentEventData
     }
   | {
       type: "compaction_event"

@@ -55,6 +55,12 @@ export type AgentEvent =
   | { type: "note_event";     data: { kind: "created"|"updated"; noteId: string; title: string } }
   | { type: "ingest_event";   data: { kind: "submitted"; jobId: string } }
   | { type: "session_event";  data: { kind: "resumed"|"started" } }
+  | { type: "buffer_event";   data: { kind: "added"|"removed"|"committed"|"cleared"; count: number; total: number } }
+  | { type: "subagent_event"; data:
+        | { kind: "start"; runId: string; scope: "corpus"|"research"; label: string }
+        | { kind: "done"|"error"|"timeout"|"aborted"; runId: string; scope: "corpus"|"research";
+            toolCalls: number; buffered?: number; error?: string } }
+  | { type: "compaction_event"; data: { coveredMessageCount: number; keptMessageCount: number; reused: boolean } }
   | { type: "done";           data: { messageId: string } }
   | { type: "error";          data: { code: string; message: string } }
 ```
@@ -70,6 +76,9 @@ The mapping to the prototype UI:
 | `memory_event` | An inline event row — "Mémoire mise à jour · Périmètre" |
 | `note_event` | An inline event row — "Note créée · Réception…" + a Tab opens in Atelier |
 | `ingest_event` | The CTA "Ouvrir Ingérer" appears in the chat |
+| `buffer_event` | Refreshes the buffer pill / dialog (the research "tampon") |
+| `subagent_event` | ONE row per `spawn_research` run: `spawn_research` emits a `start` and, on every path, exactly one terminal event with the same `runId`; the client folds them with `reduceSubagentRuns` (`lib/tools/subagent-runs.ts`). A run still open when its turn ended reads "interrompu" — domain events are live-only, so a reload or a dropped stream must never leave a spinner |
+| `compaction_event` | A muted row when the context was compacted (a cache reuse is silent) |
 | `done` | Marks the assistant turn finished; flushes `message_id` for retries |
 | `error` | Toast + the turn is marked failed; a Retry button appears |
 

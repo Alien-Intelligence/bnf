@@ -518,6 +518,10 @@ export const SPAWN_TIMEOUT_MS = 240_000
  * isolation). */
 export const SPAWN_SUMMARY_MAX_CHARS = 8_000
 
+/** The task excerpt a sub-agent row shows as its second line (the start
+ *  event's `label`), so parallel sweeps are told apart at a glance. */
+export const SPAWN_LABEL_MAX_CHARS = 80
+
 /**
  * Fan-out caps (incident 2026-09-30, Decision 20 of the Track E plan). Session
  * b275569f… ran 7 children in parallel against one BnF quota and made 2 548

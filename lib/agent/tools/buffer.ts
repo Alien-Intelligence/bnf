@@ -368,6 +368,8 @@ export const bufferAddTool = defineTool<
       restageDiscarded: true,
       candidates: input.arks.map((ark) => ({ ark })),
     })
+    // A spawn_research child reports what IT staged (never a project-wide delta).
+    if (ctx.stagingTally) ctx.stagingTally.added += result.added
     // Bare ARKs: their metadata is resolved out of band, never inline.
     if (result.unresolved > 0) kickBufferEnrich(projectId)
     const total = await emitBuffer(ctx, projectId, "added", result.added)
@@ -1456,6 +1458,8 @@ export const corpusSearchTool = defineTool<
       candidates,
     })
 
+    // A spawn_research child reports what IT staged (never a project-wide delta).
+    if (ctx.stagingTally) ctx.stagingTally.added += registered.added
     const buffered = await emitBuffer(ctx, projectId, "added", registered.added)
 
     // Never return a bare zero — see zeroResultDiagnostic.

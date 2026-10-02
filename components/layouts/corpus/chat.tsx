@@ -45,6 +45,12 @@ import { ModelSelector } from "./model-selector"
 import { EventMemoryRow } from "@/components/events/agent/memory-event"
 import { EventIngestRow } from "@/components/events/agent/ingest-event"
 import { EventSubagentRow } from "@/components/events/agent/subagent-event"
+import {
+  reduceSubagentRuns,
+  subagentEventDataSchema,
+  type SubagentRunState,
+  type SubagentTurnInput,
+} from "@/lib/tools/subagent-runs"
 import { EventCompactionRow } from "@/components/events/agent/compaction-event"
 import { FeedbackButton } from "@/components/cards/feedback/feedback-button"
 import type { AgentProvider } from "@/lib/constants"
@@ -208,14 +214,33 @@ function ToolPartView({ tool }: { tool: ToolPartEntry }) {
   )
 }
 
+/** Every domain event of an assistant turn, nested instance parts included. */
+function turnDomainEvents(parts: ReadonlyArray<AgentPart>): Array<{ type: string; data: unknown }> {
+  const out: Array<{ type: string; data: unknown }> = []
+  for (const part of parts) {
+    if (part.kind === "domain") out.push(part.event)
+    else if (part.kind === "instance") out.push(...turnDomainEvents(part.children))
+  }
+  return out
+}
+
+/** The reducer's view of the chat: each assistant turn's domain events. */
+function turnsToRunInput(turns: ReadonlyArray<ChatTurn>): SubagentTurnInput[] {
+  return turns.flatMap((turn) =>
+    turn.role === "assistant" ? [{ streaming: turn.streaming, events: turnDomainEvents(turn.parts) }] : [],
+  )
+}
+
 function DomainPartView({
   event,
   projectId,
   locale,
+  subagentRuns,
 }: {
   event: StreamDomainEvent
   projectId: string
   locale: string
+  subagentRuns: ReadonlyMap<string, SubagentRunState>
 }) {
   // Corpus mutations render from their tool part (the +N/−N pill), so the
   // corpus_event row is suppressed to avoid doubling the count.
@@ -233,15 +258,13 @@ function DomainPartView({
     )
   }
   if (event.type === "subagent_event") {
-    return event.data.kind === "start" ? (
-      <EventSubagentRow kind="start" />
-    ) : (
-      <EventSubagentRow
-        kind="done"
-        toolCalls={event.data.toolCalls}
-        buffered={event.data.buffered}
-      />
-    )
+    // One row per run, at its start event; the terminal event is folded into
+    // that row (reduceSubagentRuns) and renders nothing of its own. An event
+    // the schema rejects (an older server, no runId) renders nothing either.
+    const data = subagentEventDataSchema.safeParse(event.data)
+    if (!data.success || data.data.kind !== "start") return null
+    const run = subagentRuns.get(data.data.runId)
+    return run ? <EventSubagentRow run={run} /> : null
   }
   if (event.type === "compaction_event") {
     // Only surface a FRESH compaction; the per-turn cache-reuse is silent.
@@ -258,11 +281,13 @@ function PartView({
   active,
   projectId,
   locale,
+  subagentRuns,
 }: {
   part: AgentPart
   active: boolean
   projectId: string
   locale: string
+  subagentRuns: ReadonlyMap<string, SubagentRunState>
 }) {
   if (part.kind === "text") {
     if (!part.text) return null
@@ -281,6 +306,7 @@ function PartView({
         event={part.event as StreamDomainEvent}
         projectId={projectId}
         locale={locale}
+        subagentRuns={subagentRuns}
       />
     )
   }
@@ -293,12 +319,14 @@ function AssistantTurnView({
   locale,
   thinkingLabel,
   isLast,
+  subagentRuns,
 }: {
   turn: AssistantTurn
   projectId: string
   locale: string
   thinkingLabel: string
   isLast: boolean
+  subagentRuns: ReadonlyMap<string, SubagentRunState>
 }) {
   const lastIndex = turn.parts.length - 1
   const hasText = turn.parts.some((p) => p.kind === "text" && p.text.trim().length > 0)
@@ -317,6 +345,7 @@ function AssistantTurnView({
             active={turn.streaming && i === lastIndex && part.kind === "thinking"}
             projectId={projectId}
             locale={locale}
+            subagentRuns={subagentRuns}
           />
         ))}
         {turn.streaming && !hasText && (
@@ -379,6 +408,11 @@ export function LayoutCorpusChat({
 }: LayoutCorpusChatProps) {
   const t = useTranslations("corpus.chat")
   const chat = stream.chat
+
+  // Each sub-agent run's state, folded from the live domain events: a start
+  // and its terminal event share a runId, and a run still open when its turn
+  // ended reads `interrupted` — never a spinner that never stops.
+  const subagentRuns = useMemo(() => reduceSubagentRuns(turnsToRunInput(chat.turns)), [chat.turns])
 
   // The single open question, if any: the most recent ask_user with no user
   // reply after it. Once answered (a user turn follows), it's null and the
@@ -499,6 +533,7 @@ export function LayoutCorpusChat({
                 locale={locale}
                 thinkingLabel={t("thinking")}
                 isLast={turnIdx === chat.turns.length - 1}
+                subagentRuns={subagentRuns}
               />
             )
           })

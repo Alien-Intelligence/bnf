@@ -27,6 +27,7 @@
  */
 import "server-only"
 
+import { randomUUID } from "node:crypto"
 import { z } from "zod"
 import {
   defineTool,
@@ -48,14 +49,14 @@ import {
   OPENROUTER_APP_NAME,
   SPAWN_MAX_CONCURRENT_PER_TURN,
   SPAWN_MAX_PER_SESSION,
+  SPAWN_LABEL_MAX_CHARS,
   SPAWN_MAX_TOOL_TURNS,
   SPAWN_TIMEOUT_MS,
   SPAWN_SUMMARY_MAX_CHARS,
 } from "@/lib/constants"
-import { prisma } from "@/lib/db"
 import { resolveRequestLocale } from "@/lib/locale"
 import { withBnfRateLimit } from "@/lib/mcp/rate-limited-registry"
-import { BUFFER_STATUS } from "@/models/buffer/schema"
+import type { SubagentEventData, SubagentTerminalData } from "@/lib/tools/subagent-runs"
 import { AgentQueries } from "@/models/agents/queries"
 import { AgentService } from "@/models/agents/service"
 import { MessageQueries } from "@/models/messages/queries"
@@ -105,14 +106,6 @@ export function defaultAllowlist(scope: "corpus" | "research"): string[] {
       ]
 }
 
-/** Count active buffer candidates for a project (durable evidence of the child's
- *  work — more trustworthy than parsing the child's prose). */
-async function candidateCount(projectId: string): Promise<number> {
-  return prisma.bufferItem.count({
-    where: { projectId, status: BUFFER_STATUS.CANDIDATE },
-  })
-}
-
 // ---------------------------------------------------------------------------
 // runSpawn — the handler body, with its heavy dependencies injected so the
 // caps and the event contract can be tested without an LLM.
@@ -156,6 +149,25 @@ export type SpawnSuccess = {
 }
 export type SpawnResult = SpawnSuccess | SpawnFailure
 
+/** How a child run ended, as its terminal subagent_event reports it. */
+type SubagentTerminal = Omit<SubagentTerminalData, "runId" | "scope">
+
+/** A child run's tool result and its terminal event, always together. */
+type ChildOutcome = { result: SpawnResult; terminal: SubagentTerminal }
+
+/** A promise that rejects when `signal` aborts (at once if it already has). */
+function rejectOnAbort(signal: AbortSignal): Promise<never> {
+  return new Promise<never>((_, reject) => {
+    const fail = () => reject(new Error("sous-agent arrêté"))
+    if (signal.aborted) fail()
+    else signal.addEventListener("abort", fail, { once: true })
+  })
+}
+
+function emitSubagent(ctx: TurnScopedCtx, data: SubagentEventData): void {
+  ctx.emit?.({ type: "subagent_event", data })
+}
+
 /**
  * Children currently running, per appSessionId (a session runs one turn at a
  * time, so this is the per-turn concurrency). In-process on purpose: the app
@@ -198,7 +210,30 @@ export async function runSpawn(
           "nouveau périmètre.",
       )
     }
-    return await runChild(input, ctx, deps)
+
+    // One start event and, on EVERY path, exactly one terminal event with the
+    // same runId (feedback #10e: an uncorrelated start row spun forever, and a
+    // timeout / abort / exception emitted no terminal event at all). runChild
+    // coerces every failure into an outcome; the catch is the backstop for a
+    // fault outside its try, so the pairing holds even then (§15).
+    const runId = randomUUID()
+    emitSubagent(ctx, {
+      kind: "start",
+      runId,
+      scope: ctx.scope,
+      label: input.task.slice(0, SPAWN_LABEL_MAX_CHARS),
+    })
+    const outcome = await runChild(input, ctx, deps).catch(
+      (err: unknown): ChildOutcome => {
+        const message = err instanceof Error ? err.message : String(err)
+        return {
+          result: { success: false, error: `Le sous-agent n'a pas pu s'exécuter : ${message}` },
+          terminal: { kind: "error", toolCalls: 0, error: message },
+        }
+      },
+    )
+    emitSubagent(ctx, { ...outcome.terminal, runId, scope: ctx.scope })
+    return outcome.result
   } finally {
     const now = activeBySession.get(ctx.appSessionId) ?? 1
     if (now <= 1) activeBySession.delete(ctx.appSessionId)
@@ -210,7 +245,7 @@ async function runChild(
   input: SpawnInput,
   ctx: TurnScopedCtx,
   deps: SpawnDeps,
-): Promise<SpawnResult> {
+): Promise<ChildOutcome> {
   const scope = ctx.scope
   const pool = childPool(scope)
   const poolNames = new Set(pool.map((t) => t.name))
@@ -223,18 +258,38 @@ async function runChild(
 
   // Bound the child: linked abort (parent cancel propagates) + a wall-clock
   // ceiling. Cleared in `finally` so a completed child never leaves a timer.
+  // A parent that aborted BEFORE this point (the cap check awaits the DB)
+  // would never fire its listener: abort the child at once instead.
   const childController = new AbortController()
   const onParentAbort = () => childController.abort()
-  ctx.signal.addEventListener("abort", onParentAbort)
+  if (ctx.signal.aborted) childController.abort()
+  else ctx.signal.addEventListener("abort", onParentAbort, { once: true })
   let timedOut = false
   const timer = setTimeout(() => {
     timedOut = true
     childController.abort()
   }, deps.timeoutMs)
 
-  ctx.emit?.({ type: "subagent_event", data: { kind: "start", scope } })
+  // What THIS child staged: the staging tools add their exact `added` here.
+  // Replaces a project-wide candidate-count delta, which counted a concurrent
+  // sibling's additions and hid any clear in between.
+  const stagingTally = { added: 0 }
+  let toolCalls = 0
 
-  const candidatesBefore = scope === "corpus" ? await candidateCount(ctx.projectId) : 0
+  const timeoutOutcome = (): ChildOutcome => ({
+    result: {
+      success: false,
+      error:
+        `Le sous-agent a dépassé le délai de ${Math.round(deps.timeoutMs / 1000)}s et a été arrêté. ` +
+        "Redécoupe la tâche en un périmètre plus étroit.",
+      child_tool_calls: toolCalls,
+    },
+    terminal: { kind: "timeout", toolCalls },
+  })
+  const abortedOutcome = (): ChildOutcome => ({
+    result: { success: false, error: "Le sous-agent a été annulé avec le tour.", child_tool_calls: toolCalls },
+    terminal: { kind: "aborted", toolCalls },
+  })
 
   try {
     const system = await deps.buildSystem(ctx, input.task)
@@ -267,60 +322,80 @@ async function runChild(
       corpusProjectId: ctx.corpusProjectId,
       corpusReachable: ctx.corpusReachable,
       scope,
+      stagingTally,
     }
 
     let text = ""
-    let toolCalls = 0
     let childError: string | null = null
 
-    for await (const ev of deps.runner({
-      system,
-      task: input.task,
-      tools: childRegistry,
-      toolContext: childCtx,
-      signal: childController.signal,
-    })) {
-      if (ev.type === "text-delta") text += ev.text
-      else if (ev.type === "tool-call-end") toolCalls += 1
-      else if (ev.type === "error") childError = ev.message
+    const drain = async (): Promise<void> => {
+      for await (const ev of deps.runner({
+        system,
+        task: input.task,
+        tools: childRegistry,
+        toolContext: childCtx,
+        signal: childController.signal,
+      })) {
+        if (ev.type === "text-delta") text += ev.text
+        else if (ev.type === "tool-call-end") toolCalls += 1
+        else if (ev.type === "error") childError = ev.message
+      }
+    }
+    // The wall clock bounds the child even if a runner ignores its signal
+    // (CLAUDE_ERROR_PATTERNS §14): the drain races the child's own abort, so
+    // a timeout or a parent cancel always ends this await.
+    const drained = drain()
+    const stopped = rejectOnAbort(childController.signal)
+    let raceSettled = false
+    // The race's loser settles later, if ever. The abort sentinel carries no
+    // information of its own (why the child stopped is read from `timedOut` /
+    // `ctx.signal.aborted` below), so its late rejection is only observed. A
+    // runner that fails AFTER the run was closed is logged, never left as an
+    // unhandled rejection.
+    stopped.catch(() => undefined)
+    drained.catch((err: unknown) => {
+      if (raceSettled) console.warn("[spawn_research] child loop failed after the run was closed:", err)
+    })
+    try {
+      await Promise.race([drained, stopped])
+    } finally {
+      raceSettled = true
     }
 
-    const summary = text.trim().slice(0, SPAWN_SUMMARY_MAX_CHARS)
-    const buffered =
-      scope === "corpus"
-        ? Math.max(0, (await candidateCount(ctx.projectId)) - candidatesBefore)
-        : undefined
+    // A runner may end its loop quietly on abort rather than throw: why it
+    // stopped decides the outcome, not how.
+    if (timedOut) return timeoutOutcome()
+    if (ctx.signal.aborted) return abortedOutcome()
 
-    ctx.emit?.({
-      type: "subagent_event",
-      data: { kind: "done", scope, toolCalls, ...(buffered !== undefined ? { buffered } : {}) },
-    })
+    const summary = text.trim().slice(0, SPAWN_SUMMARY_MAX_CHARS)
+    const buffered = scope === "corpus" ? stagingTally.added : undefined
 
     // A child that produced no synthesis AND errored is a failure the parent
     // should see plainly; otherwise return the distilled result.
     if (!summary && childError) {
-      return { success: false, error: `Le sous-agent a échoué : ${childError}`, child_tool_calls: toolCalls }
-    }
-    return {
-      summary: summary || "(le sous-agent n'a pas produit de synthèse)",
-      child_tool_calls: toolCalls,
-      ...(buffered !== undefined ? { buffered_added: buffered } : {}),
-      ...(childError ? { child_error: childError } : {}),
-    }
-  } catch (err) {
-    // Coerce any failure into a tool result (§15) — including an abort from the
-    // timeout, which surfaces as a clear, actionable message.
-    if (timedOut) {
       return {
-        success: false,
-        error:
-          `Le sous-agent a dépassé le délai de ${Math.round(deps.timeoutMs / 1000)}s et a été arrêté. ` +
-          "Redécoupe la tâche en un périmètre plus étroit.",
+        result: { success: false, error: `Le sous-agent a échoué : ${childError}`, child_tool_calls: toolCalls },
+        terminal: { kind: "error", toolCalls, error: childError },
       }
     }
     return {
-      success: false,
-      error: `Le sous-agent n'a pas pu s'exécuter : ${err instanceof Error ? err.message : String(err)}`,
+      result: {
+        summary: summary || "(le sous-agent n'a pas produit de synthèse)",
+        child_tool_calls: toolCalls,
+        ...(buffered !== undefined ? { buffered_added: buffered } : {}),
+        ...(childError ? { child_error: childError } : {}),
+      },
+      terminal: { kind: "done", toolCalls, ...(buffered !== undefined ? { buffered } : {}) },
+    }
+  } catch (err) {
+    // Coerce any failure into a tool result (§15) — a timeout or a parent
+    // abort surfaces as its own outcome, with a clear, actionable message.
+    if (timedOut) return timeoutOutcome()
+    if (ctx.signal.aborted) return abortedOutcome()
+    const message = err instanceof Error ? err.message : String(err)
+    return {
+      result: { success: false, error: `Le sous-agent n'a pas pu s'exécuter : ${message}`, child_tool_calls: toolCalls },
+      terminal: { kind: "error", toolCalls, error: message },
     }
   } finally {
     clearTimeout(timer)

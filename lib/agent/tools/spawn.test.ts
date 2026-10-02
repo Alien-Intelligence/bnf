@@ -168,10 +168,7 @@ test("at most SPAWN_MAX_CONCURRENT_PER_TURN children run at once; the extra one 
   const emitted: Emitted[] = []
   const ctx = makeCtx(sid, emitted)
 
-  let release!: () => void
-  const released = new Promise<void>((resolve) => {
-    release = resolve
-  })
+  const { promise: released, resolve: release } = Promise.withResolvers<void>()
   let started = 0
   const runner: SpawnRunner = async function* () {
     started += 1
@@ -243,10 +240,7 @@ test("a slot is freed when the run ends, even when the runner throws", async () 
 
   // Fill the cap with blocked children, then confirm the slot the failed run
   // held is not leaked: exactly SPAWN_MAX_CONCURRENT_PER_TURN run.
-  let release!: () => void
-  const released = new Promise<void>((resolve) => {
-    release = resolve
-  })
+  const { promise: released, resolve: release } = Promise.withResolvers<void>()
   let started = 0
   const blocking: SpawnRunner = async function* () {
     started += 1
@@ -261,4 +255,113 @@ test("a slot is freed when the run ends, even when the runner throws", async () 
   const results = await Promise.all(runs)
   assert.equal(started, SPAWN_MAX_CONCURRENT_PER_TURN)
   assert.ok(results.every((r) => !("refused" in r)), "no refusal: the thrown run released its slot")
+})
+
+// ---------------------------------------------------------------------------
+// Terminal events and per-run tallies (Track E Phase 10, feedback #10e). Every
+// run has a runId; its start event is paired with EXACTLY ONE terminal event
+// (done / error / timeout / aborted) on every path, and its `buffered` count
+// is what THIS child staged, not a project-wide candidate delta.
+// ---------------------------------------------------------------------------
+
+type SubagentData = { kind: string; runId?: string; label?: string; toolCalls?: number; buffered?: number }
+
+function subagentEvents(emitted: Emitted[]): SubagentData[] {
+  return emitted.filter((e) => e.type === "subagent_event").map((e) => e.data as SubagentData)
+}
+
+/** Exactly one start and one terminal event, sharing one runId. */
+function assertPaired(emitted: Emitted[], terminalKind: string): SubagentData {
+  const events = subagentEvents(emitted)
+  assert.equal(events.length, 2, `two subagent events, got ${JSON.stringify(events)}`)
+  const [s, t] = events
+  assert.equal(s.kind, "start")
+  assert.equal(t.kind, terminalKind)
+  assert.equal(typeof s.runId, "string")
+  assert.equal(t.runId, s.runId, "start and terminal share the runId")
+  return t
+}
+
+/** A runner that waits for its abort signal, then fails like an aborted fetch. */
+const waitsForAbort: SpawnRunner = async function* ({ signal }) {
+  await new Promise<void>((_, reject) => {
+    signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true })
+  })
+  yield stamp({ type: "text-delta", text: "jamais" })
+}
+
+test("a runner that throws emits one start and one error with the same runId, and fails red", async () => {
+  const sid = await createTestSession(project.id, SESSION_SCOPE.CORPUS)
+  const emitted: Emitted[] = []
+  const throwing: SpawnRunner = async function* () {
+    yield stamp({ type: "text-delta", text: "" })
+    throw new Error("boom")
+  }
+  const result = await runSpawn({ task: "balaie la presse" }, makeCtx(sid, emitted), deps(throwing))
+  assert.ok("success" in result && result.success === false)
+  const t = assertPaired(emitted, "error")
+  assert.equal(subagentEvents(emitted)[0].label, "balaie la presse", "the start row carries the task excerpt")
+  assert.equal(typeof t.toolCalls, "number")
+})
+
+test("a runner that never yields hits the timeout: one timeout event", async () => {
+  const sid = await createTestSession(project.id, SESSION_SCOPE.CORPUS)
+  const emitted: Emitted[] = []
+  const result = await runSpawn({ task: "balaie" }, makeCtx(sid, emitted), deps(waitsForAbort, 20))
+  assert.ok("success" in result && result.success === false)
+  assert.match(String("error" in result ? result.error : ""), /délai/)
+  assertPaired(emitted, "timeout")
+})
+
+test("a parent abort ends the child with one aborted event", async () => {
+  const sid = await createTestSession(project.id, SESSION_SCOPE.CORPUS)
+  const emitted: Emitted[] = []
+  const controller = new AbortController()
+  const ctx: TurnScopedCtx = { ...makeCtx(sid, emitted), signal: controller.signal }
+  const run = runSpawn({ task: "balaie" }, ctx, deps(waitsForAbort))
+  await new Promise((resolve) => setImmediate(resolve))
+  controller.abort()
+  const result = await run
+  assert.ok("success" in result && result.success === false)
+  assertPaired(emitted, "aborted")
+})
+
+test("buffered counts what THIS child staged, not what a concurrent sibling staged", async () => {
+  const sid = await createTestSession(project.id, SESSION_SCOPE.CORPUS)
+  const staging = (n: number): SpawnRunner =>
+    async function* ({ toolContext }) {
+      if (toolContext.stagingTally) toolContext.stagingTally.added += n
+      await new Promise((resolve) => setImmediate(resolve))
+      yield stamp({ type: "text-delta", text: `déposé ${n}` })
+    }
+  const mine: Emitted[] = []
+  const sibling: Emitted[] = []
+  const [a, b] = await Promise.all([
+    runSpawn({ task: "trois" }, makeCtx(sid, mine), deps(staging(3))),
+    runSpawn({ task: "cinq" }, makeCtx(sid, sibling), deps(staging(5))),
+  ])
+  assert.equal("buffered_added" in a && a.buffered_added, 3)
+  assert.equal("buffered_added" in b && b.buffered_added, 5)
+  assert.equal(assertPaired(mine, "done").buffered, 3)
+  assert.equal(assertPaired(sibling, "done").buffered, 5)
+})
+
+test("buffer_add adds its exact `added` to the child's staging tally", async () => {
+  const { bufferAddTool } = await import("./buffer")
+  const { BufferService } = await import("@/models/buffer/service")
+  const sid = await createTestSession(project.id, SESSION_SCOPE.CORPUS)
+  // A discarded, already-titled candidate: buffer_add restages it (added 1)
+  // and has nothing to enrich, so no background drain is scheduled.
+  const ark = "ark:/12148/bpt6k9400001"
+  await BufferService.registerCandidates({
+    projectId: project.id,
+    originTool: "corpus_search",
+    restageDiscarded: false,
+    candidates: [{ ark, title: "Titré" }],
+  })
+  await BufferService.discard(project.id, [ark])
+  const tally = { added: 0 }
+  const ctx: TurnScopedCtx = { ...makeCtx(sid, []), stagingTally: tally }
+  await bufferAddTool.handler({ arks: [ark] }, ctx)
+  assert.equal(tally.added, 1)
 })

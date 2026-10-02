@@ -10,7 +10,8 @@
  *   - `buffer_item` rows nonetheless appear for the project — the child DID the
  *     work and deposited candidates into the shared buffer (BufferService writes
  *     to Postgres regardless of whose loop called it).
- *   - a `subagent_event` reached the live SSE stream.
+ *   - a `subagent_event` reached the live SSE stream, and every run's start is
+ *     paired with exactly one terminal event of the same runId (S7).
  *
  * Run:
  *   1. PORT=3939 npm run dev
@@ -25,6 +26,7 @@ import { AGENT_TOOLS } from "@/lib/agent/tools/constants"
 import { SESSION_SCOPE } from "@/models/sessions/schema"
 import { ProjectService } from "@/models/projects/service"
 import { cleanupProject } from "@/lib/testing/project-cleanup"
+import { subagentEventDataSchema } from "@/lib/tools/subagent-runs"
 import {
   ARK_RE,
   BASE_URL,
@@ -162,6 +164,25 @@ async function main(): Promise<void> {
     "S6 a subagent_event reached the live stream",
     t1.domainEvents.some((e) => e.type === "subagent_event"),
     `domain events: ${t1.domainEvents.map((e) => e.type).join(", ") || "none"}`,
+  )
+
+  // Feedback #10e: every start row must resolve. Each run's start is paired
+  // with exactly ONE terminal event carrying the same runId.
+  const subagent = t1.domainEvents
+    .filter((e) => e.type === "subagent_event")
+    .map((e) => subagentEventDataSchema.safeParse(e.data))
+    .flatMap((p) => (p.success ? [p.data] : []))
+  const startIds = subagent.filter((d) => d.kind === "start").map((d) => d.runId)
+  const terminalIds = subagent.filter((d) => d.kind !== "start").map((d) => d.runId)
+  check(
+    "S7 every subagent start has exactly one terminal event with the same runId",
+    startIds.length > 0 &&
+      startIds.every((id) => terminalIds.filter((t) => t === id).length === 1) &&
+      terminalIds.length === startIds.length,
+    `starts: ${startIds.length}, terminals: ${subagent
+      .filter((d) => d.kind !== "start")
+      .map((d) => d.kind)
+      .join(", ") || "none"}`,
   )
 
   printVerdict({ project: project.id, corpusSession: corpusSession.id })
