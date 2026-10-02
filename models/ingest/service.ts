@@ -45,6 +45,7 @@ import { requestOcrSync } from "@/lib/documents/ocr-sync-signal"
 import { DocumentService } from "@/models/documents/service"
 import { PAID_OCR_DEFAULT_BUDGET_USD } from "@/lib/constants"
 import { env } from "@/lib/env"
+import { toInputJson } from "@/lib/validation/json"
 
 /**
  * F20 — the pure selection logic behind {@link IngestService.retryFailed}.
@@ -523,7 +524,7 @@ export class IngestService {
           error: event.error,
           finishedAt: new Date(),
           ...(event.partialStats
-            ? { stats: event.partialStats as never }
+            ? { stats: toInputJson(event.partialStats) }
             : {}),
         },
       })
@@ -535,7 +536,7 @@ export class IngestService {
           status: INGEST_STATUS.RUNNING,
           stage: event.stage,
           progress: event.fraction,
-          stats: event.counters as never,
+          stats: event.counters,
         },
       })
     }
@@ -582,7 +583,7 @@ export class IngestService {
           status: INGEST_STATUS.DONE,
           finishedAt: now,
           chunksWritten: results.chunksWritten,
-          stats: results.stats as never,
+          stats: toInputJson(results.stats),
           ...(paidOcrCharge !== null
             ? { paidOcrActualUsd: paidOcrCharge }
             : {}),
@@ -681,7 +682,7 @@ export class IngestService {
           status: INGEST_STATUS.PARTIAL,
           finishedAt: now,
           chunksWritten: results.chunksWritten,
-          stats: results.stats as never,
+          stats: toInputJson(results.stats),
           error: `${failed}/${total} document(s) en échec — réessayez les documents échoués`,
           ...(paidOcrCharge !== null ? { paidOcrActualUsd: paidOcrCharge } : {}),
         },
