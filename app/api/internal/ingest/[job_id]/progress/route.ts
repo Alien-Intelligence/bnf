@@ -24,7 +24,11 @@
  * Security properties:
  *  - The secret is generated per-job with crypto.randomBytes(32) in IngestService.submit.
  *  - Verification is constant-time (crypto.timingSafeEqual inside verifyCallback).
- *  - A missing or blank callbackSecret on the job row is rejected with 401.
+ *  - An unknown job, a job without a callbackSecret and a bad signature take
+ *    ONE path: the body is read and verified (against a per-process secret no
+ *    caller knows when the job has none — verifyJobCallback) and all three
+ *    answer the same 401 message, so the endpoint reveals neither which job
+ *    ids exist nor how they were submitted, by its answer or its timing.
  *  - Malformed JSON after a valid HMAC is rejected with 400; the cluster must fix its payload.
  *  - So is a well-formed body that is not a ClusterProgressEvent
  *    (clusterProgressEventSchema, found bug B2): 400 with the Zod issues. The
@@ -39,7 +43,7 @@ import {
   clusterProgressEventSchema,
   type ProgressCallbackAck,
 } from "@/models/ingest/types"
-import { verifyCallback } from "@/lib/cluster/callback-auth"
+import { CALLBACK_REJECTED_MESSAGE, verifyJobCallback } from "@/lib/cluster/callback-auth"
 
 export async function POST(
   req: Request,
@@ -47,29 +51,17 @@ export async function POST(
 ): Promise<Response> {
   const { job_id } = await ctx.params
 
-  // An unknown job answers exactly like a bad signature (401): a 404 here,
-  // before any signature check, would let an unauthenticated caller probe
-  // which job ids exist.
   const job = await IngestQueries.get(job_id)
-  if (!job) return unauthorized("invalid callback signature")
-
-  // A job without a callbackSecret was never submitted through IngestService.submit
-  // (or was corrupted). Reject rather than silently accept.
-  if (!job.callbackSecret) return unauthorized("no callback secret")
 
   // Read the body as text so we can verify the HMAC over the exact bytes the
-  // cluster signed — parsing before verification would allow canonicalization attacks.
+  // cluster signed — parsing before verification would allow canonicalization
+  // attacks. Read and verified whatever the job: an unknown job or one without
+  // a callbackSecret (never submitted through IngestService.submit, or
+  // corrupted) takes the same path and gets the same answer as a bad signature.
   const bodyText = await req.text()
-
-  if (
-    !verifyCallback(
-      bodyText,
-      req.headers.get("x-callback-signature"),
-      job.callbackSecret,
-    )
-  ) {
-    return unauthorized("invalid callback signature")
-  }
+  const signature = req.headers.get("x-callback-signature")
+  const verified = verifyJobCallback(bodyText, signature, job === null ? null : job.callbackSecret)
+  if (job === null || !verified) return unauthorized(CALLBACK_REJECTED_MESSAGE)
 
   // Body was signed correctly but is not valid JSON / not a progress event —
   // a cluster bug, not ours: refuse it before anything is written.
