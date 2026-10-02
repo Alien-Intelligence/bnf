@@ -148,3 +148,34 @@ Constituer page
 - The 40/60 chat-workspace split itself: `<div className="grid grid-cols-[40%_60%]">`
 - Page-level padding / max-width: `<div className="max-w-6xl mx-auto px-6">`
 - Inline layout within a component (icon + label inside a `Card`)
+
+## Project shell ✅
+
+Every step of a project (Constituer, Ingérer, Rechercher, Carnet) shares one
+header, mounted once by `app/[locale]/projects/[projectId]/layout.tsx`.
+
+- The layout owns `LayoutWorkspaceHeader`. Step clients never mount it: their
+  root fills the layout's `min-h-0 flex-1` slot (a fragment or a
+  `flex min-h-0 flex-1 …` div), never `h-screen`.
+- The layout fetches the header's data but **never gates**. A layout does not
+  re-render on navigation and cannot read the pathname (Next 16 authentication
+  guide, "Layouts and auth checks"; `layout.md` "Pathname"), so it can neither
+  keep a session check fresh nor build the right `?next=`. Pages keep
+  `requireSessionUser(<own path>)` and their access checks. With no session,
+  or a project the user may not read, the layout renders `children` bare: the
+  page redirects or answers `notFound()`, and a 404 never shows a project name.
+- Header permissions (`steps`, `mayShare`) come from
+  `lib/authz/workspace-header.ts`, which delegates to the predicates the routes
+  enforce (`workspaceStepsFor`, `ProjectPolicy.share`). Never recompute them in
+  a component.
+
+```tsx
+// ❌ A step client mounting its own header, with hand-assembled props
+<div className="flex h-screen flex-col">
+  <LayoutWorkspaceHeader user={…} isAdmin={…} project={…} />
+  <div className="flex flex-1 overflow-hidden">…</div>
+</div>
+
+// ✅ The step client fills the layout's slot
+<div className="flex min-h-0 flex-1 overflow-hidden">…</div>
+```
