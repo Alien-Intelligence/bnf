@@ -864,7 +864,8 @@
         "eyebrow": "Dans votre recherche",
         "suffix": "{count, plural, one {document consultable} other {documents consultables}}",
         "sub": "L'assistant peut déjà les lire et les citer dans ses notes.",
-        "subNone": "L'assistant de recherche ne peut encore rien lire dans ce projet."
+        "subNone": "L'assistant de recherche ne peut encore rien lire dans ce projet.",
+        "subRemoved": "dont {count, plural, one {# ne fait plus partie de votre sélection et sera retiré} other {# ne font plus partie de votre sélection et seront retirés}} au prochain traitement"
       },
       "action": {
         "eyebrow": "Ce que va faire cette action",
@@ -956,6 +957,14 @@
         "targetValue": "cluster RAG BnF",
         "processed": "Documents traités",
         "processedValue": "{done, number} / {total, number}"
+      },
+      "coverage": {
+        "eyebrow": "Votre sélection",
+        "headline": "{ingestable, plural, one {# document ingérable} other {# documents ingérables}} sur {total, number}",
+        "notDigitized": "{count, plural, one {# notice sans numérisation à la BnF} other {# notices sans numérisation à la BnF}}",
+        "noText": "{count, plural, one {# document numérisé sans texte lisible} other {# documents numérisés sans texte lisible}}",
+        "paidOcr": "{count, plural, one {# document récupérable avec l'OCR payant} other {# documents récupérables avec l'OCR payant}}",
+        "unconfirmed": "dont {count, plural, one {# au type encore inconnu} other {# au type encore inconnu}} (métadonnées en cours ou en échec)"
       }
     },
     "paidOcr": {

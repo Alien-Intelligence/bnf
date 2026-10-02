@@ -88,7 +88,7 @@ interface Props {
   already: number
   delta: Pick<
     IngestDeltaPreview,
-    "added" | "removed" | "excluded" | "excludedNoText" | "excludedNoScan" | "paidOcr"
+    "added" | "removed" | "excluded" | "excludedNoText" | "excludedNoScan" | "paidOcr" | "coverage"
   >
   paidOcrBudget: { spentUsd: number; ceilingUsd: number; withinBudget: boolean }
   includePaidOcr: boolean
@@ -174,7 +174,18 @@ export function CardIngestPanel({
           <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
             {already === 0 ? t("already.subNone") : t("already.sub")}
           </p>
+          {/* `already` is the index content, not the selection: a document
+              removed from the selection stays readable until the next run
+              removes it — say how many, so the two numbers reconcile. */}
+          {removed > 0 && (
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+              {t("already.subRemoved", { count: removed })}
+            </p>
+          )}
         </section>
+
+        {/* 1b — the selection by ingestability: "X ingérables sur Y". */}
+        <CoverageSection coverage={delta.coverage} />
 
         {/* 2 — what this action will do. */}
         {showAction && (
@@ -328,6 +339,39 @@ export function CardIngestPanel({
 }
 
 // ── "Ce qui se passe maintenant" — live phase + bar + debug accordion ─────────
+
+/**
+ * The head selection, by what ingestion can do with it (feedback #10c: the
+ * agent said 58, the list showed 44, ingestion showed 22, and nothing said
+ * why). The breakdown lines sum, with the headline, to the selection total.
+ */
+function CoverageSection({ coverage }: { coverage: IngestDeltaPreview["coverage"] }) {
+  const t = useTranslations("ingest.panel.coverage")
+  if (coverage.total === 0) return null
+  const lines: string[] = [
+    ...(coverage.notDigitized > 0 ? [t("notDigitized", { count: coverage.notDigitized })] : []),
+    ...(coverage.noText > 0 ? [t("noText", { count: coverage.noText })] : []),
+    ...(coverage.paidOcrEligible > 0 ? [t("paidOcr", { count: coverage.paidOcrEligible })] : []),
+    ...(coverage.unconfirmed > 0 ? [t("unconfirmed", { count: coverage.unconfirmed })] : []),
+  ]
+  return (
+    <section className="rounded-lg border bg-card px-5 py-4">
+      <div className="mono-eyebrow">{t("eyebrow")}</div>
+      <p className="mt-2 text-sm text-neutral-200">
+        {t("headline", { ingestable: coverage.indexed + coverage.toIngest, total: coverage.total })}
+      </p>
+      {lines.length > 0 && (
+        <ul className="mt-2 flex flex-col gap-1">
+          {lines.map((line) => (
+            <li key={line} className="text-xs leading-relaxed text-muted-foreground">
+              {line}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  )
+}
 
 function RunningSection({ queue }: { queue: ClusterQueueProgress | null }) {
   const t = useTranslations("ingest.panel.running")

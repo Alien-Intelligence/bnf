@@ -400,7 +400,7 @@ export class IngestService {
 
     // Same partition (and same paidOcr gate) as submit(), so the preview's
     // counts and cost estimate can never drift from what a submit would carry.
-    const { ingestable, excluded, paidOcr, excludedNoText, excludedNoScan } =
+    const { ingestable, excluded, paidOcr, excludedNoText, excludedNoScan, unconfirmed } =
       await IngestService._partitionByIngestability(project.id, deltaAddedArks, {
         paidOcr: project.paidOcrEnabled,
       })
@@ -423,6 +423,15 @@ export class IngestService {
         withinBudget:
           paidOcrEstimate.docCount > 0 &&
           spentUsd + paidOcrEstimate.usd <= ceilingUsd,
+      },
+      coverage: {
+        total: targetArks.length,
+        indexed: targetArks.filter((a) => indexedSet.has(a)).length,
+        toIngest: ingestable.length,
+        paidOcrEligible: paidOcr.length,
+        notDigitized: excludedNoScan,
+        noText: excludedNoText,
+        unconfirmed,
       },
     }
   }
@@ -966,6 +975,9 @@ export class IngestService {
     excludedNoText: number
     /** Excluded docs not digitized at the BnF (NON_NUMERISE). */
     excludedNoScan: number
+    /** Of `ingestable`: pushed without a confident class — no Document row, or
+     *  digitized but not resolved yet. The worker decides for them. */
+    unconfirmed: number
   }> {
     if (arks.length === 0)
       return {
@@ -974,6 +986,7 @@ export class IngestService {
         paidOcr: [],
         excludedNoText: 0,
         excludedNoScan: 0,
+        unconfirmed: 0,
       }
     const rows = await prisma.document.findMany({
       where: { projectId, ark: { in: arks } },
@@ -996,11 +1009,13 @@ export class IngestService {
     // counts always sum to excluded.length.
     let excludedNoText = 0
     let excludedNoScan = 0
+    let unconfirmed = 0
     for (const ark of arks) {
       const doc = byArk.get(ark)
       if (!doc) {
         // No row — let the worker resolve and decide rather than drop blindly.
         ingestable.push(ark)
+        unconfirmed++
         continue
       }
       const digitized = Boolean(doc.iiifManifestUrl)
@@ -1028,9 +1043,10 @@ export class IngestService {
         else excludedNoText++
       } else {
         ingestable.push(ark)
+        if (!confident) unconfirmed++
       }
     }
-    return { ingestable, excluded, paidOcr, excludedNoText, excludedNoScan }
+    return { ingestable, excluded, paidOcr, excludedNoText, excludedNoScan, unconfirmed }
   }
 
   /**
