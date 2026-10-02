@@ -152,30 +152,37 @@ Constituer page
 ## Project shell ✅
 
 Every step of a project (Constituer, Ingérer, Rechercher, Carnet) shares one
-header, mounted once by `app/[locale]/projects/[projectId]/layout.tsx`.
+header, mounted once under `app/[locale]/projects/[projectId]/layout.tsx`.
 
-- The layout owns `LayoutWorkspaceHeader`. Step clients never mount it: their
-  root fills the layout's `min-h-0 flex-1` slot (a fragment or a
-  `flex min-h-0 flex-1 …` div), never `h-screen`.
-- The layout fetches the header's data but **never gates**. A layout does not
-  re-render on navigation and cannot read the pathname (Next 16 authentication
-  guide, "Layouts and auth checks"; `layout.md` "Pathname"), so it can neither
-  keep a session check fresh nor build the right `?next=`. Pages keep
-  `requireSessionUser(<own path>)` and their access checks. With no session,
+- The server layout loads the header data and hands it to
+  `LayoutWorkspaceProjectShell` (client), which renders `LayoutWorkspaceHeader`,
+  the page, and — at its own level — the dialogs the header opens (share this
+  project, create a project). Other components under the shell open them with
+  `useWorkspaceProjectDialogs()`; no button owns a dialog's state.
+- Step clients never mount a header: their root fills the shell's
+  `min-h-0 flex-1` slot (a fragment or a `flex min-h-0 flex-1 …` div), never
+  `h-screen`.
+- The layout fetches but **never gates**. A layout does not re-render on
+  navigation and cannot read the pathname (Next 16 authentication guide,
+  "Layouts and auth checks"; `layout.md` "Pathname"), so it can neither keep a
+  session check fresh nor build the right `?next=`. Pages keep
+  `requireSessionUser(ROUTES.<step>(id))` (admin tabs:
+  `requireAdminUser(ROUTES.<tab>)`) and their access checks. With no session,
   or a project the user may not read, the layout renders `children` bare: the
   page redirects or answers `notFound()`, and a 404 never shows a project name.
-- Header permissions (`steps`, `mayShare`) come from
-  `lib/authz/workspace-header.ts`, which delegates to the predicates the routes
-  enforce (`workspaceStepsFor`, `ProjectPolicy.share`). Never recompute them in
-  a component.
+- Everything the header may show comes from `lib/authz/workspace-header.ts`:
+  `workspaceHeaderViewer` (name, email, `isAdmin` — the console's own rule) and
+  `workspaceHeaderProject` (null without read access; `steps` from
+  `workspaceStepsFor`, `mayShare` from `ProjectPolicy.share`). Never recompute
+  them in a component or a page.
 
 ```tsx
 // ❌ A step client mounting its own header, with hand-assembled props
 <div className="flex h-screen flex-col">
-  <LayoutWorkspaceHeader user={…} isAdmin={…} project={…} />
+  <LayoutWorkspaceHeader viewer={…} project={…} />
   <div className="flex flex-1 overflow-hidden">…</div>
 </div>
 
-// ✅ The step client fills the layout's slot
+// ✅ The step client fills the shell's slot
 <div className="flex min-h-0 flex-1 overflow-hidden">…</div>
 ```
