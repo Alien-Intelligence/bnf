@@ -35,7 +35,8 @@ const FAKE_BROKER_DELAY_MS = 150; // between the two — the whole point of the 
 process.env.BNF_META_TIMEOUT_MS = SHORT_BUDGET_MS;
 process.env.BNF_PAGE_TIMEOUT_MS = LONG_BUDGET_MS;
 
-const { LiveBnfClient, docInfoFromManifest } = await import("./client.js");
+const { LiveBnfClient, docInfoFromManifest, decodeBnfBytes } = await import("./client.js");
+const { createMemoryLogger } = await import("../core/logger.js");
 
 /** A fake broker (POST /fetch) that waits `delayMs` then returns an empty JSON
  *  body — good enough for getManifest's parser (parseV3Manifest tolerates a
@@ -207,5 +208,24 @@ test("fetchAltoFolio: a valid 200 ALTO maps text and word confidence", async () 
   assert.equal(folio.text, "Le vélo");
   assert.equal(folio.empty, false);
   assert.deepEqual(folio.quality, { v: 1, wordCount: 2, scoredWordCount: 2, meanWc: 0.75 });
+});
+
+// ---------------------------------------------------------------------------
+// decodeBnfBytes — an unknown declared charset is logged, not silently ignored
+// ---------------------------------------------------------------------------
+
+test("decodeBnfBytes: an unknown declared charset falls back to UTF-8 AND logs it", () => {
+  const { logger, lines } = createMemoryLogger();
+  const text = decodeBnfBytes(Buffer.from("abc", "utf8"), "text/xml; charset=x-bogus-9", logger);
+  assert.equal(text, "abc");
+  const line = lines.find((l) => l.event === "bnf_unknown_charset");
+  assert.ok(line, "the fallback is logged");
+  assert.equal(line.charset, "x-bogus-9");
+});
+
+test("decodeBnfBytes: a known charset decodes without a log line", () => {
+  const { logger, lines } = createMemoryLogger();
+  assert.equal(decodeBnfBytes(Buffer.from([0xe9]), "text/xml; charset=iso-8859-1", logger), "é");
+  assert.equal(lines.length, 0);
 });
 

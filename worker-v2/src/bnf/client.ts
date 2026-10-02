@@ -33,6 +33,8 @@
  */
 import type { AltoFolio, BnfClient, BnfDocInfo, Manifest } from "./types.js";
 import { PermanentBnfError, TransientBnfError } from "./errors.js";
+import { createLogger } from "../core/logger.js";
+import type { Logger } from "../core/types.js";
 import { brokerGet, brokerUrl } from "./broker-client.js";
 import {
   altoFolioFromParse,
@@ -132,6 +134,9 @@ async function brokerFetch(
   }
 }
 
+/** The client holds no injected logger; its own diagnostics go to this one. */
+const clientLog = createLogger({ component: "bnf-client" });
+
 /**
  * Decode BnF response bytes using the DECLARED charset, not a blind UTF-8.
  *
@@ -142,7 +147,7 @@ async function brokerFetch(
  * `Content-Type; charset=`, then the XML prolog `encoding="…"`, else UTF-8 (so
  * JSON manifests — no prolog, UTF-8 by spec — stay correct).
  */
-function decodeBnfBytes(bytes: Buffer, contentType?: string): string {
+export function decodeBnfBytes(bytes: Buffer, contentType: string | undefined, log: Logger): string {
   let charset: string | undefined;
   const ctMatch = contentType?.match(/charset=([^;]+)/i);
   if (ctMatch) charset = ctMatch[1]!.trim().toLowerCase();
@@ -160,7 +165,9 @@ function decodeBnfBytes(bytes: Buffer, contentType?: string): string {
     // TextDecoder handles iso-8859-1 / latin1 / windows-1252 and many others.
     return new TextDecoder(charset).decode(bytes);
   } catch {
-    // Unknown label — UTF-8 is the least-surprising fallback.
+    // Unknown label — UTF-8 is the least-surprising fallback, but never a
+    // silent one: a mis-decoded French OCR text is otherwise invisible.
+    log.warn("bnf_unknown_charset", { charset, contentType: contentType ?? null });
     return bytes.toString("utf8");
   }
 }
@@ -318,7 +325,7 @@ export class LiveBnfClient implements BnfClient {
       "application/xml, text/xml, */*",
       DEFAULT_TIMEOUT_MS,
     );
-    const body = decodeBnfBytes(bytes, contentType);
+    const body = decodeBnfBytes(bytes, contentType, clientLog);
     const err = classifyStatus(status, body, url);
     if (err) throw err;
 
@@ -415,7 +422,7 @@ export class LiveBnfClient implements BnfClient {
       "application/json, application/ld+json",
       PAGE_TIMEOUT_MS,
     );
-    const body = decodeBnfBytes(bytes, contentType);
+    const body = decodeBnfBytes(bytes, contentType, clientLog);
     const err = classifyStatus(status, body, url);
     if (err) throw err;
 
@@ -450,7 +457,7 @@ export class LiveBnfClient implements BnfClient {
       PAGE_TIMEOUT_MS,
     );
     if (status === 404) return emptyAltoFolio();
-    const body = decodeBnfBytes(bytes, contentType);
+    const body = decodeBnfBytes(bytes, contentType, clientLog);
     const err = classifyStatus(status, body, url);
     if (err) throw err;
     if (!body || body.trim().length === 0) throw new TransientBnfError("alto_empty_body", { hint: url });
@@ -475,7 +482,7 @@ export class LiveBnfClient implements BnfClient {
     );
     if (status < 200 || status >= 300) {
       // Decode the (small) error body for classification context only.
-      const body = decodeBnfBytes(bytes, contentType);
+      const body = decodeBnfBytes(bytes, contentType, clientLog);
       const err = classifyStatus(status, body, url);
       if (err) throw err;
     }
