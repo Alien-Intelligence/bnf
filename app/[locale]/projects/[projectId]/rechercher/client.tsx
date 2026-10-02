@@ -187,7 +187,7 @@ export function RechercherClient({
   // only the corpus owner can. Offering the wrong action is worse than none.
   if (initialCorpusSourceState === CORPUS_SOURCE_STATE.REVOKED) {
     return (
-      <div className="flex flex-1 items-center justify-center p-6">
+      <div className="flex min-h-0 flex-1 items-center justify-center p-6">
         <CardProjectCorpusRevoked
           projectId={projectId}
           sourceName={initialCorpusSourceName}
@@ -198,7 +198,7 @@ export function RechercherClient({
 
   if (!initialIsIngested) {
     return (
-      <div className="flex flex-1 items-center justify-center p-6">
+      <div className="flex min-h-0 flex-1 items-center justify-center p-6">
         <CardProjectCorpusNotIngested
           projectId={projectId}
           sourceState={initialCorpusSourceState}
