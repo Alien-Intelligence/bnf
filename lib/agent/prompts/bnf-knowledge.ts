@@ -41,7 +41,7 @@ Inutile donc de précharger l'ARK Gallica avant d'ajouter ; n'écarte jamais une
 
 1. **Champ UNIMARC 856 $u** — \`bnf__bnf_get_catalogue_record\` : URL Gallica (ex. \`http://gallica.bnf.fr/ark:/12148/bpt6k2029874\`) → ARK \`bpt6k…\`/\`btv1b…\`.
 2. **SPARQL data.bnf.fr** — \`rdarelationships:electronicReproduction\` au niveau de la manifestation (voir « SPARQL sur data.bnf.fr »).
-3. **Re-recherche Gallica** — \`bnf__bnf_search_gallica\` par titre + auteur + date (vérifie la concordance des métadonnées).\``
+3. **Re-recherche Gallica** — \`corpus_search\` avec \`source: "gallica"\` par titre + auteur + date (vérifie la concordance des métadonnées ; le résultat entre dans le tampon — écarte-le avec \`buffer_discard\` s'il n'a pas sa place).\``
 
 // ---------------------------------------------------------------------------
 // What the BnF holds, how it names things, and where it stops
@@ -106,7 +106,7 @@ Un périodique (journal, revue) n'est pas un document unique : c'est une **colle
 
 L'API a **deux niveaux** :
 
-1. **Identifie la collection.** Il te faut l'ARK **de collection** \`cb…\` du périodique (ex. \`cb34355551z\` pour Le Figaro, \`cb34431794k\` pour Le Temps). Trouve-le via \`bnf__bnf_search_catalogue\` si tu ne l'as pas. **N'utilise jamais un \`bpt6k…\` de numéro isolé ici** — seuls les \`cb…\` de collection sont valides.
+1. **Identifie la collection.** Il te faut l'ARK **de collection** \`cb…\` du périodique (ex. \`cb34355551z\` pour Le Figaro, \`cb34431794k\` pour Le Temps). Trouve-le via \`corpus_search\` (\`source: "catalogue"\`, \`title\`) si tu ne l'as pas — la notice entre dans le tampon ; écarte-la avec \`buffer_discard\` si elle n'a pas sa place dans le corpus. **N'utilise jamais un \`bpt6k…\` de numéro isolé ici** — seuls les \`cb…\` de collection sont valides.
 2. **Liste les années.** Appelle \`bnf__bnf_get_periodical_issues\` avec l'ARK \`cb…\` **sans** \`year\` : tu obtiens \`available_years[]\` et le total de numéros.
 3. **Liste les numéros d'une année.** Rappelle l'outil **avec** \`year\` (ex. \`"1889"\`) : tu obtiens \`issues[{ark, date, gallica_url}]\`.
 

@@ -398,6 +398,7 @@ model AppSession {
   systemPrompt    String?   @map("system_prompt") // Cached rendered prompt (corpus or research); re-generated on memory change
   promptLocale    String?   @map("prompt_locale") // Locale the cached systemPrompt was rendered in; a turn in another locale rebuilds it
   promptRevision  String?   @map("prompt_revision") // PROMPT_REVISION the cached systemPrompt was rendered at; a prompt-text change (new revision) rebuilds it
+  promptEpoch     Int       @default(0) @map("prompt_epoch") // Bumped by every invalidation; a rendered prompt is cached only if the epoch did not move while it rendered (compare-and-set)
   // Auto-compaction checkpoint (agent-context-survival Slice 2). `synopsis` is a
   // model-produced summary standing in for the first `compactedMessageCount`
   // messages of this session's history (the SDK CompactionCheckpoint shape); the

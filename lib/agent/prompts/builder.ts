@@ -2,7 +2,6 @@ import "server-only"
 import { PROMPT_REVISION } from "@/lib/constants"
 import { prisma } from "@/lib/db"
 import { MemoryQueries } from "@/models/memory/queries"
-import { ProjectQueries } from "@/models/projects/queries"
 import { SESSION_SCOPE } from "@/models/sessions/schema"
 import {
   CORPUS_SOURCE_STATE,
@@ -13,7 +12,18 @@ import {
 import type { AppLocale } from "@/i18n/routing"
 import { renderCorpusPrompt } from "./corpus"
 import { renderResearchPrompt } from "./research"
-import type { AppSession } from "@/lib/generated/prisma/client"
+import type { AppSession, Prisma } from "@/lib/generated/prisma/client"
+
+/**
+ * How many times `buildForSession` renders before giving up on caching. Each
+ * lost compare-and-set means a memory change landed mid-render; three in a row
+ * means memory is being written continuously, and the last render is served
+ * without being cached (the next turn rebuilds).
+ */
+const PROMPT_CACHE_MAX_RENDERS = 3
+
+/** A Prisma client or an interactive-transaction client. */
+type PromptDb = Pick<Prisma.TransactionClient, "appSession">
 
 export class PromptBuilder {
   /**
@@ -24,23 +34,37 @@ export class PromptBuilder {
    * prompt-text change (a new PROMPT_REVISION) reaches existing sessions on
    * their next turn — without the revision check a cached prompt was served
    * forever (found bug B5).
+   *
+   * The write is a compare-and-set on `promptEpoch`, which every invalidation
+   * bumps: a memory change that lands between the render and the write makes
+   * the write miss, and the prompt is re-rendered from the new memory instead
+   * of an old-memory prompt being stamped as valid.
    */
-  static async buildForSession(
-    session: AppSession,
-    locale: AppLocale,
-  ): Promise<string> {
-    if (
-      session.systemPrompt &&
-      session.promptLocale === locale &&
-      session.promptRevision === PROMPT_REVISION
-    ) {
-      return session.systemPrompt
+  static async buildForSession(session: AppSession, locale: AppLocale): Promise<string> {
+    let current = session
+    let built = ""
+    for (let attempt = 1; attempt <= PROMPT_CACHE_MAX_RENDERS; attempt++) {
+      if (
+        current.systemPrompt &&
+        current.promptLocale === locale &&
+        current.promptRevision === PROMPT_REVISION
+      ) {
+        return current.systemPrompt
+      }
+      built = await this.render(current, locale)
+      const { count } = await prisma.appSession.updateMany({
+        where: { id: current.id, promptEpoch: current.promptEpoch },
+        data: { systemPrompt: built, promptLocale: locale, promptRevision: PROMPT_REVISION },
+      })
+      if (count === 1) return built
+      // Lost the race to an invalidation (or another turn cached first):
+      // re-read the row and either serve its fresh cache or render again.
+      current = await prisma.appSession.findUniqueOrThrow({ where: { id: session.id } })
     }
-    const built = await this.render(session, locale)
-    await prisma.appSession.update({
-      where: { id: session.id },
-      data: { systemPrompt: built, promptLocale: locale, promptRevision: PROMPT_REVISION },
-    })
+    console.warn(
+      `[prompt] session ${session.id}: memory changed during ${PROMPT_CACHE_MAX_RENDERS} ` +
+        "consecutive renders — serving the last render uncached",
+    )
     return built
   }
 
@@ -48,13 +72,14 @@ export class PromptBuilder {
    * Invalidate the cached system prompt of every session of the project, in
    * BOTH scopes. Each prompt now embeds both memories (its own, and the other
    * step's as a read-only section), so a memory change makes every one stale.
-   * Called by MemoryService after every write — the agent tool and the memory
-   * dialog alike — and awaited: a failure propagates, never swallowed.
+   * Bumps `promptEpoch` so a render already in flight cannot cache itself.
+   * Called by MemoryService inside the SAME transaction as the memory change
+   * (pass that transaction as `db`), so the two commit or fail together.
    */
-  static async invalidateProject(projectId: string): Promise<void> {
-    await prisma.appSession.updateMany({
+  static async invalidateProject(projectId: string, db: PromptDb = prisma): Promise<void> {
+    await db.appSession.updateMany({
       where: { projectId },
-      data: { systemPrompt: null, promptRevision: null },
+      data: { systemPrompt: null, promptRevision: null, promptEpoch: { increment: 1 } },
     })
   }
 
@@ -85,7 +110,8 @@ export class PromptBuilder {
 
     const source = isDerived(project)
       ? {
-          name: (await ProjectQueries.get(corpusId))?.name ?? "",
+          // The source cannot be missing: the FK is onDelete: Restrict.
+          name: (await prisma.project.findUniqueOrThrow({ where: { id: corpusId }, select: { name: true } })).name,
           state: corpusSourceState(project),
         }
       : null

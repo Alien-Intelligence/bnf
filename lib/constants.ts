@@ -771,6 +771,13 @@ export function IIIF_MANIFEST_URL(ark: string): string {
 export const MEMORY_CROSS_SCOPE_MAX_ITEMS = 20
 export const MEMORY_CROSS_SCOPE_MAX_CHARS = 3_000
 
+/**
+ * Memory dedupe (playbook/memory.md): a write whose normalised text is fewer
+ * than this many Levenshtein edits from an item of the same (scope, section)
+ * merges into it instead of adding a near-duplicate.
+ */
+export const MEMORY_NEAR_DUP_MAX_EDIT_DISTANCE = 4
+
 // ---------------------------------------------------------------------------
 // System-prompt cache revision
 // ---------------------------------------------------------------------------
@@ -781,6 +788,8 @@ export const MEMORY_CROSS_SCOPE_MAX_CHARS = 3_000
  * served only when its revision equals this one, so a prompt-text change
  * reaches EXISTING sessions on their next turn instead of never.
  * Bump on ANY change to lib/agent/prompts/*; the fingerprint test enforces it
- * (lib/agent/prompts/revision.test.ts).
+ * (lib/agent/prompts/revision.test.ts): the value is `<date>.<label>.<seal>`,
+ * where the seal is content-addressed from the rendered prompts, so a prompt
+ * change cannot be recorded without a new revision.
  */
-export const PROMPT_REVISION = "2026-10-01.corpus-buffer-v2"
+export const PROMPT_REVISION = "2026-10-02.corpus-buffer-v2.6afc4a2fa3c7"

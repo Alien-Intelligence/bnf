@@ -18,6 +18,7 @@ import { MEMORY_CROSS_SCOPE_MAX_ITEMS } from "@/lib/constants"
 import { PromptBuilder } from "@/lib/agent/prompts/builder"
 import { memoryWriteTool } from "@/lib/agent/tools/memory"
 import type { TurnScopedCtx } from "@/lib/agent/tools/registry-factory"
+import { MEMORY_SCOPE } from "@/models/memory/schema"
 import { MemoryService } from "@/models/memory/service"
 import { SESSION_SCOPE } from "@/models/sessions/schema"
 import type { PolicyUser } from "@/models/users/schema"
@@ -120,4 +121,61 @@ test("a deletion through MemoryService.forget (the dialog path) clears the promp
   await MemoryService.forget(project.id, "research", item.id)
   assert.equal(await cached(corpusSession), null)
   assert.equal(await cached(researchSession), null)
+})
+
+test("the dialog's create, edit and reorder paths each clear every prompt", async () => {
+  const created = await (async () => {
+    await cacheBoth()
+    const item = await MemoryService.createUserItem({
+      projectId: project.id,
+      scope: MEMORY_SCOPE.CORPUS,
+      section: "Périmètre",
+      text: "Presse quotidienne parisienne uniquement.",
+    })
+    assert.equal(await cached(corpusSession), null, "createUserItem clears the corpus prompt")
+    assert.equal(await cached(researchSession), null, "createUserItem clears the research prompt")
+    return item
+  })()
+
+  await cacheBoth()
+  await MemoryService.update(created.id, { text: "Presse quotidienne parisienne et lyonnaise." })
+  assert.equal(await cached(corpusSession), null, "update clears the corpus prompt")
+  assert.equal(await cached(researchSession), null, "update clears the research prompt")
+
+  await cacheBoth()
+  await MemoryService.reorder(created.id, 3)
+  assert.equal(await cached(corpusSession), null, "reorder clears the corpus prompt")
+  assert.equal(await cached(researchSession), null, "reorder clears the research prompt")
+})
+
+test("forget of an item that is not there reports it and invalidates nothing", async () => {
+  await cacheBoth()
+  const deleted = await MemoryService.forget(project.id, MEMORY_SCOPE.RESEARCH, "00000000-0000-4000-8000-000000000000")
+  assert.equal(deleted, false)
+  assert.equal(await cached(corpusSession), CACHED, "no change, no invalidation")
+
+  // The right id under the wrong scope is not a deletion either.
+  const item = await prisma.memoryItem.findFirstOrThrow({
+    where: { projectId: project.id, scope: MEMORY_SCOPE.CORPUS },
+  })
+  assert.equal(await MemoryService.forget(project.id, MEMORY_SCOPE.RESEARCH, item.id), false)
+  assert.ok(await prisma.memoryItem.findUnique({ where: { id: item.id } }), "the item is still there")
+})
+
+test("a render that lost the race to a memory write is not cached; the new memory is", async () => {
+  await PromptBuilder.invalidateProject(project.id)
+  // The row as a turn read it BEFORE the write below (its epoch is now stale).
+  const stale = await prisma.appSession.findUniqueOrThrow({ where: { id: corpusSession } })
+  await MemoryService.write({
+    projectId: project.id,
+    // The corpus session's OWN scope: never capped, so the fact must show.
+    scope: MEMORY_SCOPE.CORPUS,
+    section: "Contraintes & filtres",
+    text: "Le fonds Bxx est incomplet pour 1938.",
+  })
+  const prompt = await PromptBuilder.buildForSession(stale, "fr")
+  const row = await prisma.appSession.findUniqueOrThrow({ where: { id: corpusSession } })
+  assert.equal(row.promptEpoch, stale.promptEpoch + 1, "the write bumped the epoch")
+  assert.equal(row.systemPrompt, prompt, "the prompt cached is the one rendered at the new epoch")
+  assert.match(prompt, /fonds Bxx est incomplet/)
 })

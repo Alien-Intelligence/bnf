@@ -3,8 +3,9 @@
 ## Rule
 
 **Project memory** is a small, curated, durable fact list scoped to a project.
-It is **re-injected into the agent's system prompt at the start of every
-session** and is **not** the conversation context.
+It is **embedded in the agent's system prompt** — both scopes, see
+[below](#reading-memory--the-system-prompt) — and is **not** the conversation
+context.
 
 This distinction is the most easily-confused part of the system and the most
 important to keep crisp. Confusing them produces either a bloated context
@@ -21,9 +22,9 @@ See [doc 03 — memory_item](../design/docs/03-data-model.md#memory_item) and
 | Scope | One per project (with two sub-scopes: `corpus`, `research`) | One per session |
 | Lifetime | Durable, lives indefinitely | Until session archive / summarization |
 | Size | Tens of facts, curated | Bounded by the model's context window |
-| When read | Start of every session, injected into system prompt | Continuously, while the conversation is live |
-| Who writes | Agent (via `memory.write`) and user (via the memory dialog) | The conversation itself |
-| Who edits | User (× in the memory dialog → `memory.forget`) | Nobody — the transcript is immutable |
+| When read | Every turn, from the system prompt (re-rendered whenever memory changes) | Continuously, while the conversation is live |
+| Who writes | Agent (via `memory_write`) and user (via the memory dialog) | The conversation itself |
+| Who edits | User (the memory dialog: edit, reorder, × → `MemoryService.forget`) | Nobody — the transcript is immutable |
 | Shape | Sectioned items: `{ section, text, origin }` | Standard `messages[]` with `role` |
 | Does it "fill up"? | **No** — facts are merged/curated | Yes — summarized when long |
 
@@ -62,67 +63,76 @@ export const MEMORY_ORIGIN = { CONSIGNE: "consigne", DEDUIT: "deduit", ACTION: "
 i18n keys). The agent should prefer existing section names; new sections are
 allowed but must read naturally in French.
 
-## Reading memory — at session start
+## Reading memory — the system prompt
 
-`AgentService.runTurn` does **not** call `memory.read` as a tool on every
-turn — it builds the system prompt with the memory snapshot at session start
-(in the loop initializer; see [agent-streaming.md](agent-streaming.md)).
+`PromptBuilder.buildForSession` (`lib/agent/prompts/builder.ts`) renders the
+memory into the system prompt; the agent does not call `memory_read` on every
+turn. Each prompt carries BOTH scopes:
 
-```ts
-// lib/agent/prompts/shared.ts
-export function renderMemoryForPrompt(snapshot: MemorySnapshot): string {
-  return snapshot.sections.map(s => {
-    const items = s.items.map(i => `- ${i.text}`).join("\n")
-    return `### ${s.title}\n${items}`
-  }).join("\n\n") || "(aucun élément)"
-}
-```
+- the session's **own** scope, in full (`renderMemoryForPrompt`) — memory is
+  curated, never trimmed;
+- the **other** step's memory, read-only (`renderCrossScopeMemory`), capped at
+  `MEMORY_CROSS_SCOPE_MAX_ITEMS` items and `MEMORY_CROSS_SCOPE_MAX_CHARS`
+  characters for the whole rendered block (headings and tail included);
+  rendering stops at the first item that does not fit, and a tail says how
+  many items are not shown and which `memory_read` call reads them. This is
+  how a research-scope "source à risque" reaches the corpus agent.
 
-The `memory.read` tool exists for **explicit refresh** within a long session
-(e.g. after the agent itself called `memory.write` and wants to confirm the
-new state). It is *not* used to feed memory into the prompt on every turn.
+The rendered prompt is cached on `AppSession`, and **every memory change
+invalidates the cached prompt of every session of the project, both scopes,
+in the same transaction as the change** (`PromptBuilder.invalidateProject(projectId, tx)`).
+The cache write is a compare-and-set on `promptEpoch`, so a prompt rendered
+from memory that changed mid-render is never cached. A prompt-text change
+reaches existing sessions through `PROMPT_REVISION` (see
+[agent-streaming.md](agent-streaming.md#memory-in-the-system-prompt)).
+
+The `memory_read` tool exists for **explicit refresh** within a long session
+(e.g. after the agent itself called `memory_write` and wants to confirm the
+new state), and to read the other scope past its prompt cap. It is *not* used
+to feed memory into the prompt on every turn.
 
 ## Writing memory — agent and user
 
-### Agent path: `memory.write` tool
+### Agent path: the `memory_write` tool
 
-Calling the tool produces a `tool_call` row, a structured insert/upsert in
-`memory_item`, and a `memory_event` SSE so the memory dialog (if open)
-re-renders.
+Calling the tool produces a `tool_call` row, a write through
+`MemoryService.write`, and a `memory_event` SSE so the memory dialog (if open)
+re-renders. It always records into the session's OWN scope.
 
 ```ts
-// models/memory/service.ts
+// models/memory/service.ts — every mutation is one transaction:
+// the change AND the invalidation of every session's cached prompt.
 static async write(args: {
   projectId: string
   scope: MemoryScope
   section: string
   text: string
-  origin: MemoryOrigin
-}): Promise<{ id: string; mergedInto: string | null }> {
-  // Deduplicate against existing items in the same (scope, section).
-  const existing = await prisma.memoryItem.findMany({
-    where: { projectId: args.projectId, scope: args.scope, section: args.section },
+  origin?: MemoryOrigin | null   // absent → MEMORY_ORIGIN.DEDUIT (or the merged item's)
+}): Promise<MemoryItem> {
+  return prisma.$transaction(async (tx) => {
+    // near-duplicate in the same (scope, section)? → update it; else create
+    // …
+    await PromptBuilder.invalidateProject(args.projectId, tx)
+    return item
   })
-  const similar = existing.find(e => similarity(e.text, args.text) >= MEMORY_DEDUPE_SIMILARITY)
-  if (similar) {
-    // Update timestamp + keep the more recent origin
-    await prisma.memoryItem.update({
-      where: { id: similar.id },
-      data: { text: chooseLonger(similar.text, args.text), origin: args.origin },
-    })
-    return { id: similar.id, mergedInto: similar.id }
-  }
-  const created = await prisma.memoryItem.create({ data: args })
-  return { id: created.id, mergedInto: null }
 }
 ```
 
 Rules:
-- **Dedupe is mandatory** ✅. Two near-identical writes ("Langue : français
-  uniquement" and "Le corpus se limite au français") should merge to one
-  item, not pile up. The threshold lives in `lib/constants.ts` as
-  `MEMORY_DEDUPE_SIMILARITY` — start at `0.9` (cosine over normalized
-  embeddings or a cheap string similarity 🔶).
+- **Dedupe is mandatory** ✅. Two near-identical writes merge into one item
+  (its text replaced), not pile up: equal after normalisation (trim,
+  lowercase, collapsed whitespace), or fewer than
+  `MEMORY_NEAR_DUP_MAX_EDIT_DISTANCE` (`lib/constants.ts`) Levenshtein edits
+  apart. The dialog's `createUserItem` goes through the same `write`.
+- **Every mutation invalidates, atomically** ✅. `write`, `createUserItem`,
+  `update`, `reorder` and `forget` each run the change and
+  `invalidateProject` in one `$transaction`. `forget` returns `false` — and
+  invalidates nothing — when no item matches (id, project, scope); the route
+  answers 404.
+- **Scopes and origins are the constants** ✅. `MemoryScope`/`MemoryOrigin`
+  everywhere, and the zod schemas `memoryScopeSchema`/`memoryOriginSchema`
+  (`models/memory/types.ts`) for every route and tool input — an invented
+  origin is rejected, not persisted.
 - Memory is small by design. If a project's memory exceeds ~50 items in a
   single scope, the **user** prunes it — the system never silently drops
   items.
@@ -130,9 +140,9 @@ Rules:
 ### User path: the memory dialog
 
 The dialog lists items per section, lets the user delete any (calling
-`DELETE /api/projects/:id/memory/:item_id` → `memory.forget`), and lets them
-add a manual item (`origin: "user"`). Editing existing items is a delete +
-re-add — there is no inline rename in v1.
+`DELETE /api/projects/:id/memory/:item_id` → `MemoryService.forget`), edit
+(`PUT`) and reorder (`PATCH`) them, and add a manual item (`origin: "user"`,
+`POST`).
 
 ## What the agent should write
 
@@ -153,25 +163,31 @@ recurring key sources. See the per-step policies in
 
 ## The system prompt slot
 
-In [doc 08](../design/docs/08-prompting.md), the preamble contains:
+The shared preamble (`renderSharedPreamble`, `lib/agent/prompts/shared.ts`)
+contains two slots:
 
 ```
 PROJECT MEMORY (durable facts about this project, carried across all sessions —
 treat as authoritative unless the user overrides):
-{{memory_rendered_as_sections}}
+<renderMemoryForPrompt(own scope)>
+
+PROJECT MEMORY — OTHER STEP (READ-ONLY). …
+<renderCrossScopeMemory(other scope)>
 ```
 
-The `{{memory_rendered_as_sections}}` token is replaced by the output of
-`renderMemoryForPrompt(snapshot)` (above). If memory is empty, the slot
-renders `(aucun élément)` — the absence is explicit, not a void.
+If a scope's memory is empty, its slot renders `(aucun élément)` — the
+absence is explicit, not a void.
 
 ## SSE side-effect events
 
-`memory.write` and `memory.forget` tool handlers emit:
+The `memory_write` tool handler emits (contract: `lib/agent/stream-events.ts`):
 
 ```ts
-{ type: "memory_event", data: { kind: "write"|"forget", scope, section, itemId } }
+{ type: "memory_event", data: { kind: "write", scope, section, itemId } }
 ```
+
+There is no agent forget tool, so no `forget` event; the dialog refetches
+after its own DELETE.
 
 The client reducer:
 - Pushes a chat inline event ("Mémoire mise à jour · Contraintes & filtres").
@@ -206,9 +222,13 @@ A separate tiny table is right because:
 // ❌ Putting the conversation transcript into memory
 await MemoryService.write({ scope: "research", section: "Historique", text: lastUserMessage })
 
-// ❌ Reading memory inside every turn instead of injecting at session start
-const t = await tools.dispatch("memory.read", { scope: "corpus" })   // every turn
-// → load once at session start; use the tool only for explicit refresh
+// ❌ Reading memory through the tool on every turn
+const t = await tools.dispatch("memory_read", { scope: "corpus" })   // every turn
+// → it is in the system prompt; use the tool only for explicit refresh
+
+// ❌ Mutating memory without invalidating the cached prompts in the same transaction
+await prisma.memoryItem.update({ where: { id }, data: { text } })
+// → go through MemoryService, which invalidates inside the same $transaction
 
 // ❌ Skipping dedupe
 await prisma.memoryItem.create({ data: args })
@@ -225,12 +245,14 @@ await MemoryService.write({ scope: "corpus", section: "Système", text: "intro v
 
 ## Relation to other rules
 
-- [agent-streaming.md](agent-streaming.md): memory is loaded once per session
-  start; `memory.write` is a side-effect tool that emits a `memory_event`.
+- [agent-streaming.md](agent-streaming.md): memory is embedded in every
+  turn's system prompt, which is rebuilt on any memory change;
+  `memory_write` is a side-effect tool that emits a `memory_event`.
 - [api-routes.md](api-routes.md): `POST /api/projects/:id/memory` and
   `DELETE /api/projects/:id/memory/:item_id` are the user-driven write/forget
-  endpoints — they share validation with the `memory.write` / `memory.forget`
-  tool handlers via `models/memory/types.ts`.
+  endpoints (plus `PUT`/`PATCH` for edit and reorder) — they share the scope
+  and origin schemas with the `memory_write` / `memory_read` tool handlers via
+  `models/memory/types.ts`.
 - [models.md](models.md): `models/memory/` follows the standard five-file
   structure; `models/users/` owns the intro-seen flag.
 - [i18n.md](i18n.md): the default section names and origin labels live in

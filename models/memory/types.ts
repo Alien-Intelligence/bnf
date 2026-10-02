@@ -1,21 +1,27 @@
 import { z } from "zod"
+import { MEMORY_ORIGIN, MEMORY_SCOPE } from "./schema"
+
+/** The two memory scopes, from the domain constant (one definition). */
+export const memoryScopeSchema = z.enum(MEMORY_SCOPE)
+/** How a fact was determined, from the domain constant (one definition). */
+export const memoryOriginSchema = z.enum(MEMORY_ORIGIN)
 
 export const memoryWriteSchema = z.object({
-  scope: z.enum(["corpus", "research"]),
+  scope: memoryScopeSchema,
   section: z.string().trim().min(1).max(80),
   text: z.string().trim().min(1).max(500),
-  origin: z.enum(["consigne", "deduit", "action", "user"]).optional(),
+  origin: memoryOriginSchema.optional(),
 })
 export type MemoryWriteInput = z.infer<typeof memoryWriteSchema>
 
 export const memoryQuerySchema = z.object({
-  scope: z.enum(["corpus", "research"]),
+  scope: memoryScopeSchema,
 })
 export type MemoryQueryInput = z.infer<typeof memoryQuerySchema>
 
 // POST /api/projects/:id/memory — user-created fact
 export const createMemoryItemSchema = z.object({
-  scope: z.enum(["corpus", "research"]),
+  scope: memoryScopeSchema,
   section: z.string().trim().min(1).max(80),
   text: z.string().trim().min(1).max(500),
 })

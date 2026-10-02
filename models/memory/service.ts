@@ -1,9 +1,8 @@
 import "server-only"
 import { prisma } from "@/lib/db"
 import { PromptBuilder } from "@/lib/agent/prompts/builder"
-import type { MemoryItem } from "@/lib/generated/prisma/client"
-
-const NEAR_DUP_THRESHOLD = 4 // Levenshtein
+import { MEMORY_NEAR_DUP_MAX_EDIT_DISTANCE } from "@/lib/constants"
+import { MEMORY_ORIGIN, type MemoryItem, type MemoryOrigin, type MemoryScope } from "@/models/memory/schema"
 
 function norm(s: string): string {
   return s.trim().toLowerCase().replace(/\s+/g, " ")
@@ -30,64 +29,85 @@ function levenshtein(a: string, b: string): number {
 
 /**
  * Every memory change goes through this service, and every one of them
- * invalidates the cached system prompts of ALL the project's sessions before
- * it returns: each prompt embeds both scopes' memory (Track E Phase 11). The
- * invalidation is awaited and a failure propagates — on 0.18.1 memory_write
- * invalidated through a dynamic import that never resolved, and the error was
- * swallowed, so a fact never reached the other sessions' cached prompts.
+ * invalidates the cached system prompts of ALL the project's sessions IN THE
+ * SAME TRANSACTION: each prompt embeds both scopes' memory (Track E Phase 11),
+ * so the change and the invalidation commit together or not at all — a failed
+ * invalidation can no longer leave a committed fact behind stale prompts. On
+ * 0.18.1 memory_write invalidated through a dynamic import that never resolved,
+ * and the error was swallowed, so a fact never reached the other sessions'
+ * cached prompts.
  */
 export class MemoryService {
-  /** Upsert a fact; near-duplicates in the same (scope, section) merge. */
+  /**
+   * Upsert a fact. A near-duplicate in the same (scope, section) — equal after
+   * normalisation, or fewer than MEMORY_NEAR_DUP_MAX_EDIT_DISTANCE edits away —
+   * is merged into (its text replaced) rather than piled up
+   * (playbook/memory.md: dedupe is mandatory). Without an origin the fact is
+   * recorded as deduced (MEMORY_ORIGIN.DEDUIT), or keeps the merged item's.
+   */
   static async write(args: {
     projectId: string
-    scope: string
+    scope: MemoryScope
     section: string
     text: string
-    origin?: string | null
+    origin?: MemoryOrigin | null
   }): Promise<MemoryItem> {
-    const existing = await prisma.memoryItem.findMany({
-      where: { projectId: args.projectId, scope: args.scope, section: args.section },
+    return prisma.$transaction(async (tx) => {
+      const existing = await tx.memoryItem.findMany({
+        where: { projectId: args.projectId, scope: args.scope, section: args.section },
+      })
+      const target = norm(args.text)
+      const match = existing.find(
+        (e) =>
+          norm(e.text) === target ||
+          levenshtein(norm(e.text), target) < MEMORY_NEAR_DUP_MAX_EDIT_DISTANCE,
+      )
+      const item = match
+        ? await tx.memoryItem.update({
+            where: { id: match.id },
+            data: { text: args.text, origin: args.origin ?? match.origin ?? MEMORY_ORIGIN.DEDUIT },
+          })
+        : await tx.memoryItem.create({
+            data: {
+              projectId: args.projectId,
+              scope: args.scope,
+              section: args.section,
+              text: args.text,
+              origin: args.origin ?? MEMORY_ORIGIN.DEDUIT,
+              position: existing.length,
+            },
+          })
+      await PromptBuilder.invalidateProject(args.projectId, tx)
+      return item
     })
-    const target = norm(args.text)
-    const match = existing.find(
-      (e) => norm(e.text) === target || levenshtein(norm(e.text), target) < NEAR_DUP_THRESHOLD,
-    )
-    const item = match
-      ? await prisma.memoryItem.update({
-          where: { id: match.id },
-          data: { text: args.text, origin: args.origin ?? match.origin ?? "deduit" },
-        })
-      : await prisma.memoryItem.create({
-          data: {
-            projectId: args.projectId,
-            scope: args.scope,
-            section: args.section,
-            text: args.text,
-            origin: args.origin ?? "deduit",
-            position: existing.length,
-          },
-        })
-    await PromptBuilder.invalidateProject(args.projectId)
-    return item
-  }
-
-  static async forget(projectId: string, scope: string, itemId: string): Promise<void> {
-    await prisma.memoryItem.deleteMany({ where: { id: itemId, projectId, scope } })
-    await PromptBuilder.invalidateProject(projectId)
   }
 
   /**
-   * Create a user-authored memory item.
-   * Alias of `write` with explicit `origin: "user"` — skips the near-dup merge
-   * intentionally: the user knows what they are writing.
+   * Delete one item of the project's `scope`. Returns false — and invalidates
+   * nothing — when no such item exists (wrong id, project or scope): the
+   * caller reports "not found" instead of a deletion that did not happen.
+   */
+  static async forget(projectId: string, scope: MemoryScope, itemId: string): Promise<boolean> {
+    return prisma.$transaction(async (tx) => {
+      const { count } = await tx.memoryItem.deleteMany({ where: { id: itemId, projectId, scope } })
+      if (count === 0) return false
+      await PromptBuilder.invalidateProject(projectId, tx)
+      return true
+    })
+  }
+
+  /**
+   * Create a user-authored memory item (`origin: "user"`), from the memory
+   * dialog. It goes through `write`, so a near-duplicate of an existing item
+   * in the same section is merged into it like any other write.
    */
   static async createUserItem(args: {
     projectId: string
-    scope: string
+    scope: MemoryScope
     section: string
     text: string
   }): Promise<MemoryItem> {
-    return MemoryService.write({ ...args, origin: "user" })
+    return MemoryService.write({ ...args, origin: MEMORY_ORIGIN.USER })
   }
 
   /**
@@ -98,15 +118,17 @@ export class MemoryService {
     itemId: string,
     args: { text?: string; section?: string },
   ): Promise<MemoryItem> {
-    const item = await prisma.memoryItem.update({
-      where: { id: itemId },
-      data: {
-        ...(args.text !== undefined ? { text: args.text } : {}),
-        ...(args.section !== undefined ? { section: args.section } : {}),
-      },
+    return prisma.$transaction(async (tx) => {
+      const item = await tx.memoryItem.update({
+        where: { id: itemId },
+        data: {
+          ...(args.text !== undefined ? { text: args.text } : {}),
+          ...(args.section !== undefined ? { section: args.section } : {}),
+        },
+      })
+      await PromptBuilder.invalidateProject(item.projectId, tx)
+      return item
     })
-    await PromptBuilder.invalidateProject(item.projectId)
-    return item
   }
 
   /**
@@ -114,11 +136,10 @@ export class MemoryService {
    * The caller computes the target position (e.g. current ± 1).
    */
   static async reorder(itemId: string, position: number): Promise<MemoryItem> {
-    const item = await prisma.memoryItem.update({
-      where: { id: itemId },
-      data: { position },
+    return prisma.$transaction(async (tx) => {
+      const item = await tx.memoryItem.update({ where: { id: itemId }, data: { position } })
+      await PromptBuilder.invalidateProject(item.projectId, tx)
+      return item
     })
-    await PromptBuilder.invalidateProject(item.projectId)
-    return item
   }
 }

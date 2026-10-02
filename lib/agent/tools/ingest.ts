@@ -3,6 +3,7 @@ import "server-only"
 import { z } from "zod"
 import { defineTool } from "@alien/chat-sdk/claude"
 import type { TurnScopedCtx } from "./registry-factory"
+import { emitDomainEvent } from "@/lib/agent/stream-events"
 import { AGENT_TOOLS } from "./constants"
 import { IngestPolicy } from "@/models/ingest/policy"
 import { IngestService } from "@/models/ingest/service"
@@ -43,7 +44,7 @@ export const ingestSubmitTool = defineTool<typeof inputSchema, TurnScopedCtx>({
         return toolFailure(`L'ingestion n'a pas été lancée (issue inattendue : ${outcome.kind}).`)
       }
       const job = outcome.job
-      ctx.emit?.({
+      emitDomainEvent(ctx, {
         type: "ingest_event",
         data: { kind: "submitted", jobId: job.id, status: job.status },
       })

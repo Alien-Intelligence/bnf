@@ -54,9 +54,11 @@ test("a cached prompt at the current revision and locale is served as is", async
   assert.equal(await PromptBuilder.buildForSession(session, "fr"), STALE)
 })
 
-test("invalidateProject clears the prompt and its revision", async () => {
+test("invalidateProject clears the prompt and its revision, and bumps the epoch", async () => {
+  const before = await prisma.appSession.findUniqueOrThrow({ where: { id: sessionId } })
   await PromptBuilder.invalidateProject(projectId)
   const after = await prisma.appSession.findUniqueOrThrow({ where: { id: sessionId } })
   assert.equal(after.systemPrompt, null)
   assert.equal(after.promptRevision, null)
+  assert.equal(after.promptEpoch, before.promptEpoch + 1)
 })

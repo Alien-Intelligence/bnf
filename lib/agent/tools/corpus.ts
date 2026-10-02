@@ -35,6 +35,7 @@ import type { DocumentRow } from "@/models/corpus/schema"
 import type { TurnScopedCtx } from "./registry-factory"
 import { authorizeProjectTool } from "./authorize"
 import { EMPTY_FILTER_REFUSAL, toolRefusal } from "./failure"
+import { emitDomainEvent } from "@/lib/agent/stream-events"
 import { AGENT_TOOLS } from "./constants"
 import { provisionalTotal } from "./provisional-total"
 
@@ -436,7 +437,7 @@ export const corpusAddTool = defineTool<
       kickCanonicalize(projectId)
     }
 
-    ctx.emit?.({
+    emitDomainEvent(ctx, {
       type: "corpus_event",
       data: {
         kind: "add",
@@ -506,7 +507,7 @@ export const corpusRemoveTool = defineTool<
       reason: input.reason,
     })
 
-    ctx.emit?.({
+    emitDomainEvent(ctx, {
       type: "corpus_event",
       data: {
         kind: "remove",
@@ -592,7 +593,7 @@ export const corpusRemoveByFilterTool = defineTool<
 
     // Only a committed removal emits a corpus_event and advances a version.
     if (result.status === "removed" && result.removed > 0) {
-      ctx.emit?.({
+      emitDomainEvent(ctx, {
         type: "corpus_event",
         data: {
           kind: "remove",

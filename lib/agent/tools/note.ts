@@ -30,6 +30,7 @@ import { NoteService } from "@/models/notes/service"
 import { NoteQueries } from "@/models/notes/queries"
 import type { TurnScopedCtx } from "./registry-factory"
 import { authorizeProjectTool } from "./authorize"
+import { emitDomainEvent } from "@/lib/agent/stream-events"
 import { AGENT_TOOLS } from "./constants"
 import { toolFailure } from "./failure"
 import { NOTE_NOT_INGESTED_ERROR, resolveIngestedCorpus } from "./ingestion-guard"
@@ -169,7 +170,7 @@ export const noteCreateTool = defineTool<
       bodyMd: input.body_md,
     })
 
-    ctx.emit?.({
+    emitDomainEvent(ctx, {
       type: "note_event",
       data: { kind: "created", noteId: note.id, title: note.title },
     })
@@ -235,7 +236,7 @@ export const noteUpdateTool = defineTool<
     // answer is the same one the scope check gives.
     if (!written) return toolFailure(NOTE_NOT_FOUND_ERROR)
 
-    ctx.emit?.({
+    emitDomainEvent(ctx, {
       type: "note_event",
       data: { kind: "updated", noteId: written.note.id, title: written.note.title },
     })
@@ -293,7 +294,7 @@ export const noteAppendTool = defineTool<
     })
     if (!written) return toolFailure(NOTE_NOT_FOUND_ERROR)
 
-    ctx.emit?.({
+    emitDomainEvent(ctx, {
       type: "note_event",
       data: { kind: "updated", noteId: written.note.id, title: written.note.title },
     })

@@ -21,7 +21,7 @@ import type { AgentPart, ChatTurn } from "@alien/chat-sdk"
 import { apiFetch } from "@/lib/api-fetch"
 import { CHAT_STREAM_REVEAL_MS, LOCALE_HEADER } from "@/lib/constants"
 import { toolCallErrored } from "@/lib/tools/display"
-import type { SubagentEventData } from "@/lib/tools/subagent-runs"
+import { parseStreamDomainEvent, type StreamDomainEvent } from "@/lib/agent/stream-events"
 
 // ---------------------------------------------------------------------------
 // Public types (unchanged — the UI depends on these)
@@ -54,26 +54,8 @@ export type StreamToolCall = {
   finishedAt: string | null
 }
 
-export type StreamDomainEvent =
-  | { type: "corpus_event"; data: { kind: "add" | "remove"; count: number; versionSeq: number } }
-  | { type: "memory_event"; data: { kind: "write"; itemId: string; section: string } }
-  | { type: "ingest_event"; data: { kind: "submitted-stub" | "submitted"; jobId?: string; status?: string } }
-  | { type: "note_event"; data: { kind: "created" | "updated"; noteId: string; title: string } }
-  | {
-      type: "buffer_event"
-      data: { kind: "added" | "removed" | "committed" | "cleared"; count: number; total: number }
-    }
-  | {
-      // A spawn_research run: one `start`, then exactly one terminal event
-      // (done / error / timeout / aborted) with the same runId — folded into one
-      // row by reduceSubagentRuns (lib/tools/subagent-runs.ts).
-      type: "subagent_event"
-      data: SubagentEventData
-    }
-  | {
-      type: "compaction_event"
-      data: { coveredMessageCount: number; keptMessageCount: number; reused: boolean }
-    }
+/** The domain-event contract is shared with the server: lib/agent/stream-events.ts. */
+export type { StreamDomainEvent }
 
 export type UseTurnStreamResult = {
   messages: StreamMessage[]
@@ -95,15 +77,6 @@ export type UseTurnStreamResult = {
 
 const BASE_PATH = process.env["NEXT_PUBLIC_BASE_PATH"] ?? ""
 
-const DOMAIN_EVENT_TYPES = new Set([
-  "corpus_event",
-  "memory_event",
-  "ingest_event",
-  "note_event",
-  "buffer_event",
-  "subagent_event",
-  "compaction_event",
-])
 
 function joinText(parts: AgentPart[]): string {
   let out = ""
@@ -225,9 +198,14 @@ export function useTurnStream(
     // The SDK smoother drives the word-by-word reveal; <StreamingMarkdown> is
     // rendered with streaming=false (plain markdown of the current content).
     smooth: { delayMs: CHAT_STREAM_REVEAL_MS, chunking: "word" },
-    onDomainEvent: (event) => {
-      if (DOMAIN_EVENT_TYPES.has(event.type)) {
-        setDomainEvents((prev) => [...prev, event as StreamDomainEvent])
+    onDomainEvent: (frame) => {
+      const parsed = parseStreamDomainEvent(frame)
+      if (parsed.kind === "event") {
+        setDomainEvents((prev) => [...prev, parsed.event])
+      } else if (parsed.kind === "invalid") {
+        // A payload that breaks the shared contract is a server bug: say so,
+        // never fold a malformed event into the panels' side effects.
+        console.error(`[turn-stream] ${parsed.type} breaks the stream contract: ${parsed.issues}`)
       }
     },
   })

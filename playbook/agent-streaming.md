@@ -41,46 +41,54 @@ holds the runtime that produces it.
 
 ## The SSE event model (✅ fixed contract)
 
-The wire format is `text/event-stream` with named events. The JSON payload
-shape per event:
+The wire format is `text/event-stream`. Two families of frames share it:
+
+- **Chat events** (`text-delta`, `thinking-delta`, `tool-call-start`,
+  `tool-call-input-delta`, `tool-call-end`, `tool-result`, `message-start`,
+  `message-end`, `error`, …) are owned by `@alien/chat-sdk`
+  (`ChatEvent`, `@alien/chat-sdk/events`). The app never redefines them.
+- **Domain events** are the app's own, and have ONE definition:
+  `lib/agent/stream-events.ts`. It holds a zod schema per event and the
+  `StreamDomainEvent` union inferred from them. The server emits through
+  `emitDomainEvent(ctx, event)` (typed: a tool cannot emit a payload outside
+  the contract); the client parses every frame with `parseStreamDomainEvent`
+  (`hooks/api/turn-stream.ts`), which logs and drops a payload that breaks the
+  contract instead of folding it into the panels. Never hand-type a copy of an
+  event on either side.
 
 ```ts
-// models/agents/schema.ts
-export type AgentEvent =
-  | { type: "token";          data: { text: string } }
-  | { type: "tool_call";      data: { id: string; tool: AgentToolName; input: unknown } }
-  | { type: "tool_result";    data: { id: string; output: unknown; status: "ok"|"error"; latencyMs: number; error?: string } }
-  | { type: "corpus_event";   data: { kind: "add"|"remove"; count: number; versionSeq: number } }
-  | { type: "memory_event";   data: { kind: "write"|"forget"; scope: MemoryScope; section: string; itemId: string } }
-  | { type: "note_event";     data: { kind: "created"|"updated"; noteId: string; title: string } }
-  | { type: "ingest_event";   data: { kind: "submitted"; jobId: string } }
-  | { type: "session_event";  data: { kind: "resumed"|"started" } }
-  | { type: "buffer_event";   data: { kind: "added"|"removed"|"committed"|"cleared"; count: number; total: number } }
-  | { type: "subagent_event"; data:
-        | { kind: "start"; runId: string; scope: "corpus"|"research"; label: string }
-        | { kind: "done"|"error"|"timeout"|"aborted"; runId: string; scope: "corpus"|"research";
-            toolCalls: number; buffered?: number; error?: string } }
+// lib/agent/stream-events.ts — the union the schemas infer
+type StreamDomainEvent =
+  | { type: "corpus_event";     data: { kind: "add"|"remove"; count: number; versionSeq: number } }
+  | { type: "memory_event";     data: { kind: "write"; scope: MemoryScope; section: string; itemId: string } }
+  | { type: "ingest_event";     data: { kind: "submitted"; jobId: string; status: string } }
+  | { type: "note_event";       data: { kind: "created"|"updated"; noteId: string; title: string } }
+  | { type: "buffer_event";     data: { kind: "added"|"removed"|"committed"|"cleared"; count: number; total: number } }
+  | { type: "subagent_event";   data: SubagentEventData }   // lib/tools/subagent-runs.ts
   | { type: "compaction_event"; data: { coveredMessageCount: number; keptMessageCount: number; reused: boolean } }
-  | { type: "done";           data: { messageId: string } }
-  | { type: "error";          data: { code: string; message: string } }
 ```
+
+`compaction_event` is emitted by the chat-sdk runtime; every other domain
+event is emitted by an agent tool. There is no `forget` memory event: the
+agent has no forget tool, and the memory dialog refetches after its own
+DELETE.
 
 The mapping to the prototype UI:
 
 | Event | Renders as |
 |---|---|
-| `token` | Appended to the current assistant bubble |
-| `tool_call` | A `BadgeToolCall` chip — "bnf.search · via MCP" |
-| `tool_result` | The chip turns from spinner to ✓ or ✗ with latency |
+| `text-delta` (SDK) | Appended to the current assistant bubble |
+| `tool-call-start` (SDK) | A `BadgeToolCall` chip — "bnf.search · via MCP" |
+| `tool-result` (SDK) | The chip turns from spinner to ✓ or ✗ (`toolCallErrored`: the SDK's `isError`, or a `success: false` result) |
 | `corpus_event` | An inline event row — "+412 documents · v8" |
 | `memory_event` | An inline event row — "Mémoire mise à jour · Périmètre" |
 | `note_event` | An inline event row — "Note créée · Réception…" + a Tab opens in Atelier |
 | `ingest_event` | The CTA "Ouvrir Ingérer" appears in the chat |
-| `buffer_event` | Refreshes the buffer pill / dialog (the research "tampon") |
+| `buffer_event` | Refreshes the buffer pill / dialog (the corpus agent's "tampon": search results staged before a commit) |
 | `subagent_event` | ONE row per `spawn_research` run: `spawn_research` emits a `start` and, on every path, exactly one terminal event with the same `runId`; the client folds them with `reduceSubagentRuns` (`lib/tools/subagent-runs.ts`). A run still open when its turn ended reads "interrompu" — domain events are live-only, so a reload or a dropped stream must never leave a spinner |
 | `compaction_event` | A muted row when the context was compacted (a cache reuse is silent) |
-| `done` | Marks the assistant turn finished; flushes `message_id` for retries |
-| `error` | Toast + the turn is marked failed; a Retry button appears |
+| `message-end` (SDK) | Marks the assistant turn finished |
+| `error` (SDK) | Toast + the turn is marked failed; a Retry button appears |
 
 ## The route
 
@@ -290,16 +298,35 @@ before the disconnect.
 - Resume is best-effort: if the upstream Claude stream is gone, the user can
   simply re-ask.
 
-## Memory at session boundary
+## Memory in the system prompt
 
-At session start, `AgentService.runTurn` injects the memory snapshot into the
-system prompt (the `{{memory_rendered_as_sections}}` slot in
-[doc 08](../design/docs/08-prompting.md)). The agent does not call
-`memory.read` for ordinary recall; the tool exists for explicit refresh after
-a `memory.write` during the same long session.
+Every turn's system prompt embeds the project memory of BOTH scopes: the
+session's own scope in full (memory is curated, never trimmed), and the other
+step's memory as a read-only section capped at `MEMORY_CROSS_SCOPE_MAX_ITEMS`
+items and `MEMORY_CROSS_SCOPE_MAX_CHARS` characters for the whole rendered
+block, with a tail naming how many items are not shown and the `memory_read`
+call that reads them (`renderCrossScopeMemory`, `lib/agent/prompts/shared.ts`).
+`memory_read` is for explicit refresh within a long session; ordinary recall
+comes from the prompt.
 
-Memory writes are atomic per call and emit a `memory_event` so the memory
-dialog (if open) re-renders. See [memory.md](memory.md).
+The rendered prompt is cached on `AppSession` (`systemPrompt`, tagged with
+`promptLocale` and `promptRevision`) and rebuilt when:
+
+- **any memory of the project changes.** Every change goes through
+  `MemoryService` (the agent's `memory_write` and the memory dialog alike),
+  which clears the cached prompt of every session of the project, both
+  scopes, in the SAME transaction as the change — both commit or neither does;
+- **the locale differs** from the one it was rendered in;
+- **`PROMPT_REVISION` moved** (`lib/constants.ts`). Bump it on any change to
+  `lib/agent/prompts/*`; the fingerprint test
+  (`lib/agent/prompts/revision.test.ts`) refuses a prompt change recorded
+  without a new, sealed revision.
+
+The cache write is a compare-and-set on `promptEpoch`, which every
+invalidation bumps: a memory change that lands while a prompt renders makes
+the write miss, and the prompt is re-rendered instead of an old-memory
+prompt being cached as valid. Memory writes emit a `memory_event` so the
+memory dialog (if open) re-renders. See [memory.md](memory.md).
 
 ## Forbidden patterns
 

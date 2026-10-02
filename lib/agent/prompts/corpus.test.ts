@@ -66,3 +66,12 @@ test("the corpus sub-agent sweeps only through corpus_search and reports tool nu
   assert.match(d, /jamais une estimation/)
   assert.match(d, /NE VALIDE PAS le corpus/)
 })
+
+test("no guide tells the agent to call a raw bnf__bnf_search_* tool — only the ban names them", () => {
+  const p = prompt()
+  for (const tool of ["bnf__bnf_search_gallica", "bnf__bnf_search_catalogue"]) {
+    const mentions = p.split(`\`${tool}\``).length - 1
+    assert.equal(mentions, 1, `${tool} is named once, in the ban, not as an instruction (got ${mentions})`)
+  }
+  assert.match(p, /Trouve-le via `corpus_search` \(`source: "catalogue"`/)
+})

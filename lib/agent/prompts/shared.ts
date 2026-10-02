@@ -2,6 +2,8 @@ import "server-only"
 import type { Project } from "@/lib/generated/prisma/client"
 import type { AppLocale } from "@/i18n/routing"
 import { MEMORY_CROSS_SCOPE_MAX_CHARS, MEMORY_CROSS_SCOPE_MAX_ITEMS } from "@/lib/constants"
+import { MEMORY_SCOPE, type MemoryScope } from "@/models/memory/schema"
+import { AGENT_TOOLS } from "@/lib/agent/tools/constants"
 
 /** English name of the working language, for prompt sentences written in
  *  English ("Write the questions and options in French/English."). */
@@ -36,39 +38,58 @@ export function renderMemoryForPrompt(snapshot: MemorySnapshot): string {
 }
 
 /** The other step's memory, rendered read-only into this agent's prompt. */
-export type CrossScopeMemory = { scope: "corpus" | "research"; snapshot: MemorySnapshot }
+export type CrossScopeMemory = { scope: MemoryScope; snapshot: MemorySnapshot }
+
+/** Separator between two rendered memory sections, and before the tail. */
+const SECTION_SEPARATOR = "\n\n"
 
 /**
- * The other scope's memory, in section order, until MEMORY_CROSS_SCOPE_MAX_ITEMS
- * items or MEMORY_CROSS_SCOPE_MAX_CHARS characters; past the cap it says how
- * many items are not shown and how to read them. Empty → `(aucun élément)`.
+ * The other scope's memory, in section order, capped at
+ * MEMORY_CROSS_SCOPE_MAX_ITEMS items and MEMORY_CROSS_SCOPE_MAX_CHARS
+ * characters for the WHOLE rendered block — headings, newlines and the
+ * "not shown" tail included. Rendering stops at the first item that does not
+ * fit, across sections (a later, shorter item never jumps the queue). Past
+ * the cap the tail says how many items are not shown and how to read them.
+ * Empty → `(aucun élément)`.
  */
 export function renderCrossScopeMemory(cross: CrossScopeMemory): string {
   const total = cross.snapshot.sections.reduce((n, s) => n + s.items.length, 0)
   if (total === 0) return "(aucun élément)"
-  const blocks: string[] = []
+  const tailFor = (hidden: number) =>
+    `(+${hidden} éléments non affichés — ${AGENT_TOOLS.memoryRead} scope="${cross.scope}")`
+  // Room kept for the tail while items remain: its longest form (all hidden).
+  const tailRoom = SECTION_SEPARATOR.length + tailFor(total).length
+
+  let body = ""
   let shown = 0
-  let chars = 0
+  let full = false
   for (const section of cross.snapshot.sections) {
-    const lines: string[] = []
+    let opened = false
     for (const item of section.items) {
       const line = `- ${item.text}`
-      if (shown >= MEMORY_CROSS_SCOPE_MAX_ITEMS || chars + line.length > MEMORY_CROSS_SCOPE_MAX_CHARS) break
-      lines.push(line)
+      const piece = opened
+        ? `\n${line}`
+        : `${body.length > 0 ? SECTION_SEPARATOR : ""}### ${section.title}\n${line}`
+      const reserve = shown + 1 < total ? tailRoom : 0
+      if (shown >= MEMORY_CROSS_SCOPE_MAX_ITEMS || body.length + piece.length + reserve > MEMORY_CROSS_SCOPE_MAX_CHARS) {
+        full = true
+        break
+      }
+      body += piece
+      opened = true
       shown += 1
-      chars += line.length
     }
-    if (lines.length > 0) blocks.push(`### ${section.title}\n${lines.join("\n")}`)
-    if (shown >= MEMORY_CROSS_SCOPE_MAX_ITEMS || chars >= MEMORY_CROSS_SCOPE_MAX_CHARS) break
+    if (full) break
   }
   const hidden = total - shown
-  const tail = hidden > 0 ? `\n\n(+${hidden} éléments non affichés — memory_read scope="${cross.scope}")` : ""
-  return `${blocks.join("\n\n")}${tail}`
+  if (hidden === 0) return body
+  const tail = tailFor(hidden)
+  return body.length > 0 ? `${body}${SECTION_SEPARATOR}${tail}` : tail
 }
 
-const STEP_AGENT_NAME: Record<CrossScopeMemory["scope"], string> = {
-  corpus: "corpus-building",
-  research: "research",
+const STEP_AGENT_NAME: Record<MemoryScope, string> = {
+  [MEMORY_SCOPE.CORPUS]: "corpus-building",
+  [MEMORY_SCOPE.RESEARCH]: "research",
 }
 
 export function renderSharedPreamble(
@@ -86,7 +107,7 @@ Project: ${project.name}${project.subtitle ? ` — ${project.subtitle}` : ""}
 PROJECT MEMORY (durable facts about this project, carried across all sessions — treat as authoritative unless the user overrides):
 ${renderMemoryForPrompt(memory)}
 
-PROJECT MEMORY — OTHER STEP (READ-ONLY). Facts recorded by the ${STEP_AGENT_NAME[crossScope.scope]} agent of this project. Take them into account (e.g. a source flagged as risky, a scope decision), but never rewrite or contradict them with memory_write — your memory_write always records into YOUR step's memory:
+PROJECT MEMORY — OTHER STEP (READ-ONLY). Facts recorded by the ${STEP_AGENT_NAME[crossScope.scope]} agent of this project. Take them into account (e.g. a source flagged as risky, a scope decision), but never rewrite or contradict them with ${AGENT_TOOLS.memoryWrite} — your ${AGENT_TOOLS.memoryWrite} always records into YOUR step's memory:
 ${renderCrossScopeMemory(crossScope)}
 
 Operating principles:
@@ -95,6 +116,6 @@ Operating principles:
 - DON'T NARRATE TOOL MECHANICS. The user cares about results, not which tool or search mode you used. Say what you are doing in plain terms ("je parcours les résultats", not "j'appelle rag_query / une recherche vectorielle").
 - Always ground your work in tool results. If tools return little or nothing, say so plainly — and, for a novice, explain what that means and what you suggest next, rather than a bare or technical error.
 - Identify documents by their ARK. Never fabricate or alter an ARK.
-- When you establish a durable fact about the project, record it with memory.write. Keep memory small and curated.
+- When you establish a durable fact about the project, record it with ${AGENT_TOOLS.memoryWrite}. Keep memory small and curated.
 - \`ask_user\` IS FOR GENUINE FORKS — a point where the user must choose between options that change WHAT you do (scope, period, languages, which subset to keep, a starting point). When there is such a choice, call \`ask_user\` with structured multiple-choice questions INSTEAD of writing "Option A / B / C" as prose: it renders clickable choices and lets a novice move forward without having to invent the vocabulary. But do NOT use it to ask permission to continue work you can simply do — paginating a search, staging results to the buffer, an obvious next step: progress the task and report what happened, don't stop to be authorized page by page. It ENDS your turn; the user's selections arrive as their next message. Call it AT MOST ONCE per turn — bundle every question (up to 4) into that single call, never two. Write the questions and options in ${languageName(locale)}.`
 }

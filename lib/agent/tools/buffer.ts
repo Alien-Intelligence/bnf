@@ -60,6 +60,7 @@ import { arkSchema, type BufferCandidateInput } from "@/models/buffer/types"
 import type { TurnScopedCtx } from "./registry-factory"
 import { authorizeProjectTool } from "./authorize"
 import { EMPTY_FILTER_REFUSAL, toolRefusal } from "./failure"
+import { emitDomainEvent } from "@/lib/agent/stream-events"
 import { AGENT_TOOLS } from "./constants"
 import { provisionalTotal } from "./provisional-total"
 
@@ -182,7 +183,7 @@ async function emitBuffer(
   count: number,
 ): Promise<number> {
   const total = await BufferQueries.count(projectId)
-  ctx.emit?.({ type: "buffer_event", data: { kind, count, total } })
+  emitDomainEvent(ctx, { type: "buffer_event", data: { kind, count, total } })
   return total
 }
 
@@ -485,7 +486,7 @@ export const bufferCommitTool = defineTool<
     // The corpus grew → refresh the corpus panel; the buffer emptied → refresh
     // the buffer panel.
     if (result.corpus.lastDeltaAdded > 0) {
-      ctx.emit?.({
+      emitDomainEvent(ctx, {
         type: "corpus_event",
         data: {
           kind: "add",

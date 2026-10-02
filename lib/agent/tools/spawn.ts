@@ -68,6 +68,7 @@ import { docTools } from "./doc"
 import { memoryTools } from "./memory"
 import { resolveMcpServers, type McpServerEntry } from "./mcp-servers"
 import type { TurnScopedCtx } from "./registry-factory"
+import { emitDomainEvent } from "@/lib/agent/stream-events"
 import { AGENT_TOOLS } from "./constants"
 
 /**
@@ -165,7 +166,7 @@ function rejectOnAbort(signal: AbortSignal): Promise<never> {
 }
 
 function emitSubagent(ctx: TurnScopedCtx, data: SubagentEventData): void {
-  ctx.emit?.({ type: "subagent_event", data })
+  emitDomainEvent(ctx, { type: "subagent_event", data })
 }
 
 /**

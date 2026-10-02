@@ -25,21 +25,25 @@ import { z } from "zod"
 import { defineTool } from "@alien/chat-sdk/claude"
 import { MemoryPolicy } from "@/models/memory/policy"
 import { MemoryQueries } from "@/models/memory/queries"
-import { MEMORY_SCOPE, type MemoryScope } from "@/models/memory/schema"
+import { MEMORY_ORIGIN } from "@/models/memory/schema"
+import { memoryOriginSchema, memoryScopeSchema } from "@/models/memory/types"
 import { MemoryService } from "@/models/memory/service"
 import type { TurnScopedCtx } from "./registry-factory"
 import { authorizeProjectTool } from "./authorize"
+import { emitDomainEvent } from "@/lib/agent/stream-events"
 import { AGENT_TOOLS } from "./constants"
 
-// Zod enum for memory scopes built from the domain constant.
-const memoryScopeEnum = z.enum([MEMORY_SCOPE.CORPUS, MEMORY_SCOPE.RESEARCH] as [MemoryScope, ...MemoryScope[]])
+/** The origins the model may name, quoted, for the tool description. */
+const MEMORY_ORIGIN_LIST = Object.values(MEMORY_ORIGIN)
+  .map((o) => `"${o}"`)
+  .join(", ")
 
 // ---------------------------------------------------------------------------
 // memory_read
 // ---------------------------------------------------------------------------
 
 export const memoryReadTool = defineTool<
-  z.ZodObject<{ scope: z.ZodOptional<typeof memoryScopeEnum> }>,
+  z.ZodObject<{ scope: z.ZodOptional<typeof memoryScopeSchema> }>,
   TurnScopedCtx
 >({
   name: AGENT_TOOLS.memoryRead,
@@ -50,7 +54,7 @@ export const memoryReadTool = defineTool<
     "memory too (read-only, capped). " +
     "Omit `scope` to read the current session's scope (corpus or research).",
   inputSchema: z.object({
-    scope: memoryScopeEnum
+    scope: memoryScopeSchema
       .optional()
       .describe(
         "Memory scope to read. Defaults to the current session scope. " +
@@ -70,7 +74,7 @@ export const memoryWriteTool = defineTool<
   z.ZodObject<{
     section: z.ZodString
     text: z.ZodString
-    origin: z.ZodOptional<z.ZodString>
+    origin: z.ZodOptional<typeof memoryOriginSchema>
   }>,
   TurnScopedCtx
 >({
@@ -106,15 +110,11 @@ export const memoryWriteTool = defineTool<
           "characters (longer text is rejected). Not a session log or a list of " +
           "results: if you have several facts, call memory_write once per fact.",
       ),
-    origin: z
-      .string()
-      .trim()
-      .min(1)
-      .max(50)
+    origin: memoryOriginSchema
       .optional()
       .describe(
-        "How this fact was determined. One of: \"consigne\", \"deduit\", \"action\", \"user\". " +
-          "Defaults to \"deduit\".",
+        `How this fact was determined. One of: ${MEMORY_ORIGIN_LIST}. ` +
+          `Defaults to "${MEMORY_ORIGIN.DEDUIT}".`,
       ),
   }),
   handler: async (input, ctx: TurnScopedCtx) => {
@@ -132,7 +132,7 @@ export const memoryWriteTool = defineTool<
       origin: input.origin ?? null,
     })
 
-    ctx.emit?.({
+    emitDomainEvent(ctx, {
       type: "memory_event",
       data: { kind: "write", scope: ctx.scope, section: item.section, itemId: item.id },
     })

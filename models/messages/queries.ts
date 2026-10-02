@@ -1,7 +1,7 @@
+import "server-only"
 // models/messages/queries.ts
 // Pure database access for the persisted transcript (Message + ToolCall).
 // Imports only from @/lib/db and ./schema.
-import "server-only"
 
 import { prisma } from "@/lib/db"
 
