@@ -36,7 +36,9 @@ import {
 import { parseBnfDate } from "@/lib/mcp/normalize"
 import { quotaSaturatedResult } from "@/lib/mcp/rate-limit"
 import { BNF_SEARCH_TOOL } from "@/lib/mcp/tools"
-import { GALLICA_SEARCHABLE_DOC_TYPE, sourceFromArk } from "@/lib/mcp/vocab"
+import { GALLICA_SEARCHABLE_DOC_TYPE, canonicalLang, sourceFromArk } from "@/lib/mcp/vocab"
+import { canonicalBufferDocType, gallicaSearchDocType } from "@/lib/buffer/classify"
+import { classifyArkKind } from "@/models/documents/schema"
 import { BufferQueries, type BufferFilterSet } from "@/models/buffer/queries"
 import { BufferService } from "@/models/buffer/service"
 import { arkSchema, type BufferCandidateInput } from "@/models/buffer/types"
@@ -993,16 +995,30 @@ export const corpusSearchTool = defineTool<
         if (!Array.isArray(payload.data?.results)) {
           throw new BnfMcpError(`${BNF_SEARCH_TOOL.gallica}: payload carried no results array`)
         }
+        // The search's own doc_type filter classifies every hit better than
+        // the hit's label (Gallica labels press issues and monographs alike
+        // `text`); the `/date` collection-entry form must be read BEFORE
+        // toFullArk strips it.
+        const searchDocType = gallicaSearchDocType(input.doc_type, executedCql ?? input.cql)
         candidates = payload.data.results.flatMap((h) => {
           const ark = toFullArk(h.ark)
           if (ark === null) return []
+          const docTypeRaw = clean(h.doc_type)
+          const docType = canonicalBufferDocType(docTypeRaw, searchDocType)
+          if (!docType.known) console.warn(`[corpus_search] unknown dc:type "${docTypeRaw}" → other`)
           return [
             {
               ark,
               title: clean(h.title),
               year: toYear(h.date),
-              docType: clean(h.doc_type),
-              lang: clean(h.language),
+              docType: docType.code ?? undefined,
+              docTypeRaw,
+              arkKind: classifyArkKind({
+                ark,
+                collectionEntry: /\/date\/?$/.test(h.ark.trim()),
+                docType: docType.code,
+              }),
+              lang: canonicalLang(h.language) ?? undefined,
               source: sourceFromArk(ark),
               snippet: clean(h.description),
             },
@@ -1035,8 +1051,9 @@ export const corpusSearchTool = defineTool<
               title: clean(h.title),
               year: toYear(h.date),
               // The catalogue payload carries no doc_type; leave it for the
-              // background resolver to fill in after commit.
-              lang: clean(h.language),
+              // background resolver to fill in after commit. The kind is
+              // derived from the ARK by registerCandidates (a cb… notice).
+              lang: canonicalLang(h.language) ?? undefined,
               source: sourceFromArk(ark),
             },
           ]

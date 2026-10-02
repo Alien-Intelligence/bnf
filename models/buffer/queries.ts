@@ -1,7 +1,7 @@
 import "server-only"
 import type { Prisma } from "@/lib/generated/prisma/client"
 import { prisma } from "@/lib/db"
-import { BUFFER_STATUS } from "./schema"
+import { BUFFER_ENRICH_STATUS, BUFFER_STATUS } from "./schema"
 import type {
   BufferCrossFacets,
   BufferFacetDimension,
@@ -40,6 +40,11 @@ const bufferRowSelect = {
   snippet: true,
   originQuery: true,
   createdAt: true,
+  creator: true,
+  dateLabel: true,
+  arkKind: true,
+  subjects: true,
+  enrichStatus: true,
 } satisfies Prisma.BufferItemSelect
 
 /** Decade bucket label for a year, e.g. 1887 → "1880s". */
@@ -147,10 +152,15 @@ export class BufferQueries {
   /** Facet distribution over the filtered candidate set. */
   static async facets(projectId: string, filters: BufferFilterSet = {}): Promise<BufferFacets> {
     const where = BufferQueries.where(projectId, filters)
-    const [byType, byLang, bySource, years] = await Promise.all([
+    const [byType, byKind, byLang, bySource, years, unresolved] = await Promise.all([
       prisma.bufferItem.groupBy({
         by: ["docType"],
         where: { ...where, docType: { not: null } },
+        _count: { _all: true },
+      }),
+      prisma.bufferItem.groupBy({
+        by: ["arkKind"],
+        where: { ...where, arkKind: { not: null } },
         _count: { _all: true },
       }),
       prisma.bufferItem.groupBy({
@@ -164,6 +174,7 @@ export class BufferQueries {
         _count: { _all: true },
       }),
       prisma.bufferItem.findMany({ where, select: { year: true } }),
+      prisma.bufferItem.count({ where: { ...where, enrichStatus: BUFFER_ENRICH_STATUS.PENDING } }),
     ])
 
     const toRecord = <K extends string>(
@@ -187,10 +198,12 @@ export class BufferQueries {
 
     return {
       type: toRecord(byType, "docType"),
+      kind: toRecord(byKind, "arkKind"),
       lang: toRecord(byLang, "lang"),
       source: toRecord(bySource, "source"),
       period,
       undated,
+      unresolved,
     }
   }
 
@@ -206,16 +219,24 @@ export class BufferQueries {
   ): Promise<BufferCrossFacets> {
     const rows = await prisma.bufferItem.findMany({
       where: BufferQueries.where(projectId, filters),
-      select: { docType: true, lang: true, source: true, year: true },
+      select: { docType: true, arkKind: true, lang: true, source: true, year: true },
     })
 
     const value = (
-      row: { docType: string | null; lang: string | null; source: string | null; year: number | null },
+      row: {
+        docType: string | null
+        arkKind: string | null
+        lang: string | null
+        source: string | null
+        year: number | null
+      },
       dim: BufferFacetDimension,
     ): string | null => {
       switch (dim) {
         case "type":
           return row.docType
+        case "kind":
+          return row.arkKind
         case "lang":
           return row.lang
         case "source":

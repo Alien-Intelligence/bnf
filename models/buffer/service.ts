@@ -5,7 +5,8 @@ import { CorpusService, type CorpusAddResult } from "@/models/corpus/service"
 import { BUFFER_STATUS } from "./schema"
 import { BufferQueries, type BufferFilterSet } from "./queries"
 import { arkSchema, type BufferCandidateInput } from "./types"
-import { CORPUS_REMOVE_PREVIEW_LIMIT } from "@/lib/constants"
+import { BUFFER_CLASSIFIER_VERSION, CORPUS_REMOVE_PREVIEW_LIMIT } from "@/lib/constants"
+import { classifyArkKind } from "@/models/documents/schema"
 
 /**
  * Result of registerCandidates() — how many candidate rows were newly created
@@ -83,13 +84,22 @@ export class BufferService {
     let added = 0
     let refreshed = 0
     for (const c of unique) {
+      // The candidate's docType is canonical; the record kind is the producer's
+      // when it knows more than (ark, docType) — a `cb…/date` collection entry —
+      // and derived from them otherwise. Every row written here is in the
+      // current classification, so it carries BUFFER_CLASSIFIER_VERSION and the
+      // boot reclassifier never re-reads it.
       const metadata = {
         title: c.title ?? null,
         year: c.year ?? null,
         docType: c.docType ?? null,
+        docTypeRaw: c.docTypeRaw ?? null,
+        arkKind:
+          c.arkKind ?? classifyArkKind({ ark: c.ark, collectionEntry: false, docType: c.docType ?? null }),
         lang: c.lang ?? null,
         source: c.source ?? null,
         snippet: c.snippet ?? null,
+        classifierVersion: BUFFER_CLASSIFIER_VERSION,
       }
       const result = await prisma.bufferItem.upsert({
         where: { projectId_ark: { projectId: args.projectId, ark: c.ark } },
@@ -108,7 +118,21 @@ export class BufferService {
         update: {
           ...(c.title !== undefined ? { title: c.title } : {}),
           ...(c.year !== undefined ? { year: c.year } : {}),
-          ...(c.docType !== undefined ? { docType: c.docType } : {}),
+          // A hit that carries a type rewrites the row's classification as a
+          // whole (canonical docType, its raw label, the kind) and stamps the
+          // current version. A hit without one (a catalogue record) never
+          // downgrades a kind a typed hit established.
+          ...(c.docType !== undefined
+            ? {
+                docType: c.docType,
+                docTypeRaw: c.docTypeRaw ?? null,
+                arkKind:
+                  c.arkKind ?? classifyArkKind({ ark: c.ark, collectionEntry: false, docType: c.docType }),
+                classifierVersion: BUFFER_CLASSIFIER_VERSION,
+              }
+            : c.arkKind !== undefined
+              ? { arkKind: c.arkKind }
+              : {}),
           ...(c.lang !== undefined ? { lang: c.lang } : {}),
           ...(c.source !== undefined ? { source: c.source } : {}),
           ...(c.snippet !== undefined ? { snippet: c.snippet } : {}),

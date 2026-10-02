@@ -200,6 +200,19 @@ export const BUFFER_SEARCH_MAX_PAGE_SIZE_BY_SOURCE = { gallica: 50, catalogue: 1
 export const BUFFER_SEARCH_DEFAULT_PAGE_SIZE_BY_SOURCE = { gallica: 50, catalogue: 500 } as const
 
 /**
+ * Version of the buffer classification (canonical docType + docTypeRaw,
+ * canonical lang, arkKind — lib/buffer/classify.ts). Every row written by
+ * registerCandidates carries it; the boot-time reclassifier
+ * (lib/buffer/reclassify.ts) rewrites rows below it once, so bumping this when
+ * the vocabulary changes re-runs the mapping over every existing row
+ * automatically. 0 = a row written before the v2 buffer (raw dc:type labels).
+ */
+export const BUFFER_CLASSIFIER_VERSION = 1
+/** Rows per reclassifier batch (one transaction each); ~87 batches for the
+ *  86 765 prod rows at the first boot, then the version gate makes it a no-op. */
+export const BUFFER_RECLASSIFY_BATCH_SIZE = 1_000
+
+/**
  * The seq assigned to the first (empty) CorpusVersion created by
  * ProjectService.create(). Invariant 1: every project always has a head.
  */

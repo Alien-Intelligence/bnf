@@ -686,23 +686,44 @@ model Feedback {
 //     sole version creator (playbook/corpus-versioning.md invariant).
 //   - Rows are transient scratch, deduped per ARK, cleared on commit or clear.
 // Metadata is denormalised at search time (nullable until a hit carries it) so
-// the buffer panel + buffer_stats can facet without a Document join.
-// status: BUFFER_STATUS in models/buffer/schema.ts (String, no native enum —
-// per this file's convention).
+// the buffer panel + buffer_stats can facet without a Document join. A bare row
+// (staged by buffer_add with an ARK only) is enriched in the background
+// (enrichStatus, lib/buffer/enricher.ts): from a resolved same-project Document
+// first, otherwise through the broker (OAI-PMH / catalogue SRU) — never inline.
+// docType holds the CANONICAL code (the corpus vocabulary, so `type:["press"]`
+// means the same thing in the buffer and the corpus); the hit's own label is
+// kept verbatim in docTypeRaw. arkKind is WHAT the record is (ARK_KIND in
+// models/documents/schema.ts). classifierVersion gates the boot-time
+// reclassifier (lib/buffer/reclassify.ts).
+// status / enrichStatus: BUFFER_STATUS / BUFFER_ENRICH_STATUS in
+// models/buffer/schema.ts (String, no native enum — per this file's convention).
 // -----------------------------------------------------------------------------
 model BufferItem {
   id        String  @id @default(uuid())
   projectId String  @map("project_id")
   ark       String
   // Denormalised metadata captured from the search hit (null until a hit
-  // carries it). Never resolved in the background — the corpus is the resolved
-  // store; the buffer is pre-commit scratch.
-  title   String?
-  year    Int?
-  docType String? @map("doc_type")
-  lang    String?
-  source  String?
-  snippet String?
+  // carries it, or until background enrichment fills a bare row).
+  title             String?
+  year              Int?
+  docType           String?  @map("doc_type") // canonical code (DOC_TYPE)
+  lang              String? // canonical code (canonicalLang)
+  source            String?
+  snippet           String?
+  docTypeRaw        String?  @map("doc_type_raw") // the hit's own dc:type label, verbatim
+  arkKind           String?  @map("ark_kind") // ARK_KIND (models/documents/schema.ts)
+  creator           String? // Gallica creator / catalogue author
+  publisher         String?
+  dateLabel         String?  @map("date_label") // full BnF date string ("1861-1946", "1937-07-12")
+  yearEnd           Int?     @map("year_end") // last year of a range label; null = single year
+  subjects          String? // Rameau/dc:subject labels joined with " ; "
+  gallicaUrl        String?  @map("gallica_url")
+  catalogueUrl      String?  @map("catalogue_url")
+  searchCollapsing  Boolean? @map("search_collapsing") // provenance: collapsing mode of the staging search
+  enrichStatus      String?  @map("enrich_status") // null | pending | resolved | failed (BUFFER_ENRICH_STATUS)
+  enrichAttempts    Int      @default(0) @map("enrich_attempts")
+  enrichError       String?  @map("enrich_error")
+  classifierVersion Int      @default(0) @map("classifier_version")
   // Provenance + lifecycle.
   originTool       String  @map("origin_tool") // which tool produced it, e.g. "corpus_search"
   originQuery      String? @map("origin_query") // the query string that surfaced it
@@ -715,5 +736,7 @@ model BufferItem {
 
   @@unique([projectId, ark]) // dedupe candidates by ARK (upsert target)
   @@index([projectId, status])
+  @@index([projectId, enrichStatus]) // enrichment drain lookup
+  @@index([classifierVersion]) // boot reclassifier: rows below the current version
   @@map("buffer_item")
 }

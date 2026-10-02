@@ -76,13 +76,32 @@ export function bufferFiltersFromParams(params: URLSearchParams): BufferFilters 
 // Mutation inputs
 // ---------------------------------------------------------------------------
 
+/** The record kinds a candidate may carry — ARK_KIND's values (the enum lives
+ *  in models/documents/schema.ts; types.ts may not import another model, so the
+ *  list is restated and pinned to it by tests/models/documents/ark-kind.test.ts). */
+export const BUFFER_ARK_KIND_VALUES = [
+  "periodical_issue",
+  "periodical_collection",
+  "monograph",
+  "image",
+  "catalogue_notice",
+  "other_document",
+  "unknown",
+] as const
+
 /** A candidate hit written to the buffer by a search tool. Metadata is optional
- *  (nullable columns); only the ARK is required. */
+ *  (nullable columns); only the ARK is required. `docType` and `lang` are the
+ *  CANONICAL codes (lib/buffer/classify.ts); the hit's own type label travels
+ *  verbatim in `docTypeRaw`. `arkKind` is set by a producer that knows more
+ *  than (ark, docType) — a `cb…/date` collection entry — and derived by
+ *  registerCandidates otherwise. */
 export const bufferCandidateSchema = z.object({
   ark: arkSchema,
   title: z.string().trim().min(1).max(500).optional(),
   year: z.number().int().optional(),
   docType: z.string().trim().min(1).max(80).optional(),
+  docTypeRaw: z.string().trim().min(1).max(200).optional(),
+  arkKind: z.enum(BUFFER_ARK_KIND_VALUES).optional(),
   lang: z.string().trim().min(1).max(20).optional(),
   source: z.string().trim().min(1).max(80).optional(),
   snippet: z.string().trim().min(1).max(2_000).optional(),

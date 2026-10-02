@@ -23,6 +23,15 @@ export async function register() {
   // project with pending stubs so resolution self-heals. Unlike the turn reaper
   // (which must NOT run periodically — live streaming turns are legitimate),
   // pending stubs are never "in flight", so a periodic sweep is safe.
+  // Rewrite buffer rows written before the v2 buffer (raw dc:type labels, MARC
+  // language codes, no record kind) into the canonical vocabulary, once. The
+  // version gate makes every later boot a no-op (`updated=0`), so this never
+  // runs periodically. Fire-and-forget — must not block serving.
+  const { reclassifyBufferItems } = await import("@/lib/buffer/reclassify")
+  void reclassifyBufferItems().catch((err) => {
+    console.error("[instrumentation] buffer reclassify failed:", err)
+  })
+
   const { RESOLVE_SWEEP_INTERVAL_MS, CANONICALIZE_SWEEP_INTERVAL_MS } =
     await import("@/lib/constants")
   setInterval(() => {
