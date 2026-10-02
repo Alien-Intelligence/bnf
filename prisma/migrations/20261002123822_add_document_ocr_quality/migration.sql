@@ -39,6 +39,8 @@ ALTER TABLE "document_ocr" ADD CONSTRAINT "document_ocr_ocr_rate_check"
     CHECK ("ocr_rate" IS NULL OR ("ocr_rate" >= 0 AND "ocr_rate" <= 1));
 ALTER TABLE "document_ocr" ADD CONSTRAINT "document_ocr_sync_attempts_check"
     CHECK ("sync_attempts" >= 0);
+ALTER TABLE "document_folio" ADD CONSTRAINT "document_folio_folio_check"
+    CHECK ("folio" >= 1);
 ALTER TABLE "document_folio" ADD CONSTRAINT "document_folio_ocr_source_check"
     CHECK ("ocr_source" IN ('alto', 'mistral', 'vision'));
 ALTER TABLE "document_folio" ADD CONSTRAINT "document_folio_ocr_quality_check"
