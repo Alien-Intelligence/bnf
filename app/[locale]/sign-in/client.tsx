@@ -7,7 +7,8 @@ import { useLocale, useTranslations } from "next-intl"
 import { Link, getPathname, useRouter } from "@/i18n/navigation"
 import { apiFetch } from "@/lib/api-fetch"
 import { authClient } from "@/lib/auth-client"
-import { OAUTH_PROVIDER_ID, ROUTES } from "@/lib/constants"
+import { AUTH_ENDPOINT, OAUTH_PROVIDER_ID, ROUTES } from "@/lib/constants"
+import { INVALID_CREDENTIAL_CODES, betterAuthErrorCode } from "@/lib/auth-error"
 import { SIGNED_OUT_NOTICE } from "@/models/users/schema"
 import type { SignedOutNotice } from "@/models/users/types"
 import { signInSchema, type SignInInput } from "@/models/users/types"
@@ -65,12 +66,20 @@ export function SignInClient({
     // Better Auth redirects the browser to Authentik; callbackURL is where it
     // lands after the round-trip. Same safe `next` as the email flow, with the
     // locale prefix applied here because this is a full-page hop, not an i18n
-    // router navigation.
-    const { error } = await authClient.signIn.oauth2({
-      providerId: OAUTH_PROVIDER_ID,
-      callbackURL: getPathname({ href: nextPath, locale }),
-    })
-    if (error) {
+    // router navigation. On success the page unloads, so the button stays busy;
+    // on a refusal or a throw it is released and the failure is shown.
+    try {
+      const { error } = await authClient.signIn.oauth2({
+        providerId: OAUTH_PROVIDER_ID,
+        callbackURL: getPathname({ href: nextPath, locale }),
+      })
+      if (error) {
+        console.error("[sign-in] SSO refused", error)
+        setServerError(t("errorGeneric"))
+        setSsoLoading(false)
+      }
+    } catch (e) {
+      console.error("[sign-in] SSO failed", e)
       setServerError(t("errorGeneric"))
       setSsoLoading(false)
     }
@@ -78,28 +87,25 @@ export function SignInClient({
 
   async function handleSubmit(values: SignInInput) {
     setServerError(null)
-    const response = await apiFetch("/api/auth/sign-in/email", {
-      method: "POST",
-      body: JSON.stringify({ email: values.email, password: values.password }),
-    })
+    let response: Response
+    try {
+      response = await apiFetch(AUTH_ENDPOINT.SIGN_IN_EMAIL, {
+        method: "POST",
+        body: JSON.stringify({ email: values.email, password: values.password }),
+      })
+    } catch (e) {
+      console.error("[sign-in] request failed", e)
+      setServerError(t("errorGeneric"))
+      return
+    }
 
     if (!response.ok) {
-      const body = await response.json().catch(() => ({}))
-      const code: string | undefined =
-        (body as { code?: string }).code ??
-        (body as { error?: string }).error
-
-      const INVALID_CREDENTIAL_CODES = new Set([
-        "INVALID_EMAIL_OR_PASSWORD",
-        "INVALID_PASSWORD",
-        "USER_NOT_FOUND",
-      ])
-      const message =
-        code !== undefined && INVALID_CREDENTIAL_CODES.has(code)
+      const code = await betterAuthErrorCode(response)
+      setServerError(
+        code !== null && INVALID_CREDENTIAL_CODES.has(code)
           ? t("errorInvalidCredentials")
-          : t("errorGeneric")
-
-      setServerError(message)
+          : t("errorGeneric"),
+      )
       return
     }
 

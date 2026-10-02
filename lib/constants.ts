@@ -139,6 +139,20 @@ export const AUTH_ENDPOINT = {
 } as const
 
 /**
+ * better-auth's error codes the auth forms tell apart. Anything else reads as
+ * the generic failure. INVALID_* / USER_NOT_FOUND → « Identifiants invalides »;
+ * *_ALREADY_EXISTS → « adresse déjà utilisée ».
+ */
+export const BETTER_AUTH_ERROR = {
+  INVALID_EMAIL_OR_PASSWORD: "INVALID_EMAIL_OR_PASSWORD",
+  INVALID_PASSWORD: "INVALID_PASSWORD",
+  USER_NOT_FOUND: "USER_NOT_FOUND",
+  USER_ALREADY_EXISTS: "USER_ALREADY_EXISTS",
+  USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL: "USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL",
+  EMAIL_ALREADY_EXISTS: "EMAIL_ALREADY_EXISTS",
+} as const
+
+/**
  * The UI locales, French first and default. i18n/routing.ts builds next-intl's
  * routing from these, and models/users/types.ts validates a client-sent locale
  * against them.
