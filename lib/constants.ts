@@ -27,6 +27,8 @@ export const ROUTES = {
   signIn: "/sign-in",
   signUp: "/sign-up",
   forgotPassword: "/forgot-password",
+  /** The site root: the session-aware entry page (app/[locale]/page.tsx). */
+  root: "/",
 } as const
 
 /**
@@ -115,13 +117,24 @@ export const OAUTH_PROVIDER_ID = LOGIN_METHOD.AUTHENTIK
 export const AUTH_QUERY = { NEXT: "next", SIGNED_OUT: "signedOut" } as const
 
 /**
+ * better-auth's catch-all mount and the email endpoints under it, as
+ * better-auth names them (the session.create hook sees these paths:
+ * lib/auth-login-method.ts).
+ */
+export const BETTER_AUTH_BASE_PATH = "/api/auth"
+export const BETTER_AUTH_PATH = {
+  SIGN_IN_EMAIL: "/sign-in/email",
+  SIGN_UP_EMAIL: "/sign-up/email",
+} as const
+
+/**
  * The auth endpoints the app's own clients call: better-auth's email sign-up
- * and sign-in (its catch-all under /api/auth), and the app's sign-out route.
- * Used by the sign-in/sign-up clients, the sign-out hook and the e2e scripts.
+ * and sign-in, and the app's sign-out route. Used by the sign-in/sign-up
+ * clients, the sign-out hook and the e2e/seed scripts.
  */
 export const AUTH_ENDPOINT = {
-  SIGN_UP_EMAIL: "/api/auth/sign-up/email",
-  SIGN_IN_EMAIL: "/api/auth/sign-in/email",
+  SIGN_UP_EMAIL: `${BETTER_AUTH_BASE_PATH}${BETTER_AUTH_PATH.SIGN_UP_EMAIL}`,
+  SIGN_IN_EMAIL: `${BETTER_AUTH_BASE_PATH}${BETTER_AUTH_PATH.SIGN_IN_EMAIL}`,
   SIGN_OUT: "/api/sign-out",
 } as const
 

@@ -64,14 +64,16 @@ const HEALTH_PROBE_TIMEOUT_MS = 5_000
  *  explicitly; the agent e2es keep the 3939 default. The remediation names the
  *  port of the base actually probed, and the network error rides as `cause`. */
 export async function requireServer(baseUrl: string = BASE_URL): Promise<void> {
+  // Parsed before the probe: a malformed base fails here with its own error,
+  // not inside the catch where it would replace the network error.
+  const { port } = new URL(baseUrl)
+  const start = port ? `npm run dev -- -p ${port}` : "npm run dev"
   try {
     await fetch(`${baseUrl}/api/health`, {
       method: "GET",
       signal: AbortSignal.timeout(HEALTH_PROBE_TIMEOUT_MS),
     })
   } catch (e) {
-    const { port } = new URL(baseUrl)
-    const start = port ? `npm run dev -- -p ${port}` : "npm run dev"
     throw new Error(`dev server unreachable at ${baseUrl} — start it with: ${start}`, { cause: e })
   }
 }

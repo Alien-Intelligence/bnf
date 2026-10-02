@@ -17,7 +17,8 @@ import { randomUUID } from "node:crypto"
 import { z } from "zod"
 import { routing } from "@/i18n/routing"
 import { prisma } from "@/lib/db"
-import { AUTH_QUERY, ROUTES } from "@/lib/constants"
+import { AUTH_ENDPOINT, AUTH_QUERY, ROUTES } from "@/lib/constants"
+import { localePrefixedPath } from "@/lib/auth-redirect"
 import { LOGIN_METHOD, SIGNED_OUT_NOTICE, SSO_LOGOUT } from "@/models/users/schema"
 import fr from "@/messages/fr.json"
 import { cleanupProject } from "@/lib/testing/project-cleanup"
@@ -32,18 +33,26 @@ const REQUEST_TIMEOUT_MS = 60_000
 const RUN_DEADLINE_MS = 300_000
 const RUN_DEADLINE = AbortSignal.timeout(RUN_DEADLINE_MS)
 
+/**
+ * Bound a non-fetch await (Prisma, cleanup) by the run's deadline: it rejects
+ * when the deadline fires, whatever the awaited work is doing.
+ */
+function untilDeadline<T>(work: Promise<T>): Promise<T> {
+  const deadline = new Promise<never>((_, reject) => {
+    const fire = () => reject(new Error(`e2e-auth: run deadline (${RUN_DEADLINE_MS} ms) passed`, { cause: RUN_DEADLINE.reason }))
+    if (RUN_DEADLINE.aborted) fire()
+    else RUN_DEADLINE.addEventListener("abort", fire, { once: true })
+  })
+  return Promise.race([work, deadline])
+}
+
 /** Every request is bounded by its own timeout and by the run's deadline. */
 function bounded(): AbortSignal {
   return AbortSignal.any([AbortSignal.timeout(REQUEST_TIMEOUT_MS), RUN_DEADLINE])
 }
 
-/** The endpoints this script drives. */
-const ENDPOINT = {
-  signUp: "/api/auth/sign-up/email",
-  signIn: "/api/auth/sign-in/email",
-  signOut: "/api/sign-out",
-  projects: "/api/projects",
-} as const
+/** The one API route this script calls that is not an auth endpoint. */
+const PROJECTS_ENDPOINT = "/api/projects"
 
 /** better-auth's session cookie name (no `__Secure-` prefix over plain http). */
 const SESSION_COOKIE = "better-auth.session_token"
@@ -74,17 +83,27 @@ type Account = { cookie: string; id: string; email: string }
  *  better-auth refuses a cross-origin POST). */
 async function signUp(): Promise<Account> {
   const email = `e2e-auth-${randomUUID().slice(0, 8)}@bnf-e2e.local`
-  const res = await fetch(`${BASE}${ENDPOINT.signUp}`, {
+  const res = await fetch(`${BASE}${AUTH_ENDPOINT.SIGN_UP_EMAIL}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", origin: BASE },
     body: JSON.stringify({ email, password: PW, name: `e2e auth ${email}` }),
     signal: bounded(),
   })
   if (!res.ok) throw new Error(`sign-up: ${res.status} ${await res.text()}`)
-  const cookie = cookieHeader(res)
+  const cookie = sessionCookie(res, "sign-up")
   check("1. sign-up answers 200 with a session cookie", cookie.length > 0, `status=${res.status} cookie=${cookie.slice(0, 40)}…`)
-  const user = await prisma.user.findUniqueOrThrow({ where: { email } })
+  const user = await untilDeadline(prisma.user.findUniqueOrThrow({ where: { email } }))
   return { cookie, id: user.id, email }
+}
+
+/** The Cookie header for a sign-up/sign-in answer; throws without a session
+ *  cookie, so no later step runs signed out and misreports why. */
+function sessionCookie(res: Response, what: string): string {
+  const cookie = cookieHeader(res)
+  if (!cookie.split("; ").some((c) => c.startsWith(`${SESSION_COOKIE}=`))) {
+    throw new Error(`${what}: ${res.status} without a ${SESSION_COOKIE} cookie`)
+  }
+  return cookie
 }
 
 function cookieHeader(res: Response): string {
@@ -139,14 +158,14 @@ async function api(path: string, cookie: string, init: RequestInit = {}): Promis
 /** An email sign-in; fails the run at once if refused, so no later check
  *  misreports a missing cookie as its own failure. */
 async function signInEmail(account: Account): Promise<{ cookie: string; status: number }> {
-  const res = await fetch(`${BASE}${ENDPOINT.signIn}`, {
+  const res = await fetch(`${BASE}${AUTH_ENDPOINT.SIGN_IN_EMAIL}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", origin: BASE },
     body: JSON.stringify({ email: account.email, password: PW }),
     signal: bounded(),
   })
   if (!res.ok) throw new Error(`sign-in: ${res.status} ${await res.text()}`)
-  return { cookie: cookieHeader(res), status: res.status }
+  return { cookie: sessionCookie(res, "sign-in"), status: res.status }
 }
 
 /**
@@ -182,15 +201,15 @@ async function signOutRoundTrip(account: Account): Promise<void> {
   const token = sessionToken(cookie)
 
   // 11. The hook stamped the method.
-  const row = await prisma.session.findUnique({ where: { token }, select: { loginMethod: true } })
+  const row = await untilDeadline(prisma.session.findUnique({ where: { token }, select: { loginMethod: true } }))
   check("11. the session row records loginMethod=email", row?.loginMethod === LOGIN_METHOD.EMAIL, `loginMethod=${String(row?.loginMethod)}`)
 
   // 12. The cookie works.
-  const before = await api(ENDPOINT.projects, cookie)
+  const before = await api(PROJECTS_ENDPOINT, cookie)
   check("12. GET /api/projects with the cookie → 200", before.status === 200, `status=${before.status}`)
 
   // 13. Our sign-out route.
-  const out = await api(ENDPOINT.signOut, cookie, { method: "POST", body: JSON.stringify({ locale: DEFAULT_LOCALE }) })
+  const out = await api(AUTH_ENDPOINT.SIGN_OUT, cookie, { method: "POST", body: JSON.stringify({ locale: DEFAULT_LOCALE }) })
   // Parse only a 200: on main the route does not exist and answers an HTML 404.
   const outBody = out.ok ? signOutBodySchema.safeParse(await out.json()) : null
   const expectedRedirect = `${ROUTES.signIn}?${AUTH_QUERY.SIGNED_OUT}=${SIGNED_OUT_NOTICE.DONE}`
@@ -205,18 +224,18 @@ async function signOutRoundTrip(account: Account): Promise<void> {
   check("13b. the response expires the session cookie", clearing.length === 1, out.headers.getSetCookie().join(" | ").slice(0, 200))
 
   // 14. The row is gone.
-  const count = await prisma.session.count({ where: { token } })
+  const count = await untilDeadline(prisma.session.count({ where: { token } }))
   check("14. the session row is deleted", count === 0, `count=${count}`)
 
   // 15–17. The old cookie is dead everywhere.
-  const after = await api(ENDPOINT.projects, cookie)
+  const after = await api(PROJECTS_ENDPOINT, cookie)
   check("15. GET /api/projects with the OLD cookie → 401", after.status === 401, `status=${after.status}`)
-  expectRedirect("16. GET / with the old cookie → /sign-in", await page("/", cookie), ROUTES.signIn)
-  const again = await api(ENDPOINT.signOut, cookie, { method: "POST", body: JSON.stringify({ locale: DEFAULT_LOCALE }) })
+  expectRedirect("16. GET / with the old cookie → /sign-in", await page(ROUTES.root, cookie), ROUTES.signIn)
+  const again = await api(AUTH_ENDPOINT.SIGN_OUT, cookie, { method: "POST", body: JSON.stringify({ locale: DEFAULT_LOCALE }) })
   check("17. POST /api/sign-out with the old cookie → 401 (idempotent)", again.status === 401, `status=${again.status}`)
 
   // 17b. No session at all: withAuth is the authorization for this route.
-  const anonymous = await fetch(`${BASE}${ENDPOINT.signOut}`, {
+  const anonymous = await fetch(`${BASE}${AUTH_ENDPOINT.SIGN_OUT}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", origin: BASE },
     body: JSON.stringify({ locale: DEFAULT_LOCALE }),
@@ -226,7 +245,7 @@ async function signOutRoundTrip(account: Account): Promise<void> {
 
   // 18. parseBody refuses a bad locale, with a valid cookie.
   const fresh = await signInEmail(account)
-  const bad = await api(ENDPOINT.signOut, fresh.cookie, { method: "POST", body: JSON.stringify({ locale: "xx" }) })
+  const bad = await api(AUTH_ENDPOINT.SIGN_OUT, fresh.cookie, { method: "POST", body: JSON.stringify({ locale: "xx" }) })
   check("18. POST /api/sign-out {locale: xx} → 400", bad.status === 400, `status=${bad.status}`)
 }
 
@@ -242,7 +261,7 @@ function headerHtml(html: string): string | null {
 }
 
 async function workspaceShell(account: Account): Promise<void> {
-  const created = await api(ENDPOINT.projects, account.cookie, {
+  const created = await api(PROJECTS_ENDPOINT, account.cookie, {
     method: "POST",
     body: JSON.stringify({ name: `e2e auth shell ${randomUUID().slice(0, 8)}` }),
   })
@@ -272,7 +291,7 @@ async function workspaceShell(account: Account): Promise<void> {
       missing.status === 404 && !missingHtml.includes(SHARE_LABEL),
       `status=${missing.status}`,
     )
-  }, () => cleanupProject(id))
+  }, () => untilDeadline(cleanupProject(id)).then(() => undefined))
 }
 
 async function main(): Promise<void> {
@@ -286,11 +305,11 @@ async function main(): Promise<void> {
   await withTeardown(
     "auth round trip",
     async () => {
-      expectRedirect("2. GET / signed in → /projects", await page("/", cookie), ROUTES.projects)
+      expectRedirect("2. GET / signed in → /projects", await page(ROUTES.root, cookie), ROUTES.projects)
       expectRedirect(
         `3. GET /${OTHER_LOCALE} signed in → /${OTHER_LOCALE}/projects`,
-        await page(`/${OTHER_LOCALE}`, cookie),
-        `/${OTHER_LOCALE}${ROUTES.projects}`,
+        await page(localePrefixedPath(ROUTES.root, OTHER_LOCALE), cookie),
+        localePrefixedPath(ROUTES.projects, OTHER_LOCALE),
       )
       expectRedirect("4. GET /sign-in signed in → /projects", await page(ROUTES.signIn, cookie), ROUTES.projects)
       expectRedirect(
@@ -306,11 +325,11 @@ async function main(): Promise<void> {
         )
       }
       expectRedirect("6b. GET /sign-up signed in → /projects", await page(ROUTES.signUp, cookie), ROUTES.projects)
-      expectRedirect("7. GET / signed out → /sign-in", await page("/", null), ROUTES.signIn)
+      expectRedirect("7. GET / signed out → /sign-in", await page(ROUTES.root, null), ROUTES.signIn)
       expectRedirect(
         `8. GET /${OTHER_LOCALE}/projects signed out → /${OTHER_LOCALE}/sign-in?next=/projects (with next)`,
-        await page(`/${OTHER_LOCALE}${ROUTES.projects}`, null),
-        `/${OTHER_LOCALE}${ROUTES.signIn}?${AUTH_QUERY.NEXT}=${encodeURIComponent(ROUTES.projects)}`,
+        await page(localePrefixedPath(ROUTES.projects, OTHER_LOCALE), null),
+        `${localePrefixedPath(ROUTES.signIn, OTHER_LOCALE)}?${AUTH_QUERY.NEXT}=${encodeURIComponent(ROUTES.projects)}`,
       )
 
       section("Phase 3 — the project shell (#1, #2, #6)")
@@ -322,7 +341,7 @@ async function main(): Promise<void> {
     async () => {
       section("Teardown")
       // user.delete cascades to sessions and accounts (prisma/schema.prisma).
-      await prisma.user.delete({ where: { id: account.id } })
+      await untilDeadline(prisma.user.delete({ where: { id: account.id } }))
       console.log(`  deleted ${account.email}`)
     },
   )
@@ -333,7 +352,7 @@ async function main(): Promise<void> {
 /** Close the DB pool; a failure to do so is reported, not dropped. */
 async function shutdown(): Promise<void> {
   try {
-    await prisma.$disconnect()
+    await untilDeadline(prisma.$disconnect())
   } catch (e) {
     console.error("[e2e-auth] prisma.$disconnect failed", e)
     process.exitCode = 1

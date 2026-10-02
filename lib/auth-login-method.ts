@@ -11,12 +11,15 @@
 //
 // Pure: no `server-only`, unit-tested in auth-login-method.test.ts.
 
-import { OAUTH_PROVIDER_ID } from "@/lib/constants"
+import { BETTER_AUTH_PATH, OAUTH_PROVIDER_ID } from "@/lib/constants"
 import { LOGIN_METHOD } from "@/models/users/schema"
 import type { LoginMethod } from "@/models/users/types"
 
 const OAUTH_CALLBACK_PREFIX = "/oauth2/callback/"
-const EMAIL_PATHS: ReadonlySet<string> = new Set(["/sign-in/email", "/sign-up/email"])
+const EMAIL_PATHS: ReadonlySet<string> = new Set([
+  BETTER_AUTH_PATH.SIGN_IN_EMAIL,
+  BETTER_AUTH_PATH.SIGN_UP_EMAIL,
+])
 
 /**
  * `null` is a defined answer, not a failure: a session created by an endpoint

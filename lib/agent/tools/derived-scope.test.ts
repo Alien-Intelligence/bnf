@@ -149,12 +149,20 @@ test("the research scope carries no corpus, buffer or ingest tools", () => {
   // A derived project only ever runs research sessions (see above), so the
   // research registry is the complete set of tools it can reach.
   const names = toolsForScope(SESSION_SCOPE.RESEARCH).map((t) => t.name)
-  // Every corpus-side tool, by its AGENT_TOOLS key family, so a tool added to
-  // one of these families later is covered without touching this test.
-  const corpusSide: ReadonlySet<string> = new Set(
-    Object.entries(AGENT_TOOLS)
-      .filter(([key]) => /^(corpus|buffer|ingest)[A-Z]/.test(key))
-      .map(([, name]) => name),
+  // The corpus-side tools are whatever the corpus registry offers that the
+  // research scope is not meant to share — read from the registry itself, so
+  // a new corpus tool is covered however it is named. The shared set is the
+  // explicit, reviewed list of tools both scopes may carry.
+  const sharedWithResearch: ReadonlySet<string> = new Set([
+    AGENT_TOOLS.memoryRead,
+    AGENT_TOOLS.memoryWrite,
+    AGENT_TOOLS.askUser,
+    AGENT_TOOLS.spawnResearch,
+  ])
+  const corpusSide = new Set(
+    toolsForScope(SESSION_SCOPE.CORPUS)
+      .map((t) => t.name)
+      .filter((n) => !sharedWithResearch.has(n)),
   )
   const leaked = names.filter((n) => corpusSide.has(n))
   assert.deepEqual(leaked, [], `corpus-side tools in research scope: ${leaked}`)
