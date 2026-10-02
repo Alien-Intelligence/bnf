@@ -299,6 +299,8 @@ truth to avoid churn.)
 | `worker.replicaCount` | Worker replicas (pg-boss-safe to scale) | `1` |
 | `worker.config.clusterId` | Data cluster ID (must match the RAG dataset region) | `""` |
 | `worker.config.*` | Vision / embed / Gallica / reliability knobs | see values.yaml |
+| `worker.config.ocrBackfillEnabled` | Build missing OCR-quality artifacts (BnF spend; see below) | `"true"` |
+| `worker.config.ocrBackfillConcurrency` | In-flight backfill documents (≥ 1) | `"2"` |
 | `istio.hosts[].gateway` | `own` (provision gateway+cert) or `shared` | `own` |
 | `postgres.persistence.size` | Postgres PVC size | `10Gi` |
 
@@ -318,6 +320,44 @@ All set automatically by the chart in `real` mode:
   The chart derives **both** `WORKER_CALLBACK_BASE_URL` and `APP_BASE_URL` from
   the same `bnf-demo.appInternalUrl` helper, so they always match. If you change
   one by hand, change the other.
+
+---
+
+## OCR quality backfill
+
+The low-OCR disclaimer (feedback 2026-09-29 #7) reads each folio's OCR quality
+from the app tables `document_ocr` / `document_folio`, which mirror the worker's
+per-ARK S3 artifact `v2/ocr-quality/<slug>.json`. New ingests write the artifact
+themselves. Documents indexed **before** the release have none and are
+backfilled automatically — no manual step:
+
+- **What drives it:** the app's `[ocr-sync]` sweep (boot + every 3 min, at most
+  10 × 100 ARKs per cycle, cited documents first) calls the worker's
+  `POST /ocr-quality/sync`. Each missing artifact is queued once on the worker's
+  `ocr-quality-backfill` stage, which answers `building` until it is done.
+- **How to watch it:**
+  - app logs: `[ocr-sync] cycle: available=…, building=…, unavailable=…, pending-left=…`
+    (`pending-left` reaching 0 and staying there means converged);
+  - worker pod: `npm run status` prints `ocrBackfill: {queued, done, failed}`;
+  - Postgres: `SELECT status, reason, count(*) FROM document_ocr GROUP BY 1, 2;`
+- **BnF cost:** one Presentation-API (ALTO) call per indexed **text** folio,
+  once — the `alto` cache holds extracted text, not XML, so the word confidences
+  must be re-fetched. Vision and Mistral documents cost nothing. The calls go
+  through the broker and share the worker's fetch rate gate FIFO with live
+  ingests; check the broker's `/calls.csv` for a 429 increase on live runs.
+- **How to speed it up:** raise `worker.config.ocrBackfillConcurrency` off-hours
+  (default 2 ≈ 60–120 folios/min).
+- **How to stop the spend without a rollback:** set
+  `worker.config.ocrBackfillEnabled: "false"`. The stage is not registered and
+  missing ARKs answer `unavailable: backfill_disabled` (rechecked by the app after
+  24 h); existing artifacts are still served.
+- **Rollout order:** the worker must be at least as new as the app (an old worker
+  answers 404 on `/ocr-quality/sync`; the app logs the failed batch and retries
+  every sweep). Roll the worker **between ingest runs**: a text document whose
+  folios were fetched by the old worker and assembled by the new one has no ALTO
+  quality sidecars and fails with
+  `assemble_failed_after_retries: ocr_quality_missing_sidecar`. Retrying the
+  failed documents re-fetches them with sidecars.
 
 ---
 
