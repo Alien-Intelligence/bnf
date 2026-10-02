@@ -11,18 +11,18 @@ afterEach(() => {
   else process.env.CLUSTER_MODE = original
 })
 
-test("fake and real are read as is; unset is the documented fake default", () => {
+test("fake and real are read as is", () => {
   process.env.CLUSTER_MODE = "real"
   assert.equal(clusterMode(), CLUSTER_MODE.REAL)
   process.env.CLUSTER_MODE = "fake"
   assert.equal(clusterMode(), CLUSTER_MODE.FAKE)
-  delete process.env.CLUSTER_MODE
-  assert.equal(clusterMode(), CLUSTER_MODE.FAKE)
 })
 
-test("an unknown value throws instead of silently serving the fake cluster", () => {
+test("unset or an unknown value throws instead of silently serving the fake cluster", () => {
+  delete process.env.CLUSTER_MODE
+  assert.throws(() => clusterMode(), /CLUSTER_MODE must be set/)
   for (const bad of ["Real", "prod", ""]) {
     process.env.CLUSTER_MODE = bad
-    assert.throws(() => clusterMode(), /CLUSTER_MODE must be/)
+    assert.throws(() => clusterMode(), /CLUSTER_MODE must be set/)
   }
 })

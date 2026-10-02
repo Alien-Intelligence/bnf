@@ -9,16 +9,18 @@ export const CLUSTER_MODE = { FAKE: "fake", REAL: "real" } as const
 export type ClusterMode = (typeof CLUSTER_MODE)[keyof typeof CLUSTER_MODE]
 
 /**
- * CLUSTER_MODE, validated. Unset means `fake`, the documented local-dev
- * default (README, .env.example). Any other value than `fake` / `real` is a
- * misconfiguration and throws: a typo such as `Real` or `prod` must not
- * quietly serve fixture passages and fake ingests in place of the corpus.
+ * CLUSTER_MODE, validated. It is REQUIRED: `fake` or `real`, nothing else, and
+ * unset throws (CLAUDE_ERROR_PATTERNS §9 — no default for environment;
+ * playbook/mcp-client.md — required variables throw). `.env.example` sets
+ * `fake` explicitly and the Helm chart sets `real`, so no deployment relies on
+ * a default; a missing or mistyped value must never quietly serve fixture
+ * passages and fake ingests in place of the corpus.
  */
 export function clusterMode(): ClusterMode {
   const raw = process.env.CLUSTER_MODE
-  if (raw === undefined) return CLUSTER_MODE.FAKE
   if (raw === CLUSTER_MODE.FAKE || raw === CLUSTER_MODE.REAL) return raw
   throw new Error(
-    `CLUSTER_MODE must be "${CLUSTER_MODE.FAKE}" or "${CLUSTER_MODE.REAL}" (or unset for fake), got "${raw}"`,
+    `CLUSTER_MODE must be set to "${CLUSTER_MODE.FAKE}" or "${CLUSTER_MODE.REAL}", got ` +
+      (raw === undefined ? "nothing (unset)" : `"${raw}"`),
   )
 }

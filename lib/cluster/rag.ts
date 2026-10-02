@@ -3,9 +3,9 @@ import "server-only"
 // Facade that routes RAG queries to the real cluster or the fake in-process
 // implementation based on the CLUSTER_MODE environment variable.
 //
-// CLUSTER_MODE=fake  (or unset) → FakeRagRunner (no network, no ML)
+// CLUSTER_MODE=fake            → FakeRagRunner (no network, no ML)
 // CLUSTER_MODE=real             → RealRagRunner (data-cluster MCP, real Qdrant)
-// any other value               → throws (lib/cluster/mode.ts)
+// unset or any other value      → throws (lib/cluster/mode.ts)
 //
 // All application code that needs RAG results imports ClusterRagClient from
 // this module — never FakeRagRunner / RealRagRunner directly.

@@ -44,7 +44,8 @@ do not fabricate credentials.
 ### 2. Derive mode + port from .env.local
 
 ```bash
-MODE=$(grep -E '^CLUSTER_MODE=' .env.local | cut -d= -f2 | tr -d '"' | tr -d ' '); MODE=${MODE:-fake}
+MODE=$(grep -E '^CLUSTER_MODE=' .env.local | cut -d= -f2 | tr -d '"' | tr -d ' ')
+[ -n "$MODE" ] || echo "CLUSTER_MODE is not set in .env.local — set fake or real (the app refuses to start a cluster call without it)"
 PORT=$(grep -E '^BETTER_AUTH_URL=' .env.local | sed -E 's|.*:([0-9]+).*|\1|'); PORT=${PORT:-3000}
 echo "CLUSTER_MODE=$MODE  PORT=$PORT"
 ```
