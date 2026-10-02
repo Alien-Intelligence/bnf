@@ -48,7 +48,8 @@ export const ragQueryTool = defineTool<
     "Search the ingested corpus by semantic similarity. " +
     "Returns passages with ARK, folio, snippet, and relevance score. " +
     "Use focused, specific queries — one concept per call — rather than broad questions. " +
-    "Apply filters (type, lang, source, yearFrom/yearTo) when the question is scoped. " +
+    "Semantic search CANNOT filter: `filters` are not applied (the result lists them in " +
+    "ignoredFilters). To filter by type, language or source, use rag_keyword_search. " +
     "Returns an empty passages array when no ingestion has been committed — " +
     "the error field will explain the situation.",
   inputSchema: z.object({
@@ -74,7 +75,10 @@ export const ragQueryTool = defineTool<
         yearTo: z.number().int().optional().describe("Latest publication year (inclusive)."),
       })
       .optional()
-      .describe("Optional filters to narrow the search scope."),
+      .describe(
+        "NOT APPLIED by semantic search — accepted only so a call that passes them is not " +
+          "rejected; they come back in ignoredFilters. Filter with rag_keyword_search instead.",
+      ),
   }),
   handler: async (input, ctx) => {
     const corpus = await resolveIngestedCorpus(ctx, NOT_INGESTED_ERROR)
@@ -82,13 +86,18 @@ export const ragQueryTool = defineTool<
       return { passages: [], total: 0, error: corpus.error }
     }
 
-    return ClusterRagClient.query({
+    const result = await ClusterRagClient.query({
       projectId: ctx.corpusProjectId,
       query: input.query,
       k: input.k,
-      filters: input.filters,
       signal: ctx.signal,
     })
+    // The cluster's vector search filters by dataset / entry / score only:
+    // say which requested filters had no effect rather than imply they did.
+    const ignoredFilters = Object.entries(input.filters ?? {})
+      .filter(([, value]) => value !== undefined)
+      .map(([name]) => name)
+    return ignoredFilters.length > 0 ? { ...result, ignoredFilters } : result
   },
 })
 

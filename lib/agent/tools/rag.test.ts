@@ -138,3 +138,23 @@ test("rag_query and rag_keyword_search read the CORPUS project with the turn's s
     assert.equal(req.signal, controller.signal)
   }
 })
+
+test("rag_query does not pass filters it cannot apply, and reports them as ignored", async () => {
+  const original = ClusterRagClient.query
+  const seen: Array<Record<string, unknown>> = []
+  ClusterRagClient.query = async (req) => {
+    seen.push({ ...req })
+    return { passages: [], total: 0, modelVersion: "test" }
+  }
+  let withFilters: unknown
+  let without: unknown
+  try {
+    withFilters = await ragQueryTool.handler({ query: "incendie", filters: { yearFrom: 1930, lang: ["fre"] } }, ctxFor())
+    without = await ragQueryTool.handler({ query: "incendie" }, ctxFor())
+  } finally {
+    ClusterRagClient.query = original
+  }
+  assert.ok(seen.every((req) => !("filters" in req)), "the facade request carries no filters")
+  assert.deepEqual(withFilters, { passages: [], total: 0, modelVersion: "test", ignoredFilters: ["yearFrom", "lang"] })
+  assert.deepEqual(without, { passages: [], total: 0, modelVersion: "test" })
+})

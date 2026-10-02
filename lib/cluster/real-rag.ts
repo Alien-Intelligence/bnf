@@ -129,10 +129,9 @@ export const RealRagRunner = {
     const client = new DataclusterMcpClient({ signal: req.signal })
     const datasetId = await resolveDatasetId(req.projectId, client)
 
-    // NB: `req.filters` (type/lang/source/year) are NOT pushed down — the
-    // cluster's vector search only filters by dataset_ids / entry_ids /
-    // score_threshold. Same limitation as FakeRagRunner; the agent narrows
-    // scope through the query text instead.
+    // The cluster's vector search filters by dataset_ids / entry_ids /
+    // score_threshold only, so the request carries no facet filters (the
+    // rag_query tool reports any it was given as ignored).
     const data = await client.vectorSearchChunks({
       query: req.query,
       limit: req.k ?? RAG_DEFAULT_K,

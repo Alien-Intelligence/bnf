@@ -154,18 +154,6 @@ function scoreAgainstQuery(
   return Math.min(1, score)
 }
 
-function passesFilters(
-  p: RagFixture,
-  filters?: RagQueryRequest["filters"],
-): boolean {
-  if (!filters) return true
-  if (filters.yearFrom !== undefined && p.year < filters.yearFrom) return false
-  if (filters.yearTo !== undefined && p.year > filters.yearTo) return false
-  // type / lang / source filters cannot be applied here — RagFixture does not
-  // carry those fields.  They are checked server-side on the real cluster.
-  return true
-}
-
 export const FakeRagRunner = {
   async query(req: RagQueryRequest): Promise<RagQueryResponse> {
     req.signal.throwIfAborted()
@@ -177,7 +165,6 @@ export const FakeRagRunner = {
         s: scoreAgainstQuery(req.query, p.topics, p.snippet),
       }))
       .filter((x) => x.s > 0)
-      .filter((x) => passesFilters(x.p, req.filters))
       .sort((a, b) => b.s - a.s)
 
     const passages = scored

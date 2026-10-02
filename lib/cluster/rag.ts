@@ -64,23 +64,17 @@ export interface RagQueryRequest {
   projectId: string
   /** Free-text query issued by the research agent. */
   query: string
-  /** Maximum number of passages to return (default: 12). */
+  /** Maximum number of passages to return (default: RAG_DEFAULT_K). */
   k?: number
-  /** Server-side pre-filters applied before vector search. */
-  filters?: {
-    type?: string[]
-    lang?: string[]
-    source?: string[]
-    yearFrom?: number
-    yearTo?: number
-  }
+  // No filters: the cluster's vector search filters by dataset / entry / score
+  // only. Facet filtering is keyword search's (RagKeywordRequest.filters).
   /** Bounds every cluster await (the turn's signal). */
   signal: AbortSignal
 }
 
 export interface RagQueryResponse {
   passages: RagPassage[]
-  /** Total number of passages that survived filters and scored > 0. */
+  /** Total number of passages the search matched. */
   total: number
   /** Version tag of the embedding model used (or "fake-rag-v1" in fake mode). */
   modelVersion: string
