@@ -14,6 +14,18 @@
  */
 
 /** Reduced catalogue metadata, from OAI-PMH (text lane) or the IIIF manifest (image fallback). */
+/**
+ * Where a BnfDocInfo came from — `raw.source` of every cached `meta/<slug>.json`
+ * blob. The IIIF manifest is the primary path; OAI-PMH the fallback for the rare
+ * manifest-less ARK (client.ts). One definition: the client writes it, the
+ * cached-blob normalizer (doc-info.ts) reads it.
+ */
+export const DOC_INFO_SOURCE = {
+  IIIF_MANIFEST: "iiif_manifest",
+  OAI_PMH: "oai_pmh",
+} as const;
+export type DocInfoSource = (typeof DOC_INFO_SOURCE)[keyof typeof DOC_INFO_SOURCE];
+
 export interface BnfDocInfo {
   ark: string;
   title: string | null;

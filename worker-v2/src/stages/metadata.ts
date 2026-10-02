@@ -35,7 +35,7 @@ import { PipelineStage, type StageDeps } from "../core/stage.js";
 import type { RateGate, StageContext, StageOutcome } from "../core/types.js";
 import { classifyLane } from "../bnf/classify.js";
 import { docInfoFromManifest } from "../bnf/client.js";
-import { normalizeCachedDocInfo } from "../bnf/doc-info.js";
+import { CorruptDocInfoError, normalizeCachedDocInfo } from "../bnf/doc-info.js";
 import type { BnfClient, BnfDocInfo, Manifest } from "../bnf/types.js";
 import { PermanentBnfError } from "../bnf/errors.js";
 import {
@@ -131,8 +131,7 @@ export class MetadataStage extends PipelineStage<DocRef, never> {
       // work at all (no manifest cache lookup, no gate acquire, no BnF call).
       // Read through the normalizer: a pre-release blob lacks `ocrRate`, which
       // is derived from its cached manifest metadata (bnf/doc-info.ts, D5).
-      const rawCached = await this.blob.getJson<unknown>(keys.metadata(doc.ark));
-      const cached = rawCached === null ? null : normalizeCachedDocInfo(rawCached);
+      const cached = await this.readCachedDocInfo(doc.ark, ctx);
       info = cached ?? (await this.resolveDocInfo(doc.ark, ctx));
       if (!cached) await this.blob.putJson(keys.metadata(doc.ark), info);
     } catch (e) {
@@ -190,6 +189,24 @@ export class MetadataStage extends PipelineStage<DocRef, never> {
     await this.queue.send(Q.manifest, req);
     ctx.log.info("metadata_manifest_handoff", { ark: doc.ark, lane: decision.lane });
     return { kind: "done" };
+  }
+
+  /**
+   * The cached doc-info, or null on a miss. A corrupt blob (CorruptDocInfoError)
+   * is logged and treated as a miss: process() resolves it again from BnF and
+   * overwrites it, instead of retrying a blob that will never parse and then
+   * failing the doc as "metadata unavailable".
+   */
+  private async readCachedDocInfo(ark: string, ctx: StageContext): Promise<BnfDocInfo | null> {
+    const rawCached = await this.blob.getJson<unknown>(keys.metadata(ark));
+    if (rawCached === null) return null;
+    try {
+      return normalizeCachedDocInfo(rawCached);
+    } catch (e) {
+      if (!(e instanceof CorruptDocInfoError)) throw e;
+      ctx.log.warn("metadata_cache_corrupt", { ark, key: keys.metadata(ark), error: e.message });
+      return null;
+    }
   }
 
   /**

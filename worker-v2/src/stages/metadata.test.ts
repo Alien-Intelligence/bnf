@@ -450,3 +450,18 @@ test("a text doc whose page count BnF does not publish is skipped as page_count_
   assert.equal(row?.skipReason, "page_count_unknown");
   assert.equal(h.fetched.length, 0);
 });
+
+test("a corrupt cached doc-info blob is logged and repaired from BnF, not retried as a transient failure", async () => {
+  const h = await setup({
+    spec: { ark: "ark:/12148/textdoc", ocrAvailable: true, docType: "texte", pageCount: 2 },
+  });
+  await h.blob.putJson(keys.metadata(h.ref.ark), { ark: h.ref.ark, ocrAvailable: "yes", raw: {} });
+  await h.deliver();
+  await h.q.idle();
+
+  assert.ok(h.lines.some((l) => l.event === "metadata_cache_corrupt"), "the corruption is logged");
+  assert.equal(h.fetched.length, 2, "the doc resolved fresh and fanned out");
+  const repaired = await h.blob.getJson<{ ocrAvailable: unknown }>(keys.metadata(h.ref.ark));
+  assert.equal(repaired?.ocrAvailable, true, "the blob was rewritten from BnF");
+  assert.equal(h.bnf.calls.manifest, 1);
+});

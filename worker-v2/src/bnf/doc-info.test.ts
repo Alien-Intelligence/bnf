@@ -9,7 +9,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { normalizeCachedDocInfo } from "./doc-info.js";
+import { CorruptDocInfoError, normalizeCachedDocInfo } from "./doc-info.js";
 
 const ARK = "ark:/12148/bpt6k4625753w";
 
@@ -92,7 +92,7 @@ test("current blob with ocrRate null → unchanged (null is a valid recorded val
 test("blob whose ocrRate is a string → throws (corrupt cache, never coerced)", () => {
   assert.throws(
     () => normalizeCachedDocInfo({ ...legacyManifestBlob([]), ocrRate: "0.78" }),
-    /ocrRate/,
+    (e: unknown) => e instanceof CorruptDocInfoError && /ocrRate/.test(e.message),
   );
 });
 
@@ -101,3 +101,58 @@ test("blob that is not a BnfDocInfo at all → throws", () => {
   assert.throws(() => normalizeCachedDocInfo("nope"), /cached BnfDocInfo/);
   assert.throws(() => normalizeCachedDocInfo({ title: "no ark" }), /cached BnfDocInfo/);
 });
+
+const isCorrupt = (pattern: RegExp) => (e: unknown): boolean =>
+  e instanceof CorruptDocInfoError && pattern.test(e.message);
+
+test("a recorded ocrRate outside [0, 1] is corrupt", () => {
+  for (const ocrRate of [1.2, -0.1, 78.21]) {
+    assert.throws(
+      () => normalizeCachedDocInfo({ ...legacyManifestBlob([]), ocrRate }),
+      isCorrupt(/ocrRate/),
+      String(ocrRate),
+    );
+  }
+});
+
+test("an unknown or missing raw.source is corrupt, never assumed to be OAI", () => {
+  assert.throws(
+    () => normalizeCachedDocInfo({ ...legacyManifestBlob([]), raw: { source: "sru" } }),
+    isCorrupt(/raw\.source/),
+  );
+  assert.throws(
+    () => normalizeCachedDocInfo({ ...legacyManifestBlob([]), raw: {} }),
+    isCorrupt(/raw\.source/),
+  );
+});
+
+test("a missing field is corrupt, not read as null", () => {
+  const { title: _title, ...noTitle } = legacyManifestBlob([]);
+  assert.throws(() => normalizeCachedDocInfo(noTitle), isCorrupt(/title/));
+  const { pageCount: _pageCount, ...noPageCount } = legacyManifestBlob([]);
+  assert.throws(() => normalizeCachedDocInfo(noPageCount), isCorrupt(/pageCount/));
+});
+
+test("a malformed raw.metadata entry is corrupt, not skipped", () => {
+  const blob = legacyManifestBlob([]);
+  assert.throws(
+    () => normalizeCachedDocInfo({ ...blob, raw: { ...blob.raw, metadata: [{ label: "Taux OCR", value: 78 }] } }),
+    isCorrupt(/raw\.metadata/),
+  );
+  assert.throws(
+    () => normalizeCachedDocInfo({ ...blob, raw: { ...blob.raw, metadata: ["Taux OCR"] } }),
+    isCorrupt(/raw\.metadata/),
+  );
+});
+
+test("pageCount must be a non-negative integer or null", () => {
+  for (const pageCount of [-1, 2.5]) {
+    assert.throws(
+      () => normalizeCachedDocInfo({ ...legacyManifestBlob([]), pageCount }),
+      isCorrupt(/pageCount/),
+      String(pageCount),
+    );
+  }
+  assert.equal(normalizeCachedDocInfo({ ...legacyManifestBlob([]), pageCount: null }).pageCount, null);
+});
+

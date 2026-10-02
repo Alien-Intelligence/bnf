@@ -31,7 +31,7 @@
  * (permanent — it's an access decision, not throttling), 404→not_found, 400→
  * bad_ark, 429→transient(is429), 5xx→transient.
  */
-import type { AltoFolio, BnfClient, BnfDocInfo, Manifest } from "./types.js";
+import { DOC_INFO_SOURCE, type AltoFolio, type BnfClient, type BnfDocInfo, type Manifest } from "./types.js";
 import { PermanentBnfError, TransientBnfError } from "./errors.js";
 import { createLogger } from "../core/logger.js";
 import type { Logger } from "../core/types.js";
@@ -290,7 +290,7 @@ export function docInfoFromManifest(manifest: Manifest, canonicalArk: string): B
     iiifManifestUrl,
     lang,
     raw: {
-      source: "iiif_manifest",
+      source: DOC_INFO_SOURCE.IIIF_MANIFEST,
       type_document: typeDocument,
       type: typeGeneric,
       language: lang,
@@ -399,7 +399,7 @@ export class LiveBnfClient implements BnfClient {
       raw: {
         ...(dc as Record<string, unknown>),
         language: lang,
-        source: "oai_pmh",
+        source: DOC_INFO_SOURCE.OAI_PMH,
         gallica_typedoc: typedoc,
         pageNumber: pageCount,
       },

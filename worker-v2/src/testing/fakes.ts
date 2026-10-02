@@ -7,7 +7,7 @@
  */
 import { PermanentBnfError, TransientBnfError } from "../bnf/errors.js";
 import { emptyAltoFolio } from "../bnf/parse.js";
-import type { AltoFolio, BnfClient, BnfDocInfo, Manifest } from "../bnf/types.js";
+import { DOC_INFO_SOURCE, type AltoFolio, type BnfClient, type BnfDocInfo, type Manifest } from "../bnf/types.js";
 import type { ClusterSink, Describer, Embedder, OcrEngine, OcrBatchStatus } from "../ports.js";
 import type { PreparedPage } from "../domain/types.js";
 
@@ -116,7 +116,7 @@ export class FakeBnfClient implements BnfClient {
       pageCount: s.pageCount,
       iiifManifestUrl: null,
       lang: "fre",
-      raw: {},
+      raw: { source: DOC_INFO_SOURCE.OAI_PMH },
     };
   }
 
