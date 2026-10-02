@@ -89,6 +89,14 @@ export const OAUTH_PROVIDER_ID = "authentik"
 export const AUTH_QUERY = { NEXT: "next" } as const
 
 /**
+ * Wall-clock ceiling on fetching Authentik's OIDC discovery document during
+ * sign-out (lib/auth-sso.ts). Sign-out must never hang on an identity
+ * provider: past this bound the app session is ended anyway and the user is
+ * told the Alien session could not be closed (CLAUDE_ERROR_PATTERNS §14).
+ */
+export const OIDC_DISCOVERY_TIMEOUT_MS = 5_000
+
+/**
  * Longest `?next=` value accepted. A real in-app path is a few dozen
  * characters; anything near this bound is a crafted payload, and the browser
  * URL limit is the same order of magnitude.

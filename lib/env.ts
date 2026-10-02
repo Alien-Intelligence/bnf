@@ -93,13 +93,38 @@ const bootEnvSchema = z.object({
 // NO defaults — see platform-wide CLAUDE_ERROR_PATTERNS.md §10.
 export const env = bootEnvSchema.parse(process.env)
 
-// True only when all three SSO credentials are present. Gates both the
-// server-side genericOAuth plugin (lib/auth.ts) and the sign-in button
-// (app/[locale]/sign-in). A partial config (e.g. id without secret) is
-// treated as "off" rather than silently half-configured.
-export const ssoEnabled: boolean = Boolean(
-  env.AUTHENTIK_BASE_URL && env.AUTHENTIK_CLIENT_ID && env.AUTHENTIK_CLIENT_SECRET,
-)
+/** The Alien Auth (Authentik) application this deployment signs in against. */
+export type AuthentikConfig = {
+  baseUrl: string
+  appSlug: string
+  clientId: string
+  clientSecret: string
+}
+
+const { AUTHENTIK_BASE_URL, AUTHENTIK_CLIENT_ID, AUTHENTIK_CLIENT_SECRET } = env
+
+/**
+ * The Authentik configuration as one typed object, present exactly when all
+ * three credentials are set. The narrowing is on the values themselves (no
+ * `!`), so nothing can hold an undefined credential. lib/auth.ts (the OAuth
+ * plugin) and lib/auth-sso.ts (RP-initiated logout) read this and never touch
+ * `env.AUTHENTIK_*` directly. A partial config (id without secret, say) is
+ * "off", never half-configured.
+ */
+export const authentik: AuthentikConfig | null =
+  AUTHENTIK_BASE_URL && AUTHENTIK_CLIENT_ID && AUTHENTIK_CLIENT_SECRET
+    ? {
+        baseUrl: AUTHENTIK_BASE_URL,
+        appSlug: env.AUTHENTIK_APP_SLUG,
+        clientId: AUTHENTIK_CLIENT_ID,
+        clientSecret: AUTHENTIK_CLIENT_SECRET,
+      }
+    : null
+
+// Gates both the server-side genericOAuth plugin (lib/auth.ts) and the sign-in
+// button (app/[locale]/sign-in). Derived from `authentik`, so the two cannot
+// disagree.
+export const ssoEnabled: boolean = authentik !== null
 
 // ---------------------------------------------------------------------------
 // Lazy MCP env — only required when the BnF MCP layer is invoked.

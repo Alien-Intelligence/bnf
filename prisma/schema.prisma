@@ -64,6 +64,12 @@ model Session {
   expiresAt DateTime  @map("expires_at")
   ipAddress String?   @map("ip_address")
   userAgent String?   @map("user_agent")
+  // How this session was opened — models/users/schema.ts LOGIN_METHOD. Written
+  // by the better-auth session.create hook (lib/auth.ts). Null for sessions
+  // opened before the column existed or by an endpoint the app does not
+  // expose; sign-out then falls back to "has an Authentik account"
+  // (UserService.signOut).
+  loginMethod String? @map("login_method")
   createdAt DateTime  @default(now()) @map("created_at")
   updatedAt DateTime  @updatedAt @map("updated_at")
 
