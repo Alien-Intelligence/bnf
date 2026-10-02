@@ -11,6 +11,11 @@ const bootEnvSchema = z.object({
   BETTER_AUTH_URL: z.string().url(),
   ANTHROPIC_API_KEY: z.string().min(1),
   APP_URL: z.string().url(),
+  // Not read by the app: ingest callbacks are signed with a per-job secret
+  // generated at submit time and stored on ingest_job.callback_secret
+  // (IngestService.submit, app/api/internal/ingest/[job_id]/progress). The
+  // chart still provisions it (secret-app.yaml, kept across upgrades by
+  // `lookup`), so it is declared, validated when present, and optional.
   JOB_CALLBACK_SECRET: z.string().min(32).optional(),
   // Langfuse observability — OPTIONAL. When all three are set, @alien/chat-sdk
   // traces every agent turn to Langfuse automatically (the SDK reads these from
@@ -55,10 +60,11 @@ const bootEnvSchema = z.object({
   // BnF authenticated partner gateway (proext). Base URL for the OAuth-gated
   // partner API — catalogue SRU, Gallica SRU, SPARQL, IIIF. The metadata resolver
   // (lib/bnf/direct.ts) targets it whenever the broker is configured (the broker
-  // mints the bearer + counts quota for this host; see broker isPartnerApi). A
-  // safe-default base, NOT a secret. The KEY/
-  // SECRET live in the broker, never here.
-  BNF_API_BASE_URL: z.string().url().default("https://openapiproext.bnf.fr"),
+  // mints the bearer + counts quota for this host; see broker isPartnerApi).
+  // REQUIRED, no default: it must be the host the broker holds a token for
+  // (helm: the app ConfigMap reuses broker.config.apiBaseUrl), and a default
+  // pointing at prod would hide a dev or staging misconfiguration.
+  BNF_API_BASE_URL: z.string().url(),
   // Agent provider — which gateway drives the `claude` agent mode (@alien/chat-sdk
   // v0.7+). `anthropic` (default) calls Anthropic directly with ANTHROPIC_API_KEY;
   // `openrouter` routes the same turns + tools + MCP through the OpenRouter gateway
@@ -109,7 +115,9 @@ const bootEnvSchema = z.object({
   })
 
 // Throws immediately on process start if any required var is absent / invalid.
-// NO defaults — see platform-wide CLAUDE_ERROR_PATTERNS.md §10.
+// No defaults for secrets, endpoints or identifiers (CLAUDE_ERROR_PATTERNS.md
+// §9/§10). The one default is AGENT_PROVIDER, a feature toggle whose default
+// is the direct Anthropic gateway; its key is never defaulted (superRefine).
 export const env = bootEnvSchema.parse(process.env)
 
 /** The Alien Auth (Authentik) application this deployment signs in against. */

@@ -14,6 +14,9 @@ data:
   BNF_MCP_URL: {{ .Values.config.bnfMcpUrl | quote }}
   DATACLUSTER_MCP_URL: {{ .Values.config.dataclusterMcpUrl | quote }}
   OTEL_SERVICE_NAME: {{ .Values.config.otelServiceName | quote }}
+  # BnF partner API host (lib/bnf/direct.ts). Required by the app's boot schema;
+  # the same value the broker mints tokens for, so the two cannot drift.
+  BNF_API_BASE_URL: {{ .Values.broker.config.apiBaseUrl | quote }}
   {{- with .Values.config.agentProvider }}
   # Agent gateway toggle. OPENROUTER_API_KEY (required when "openrouter") arrives
   # via the -app-creds ExternalSecret.
