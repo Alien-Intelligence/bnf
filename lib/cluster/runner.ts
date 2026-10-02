@@ -3,21 +3,22 @@ import "server-only"
 // Facade that routes to the real ClusterClient or the FakeClusterRunner
 // based on the CLUSTER_MODE env variable.
 //
-// CLUSTER_MODE=fake  (default) → FakeClusterRunner (in-process, no real HTTP)
+// CLUSTER_MODE=fake  (or unset) → FakeClusterRunner (in-process, no real HTTP)
 // CLUSTER_MODE=real             → ClusterClient (real cluster API)
+// any other value               → throws (lib/cluster/mode.ts)
 //
 // All app code submits and cancels jobs through this facade; it never imports
 // ClusterClient or FakeClusterRunner directly.
 import type { ClusterIngestRequest, ClusterQueueProgress } from "./contracts"
 import { ClusterClient } from "./client"
 import { FakeClusterRunner } from "./fake"
+import { CLUSTER_MODE, clusterMode } from "./mode"
 
 export const ClusterRunner = {
   async submit(
     req: ClusterIngestRequest,
   ): Promise<{ clusterJobId: string }> {
-    const mode = process.env.CLUSTER_MODE ?? "fake"
-    return mode === "real"
+    return clusterMode() === CLUSTER_MODE.REAL
       ? ClusterClient.submit(req)
       : FakeClusterRunner.submit(req)
   },
@@ -30,13 +31,11 @@ export const ClusterRunner = {
   async progress(
     clusterJobId: string,
   ): Promise<ClusterQueueProgress | null> {
-    const mode = process.env.CLUSTER_MODE ?? "fake"
-    return mode === "real" ? ClusterClient.progress(clusterJobId) : null
+    return clusterMode() === CLUSTER_MODE.REAL ? ClusterClient.progress(clusterJobId) : null
   },
 
   async cancel(clusterJobId: string): Promise<void> {
-    const mode = process.env.CLUSTER_MODE ?? "fake"
-    return mode === "real"
+    return clusterMode() === CLUSTER_MODE.REAL
       ? ClusterClient.cancel(clusterJobId)
       : FakeClusterRunner.cancel(clusterJobId)
   },

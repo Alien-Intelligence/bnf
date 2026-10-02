@@ -3,8 +3,9 @@ import "server-only"
 // Facade that routes RAG queries to the real cluster or the fake in-process
 // implementation based on the CLUSTER_MODE environment variable.
 //
-// CLUSTER_MODE=fake  (default) → FakeRagRunner (no network, no ML)
+// CLUSTER_MODE=fake  (or unset) → FakeRagRunner (no network, no ML)
 // CLUSTER_MODE=real             → RealRagRunner (data-cluster MCP, real Qdrant)
+// any other value               → throws (lib/cluster/mode.ts)
 //
 // All application code that needs RAG results imports ClusterRagClient from
 // this module — never FakeRagRunner / RealRagRunner directly.
@@ -20,6 +21,7 @@ import "server-only"
 // every offset and length is in Unicode code points (folio-text.ts).
 
 import type { DocumentFolios } from "./folio-text"
+import { CLUSTER_MODE, clusterMode } from "./mode"
 
 // ---------------------------------------------------------------------------
 // Public types (shared by fake and real implementations)
@@ -176,14 +178,11 @@ export type DocumentFoliosResult =
 // Facade
 // ---------------------------------------------------------------------------
 
-function clusterMode(): "fake" | "real" {
-  return (process.env.CLUSTER_MODE ?? "fake") === "real" ? "real" : "fake"
-}
 
 export const ClusterRagClient = {
   /** Semantic similarity search → ARK + folio + char-range passages. */
   async query(req: RagQueryRequest): Promise<RagQueryResponse> {
-    if (clusterMode() === "real") {
+    if (clusterMode() === CLUSTER_MODE.REAL) {
       const { RealRagRunner } = await import("./real-rag")
       return RealRagRunner.query(req)
     }
@@ -193,7 +192,7 @@ export const ClusterRagClient = {
 
   /** Keyword search → entry-level hits with snippets and facet filters. */
   async keywordSearch(req: RagKeywordRequest): Promise<RagKeywordResponse> {
-    if (clusterMode() === "real") {
+    if (clusterMode() === CLUSTER_MODE.REAL) {
       const { RealRagRunner } = await import("./real-rag")
       return RealRagRunner.keywordSearch(req)
     }
@@ -203,7 +202,7 @@ export const ClusterRagClient = {
 
   /** Selective full-text retrieval by entry id and character range. */
   async getEntryContent(req: RagEntryContentRequest): Promise<RagEntryContent> {
-    if (clusterMode() === "real") {
+    if (clusterMode() === CLUSTER_MODE.REAL) {
       const { RealRagRunner } = await import("./real-rag")
       return RealRagRunner.getEntryContent(req)
     }
@@ -221,7 +220,7 @@ export const ClusterRagClient = {
    * project's dataset id through the database propagates as that error.)
    */
   async getDocumentFolios(req: DocumentFoliosRequest): Promise<DocumentFoliosResult> {
-    if (clusterMode() === "real") {
+    if (clusterMode() === CLUSTER_MODE.REAL) {
       const { RealRagRunner } = await import("./real-rag")
       return RealRagRunner.getDocumentFolios(req)
     }

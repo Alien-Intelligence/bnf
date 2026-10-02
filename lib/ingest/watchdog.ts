@@ -30,6 +30,7 @@ import "server-only"
 // watchdog's only job is to stop a stuck row from blocking the dedup guard
 // forever, never to have the final say on outcome. See the comment on
 // IngestService.applyProgress.
+import { CLUSTER_MODE, clusterMode } from "@/lib/cluster/mode"
 import { prisma } from "@/lib/db"
 import { INGEST_STATUS } from "@/models/ingest/schema"
 import { IngestQueries } from "@/models/ingest/queries"
@@ -161,7 +162,7 @@ const nullSinceByJob = new Map<string, Date>()
  * corpse, so there is nothing for this watchdog to reconcile.
  */
 export function startIngestWatchdog(): { stop: () => void } {
-  if (process.env.CLUSTER_MODE !== "real") {
+  if (clusterMode() !== CLUSTER_MODE.REAL) {
     return { stop: () => {} }
   }
   const timer = setInterval(() => {
