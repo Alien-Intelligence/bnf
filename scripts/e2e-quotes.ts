@@ -46,6 +46,7 @@ import { cleanupProject } from "@/lib/testing/project-cleanup"
 import { markHeadIngested } from "@/lib/testing/mark-ingested"
 import {
   LOW_OCR_TOLD_TO_USER,
+  atLeastTwoThirds,
   casePasses,
   citedQuoteCount,
   hardViolations,
@@ -411,10 +412,6 @@ function reportRun(r: RunReport): void {
   }
   console.log(`      trace: ${r.trace}`)
   if (r.turnErrors.length > 0) console.log(`      turn errors: ${r.turnErrors.join("; ").slice(0, 200)}`)
-}
-
-function atLeastTwoThirds(passing: number, total: number): boolean {
-  return passing >= Math.ceil((2 / 3) * total)
 }
 
 // ---------------------------------------------------------------------------

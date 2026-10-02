@@ -133,6 +133,11 @@ export function runVerdict(
   return { firstWrite: broken(run.firstWrites), final: broken(run.finalNotes) }
 }
 
+/** The plan's "≥ 2/3 of runs" bar, for first writes and the soft criteria. */
+export function atLeastTwoThirds(passing: number, total: number): boolean {
+  return passing >= Math.ceil((2 / 3) * total)
+}
+
 /**
  * The plan's pass rule for one case over its runs: H1–H6 hold on final notes
  * in EVERY run, and H1, H2, H6 hold on first writes in at least
@@ -148,5 +153,5 @@ export function casePasses(
   const firstWritePassing = verdicts.filter(
     ({ r, v }) => r.noteWritten && FIRST_WRITE_CRITERIA.every((c) => !v.firstWrite.has(c)),
   ).length
-  return { finalOk, firstWriteOk: firstWritePassing >= Math.ceil((2 / 3) * runs.length), firstWritePassing }
+  return { finalOk, firstWriteOk: atLeastTwoThirds(firstWritePassing, runs.length), firstWritePassing }
 }
