@@ -1,9 +1,12 @@
 // app/[locale]/admin/layout.tsx
 // Admin console shell — shared by every admin tab (overview, accounts,
-// feedback, usage). Owns the single access gate (requireAdminUser), the
-// co-branded header, the tab-nav, and the centred main column, so each tab's
-// client renders only its own content. A non-admin hits notFound() here (404,
-// not a visible 403) before any tab code runs.
+// feedback, usage, …). Owns the co-branded header, the tab-nav and the centred
+// main column, so each tab's client renders only its own content. It resolves
+// the admin for the header with requireAdminUser, but it is not the gate: a
+// layout does not re-render on client navigation between tabs (Next 16,
+// "Layouts and auth checks"), so every tab page runs its own
+// requireAdminUser(<its ROUTES path>). A non-admin gets notFound() (404, not
+// a visible 403).
 
 import { ROUTES } from "@/lib/constants"
 import type { ReactNode } from "react"
