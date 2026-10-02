@@ -5,8 +5,12 @@
 import "server-only"
 
 import { prisma } from "@/lib/db"
-import type { Prisma } from "@/lib/generated/prisma/client"
-import { DOCUMENT_RESOLVE_STATUS, OCR_SYNC_STATUS, type OcrSource } from "./schema"
+import {
+  DOCUMENT_RESOLVE_STATUS,
+  OCR_SYNC_STATUS,
+  type DocumentUpsertData,
+  type OcrSource,
+} from "./schema"
 import type { WorkerOcrQualitySyncResponse } from "./types"
 import { ClusterRunner } from "@/lib/cluster/runner"
 import { iiifManifestUrl, sourceFromArk } from "@/lib/mcp/vocab"
@@ -84,14 +88,6 @@ export function planOcrSyncWrites(
   }
 }
 
-/** Shape of a document to upsert. Mirrors the Document table columns. */
-export type DocumentUpsertData = Omit<
-  Prisma.DocumentCreateInput,
-  "project" | "membership"
-> & {
-  projectId: string
-  ark: string
-}
 
 export class DocumentService {
   /**

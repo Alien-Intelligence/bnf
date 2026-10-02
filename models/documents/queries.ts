@@ -4,8 +4,8 @@
 import "server-only"
 
 import { prisma } from "@/lib/db"
-import type { Document } from "@/lib/generated/prisma/client"
 import {
+  type Document,
   OCR_SYNC_STATUS,
   documentFolioRow,
   documentOcrWithFolios,

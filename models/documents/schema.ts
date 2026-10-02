@@ -19,7 +19,18 @@
 //
 // No imports from other model directories — schema.ts is the foundation layer.
 
-import type { Prisma } from "@/lib/generated/prisma/client"
+import type { Document, Prisma } from "@/lib/generated/prisma/client"
+
+export type { Document }
+
+/** Shape of a document to upsert (DocumentService.upsertMany). Mirrors the Document table columns. */
+export type DocumentUpsertData = Omit<
+  Prisma.DocumentCreateInput,
+  "project" | "membership"
+> & {
+  projectId: string
+  ark: string
+}
 import { OCR_LOW_QUALITY_THRESHOLD } from "@/lib/constants"
 
 /** One entry in a facet vocabulary map. */
