@@ -12,6 +12,12 @@
  * Each tool checks that the project has a committed ingested version before
  * delegating to ClusterRagClient. If not, it returns a structured error so the
  * agent can explain the situation to the user rather than crashing.
+ *
+ * Every result carries the OCR quality of the folios it returns (feedback
+ * 2026-09-29 #7 — see rag-ocr.ts): `ocrLow` is decided by code, and an
+ * `ocrNotice` rides along when anything is low. A failed quality read throws;
+ * the chat-sdk coerces it into an isError tool result, so the model sees the
+ * failure instead of a silently unannotated result.
  */
 import "server-only"
 
@@ -21,6 +27,23 @@ import { ClusterRagClient } from "@/lib/cluster/rag"
 import type { TurnScopedCtx } from "./registry-factory"
 import { AGENT_TOOLS } from "./constants"
 import { NOT_INGESTED_ERROR, resolveIngestedCorpus } from "./ingestion-guard"
+import { foliosInSlice } from "@/lib/citations/ocr"
+import { arkSchema } from "@/models/corpus/types"
+import { DocumentQueries } from "@/models/documents/queries"
+import {
+  annotateKeywordHits,
+  annotatePassages,
+  annotateTextSlice,
+  loadDocOcrIndex,
+  loadFolioIndex,
+} from "./rag-ocr"
+
+/**
+ * rag_get_text's ARK is not an indexed document of this corpus. Structured
+ * output, never a throw: the model recovers by passing the ARK of the same
+ * search result as the entryId (CLAUDE_ERROR_PATTERNS §15).
+ */
+export const ARK_NOT_IN_CORPUS_ERROR = "ark_not_in_corpus"
 
 // ---------------------------------------------------------------------------
 // rag_query
@@ -46,6 +69,10 @@ export const ragQueryTool = defineTool<
   description:
     "Search the ingested corpus by semantic similarity. " +
     "Returns passages with ARK, folio, snippet, and relevance score. " +
+    "Each passage also carries its folio's OCR quality: ocrQuality (mean word " +
+    "confidence 0–1, null when not measured), ocrSource (alto | mistral | vision; " +
+    "null = quality not synced yet) and ocrLow (true = the folio's text is poorly " +
+    "recognised — an ocrNotice then explains it). " +
     "Use focused, specific queries — one concept per call — rather than broad questions. " +
     "Apply filters (type, lang, source, yearFrom/yearTo) when the question is scoped. " +
     "Returns an empty passages array when no ingestion has been committed — " +
@@ -81,13 +108,18 @@ export const ragQueryTool = defineTool<
       return { passages: [], total: 0, error: corpus.error }
     }
 
-    return ClusterRagClient.query({
+    const result = await ClusterRagClient.query({
       projectId: ctx.corpusProjectId,
       ingestedVersionId: corpus.versionId,
       query: input.query,
       k: input.k,
       filters: input.filters,
     })
+    // Passages come from this project's own dataset — the D8 corpus gate.
+    const index = await loadFolioIndex(
+      result.passages.flatMap((p) => (p.folio === null ? [] : [{ ark: p.ark, folio: p.folio }])),
+    )
+    return { ...result, ...annotatePassages(result.passages, index) }
   },
 })
 
@@ -117,6 +149,9 @@ export const ragKeywordSearchTool = defineTool<
     "when you need to FILTER by document type, language or source — filtering " +
     "lives here, not on rag_query. Use the returned entryId with rag_get_text " +
     "to read the surrounding full text. " +
+    "Each hit also carries its document's OCR quality: ocrStatus (available | " +
+    "building | unavailable | pending), ocrRate (the BnF \"Taux OCR\", 0–1) and " +
+    "ocrLowFolios / ocrLowFolioCount (the folios whose text is poorly recognised). " +
     "Returns an empty hits array (with an error field) when nothing is ingested.",
   inputSchema: z.object({
     query: z
@@ -146,13 +181,16 @@ export const ragKeywordSearchTool = defineTool<
       return { hits: [], total: 0, error: corpus.error }
     }
 
-    return ClusterRagClient.keywordSearch({
+    const result = await ClusterRagClient.keywordSearch({
       projectId: ctx.corpusProjectId,
       ingestedVersionId: corpus.versionId,
       query: input.query,
       limit: input.limit,
       filters: input.filters,
     })
+    // Hits come from this project's own dataset — the D8 corpus gate.
+    const docIndex = await loadDocOcrIndex(result.hits.map((h) => h.ark))
+    return { ...result, ...annotateKeywordHits(result.hits, docIndex) }
   },
 })
 
@@ -163,6 +201,7 @@ export const ragKeywordSearchTool = defineTool<
 export const ragGetTextTool = defineTool<
   z.ZodObject<{
     entryId: z.ZodNumber
+    ark: z.ZodString
     charOffset: z.ZodOptional<z.ZodNumber>
     charLimit: z.ZodOptional<z.ZodNumber>
   }>,
@@ -175,12 +214,20 @@ export const ragGetTextTool = defineTool<
     "result, and use a passage's char range to pull the surrounding context " +
     "(e.g. charOffset slightly before its start). charLimit 0 returns the rest " +
     "of the document; keep slices to a few thousand characters. Returns text, " +
-    "totalLength, hasMore and nextOffset for pagination.",
+    "totalLength, hasMore and nextOffset for pagination. " +
+    "Also pass the ARK of that same search result: the result then carries " +
+    "ocr.folios — the OCR quality (ocrQuality, ocrSource, ocrLow) of each folio " +
+    "whose \"## Folio N\" heading falls inside the slice — and " +
+    "ocr.leadingFolioKnown (false when the slice starts mid-folio; that folio's " +
+    "quality is then unknown).",
   inputSchema: z.object({
     entryId: z
       .number()
       .int()
       .describe("Cluster entry id, taken verbatim from a search result. Never invented."),
+    ark: arkSchema.describe(
+      "The ARK of the SAME search result as entryId, taken verbatim from it. Never invented.",
+    ),
     charOffset: z
       .number()
       .int()
@@ -201,12 +248,21 @@ export const ragGetTextTool = defineTool<
       return { text: "", error: corpus.error }
     }
 
-    return ClusterRagClient.getEntryContent({
+    // D8/D12: the quality table is global, so the ARK must be an indexed
+    // document of THIS corpus before anything is read for it.
+    if (!(await DocumentQueries.isIndexedInCorpus(ctx.corpusProjectId, input.ark))) {
+      return { text: "", error: ARK_NOT_IN_CORPUS_ERROR, ark: input.ark }
+    }
+
+    const content = await ClusterRagClient.getEntryContent({
       projectId: ctx.corpusProjectId,
       entryId: input.entryId,
       charOffset: input.charOffset,
       charLimit: input.charLimit,
     })
+    const { folios } = foliosInSlice(content.text)
+    const index = await loadFolioIndex(folios.map((folio) => ({ ark: input.ark, folio })))
+    return { ...content, ark: input.ark, ...annotateTextSlice(content.text, input.ark, index) }
   },
 })
 

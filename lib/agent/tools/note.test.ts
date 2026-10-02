@@ -10,7 +10,8 @@ import { test, before, after } from "node:test"
 import assert from "node:assert/strict"
 import { randomUUID } from "node:crypto"
 import { prisma } from "@/lib/db"
-import { noteCreateTool, noteUpdateTool, noteAppendTool } from "./note"
+import { noteCreateTool, noteUpdateTool, noteAppendTool, noteResult } from "./note"
+import { NOTE_LOW_OCR_NOTICE } from "./constants"
 import { NOTE_NOT_INGESTED_ERROR } from "./ingestion-guard"
 import type { TurnScopedCtx } from "./registry-factory"
 import {
@@ -116,3 +117,25 @@ test("note_create succeeds once the project has an ingested version", async () =
     "exactly one note row created",
   )
 })
+
+// --- OCR quality in the write result (feedback 2026-09-29 #7) --------------
+
+const WRITTEN = { id: "00000000-0000-4000-8000-000000000001", title: "Note", citationCount: 2 }
+
+test("noteResult without low-OCR citations is byte-identical to before", () => {
+  assert.equal(
+    JSON.stringify(noteResult(WRITTEN, [], [])),
+    JSON.stringify({ note_id: WRITTEN.id, title: WRITTEN.title, citation_count: 2 }),
+  )
+})
+
+test("noteResult with low-OCR citations reports them and the notice", () => {
+  const low = [{ ark: "ark:/12148/bpt6k4625753w", folio: 2, ocr_quality: 0.661 }]
+  assert.deepEqual(noteResult(WRITTEN, [], low), {
+    note_id: WRITTEN.id,
+    title: WRITTEN.title,
+    citation_count: 2,
+    low_ocr_citations: { citations: low, message: NOTE_LOW_OCR_NOTICE },
+  })
+})
+

@@ -10,6 +10,8 @@
  * `createToolRegistry` applies automatically when building the Anthropic tool
  * list (see playbook/mcp-client.md).
  */
+import { OCR_LOW_QUALITY_THRESHOLD } from "@/lib/constants"
+
 export const AGENT_TOOLS = {
   // --- Corpus tools -----------------------------------------------------------
   corpusGetState:       "corpus_get_state",
@@ -76,3 +78,28 @@ export const AGENT_TOOLS = {
 } as const
 
 export type AgentToolName = (typeof AGENT_TOOLS)[keyof typeof AGENT_TOOLS]
+
+// ---------------------------------------------------------------------------
+// OCR-quality notices (feedback 2026-09-29 #7, Track B — plan D16)
+//
+// Model-facing, so French constants rather than i18n: agent-facing text
+// follows the prompts' canonical French (playbook/i18n.md, "agent output is not
+// translated"). Factual only — the quote-integrity rules themselves are prompt
+// work owned by Track C, which can refer to these fields. The threshold comes
+// from OCR_LOW_QUALITY_THRESHOLD, never a literal.
+// ---------------------------------------------------------------------------
+
+const OCR_LOW_PERCENT = `${Math.round(OCR_LOW_QUALITY_THRESHOLD * 100)} %`
+
+/** Attached to a rag_query / rag_keyword_search / rag_get_text result when any folio in it is low. */
+export const RAG_OCR_LOW_NOTICE =
+  `ocrLow=true : la reconnaissance du texte de ce folio est peu fiable ` +
+  `(qualité OCR moyenne < ${OCR_LOW_PERCENT}). Toute note qui cite ce folio ` +
+  `portera automatiquement la mise en garde de la BnF.`
+
+/** Attached to a note_create / note_update / note_append result that cites a low folio. */
+export const NOTE_LOW_OCR_NOTICE =
+  `Ces citations renvoient à des folios dont la reconnaissance du texte est peu ` +
+  `fiable (qualité OCR moyenne < ${OCR_LOW_PERCENT}). La note affiche ` +
+  `automatiquement la mise en garde de la BnF et signale ces citations : ` +
+  `n'ajoute pas de mise en garde toi-même.`

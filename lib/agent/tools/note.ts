@@ -27,8 +27,10 @@ import { z } from "zod"
 import { defineTool } from "@alien/chat-sdk/claude"
 import { NoteService } from "@/models/notes/service"
 import { NoteQueries } from "@/models/notes/queries"
+import { parseCitations } from "@/lib/citations/syntax"
 import type { TurnScopedCtx } from "./registry-factory"
-import { AGENT_TOOLS } from "./constants"
+import { AGENT_TOOLS, NOTE_LOW_OCR_NOTICE } from "./constants"
+import { loadFolioIndex, lowOcrForNoteResult, type LowOcrCitation } from "./rag-ocr"
 import { NOTE_NOT_INGESTED_ERROR, resolveIngestedCorpus } from "./ingestion-guard"
 
 /**
@@ -45,15 +47,23 @@ export const NOTE_NOT_FOUND_ERROR = "note_not_found"
  * for. A rejected ARK is not a failure — the note was written, and its body
  * still contains the text — but the agent must be told, or it will believe it
  * cited a source it actually invented (playbook/citations.md).
+ *
+ * It also names the citations of low-OCR folios (feedback 2026-09-29 #7), so
+ * the agent knows the BnF disclaimer is added to the note BY CODE and does not
+ * write its own. Without any, the result is unchanged. Exported for the tests.
  */
-function noteResult(
+export function noteResult(
   note: { id: string; title: string; citationCount: number },
   rejected: string[],
+  lowOcr: LowOcrCitation[],
 ) {
   const base = {
     note_id: note.id,
     title: note.title,
     citation_count: note.citationCount,
+    ...(lowOcr.length > 0
+      ? { low_ocr_citations: { citations: lowOcr, message: NOTE_LOW_OCR_NOTICE } }
+      : {}),
   }
   if (rejected.length === 0) return base
   return {
@@ -66,6 +76,18 @@ function noteResult(
         "rag_query ou retire la citation.",
     },
   }
+}
+
+/**
+ * The written note's low-OCR citations. Only the citations the corpus vouched
+ * for are looked up (rejected ARKs never reach the global quality table).
+ */
+async function lowOcrOf(body: string, rejected: string[]): Promise<LowOcrCitation[]> {
+  const excluded = new Set(rejected)
+  const refs = parseCitations(body)
+    .filter((c) => !excluded.has(c.ark))
+    .map((c) => ({ ark: c.ark, folio: c.folio }))
+  return lowOcrForNoteResult(body, await loadFolioIndex(refs), rejected)
 }
 
 // ---------------------------------------------------------------------------
@@ -168,7 +190,7 @@ export const noteCreateTool = defineTool<
       data: { kind: "created", noteId: note.id, title: note.title },
     })
 
-    return noteResult(note, rejected)
+    return noteResult(note, rejected, await lowOcrOf(note.body_md, rejected))
   },
 })
 
@@ -232,7 +254,11 @@ export const noteUpdateTool = defineTool<
       data: { kind: "updated", noteId: written.note.id, title: written.note.title },
     })
 
-    return noteResult(written.note, written.rejected)
+    return noteResult(
+      written.note,
+      written.rejected,
+      await lowOcrOf(written.note.body_md, written.rejected),
+    )
   },
 })
 
@@ -288,7 +314,11 @@ export const noteAppendTool = defineTool<
       data: { kind: "updated", noteId: written.note.id, title: written.note.title },
     })
 
-    return noteResult(written.note, written.rejected)
+    return noteResult(
+      written.note,
+      written.rejected,
+      await lowOcrOf(written.note.body_md, written.rejected),
+    )
   },
 })
 

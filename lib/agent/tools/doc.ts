@@ -14,8 +14,11 @@ import "server-only"
 import { z } from "zod"
 import { defineTool } from "@alien/chat-sdk/claude"
 import { prisma } from "@/lib/db"
+import { DocumentQueries } from "@/models/documents/queries"
+import { toDocumentOcrView } from "@/models/documents/schema"
 import type { TurnScopedCtx } from "./registry-factory"
 import { AGENT_TOOLS } from "./constants"
+import { docOcrSummary } from "./rag-ocr"
 
 // ---------------------------------------------------------------------------
 // doc_get
@@ -28,7 +31,9 @@ export const docGetTool = defineTool<
   name: AGENT_TOOLS.docGet,
   description:
     "Fetch a corpus document's metadata (title, author, year, type, language, source, " +
-    "excerpt) and its IIIF manifest URL by ARK. " +
+    "excerpt) and its IIIF manifest URL by ARK, plus its OCR quality summary " +
+    "(ocr: status, ocrRate = the BnF \"Taux OCR\" 0–1, scoredFolios, and the " +
+    "lowFolios / lowFolioCount whose text is poorly recognised). " +
     "Only documents already in this project's corpus can be retrieved — " +
     "pass an ARK from rag_query results or from the user's own reference. " +
     "Returns an error if the ARK is not in the corpus.",
@@ -57,7 +62,11 @@ export const docGetTool = defineTool<
       }
     }
 
-    return { document: doc }
+    // Gated by the corpus Document lookup above (plan D8).
+    const ocr = docOcrSummary(
+      toDocumentOcrView(input.ark, await DocumentQueries.ocrForArk(input.ark)),
+    )
+    return { document: doc, ocr }
   },
 })
 
