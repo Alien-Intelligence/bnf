@@ -38,7 +38,13 @@ import { docInfoFromManifest } from "../bnf/client.js";
 import { normalizeCachedDocInfo } from "../bnf/doc-info.js";
 import type { BnfClient, BnfDocInfo, Manifest } from "../bnf/types.js";
 import { PermanentBnfError } from "../bnf/errors.js";
-import { ensureCanonicalArk, isCatalogueNotice } from "../bnf/parse.js";
+import {
+  ensureCanonicalArk,
+  isCatalogueNotice,
+  metadataValue,
+  parseOcrRate,
+  TAUX_OCR_LABELS,
+} from "../bnf/parse.js";
 import type { DocStateStore } from "../domain/doc-state.js";
 import { keys } from "../domain/keys.js";
 import { Q, withFetchPriority } from "../domain/queues.js";
@@ -127,7 +133,7 @@ export class MetadataStage extends PipelineStage<DocRef, never> {
       // is derived from its cached manifest metadata (bnf/doc-info.ts, D5).
       const rawCached = await this.blob.getJson<unknown>(keys.metadata(doc.ark));
       const cached = rawCached === null ? null : normalizeCachedDocInfo(rawCached);
-      info = cached ?? (await this.resolveDocInfo(doc.ark));
+      info = cached ?? (await this.resolveDocInfo(doc.ark, ctx));
       if (!cached) await this.blob.putJson(keys.metadata(doc.ark), info);
     } catch (e) {
       if (e instanceof PermanentBnfError) {
@@ -187,7 +193,7 @@ export class MetadataStage extends PipelineStage<DocRef, never> {
    * either path propagate to process()'s catch, which retries/exhausts exactly
    * like every other stage.
    */
-  private async resolveDocInfo(ark: string): Promise<BnfDocInfo> {
+  private async resolveDocInfo(ark: string, ctx: StageContext): Promise<BnfDocInfo> {
     const canonicalArk = ensureCanonicalArk(ark);
     // Fail fast on catalogue notices. `cb*` ARKs are bibliographic/authority
     // records, not digitized documents — they have no pages, so every fetch
@@ -203,6 +209,7 @@ export class MetadataStage extends PipelineStage<DocRef, never> {
     }
     try {
       const manifest = await this.resolveManifest(canonicalArk);
+      logUnusableTauxOcr(ctx, canonicalArk, manifest);
       return docInfoFromManifest(manifest, canonicalArk);
     } catch (e) {
       // A permanently-unavailable manifest is rare (every digitized doc has one)
@@ -232,3 +239,17 @@ export class MetadataStage extends PipelineStage<DocRef, never> {
     return manifest;
   }
 }
+
+/**
+ * Log a "Taux OCR" row BnF published but we cannot read (unparseable or out of
+ * range): docInfoFromManifest records it as `ocrRate: null`, which on its own
+ * is indistinguishable from "no OCR row". This is where the value first enters
+ * the worker (a fresh manifest), so it is the one place it is logged.
+ */
+function logUnusableTauxOcr(ctx: StageContext, ark: string, manifest: Manifest): void {
+  const parsed = parseOcrRate(metadataValue(manifest.metadata, TAUX_OCR_LABELS));
+  if (parsed.kind === "unparseable" || parsed.kind === "out_of_range") {
+    ctx.log.warn("taux_ocr_unusable", { ark, kind: parsed.kind, raw: parsed.raw });
+  }
+}
+

@@ -54,6 +54,12 @@ export interface FakeDocSpec {
    * an ALTO without WC. The real client derives this from the XML (parseAlto).
    */
   folioMeanWc?: Record<number, number | null>;
+  /**
+   * The raw "Taux OCR" metadata value the fake manifest publishes when
+   * `ocrAvailable` (default "100%"). Any string — "78.21 %", "n/a", "150 %" — so
+   * tests can drive every parseOcrRate outcome through the real parsing path.
+   */
+  tauxOcr?: string;
   /** Image folios (ordre) served TRUNCATED (valid SOI, missing EOI) — the
    *  poisoned-transport shape the fetch stage must reject, never cache. */
   truncatedFolios?: number[];
@@ -73,6 +79,9 @@ export interface FakeDocSpec {
   /** Faults per folio fetch (ALTO or image), keyed by ordre. */
   folioFaults?: Record<number, Fault>;
 }
+
+/** The Taux OCR a fake text document publishes unless its spec says otherwise. */
+const FAKE_DEFAULT_TAUX_OCR = "100%";
 
 export class FakeBnfClient implements BnfClient {
   private readonly docs = new Map<string, FakeDocSpec>();
@@ -129,7 +138,7 @@ export class FakeBnfClient implements BnfClient {
     // never round-tripped through a manifest at all.)
     const metadata: Array<{ label: string; value: string }> = [{ label: "langue", value: "fre" }];
     if (s.docType) metadata.push({ label: "type document", value: s.docType });
-    if (s.ocrAvailable) metadata.push({ label: "taux ocr", value: "100%" });
+    if (s.ocrAvailable) metadata.push({ label: "taux ocr", value: s.tauxOcr ?? FAKE_DEFAULT_TAUX_OCR });
     return { title: s.title ?? `Doc ${ark}`, metadata, totalPages: s.pageCount, canvases };
   }
 

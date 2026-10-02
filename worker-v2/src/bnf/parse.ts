@@ -11,7 +11,7 @@
  * BnfClient interface, the client depends on the broker, the parsers depend on
  * nothing.
  */
-import { XMLParser } from "fast-xml-parser";
+import { XMLParser, XMLValidator } from "fast-xml-parser";
 
 import type { AltoFolio, Manifest, ManifestCanvas } from "./types.js";
 import { PermanentBnfError, TransientBnfError } from "./errors.js";
@@ -373,24 +373,41 @@ export function metadataValue(
 export const TAUX_OCR_LABELS = ["taux ocr", "taux d'ocr", "ocr rate"] as const;
 
 /**
+ * What a "Taux OCR" metadata value parses to. The three non-`ok` kinds are kept
+ * apart so the caller can log what it saw (`missing` is normal — image documents
+ * have no OCR; `unparseable` / `out_of_range` mean BnF published something we do
+ * not understand) instead of collapsing them into one silent null.
+ */
+export type OcrRateParse =
+  | { kind: "ok"; rate: number }
+  | { kind: "missing" }
+  | { kind: "unparseable"; raw: string }
+  | { kind: "out_of_range"; raw: string };
+
+/** The plain doc-level rate: a number for an `ok` parse, null otherwise. */
+export function ocrRateValue(p: OcrRateParse): number | null {
+  return p.kind === "ok" ? p.rate : null;
+}
+
+/**
  * Parse a "Taux OCR" metadata value ("78.21 %", "89,59 %", "100 %") into a
  * fraction in [0, 1], rounded to 4 decimals — a port of mcp-bnf's
  * `BnfDocumentClient._extract_ocr_rate` (bnf_document_client.py:141-159: strip
  * the %, comma → dot, /100, round 4) with two additions that port lacks:
- *   - a [0, 100] range check — "150 %" is null here, 1.5 there (bug B7, reported
- *     against mcp-bnf separately; it is frozen this round);
+ *   - a [0, 100] range check — "150 %" is out_of_range here, 1.5 there (bug B7,
+ *     reported against mcp-bnf separately; it is frozen this round);
  *   - the " | " multi-value joiner of parseV3ManifestMetadata is split and the
  *     first value taken.
- * Anything unparsable or out of range is null — never a default, never coerced.
+ * Never a default, never coerced.
  */
-export function parseOcrRate(raw: string | null): number | null {
-  if (raw === null) return null;
-  const first = raw.split(" | ")[0] ?? "";
-  const cleaned = first.replace(/%/g, "").replace(/,/g, ".").trim();
-  if (!/^\d+(\.\d+)?$/.test(cleaned)) return null;
+export function parseOcrRate(raw: string | null): OcrRateParse {
+  if (raw === null) return { kind: "missing" };
+  const [first] = raw.split(" | ");
+  const cleaned = (first ?? raw).replace(/%/g, "").replace(/,/g, ".").trim();
+  if (!/^\d+(\.\d+)?$/.test(cleaned)) return { kind: "unparseable", raw };
   const pct = Number(cleaned);
-  if (pct < 0 || pct > 100) return null;
-  return round4(pct / 100);
+  if (pct > 100) return { kind: "out_of_range", raw };
+  return { kind: "ok", rate: round4(pct / 100) };
 }
 
 function round4(n: number): number {
@@ -425,7 +442,25 @@ export interface AltoParse {
   invalidWcCount: number;
 }
 
-/** The AltoFolio for a folio BnF has no text for (ALTO 404, blank body). */
+/**
+ * The ONE AltoParse → AltoFolio mapping, shared by the live client and the fake
+ * so both produce the sidecar from the same parse (fetchAltoFolio).
+ */
+export function altoFolioFromParse(parsed: AltoParse): AltoFolio {
+  return {
+    text: parsed.text,
+    empty: parsed.text.trim() === "",
+    quality: {
+      v: 1,
+      wordCount: parsed.wordCount,
+      scoredWordCount: parsed.scoredWordCount,
+      meanWc: parsed.meanWordConfidence,
+    },
+    invalidWcCount: parsed.invalidWcCount,
+  };
+}
+
+/** The AltoFolio for a folio BnF has no text for (ALTO 404). */
 export function emptyAltoFolio(): AltoFolio {
   return {
     text: "",
@@ -452,44 +487,41 @@ interface AltoStats {
  * is a legitimately text-less folio: `{text: "", wordCount: 0,
  * meanWordConfidence: null}`.
  *
- * A body the parser cannot read, or one that parses but has no <alto> root,
- * throws TransientBnfError("alto_parse_failed") (B9). fast-xml-parser without
- * validation only throws on a truncated tag/attribute — the shape a chunked
- * response closed mid-stream produces — and it reads an HTML error page served
- * as 200 into `{html: …}` without complaint. Neither is a text-less page; both
- * used to come back as "" and be recorded as one. Transient so the fetch stage
- * retries, and a persistent one counts the folio as lost (fail-ratio) instead
- * of silently shipping an empty page.
+ * Everything else that is not a readable ALTO throws
+ * TransientBnfError("alto_parse_failed") (B9) — transient so the fetch stage
+ * retries, and a persistent one counts the folio as lost (fail-ratio) instead of
+ * silently shipping a wrong page:
+ *   - a body that is not well-formed XML (XMLValidator). fast-xml-parser alone
+ *     only throws on a tag truncated mid-attribute; a body cut BETWEEN elements
+ *     (a chunked response closed after a complete tag) parses "fine" and would
+ *     return the words seen so far — a shorter page, read as complete;
+ *   - a well-formed body with no <alto> root (an HTML error page served as 200);
+ *   - an <alto> root or a Layout that carries text instead of elements.
  */
 export function parseAlto(xml: string): AltoParse {
+  const valid = XMLValidator.validate(xml);
+  if (valid !== true) {
+    throw altoParseFailure(`not well-formed XML: ${valid.err.msg} (line ${valid.err.line})`);
+  }
   let parsed: unknown;
   try {
     parsed = altoParser.parse(xml);
   } catch (e) {
-    throw new TransientBnfError("alto_parse_failed", {
-      hint: e instanceof Error ? e.message : String(e),
-    });
+    throw altoParseFailure(e instanceof Error ? e.message : String(e));
   }
-  if (parsed === null || typeof parsed !== "object" || !("alto" in parsed)) {
-    throw new TransientBnfError("alto_parse_failed", {
-      hint: "body parsed but has no <alto> root element",
-    });
+  if (!isRecord(parsed) || !("alto" in parsed)) {
+    throw altoParseFailure("body parsed but has no <alto> root element");
   }
-  const root = (parsed as Record<string, unknown>).alto;
-  const layout =
-    root !== null && typeof root === "object"
-      ? ((root as Record<string, unknown>).Layout as Record<string, unknown> | undefined)
-      : undefined;
-  const pages = layout && Array.isArray(layout.Page) ? (layout.Page as unknown[]) : [];
+  const root = elementOrEmpty(parsed.alto, "<alto>");
+  const layout = root.Layout === undefined ? {} : elementOrEmpty(root.Layout, "<Layout>");
+  const pages = Array.isArray(layout.Page) ? (layout.Page as unknown[]) : [];
 
   const lines: string[] = [];
   const stats: AltoStats = { words: 0, scored: 0, wcSum: 0, invalid: 0 };
   for (const page of pages) {
-    if (!page || typeof page !== "object") continue;
-    const printSpace = (page as Record<string, unknown>).PrintSpace as
-      | Record<string, unknown>
-      | undefined;
-    if (!printSpace) continue;
+    if (!isRecord(page)) continue;
+    const printSpace = page.PrintSpace;
+    if (!isRecord(printSpace)) continue;
     collectLines(printSpace, lines, stats);
   }
   return {
@@ -499,6 +531,25 @@ export function parseAlto(xml: string): AltoParse {
     meanWordConfidence: stats.scored > 0 ? round4(stats.wcSum / stats.scored) : null,
     invalidWcCount: stats.invalid,
   };
+}
+
+function altoParseFailure(hint: string): TransientBnfError {
+  return new TransientBnfError("alto_parse_failed", { hint });
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return v !== null && typeof v === "object" && !Array.isArray(v);
+}
+
+/**
+ * An ALTO element as the walk reads it: its children object, or `{}` for an
+ * empty element (`<Layout/>` parses to ""). Text content where elements belong
+ * is not ALTO — throw rather than read it as an empty page.
+ */
+function elementOrEmpty(v: unknown, what: string): Record<string, unknown> {
+  if (isRecord(v)) return v;
+  if (v === "") return {};
+  throw altoParseFailure(`${what} carries text, not ALTO elements`);
 }
 
 /**

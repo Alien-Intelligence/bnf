@@ -57,6 +57,8 @@ interface Harness {
   ref: DocRef;
   /** Push the seeded DocRef onto Q.metadata (a fresh delivery). */
   deliver: () => Promise<void>;
+  /** Every structured log line the stage emitted. */
+  lines: Array<Record<string, unknown>>;
 }
 
 /** Wire a started MetadataStage over a doc spec + capturing sinks on the two
@@ -69,7 +71,7 @@ async function setup(args: {
 }): Promise<Harness> {
   const q = new MemoryQueue();
   const blob = new MemoryBlobStore();
-  const { logger } = createMemoryLogger();
+  const { logger, lines } = createMemoryLogger();
   const ds = new MemoryDocState();
   const bnf = new FakeBnfClient();
   bnf.add(args.spec);
@@ -104,6 +106,7 @@ async function setup(args: {
     manifested,
     ref,
     deliver: () => q.send(Q.metadata, ref),
+    lines,
   };
 }
 
@@ -406,3 +409,31 @@ test("manifest cache MISS costs exactly one gate acquire + one getManifest, and 
   assert.equal(row?.pagesExpected, 4);
   assert.equal(fetched.length, 4, "ManifestStage fanned out image folios from the SAME cached manifest");
 });
+
+test("an unusable Taux OCR value is logged with what was seen; the doc still routes on the row's presence", async () => {
+  for (const [tauxOcr, kind] of [
+    ["n/a", "unparseable"],
+    ["150 %", "out_of_range"],
+  ] as const) {
+    const h = await setup({
+      spec: { ark: "ark:/12148/textdoc", ocrAvailable: true, docType: "texte", pageCount: 1, tauxOcr },
+    });
+    await h.deliver();
+    await h.q.idle();
+    const line = h.lines.find((l) => l.event === "taux_ocr_unusable");
+    assert.ok(line, `a taux_ocr_unusable line for ${tauxOcr}`);
+    assert.equal(line.kind, kind);
+    assert.equal(line.raw, tauxOcr);
+    assert.equal(h.fetched.length, 1, "the text lane still runs: the label is present");
+  }
+});
+
+test("a missing or valid Taux OCR logs nothing", async () => {
+  const h = await setup({
+    spec: { ark: "ark:/12148/textdoc", ocrAvailable: true, docType: "texte", pageCount: 1, tauxOcr: "78.21 %" },
+  });
+  await h.deliver();
+  await h.q.idle();
+  assert.equal(h.lines.some((l) => l.event === "taux_ocr_unusable"), false);
+});
+

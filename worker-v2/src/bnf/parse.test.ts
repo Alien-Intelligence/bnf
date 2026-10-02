@@ -19,6 +19,8 @@ import {
   iiifV3Label,
   isCatalogueNotice,
   oaiParser,
+  altoFolioFromParse,
+  ocrRateValue,
   parseAlto,
   parseOcrRate,
   parseV3Manifest,
@@ -147,15 +149,26 @@ test("parseAlto: structurally empty ALTO (no Layout / no words) → empty text, 
   });
 });
 
-test("parseAlto: malformed (truncated) XML throws TransientBnfError alto_parse_failed (B9)", () => {
-  // The shape a chunked response closed mid-stream produces — the only input
-  // fast-xml-parser (no validation) actually throws on. Pre-fix this was
-  // swallowed into "" and the folio counted as legitimately empty.
+const isAltoParseFailure = (err: unknown): boolean =>
+  err instanceof TransientBnfError && err.cause === "alto_parse_failed";
+
+test("parseAlto: XML truncated inside a tag throws TransientBnfError alto_parse_failed (B9)", () => {
+  // Pre-fix this was swallowed into "" and the folio counted as legitimately empty.
   const truncated = `<alto><Layout><Page><PrintSpace><TextBlock><TextLine><String CONTENT="a" WC="1"/><String CONTENT="b" WC="0.3`;
-  assert.throws(
-    () => parseAlto(truncated),
-    (err: unknown) => err instanceof TransientBnfError && err.cause === "alto_parse_failed",
-  );
+  assert.throws(() => parseAlto(truncated), isAltoParseFailure);
+});
+
+test("parseAlto: XML truncated BETWEEN elements (no closing tags) is rejected too, not read as a shorter page", () => {
+  // A chunked response closed after a complete element: fast-xml-parser alone
+  // accepts it and returns the words seen so far, so the page silently loses
+  // its tail. The document must be well-formed (XMLValidator) to be read.
+  const truncated = `<alto><Layout><Page><PrintSpace><TextBlock><TextLine><String CONTENT="a" WC="1"/>`;
+  assert.throws(() => parseAlto(truncated), isAltoParseFailure);
+});
+
+test("parseAlto: an <alto> root or Layout that is not an element structure is a parse failure", () => {
+  assert.throws(() => parseAlto("<alto>hello</alto>"), isAltoParseFailure);
+  assert.throws(() => parseAlto("<alto><Layout>hello</Layout></alto>"), isAltoParseFailure);
 });
 
 test("parseAlto: a body with no <alto> root (e.g. an HTML error page served as 200) is a parse failure, not an empty folio", () => {
@@ -191,26 +204,59 @@ test("parseAlto: a lone ComposedBlock's words are read and scored (not dropped a
 // ---------------------------------------------------------------------------
 
 test("parseOcrRate: percentage strings (dot or comma decimal) → fraction, 4 decimals", () => {
-  assert.equal(parseOcrRate("78.21 %"), 0.7821);
-  assert.equal(parseOcrRate("89,59 %"), 0.8959);
-  assert.equal(parseOcrRate("100 %"), 1);
-  assert.equal(parseOcrRate("0 %"), 0);
-  assert.equal(parseOcrRate("78.21%"), 0.7821, "no space before the sign");
-  assert.equal(parseOcrRate("78.21"), 0.7821, "no sign at all");
+  assert.deepEqual(parseOcrRate("78.21 %"), { kind: "ok", rate: 0.7821 });
+  assert.deepEqual(parseOcrRate("89,59 %"), { kind: "ok", rate: 0.8959 });
+  assert.deepEqual(parseOcrRate("100 %"), { kind: "ok", rate: 1 });
+  assert.deepEqual(parseOcrRate("0 %"), { kind: "ok", rate: 0 });
+  assert.deepEqual(parseOcrRate("78.21%"), { kind: "ok", rate: 0.7821 }, "no space before the sign");
+  assert.deepEqual(parseOcrRate("78.21"), { kind: "ok", rate: 0.7821 }, "no sign at all");
 });
 
-test("parseOcrRate: out-of-range and unparsable values → null (never coerced)", () => {
-  assert.equal(parseOcrRate("150 %"), null, "above 100 % is out of range (the mcp-bnf port lacks this check)");
-  assert.equal(parseOcrRate("-5 %"), null);
-  assert.equal(parseOcrRate("n/a"), null);
-  assert.equal(parseOcrRate(""), null);
-  assert.equal(parseOcrRate("   "), null);
-  assert.equal(parseOcrRate(null), null);
+test("parseOcrRate: missing, unparseable and out-of-range are told apart (never coerced)", () => {
+  assert.deepEqual(parseOcrRate(null), { kind: "missing" });
+  assert.deepEqual(parseOcrRate("150 %"), { kind: "out_of_range", raw: "150 %" }, "the mcp-bnf port lacks this check");
+  assert.deepEqual(parseOcrRate("n/a"), { kind: "unparseable", raw: "n/a" });
+  assert.deepEqual(parseOcrRate("-5 %"), { kind: "unparseable", raw: "-5 %" });
+  assert.deepEqual(parseOcrRate(""), { kind: "unparseable", raw: "" });
+  assert.deepEqual(parseOcrRate("   "), { kind: "unparseable", raw: "   " });
 });
 
 test("parseOcrRate: a multi-valued metadata row takes the first value", () => {
   // parseV3ManifestMetadata joins multi-valued fields with " | ".
-  assert.equal(parseOcrRate("78.21 % | x"), 0.7821);
+  assert.deepEqual(parseOcrRate("78.21 % | x"), { kind: "ok", rate: 0.7821 });
+});
+
+test("ocrRateValue: only an ok parse yields a number", () => {
+  assert.equal(ocrRateValue({ kind: "ok", rate: 0.5 }), 0.5);
+  assert.equal(ocrRateValue({ kind: "missing" }), null);
+  assert.equal(ocrRateValue({ kind: "unparseable", raw: "x" }), null);
+  assert.equal(ocrRateValue({ kind: "out_of_range", raw: "150" }), null);
+});
+
+// ---------------------------------------------------------------------------
+// altoFolioFromParse — the ONE AltoParse → AltoFolio mapping (client + fake)
+// ---------------------------------------------------------------------------
+
+test("altoFolioFromParse: maps the statistics into the sidecar shape", () => {
+  assert.deepEqual(
+    altoFolioFromParse({
+      text: "a b",
+      wordCount: 2,
+      scoredWordCount: 1,
+      meanWordConfidence: 0.5,
+      invalidWcCount: 1,
+    }),
+    {
+      text: "a b",
+      empty: false,
+      quality: { v: 1, wordCount: 2, scoredWordCount: 1, meanWc: 0.5 },
+      invalidWcCount: 1,
+    },
+  );
+  assert.equal(
+    altoFolioFromParse({ text: "  ", wordCount: 0, scoredWordCount: 0, meanWordConfidence: null, invalidWcCount: 0 }).empty,
+    true,
+  );
 });
 
 // ---------------------------------------------------------------------------

@@ -13,7 +13,7 @@
  * and throws — never coerced into a default (CLAUDE_ERROR_PATTERNS §1/§11).
  */
 import type { BnfDocInfo } from "./types.js";
-import { metadataValue, parseOcrRate, TAUX_OCR_LABELS } from "./parse.js";
+import { metadataValue, ocrRateValue, parseOcrRate, TAUX_OCR_LABELS } from "./parse.js";
 
 const MANIFEST_SOURCE = "iiif_manifest";
 
@@ -79,7 +79,7 @@ export function normalizeCachedDocInfo(raw: unknown): BnfDocInfo {
     if (!Array.isArray(raw.raw.metadata)) {
       throw corrupt(ark, "manifest-sourced blob without raw.metadata");
     }
-    ocrRate = parseOcrRate(metadataValue(metadataPairs(raw.raw.metadata), TAUX_OCR_LABELS));
+    ocrRate = ocrRateValue(parseOcrRate(metadataValue(metadataPairs(raw.raw.metadata), TAUX_OCR_LABELS)));
   } else {
     // Pre-release OAI blob: OAI-PMH publishes no Taux OCR.
     ocrRate = null;
