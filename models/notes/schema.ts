@@ -67,9 +67,11 @@ export type QuoteUnverifiableCause =
   (typeof QUOTE_UNVERIFIABLE_CAUSE)[keyof typeof QUOTE_UNVERIFIABLE_CAUSE]
 
 /**
- * Outcome of one quote check. `partial` when any quote is `unverifiable` or a
- * rule could not be evaluated at all (`unevaluated_rules`); `failed` when the
- * check itself broke after the write (the note tools set it).
+ * Outcome of one quote check. `partial` when part of the body could not be
+ * checked: a quote is `unverifiable`, a rule could not be evaluated at all
+ * (`unevaluated_rules`), or text sits behind an unclosed quote mark or was left
+ * unscanned (`unbalanced_quote_mark`, `unscanned_rest_of_block`). `failed`
+ * when the check itself broke after the write (the note tools set it).
  */
 export const QUOTE_CHECK_STATUS = {
   COMPLETE: "complete",

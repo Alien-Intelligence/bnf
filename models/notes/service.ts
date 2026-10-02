@@ -1,8 +1,9 @@
 import "server-only"
 import { prisma } from "@/lib/db"
 import type { Note, Prisma } from "@/lib/generated/prisma/client"
-import { parseCitations } from "@/lib/citations/syntax"
+import { findInvalidFolioCitations, parseCitations } from "@/lib/citations/syntax"
 import { CorpusQueries } from "@/models/corpus/queries"
+import type { InvalidFolioCitationRef } from "./schema"
 
 /**
  * A write, plus the ARKs it refused to record.
@@ -13,8 +14,12 @@ import { CorpusQueries } from "@/models/corpus/queries"
  * must not, or a fabricated ARK would enter the citation index looking exactly
  * like a real one. `rejected` is what lets the tool handler tell the agent
  * which citation it invented, so it can correct itself within the turn.
+ * `invalidFolios` does the same for citation-shaped text whose folio is
+ * missing or not a page: it is not a citation at all, so it is never
+ * projected. Both are computed over the same text — the note's full body
+ * after the write — so they describe one scope.
  */
-export type NoteWriteResult = { note: Note; rejected: string[] }
+export type NoteWriteResult = { note: Note; rejected: string[]; invalidFolios: InvalidFolioCitationRef[] }
 
 export class NoteService {
   /**
@@ -31,7 +36,7 @@ export class NoteService {
     bodyMd: string
   }): Promise<NoteWriteResult> {
     const known = await NoteService.knownArks(args.corpusProjectId)
-    const { valid, rejected } = NoteService.splitCitations(args.bodyMd, known)
+    const { valid, rejected, invalidFolios } = NoteService.splitCitations(args.bodyMd, known)
 
     const note = await prisma.$transaction(async (tx) => {
       const created = await tx.note.create({
@@ -57,7 +62,7 @@ export class NoteService {
       return created
     })
 
-    return { note, rejected }
+    return { note, rejected, invalidFolios }
   }
 
   /**
@@ -108,7 +113,7 @@ export class NoteService {
       const current = await tx.note.findUnique({ where: { id } })
       if (!current) return null
       const addition = args.bodyMd.trim()
-      if (addition.length === 0) return { note: current, rejected: [] }
+      if (addition.length === 0) return { note: current, rejected: [], invalidFolios: [] }
 
       const base = current.body_md.replace(/\s+$/, "")
       const nextBody = base.length ? `${base}\n\n${addition}` : addition
@@ -135,6 +140,7 @@ export class NoteService {
     return {
       valid: parsed.filter((c) => known.has(c.ark)),
       rejected: [...new Set(parsed.filter((c) => !known.has(c.ark)).map((c) => c.ark))],
+      invalidFolios: findInvalidFolioCitations(body).map((c) => ({ ark: c.ark, folio: c.folio })),
     }
   }
 
@@ -162,9 +168,11 @@ export class NoteService {
 
     let citationCount = current.citationCount
     let rejected: string[] = []
+    let invalidFolios: InvalidFolioCitationRef[] = []
     if (next.bodyChanged) {
       const split = NoteService.splitCitations(next.body, known)
       rejected = split.rejected
+      invalidFolios = split.invalidFolios
       await tx.citation.deleteMany({ where: { noteId: current.id } })
       if (split.valid.length) {
         await tx.citation.createMany({
@@ -189,7 +197,7 @@ export class NoteService {
       },
     })
 
-    return { note, rejected }
+    return { note, rejected, invalidFolios }
   }
 
   static async delete(id: string): Promise<void> {

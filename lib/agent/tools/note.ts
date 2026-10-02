@@ -29,11 +29,11 @@ import { NoteService } from "@/models/notes/service"
 import { NoteQueries } from "@/models/notes/queries"
 import { checkNoteQuotes } from "@/lib/citations/quote-check"
 import { QUOTE_CHECK_BUDGET_MS } from "@/lib/constants"
-import { findInvalidFolioCitations, type InvalidFolioCitation } from "@/lib/citations/syntax"
 import {
   NOTE_BODY_MAX_CHARS,
   NOTE_TITLE_MAX_CHARS,
   QUOTE_CHECK_STATUS,
+  type InvalidFolioCitationRef,
   type NoteToolResult,
   type QuoteCheckResult,
 } from "@/models/notes/schema"
@@ -58,8 +58,8 @@ const UNKNOWN_ARK_MESSAGE =
   "Ces ARK ne figurent dans aucune version du corpus : la citation a été conservée dans " +
   "le texte mais n'a pas été indexée. Vérifie l'ARK avec rag_query ou retire la citation."
 const INVALID_FOLIO_MESSAGE =
-  "Ces citations ont un folio invalide (0, ou trop long pour une page) : elles restent du " +
-  "texte, sans lien vers la page. Corrige le folio avec celui que la recherche a donné."
+  "Ces citations n'ont pas de folio valide (absent, non entier, 0 ou trop long) : elles " +
+  "restent du texte, sans lien vers la page. Mets le folio que la recherche a donné."
 
 /**
  * The tool result for a write (NoteToolResult, models/notes/schema.ts), naming
@@ -72,7 +72,7 @@ const INVALID_FOLIO_MESSAGE =
 function noteResult(
   note: { id: string; title: string; citationCount: number },
   rejected: string[],
-  invalidFolios: InvalidFolioCitation[],
+  invalidFolios: InvalidFolioCitationRef[],
   quoteCheck?: QuoteCheckResult,
 ): NoteToolResult {
   const base: NoteToolResult = {
@@ -83,7 +83,7 @@ function noteResult(
   if (rejected.length > 0 || invalidFolios.length > 0) {
     base.invalid_citation = {
       arks: rejected,
-      folios: invalidFolios.map((c) => ({ ark: c.ark, folio: c.folio })),
+      folios: invalidFolios,
       message: [rejected.length > 0 ? UNKNOWN_ARK_MESSAGE : null, invalidFolios.length > 0 ? INVALID_FOLIO_MESSAGE : null]
         .filter((m): m is string => m !== null)
         .join(" "),
@@ -205,7 +205,7 @@ export async function handleNoteCreate(input: NoteCreateInput, ctx: TurnScopedCt
 
   // The note is the project's own; its citations belong to the corpus it
   // reads, which is the source's when this is a derived workspace.
-  const { note, rejected } = await NoteService.create({
+  const { note, rejected, invalidFolios } = await NoteService.create({
     projectId: ctx.projectId,
     corpusProjectId: ctx.corpusProjectId,
     appSessionId: ctx.appSessionId,
@@ -221,7 +221,7 @@ export async function handleNoteCreate(input: NoteCreateInput, ctx: TurnScopedCt
   return noteResult(
     note,
     rejected,
-    findInvalidFolioCitations(input.body_md),
+    invalidFolios,
     await runQuoteCheck(ctx, input.body_md, null),
   )
 }
@@ -296,7 +296,7 @@ export async function handleNoteUpdate(input: NoteUpdateInput, ctx: TurnScopedCt
   return noteResult(
     written.note,
     written.rejected,
-    input.body_md === undefined ? [] : findInvalidFolioCitations(input.body_md),
+    written.invalidFolios,
     quoteCheck,
   )
 }
@@ -356,7 +356,7 @@ export async function handleNoteAppend(input: NoteAppendInput, ctx: TurnScopedCt
   return noteResult(
     written.note,
     written.rejected,
-    findInvalidFolioCitations(input.body_md),
+    written.invalidFolios,
     await runQuoteCheck(ctx, input.body_md, target.body_md),
   )
 }

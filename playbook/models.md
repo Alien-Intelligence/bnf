@@ -169,6 +169,9 @@ Rules:
 Zod schemas for request validation and their inferred TypeScript types. These
 are what route handlers validate against and what hooks import.
 
+`types.ts` may import `zod`, its model's `./schema` (domain constants such as
+length limits) and `@/lib/constants` — nothing server-only, since hooks import it.
+
 ```ts
 // models/corpus/types.ts
 import { z } from "zod"

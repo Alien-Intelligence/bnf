@@ -283,4 +283,19 @@ describe("quote guard", () => {
     assert.deepEqual(result.invalid_citation?.folios, [{ ark: FIGARO, folio: "0" }])
     assert.deepEqual(result.invalid_citation?.arks, [])
   })
+
+  test("invalid_citation has one scope — the note's full body — for note_append too", async () => {
+    const created = written(
+      await handleNoteCreate(
+        { title: "Sans folio", body_md: `## Foule\n\nUne foule [[${FIGARO}|Le Figaro]] immense.` },
+        ctxFor(),
+      ),
+    )
+    assert.deepEqual(created.invalid_citation?.folios, [{ ark: FIGARO, folio: "" }], "a missing folio is reported")
+    const appended = written(await handleNoteAppend({ id: created.note_id, body_md: `Suite ${FIGARO_CITE(2)}.` }, ctxFor()))
+    // The merged body still holds the folio-less citation: reported again,
+    // exactly as an unknown ARK in the merged body would be.
+    assert.deepEqual(appended.invalid_citation?.folios, [{ ark: FIGARO, folio: "" }])
+    assert.deepEqual(appended.invalid_citation?.arks, [])
+  })
 })

@@ -43,3 +43,24 @@ test("findInvalidFolioCitations reports what the strict syntax rejected for its 
     ["0", "00", "99999999999999999999"],
   )
 })
+
+test("findInvalidFolioCitations reports a missing or non-integer folio, not only a bad number", () => {
+  const cases: Array<[string, string]> = [
+    [`[[${ARK}|Sans folio]]`, ""],
+    [`[[${ARK}|L|abc]]`, "abc"],
+    [`[[${ARK}|L|1-2]]`, "1-2"],
+    [`[[${ARK}|L|-1]]`, "-1"],
+    [`[[${ARK}|L|1.5]]`, "1.5"],
+    [`[[${ARK}|L|p. 3]]`, "p. 3"],
+    [`![[${ARK}|Une]]`, ""],
+  ]
+  for (const [md, folio] of cases) {
+    assert.deepEqual(
+      findInvalidFolioCitations(md).map((c) => [c.ark, c.folio]),
+      [[ARK, folio]],
+      md,
+    )
+    assert.deepEqual(parseCitations(md), [], `${md} is not a citation`)
+  }
+  assert.deepEqual(findInvalidFolioCitations(`[[${ARK}|L|3]] ![[${ARK}|C|f4]] [[note:00000000-0000-0000-0000-000000000000|n]]`), [])
+})
