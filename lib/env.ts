@@ -23,16 +23,16 @@ const bootEnvSchema = z.object({
   // build "view in Langfuse" deep-links (e.g. the admin feedback tab). It is 1:1
   // with the public key; absent → deep-links are simply omitted. Non-secret.
   LANGFUSE_PROJECT_ID: z.string().min(1).optional(),
-  // Alien Auth (Authentik OIDC) SSO — OPTIONAL. When the base URL + client
-  // id + secret are all set, the Better Auth genericOAuth plugin is wired up
-  // and a "Se connecter avec Alien" button appears on the sign-in page.
-  // Absent → the app boots in email/password-only mode. This is genuine
-  // optionality (a feature toggle), not an empty default — CLAUDE_ERROR_PATTERNS
-  // §10 forbids defaulting secrets, not declaring a feature optional.
-  // The Authentik application (`AUTHENTIK_APP_SLUG`) is shared with the
-  // alien-agents demo; the client id/secret are the same credentials.
+  // Alien Auth (Authentik OIDC) SSO — OPTIONAL, all or nothing. With the base
+  // URL, app slug, client id and secret all set, the Better Auth genericOAuth
+  // plugin is wired up, a "Se connecter avec Alien" button appears on the
+  // sign-in page and sign-out ends the Authentik session too. With none set
+  // the app boots in email/password-only mode. Any other combination refuses
+  // to boot (superRefine below): a half-configured SSO used to read as "off"
+  // and hide the typo. The Authentik application (`datastreaming`) is shared
+  // with the alien-agents demo; the client id/secret are the same credentials.
   AUTHENTIK_BASE_URL: z.string().url().optional(),
-  AUTHENTIK_APP_SLUG: z.string().min(1).default("datastreaming"),
+  AUTHENTIK_APP_SLUG: z.string().min(1).optional(),
   AUTHENTIK_CLIENT_ID: z.string().min(1).optional(),
   AUTHENTIK_CLIENT_SECRET: z.string().min(1).optional(),
   // Gallica browser-handshake relay — OPTIONAL, DEMO STOPGAP. Cloudflare
@@ -56,14 +56,14 @@ const bootEnvSchema = z.object({
   // partner API — catalogue SRU, Gallica SRU, SPARQL, IIIF. The metadata resolver
   // (lib/bnf/direct.ts) targets it whenever the broker is configured (the broker
   // mints the bearer + counts quota for this host; see broker isPartnerApi). A
-  // safe-default base, NOT a secret — same pattern as AUTHENTIK_APP_SLUG. The KEY/
+  // safe-default base, NOT a secret. The KEY/
   // SECRET live in the broker, never here.
   BNF_API_BASE_URL: z.string().url().default("https://openapiproext.bnf.fr"),
   // Agent provider — which gateway drives the `claude` agent mode (@alien/chat-sdk
   // v0.7+). `anthropic` (default) calls Anthropic directly with ANTHROPIC_API_KEY;
   // `openrouter` routes the same turns + tools + MCP through the OpenRouter gateway
   // (one key for every vendor, access to non-Anthropic models). This is a genuine
-  // feature toggle with a safe default — like AUTHENTIK_APP_SLUG — NOT a defaulted
+  // feature toggle with a safe default — NOT a defaulted
   // secret (CLAUDE_ERROR_PATTERNS §10 forbids defaulting secrets, not toggles).
   // Rollback is a flip back to `anthropic`. The key itself is NOT defaulted; see
   // the superRefine below.
@@ -75,6 +75,25 @@ const bootEnvSchema = z.object({
   OPENROUTER_API_KEY: z.string().min(1).optional(),
 })
   .superRefine((cfg, ctx) => {
+    // SSO is all or nothing: the four AUTHENTIK_* together, or none of them.
+    const authentikVars = {
+      AUTHENTIK_BASE_URL: cfg.AUTHENTIK_BASE_URL,
+      AUTHENTIK_APP_SLUG: cfg.AUTHENTIK_APP_SLUG,
+      AUTHENTIK_CLIENT_ID: cfg.AUTHENTIK_CLIENT_ID,
+      AUTHENTIK_CLIENT_SECRET: cfg.AUTHENTIK_CLIENT_SECRET,
+    }
+    const missing = Object.entries(authentikVars).filter(([, v]) => v === undefined)
+    if (missing.length > 0 && missing.length < Object.keys(authentikVars).length) {
+      for (const [name] of missing) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [name],
+          message:
+            `${name} is missing while other AUTHENTIK_* are set: Alien Auth SSO ` +
+            "needs all four (or none, for email/password only).",
+        })
+      }
+    }
     // No silent default for the OpenRouter key: if the operator selects the
     // openrouter provider, the key MUST be present, or the server refuses to
     // boot. (CLAUDE_ERROR_PATTERNS §10 — secrets are never defaulted/empty.)
@@ -101,21 +120,25 @@ export type AuthentikConfig = {
   clientSecret: string
 }
 
-const { AUTHENTIK_BASE_URL, AUTHENTIK_CLIENT_ID, AUTHENTIK_CLIENT_SECRET } = env
+const {
+  AUTHENTIK_BASE_URL,
+  AUTHENTIK_APP_SLUG,
+  AUTHENTIK_CLIENT_ID,
+  AUTHENTIK_CLIENT_SECRET,
+} = env
 
 /**
- * The Authentik configuration as one typed object, present exactly when all
- * three credentials are set. The narrowing is on the values themselves (no
- * `!`), so nothing can hold an undefined credential. lib/auth.ts (the OAuth
- * plugin) and lib/auth-sso.ts (RP-initiated logout) read this and never touch
- * `env.AUTHENTIK_*` directly. A partial config (id without secret, say) is
- * "off", never half-configured.
+ * The Authentik configuration as one typed object, present exactly when SSO
+ * is configured (boot already refused a partial set). The narrowing is on the
+ * values themselves (no `!`), so nothing can hold an undefined credential.
+ * lib/auth.ts (the OAuth plugin) and lib/auth-sso.ts (RP-initiated logout)
+ * read this and never touch `env.AUTHENTIK_*` directly.
  */
 export const authentik: AuthentikConfig | null =
-  AUTHENTIK_BASE_URL && AUTHENTIK_CLIENT_ID && AUTHENTIK_CLIENT_SECRET
+  AUTHENTIK_BASE_URL && AUTHENTIK_APP_SLUG && AUTHENTIK_CLIENT_ID && AUTHENTIK_CLIENT_SECRET
     ? {
         baseUrl: AUTHENTIK_BASE_URL,
-        appSlug: env.AUTHENTIK_APP_SLUG,
+        appSlug: AUTHENTIK_APP_SLUG,
         clientId: AUTHENTIK_CLIENT_ID,
         clientSecret: AUTHENTIK_CLIENT_SECRET,
       }
