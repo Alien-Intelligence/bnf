@@ -16,6 +16,8 @@
 import { prisma } from "@/lib/db"
 import { markHeadIngested } from "@/lib/testing/mark-ingested"
 import { randomUUID } from "node:crypto"
+import { z } from "zod"
+import type { ShareWithGroup } from "@/models/projects/schema"
 
 const BASE = process.env["APP_URL"] ?? "http://localhost:3001"
 const PW = "TestPassword123!"
@@ -55,6 +57,11 @@ function api(s: Session) {
 }
 
 const created: string[] = []
+
+/** The part of GET /api/projects/:id/shares (ShareWithGroup[]) the reach check reads. */
+const grantsReachSchema = z.array(
+  z.object({ groupId: z.string(), group: z.object({ _count: z.object({ members: z.number() }) }) }),
+) satisfies z.ZodType<Array<Pick<ShareWithGroup, "groupId"> & { group: Pick<ShareWithGroup["group"], "_count"> }>>
 
 async function main() {
   const admin = await signUp("admin")
@@ -114,8 +121,9 @@ async function main() {
   // The share dialog shows how many people a grant reaches (feedback #5): the
   // grants list carries the group's member count, A and B from step 1.
   const grants = await a(`/api/projects/${source}/shares`)
-  const grant = (grants.body as { groupId: string; group: { _count?: { members: number } } }[]).find((x) => x.groupId === groupId)
-  check(grant?.group._count?.members === 2, "GET shares → the grant carries group._count.members = 2", JSON.stringify(grant?.group ?? null))
+  if (grants.status !== 200) throw new Error(`GET shares: ${grants.status} ${JSON.stringify(grants.body)}`)
+  const grant = grantsReachSchema.parse(grants.body).find((x) => x.groupId === groupId)
+  check(grant?.group._count.members === 2, "GET shares → the grant carries group._count.members = 2", JSON.stringify(grant?.group ?? null))
 
   const bShare = await b(`/api/projects/${source}/shares`, { method: "POST", body: JSON.stringify({ groupId, access: "write" }) })
   check(bShare.status === 403, "a read-shared member cannot re-share → 403", String(bShare.status))
