@@ -9,9 +9,11 @@
 // ARKs are taken verbatim from prisma/seed.ts (the 30-document seed set).
 // Passages are illustrative excerpts that reflect the document type and
 // period (Exposition Universelle 1889) — they are synthetic fixtures, not
-// OCR output.
+// OCR output. The quote-integrity harness documents (1937 fires, garbled OCR
+// on purpose) live in rag-fixtures-quotes.ts and are appended at the end.
 
 import type { RagPassage } from "./rag"
+import { QUOTE_FIXTURES } from "./rag-fixtures-quotes"
 
 // Fixtures carry no entryId and no charRange — the FakeRagRunner derives a
 // stable entry id from the ARK, assembles each ARK's fixtures into one
@@ -314,4 +316,7 @@ export const RAG_FIXTURES: RagFixture[] = [
     year: 1889,
     topics: ["plan", "carte", "exposition", "champ de mars", "trocadéro", "tour eiffel", "galerie des machines"],
   },
+
+  // ── Quote-integrity harness documents (1937 fires; synthetic) ──────────
+  ...QUOTE_FIXTURES,
 ]
