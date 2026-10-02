@@ -7,6 +7,7 @@
 // must stay consistent with these sentences.
 import "server-only"
 
+import { AGENT_TOOLS } from "@/lib/agent/tools/constants"
 import { QUOTE_WARNING_REASON, type QuoteWarningReason } from "@/models/notes/schema"
 
 /** What the agent should do about each reason (rendered into `detail`). */
@@ -40,6 +41,6 @@ export const QUOTE_WARNING_DETAIL: Record<QuoteWarningReason, string> = {
     "Guillemet ouvrant sans guillemet fermant : ferme la citation (« … » ou “ … ”) ou retire " +
     "le guillemet, sinon elle ne peut pas être contrôlée.",
   [QUOTE_WARNING_REASON.UNVERIFIABLE]:
-    "Contrôle impossible (cause indiquée) : relis le passage avec `rag_get_text` avant de " +
-    "conserver cette citation.",
+    `Contrôle impossible (cause indiquée) : relis le passage avec \`${AGENT_TOOLS.ragGetText}\` ` +
+    "avant de conserver cette citation.",
 }

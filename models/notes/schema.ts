@@ -11,6 +11,11 @@ export type NoteListItem = Pick<Note, "id" | "title" | "updatedAt" | "citationCo
 /** Lightweight row returned by GET /api/notes/:nid/versions */
 export type NoteVersionListItem = Pick<NoteVersion, "id" | "seq" | "createdAt">
 
+/** Longest note title, for the agent tools and the API alike. */
+export const NOTE_TITLE_MAX_CHARS = 200
+/** Longest note body; it also bounds what one quote check has to scan. */
+export const NOTE_BODY_MAX_CHARS = 200_000
+
 // ---------------------------------------------------------------------------
 // Quote integrity (feedback-2026-09-29 #7 / #8). The agent's note writes run a
 // quote check; these are the domain values and the wire shape of its result,
@@ -115,4 +120,25 @@ export type QuoteCheckResult = {
    * Non-empty forces `status: partial`.
    */
   unevaluated_rules: QuoteWarningReason[]
+}
+
+/** A citation-shaped `[[ark|label|folio]]` whose folio is not a valid page. */
+export type InvalidFolioCitationRef = { ark: string; folio: string }
+
+/**
+ * What the agent's note write tools (note_create / note_update / note_append)
+ * return for a written note — the wire shape persisted in tool_call.output.
+ * (Not the service's `NoteWriteResult`, which is the written row.)
+ */
+export type NoteToolResult = {
+  note_id: string
+  title: string
+  citation_count: number
+  /** Citations kept as text but not projected: unknown ARKs, invalid folios. */
+  invalid_citation?: { arks: string[]; folios: InvalidFolioCitationRef[]; message: string }
+  /** Present whenever a quote was in scope, a warning was raised, or the check broke. */
+  quote_check?: Pick<QuoteCheckResult, "status" | "checked"> & {
+    unevaluated_rules?: QuoteCheckResult["unevaluated_rules"]
+  }
+  quote_warnings?: QuoteWarning[]
 }

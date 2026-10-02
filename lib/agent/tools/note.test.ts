@@ -11,7 +11,7 @@ import assert from "node:assert/strict"
 import { randomUUID } from "node:crypto"
 import { prisma } from "@/lib/db"
 import { handleNoteAppend, handleNoteCreate, handleNoteUpdate } from "./note"
-import type { NoteWriteOutcome, NoteWriteResult } from "./note"
+import type { NoteWriteOutcome } from "./note"
 import { NOTE_NOT_INGESTED_ERROR } from "./ingestion-guard"
 import { toolCallErrored } from "@/lib/tools/display"
 import type { TurnScopedCtx } from "./registry-factory"
@@ -24,17 +24,20 @@ import {
 import { cleanupProject } from "@/lib/testing/project-cleanup"
 import { SESSION_SCOPE } from "@/models/sessions/schema"
 import { ClusterRagClient } from "@/lib/cluster/rag"
+import { CLUSTER_MODE } from "@/lib/cluster/mode"
 import { seedCorpusDocuments } from "@/lib/testing/seed-corpus"
 import { markHeadIngested } from "@/lib/testing/mark-ingested"
 import {
   QUOTE_CHECK_STATUS,
   QUOTE_WARNING_REASON,
+  type NoteToolResult,
   type QuoteCheckResult,
   type QuoteCitation,
   type QuoteWarningReason,
 } from "@/models/notes/schema"
 import { ProjectService } from "@/models/projects/service"
 
+let user: TurnScopedCtx["user"]
 let userId: string
 let projectId: string
 let sessionId: string
@@ -44,20 +47,20 @@ function ctxFor(): TurnScopedCtx {
     signal: new AbortController().signal,
     request: new Request("http://localhost/test"),
     db: prisma,
-    user: { id: userId } as TurnScopedCtx["user"],
+    user,
     appSessionId: sessionId,
     projectId,
     // This project owns its corpus, so the corpus id is its own and the grant
-    // question does not arise. Spelled out rather than cast away: a new field
+    // question does not arise. Every field spelled out, none cast: a new field
     // on TurnScopedCtx must be a decision here, not a silent undefined.
     corpusProjectId: projectId,
     corpusReachable: true,
-    scope: "research",
+    scope: SESSION_SCOPE.RESEARCH,
   }
 }
 
 before(async () => {
-  const user = await createTestUser()
+  user = await createTestUser()
   userId = user.id
   const project = await createTestProject(userId, "note-guard")
   projectId = project.id
@@ -70,7 +73,7 @@ after(async () => {
 })
 
 /** The note was written: narrow the outcome, failing the test on a refusal. */
-function written(outcome: NoteWriteOutcome): NoteWriteResult {
+function written(outcome: NoteWriteOutcome): NoteToolResult {
   assert.ok(!("error" in outcome), `the write was refused: ${JSON.stringify(outcome)}`)
   return outcome
 }
@@ -155,7 +158,7 @@ const STITCHED =
 const EXACT = `« une foule considérable se pressait aux abords du Champ de Mars » ${FIGARO_CITE(1)}`
 
 /** What a check with `checked` quotes in scope reports in this build. */
-function checkedWithoutQuality(checked: number): NoteWriteResult["quote_check"] {
+function checkedWithoutQuality(checked: number): NoteToolResult["quote_check"] {
   return {
     status: QUOTE_CHECK_STATUS.PARTIAL,
     checked,
@@ -163,7 +166,7 @@ function checkedWithoutQuality(checked: number): NoteWriteResult["quote_check"] 
   }
 }
 
-function reasonsAndCitations(result: NoteWriteResult): Array<[QuoteWarningReason, QuoteCitation | null]> {
+function reasonsAndCitations(result: NoteToolResult): Array<[QuoteWarningReason, QuoteCitation | null]> {
   return (result.quote_warnings ?? []).map((w) => [w.reason, w.citation])
 }
 
@@ -172,7 +175,7 @@ function reasonsAndCitations(result: NoteWriteResult): Array<[QuoteWarningReason
 describe("quote guard", () => {
   const clusterModeBefore = process.env.CLUSTER_MODE
   before(async () => {
-    process.env.CLUSTER_MODE = "fake"
+    process.env.CLUSTER_MODE = CLUSTER_MODE.FAKE
     await seedCorpusDocuments(projectId, [{ ark: FIGARO, title: "Le Figaro" }], `user:${userId}`)
     await markHeadIngested(projectId)
   })
@@ -267,5 +270,17 @@ describe("quote guard", () => {
       await cleanupProject(derived.id)
     }
     assert.deepEqual(seen, [projectId])
+  })
+
+  test("a citation with folio 0 is reported to the agent as invalid_citation, not silently dropped", async () => {
+    const result = written(
+      await handleNoteCreate(
+        { title: "Folio zéro", body_md: `## Foule\n\nUne foule ${FIGARO_CITE(0)} et ${FIGARO_CITE(1)}.` },
+        ctxFor(),
+      ),
+    )
+    assert.equal(result.citation_count, 1, "only the folio-1 citation is projected")
+    assert.deepEqual(result.invalid_citation?.folios, [{ ark: FIGARO, folio: "0" }])
+    assert.deepEqual(result.invalid_citation?.arks, [])
   })
 })

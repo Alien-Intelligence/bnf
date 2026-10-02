@@ -38,12 +38,25 @@
 
 // The `(?<!!)` lookbehind makes a text citation NOT match the `[[…]]` inside an
 // image embed `![[…]]` — the two constructs stay disjoint.
+//
+// The folio group is the ONE definition of a valid folio, shared by everything
+// that scans with these regexes (the parser, note-body.tsx, the exporter): a
+// positive integer — leading zeros tolerated, never 0 — of at most 15
+// significant digits, so `Number()` of it is always a safe integer.
 export const CITATION_REGEX =
-  /(?<!!)\[\[(ark:\/\d+\/[A-Za-z0-9]+)\|((?:[^|\]]|\\\||\\\])+)\|f?(\d+)\]\]/g
+  /(?<!!)\[\[(ark:\/\d+\/[A-Za-z0-9]+)\|((?:[^|\]]|\\\||\\\])+)\|f?(0*[1-9]\d{0,14})\]\]/g
 
 /** Image embed: a citation prefixed with `!`, mirroring markdown image syntax. */
 export const IMAGE_CITATION_REGEX =
-  /!\[\[(ark:\/\d+\/[A-Za-z0-9]+)\|((?:[^|\]]|\\\||\\\])+)\|f?(\d+)\]\]/g
+  /!\[\[(ark:\/\d+\/[A-Za-z0-9]+)\|((?:[^|\]]|\\\||\\\])+)\|f?(0*[1-9]\d{0,14})\]\]/g
+
+/**
+ * The citation SHAPE with any digits as folio — only for finding citations the
+ * strict regexes reject because of their folio (0, or too long to be a page),
+ * so the agent can be told instead of the text silently not being a citation.
+ */
+const ANY_FOLIO_CITATION_REGEX =
+  /!?\[\[(ark:\/\d+\/[A-Za-z0-9]+)\|((?:[^|\]]|\\\||\\\])+)\|f?(\d+)\]\]/g
 
 // A note-to-note link: `[[note:<uuid>|<label>]]`. The `note:` prefix and the
 // canonical UUID shape make it disjoint from CITATION_REGEX (which requires
@@ -99,17 +112,31 @@ export function unescapeCitationText(s: string): string {
 function parseWith(md: string, regex: RegExp): ParsedCitation[] {
   const out: ParsedCitation[] = []
   for (const m of md.matchAll(regex)) {
-    // A folio is a IIIF vue index, ≥ 1 (playbook/citations.md: the parser is
-    // strict on the folio). `[[ark|label|0]]` is not a citation.
-    if (Number(m[3]) < 1) continue
     out.push({
       ark: m[1],
       label: unescapeCitationText(m[2]),
       folio: Number(m[3]),
       raw: m[0],
-      index: m.index ?? 0,
+      index: m.index,
       length: m[0].length,
     })
+  }
+  return out
+}
+
+/** A citation-shaped `[[ark|label|folio]]` whose folio is not a valid page. */
+export type InvalidFolioCitation = { ark: string; folio: string; raw: string }
+
+/**
+ * Citations (or image embeds) whose folio the strict syntax rejects — `0`, or
+ * a number too long to be a page. They render as plain text and are not
+ * projected, so the note tools report them to the agent (`invalid_citation`).
+ */
+export function findInvalidFolioCitations(md: string): InvalidFolioCitation[] {
+  const strict = new RegExp(`^!?${CITATION_REGEX.source.replace("(?<!!)", "")}$`)
+  const out: InvalidFolioCitation[] = []
+  for (const m of md.matchAll(ANY_FOLIO_CITATION_REGEX)) {
+    if (!strict.test(m[0])) out.push({ ark: m[1], folio: m[3], raw: m[0] })
   }
   return out
 }
@@ -141,7 +168,7 @@ export function parseNoteLinks(md: string): ParsedNoteLink[] {
       noteId: m[1],
       label: unescapeCitationText(m[2]),
       raw: m[0],
-      index: m.index ?? 0,
+      index: m.index,
       length: m[0].length,
     })
   }

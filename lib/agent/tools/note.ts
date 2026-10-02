@@ -29,12 +29,13 @@ import { NoteService } from "@/models/notes/service"
 import { NoteQueries } from "@/models/notes/queries"
 import { checkNoteQuotes } from "@/lib/citations/quote-check"
 import { QUOTE_CHECK_BUDGET_MS } from "@/lib/constants"
+import { findInvalidFolioCitations, type InvalidFolioCitation } from "@/lib/citations/syntax"
 import {
+  NOTE_BODY_MAX_CHARS,
+  NOTE_TITLE_MAX_CHARS,
   QUOTE_CHECK_STATUS,
+  type NoteToolResult,
   type QuoteCheckResult,
-  type QuoteCheckStatus,
-  type QuoteWarning,
-  type QuoteWarningReason,
 } from "@/models/notes/schema"
 import type { TurnScopedCtx } from "./registry-factory"
 import { AGENT_TOOLS } from "./constants"
@@ -50,51 +51,42 @@ import { NOTE_NOT_INGESTED_ERROR, resolveIngestedCorpus } from "./ingestion-guar
  */
 export const NOTE_NOT_FOUND_ERROR = "note_not_found"
 
-/**
- * The tool result for a write, naming any citation the corpus could not vouch
- * for and any quotation the cited folio does not bear out. Neither is a
- * failure — the note was written, and its body still contains the text — but
- * the agent must be told, or it will believe it cited a source it actually
- * invented (playbook/citations.md) or quoted text the document never says.
- *
- * `quote_check` appears whenever a quote was in scope, a warning was raised,
- * or the check itself broke; it names the rules it could not evaluate
- * (`unevaluated_rules`) so `partial` is never mistaken for a clean pass.
- * `quote_warnings` appears only when there is something to fix.
- */
-export type NoteWriteResult = {
-  note_id: string
-  title: string
-  citation_count: number
-  invalid_citation?: { arks: string[]; message: string }
-  quote_check?: {
-    status: QuoteCheckStatus
-    checked: number
-    unevaluated_rules?: QuoteWarningReason[]
-  }
-  quote_warnings?: QuoteWarning[]
-}
-
 /** What a note write tool returns: the written note, or a structured refusal. */
-export type NoteWriteOutcome = NoteWriteResult | ToolRefusal
+export type NoteWriteOutcome = NoteToolResult | ToolRefusal
 
+const UNKNOWN_ARK_MESSAGE =
+  "Ces ARK ne figurent dans aucune version du corpus : la citation a été conservée dans " +
+  "le texte mais n'a pas été indexée. Vérifie l'ARK avec rag_query ou retire la citation."
+const INVALID_FOLIO_MESSAGE =
+  "Ces citations ont un folio invalide (0, ou trop long pour une page) : elles restent du " +
+  "texte, sans lien vers la page. Corrige le folio avec celui que la recherche a donné."
+
+/**
+ * The tool result for a write (NoteToolResult, models/notes/schema.ts), naming
+ * any citation the corpus could not vouch for — unknown ARK or invalid folio —
+ * and any quotation the cited folio does not bear out. Neither is a failure —
+ * the note was written, and its body still contains the text — but the agent
+ * must be told, or it will believe it cited a source it actually invented
+ * (playbook/citations.md) or quoted text the document never says.
+ */
 function noteResult(
   note: { id: string; title: string; citationCount: number },
   rejected: string[],
+  invalidFolios: InvalidFolioCitation[],
   quoteCheck?: QuoteCheckResult,
-): NoteWriteResult {
-  const base: NoteWriteResult = {
+): NoteToolResult {
+  const base: NoteToolResult = {
     note_id: note.id,
     title: note.title,
     citation_count: note.citationCount,
   }
-  if (rejected.length > 0) {
+  if (rejected.length > 0 || invalidFolios.length > 0) {
     base.invalid_citation = {
       arks: rejected,
-      message:
-        "Ces ARK ne figurent dans aucune version du corpus : la citation a été " +
-        "conservée dans le texte mais n'a pas été indexée. Vérifie l'ARK avec " +
-        "rag_query ou retire la citation.",
+      folios: invalidFolios.map((c) => ({ ark: c.ark, folio: c.folio })),
+      message: [rejected.length > 0 ? UNKNOWN_ARK_MESSAGE : null, invalidFolios.length > 0 ? INVALID_FOLIO_MESSAGE : null]
+        .filter((m): m is string => m !== null)
+        .join(" "),
     }
   }
   if (
@@ -191,12 +183,12 @@ const noteCreateInputSchema = z.object({
     .string()
     .trim()
     .min(1)
-    .max(200)
-    .describe("A clear, specific note title (max 200 chars)."),
+    .max(NOTE_TITLE_MAX_CHARS)
+    .describe(`A clear, specific note title (max ${NOTE_TITLE_MAX_CHARS} chars).`),
   body_md: z
     .string()
     .min(1)
-    .max(200_000)
+    .max(NOTE_BODY_MAX_CHARS)
     .describe(
       "The note body in Markdown. Use [[ark|label|folio]] for inline citations, " +
         "![[ark|caption|folio]] to embed a folio image, and [[note:<id>|<label>]] to link " +
@@ -226,7 +218,12 @@ export async function handleNoteCreate(input: NoteCreateInput, ctx: TurnScopedCt
     data: { kind: "created", noteId: note.id, title: note.title },
   })
 
-  return noteResult(note, rejected, await runQuoteCheck(ctx, input.body_md, null))
+  return noteResult(
+    note,
+    rejected,
+    findInvalidFolioCitations(input.body_md),
+    await runQuoteCheck(ctx, input.body_md, null),
+  )
 }
 
 export const noteCreateTool = defineTool<typeof noteCreateInputSchema, TurnScopedCtx>({
@@ -255,12 +252,12 @@ const noteUpdateInputSchema = z.object({
     .string()
     .trim()
     .min(1)
-    .max(200)
+    .max(NOTE_TITLE_MAX_CHARS)
     .optional()
     .describe("New title, if changing it."),
   body_md: z
     .string()
-    .max(200_000)
+    .max(NOTE_BODY_MAX_CHARS)
     .optional()
     .describe(
       "New body in Markdown, if replacing it. Use [[ark|label|folio]] citations and " +
@@ -296,7 +293,12 @@ export async function handleNoteUpdate(input: NoteUpdateInput, ctx: TurnScopedCt
     input.body_md === undefined
       ? undefined
       : await runQuoteCheck(ctx, input.body_md, target.body_md)
-  return noteResult(written.note, written.rejected, quoteCheck)
+  return noteResult(
+    written.note,
+    written.rejected,
+    input.body_md === undefined ? [] : findInvalidFolioCitations(input.body_md),
+    quoteCheck,
+  )
 }
 
 export const noteUpdateTool = defineTool<typeof noteUpdateInputSchema, TurnScopedCtx>({
@@ -322,7 +324,7 @@ const noteAppendInputSchema = z.object({
     .string()
     .trim()
     .min(1)
-    .max(200_000)
+    .max(NOTE_BODY_MAX_CHARS)
     .describe(
       "Markdown to append at the end of the note. Include your own ## / ### headings; " +
         "it is added after a blank line. Use [[ark|label|folio]] citations, " +
@@ -354,6 +356,7 @@ export async function handleNoteAppend(input: NoteAppendInput, ctx: TurnScopedCt
   return noteResult(
     written.note,
     written.rejected,
+    findInvalidFolioCitations(input.body_md),
     await runQuoteCheck(ctx, input.body_md, target.body_md),
   )
 }
