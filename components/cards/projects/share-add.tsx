@@ -46,11 +46,22 @@ function ShareAddBody({ groups, grantedGroupIds, viewerIsAdmin, onGrant }: CardP
   const tCommon = useTranslations("common")
 
   if (groups.isPending) {
+    // The form's own shape — two labelled fields, the button, the owner note —
+    // so nothing moves when it arrives.
     return (
-      <div className="flex items-end gap-2">
-        <Skeleton className="h-8 flex-1 rounded-lg" />
-        <Skeleton className="h-8 w-36 rounded-lg" />
-        <Skeleton className="h-8 w-20 rounded-lg" />
+      <div className="flex flex-col gap-2" aria-busy>
+        <div className="flex items-end gap-2">
+          <div className="flex flex-1 flex-col gap-1.5">
+            <Skeleton className="h-3.5 w-16" />
+            <Skeleton className="h-8 rounded-lg" />
+          </div>
+          <div className="flex w-36 flex-col gap-1.5">
+            <Skeleton className="h-3.5 w-12" />
+            <Skeleton className="h-8 rounded-lg" />
+          </div>
+          <Skeleton className="h-8 w-20 rounded-lg" />
+        </div>
+        <Skeleton className="h-3 w-2/3" />
       </div>
     )
   }
@@ -67,21 +78,23 @@ function ShareAddBody({ groups, grantedGroupIds, viewerIsAdmin, onGrant }: CardP
   }
 
   if (groups.data.length === 0) {
-    // GET /api/groups lists the caller's own groups (all of them for an admin):
-    // empty means "you are in no group", and only an admin can change that here.
-    return (
-      <div className="flex flex-col items-start gap-2">
-        <p className="text-sm text-muted-foreground">{t("noGroups")}</p>
-        {viewerIsAdmin && (
+    // GET /api/groups lists an admin's every group and a member's own: empty
+    // means "no group exists" for an admin, "you are in none" for a member,
+    // and only an admin can change either from here.
+    if (viewerIsAdmin) {
+      return (
+        <div className="flex flex-col items-start gap-2">
+          <p className="text-sm text-muted-foreground">{t("noGroupsAdmin")}</p>
           <Link
             href={ROUTES.adminGroups}
             className={buttonVariants({ variant: "outline", size: "sm" })}
           >
             {t("createGroup")}
           </Link>
-        )}
-      </div>
-    )
+        </div>
+      )
+    }
+    return <p className="text-sm text-muted-foreground">{t("noGroups")}</p>
   }
 
   const available = groups.data.filter((g) => !grantedGroupIds.has(g.id))

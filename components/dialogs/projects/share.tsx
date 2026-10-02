@@ -35,7 +35,11 @@ import {
   useShareProject,
   useUnshareProject,
 } from "@/hooks/api/projects"
-import { ApiError } from "@/lib/api-fetch"
+import {
+  SHARE_ERROR_REASON,
+  ShareGrantError,
+  shareErrorReason,
+} from "@/components/forms/projects/share"
 import type { ProjectAccess } from "@/lib/authz/project-access"
 import type { ShareWithGroup } from "@/models/projects/schema"
 import type { ShareProjectInput } from "@/models/projects/types"
@@ -73,19 +77,6 @@ export function DialogProjectShare({
   )
 }
 
-/** Maps a failed share request to a sentence in the user's language. */
-function useShareErrorMessage(): (error: unknown) => string {
-  const t = useTranslations("projects.share.errors")
-  return (error) => {
-    if (error instanceof ApiError) {
-      if (error.status === 403) return t("forbidden")
-      if (error.status === 404) return t("projectGone")
-      if (error.status === 422) return t("groupGone")
-    }
-    return t("generic")
-  }
-}
-
 function ShareDialogBody({
   projectId,
   viewerIsAdmin,
@@ -95,7 +86,7 @@ function ShareDialogBody({
 }) {
   const t = useTranslations("projects.share")
   const { toast } = useToast()
-  const errorMessage = useShareErrorMessage()
+  const tError = useTranslations("projects.share.errors")
 
   const groups = useGroups()
   const shares = useProjectShares(projectId)
@@ -111,17 +102,30 @@ function ShareDialogBody({
 
   const grantedGroupIds = new Set((shares.data ?? []).map((s) => s.groupId))
 
-  // Rejects with the user-facing sentence; FormProjectShare shows it.
+  // A failed request is logged with its original error and shown as a
+  // translated sentence (projects.share.errors.*), never the raw text.
+  const report = (what: string, e: unknown): string => {
+    console.error(`[share] ${what} failed`, e)
+    return tError(shareErrorReason(e))
+  }
+
+  // Rejects with a ShareGrantError (the reason, the original as `cause`);
+  // FormProjectShare shows the reason on its group field.
   const onGrant = async (data: ShareProjectInput): Promise<void> => {
     let updated: ShareWithGroup[]
     try {
       updated = await shareProject.mutateAsync(data)
     } catch (e) {
-      throw new Error(errorMessage(e))
+      console.error("[share] grant failed", e)
+      throw new ShareGrantError(shareErrorReason(e), { cause: e })
     }
     // The answer is the full grant list; the new row names its group.
     const granted = updated.find((s) => s.groupId === data.groupId)
-    if (!granted) throw new Error(errorMessage(null))
+    if (!granted) {
+      const missing = new Error(`Grant to ${data.groupId} missing from the server's answer`)
+      console.error("[share] grant answer", missing)
+      throw new ShareGrantError(SHARE_ERROR_REASON.GENERIC, { cause: missing })
+    }
     toast(t("granted", { group: granted.group.name, level: levelLabel(data.access) }))
   }
 
@@ -130,7 +134,7 @@ function ShareDialogBody({
     try {
       await shareProject.mutateAsync({ groupId: share.groupId, access })
     } catch (e) {
-      setActionError(errorMessage(e))
+      setActionError(report("level change", e))
     }
   }
 
@@ -140,7 +144,7 @@ function ShareDialogBody({
       await unshareProject.mutateAsync(share.groupId)
       toast(t("revoked", { name: share.group.name }))
     } catch (e) {
-      setActionError(errorMessage(e))
+      setActionError(report("revoke", e))
     } finally {
       setRevokeTarget(null)
     }
@@ -182,12 +186,18 @@ function ShareDialogBody({
           {actionError}
         </p>
       )}
-      <AlertDialogProjectRevokeShare
-        share={revokeTarget}
-        onCancel={() => setRevokeTarget(null)}
-        onConfirm={(share) => void revoke(share)}
-        pending={unshareProject.isPending}
-      />
+      {revokeTarget && (
+        <AlertDialogProjectRevokeShare
+          open
+          onOpenChange={(open) => {
+            if (!open) setRevokeTarget(null)
+          }}
+          groupName={revokeTarget.group.name}
+          derivedCount={revokeTarget.derivedCount}
+          onConfirm={() => void revoke(revokeTarget)}
+          pending={unshareProject.isPending}
+        />
+      )}
     </div>
   )
 }

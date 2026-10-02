@@ -5,6 +5,11 @@
 // research workspaces are built on: revoking severs their corpus, so it names
 // how many before anything happens. A grant nothing is built on is revoked in
 // one click and never reaches this dialog (DialogProjectShare decides).
+//
+// Nested in the share dialog, so its state lives at the share dialog's level
+// (playbook/componentization.md, "a confirmation nested in a dialog"). While
+// the revoke is in flight it cannot be dismissed — not by its buttons, not by
+// Escape or the backdrop.
 
 import { useTranslations } from "next-intl"
 import {
@@ -17,19 +22,21 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
-import type { ShareWithGroup } from "@/models/projects/schema"
 
 interface AlertDialogProjectRevokeShareProps {
-  /** The grant awaiting confirmation; null keeps the dialog closed. */
-  share: ShareWithGroup | null
-  onCancel: () => void
-  onConfirm: (share: ShareWithGroup) => void
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  groupName: string
+  derivedCount: number
+  onConfirm: () => void
   pending: boolean
 }
 
 export function AlertDialogProjectRevokeShare({
-  share,
-  onCancel,
+  open,
+  onOpenChange,
+  groupName,
+  derivedCount,
   onConfirm,
   pending,
 }: AlertDialogProjectRevokeShareProps) {
@@ -38,31 +45,26 @@ export function AlertDialogProjectRevokeShare({
 
   return (
     <AlertDialog
-      open={share !== null}
-      onOpenChange={(open) => {
-        if (!open) onCancel()
+      open={open}
+      onOpenChange={(next) => {
+        if (pending) return
+        onOpenChange(next)
       }}
     >
-      {share && (
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>{t("revokeTitle", { name: share.group.name })}</AlertDialogTitle>
-            <AlertDialogDescription>
-              {t("revokeConfirm", { count: share.derivedCount })}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={pending}>{tCommon("cancel")}</AlertDialogCancel>
-            <AlertDialogAction
-              variant="destructive"
-              disabled={pending}
-              onClick={() => onConfirm(share)}
-            >
-              {t("revokeConfirmAction")}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      )}
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{t("revokeTitle", { name: groupName })}</AlertDialogTitle>
+          <AlertDialogDescription>
+            {t("revokeConfirm", { count: derivedCount })}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={pending}>{tCommon("cancel")}</AlertDialogCancel>
+          <AlertDialogAction variant="destructive" disabled={pending} onClick={onConfirm}>
+            {t("revokeConfirmAction")}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
     </AlertDialog>
   )
 }

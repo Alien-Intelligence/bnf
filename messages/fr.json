@@ -345,9 +345,9 @@
       "revokeConfirm": "{count, plural, one {# espace de recherche construit sur ce partage perdra} other {# espaces de recherche construits sur ce partage perdront}} l'accès au corpus.",
       "revokeConfirmAction": "Retirer l'accès",
       "revoked": "Accès de « {name} » retiré.",
-      "empty": "Aucun groupe n'a encore accès à ce projet.",
+      "empty": "Aucun groupe n'a encore accès à ce projet. Choisissez un groupe ci-dessus pour lui en donner l'accès.",
       "noGroups": "Vous ne faites partie d'aucun groupe. Le partage se fait par groupe : demandez à un administrateur de vous ajouter à un groupe.",
-      "allGroupsShared": "Tous vos groupes ont déjà accès à ce projet.",
+      "allGroupsShared": "Tous vos groupes ont déjà accès à ce projet. Pour changer leur niveau, utilisez la liste ci-dessous.",
       "groupsError": "Impossible de charger la liste des groupes.",
       "derived": "{count, plural, one {# espace de recherche en dépend} other {# espaces de recherche en dépendent}}",
       "changeAccess": "Modifier l'accès de {name}",
@@ -357,10 +357,13 @@
         "forbidden": "Vous ne pouvez pas partager ce projet.",
         "projectGone": "Ce projet n'existe plus.",
         "groupGone": "Ce groupe n'existe plus. Choisissez-en un autre.",
-        "generic": "L'opération a échoué. Réessayez."
+        "generic": "L'opération a échoué. Réessayez.",
+        "groupRequired": "Choisissez un groupe."
       },
       "currentHeadingUnknown": "Groupes ayant accès",
-      "grantsError": "Impossible de charger les groupes ayant accès."
+      "grantsError": "Impossible de charger les groupes ayant accès.",
+      "noGroupsAdmin": "Aucun groupe n'existe encore. Créez-en un dans la console d'administration, puis revenez partager ce projet.",
+      "levelUnknown": "Niveau d'accès non reconnu : ce partage n'accorde aucun accès. Retirez-le puis partagez à nouveau."
     },
     "derive": {
       "title": "Créer un espace de recherche",

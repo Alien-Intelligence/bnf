@@ -345,9 +345,9 @@
       "revokeConfirm": "{count, plural, one {# research workspace built on this share will lose} other {# research workspaces built on this share will lose}} access to the corpus.",
       "revokeConfirmAction": "Revoke access",
       "revoked": "Access for “{name}” revoked.",
-      "empty": "No group has access to this project yet.",
+      "empty": "No group has access to this project yet. Choose a group above to give it access.",
       "noGroups": "You are not in any group. Sharing works through groups: ask an administrator to add you to one.",
-      "allGroupsShared": "All of your groups already have access to this project.",
+      "allGroupsShared": "All of your groups already have access to this project. To change their level, use the list below.",
       "groupsError": "Could not load the list of groups.",
       "derived": "{count, plural, one {# research workspace depends on it} other {# research workspaces depend on it}}",
       "changeAccess": "Change access for {name}",
@@ -357,10 +357,13 @@
         "forbidden": "You cannot share this project.",
         "projectGone": "This project no longer exists.",
         "groupGone": "This group no longer exists. Choose another one.",
-        "generic": "The operation failed. Please try again."
+        "generic": "The operation failed. Please try again.",
+        "groupRequired": "Choose a group."
       },
       "currentHeadingUnknown": "Groups with access",
-      "grantsError": "Could not load the groups with access."
+      "grantsError": "Could not load the groups with access.",
+      "noGroupsAdmin": "No group exists yet. Create one in the admin console, then come back to share this project.",
+      "levelUnknown": "Unrecognised access level: this share grants no access. Revoke it, then share again."
     },
     "derive": {
       "title": "Create a research workspace",
