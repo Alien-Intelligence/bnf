@@ -3,6 +3,9 @@
 // Rule: no magic numbers in routes, services, or components — import from here.
 // See playbook/constants.md.
 
+import { OCR_CORRECTION_MARKING_MODE } from "@/models/notes/schema"
+import type { OcrCorrectionMarking } from "@/models/notes/schema"
+
 // ---------------------------------------------------------------------------
 // Routes — single source of truth for in-app navigation paths.
 // Locale prefix is handled by next-intl's <Link>; these are locale-agnostic.
@@ -299,6 +302,50 @@ export const RAG_DEFAULT_K = 12
  * multi-hundred-folio volume into the turn.
  */
 export const RAG_GET_TEXT_DEFAULT_CHAR_LIMIT = 4_000
+
+// ---------------------------------------------------------------------------
+// Quote integrity — the note-write quote check (lib/citations/quote-check.ts)
+// and the prompt rules it backs (feedback-2026-09-29 #7 / #8).
+// ---------------------------------------------------------------------------
+
+/**
+ * How the agent marks an OCR word it corrected inside a quote. **BnF-confirmable
+ * house convention** (feedback-2026-09-29 #8): brackets by default because a
+ * reader cannot otherwise tell what the agent touched; `SILENT` is the one-line
+ * alternative. The prompt text, the tool hint and the guard all render from it.
+ */
+export const OCR_CORRECTION_MARKING: OcrCorrectionMarking =
+  OCR_CORRECTION_MARKING_MODE.BRACKETED_WORD
+
+/** At most this many `[…]` per quote — the upper end of BnF's "one or two". */
+export const QUOTE_MAX_ELISIONS = 2
+
+/** Spans shorter than this are terms and titles (« Le Figaro »), not quotes. */
+export const QUOTE_MIN_CHECKED_WORDS = 4
+
+/** Source words a `[…]` may skip — about one sentence (D7). */
+export const ELISION_MAX_GAP_WORDS = 40
+
+/** Character edits allowed between a quote word and its source word (D14). */
+export const QUOTE_FUZZY_MAX_EDIT = 2
+
+/** Share of a segment's words that may be fuzzy matches, floor 1 (D14). */
+export const QUOTE_FUZZY_WORD_RATIO = 0.2
+
+/** Source words one `[illisible]` may stand for (1 to this many). */
+export const QUOTE_ILLEGIBLE_MAX_WORDS = 6
+
+/** Distinct cited ARKs fetched per note write; the rest are `unverifiable`. */
+export const QUOTE_CHECK_MAX_SOURCES = 12
+
+/** Parallel document fetches during one check. */
+export const QUOTE_CHECK_CONCURRENCY = 4
+
+/** Wall-clock ceiling of one check; past it, pending quotes are `unverifiable`. */
+export const QUOTE_CHECK_BUDGET_MS = 20_000
+
+/** Characters of a flagged quote echoed back to the agent in a warning. */
+export const QUOTE_WARNING_EXCERPT_CHARS = 160
 
 // ---------------------------------------------------------------------------
 // Background document metadata resolution (the Document table is the queue)
