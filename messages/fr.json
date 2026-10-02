@@ -302,7 +302,8 @@
     "section": {
       "mine": "Mes projets",
       "mineEmpty": "Vous ne possédez aucun projet pour l'instant.",
-      "shared": "Partagés avec moi"
+      "shared": "Partagés avec moi",
+      "public": "Projets publics"
     },
     "access": {
       "read": "Lecture seule",

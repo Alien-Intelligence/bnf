@@ -34,7 +34,7 @@ import { Button, buttonVariants } from "@/components/ui/button"
 import { BadgeProjectAccess } from "@/components/badges/projects/access"
 import { BadgeProjectSharedCorpus } from "@/components/badges/projects/shared-corpus"
 import { ROUTES } from "@/lib/constants"
-import { PROJECT_ACCESS_LEVEL } from "@/lib/authz/project-access"
+import { PROJECT_ACCESS_LEVEL, PROJECT_RELATION } from "@/lib/authz/project-access"
 import {
   CORPUS_SOURCE_STATE,
   corpusSourceState,
@@ -44,15 +44,12 @@ import type { ProjectListItem } from "@/models/projects/schema"
 
 interface CardProjectTileProps {
   project: ProjectListItem
-  /** The viewing user, to tell "I own this" from "I may act as an owner". */
-  currentUserId: string
   onShare?: () => void
   onDerive?: () => void
 }
 
 export function CardProjectTile({
   project,
-  currentUserId,
   onShare,
   onDerive,
 }: CardProjectTileProps) {
@@ -65,7 +62,7 @@ export function CardProjectTile({
   // Two different questions, deliberately kept apart. `isMine` is a fact about
   // the row; `mayShare` is a permission, and an admin holds it on every project
   // without owning any of them.
-  const isMine = project.ownerId === currentUserId
+  const isMine = project.relation === PROJECT_RELATION.OWN
   const isOwner = project.access === PROJECT_ACCESS_LEVEL.OWNER
   const canWrite = isOwner || project.access === PROJECT_ACCESS_LEVEL.WRITE
 

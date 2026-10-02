@@ -6,7 +6,7 @@ import {
   type Prisma,
   type Project as PrismaProject,
 } from "@/lib/generated/prisma/client"
-import type { ProjectAccessLevel } from "@/lib/authz/project-access"
+import type { ProjectAccessLevel, ProjectRelation } from "@/lib/authz/project-access"
 
 export type Project = PrismaProject
 
@@ -39,6 +39,12 @@ export type ProjectListItem = Project & {
   isIngested: boolean
   /** What the requesting user may do with this project. */
   access: ProjectAccessLevel
+  /**
+   * Whether it is the requesting user's own, shared with one of their groups,
+   * or public (lib/authz/project-access.ts projectRelation). "May I open it"
+   * is `access`; this is "is it mine", decided on the server.
+   */
+  relation: ProjectRelation
   /** The owner's display name — shown on tiles under « Partagés avec moi ». */
   ownerName: string
   /**

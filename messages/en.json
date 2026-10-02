@@ -302,7 +302,8 @@
     "section": {
       "mine": "My projects",
       "mineEmpty": "You do not own any project yet.",
-      "shared": "Shared with me"
+      "shared": "Shared with me",
+      "public": "Public projects"
     },
     "access": {
       "read": "Read-only",

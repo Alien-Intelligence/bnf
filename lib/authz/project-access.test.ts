@@ -17,6 +17,8 @@ import {
   isProjectAccess,
   projectAccessLevel,
   personalVisibilityScope,
+  PROJECT_RELATION,
+  projectRelation,
   adminVisibilityScope,
 } from "./project-access"
 import { ProjectPolicy } from "@/models/projects/policy"
@@ -290,4 +292,36 @@ test("ProjectPolicy.listAll is admin-only and distinct from view", () => {
   // them all".
   assert.equal(new ProjectPolicy(admin).view(foreign), true)
   assert.equal(new ProjectPolicy(member).view(foreign), false)
+})
+
+// ---------------------------------------------------------------------------
+// "Is it mine?" is not "may I open it?"
+// ---------------------------------------------------------------------------
+
+test("projectRelation: own, shared through a group, public, or none", () => {
+  const owner = user({ id: OWNER_ID })
+  const member = user({ id: OTHER_ID, groupIds: [GROUP_A] })
+  const stranger = user({ id: "stranger" })
+  const shared = project({ shares: [share(GROUP_A, PROJECT_ACCESS.READ)] })
+
+  assert.equal(projectRelation(owner, project()), PROJECT_RELATION.OWN)
+  assert.equal(projectRelation(member, shared), PROJECT_RELATION.SHARED)
+  assert.equal(projectRelation(stranger, project({ isPublic: true })), PROJECT_RELATION.PUBLIC)
+  assert.equal(projectRelation(stranger, shared), PROJECT_RELATION.NONE)
+})
+
+test("projectRelation: a public project shared with my group is shared, not public", () => {
+  const member = user({ id: OTHER_ID, groupIds: [GROUP_A] })
+  const p = project({ isPublic: true, shares: [share(GROUP_A, PROJECT_ACCESS.WRITE)] })
+  assert.equal(projectRelation(member, p), PROJECT_RELATION.SHARED)
+})
+
+test("projectRelation: an admin's reach makes nothing theirs", () => {
+  const admin = user({ id: "someone", role: USER_ROLE.ADMIN })
+  assert.equal(projectRelation(admin, project()), PROJECT_RELATION.NONE)
+})
+
+test("projectRelation: a share with an unrecognised level is no share", () => {
+  const member = user({ id: OTHER_ID, groupIds: [GROUP_A] })
+  assert.equal(projectRelation(member, project({ shares: [share(GROUP_A, "admin")] })), PROJECT_RELATION.NONE)
 })

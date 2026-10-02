@@ -3,7 +3,9 @@ import "server-only"
 import { prisma } from "@/lib/db"
 import {
   PROJECT_ACCESS_LEVEL,
+  PROJECT_RELATION,
   projectAccessLevel,
+  projectRelation,
   adminVisibilityScope,
   personalVisibilityScope,
   type ProjectAccess,
@@ -186,10 +188,17 @@ export class ProjectService {
 export async function listProjectsForUser(
   user: PolicyUser,
 ): Promise<ProjectListItem[]> {
-  return decorateProjectRows(
+  const rows = await decorateProjectRows(
     user,
     await ProjectQueries.listVisibleRows(personalVisibilityScope(user)),
   )
+  // The personal scope only returns own, shared and public rows; anything else
+  // means the scope and the relation predicate disagree, which is a bug.
+  const stray = rows.find((r) => r.relation === PROJECT_RELATION.NONE)
+  if (stray) {
+    throw new Error(`Project ${stray.id} is in ${user.id}'s list but is not theirs, shared or public`)
+  }
+  return rows
 }
 
 /**
@@ -232,6 +241,7 @@ async function decorateProjectRows(
       corpusSize: reachable && headId ? (sizeByVersion.get(headId) ?? 0) : 0,
       isIngested: reachable && ingestedId !== null,
       access: projectAccessLevel(user, p),
+      relation: projectRelation(user, p),
       ownerName: owner.name,
       corpusSourceName: corpusSource?.name ?? null,
     }

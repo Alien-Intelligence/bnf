@@ -76,6 +76,35 @@ export function projectAccessLevel(
   return PROJECT_ACCESS_LEVEL.NONE
 }
 
+/**
+ * How a project reaches this user's OWN lists — "is it mine, shared with me,
+ * or public?" — which is not "may I open it": an admin may open every project
+ * (rule 2 of the access table) without any of them being theirs, so the role
+ * plays no part here. The projects page files its sections by this.
+ */
+export const PROJECT_RELATION = {
+  OWN: "own",
+  SHARED: "shared",
+  PUBLIC: "public",
+  NONE: "none",
+} as const
+
+export type ProjectRelation = (typeof PROJECT_RELATION)[keyof typeof PROJECT_RELATION]
+
+export function projectRelation(
+  user: PolicyUser,
+  project: ProjectWithShares,
+): ProjectRelation {
+  if (project.ownerId === user.id) return PROJECT_RELATION.OWN
+  const groupIds = new Set(user.groupIds)
+  // An unrecognised stored level is no grant, as in projectAccessLevel.
+  if (project.shares.some((s) => groupIds.has(s.groupId) && isProjectAccess(s.access))) {
+    return PROJECT_RELATION.SHARED
+  }
+  if (project.isPublic) return PROJECT_RELATION.PUBLIC
+  return PROJECT_RELATION.NONE
+}
+
 /** Any level above `none` can read. */
 export function canReadProject(
   user: PolicyUser,

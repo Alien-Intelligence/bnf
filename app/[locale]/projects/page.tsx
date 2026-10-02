@@ -18,7 +18,6 @@ export default async function ProjectsPage() {
   return (
     <ProjectsClient
       initialProjects={projects}
-      userId={user.id}
       viewer={workspaceHeaderViewer(user)}
     />
   )
