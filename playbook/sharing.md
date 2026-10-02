@@ -11,6 +11,9 @@ projectAccessLevel(user, project)  // → owner | write | read | none
 canReadProject(user, project)
 canWriteProject(user, project)
 isProjectOwner(user, project)
+projectRelation(user, project)     // → own | shared | public | none — "is it mine",
+                                   //   built on projectAccessLevel without the
+                                   //   admin and public rules; files list sections
 
 // lib/authz/corpus-source.ts — whose corpus this project reads
 corpusProjectId(project)   // → project.corpusSourceId ?? project.id

@@ -60,7 +60,16 @@ export const ADMIN_TAB_HREF: Record<AdminTab, string> = {
  * affordance derive their sequence from this list. `key` matches the route
  * segment and the `nav.*` i18n key.
  */
-export const WORKSPACE_STEPS = ["constituer", "ingerer", "rechercher"] as const
+export const WORKSPACE_STEP = {
+  CONSTITUER: "constituer",
+  INGERER: "ingerer",
+  RECHERCHER: "rechercher",
+} as const
+export const WORKSPACE_STEPS = [
+  WORKSPACE_STEP.CONSTITUER,
+  WORKSPACE_STEP.INGERER,
+  WORKSPACE_STEP.RECHERCHER,
+] as const
 export type WorkspaceStep = (typeof WORKSPACE_STEPS)[number]
 
 /**
@@ -68,7 +77,7 @@ export type WorkspaceStep = (typeof WORKSPACE_STEPS)[number]
  * derived workspace over a shared corpus. Constituer and Ingérer mutate the
  * corpus and are not theirs to open.
  */
-export const RESEARCH_ONLY_STEPS = ["rechercher"] as const satisfies readonly WorkspaceStep[]
+export const RESEARCH_ONLY_STEPS = [WORKSPACE_STEP.RECHERCHER] as const satisfies readonly WorkspaceStep[]
 
 // ---------------------------------------------------------------------------
 // Authentication — Alien Auth (Authentik) SSO.

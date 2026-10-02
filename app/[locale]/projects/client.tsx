@@ -28,7 +28,7 @@ import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import type { ProjectListItem } from "@/models/projects/schema"
 import type { WorkspaceHeaderViewer } from "@/lib/authz/workspace-header"
-import { PROJECT_RELATION } from "@/lib/authz/project-access"
+import { PROJECT_RELATION } from "@/models/projects/schema"
 
 /** Placeholder tiles while the list loads. */
 const PROJECTS_SKELETON_TILES = 3
@@ -157,6 +157,9 @@ function ProjectsBody({
   const shared = projects.data.filter((p) => p.relation === PROJECT_RELATION.SHARED)
   const publicProjects = projects.data.filter((p) => p.relation === PROJECT_RELATION.PUBLIC)
 
+  // Deriving is offered on shared projects only: a public project is readable,
+  // not derivable (the server refuses with NoCorpusGrantError), and your own
+  // project needs no workspace on top of it.
   const grid = (items: ProjectListItem[]) => (
     <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
       {items.map((project) => (
@@ -164,7 +167,9 @@ function ProjectsBody({
           key={project.id}
           project={project}
           onShare={() => onShare(project)}
-          onDerive={() => onDerive(project)}
+          onDerive={
+            project.relation === PROJECT_RELATION.SHARED ? () => onDerive(project) : undefined
+          }
         />
       ))}
     </div>

@@ -3,14 +3,16 @@ import "server-only"
 import { prisma } from "@/lib/db"
 import {
   PROJECT_ACCESS_LEVEL,
-  PROJECT_RELATION,
+  isProjectAccess,
   projectAccessLevel,
   projectRelation,
   adminVisibilityScope,
   personalVisibilityScope,
   type ProjectAccess,
 } from "@/lib/authz/project-access"
-import { canReachCorpus } from "@/lib/authz/corpus-source"
+import { CORPUS_SOURCE_STATE, canReachCorpus, corpusSourceState } from "@/lib/authz/corpus-source"
+import { workspaceStepsFor } from "@/lib/authz/workspace-steps"
+import { ProjectPolicy } from "./policy"
 import { CORPUS_VERSION_STATUS } from "@/models/corpus/schema"
 import type { PolicyUser } from "@/models/users/schema"
 import { ProjectQueries } from "./queries"
@@ -20,6 +22,7 @@ import {
   type ProjectListItem,
   type ProjectWithShares,
   type ShareWithGroup,
+  PROJECT_RELATION,
 } from "./schema"
 import type { CreateProjectInput } from "./types"
 
@@ -129,8 +132,9 @@ export class ProjectService {
     // project with no share at all, in which case there is nothing to pin —
     // and nothing that could later be revoked.
     const groupIds = new Set(user.groupIds)
+    // Only a recognised level is a grant (isProjectAccess), as everywhere else.
     const grant =
-      source.shares.find((s) => groupIds.has(s.groupId)) ?? null
+      source.shares.find((s) => groupIds.has(s.groupId) && isProjectAccess(s.access)) ?? null
 
     if (
       grant === null &&
@@ -192,12 +196,11 @@ export async function listProjectsForUser(
     user,
     await ProjectQueries.listVisibleRows(personalVisibilityScope(user)),
   )
-  // The personal scope only returns own, shared and public rows; anything else
-  // means the scope and the relation predicate disagree, which is a bug.
+  // The personal scope only returns own, validly shared and public rows, and
+  // projectRelation is built on the same access table; a row that is none of
+  // the three means the two disagree — a bug, raised as such.
   const stray = rows.find((r) => r.relation === PROJECT_RELATION.NONE)
-  if (stray) {
-    throw new Error(`Project ${stray.id} is in ${user.id}'s list but is not theirs, shared or public`)
-  }
+  if (stray) throw new ProjectScopeMismatchError(stray.id, user.id)
   return rows
 }
 
@@ -233,6 +236,7 @@ async function decorateProjectRows(
 
   return rows.map(({ owner, corpusSource, ...p }) => {
     const reachable = canReachCorpus(p)
+    const relation = projectRelation(user, p)
     const headId = corpusSource?.headVersionId ?? p.headVersionId
     const ingestedId = corpusSource?.ingestedVersionId ?? p.ingestedVersionId
 
@@ -241,11 +245,32 @@ async function decorateProjectRows(
       corpusSize: reachable && headId ? (sizeByVersion.get(headId) ?? 0) : 0,
       isIngested: reachable && ingestedId !== null,
       access: projectAccessLevel(user, p),
-      relation: projectRelation(user, p),
+      relation,
+      mayShare: new ProjectPolicy(user).share(p),
+      steps: workspaceStepsFor(user, p),
+      canDerive:
+        relation === PROJECT_RELATION.SHARED &&
+        corpusSourceState(p) === CORPUS_SOURCE_STATE.OWN &&
+        ingestedId !== null,
       ownerName: owner.name,
       corpusSourceName: corpusSource?.name ?? null,
     }
   })
+}
+
+/**
+ * The personal listing returned a project that projectRelation says is not
+ * the user's, shared with them or public: the visibility scope and the access
+ * table disagree.
+ */
+export class ProjectScopeMismatchError extends Error {
+  constructor(
+    readonly projectId: string,
+    readonly userId: string,
+  ) {
+    super(`Project ${projectId} is in ${userId}'s list but is not theirs, shared or public`)
+    this.name = "ProjectScopeMismatchError"
+  }
 }
 
 /** Thrown when a share names a group that does not exist. */
