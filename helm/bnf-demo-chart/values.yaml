@@ -6,8 +6,9 @@ namespace: bnf
 # ONE replica by design. The app-side BnF MCP rate limiter (config.bnfMcpRate,
 # lib/mcp/rate-limit.ts) keeps its token buckets in process memory, so they are
 # exact only for a single pod. configmap.yaml divides every bnfMcpRate*Rpm by
-# this count (integer div, floor 1), so raising it keeps the FLEET under the
-# BnF quota by construction — at the price of each pod getting a smaller share.
+# this count (integer div; a share below 1/min fails the render), so raising it
+# keeps the FLEET under the BnF quota by construction — at the price of each pod
+# getting a smaller share.
 # Past 2–3 replicas, move the limiter to a shared store (Postgres/Redis)
 # instead of shrinking the per-pod share further.
 replicaCount: 1

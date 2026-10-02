@@ -73,3 +73,25 @@ and the worker point BNF_BROKER_URL here so the shared rate caps are honoured.
 {{- define "bnf-demo.brokerInternalUrl" -}}
 {{- printf "http://%s-broker.%s.svc.cluster.local:%d" (include "bnf-demo.fullname" .) .Values.namespace (int .Values.broker.service.port) }}
 {{- end }}
+
+{{/*
+One replica's share of a BnF MCP per-minute rate (config.bnfMcpRate.<key>),
+for the app-side limiter (lib/mcp/rate-limit.ts). The buckets live in process
+memory, so each replica gets rate / replicaCount and the fleet stays under the
+BnF quota by construction. The value is REQUIRED (the app has no code default)
+and a share below 1/min FAILS the render: flooring it up to 1 would put the
+fleet over the quota, which is the 2026-09-30 incident.
+Usage: {{ include "bnf-demo.bnfRateShare" (dict "root" . "key" "catalogueRpm") }}
+*/}}
+{{- define "bnf-demo.bnfRateShare" -}}
+{{- $rate := required (printf "config.bnfMcpRate.%s is required" .key) (index .root.Values.config.bnfMcpRate .key) -}}
+{{- $replicas := required "replicaCount is required" .root.Values.replicaCount -}}
+{{- if lt (int $replicas) 1 -}}
+{{- fail (printf "replicaCount must be >= 1 (got %v)" $replicas) -}}
+{{- end -}}
+{{- $share := div $rate $replicas -}}
+{{- if lt (int $share) 1 -}}
+{{- fail (printf "config.bnfMcpRate.%s=%v split over %v replicas is below 1/min — lower replicaCount or move the limiter to a shared store" .key $rate $replicas) -}}
+{{- end -}}
+{{- $share -}}
+{{- end -}}

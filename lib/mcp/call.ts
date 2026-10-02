@@ -23,7 +23,8 @@ import {
   BnfMcpQuotaSaturatedError,
   BnfMcpRateLimitError,
 } from "./errors"
-import { acquireBnfMcp } from "./rate-limit"
+import { acquireBnfMcp, reportBnfUpstreamRateLimit } from "./rate-limit"
+import type { BnfMcpToolName } from "./tools"
 
 interface JsonRpcOk<T> {
   jsonrpc: "2.0"
@@ -91,7 +92,7 @@ function retryAfterMs(header: string | null): number | undefined {
  * terminal. A 404 from a SEARCH tool is a different thing (routing / upstream
  * fault), so it stays a generic error rather than borrowing resolve semantics.
  */
-function softFailureError(envelope: McpFailureEnvelope, toolName: string): BnfMcpError {
+function softFailureError(envelope: McpFailureEnvelope, toolName: BnfMcpToolName): BnfMcpError {
   const status = typeof envelope.status_code === "number" ? envelope.status_code : undefined
   const detail =
     typeof envelope.error === "string" && envelope.error.length > 0
@@ -115,6 +116,19 @@ function softFailureError(envelope: McpFailureEnvelope, toolName: string): BnfMc
 }
 
 /**
+ * The body of a failed response, for the error message. A body that cannot be
+ * read is named as such in the message — the call is failing either way, and
+ * the status is what the caller acts on.
+ */
+async function failureBody(res: Response): Promise<string> {
+  try {
+    return (await res.text()).slice(0, 200)
+  } catch (err) {
+    return `<body unreadable: ${err instanceof Error ? err.message : String(err)}>`
+  }
+}
+
+/**
  * Call one BnF MCP tool and return its parsed JSON payload.
  *
  * The BnF search tools return their payload as a single `{type:"text"}` content
@@ -130,7 +144,7 @@ function softFailureError(envelope: McpFailureEnvelope, toolName: string): BnfMc
 export async function callBnfTool<T>(
   url: string,
   token: string,
-  toolName: string,
+  toolName: BnfMcpToolName,
   args: Record<string, unknown>,
   signal?: AbortSignal,
 ): Promise<T> {
@@ -140,7 +154,12 @@ export async function callBnfTool<T>(
   // tool result; it never reached BnF. An abort during the wait rejects exactly
   // like an aborted fetch would.
   const grant = await acquireBnfMcp(toolName, args, signal)
-  if (!grant.ok) throw new BnfMcpQuotaSaturatedError(grant.api, grant.waitedMs)
+  if (!grant.ok) {
+    if (grant.kind === "invalid_input") {
+      throw new BnfMcpQueryRefusedError(`MCP ${toolName}: ${grant.error}`, [grant.error])
+    }
+    throw new BnfMcpQuotaSaturatedError(grant.api, grant.waitedMs)
+  }
 
   const res = await fetch(url, {
     method: "POST",
@@ -169,6 +188,7 @@ export async function callBnfTool<T>(
     // model can pace itself instead of reading a generic failure. The typed
     // class also means a future `withRetry` wrap honours Retry-After for free.
     const waitMs = retryAfterMs(res.headers.get("retry-after"))
+    reportBnfUpstreamRateLimit(toolName, waitMs)
     throw new BnfMcpRateLimitError(
       waitMs === undefined
         ? "MCP tools/call rate limited (HTTP 429)"
@@ -177,8 +197,7 @@ export async function callBnfTool<T>(
     )
   }
   if (!res.ok) {
-    const body = await res.text().catch(() => "")
-    throw new BnfMcpError(`MCP tools/call failed (HTTP ${res.status}): ${body.slice(0, 200)}`)
+    throw new BnfMcpError(`MCP tools/call failed (HTTP ${res.status}): ${await failureBody(res)}`)
   }
 
   const ctype = res.headers.get("content-type") ?? ""
@@ -214,7 +233,11 @@ export async function callBnfTool<T>(
   // handed an opaque "TypeError: Cannot read properties of undefined" instead of
   // the upstream status.
   if (isFailureEnvelope(payload)) {
-    throw softFailureError(payload, toolName)
+    const failure = softFailureError(payload, toolName)
+    // BnF's quota is already blown even though our buckets granted the call:
+    // freeze the API's bucket so no other agent re-sends into it.
+    if (failure instanceof BnfMcpRateLimitError) reportBnfUpstreamRateLimit(toolName, undefined)
+    throw failure
   }
 
   return payload as T

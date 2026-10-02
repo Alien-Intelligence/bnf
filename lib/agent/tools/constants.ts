@@ -10,6 +10,8 @@
  * `createToolRegistry` applies automatically when building the Anthropic tool
  * list (see playbook/mcp-client.md).
  */
+import { bnfPrefixedToolName } from "@/lib/mcp/tools"
+
 export const AGENT_TOOLS = {
   // --- Corpus tools -----------------------------------------------------------
   corpusGetState:       "corpus_get_state",
@@ -68,11 +70,12 @@ export const AGENT_TOOLS = {
   // --- BnF MCP tools (prefixed by the MCP server name "bnf") -----------------
   // These are NOT registered via defineTool — they come from the MCP server.
   // Listed here so the prompt-builder and the SSE event labels can reference
-  // them by a typed key rather than a magic string.
-  bnfSearchCatalogue: "bnf__bnf_search_catalogue",
-  bnfSearchGallica:   "bnf__bnf_search_gallica",
-  bnfGetRecord:       "bnf__bnf_get_catalogue_record",
-  bnfGetDocumentInfo: "bnf__bnf_get_document_info",
+  // them by a typed key rather than a magic string; the prefix is derived from
+  // BNF_MCP_SERVER_NAME so a rename cannot leave these stale.
+  bnfSearchCatalogue: bnfPrefixedToolName("bnf_search_catalogue"),
+  bnfSearchGallica: bnfPrefixedToolName("bnf_search_gallica"),
+  bnfGetRecord: bnfPrefixedToolName("bnf_get_catalogue_record"),
+  bnfGetDocumentInfo: bnfPrefixedToolName("bnf_get_document_info"),
 } as const
 
 export type AgentToolName = (typeof AGENT_TOOLS)[keyof typeof AGENT_TOOLS]

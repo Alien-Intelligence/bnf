@@ -183,24 +183,55 @@ points share those buckets:
   `spawn_research` child. `onToolStart` cannot do this: it is sync-only and
   cannot veto.
 
-A call that cannot get its tokens within `BNF_MCP_RATE_MAX_WAIT_MS` is shed
-with a structured `{ success: false, rate_limited: true, api, error: « Quota
-BnF saturé … » }` tool result — never a throw out of the loop, never a call
-that reaches BnF. One acquire per MCP call: a model retry acquires again.
+Every call takes the global bucket, then its API bucket, against ONE deadline
+computed when it is enqueued. The rules:
+
+- **Shed, never thrown.** A call that cannot get its tokens within
+  `BNF_MCP_RATE_MAX_WAIT_MS` is shed with a structured `{ success: false,
+  rate_limited: true, api, error: « Quota BnF saturé … » }` tool result — never
+  a throw out of the loop, never a call that reaches BnF. The global tokens a
+  call took are **refunded** when its API bucket sheds it (or its turn aborts),
+  so refused catalogue retries cannot starve IIIF/Gallica/graphe.
+- **Unknown tools are refused.** A `bnf__<tool>` absent from `BNF_MCP_TOOLS`
+  has no API bucket, so the decorator refuses it (`{ success: false, refused:
+  "bnf_call_refused", error }`) and never sends it. A new mcp-bnf tool ships
+  only once it is mapped in `BNF_MCP_TOOL_API`.
+- **Weights are upstream requests.** `bnfMcpCallWeight`: a full-text read
+  (`bnf_get_document_text`) is 2 + pages (OAI record + pagination + one ALTO
+  per page, default 10, max 200); `bnf_find_person` 3, `bnf_find_work` 2,
+  everything else 1. A `max_pages` that is not an integer is refused — mcp-bnf
+  would coerce `"150"` to 150 pages.
+- **A BnF 429 freezes the bucket.** When BnF answers 429 anyway — HTTP 429 on
+  `callBnfTool`, the SDK's `HTTP 429` transport error, or mcp-bnf's soft
+  envelope `{ success: false, status_code: 429 }` in the tool result — the
+  API's bucket is frozen for `Retry-After` when sent, otherwise until the next
+  clock-minute boundary, capped at 5 minutes (`BNF_RATE_LIMIT_FREEZE_MAX_MS`).
+- **Cancellation is honoured while queued.** A caller whose turn aborts leaves
+  the FIFO queue at once, not when its turn comes.
+- **One acquire per MCP call**: a model retry acquires again.
 
 **Rule: every `createToolRegistry(...)` built in app code MUST be wrapped with
 `withBnfRateLimit`.** The two call sites today are
-`lib/agent/tools/registry-factory.ts` and `lib/agent/tools/spawn.ts`.
+`lib/agent/tools/registry-factory.ts` and `lib/agent/tools/spawn.ts`. The
+wrap is pinned on the SDK's real dispatch path by
+`lib/mcp/rate-limited-registry-runner.test.ts` (`runClaudeSdk` against a local
+fake Anthropic endpoint and a fake mcp-bnf).
+
+**Config is validated at boot.** When `BNF_MCP_URL` is set, `lib/env.ts`
+parses the seven `BNF_MCP_RATE_*` values on import (`instrumentation.ts`
+imports it first), with `BNF_MCP_RATE_MAX_WAIT_MS` ≤ 60 s; a missing value
+stops the process instead of failing its first turn. `withBnfRateLimit`
+re-asserts it when a registry is built. The chart renders every rate with
+`required`, and a per-replica share below 1/min fails the render
+(`bnf-demo.bnfRateShare`) instead of flooring up past the quota.
 
 Not covered, on purpose: MCP `tools/list` discovery (never reaches BnF);
 other mcp-bnf clients sharing the platform connectors (none in prod besides
-this app); the upstream HTTP requests a tool makes internally — the limiter
-counts MCP calls, weighted by the upstream requests a call is known to make
-(`bnfMcpCallWeight`: a full-text read is manifest + one ALTO per page, the
-semantic helpers chain several SPARQL queries), and mcp-bnf's 1 h SRU cache
-keeps real upstream traffic at or below the counted traffic. The buckets are
-per replica; the chart divides the rates by `replicaCount` so a scale-out
-stays under quota by construction (see `values.yaml`).
+this app); the upstream HTTP requests a tool makes internally beyond the
+weights above — mcp-bnf's 1 h SRU cache keeps real upstream traffic at or
+below the counted traffic. The buckets are per replica; the chart divides the
+rates by `replicaCount` so a scale-out stays under quota by construction (see
+`values.yaml`).
 
 ## Auth
 

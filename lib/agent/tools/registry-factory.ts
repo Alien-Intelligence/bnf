@@ -5,6 +5,7 @@ import { prisma } from "@/lib/db"
 import { withBnfRateLimit } from "@/lib/mcp/rate-limited-registry"
 import { resolveMcpServers } from "./mcp-servers"
 import { toolsForScope } from "./index"
+import type { SessionScope } from "@/models/sessions/schema"
 import type { PolicyUser } from "@/models/users/schema"
 
 /**
@@ -46,7 +47,7 @@ export interface TurnScopedCtx extends ToolContext {
    */
   corpusReachable: boolean
   /** Whether this is a corpus-building or RAG research session. */
-  scope: "corpus" | "research"
+  scope: SessionScope
   /**
    * Set only on a spawn_research CHILD's context: the staging tools add their
    * exact `added` count here, so the child reports what IT staged — not a
@@ -65,7 +66,7 @@ export interface BuildTurnCtxOpts {
   /** False when a derived project's corpus grant was revoked. */
   corpusReachable: boolean
   /** Whether this is a corpus-building or RAG research session. */
-  scope: "corpus" | "research"
+  scope: SessionScope
 }
 
 /**
@@ -118,7 +119,7 @@ export function buildTurnScopedCtx(
  * memory + ask_user are shared. See toolsForScope(). Tool-scoped data (user,
  * project, scope) lives on the `TurnScopedCtx` built by `buildTurnScopedCtx`.
  */
-export async function buildTurnScopedRegistry(scope: "corpus" | "research", signal?: AbortSignal) {
+export async function buildTurnScopedRegistry(scope: SessionScope, signal?: AbortSignal) {
   // MCP server is optional: if BNF_MCP_URL / BNF_MCP_TOKEN are absent — or the
   // session handshake fails (server down) — the app-defined corpus/memory/
   // ingest tools still work; the agent just has no BnF search capability for

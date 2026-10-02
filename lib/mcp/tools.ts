@@ -14,10 +14,10 @@
  * `<server>__<tool>`, so `bnf__bnf_search_catalogue` is the agent-facing form of
  * `bnf_search_catalogue`. The rate limiter keys on this prefix.
  */
-export const BNF_MCP_SERVER_NAME = "bnf"
+export const BNF_MCP_SERVER_NAME = "bnf" as const
 
 /** The chat-sdk's server/tool separator (`prefixToolName` in @alien/chat-sdk). */
-const MCP_PREFIX_SEP = "__"
+const MCP_PREFIX_SEP = "__" as const
 
 /**
  * Every tool mcp-bnf registers (MCPs/mcp-bnf/src/tools/registry.py, one `NAME`
@@ -61,12 +61,22 @@ export const BNF_SEARCH_TOOL = {
 
 export type BnfSearchSource = keyof typeof BNF_SEARCH_TOOL
 
+/** The agent-facing name of a BnF MCP tool: `bnf__<tool>`. */
+export type BnfPrefixedToolName<T extends BnfMcpToolName = BnfMcpToolName> =
+  `${typeof BNF_MCP_SERVER_NAME}${typeof MCP_PREFIX_SEP}${T}`
+
+/** `bnf_search_catalogue` → `bnf__bnf_search_catalogue`, typed. */
+export function bnfPrefixedToolName<T extends BnfMcpToolName>(tool: T): BnfPrefixedToolName<T> {
+  return `${BNF_MCP_SERVER_NAME}${MCP_PREFIX_SEP}${tool}`
+}
+
 /**
  * The raw mcp-bnf tool name behind an agent-facing `bnf__<tool>` name, or null
- * when the name is not a BnF MCP tool (a custom app tool, another server's
- * tool, or a bare prefix). Deliberately does NOT check the tool against
- * BNF_MCP_TOOLS: an unknown `bnf__` tool is still BnF egress and is throttled
- * on the global bucket rather than slipping through unmetered.
+ * when the name does not carry the BnF server prefix (a custom app tool,
+ * another server's tool, or a bare prefix). Deliberately does NOT check the
+ * tool against BNF_MCP_TOOLS: an unknown `bnf__` tool is still BnF egress, and
+ * the rate-limited registry REFUSES it (isBnfMcpToolName in rate-limit.ts)
+ * rather than letting it through unmetered.
  */
 export function bnfToolFromPrefixed(prefixed: string): string | null {
   const prefix = BNF_MCP_SERVER_NAME + MCP_PREFIX_SEP
