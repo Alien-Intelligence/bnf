@@ -126,6 +126,26 @@ export class DocumentQueries {
   }
 
   /**
+   * How many ARKs pendingOcrArks would offer with the same cutoffs (no limit) —
+   * the `pending-left` of the sync cycle's progress log line.
+   */
+  static async countPendingOcrArks(opts: {
+    buildingCutoff: Date
+    unavailableCutoff: Date
+  }): Promise<number> {
+    const [row] = await prisma.$queryRaw<Array<{ n: bigint }>>`
+      SELECT count(*) AS n
+      FROM (SELECT DISTINCT ark FROM document WHERE indexed_at IS NOT NULL) d
+      LEFT JOIN document_ocr o ON o.ark = d.ark
+      WHERE o.ark IS NULL
+         OR (o.status = ${OCR_SYNC_STATUS.BUILDING} AND o.checked_at < ${opts.buildingCutoff})
+         OR (o.status = ${OCR_SYNC_STATUS.UNAVAILABLE} AND o.checked_at < ${opts.unavailableCutoff})
+    `
+    if (row === undefined) throw new Error("countPendingOcrArks: COUNT returned no row")
+    return Number(row.n)
+  }
+
+  /**
    * Whether `ark` is an INDEXED document of the corpus owned by
    * `corpusProjectId` — the D8 gate for a direct per-ARK OCR read
    * (documents/ocr route, doc_get, rag_get_text). Callers resolve

@@ -37,6 +37,7 @@ import { IngestQueries } from "@/models/ingest/queries"
 import { IngestService } from "@/models/ingest/service"
 import { clusterProgressEventSchema } from "@/models/ingest/types"
 import { verifyCallback } from "@/lib/cluster/callback-auth"
+import { kickOcrSync } from "@/lib/documents/ocr-sync"
 
 export async function POST(
   req: Request,
@@ -77,5 +78,10 @@ export async function POST(
   if (!event.success) return badRequest("invalid event", event.error.issues)
 
   await IngestService.applyProgress(job, event.data)
+  // The run's artifacts were written at each lane's convergence point, before
+  // this terminal event: pull their OCR quality now (forced — a re-ingest may
+  // have re-OCR'd). ARKs that failed have no artifact and come back
+  // `unavailable`, which is harmless. Runs after the response (after()).
+  if (event.data.stage === "done") kickOcrSync(job.addedArks)
   return ok({ accepted: true })
 }

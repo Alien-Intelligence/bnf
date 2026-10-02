@@ -8,6 +8,7 @@ import { prisma } from "@/lib/db"
 import type { Prisma } from "@/lib/generated/prisma/client"
 import { DOCUMENT_RESOLVE_STATUS, OCR_SYNC_STATUS, type OcrSource } from "./schema"
 import type { WorkerOcrQualitySyncResponse } from "./types"
+import { ClusterRunner } from "@/lib/cluster/runner"
 import { iiifManifestUrl, sourceFromArk } from "@/lib/mcp/vocab"
 
 /**
@@ -31,6 +32,31 @@ export type OcrSyncWritePlan = {
   }>
   building: string[]
   unavailable: Array<{ ark: string; reason: string }>
+}
+
+/**
+ * The worker must answer each asked ARK exactly once (the schema already
+ * guarantees "at most once"). An ARK left unanswered would stay pending and be
+ * re-asked every sweep; an ARK nobody asked for is a contract break. Both
+ * throw — nothing of that answer is written. Pure, exported for the tests.
+ */
+export function assertSyncCoverage(
+  asked: string[],
+  response: WorkerOcrQualitySyncResponse,
+): void {
+  const answered = new Set([
+    ...response.documents.map((d) => d.ark),
+    ...response.building,
+    ...response.unavailable.map((u) => u.ark),
+  ])
+  const askedSet = new Set(asked)
+  const missing = [...askedSet].filter((a) => !answered.has(a))
+  const extra = [...answered].filter((a) => !askedSet.has(a))
+  if (missing.length > 0 || extra.length > 0) {
+    throw new Error(
+      `ocr-quality sync answer does not match the request: missing=[${missing.join(", ")}] unexpected=[${extra.join(", ")}]`,
+    )
+  }
 }
 
 /**
@@ -168,6 +194,21 @@ export class DocumentService {
       },
     })
     return { retried: res.count }
+  }
+
+  /**
+   * One sync batch: ask the worker about `arks` (≤ OCR_SYNC_BATCH_SIZE), check
+   * the answer covers exactly them, and persist it. Returns the plan that was
+   * written so the drainer can tally it. Any failure — transport, non-2xx,
+   * invalid body, coverage, DB — throws to the caller; the rows stay as they
+   * were and the next sweep re-asks.
+   */
+  static async syncOcrBatch(arks: string[]): Promise<OcrSyncWritePlan> {
+    const response = await ClusterRunner.ocrQualitySync(arks)
+    assertSyncCoverage(arks, response)
+    const plan = planOcrSyncWrites(response, new Date())
+    await DocumentService.recordOcrSync(plan)
+    return plan
   }
 
   /**

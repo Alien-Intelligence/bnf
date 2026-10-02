@@ -52,6 +52,14 @@ export async function register() {
     })
   }, CANONICALIZE_SWEEP_INTERVAL_MS)
 
+  // OCR-quality sync (feedback 2026-09-29 #7): boot resume + periodic sweep that
+  // pulls the worker's per-ARK OCR-quality artifacts into DocumentOcr /
+  // DocumentFolio, and through it drives the backfill of documents indexed
+  // before the feature. The terminal ingest callback kicks it for its own ARKs.
+  // No-op (one log line) unless CLUSTER_MODE=real. See lib/documents/ocr-sync.ts.
+  const { startOcrSync } = await import("@/lib/documents/ocr-sync")
+  startOcrSync()
+
   // Ingest lifecycle watchdog (audit findings F18 + F21) — periodically
   // reconciles RUNNING ingest jobs whose worker has stopped reporting and
   // QUEUED jobs that never reached the worker at all, so neither can wedge a

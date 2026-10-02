@@ -10,6 +10,12 @@ import "server-only"
 //
 // On any non-2xx response or transport error, throws an Error with enough
 // context for IngestService.submit to mark the parent job failed.
+import { z } from "zod"
+
+import {
+  workerOcrQualitySyncResponseSchema,
+  type WorkerOcrQualitySyncResponse,
+} from "@/models/documents/types"
 import type { ClusterIngestRequest, ClusterQueueProgress } from "./contracts"
 
 const DEFAULT_TIMEOUT_MS = 30_000
@@ -119,6 +125,40 @@ export class ClusterClient {
     } finally {
       clearTimeout(timer)
     }
+  }
+
+  /**
+   * POST /ocr-quality/sync — the per-ARK OCR-quality artifacts for `arks`
+   * (lib/documents/ocr-sync.ts, plan D7). The worker returns the artifacts it
+   * has and queues a rate-gated build for the others. A non-2xx throws with the
+   * body; a body that is not a valid sync response throws with the Zod issues —
+   * a contract break is never written to the app DB.
+   */
+  static async ocrQualitySync(arks: string[]): Promise<WorkerOcrQualitySyncResponse> {
+    const res = await postJson("/ocr-quality/sync", { arks })
+    const text = await res.text()
+    if (!res.ok) {
+      throw new Error(
+        `ClusterClient.ocrQualitySync: worker returned ${res.status} ${res.statusText}: ${text}`,
+      )
+    }
+    let json: unknown
+    try {
+      json = JSON.parse(text)
+    } catch (err) {
+      throw new Error(
+        `ClusterClient.ocrQualitySync: worker response is not JSON: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      )
+    }
+    const parsed = workerOcrQualitySyncResponseSchema.safeParse(json)
+    if (!parsed.success) {
+      throw new Error(
+        `ClusterClient.ocrQualitySync: invalid worker response: ${z.prettifyError(parsed.error)}`,
+      )
+    }
+    return parsed.data
   }
 
   static async cancel(clusterJobId: string): Promise<void> {
