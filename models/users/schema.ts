@@ -19,6 +19,19 @@ export const USER_ROLE = {
 
 export type UserRole = (typeof USER_ROLE)[keyof typeof USER_ROLE]
 
+function isUserRole(value: string): value is UserRole {
+  return value === USER_ROLE.ADMIN || value === USER_ROLE.MEMBER || value === USER_ROLE.GUEST
+}
+
+/**
+ * `user.role` is a plain String column; this is the one place that narrows it.
+ * An unknown stored value is a corrupt row and throws, never guessed.
+ */
+export function parseUserRole(value: string): UserRole {
+  if (!isUserRole(value)) throw new Error(`Unknown user role "${value}"`)
+  return value
+}
+
 /**
  * The one column sign-out needs from an OAuth account row: the id_token
  * better-auth stored at the last SSO sign-in, passed to Authentik as
@@ -76,7 +89,7 @@ export type AdminAccountStat = {
   id: string
   name: string
   email: string
-  role: string
+  role: UserRole
   createdAt: string
   projectCount: number
   sessionCount: number

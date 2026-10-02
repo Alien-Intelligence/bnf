@@ -5,6 +5,7 @@
 // per-account activity totals, plus a CSV export. Header/tabs/main wrapper come
 // from the admin layout. Loading / error / empty / data are distinct branches.
 
+import { USER_ROLE } from "@/models/users/schema"
 import { Download } from "lucide-react"
 import { useLocale, useTranslations } from "next-intl"
 import { useAdminAccounts } from "@/hooks/api/admin"
@@ -85,7 +86,7 @@ export function AdminAccountsClient() {
                       <div className="text-xs text-muted-foreground">{a.email}</div>
                     </td>
                     <td className="px-4 py-2">
-                      <Badge variant={a.role === "admin" ? "default" : "secondary"}>
+                      <Badge variant={a.role === USER_ROLE.ADMIN ? "default" : "secondary"}>
                         {tRole(a.role)}
                       </Badge>
                     </td>
