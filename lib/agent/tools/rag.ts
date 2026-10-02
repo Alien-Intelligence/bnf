@@ -30,6 +30,7 @@ import {
 } from "@/lib/constants"
 import type { TurnScopedCtx } from "./registry-factory"
 import { AGENT_TOOLS } from "./constants"
+import { refusal } from "./refusal"
 import { NOT_INGESTED_ERROR, resolveIngestedCorpus } from "./ingestion-guard"
 
 // ---------------------------------------------------------------------------
@@ -59,8 +60,8 @@ export const ragQueryTool = defineTool<
     "Use focused, specific queries — one concept per call — rather than broad questions. " +
     "Semantic search CANNOT filter: `filters` are not applied (the result lists them in " +
     "ignoredFilters). To filter by type, language or source, use rag_keyword_search. " +
-    "Returns an empty passages array when no ingestion has been committed — " +
-    "the error field will explain the situation.",
+    "Refuses (success: false, with an error explaining why) when no ingestion has " +
+    "been committed.",
   inputSchema: z.object({
     query: z
       .string()
@@ -92,7 +93,7 @@ export const ragQueryTool = defineTool<
   handler: async (input, ctx) => {
     const corpus = await resolveIngestedCorpus(ctx, NOT_INGESTED_ERROR)
     if ("error" in corpus) {
-      return { passages: [], total: 0, error: corpus.error }
+      return refusal(corpus.error)
     }
 
     const result = await ClusterRagClient.query({
@@ -136,7 +137,7 @@ export const ragKeywordSearchTool = defineTool<
     "when you need to FILTER by document type, language or source — filtering " +
     "lives here, not on rag_query. Use the returned entryId with rag_get_text " +
     "to read the surrounding full text. " +
-    "Returns an empty hits array (with an error field) when nothing is ingested.",
+    "Refuses (success: false, with an error) when nothing is ingested.",
   inputSchema: z.object({
     query: z
       .string()
@@ -164,7 +165,7 @@ export const ragKeywordSearchTool = defineTool<
   handler: async (input, ctx) => {
     const corpus = await resolveIngestedCorpus(ctx, NOT_INGESTED_ERROR)
     if ("error" in corpus) {
-      return { hits: [], total: 0, error: corpus.error }
+      return refusal(corpus.error)
     }
 
     return ClusterRagClient.keywordSearch({
@@ -222,7 +223,7 @@ export const ragGetTextTool = defineTool<
   handler: async (input, ctx) => {
     const corpus = await resolveIngestedCorpus(ctx, NOT_INGESTED_ERROR)
     if ("error" in corpus) {
-      return { text: "", error: corpus.error }
+      return refusal(corpus.error)
     }
 
     // The defaults are applied HERE and nowhere else: the facade and both

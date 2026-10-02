@@ -38,6 +38,7 @@ import {
 } from "@/models/notes/schema"
 import type { TurnScopedCtx } from "./registry-factory"
 import { AGENT_TOOLS } from "./constants"
+import { refusal, type ToolRefusal } from "./refusal"
 import { NOTE_NOT_INGESTED_ERROR, resolveIngestedCorpus } from "./ingestion-guard"
 
 /**
@@ -75,7 +76,7 @@ export type NoteWriteResult = {
 }
 
 /** What a note write tool returns: the written note, or a structured refusal. */
-export type NoteWriteOutcome = NoteWriteResult | { error: string }
+export type NoteWriteOutcome = NoteWriteResult | ToolRefusal
 
 function noteResult(
   note: { id: string; title: string; citationCount: number },
@@ -176,7 +177,7 @@ export const noteGetTool = defineTool<
   }),
   handler: async (input, ctx) => {
     const note = await NoteQueries.getForProject(input.id, ctx.projectId)
-    if (!note) return { error: NOTE_NOT_FOUND_ERROR }
+    if (!note) return refusal(NOTE_NOT_FOUND_ERROR)
     return { note }
   },
 })
@@ -208,7 +209,7 @@ export async function handleNoteCreate(input: NoteCreateInput, ctx: TurnScopedCt
   // Structural guard: a note must rest on the ingested corpus, never on
   // general knowledge before any retrieval exists (design item 4).
   const corpus = await resolveIngestedCorpus(ctx, NOTE_NOT_INGESTED_ERROR)
-  if ("error" in corpus) return { error: corpus.error }
+  if ("error" in corpus) return refusal(corpus.error)
 
   // The note is the project's own; its citations belong to the corpus it
   // reads, which is the source's when this is a derived workspace.
@@ -270,12 +271,12 @@ export type NoteUpdateInput = z.infer<typeof noteUpdateInputSchema>
 
 export async function handleNoteUpdate(input: NoteUpdateInput, ctx: TurnScopedCtx): Promise<NoteWriteOutcome> {
   const corpus = await resolveIngestedCorpus(ctx, NOTE_NOT_INGESTED_ERROR)
-  if ("error" in corpus) return { error: corpus.error }
+  if ("error" in corpus) return refusal(corpus.error)
 
   // Scope before mutating. `input.id` came from the model and names any note
   // in the database, not necessarily one this project owns.
   const target = await NoteQueries.getForProject(input.id, ctx.projectId)
-  if (!target) return { error: NOTE_NOT_FOUND_ERROR }
+  if (!target) return refusal(NOTE_NOT_FOUND_ERROR)
 
   const written = await NoteService.update(input.id, ctx.corpusProjectId, {
     title: input.title,
@@ -283,7 +284,7 @@ export async function handleNoteUpdate(input: NoteUpdateInput, ctx: TurnScopedCt
   })
   // Deleted between the scope check and the write — rare, but the honest
   // answer is the same one the scope check gives.
-  if (!written) return { error: NOTE_NOT_FOUND_ERROR }
+  if (!written) return refusal(NOTE_NOT_FOUND_ERROR)
 
   ctx.emit?.({
     type: "note_event",
@@ -332,16 +333,16 @@ export type NoteAppendInput = z.infer<typeof noteAppendInputSchema>
 
 export async function handleNoteAppend(input: NoteAppendInput, ctx: TurnScopedCtx): Promise<NoteWriteOutcome> {
   const corpus = await resolveIngestedCorpus(ctx, NOTE_NOT_INGESTED_ERROR)
-  if ("error" in corpus) return { error: corpus.error }
+  if ("error" in corpus) return refusal(corpus.error)
 
   // Scope before mutating — see note_update.
   const target = await NoteQueries.getForProject(input.id, ctx.projectId)
-  if (!target) return { error: NOTE_NOT_FOUND_ERROR }
+  if (!target) return refusal(NOTE_NOT_FOUND_ERROR)
 
   const written = await NoteService.append(input.id, ctx.corpusProjectId, {
     bodyMd: input.body_md,
   })
-  if (!written) return { error: NOTE_NOT_FOUND_ERROR }
+  if (!written) return refusal(NOTE_NOT_FOUND_ERROR)
 
   ctx.emit?.({
     type: "note_event",

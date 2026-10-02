@@ -13,6 +13,7 @@ import { ClusterRagClient } from "@/lib/cluster/rag"
 import type { RagEntryContentRequest } from "@/lib/cluster/rag"
 import { RAG_DEFAULT_K, RAG_GET_TEXT_DEFAULT_CHAR_LIMIT, RAG_KEYWORD_DEFAULT_LIMIT } from "@/lib/constants"
 import { ragGetTextTool, ragKeywordSearchTool, ragQueryTool } from "./rag"
+import { toolCallErrored } from "@/lib/tools/display"
 import type { TurnScopedCtx } from "./registry-factory"
 import {
   createTestUser,
@@ -184,4 +185,15 @@ test("rag_query and rag_keyword_search resolve their defaults once, in the handl
   }
   assert.deepEqual(ks, [RAG_DEFAULT_K, 7])
   assert.deepEqual(limits, [RAG_KEYWORD_DEFAULT_LIMIT, 3])
+})
+
+test("a rag tool refusal is recorded as a failed call, not an ok one", async () => {
+  // A derived-shaped ctx whose corpus is NOT ingested: a fresh project.
+  const bare = await createTestProject(userId, "rag-refusal")
+  try {
+    const out = await ragQueryTool.handler({ query: "incendie" }, { ...ctxFor(), corpusProjectId: bare.id })
+    assert.equal(toolCallErrored(false, out), true)
+  } finally {
+    await cleanupProject(bare.id)
+  }
 })

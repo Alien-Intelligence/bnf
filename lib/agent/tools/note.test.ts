@@ -13,6 +13,7 @@ import { prisma } from "@/lib/db"
 import { handleNoteAppend, handleNoteCreate, handleNoteUpdate } from "./note"
 import type { NoteWriteOutcome, NoteWriteResult } from "./note"
 import { NOTE_NOT_INGESTED_ERROR } from "./ingestion-guard"
+import { toolCallErrored } from "@/lib/tools/display"
 import type { TurnScopedCtx } from "./registry-factory"
 import {
   createTestUser,
@@ -74,9 +75,14 @@ function written(outcome: NoteWriteOutcome): NoteWriteResult {
   return outcome
 }
 
-/** The write was refused: return its error. */
+/**
+ * The write was refused: return its error. A refusal must be recorded as a
+ * failed call (success: false → toolCallErrored), not as an "ok" with a ✓.
+ */
 function refusal(outcome: NoteWriteOutcome): string {
   assert.ok("error" in outcome, `the write was not refused: ${JSON.stringify(outcome)}`)
+  assert.equal(outcome.success, false)
+  assert.equal(toolCallErrored(false, outcome), true, "persisted and displayed as an error")
   return outcome.error
 }
 
