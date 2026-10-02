@@ -437,3 +437,16 @@ test("a missing or valid Taux OCR logs nothing", async () => {
   assert.equal(h.lines.some((l) => l.event === "taux_ocr_unusable"), false);
 });
 
+
+test("a text doc whose page count BnF does not publish is skipped as page_count_unknown, not as an empty no_pages doc", async () => {
+  // docInfoFromManifest maps a manifest without totalPages to pageCount null.
+  const h = await setup({
+    spec: { ark: "ark:/12148/textdoc", ocrAvailable: true, docType: "texte", pageCount: 0 },
+  });
+  await h.deliver();
+  await h.q.idle();
+  const row = await h.ds.get(h.ref.docJobId);
+  assert.equal(row?.status, "skipped");
+  assert.equal(row?.skipReason, "page_count_unknown");
+  assert.equal(h.fetched.length, 0);
+});

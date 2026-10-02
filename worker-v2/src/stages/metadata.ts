@@ -160,7 +160,13 @@ export class MetadataStage extends PipelineStage<DocRef, never> {
     }
 
     if (decision.lane === "text") {
-      const pageCount = info.pageCount ?? 0;
+      // An unknown count is not an empty document: say which one it is rather
+      // than defaulting null to 0 and reporting "no pages".
+      if (info.pageCount === null) {
+        await this.docState.setStatus(doc.docJobId, "skipped", { skipReason: "page_count_unknown" });
+        return { kind: "skip", reason: "page_count_unknown" };
+      }
+      const pageCount = info.pageCount;
       if (pageCount <= 0) {
         await this.docState.setStatus(doc.docJobId, "skipped", { skipReason: "no_pages" });
         return { kind: "skip", reason: "no_pages" };
