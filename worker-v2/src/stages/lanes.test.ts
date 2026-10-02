@@ -1278,3 +1278,22 @@ test("ocr-poll: artifact lane mistral, dropped pages excluded", async () => {
     { ordre: 3, ocrSource: "mistral", ocrQuality: null, wordCount: null },
   ]);
 });
+
+test("describe: a corrupt cached pages blob is not a cache hit — the folios are described again and the blob rewritten", async () => {
+  const q = new MemoryQueue();
+  const blob = new MemoryBlobStore();
+  const ds = new MemoryDocState();
+  await readyRow(ds, "vision", 1);
+  await blob.putJson(keys.metadata(ARK), metaBlob(null, { ocrAvailable: false, docType: "estampe" }));
+  await blob.putBytes(keys.image(ARK, 1), Buffer.from("IMG f1"));
+  await blob.putJson(keys.pages(ARK), [{ ordre: "1", body: 42 }]);
+
+  const emitted = await collect<PreparedDoc>(q, Q.embed);
+  await new DescribeStage(deps(q, blob), new FakeDescriber(), ds, undefined).start();
+  await q.send(Q.describe, docReady("vision", [1]));
+  await q.idle();
+
+  assert.equal(emitted.length, 1);
+  assert.deepEqual(emitted[0]?.pages, [{ ordre: 1, text: `Description of ${ARK} folio 1` }]);
+  assert.deepEqual(await blob.getJson(keys.pages(ARK)), emitted[0]?.pages);
+});
