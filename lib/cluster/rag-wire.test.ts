@@ -176,3 +176,35 @@ test("chunkToPassage refuses a folio or entry id that is not a positive integer"
   assert.throws(() => chunkToPassage(chunk(3, 0)), /invalid entry_id/)
   assert.equal(chunkToPassage(chunk(3, 4))?.folio, 3)
 })
+
+test("toEntryContent: a page must fit the document — length, total, has_more and the echoed entry id", () => {
+  const req = { entryId: 7, charOffset: 0, charLimit: 4 }
+  const page = { entry_id: 7, text: "abcd", char_offset: 0, char_limit: 4, total_length: 9, has_more: true, next_offset: 4 }
+  for (const bad of [
+    // the reviewer's probe: short text, a large total, no more, another entry
+    { entry_id: 99, text: "0123456789", char_offset: 0, char_limit: 4, total_length: 9000, has_more: false, next_offset: null },
+    { ...page, entry_id: 99 },
+    { ...page, text: "abcdef", next_offset: 6 },
+    { ...page, total_length: 3 },
+    { ...page, total_length: 4, has_more: true },
+    { ...page, entry_id: undefined },
+  ]) {
+    assert.throws(() => toEntryContent(bad, req), /inconsistent|omitted/, JSON.stringify(bad))
+  }
+  // Past the end: an empty slice and nothing more is consistent.
+  const past = toEntryContent(
+    { entry_id: 7, text: "", char_offset: 20, char_limit: 4, total_length: 9, has_more: false, next_offset: null },
+    { entryId: 7, charOffset: 20, charLimit: 4 },
+  )
+  assert.equal(past.text, "")
+})
+
+test("toEntryContent: an offset-only slice must run to the end of the document", () => {
+  const req = { entryId: 7, charOffset: 2, charLimit: 0 }
+  assert.equal(toEntryContent({ text: "cdef", char_offset: 2, total_length: 6, has_more: false }, req).nextOffset, 6)
+  assert.throws(() => toEntryContent({ text: "cd", char_offset: 2, total_length: 6, has_more: false }, req), /inconsistent/)
+  assert.throws(
+    () => toEntryContent({ entry_id: 8, text: "cdef", char_offset: 2, total_length: 6, has_more: false }, req),
+    /inconsistent/,
+  )
+})

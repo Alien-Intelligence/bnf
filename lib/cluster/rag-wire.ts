@@ -89,24 +89,36 @@ export function toEntryContent(
   const missing = (fields: Array<keyof DataclusterEntryContent>) =>
     fields.filter((f) => data[f] === undefined)
 
+  // An echoed entry id must be the one asked for (paginated mode always
+  // echoes it; the raw payload of the other modes may carry it too).
+  if (data.entry_id !== undefined && data.entry_id !== req.entryId) throw inconsistent(req, data)
+
   if (req.charLimit > 0) {
-    const { char_offset, char_limit, total_length, has_more, next_offset } = data
+    const { entry_id, char_offset, char_limit, total_length, has_more, next_offset } = data
     if (
+      entry_id === undefined ||
       char_offset === undefined ||
       char_limit === undefined ||
       total_length === undefined ||
       has_more === undefined ||
       next_offset === undefined
     ) {
-      throw incomplete(req, "paginated", missing(["char_offset", "char_limit", "total_length", "has_more", "next_offset"]))
+      throw incomplete(
+        req,
+        "paginated",
+        missing(["entry_id", "char_offset", "char_limit", "total_length", "has_more", "next_offset"]),
+      )
     }
     // The MCP echoes the request and derives the rest from the slice
-    // (get_entry_content.py): end = offset + len(text); next_offset = end
-    // while end < total, else null; has_more = end < total.
-    const end = char_offset + codePointLength(data.text)
+    // (get_entry_content.py): end = offset + len(text) ≤ offset + limit;
+    // has_more = end < total; next_offset = end while end < total, else null.
+    const length = codePointLength(data.text)
+    const end = char_offset + length
     if (
       char_offset !== req.charOffset ||
       char_limit !== req.charLimit ||
+      length > char_limit ||
+      !sliceFits(char_offset, end, total_length, has_more) ||
       has_more !== (next_offset !== null) ||
       (next_offset !== null && next_offset !== end)
     ) {
@@ -128,8 +140,17 @@ export function toEntryContent(
     if (char_offset === undefined || total_length === undefined || has_more === undefined) {
       throw incomplete(req, "offset-only", missing(["char_offset", "total_length", "has_more"]))
     }
-    // Offset-only mode returns everything from the offset: nothing follows.
-    if (char_offset !== req.charOffset || has_more) throw inconsistent(req, data)
+    // Offset-only mode returns everything from the offset: the slice runs to
+    // the end, and nothing follows.
+    const end = char_offset + codePointLength(data.text)
+    if (
+      char_offset !== req.charOffset ||
+      has_more ||
+      !sliceFits(char_offset, end, total_length, has_more) ||
+      (char_offset <= total_length && end !== total_length)
+    ) {
+      throw inconsistent(req, data)
+    }
     return {
       entryId: req.entryId,
       text: data.text,
@@ -151,6 +172,17 @@ export function toEntryContent(
     hasMore: false,
     nextOffset: total,
   }
+}
+
+/**
+ * Does a slice [offset, end) agree with the document total and `has_more`?
+ * Past the end of the document (offset > total) Python yields an empty slice
+ * and nothing more; otherwise the slice ends inside the document and
+ * `has_more` says whether text follows.
+ */
+function sliceFits(offset: number, end: number, total: number, hasMore: boolean): boolean {
+  if (offset > total) return end === offset && !hasMore
+  return end <= total && hasMore === end < total
 }
 
 function inconsistent(req: { entryId: number }, data: DataclusterEntryContent): DataclusterMcpProtocolError {
