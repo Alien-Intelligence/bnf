@@ -7,11 +7,16 @@
  * the folio it cites — and prints how many quotes break each rule, with up to
  * five excerpts per rule.
  *
- * Read-only: it never writes a note, a citation or any other row. It is a
- * measurement, not a gate: it exits 0 whatever it finds, and non-zero only
- * when it cannot measure (bad arguments, a database or unexpected error).
- * The cluster it reads is whatever CLUSTER_MODE selects, through the same
- * read path the agent uses; on prod it is run only with Leo's go-ahead.
+ * It writes no note, citation or quote data. It is NOT strictly read-only:
+ * it reads the cluster through the same path the agent uses, and that path
+ * caches a corpus project's cluster dataset id on `Project.clusterDatasetId`
+ * the first time it resolves one (lib/cluster/real-rag.ts resolveDatasetId) —
+ * the same write the app's first rag_query on that project makes. On prod it
+ * is run only with Leo's go-ahead.
+ *
+ * It is a measurement, not a gate: it exits 0 whatever it finds, and non-zero
+ * only when it cannot measure (bad arguments, a database or unexpected error).
+ * The cluster it reads is whatever CLUSTER_MODE selects.
  *
  * Run:
  *   npm run audit:quotes -- <projectId>
@@ -21,7 +26,7 @@ import { prisma } from "@/lib/db"
 import { corpusProjectId } from "@/lib/authz/corpus-source"
 import { checkNoteQuotes } from "@/lib/citations/quote-check"
 import { QUOTE_CHECK_BUDGET_MS } from "@/lib/constants"
-import type { QuoteWarning } from "@/models/notes/schema"
+import { QUOTE_WARNING_REASON, type QuoteWarning, type QuoteWarningReason } from "@/models/notes/schema"
 
 const EXCERPTS_PER_REASON = 5
 const USAGE = "usage: npm run audit:quotes -- <projectId> | --all"
@@ -53,7 +58,8 @@ async function main(): Promise<void> {
 
   let notesSeen = 0
   let quotesChecked = 0
-  let notesPartial = 0
+  let notesWithUnverifiable = 0
+  const unevaluated = new Set<QuoteWarningReason>()
   const counts = new Map<string, number>()
   const excerpts = new Map<string, string[]>()
 
@@ -78,7 +84,8 @@ async function main(): Promise<void> {
         budgetMs: QUOTE_CHECK_BUDGET_MS,
       })
       quotesChecked += res.checked
-      if (res.status !== "complete") notesPartial++
+      if (res.warnings.some((w) => w.reason === QUOTE_WARNING_REASON.UNVERIFIABLE)) notesWithUnverifiable++
+      for (const rule of res.unevaluated_rules) unevaluated.add(rule)
       console.log(`  ${note.id.slice(0, 8)} ${res.checked} quote(s), ${res.warnings.length} warning(s) — ${note.title}`)
       for (const w of res.warnings) {
         const bucket = bucketOf(w)
@@ -96,7 +103,10 @@ async function main(): Promise<void> {
 
   console.log(`\n${"=".repeat(72)}\nQUOTE AUDIT`)
   console.log(`projects: ${projects.length}  notes: ${notesSeen}  quotes checked: ${quotesChecked}`)
-  console.log(`notes with an unverifiable quote: ${notesPartial}`)
+  console.log(`notes with an unverifiable quote: ${notesWithUnverifiable}`)
+  if (unevaluated.size > 0) {
+    console.log(`rules NOT evaluated (no data in this build): ${[...unevaluated].join(", ")}`)
+  }
   if (counts.size === 0) {
     console.log("no warnings")
     return

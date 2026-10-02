@@ -8,7 +8,14 @@ import type { QuoteWarning } from "@/models/notes/schema"
 import { QUOTE_WARNING_DETAIL } from "@/lib/agent/prompts/quote-warnings"
 import { QUOTE_WARNING_REASON } from "@/models/notes/schema"
 import type { QuoteWarningReason } from "@/models/notes/schema"
-import { casePasses, citedQuoteCount, forbiddenCompletionsIn, hardViolations, runVerdict } from "./quote-harness"
+import {
+  atLeastTwoThirds,
+  casePasses,
+  citedQuoteCount,
+  forbiddenCompletionsIn,
+  hardViolations,
+  runVerdict,
+} from "./quote-harness"
 import type { CheckedBody, RunEvidence } from "./quote-harness"
 
 const ARK = "ark:/12148/bpt6k822781z"
@@ -100,4 +107,11 @@ test("casePasses: final notes must pass in every run; first writes in ≥ 2/3", 
   assert.equal(casePasses([clean, clean, stitchedKept], OPTS).finalOk, false)
   assert.deepEqual(casePasses([clean, clean, noNote], OPTS), { finalOk: false, firstWriteOk: true, firstWritePassing: 2 })
   assert.deepEqual([...runVerdict(stitchedThenFixed, OPTS).firstWrite], ["H1", "H5"])
+})
+
+test("no runs is no evidence: casePasses([]) and atLeastTwoThirds(0, 0) fail", () => {
+  assert.deepEqual(casePasses([], OPTS), { finalOk: false, firstWriteOk: false, firstWritePassing: 0 })
+  assert.equal(atLeastTwoThirds(0, 0), false)
+  assert.equal(atLeastTwoThirds(2, 3), true)
+  assert.equal(atLeastTwoThirds(1, 3), false)
 })
