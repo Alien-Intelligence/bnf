@@ -14,6 +14,7 @@ import { ArrowUpRight, BookOpen, Eye, TriangleAlert } from "lucide-react"
 import { iiifImageUrl, gallicaItemUrl, gallicaViewerUrl } from "@/lib/citations/external"
 // gallicaViewerUrl → IIIF (view3if) viewer; gallicaItemUrl → classic Gallica item page.
 import { buildOcrIndex, folioOcrState, ocrPercent, type FolioOcrState } from "@/lib/ocr/quality"
+import { CITATION_THUMB_IIIF_SIZE } from "@/lib/constants"
 import { useCitationsForArk } from "@/hooks/api/citations"
 import { useDocumentOcr } from "@/hooks/api/documents"
 import { cn } from "@/lib/utils"
@@ -49,13 +50,9 @@ export function SheetCitationSource({
   const ocrQuery = useDocumentOcr(projectId, ark)
   const usages = usagesQuery.data
 
-  // The exact-folio surfaces are inlined inside `hasFolio` guards below so TS
-  // narrows `folio` to a number. Folio is mandatory on a citation, but the
-  // guard lets a malformed one degrade to the document-level Gallica viewer.
+  // The exact-folio thumbnail is inlined inside a `hasFolio` guard so TS
+  // narrows `folio` to a number.
   const hasFolio = ark != null && folio != null
-  // Document-level Gallica viewer — used when the folio is missing/malformed.
-  // Never a guessed folio: the viewer opens the document itself.
-  const gallicaUrl = ark ? gallicaViewerUrl(ark) : null
 
   // Dedupe by note — a note citing the same ARK on several folios returns one
   // usage row per citation, which previously rendered as N identical lines.
@@ -88,7 +85,7 @@ export function SheetCitationSource({
               {/* Plain <img>: a contained IIIF folio thumbnail — no giant hero. */}
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
-                src={iiifImageUrl(ark, folio, "200,")}
+                src={iiifImageUrl(ark, folio, CITATION_THUMB_IIIF_SIZE)}
                 alt={label ?? ""}
                 className="h-26 w-20 shrink-0 rounded border bg-muted object-cover"
                 loading="lazy"
@@ -120,35 +117,12 @@ export function SheetCitationSource({
           ) : null}
 
           {/* Consult on the BnF — IIIF folio viewer is the primary action */}
-          <div>
-            <div className="mono-eyebrow mb-2.5 text-neutral-600">{t("consult")}</div>
-            <div className="flex flex-col gap-2">
-              {hasFolio ? (
-                <CiteAction
-                  href={gallicaViewerUrl(ark, folio)}
-                  icon={<Eye className="size-4" strokeWidth={1.8} />}
-                  title={t("iiifViewer", { folio })}
-                  subtitle={t("iiifViewerSub")}
-                  primary
-                />
-              ) : null}
-              {hasFolio ? (
-                <CiteAction
-                  href={gallicaItemUrl(ark, folio)}
-                  icon={<BookOpen className="size-4" strokeWidth={1.8} />}
-                  title={t("gallicaViewer")}
-                  subtitle={t("gallicaViewerSub")}
-                />
-              ) : gallicaUrl ? (
-                <CiteAction
-                  href={gallicaUrl}
-                  icon={<BookOpen className="size-4" strokeWidth={1.8} />}
-                  title={t("gallicaViewer")}
-                  subtitle={t("gallicaViewerSub")}
-                />
-              ) : null}
+          {ark ? (
+            <div>
+              <div className="mono-eyebrow mb-2.5 text-neutral-600">{t("consult")}</div>
+              <ConsultActions ark={ark} folio={folio} />
             </div>
-          </div>
+          ) : null}
 
           {/* Other notes citing this ARK. Found bug B4: its loading and error
               states used to be dropped — an error read as "no other note". */}
@@ -164,8 +138,42 @@ export function SheetCitationSource({
   )
 }
 
-// "Utilisé dans d'autres notes" — loading → error → empty (nothing shown: the
-// block only exists to list other notes) → content.
+// "Consulter sur la BnF": the exact folio in the IIIF viewer (primary) and in
+// Gallica when the citation carries a folio. Folio is mandatory on a citation,
+// but a malformed one degrades to the document-level Gallica viewer — never a
+// guessed folio.
+function ConsultActions({ ark, folio }: { ark: string; folio: number | null }) {
+  const t = useTranslations("citations.panel")
+  if (folio === null) {
+    return (
+      <CiteAction
+        href={gallicaViewerUrl(ark)}
+        icon={<BookOpen className="size-4" strokeWidth={1.8} />}
+        title={t("gallicaViewer")}
+        subtitle={t("gallicaViewerSub")}
+      />
+    )
+  }
+  return (
+    <div className="flex flex-col gap-2">
+      <CiteAction
+        href={gallicaViewerUrl(ark, folio)}
+        icon={<Eye className="size-4" strokeWidth={1.8} />}
+        title={t("iiifViewer", { folio })}
+        subtitle={t("iiifViewerSub")}
+        primary
+      />
+      <CiteAction
+        href={gallicaItemUrl(ark, folio)}
+        icon={<BookOpen className="size-4" strokeWidth={1.8} />}
+        title={t("gallicaViewer")}
+        subtitle={t("gallicaViewerSub")}
+      />
+    </div>
+  )
+}
+
+// "Utilisé dans d'autres notes" — loading → error → empty (said so) → content.
 function SectionCitationUsages({
   isLoading,
   isError,
@@ -197,7 +205,14 @@ function SectionCitationUsages({
       </>
     )
   }
-  if (otherNotes.length === 0) return null
+  if (otherNotes.length === 0) {
+    return (
+      <>
+        <Separator />
+        <p className="text-sm text-muted-foreground">{t("usagesNone")}</p>
+      </>
+    )
+  }
   return (
     <>
       <Separator />
@@ -260,17 +275,15 @@ function SectionCitationOcr({
     <div>
       <div className="mono-eyebrow mb-1.5 text-neutral-600">{t("sheetTitle")}</div>
       <p className="text-[12.5px] text-foreground">{folioOcrLine(state, t)}</p>
-      {low ? (
+      {low && (
         <p className="mt-1.5 flex items-center gap-1.5 text-[12px] text-warning">
           <TriangleAlert className="size-3.5 shrink-0" strokeWidth={1.8} aria-hidden />
           {t("lowFolio")}
         </p>
-      ) : null}
-      {ocr.ocrRate !== null ? (
-        <p className="mt-1.5 text-[11.5px] text-muted-foreground">
-          {t("docRate", { rate: ocrPercent(ocr.ocrRate) })}
-        </p>
-      ) : null}
+      )}
+      <p className="mt-1.5 text-[11.5px] text-muted-foreground">
+        {ocr.ocrRate === null ? t("noRate") : t("docRate", { rate: ocrPercent(ocr.ocrRate) })}
+      </p>
     </div>
   )
 }

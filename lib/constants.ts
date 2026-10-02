@@ -802,8 +802,11 @@ export function IIIF_IMAGE_URL(ark: string, folio: number, size = "full"): strin
 
 /** IIIF size (`{width},` syntax) for a folio image embedded in a note figure.
  * Constrained so a full press-page scan isn't fetched at native resolution;
- * the source panel uses a smaller `200,` thumbnail. */
+ * the source panel uses the smaller CITATION_THUMB_IIIF_SIZE thumbnail. */
 export const NOTE_IMAGE_IIIF_SIZE = "843,"
+
+/** IIIF size (`{width},` syntax) of the cited folio's thumbnail in the source panel. */
+export const CITATION_THUMB_IIIF_SIZE = "200,"
 
 /** IIIF manifest URL for a given ARK. */
 export function IIIF_MANIFEST_URL(ark: string): string {

@@ -12,7 +12,7 @@
 
 import { useMemo } from "react"
 import { ArrowLeft, Download, FileText, HelpCircle, NotebookText, PenLine, RotateCw, X } from "lucide-react"
-import { useTranslations } from "next-intl"
+import { useFormatter, useNow, useTranslations } from "next-intl"
 import { LayoutCorpusChat } from "@/components/layouts/corpus/chat"
 import { NoteBody } from "@/components/cards/notes/note-body"
 import { FeedbackButton } from "@/components/cards/feedback/feedback-button"
@@ -27,7 +27,6 @@ import {
   downloadMarkdown,
   filenameFromTitle,
 } from "@/lib/notes/export"
-import { formatRelativeFr } from "@/lib/format"
 import { cn } from "@/lib/utils"
 import type { NoteDetail, NoteListItem } from "@/models/notes/schema"
 import { useNoteExportCopy } from "@/lib/notes/export-copy"
@@ -297,18 +296,52 @@ function ReaderAtelier({
 
       {/* Active note */}
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {activeNoteId ? (
-          <NoteReader
-            projectId={projectId}
-            noteId={activeNoteId}
-            onCitationClick={onCitationClick}
-            onNoteLinkClick={onNoteLinkClick}
-            knownNoteIds={knownNoteIds}
-          />
-        ) : null}
+        <ActiveNotePane
+          projectId={projectId}
+          activeNoteId={activeNoteId}
+          onCitationClick={onCitationClick}
+          onNoteLinkClick={onNoteLinkClick}
+          knownNoteIds={knownNoteIds}
+        />
       </div>
     </div>
   )
+}
+
+/** The reader under the tab strip: the active note, or a hint to pick a tab. */
+function ActiveNotePane({
+  projectId,
+  activeNoteId,
+  onCitationClick,
+  onNoteLinkClick,
+  knownNoteIds,
+}: {
+  projectId: string
+  activeNoteId: string | null
+  onCitationClick: (c: ParsedCitation) => void
+  onNoteLinkClick: (noteId: string) => void
+  knownNoteIds: ReadonlySet<string>
+}) {
+  const t = useTranslations("research.atelier")
+  if (activeNoteId === null) {
+    return <p className="p-10 text-center text-sm text-muted-foreground">{t("noActiveTab")}</p>
+  }
+  return (
+    <NoteReader
+      projectId={projectId}
+      noteId={activeNoteId}
+      onCitationClick={onCitationClick}
+      onNoteLinkClick={onNoteLinkClick}
+      knownNoteIds={knownNoteIds}
+    />
+  )
+}
+
+/** A note's last update, relative, in the active locale (next-intl, not a French-only helper). */
+function NoteUpdatedAt({ date }: { date: Date | string }) {
+  const format = useFormatter()
+  const now = useNow()
+  return <>{format.relativeTime(new Date(date), now)}</>
 }
 
 // ── Single artefact reader (artefact eyebrow + title + meta + body) ─────────
@@ -382,7 +415,7 @@ function NoteReader({
         </div>
         <h1 className="mb-1 mt-2.5 text-[25px] font-semibold tracking-tight">{note.title}</h1>
         <div className="mb-5 font-mono text-[11.5px] text-muted-foreground">
-          {formatRelativeFr(note.updatedAt)}
+          <NoteUpdatedAt date={note.updatedAt} />
         </div>
         <NoteBody
           body={note.body_md ?? ""}
@@ -447,83 +480,129 @@ function ReaderCarnet({
           <NotebookText className="size-3.5" strokeWidth={1.8} aria-hidden />
           {t("compiledHeader", { count: notes.length })}
         </span>
-        {failed.length > 0 ? (
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={retryFailed}
-            title={t("exportBlocked")}
-            className="h-7 gap-1.5 border-destructive/40 text-[11.5px] text-destructive"
-          >
-            <RotateCw className="size-3.5" strokeWidth={1.8} />
-            {t("retryLoad")}
-          </Button>
-        ) : (
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={onExport}
-            disabled={!exportable}
-            className="h-7 gap-1.5 text-[11.5px]"
-          >
-            <Download className="size-3.5" strokeWidth={1.8} />
-            {t("export")}
-          </Button>
-        )}
+        <CarnetHeaderAction
+          failedCount={failed.length}
+          exportable={exportable}
+          onRetry={retryFailed}
+          onExport={onExport}
+        />
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-10 pb-20 pt-8">
-        {notes.length === 0 ? (
-          <p className="py-10 text-center text-sm text-muted-foreground">{t("empty")}</p>
-        ) : (
-          <div className="mx-auto max-w-[42.5rem]">
-            {/* Project header + TOC */}
-            <div className="mb-7 border-b pb-6">
-              <div className="font-mono text-[10.5px] uppercase tracking-wide text-brand-teal">
-                {t("projectEyebrow")}
-              </div>
-              <h1 className="mb-3.5 mt-2 text-[27px] font-semibold tracking-tight">{projectName}</h1>
-              <div className="flex flex-col gap-1.5">
-                {notes.map((n, i) => (
-                  <button
-                    key={n.id}
-                    type="button"
-                    onClick={() => scrollToSection(n.id)}
-                    title={n.title}
-                    className="group flex items-baseline gap-2.5 text-left text-[13px] text-neutral-300 transition-colors hover:text-foreground"
-                  >
-                    <span className="w-5.5 shrink-0 font-mono text-[11px] text-neutral-600 group-hover:text-brand-teal">
-                      {String(i + 1).padStart(2, "0")}
-                    </span>
-                    <span className="min-w-0 flex-1 truncate group-hover:underline">
-                      {n.title}
-                    </span>
-                    <span className="shrink-0 font-mono text-[10px] text-neutral-600">
-                      {n.citationCount}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Stitched notes */}
-            {states.map((state, i) => (
-              <CarnetSection
-                key={notes[i].id}
-                sectionId={carnetSectionId(notes[i].id)}
-                index={i}
-                fallbackTitle={notes[i].title}
-                state={state}
-                onCitationClick={onCitationClick}
-                onNoteLinkClick={scrollToSection}
-                knownNoteIds={knownNoteIds}
-              />
-            ))}
-          </div>
-        )}
+        <ReaderCarnetBody
+          notes={notes}
+          states={states}
+          projectName={projectName}
+          onCitationClick={onCitationClick}
+          onTocClick={scrollToSection}
+          knownNoteIds={knownNoteIds}
+        />
       </div>
     </div>
   )
+}
+
+/**
+ * The compiled journal's header action: a failed note blocks the export with
+ * an explicit retry (found bug B5); otherwise the export, enabled only once
+ * every note is loaded.
+ */
+function CarnetHeaderAction({
+  failedCount,
+  exportable,
+  onRetry,
+  onExport,
+}: {
+  failedCount: number
+  exportable: boolean
+  onRetry: () => void
+  onExport: () => void
+}) {
+  const t = useTranslations("research.carnet")
+  if (failedCount > 0) {
+    return (
+      <Button variant="destructive" size="sm" onClick={onRetry} title={t("exportBlocked")} className="text-[11.5px]">
+        <RotateCw strokeWidth={1.8} />
+        {t("retryLoad")}
+      </Button>
+    )
+  }
+  return (
+    <Button variant="outline" size="sm" onClick={onExport} disabled={!exportable} className="text-[11.5px]">
+      <Download strokeWidth={1.8} />
+      {t("export")}
+    </Button>
+  )
+}
+
+/** The compiled journal: empty → project header + TOC + every stitched note. */
+function ReaderCarnetBody({
+  notes,
+  states,
+  projectName,
+  onCitationClick,
+  onTocClick,
+  knownNoteIds,
+}: {
+  notes: NoteListItem[]
+  states: CarnetEntryState[]
+  projectName: string
+  onCitationClick: (c: ParsedCitation) => void
+  onTocClick: (noteId: string) => void
+  knownNoteIds: ReadonlySet<string>
+}) {
+  const t = useTranslations("research.carnet")
+  if (notes.length === 0) {
+    return <p className="py-10 text-center text-sm text-muted-foreground">{t("empty")}</p>
+  }
+  return (
+    <div className="mx-auto max-w-[42.5rem]">
+      {/* Project header + TOC */}
+      <div className="mb-7 border-b pb-6">
+        <div className="font-mono text-[10.5px] uppercase tracking-wide text-brand-teal">
+          {t("projectEyebrow")}
+        </div>
+        <h1 className="mb-3.5 mt-2 text-[27px] font-semibold tracking-tight">{projectName}</h1>
+        <div className="flex flex-col gap-1.5">
+          {notes.map((n, i) => (
+            <button
+              key={n.id}
+              type="button"
+              onClick={() => onTocClick(n.id)}
+              title={n.title}
+              className="group flex items-baseline gap-2.5 text-left text-[13px] text-neutral-300 transition-colors hover:text-foreground"
+            >
+              <span className="w-5.5 shrink-0 font-mono text-[11px] text-neutral-600 group-hover:text-brand-teal">
+                {String(i + 1).padStart(2, "0")}
+              </span>
+              <span className="min-w-0 flex-1 truncate group-hover:underline">{n.title}</span>
+              <span className="shrink-0 font-mono text-[10px] text-neutral-600">{n.citationCount}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Stitched notes */}
+      {states.map((state, i) => (
+        <CarnetSection
+          key={notes[i].id}
+          sectionId={carnetSectionId(notes[i].id)}
+          index={i}
+          fallbackTitle={notes[i].title}
+          state={state}
+          onCitationClick={onCitationClick}
+          onNoteLinkClick={onTocClick}
+          knownNoteIds={knownNoteIds}
+        />
+      ))}
+    </div>
+  )
+}
+
+/** A stitched note's date line: a placeholder until the note is loaded. */
+function CarnetSectionDate({ state }: { state: CarnetEntryState }) {
+  if (state.kind === "ready") return <NoteUpdatedAt date={state.note.updatedAt} />
+  return <Skeleton className="inline-block h-3 w-16 align-middle" />
 }
 
 /** Stable DOM id for a carnet section, shared by the TOC scroll target and the
@@ -566,7 +645,7 @@ function CarnetSection({
       <div className="mb-1 flex items-baseline gap-2.5">
         <span className="font-mono text-xs text-neutral-600">{String(index + 1).padStart(2, "0")}</span>
         <span className="font-mono text-[11px] text-muted-foreground">
-          {note === null ? "" : formatRelativeFr(note.updatedAt)}
+          <CarnetSectionDate state={state} />
         </span>
       </div>
       <h2 className="mb-3 text-xl font-semibold">{note === null ? fallbackTitle : note.title}</h2>

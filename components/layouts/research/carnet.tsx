@@ -101,7 +101,10 @@ export function LayoutCarnet({ list, onCitationClick }: LayoutCarnetProps) {
   )
 }
 
+// The TOC rail never renders nothing: loading → error (with the same retry as
+// the body) → empty → content (playbook/ui-states.md).
 function CarnetToc({ list }: { list: CarnetListState }) {
+  const t = useTranslations("research.carnet")
   if (list.kind === "loading") {
     return (
       <div className="space-y-2 py-0.5">
@@ -111,7 +114,12 @@ function CarnetToc({ list }: { list: CarnetListState }) {
       </div>
     )
   }
-  if (list.kind === "error") return null
+  if (list.kind === "error") {
+    return <CardSharedLoadError layout="inline" message={t("loadListError")} onRetry={list.retry} />
+  }
+  if (list.entries.length === 0) {
+    return <p className="text-sm text-muted-foreground">{t("empty")}</p>
+  }
   return (
     <>
       {list.entries.map((e) => (

@@ -11,7 +11,7 @@
 // Client component: drives Sheet open state, derives external links, and owns
 // the remove mutation.
 
-import { useEffect, useRef } from "react"
+import { useEffect, useRef, type ReactNode } from "react"
 import { useTranslations } from "next-intl"
 import {
   Braces,
@@ -20,7 +20,6 @@ import {
   FileText,
   ExternalLink,
   Loader2,
-  RotateCw,
   Sparkles,
   TriangleAlert,
   Trash2,
@@ -38,7 +37,6 @@ import { BadgeDocumentThumb } from "@/components/badges/documents/thumb"
 import {
   CATALOGUE_RECORD_URL,
   GALLICA_IIIF_VIEWER_URL,
-  GALLICA_ITEM_URL,
   GALLICA_OAI_URL,
   IIIF_MANIFEST_URL,
   TYPE_DATASET_COLOR,
@@ -86,14 +84,12 @@ function FieldOcr({
   label,
   value,
   ocr,
-  isLoading,
   isError,
   onRetry,
 }: {
   label: string
   value: string
   ocr: DocumentOcrView | undefined
-  isLoading: boolean
   isError: boolean
   onRetry: () => void
 }) {
@@ -101,27 +97,27 @@ function FieldOcr({
     <div className="flex flex-col gap-1">
       <span className="mono-eyebrow">{label}</span>
       <span className="text-[12.5px] text-foreground">{value}</span>
-      <FieldOcrQuality ocr={ocr} isLoading={isLoading} isError={isError} onRetry={onRetry} />
+      <FieldOcrQuality ocr={ocr} isError={isError} onRetry={onRetry} />
     </div>
   )
 }
 
 function FieldOcrQuality({
   ocr,
-  isLoading,
   isError,
   onRetry,
 }: {
   ocr: DocumentOcrView | undefined
-  isLoading: boolean
   isError: boolean
   onRetry: () => void
 }) {
   const t = useTranslations("corpus.documents.detail.ocrQuality")
-  if (isLoading) return <Skeleton className="h-3.5 w-28" />
-  if (isError || ocr === undefined) {
+  if (isError) {
     return <CardSharedLoadError layout="inline" message={t("loadError")} onRetry={onRetry} />
   }
+  // No data and no error is loading — a fetch in flight, or the query disabled
+  // while the sheet animates closed: never a false error.
+  if (ocr === undefined) return <Skeleton className="h-3.5 w-28" />
   return <span className="text-[11px] text-muted-foreground">{ocrStatusLine(ocr, t)}</span>
 }
 
@@ -325,36 +321,8 @@ export function SheetDocumentDetail({ doc, projectId, open, onOpenChange }: Prop
           </div>
 
           {/* Metadata region — loading while resolving, a single retry-able
-              message on failure, the full grid + excerpt once resolved. */}
-          {isPending ? (
-            <div className="mt-5 flex flex-col items-center gap-2.5 rounded-md border border-dashed bg-input/10 px-4 py-8 text-center">
-              <Loader2 className="size-5 animate-spin text-muted-foreground" />
-              <p className="text-[12.5px] text-muted-foreground">
-                {t("detail.resolvingMeta")}
-              </p>
-            </div>
-          ) : isFailed ? (
-            <div className="mt-5 flex flex-col items-center gap-3 rounded-md border border-destructive/30 bg-destructive/5 px-4 py-7 text-center">
-              <TriangleAlert className="size-5 text-destructive" />
-              <p className="text-[12.5px] text-muted-foreground">
-                {t("detail.metaFailed")}
-              </p>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={onRetry}
-                disabled={retry.isPending}
-              >
-                {retry.isPending ? (
-                  <Loader2 className="size-3.5 animate-spin" />
-                ) : (
-                  <RotateCw className="size-3.5" />
-                )}
-                {t("detail.retry")}
-              </Button>
-            </div>
-          ) : (
-            <>
+              error on failure, the full grid + excerpt once resolved. */}
+          <DocumentMetadataRegion pending={isPending} failed={isFailed} onRetry={onRetry}>
               {/* Metadata grid */}
               <div className="mt-5 grid grid-cols-2 gap-x-3 gap-y-3.5">
                 <Field label={t("detail.fields.type")} value={typeLabel} />
@@ -377,7 +345,6 @@ export function SheetDocumentDetail({ doc, projectId, open, onOpenChange }: Prop
                   label={t("detail.fields.ocr")}
                   value={ocrLabel}
                   ocr={ocrQuery.data}
-                  isLoading={ocrQuery.isLoading}
                   isError={ocrQuery.isError}
                   onRetry={() => void ocrQuery.refetch()}
                 />
@@ -393,8 +360,7 @@ export function SheetDocumentDetail({ doc, projectId, open, onOpenChange }: Prop
                   </p>
                 </div>
               )}
-            </>
-          )}
+          </DocumentMetadataRegion>
 
           {/* ARK box */}
           <div className="mt-5 rounded-md border bg-input/20 px-3 py-2.5">
@@ -416,12 +382,6 @@ export function SheetDocumentDetail({ doc, projectId, open, onOpenChange }: Prop
                     icon={<Eye className="size-4" />}
                     title={t("detail.iiifViewer")}
                     subtitle={t("detail.iiifViewerSub")}
-                  />
-                  <LinkCard
-                    href={GALLICA_ITEM_URL(doc.ark, 1)}
-                    icon={<FileText className="size-4" />}
-                    title={t("detail.gallicaNotice")}
-                    subtitle={t("detail.gallicaNoticeSub")}
                   />
                   <LinkCard
                     href={manifestUrl}
@@ -492,4 +452,39 @@ export function SheetDocumentDetail({ doc, projectId, open, onOpenChange }: Prop
       </SheetContent>
     </Sheet>
   )
+}
+
+/**
+ * The metadata region: loading while the notice resolves → the retry-able
+ * error card when it failed → the resolved grid (children). If-blocks, one
+ * state each (playbook/ui-states.md).
+ */
+function DocumentMetadataRegion({
+  pending,
+  failed,
+  onRetry,
+  children,
+}: {
+  pending: boolean
+  failed: boolean
+  onRetry: () => void
+  children: ReactNode
+}) {
+  const t = useTranslations("corpus.documents")
+  if (pending) {
+    return (
+      <div className="mt-5 flex flex-col items-center gap-2.5 rounded-md border border-dashed bg-input/10 px-4 py-8 text-center">
+        <Loader2 className="size-5 animate-spin text-muted-foreground" />
+        <p className="text-[12.5px] text-muted-foreground">{t("detail.resolvingMeta")}</p>
+      </div>
+    )
+  }
+  if (failed) {
+    return (
+      <div className="mt-5">
+        <CardSharedLoadError layout="block" message={t("detail.metaFailed")} onRetry={onRetry} />
+      </div>
+    )
+  }
+  return <>{children}</>
 }

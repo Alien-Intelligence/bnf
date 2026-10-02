@@ -483,8 +483,6 @@
         "consultBnf": "Consulter sur la BnF",
         "iiifViewer": "Visionneuse IIIF",
         "iiifViewerSub": "Ouvrir dans le viewer BnF",
-        "gallicaNotice": "Notice Gallica",
-        "gallicaNoticeSub": "Fiche document et fac-similé",
         "iiifManifest": "Manifeste IIIF",
         "iiifManifestSub": "manifest.json",
         "oai": "Notice OAI",
@@ -794,7 +792,8 @@
       "cites": "{count, plural, =0 {aucune référence} one {# référence ARK} other {# références ARK}}",
       "export": "Exporter en Markdown",
       "loadError": "Impossible de charger la note.",
-      "retry": "Réessayer"
+      "retry": "Réessayer",
+      "noActiveTab": "Choisissez un onglet pour lire sa note."
     },
     "carnet": {
       "title": "Carnet de recherche",
@@ -826,7 +825,8 @@
       "gallicaViewer": "Voir sur Gallica",
       "gallicaViewerSub": "Le document dans la visionneuse Gallica",
       "usages": "Utilisé dans d'autres notes",
-      "usagesLoadError": "Impossible de charger les autres notes qui citent ce document."
+      "usagesLoadError": "Impossible de charger les autres notes qui citent ce document.",
+      "usagesNone": "Aucune autre note ne cite ce document."
     },
     "ocr": {
       "disclaimer": "La lisibilité de certains documents originaux peut limiter la reconnaissance du texte. L'outil a pu donc, dans certains cas, mal retranscrire / interpréter certaines citations figurant dans les notes. Le lien vers le document source permet d'en vérifier l'exactitude.",
@@ -848,7 +848,8 @@
       "statusBuilding": "Qualité OCR : calcul en cours",
       "statusUnavailable": "Qualité OCR non disponible pour ce document",
       "statusQuarantined": "Qualité OCR non disponible (synchronisation suspendue)",
-      "corpusRevoked": "Qualité OCR non lue : l'accès au corpus partagé a été révoqué"
+      "corpusRevoked": "Qualité OCR non lue : l'accès au corpus partagé a été révoqué",
+      "noRate": "Taux OCR du document non publié par la BnF"
     }
   },
   "ingest": {
