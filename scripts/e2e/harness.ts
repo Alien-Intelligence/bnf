@@ -136,8 +136,13 @@ export interface TurnResult {
   elapsedMs: number
 }
 
-/** The frame that ends every turn's stream (chat-sdk server). */
-const MESSAGE_END_FRAME = "message-end"
+/**
+ * The frame that ends every turn's stream: chat-sdk publishes
+ * `{ type: "closed", reason }` once the turn is over (after its `message-end`),
+ * with reason `done`, `error` or `canceled`.
+ */
+const CLOSED_FRAME = "closed"
+const CLOSED_REASON_DONE = "done"
 
 /** An SSE frame: a JSON object with a string `type`. */
 const frameSchema = z.object({ type: z.string() }).loose()
@@ -160,8 +165,9 @@ function parseFrame(raw: string): Frame {
  * One real agent turn over SSE. `locale` is the UI locale the turn is sent
  * under (the research prompt's language). Throws on a transport or protocol
  * failure — a non-JSON or untyped frame, or a stream that does not end with
- * the `message-end` frame — so a broken turn is never scored as a quiet one.
- * An `error` frame is a turn-level failure the caller asserts on.
+ * the `closed` frame — so a broken turn is never scored as a quiet one. An
+ * `error` frame, or a turn closed for any reason but `done`, is a turn-level
+ * failure reported in `errors` for the caller to assert on.
  */
 export async function runTurn(
   sessionId: string,
@@ -223,10 +229,12 @@ export async function runTurn(
       }
     }
 
-    if (frames.at(-1)?.type !== MESSAGE_END_FRAME) {
-      throw new Error(
-        `turn stream ended without a ${MESSAGE_END_FRAME} frame (last: ${frames.at(-1)?.type ?? "no frame at all"})`,
-      )
+    const last = frames.at(-1)
+    if (last?.type !== CLOSED_FRAME) {
+      throw new Error(`turn stream ended without a ${CLOSED_FRAME} frame (last: ${last?.type ?? "no frame at all"})`)
+    }
+    if (last["reason"] !== CLOSED_REASON_DONE) {
+      errors.push(`turn closed with reason ${JSON.stringify(last["reason"])}`)
     }
     return { text, frames, domainEvents, errors, elapsedMs: Date.now() - started }
   } finally {
