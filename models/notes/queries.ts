@@ -30,7 +30,7 @@ export class NoteQueries {
     return prisma.note.findUnique({
       where: { id },
       include: { citations: true },
-    }) as Promise<NoteWithCitations | null>
+    })
   }
 
   /**
@@ -100,7 +100,7 @@ export class NoteQueries {
     return prisma.note.findFirst({
       where: { id, projectId },
       include: { citations: true },
-    }) as Promise<NoteWithCitations | null>
+    })
   }
 
   static async listVersions(noteId: string): Promise<NoteVersionListItem[]> {

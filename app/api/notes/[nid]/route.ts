@@ -17,7 +17,7 @@ import { NoteQueries } from "@/models/notes/queries"
 import { NoteService } from "@/models/notes/service"
 import { corpusProjectId } from "@/lib/authz/corpus-source"
 import { updateNoteSchema } from "@/models/notes/types"
-import type { NoteDetail } from "@/models/notes/schema"
+import type { NoteDeleted, NoteDetail } from "@/models/notes/schema"
 
 type RouteCtx = { params: Promise<{ nid: string }> }
 
@@ -73,5 +73,5 @@ export const DELETE = withAuth(async (req, _user, bouncer, ctx: RouteCtx) => {
   await bouncer.with(NotePolicy).authorize("delete", project, note)
 
   await NoteService.delete(nid)
-  return ok<{ deleted: true }>({ deleted: true })
+  return ok<NoteDeleted>({ deleted: true })
 })
