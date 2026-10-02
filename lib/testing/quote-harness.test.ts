@@ -55,6 +55,16 @@ test("H6: a self-written OCR disclaimer in the body", () => {
   assert.deepEqual(criteria(body([], "La reconnaissance du texte est imparfaite.")), ["H6"])
 })
 
+test("H6: the disclaimers the baseline agents actually wrote", () => {
+  // Verbatim from the 2026-10-02 baseline (C3 runs 1 and 3); the plan's
+  // original regex matched neither.
+  assert.deepEqual(criteria(body([], "Le texte est conservé dans un état d'OCR dégradé (caractères altérés).")), ["H6"])
+  assert.deepEqual(criteria(body([], "> ⚠️ Le texte OCR d'origine est fortement dégradé (caractères substitués).")), ["H6"])
+  assert.deepEqual(criteria(body([], "La numérisation a dégradé l'OCR de cette page.")), ["H6"])
+  // Not a disclaimer: a fact about the building, or a neutral mention of OCR.
+  assert.deepEqual(criteria(body([], "Le bâtiment, très dégradé, fut démoli. Le texte vient de l'OCR de Gallica.")), [])
+})
+
 test("S2: distinct, cited, checkable quotes", () => {
   const md =
     `« Les premiers témoins accusent l'imprudence » [[${ARK}|S|2]] puis « un court-circuit a provoqué le sinistre » ` +

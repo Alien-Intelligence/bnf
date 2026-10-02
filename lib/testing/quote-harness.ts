@@ -40,8 +40,14 @@ const LOW_FOLIO_REASONS: ReadonlySet<QuoteWarningReason> = new Set([
   QUOTE_WARNING_REASON.CORRECTION_ON_LOW_OCR,
 ])
 
-/** A note body that writes its own OCR disclaimer (Track B's banner is code-rendered). */
-export const SELF_WRITTEN_OCR_DISCLAIMER = /lisibilit|mal retranscri|reconnaissance du texte/i
+/**
+ * A note body that writes its own OCR disclaimer (Track B's banner is
+ * code-rendered). The plan's three stems, plus "OCR … dégradé" in either order
+ * within one sentence: the form every C3 baseline agent actually used
+ * (« état d'OCR dégradé », « Le texte OCR d'origine est fortement dégradé »).
+ */
+export const SELF_WRITTEN_OCR_DISCLAIMER =
+  /lisibilit|mal retranscri|reconnaissance du texte|OCR[^.\n]{0,60}dégrad|dégrad[^.\n]{0,60}OCR/i
 
 /** The assistant told the user the source is poorly recognised (S1). */
 export const LOW_OCR_TOLD_TO_USER = /mal reconnu|reconnaissance|OCR|illisible/i
