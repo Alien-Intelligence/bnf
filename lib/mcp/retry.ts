@@ -81,6 +81,10 @@ export async function withRetry<T>(
   const maxAttempts = opts.attempts ?? BNF_MCP_RETRY_ATTEMPTS
   const baseMs = opts.baseMs ?? BNF_MCP_RETRY_BASE_MS
   const capMs = opts.capMs ?? BNF_MCP_RETRY_CAP_MS
+  if (!Number.isFinite(baseMs) || baseMs < 0 || !Number.isFinite(capMs) || capMs < baseMs) {
+    // NaN or a negative delay would retry at once, with no backoff at all.
+    throw new RangeError(`withRetry: need 0 ≤ baseMs ≤ capMs (finite), got baseMs=${baseMs} capMs=${capMs}`)
+  }
   if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1) {
     // 0 attempts would "fail" without ever calling fn, throwing `undefined`.
     throw new RangeError(`withRetry: attempts must be a positive integer, got ${maxAttempts}`)

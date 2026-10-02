@@ -6,7 +6,12 @@ import "server-only"
 import { test, before, after } from "node:test"
 import assert from "node:assert/strict"
 import { z } from "zod"
-import { DataclusterMcpClient, DataclusterMcpProtocolError, DataclusterMcpRequestError } from "./datacluster-mcp-client"
+import {
+  DataclusterMcpClient,
+  DataclusterMcpNotFoundError,
+  DataclusterMcpProtocolError,
+  DataclusterMcpRequestError,
+} from "./datacluster-mcp-client"
 
 /** The part of a JSON-RPC request the stub routes on. */
 const rpcRequestSchema = z.object({ method: z.string() })
@@ -115,4 +120,61 @@ test("a 5xx keeps its body in the error message", async () => {
     new DataclusterMcpClient({ signal: new AbortController().signal }).listDatasets(10, 0),
     /HTTP 503 calling datacluster_list_datasets: qdrant unavailable/,
   )
+})
+
+test("a 404 for our session id re-initializes once, then succeeds", async () => {
+  initializeCalls = 0
+  let toolCalls = 0
+  handler = (body) => {
+    if (body.method === "initialize") return session()
+    toolCalls++
+    return toolCalls === 1
+      ? new Response("Session not found", { status: 404 })
+      : toolResult({ success: true, data: { datasets: [] } })
+  }
+  assert.deepEqual(await new DataclusterMcpClient({ signal: new AbortController().signal }).listDatasets(10, 0), [])
+  assert.equal(initializeCalls, 2, "the session was renewed")
+})
+
+test("a second 404 after renewing the session is terminal", async () => {
+  let toolCalls = 0
+  handler = (body) => {
+    if (body.method === "initialize") return session()
+    toolCalls++
+    return new Response("no such endpoint", { status: 404 })
+  }
+  await assert.rejects(
+    new DataclusterMcpClient({ signal: new AbortController().signal }).listDatasets(10, 0),
+    DataclusterMcpNotFoundError,
+  )
+  assert.equal(toolCalls, 2)
+})
+
+test("a 400 to initialize and JSON-RPC parse / invalid-request errors are terminal", async () => {
+  let inits = 0
+  handler = (body) => {
+    if (body.method === "initialize") {
+      inits++
+      return new Response("bad protocolVersion", { status: 400 })
+    }
+    return toolResult({ success: true, data: { datasets: [] } })
+  }
+  await assert.rejects(new DataclusterMcpClient({ signal: new AbortController().signal }).listDatasets(10, 0), DataclusterMcpRequestError)
+  assert.equal(inits, 1, "not retried")
+  for (const code of [-32700, -32600]) {
+    handler = (body) =>
+      body.method === "initialize"
+        ? session()
+        : new Response(JSON.stringify({ jsonrpc: "2.0", id: "1", error: { code, message: "x" } }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          })
+    await assert.rejects(new DataclusterMcpClient({ signal: new AbortController().signal }).listDatasets(10, 0), DataclusterMcpRequestError)
+  }
+})
+
+test("a 400 that merely mentions a session is not taken for a stale one", async () => {
+  handler = (body) =>
+    body.method === "initialize" ? session() : new Response("dataset_ids must not reference session data", { status: 400 })
+  await assert.rejects(new DataclusterMcpClient({ signal: new AbortController().signal }).listDatasets(10, 0), DataclusterMcpRequestError)
 })

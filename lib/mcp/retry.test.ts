@@ -79,3 +79,9 @@ test("a Retry-After beyond the cap waits only the cap", async () => {
   assert.equal(out, "ok")
   assert.ok(Date.now() - started < 2_000, "did not wait the 60 s Retry-After")
 })
+
+test("baseMs and capMs must be finite, non-negative and ordered", async () => {
+  for (const opts of [{ baseMs: Number.NaN }, { baseMs: -1 }, { capMs: Number.NaN }, { baseMs: 10, capMs: 5 }]) {
+    await assert.rejects(withRetry(async () => "x", { attempts: 1, ...opts }), RangeError, JSON.stringify(opts))
+  }
+})

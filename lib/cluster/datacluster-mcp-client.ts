@@ -106,11 +106,22 @@ export class DataclusterMcpRequestError extends DataclusterMcpError {
 }
 
 /** JSON-RPC error codes that describe the request, not a transient fault. */
+const JSON_RPC_PARSE_ERROR = -32700
+const JSON_RPC_INVALID_REQUEST = -32600
 const JSON_RPC_METHOD_NOT_FOUND = -32601
 const JSON_RPC_INVALID_PARAMS = -32602
+const JSON_RPC_TERMINAL_CODES: ReadonlySet<number> = new Set([
+  JSON_RPC_PARSE_ERROR,
+  JSON_RPC_INVALID_REQUEST,
+  JSON_RPC_METHOD_NOT_FOUND,
+  JSON_RPC_INVALID_PARAMS,
+])
 
-/** An HTTP 400 body that says the MCP session is missing or expired. */
-const STALE_SESSION_BODY = /session/i
+/**
+ * An HTTP 400 body that says the MCP session is missing, invalid or expired —
+ * the MCP SDK's own wording, not any body that happens to say "session".
+ */
+const STALE_SESSION_BODY = /\b(?:no valid session id|missing session id|invalid session id|session (?:id )?(?:not found|expired|terminated))\b/i
 
 /** Auth, not-found, tool-level, request and protocol errors are terminal;
  *  everything else (429/5xx/transport/stale session) retries. */
@@ -465,9 +476,10 @@ export class DataclusterMcpClient {
     }
     if (!res.ok) {
       const body = await this.failureBody(res, "data-cluster MCP initialize failed")
-      throw new DataclusterMcpError(
-        `data-cluster MCP initialize failed (HTTP ${res.status}): ${body}`,
-      )
+      const message = `data-cluster MCP initialize failed (HTTP ${res.status}): ${body}`
+      // A 400 to `initialize` is our request, not a transient fault.
+      if (res.status === 400) throw new DataclusterMcpRequestError(message)
+      throw new DataclusterMcpError(message)
     }
 
     const sessionId = res.headers.get("mcp-session-id")
@@ -485,6 +497,14 @@ export class DataclusterMcpClient {
    * An abort of the caller's signal is terminal: no retry, no backoff wait.
    */
   private async callTool(name: string, args: unknown): Promise<unknown> {
+    // A stale session is recovered from ONCE per call: drop it, re-initialize
+    // on the retry. A second rejection is not staleness.
+    let sessionRenewed = false
+    const staleSession = (reason: string): DataclusterMcpError => {
+      sessionRenewed = true
+      this.sessionPromise = null
+      return new DataclusterMcpError(`data-cluster MCP session rejected calling ${name}: ${reason}`)
+    }
     return withRetry(
       async () => {
         const id = crypto.randomUUID()
@@ -513,17 +533,16 @@ export class DataclusterMcpClient {
           )
         }
         if (res.status === 404) {
-          throw new DataclusterMcpNotFoundError(
-            `data-cluster MCP returned 404 for tool ${name}`,
-          )
+          // The MCP spec (and the server's SDK) answers an unknown or expired
+          // Mcp-Session-Id with 404: re-initialize once before calling it a
+          // missing endpoint.
+          const body = await this.failureBody(res, `data-cluster MCP HTTP 404 calling ${name}`)
+          if (!sessionRenewed) throw staleSession(`HTTP 404 for session ${sessionId}: ${body}`)
+          throw new DataclusterMcpNotFoundError(`data-cluster MCP returned 404 for tool ${name}: ${body}`)
         }
         if (res.status === 400) {
           const body = await this.failureBody(res, `data-cluster MCP HTTP 400 calling ${name}`)
-          if (STALE_SESSION_BODY.test(body)) {
-            // A stale/expired session: drop it so the retry re-initializes.
-            this.sessionPromise = null
-            throw new DataclusterMcpError(`data-cluster MCP session rejected calling ${name}: ${body}`)
-          }
+          if (STALE_SESSION_BODY.test(body) && !sessionRenewed) throw staleSession(body)
           throw new DataclusterMcpRequestError(`data-cluster MCP HTTP 400 calling ${name}: ${body}`)
         }
         if (!res.ok) {
@@ -542,7 +561,7 @@ export class DataclusterMcpClient {
         if (rpcError.success) {
           const { code, message } = rpcError.data.error
           const text = `data-cluster MCP JSON-RPC error ${code} for ${name}: ${message}`
-          if (code === JSON_RPC_METHOD_NOT_FOUND || code === JSON_RPC_INVALID_PARAMS) {
+          if (JSON_RPC_TERMINAL_CODES.has(code)) {
             throw new DataclusterMcpRequestError(text)
           }
           throw new DataclusterMcpError(text)
