@@ -36,6 +36,7 @@ import { IngestQueries } from "@/models/ingest/queries"
 import { ClusterRunner } from "@/lib/cluster/runner"
 import { CLUSTER_MODE, clusterMode } from "@/lib/cluster/mode"
 import { CLUSTER_POLL, type ClusterProgressPoll } from "@/lib/cluster/contracts"
+import { startPeriodic } from "@/lib/async/periodic"
 
 /** How stale a QUEUED job (no clusterJobId) must be to count as an F19 corpse. */
 export const WATCHDOG_QUEUED_STALE_MS = 15 * 60 * 1000
@@ -177,16 +178,8 @@ export function startIngestWatchdog(): { stop: () => void } {
   if (clusterMode() !== CLUSTER_MODE.REAL) {
     return { stop: () => {} }
   }
-  const timer = setInterval(() => {
-    void runWatchdogTick().catch((err) => {
-      console.error("[ingest-watchdog] tick failed:", err)
-    })
-  }, WATCHDOG_TICK_MS)
-  return {
-    stop: () => {
-      clearInterval(timer)
-    },
-  }
+  // Unref'd, and replaced (not stacked) on a re-run of register().
+  return startPeriodic("ingest-watchdog", WATCHDOG_TICK_MS, runWatchdogTick)
 }
 
 async function runWatchdogTick(): Promise<void> {
