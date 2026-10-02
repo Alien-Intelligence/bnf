@@ -7,7 +7,9 @@
 // is redefined here rather than imported from models/corpus (the import diagram
 // forbids sideways model imports in types.ts).
 import { z } from "zod"
-import { BUFFER_ARK_KIND_VALUES, isBufferArkKind, type BufferFilterSet } from "./schema"
+import { ARK_KIND_VALUES } from "@/lib/documents/ark-kind"
+import { textAnySchema } from "@/lib/filters"
+import type { BufferFilterFields, BufferFilterSet } from "./schema"
 
 // ---------------------------------------------------------------------------
 // ARK validation (opaque identifier — never constructed, never mutated)
@@ -17,13 +19,111 @@ import { BUFFER_ARK_KIND_VALUES, isBufferArkKind, type BufferFilterSet } from ".
 export const arkSchema = z.string().regex(/^ark:\/\d+\/[A-Za-z0-9]+$/, "ARK invalide")
 
 // ---------------------------------------------------------------------------
-// Buffer filter state (curation) — the buffer's counterpart to CorpusFilters,
-// trimmed to the columns denormalised on a candidate row.
+// Buffer filters — ONE definition for the agent tools AND the REST route
+// (GET /api/projects/:id/buffer decodes its query string into this shape and
+// validates it with this schema; the client hook encodes the same shape).
+// Array-based, like the corpus filters.
 // ---------------------------------------------------------------------------
 
+export const bufferFilterFieldsSchema = z.object({
+  type: z
+    .array(z.string())
+    .optional()
+    .describe(
+      "Canonical doc-type codes to match: book | press | image | map | manuscript | score | " +
+        "audio | video | object | poster | estampe | enlum | charte | other | text (« texte " +
+        'imprimé, nature indéterminée »), e.g. ["press","book"].',
+    ),
+  kind: z
+    .array(z.enum(ARK_KIND_VALUES))
+    .optional()
+    .describe(
+      "Record kinds to match: periodical_issue | periodical_collection | monograph | image | " +
+        "catalogue_notice | other_document | unknown.",
+    ),
+  lang: z
+    .array(z.string())
+    .optional()
+    .describe('Language codes to match (ISO 639-1, e.g. ["fr","la","de"]).'),
+  source: z
+    .array(z.string())
+    .optional()
+    .describe('Sources to match: "gallica" | "catalogue" | "other".'),
+  title: textAnySchema
+    .optional()
+    .describe(
+      "Contains ANY of these strings in the title (case-insensitive, accent-sensitive — pass " +
+        'variants: ["Algérie","Algerie"]).',
+    ),
+  creator: textAnySchema
+    .optional()
+    .describe("Contains ANY of these strings in the creator/author (case-insensitive, accent-sensitive)."),
+  subject: textAnySchema
+    .optional()
+    .describe("Contains ANY of these strings in the subject headings (case-insensitive, accent-sensitive)."),
+  yearFrom: z
+    .number()
+    .int()
+    .optional()
+    .describe("Year lower bound, inclusive. A date RANGE matches when it overlaps (a 1861–1946 run matches 1937)."),
+  yearTo: z.number().int().optional().describe("Year upper bound, inclusive (overlap, as yearFrom)."),
+  undated: z
+    .boolean()
+    .optional()
+    .describe("With a year range: also match undated candidates. Alone: match only undated candidates."),
+  unresolved: z
+    .boolean()
+    .optional()
+    .describe(
+      "true: candidates whose metadata is still being resolved in the background (filters on " +
+        "title/type/date cannot see them yet); false: only resolved ones.",
+    ),
+  q: z
+    .string()
+    .trim()
+    .min(1)
+    .optional()
+    .describe("Free-text match over title, creator, snippet and subjects."),
+})
+
+export const bufferFilterSetSchema = bufferFilterFieldsSchema
+  .extend({
+    not: bufferFilterFieldsSchema
+      .optional()
+      .describe(
+        "EXCLUDE candidates matching ALL these criteria. A candidate whose field is unknown for a " +
+          "criterion used here is never excluded (reported as notUnknown on a dry run).",
+      ),
+  })
+  .describe(
+    "Metadata filters over the buffer candidates, to MATCH. Omit a field to leave it unconstrained.",
+  )
+
+
+/** How each filter field travels in a query string. Keyed by the schema's own
+ *  keys (a field added to the schema without a codec is a type error). */
+const BUFFER_FILTER_PARAM_CODEC = {
+  type: "list",
+  kind: "list",
+  lang: "list",
+  source: "list",
+  title: "list",
+  creator: "list",
+  subject: "list",
+  yearFrom: "number",
+  yearTo: "number",
+  undated: "boolean",
+  unresolved: "boolean",
+  q: "text",
+} as const satisfies Record<keyof z.infer<typeof bufferFilterFieldsSchema>, "list" | "number" | "boolean" | "text">
+
+type BufferFilterField = keyof typeof BUFFER_FILTER_PARAM_CODEC
+
+/** The `not` fields travel as `not.<field>` query parameters. */
+const NOT_PARAM_PREFIX = "not."
+
 /** Split a CSV query value into a trimmed, non-empty array, or undefined. */
-function splitCsv(value: string | undefined): string[] | undefined {
-  if (value === undefined) return undefined
+function splitCsv(value: string): string[] | undefined {
   const parts = value
     .split(",")
     .map((s) => s.trim())
@@ -32,114 +132,72 @@ function splitCsv(value: string | undefined): string[] | undefined {
 }
 
 /**
- * A query-string boolean. `z.coerce.boolean()` turns the STRING "false" into
- * `true` (any non-empty string is truthy) — the found bug that made
- * `?undated=false` return the undated candidates.
+ * One query value → its field's shape, or the raw string when it does not
+ * decode, so the schema rejects it with a message (never a silent drop). A
+ * boolean is "true"/"1" or "false"/"0" — `z.coerce.boolean()` turned the
+ * STRING "false" into `true`, the found bug that made `?undated=false` return
+ * the undated candidates.
  */
-const queryBooleanSchema = z
-  .enum(["true", "false", "1", "0"])
-  .transform((v) => v === "true" || v === "1")
-
-export const bufferFiltersSchema = z.object({
-  /** Comma-separated doc-type codes, e.g. "press,book". */
-  type: z.string().optional(),
-  /** Comma-separated record kinds (ARK_KIND values), e.g. "periodical_issue". */
-  kind: z
-    .string()
-    .refine((v) => (splitCsv(v) ?? []).every(isBufferArkKind), {
-      message: `record kinds: ${BUFFER_ARK_KIND_VALUES.join(", ")}`,
-    })
-    .optional(),
-  /** Comma-separated BCP-47 language codes, e.g. "fr,la". */
-  lang: z.string().optional(),
-  /** Comma-separated source identifiers, e.g. "gallica,catalogue". */
-  source: z.string().optional(),
-  /** Comma-separated strings, a candidate matches when its title contains ANY. */
-  title: z.string().optional(),
-  /** Same, over the creator. */
-  creator: z.string().optional(),
-  /** Same, over the subject headings. */
-  subject: z.string().optional(),
-  /** Year lower bound (inclusive); matches by overlap with a range label. */
-  yearFrom: z.coerce.number().int().optional(),
-  /** Year upper bound (inclusive). */
-  yearTo: z.coerce.number().int().optional(),
-  /** "true"/"1": include candidates with no date; "false"/"0": do not. */
-  undated: queryBooleanSchema.optional(),
-  /** Free-text query over title, creator, snippet and subjects; empty is absent. */
-  q: z.string().trim().min(1).optional(),
-})
-
-export type BufferFilters = z.infer<typeof bufferFiltersSchema>
-
-/**
- * The CSV boundary form → the canonical filter set the queries take. Pure; the
- * one conversion the REST route uses (it used to redefine the schema and split
- * the CSV itself).
- */
-export function bufferFiltersToSet(f: BufferFilters): BufferFilterSet {
-  const type = splitCsv(f.type)
-  const kind = splitCsv(f.kind)?.filter(isBufferArkKind)
-  const lang = splitCsv(f.lang)
-  const source = splitCsv(f.source)
-  const title = splitCsv(f.title)
-  const creator = splitCsv(f.creator)
-  const subject = splitCsv(f.subject)
-  // Absent keys, not `undefined` values: the set states only what was asked.
-  return {
-    ...(type !== undefined ? { type } : {}),
-    ...(kind !== undefined && kind.length > 0 ? { kind } : {}),
-    ...(lang !== undefined ? { lang } : {}),
-    ...(source !== undefined ? { source } : {}),
-    ...(title !== undefined ? { title } : {}),
-    ...(creator !== undefined ? { creator } : {}),
-    ...(subject !== undefined ? { subject } : {}),
-    ...(f.yearFrom !== undefined ? { yearFrom: f.yearFrom } : {}),
-    ...(f.yearTo !== undefined ? { yearTo: f.yearTo } : {}),
-    ...(f.undated !== undefined ? { undated: f.undated } : {}),
-    ...(f.q !== undefined ? { q: f.q } : {}),
+function decodeParam(field: BufferFilterField, raw: string): unknown {
+  switch (BUFFER_FILTER_PARAM_CODEC[field]) {
+    case "list":
+      return splitCsv(raw)
+    case "number":
+      return raw.trim() === "" ? raw : Number(raw)
+    case "boolean":
+      if (raw === "true" || raw === "1") return true
+      if (raw === "false" || raw === "0") return false
+      return raw
+    case "text":
+      return raw.trim() === "" ? undefined : raw
   }
 }
 
-/** True when at least one filter value is set. */
-export function hasActiveBufferFilters(filters: BufferFilters): boolean {
-  return (
-    (!!filters.type && filters.type.length > 0) ||
-    (!!filters.kind && filters.kind.length > 0) ||
-    (!!filters.title && filters.title.length > 0) ||
-    (!!filters.creator && filters.creator.length > 0) ||
-    (!!filters.subject && filters.subject.length > 0) ||
-    (!!filters.lang && filters.lang.length > 0) ||
-    (!!filters.source && filters.source.length > 0) ||
-    filters.yearFrom !== undefined ||
-    filters.yearTo !== undefined ||
-    filters.undated === true ||
-    (!!filters.q && filters.q.length > 0)
-  )
+function isBufferFilterField(key: string): key is BufferFilterField {
+  return key in BUFFER_FILTER_PARAM_CODEC
 }
 
-/** Serialise BufferFilters into URLSearchParams (multi-selects stay CSV). */
-export function bufferFiltersToParams(filters: BufferFilters): URLSearchParams {
-  const p = new URLSearchParams()
-  if (filters.type) p.set("type", filters.type)
-  if (filters.kind) p.set("kind", filters.kind)
-  if (filters.title) p.set("title", filters.title)
-  if (filters.creator) p.set("creator", filters.creator)
-  if (filters.subject) p.set("subject", filters.subject)
-  if (filters.lang) p.set("lang", filters.lang)
-  if (filters.source) p.set("source", filters.source)
-  if (filters.yearFrom !== undefined) p.set("yearFrom", String(filters.yearFrom))
-  if (filters.yearTo !== undefined) p.set("yearTo", String(filters.yearTo))
-  if (filters.undated !== undefined) p.set("undated", String(filters.undated))
-  if (filters.q !== undefined && filters.q.trim().length > 0) p.set("q", filters.q.trim())
-  return p
+/**
+ * Decode a buffer query string into the canonical filter shape, ready for
+ * `bufferFilterSetSchema`. Unknown parameters are left out (the route parses
+ * its own, e.g. `limit`).
+ */
+export function bufferFilterInputFromParams(params: URLSearchParams): Record<string, unknown> {
+  const positive: Record<string, unknown> = {}
+  const not: Record<string, unknown> = {}
+  for (const [key, raw] of params.entries()) {
+    const isNot = key.startsWith(NOT_PARAM_PREFIX)
+    const field = isNot ? key.slice(NOT_PARAM_PREFIX.length) : key
+    if (!isBufferFilterField(field)) continue
+    const value = decodeParam(field, raw)
+    if (value === undefined) continue
+    if (isNot) not[field] = value
+    else positive[field] = value
+  }
+  return Object.keys(not).length > 0 ? { ...positive, not } : positive
 }
 
-/** Deserialise URLSearchParams into BufferFilters (coerces + drops unknowns). */
-export function bufferFiltersFromParams(params: URLSearchParams): BufferFilters {
-  const raw: Record<string, string> = {}
-  for (const [k, v] of params.entries()) raw[k] = v
-  return bufferFiltersSchema.parse(raw)
+/** Encode one level of filters into query parameters (inverse of decodeParam). */
+function encodeLevel(fields: BufferFilterFields, prefix: string, out: URLSearchParams): void {
+  for (const [field, value] of Object.entries(fields)) {
+    if (!isBufferFilterField(field) || value === undefined) continue
+    if (Array.isArray(value)) {
+      if (value.length > 0) out.set(prefix + field, value.join(","))
+    } else if (typeof value === "string") {
+      if (value.trim().length > 0) out.set(prefix + field, value.trim())
+    } else {
+      out.set(prefix + field, String(value))
+    }
+  }
+}
+
+/** Serialise a filter set into URLSearchParams (lists CSV, `not.<field>`). */
+export function bufferFiltersToParams(filters: BufferFilterSet): URLSearchParams {
+  const out = new URLSearchParams()
+  const { not, ...positive } = filters
+  encodeLevel(positive, "", out)
+  if (not !== undefined) encodeLevel(not, NOT_PARAM_PREFIX, out)
+  return out
 }
 
 // ---------------------------------------------------------------------------
@@ -158,7 +216,7 @@ export const bufferCandidateSchema = z.object({
   year: z.number().int().optional(),
   docType: z.string().trim().min(1).max(80).optional(),
   docTypeRaw: z.string().trim().min(1).max(200).optional(),
-  arkKind: z.enum(BUFFER_ARK_KIND_VALUES).optional(),
+  arkKind: z.enum(ARK_KIND_VALUES).optional(),
   lang: z.string().trim().min(1).max(20).optional(),
   source: z.string().trim().min(1).max(80).optional(),
   snippet: z.string().trim().min(1).max(2_000).optional(),

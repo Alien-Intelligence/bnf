@@ -7,12 +7,8 @@ import "server-only"
 import { prisma } from "@/lib/db"
 import type { Prisma } from "@/lib/generated/prisma/client"
 import { CORPUS_SAMPLE_SIZE } from "@/lib/constants"
+import { arkKindWhere, type ArkKind } from "@/lib/documents/ark-kind"
 import {
-  ARK_KIND,
-  ARK_KIND_IMAGE_TYPES,
-  ARK_KIND_OTHER_DOCUMENT_TYPES,
-  GALLICA_ARK_PREFIXES,
-  type ArkKind,
   DOCUMENT_CANONICAL_STATUS,
   DOCUMENT_RESOLVE_STATUS,
   INDEXATION_OUTCOME,
@@ -33,10 +29,15 @@ function ingestClassWhere(cls: string): Prisma.DocumentWhereInput | null {
     { ocrAvailable: null },
   ]
   switch (cls) {
+    // Every arm is two-valued (never SQL NULL): `ocr_available = true` and
+    // `doc_type IN (…)` are NULL on a NULL column, which `NOT(…)` keeps NULL
+    // and so drops the row from BOTH sides of a `not` (Decision 4). The
+    // explicit `not: null` makes them FALSE instead — the classifier's reading
+    // (a null OCR flag is "no OCR", a null type is not image-like).
     case INGESTION_CLASS.OCR:
-      return { iiifManifestUrl: { not: null }, ocrAvailable: true }
+      return { iiifManifestUrl: { not: null }, ocrAvailable: { not: null, equals: true } }
     case INGESTION_CLASS.VISION:
-      return { iiifManifestUrl: { not: null }, docType: { in: imageLike }, OR: noOcr }
+      return { iiifManifestUrl: { not: null }, docType: { not: null, in: imageLike }, OR: noOcr }
     case INGESTION_CLASS.SANS_TEXTE:
       // `notIn` compiles to SQL NOT IN, which is null-hostile: a row with a
       // NULL doc_type does not satisfy it. classifyIngestion() reads that same
@@ -198,7 +199,7 @@ export type CorpusFilterSet = {
   title?: string[]
   /** Contains-ANY over the author (the agent's `creator`, as in the buffer). */
   creator?: string[]
-  /** Record kinds — ARK_KIND values, through arkKindWhere. */
+  /** Record kinds — ARK_KIND values, through arkKindWhere (lib/documents/ark-kind.ts). */
   kind?: ArkKind[]
   /**
    * One-level exclusion: documents matching ALL these criteria are left out.
@@ -208,72 +209,85 @@ export type CorpusFilterSet = {
   not?: Omit<CorpusFilterSet, "not" | "session">
 }
 
-/** The "id starts with <prefix>" test over a full ARK. An ARK is
- *  `ark:/<NAAN>/<id>` with no slash inside the id (arkSchema), so `/<prefix>`
- *  can only occur at the start of the id. */
-function arkIdStartsWith(prefix: string): Prisma.DocumentWhereInput {
-  return { ark: { contains: `/${prefix}` } }
+/** Contains-ANY over a Document text column. */
+function documentContainsAny(column: "title" | "author", values: string[]): Prisma.DocumentWhereInput {
+  return { OR: values.map((v) => documentContains(column, v)) }
+}
+
+/** ILIKE over one nullable text column, FALSE (not NULL) on a NULL column. */
+function documentContains(column: "title" | "author" | "excerpt", value: string): Prisma.DocumentWhereInput {
+  const filter = { not: null, contains: value, mode: "insensitive" as const }
+  switch (column) {
+    case "title":
+      return { title: filter }
+    case "author":
+      return { author: filter }
+    case "excerpt":
+      return { excerpt: filter }
+  }
+}
+
+/** The fields a corpus `not` may carry. */
+export type CorpusNotFilterSet = Omit<CorpusFilterSet, "not" | "session">
+
+/**
+ * Per dimension a corpus `not` can name: when it is used, what makes a
+ * document's value KNOWN for it, and the unknown complement (Decision 4). A
+ * document whose value is unknown for a dimension the exclusion names is never
+ * matched by the exclusion: a read keeps it, a removal leaves it in place, and
+ * the dry run reports it (`notUnknown`). `kind` and `outcome` are always known
+ * (every document has a record kind and an indexation outcome), so they have
+ * no entry; `q` is unknown only when the document has no text at all; the
+ * ingestion class is unknown until the document is resolved.
+ */
+const CORPUS_NOT_PRESENCE: ReadonlyArray<{
+  dimension: keyof CorpusNotFilterSet | "year" | "q"
+  used: (f: CorpusNotFilterSet) => boolean
+  known: Prisma.DocumentWhereInput
+  unknown: Prisma.DocumentWhereInput
+}> = [
+  { dimension: "type", used: (f) => !!f.type?.length, known: { docType: { not: null } }, unknown: { docType: null } },
+  { dimension: "lang", used: (f) => !!f.lang?.length, known: { lang: { not: null } }, unknown: { lang: null } },
+  { dimension: "source", used: (f) => !!f.source?.length, known: { source: { not: null } }, unknown: { source: null } },
+  { dimension: "title", used: (f) => !!f.title?.length, known: { title: { not: null } }, unknown: { title: null } },
+  { dimension: "creator", used: (f) => !!f.creator?.length, known: { author: { not: null } }, unknown: { author: null } },
+  {
+    dimension: "year",
+    used: (f) => f.yearFrom !== undefined || f.yearTo !== undefined,
+    known: { year: { not: null } },
+    unknown: { year: null },
+  },
+  {
+    dimension: "q",
+    used: (f) => !!f.q && f.q.trim().length > 0,
+    known: { OR: [{ title: { not: null } }, { author: { not: null } }, { excerpt: { not: null } }] },
+    unknown: { title: null, author: null, excerpt: null },
+  },
+  {
+    dimension: "ingest",
+    used: (f) => !!f.ingest?.length,
+    known: { resolveStatus: DOCUMENT_RESOLVE_STATUS.RESOLVED },
+    unknown: { resolveStatus: { not: DOCUMENT_RESOLVE_STATUS.RESOLVED } },
+  },
+]
+
+/** The presence entries a `not` filter set uses. */
+function corpusNotPresence(not: CorpusNotFilterSet) {
+  return CORPUS_NOT_PRESENCE.filter((p) => p.used(not))
 }
 
 /**
- * Prisma WHERE fragment matching one record kind — the SQL mirror of
- * classifyArkKind (models/documents/schema.ts) over Document, which has no
- * collection-entry form: `cb…` + press is a periodical title, other `cb…` a
- * catalogue notice, a digitized prefix takes its kind from docType. A parity
- * test (tests/models/corpus/filters.test.ts) pins the two together; the
- * prefix and type lists are imported from the classifier, never restated.
+ * How a `not` reads (Decision 4):
+ *   - `read`   — list, snapshot, facets, export: the exclusion removes only
+ *                documents KNOWN to match it; a document with an unknown value
+ *                stays visible. NOT(known AND inner), the presence INSIDE.
+ *   - `remove` — remove-by-filter: additionally requires every named value to
+ *                be known, so "remove everything not French" never deletes a
+ *                document of unknown language. The dry run reports those as
+ *                `notUnknown`.
  */
-export function arkKindWhere(kind: ArkKind): Prisma.DocumentWhereInput {
-  const cb = arkIdStartsWith("cb")
-  const digitized: Prisma.DocumentWhereInput = { OR: GALLICA_ARK_PREFIXES.map(arkIdStartsWith) }
-  const known = ["press", "book", ...ARK_KIND_IMAGE_TYPES, ...ARK_KIND_OTHER_DOCUMENT_TYPES]
-  switch (kind) {
-    case ARK_KIND.PERIODICAL_COLLECTION:
-      return { AND: [cb, { docType: "press" }] }
-    case ARK_KIND.CATALOGUE_NOTICE:
-      // `not: "press"` is SQL `<>`, which a NULL type never satisfies: the
-      // null arm is spelled out, as classifyArkKind treats null as "not press".
-      return { AND: [cb, { OR: [{ docType: null }, { docType: { not: "press" } }] }] }
-    case ARK_KIND.PERIODICAL_ISSUE:
-      return { AND: [digitized, { docType: "press" }] }
-    case ARK_KIND.MONOGRAPH:
-      return { AND: [digitized, { docType: "book" }] }
-    case ARK_KIND.IMAGE:
-      return { AND: [digitized, { docType: { in: [...ARK_KIND_IMAGE_TYPES] } }] }
-    case ARK_KIND.OTHER_DOCUMENT:
-      return { AND: [digitized, { docType: { in: [...ARK_KIND_OTHER_DOCUMENT_TYPES] } }] }
-    case ARK_KIND.UNKNOWN:
-      return {
-        OR: [
-          { AND: [digitized, { OR: [{ docType: null }, { docType: { notIn: known } }] }] },
-          { AND: [{ NOT: cb }, { NOT: digitized }] },
-        ],
-      }
-  }
-}
-
-/** Contains-ANY over a Document text column. */
-function documentContainsAny(column: "title" | "author", values: string[]): Prisma.DocumentWhereInput {
-  return {
-    OR: values.map((v) =>
-      column === "title"
-        ? { title: { contains: v, mode: "insensitive" as const } }
-        : { author: { contains: v, mode: "insensitive" as const } },
-    ),
-  }
-}
-
-/** The nullable columns a corpus `not` reads, per dimension (Decision 4). */
-function corpusNotPresence(not: Omit<CorpusFilterSet, "not" | "session">): Prisma.DocumentWhereInput[] {
-  const presence: Prisma.DocumentWhereInput[] = []
-  if (not.type?.length) presence.push({ docType: { not: null } })
-  if (not.lang?.length) presence.push({ lang: { not: null } })
-  if (not.source?.length) presence.push({ source: { not: null } })
-  if (not.title?.length) presence.push({ title: { not: null } })
-  if (not.creator?.length) presence.push({ author: { not: null } })
-  if (not.yearFrom !== undefined || not.yearTo !== undefined) presence.push({ year: { not: null } })
-  return presence
-}
+export const CORPUS_NOT_MODE = { READ: "read", REMOVE: "remove" } as const
+export type CorpusNotMode = (typeof CORPUS_NOT_MODE)[keyof typeof CORPUS_NOT_MODE]
 
 /**
  * Translate a CorpusFilterSet into the two Prisma WHERE predicates every corpus
@@ -299,6 +313,7 @@ function buildCorpusWhere(
   versionId: string,
   paidOcrEnabled: boolean,
   filters?: CorpusFilterSet,
+  notMode: CorpusNotMode = CORPUS_NOT_MODE.READ,
 ): {
   sharedWhere: Prisma.DocumentWhereInput
   resolvedWhere: Prisma.DocumentWhereInput
@@ -359,15 +374,10 @@ function buildCorpusWhere(
 
   // Full-text: Prisma OR over contains (ILIKE on Postgres, mode-insensitive),
   // matching title, author, and excerpt (null columns are skipped automatically).
+  const q = filters?.q
   const fullTextWhere: Prisma.DocumentWhereInput =
-    filters?.q && filters.q.trim().length > 0
-      ? {
-          OR: [
-            { title: { contains: filters.q, mode: "insensitive" as const } },
-            { author: { contains: filters.q, mode: "insensitive" as const } },
-            { excerpt: { contains: filters.q, mode: "insensitive" as const } },
-          ],
-        }
+    q && q.trim().length > 0
+      ? { OR: [documentContains("title", q), documentContains("author", q), documentContains("excerpt", q)] }
       : {}
 
   // Ingestion-class filter: an OR over the selected classes, each a SQL mirror
@@ -410,10 +420,14 @@ function buildCorpusWhere(
   // `not` reuses THIS translation for its inside, so an exclusion means
   // exactly what the same filter means positively. The inner predicate carries
   // the membership clause too; under the outer membership clause NOT(member
-  // AND inner) reduces to NOT(inner).
+  // AND inner) reduces to NOT(inner). Every inner arm is two-valued, and the
+  // presence of each named value sits INSIDE the NOT, so a document with an
+  // unknown value is never excluded by it (CORPUS_NOT_MODE).
   if (filters?.not) {
     const inner = buildCorpusWhere(versionId, paidOcrEnabled, filters.not).sharedWhere
-    andClauses.push({ AND: [...corpusNotPresence(filters.not), { NOT: inner }] })
+    const known = corpusNotPresence(filters.not).map((p) => p.known)
+    andClauses.push({ NOT: { AND: [...known, inner] } })
+    if (notMode === CORPUS_NOT_MODE.REMOVE) andClauses.push(...known)
   }
 
   const base: Prisma.DocumentWhereInput = {
@@ -454,15 +468,15 @@ export class CorpusQueries {
    * Whether the project pays for fallback OCR. It decides whether a digitized,
    * OCR-less, Latin-script document counts as `excluded` ("nothing to index")
    * or `not_ingested` ("nothing has covered it yet") — see classifyOutcome().
-   * Defaults to the column default when the project is gone, so a read never
-   * fails on a missing flag.
+   * A missing project throws: reading the corpus of a project that does not
+   * exist is a caller bug, not a reason to guess the flag.
    */
   private static async paidOcrEnabled(projectId: string): Promise<boolean> {
-    const project = await prisma.project.findUnique({
+    const project = await prisma.project.findUniqueOrThrow({
       where: { id: projectId },
       select: { paidOcrEnabled: true },
     })
-    return project?.paidOcrEnabled ?? true
+    return project.paidOcrEnabled
   }
 
   /**
@@ -1131,25 +1145,51 @@ export class CorpusQueries {
   }
 
   /**
-   * Resolve the ARKs in a version matching the given filters. Powers
-   * remove-by-filter: the service resolves the target ARKs here, then either
-   * previews them (dry run) or hands them to `removeArks()`. Returns the ARKs in
-   * stable ascending order so a preview is reproducible.
+   * Resolve the ARKs in a version a remove-by-filter would remove. The `not`
+   * reads in REMOVE mode (CORPUS_NOT_MODE): a document whose value is unknown
+   * for a dimension the exclusion names is never removed. The service either
+   * previews these (dry run) or hands them to `removeArks()`. Returns the ARKs
+   * in stable ascending order so a preview is reproducible.
    */
-  static async arksMatchingFilters(
+  static async arksToRemoveByFilter(
     projectId: string,
     ref: "head" | "ingested" | { seq: number },
-    filters?: CorpusFilterSet,
+    filters: CorpusFilterSet,
   ): Promise<string[]> {
     const version = await CorpusQueries.resolveVersion(projectId, ref)
     const paidOcr = await CorpusQueries.paidOcrEnabled(projectId)
-    const { sharedWhere } = buildCorpusWhere(version.id, paidOcr, filters)
+    const { sharedWhere } = buildCorpusWhere(version.id, paidOcr, filters, CORPUS_NOT_MODE.REMOVE)
     const rows = await prisma.document.findMany({
       where: sharedWhere,
       select: { ark: true },
       orderBy: { ark: "asc" },
     })
     return rows.map((r) => r.ark)
+  }
+
+  /**
+   * For a filter set with `not`: per dimension the exclusion names, how many
+   * documents of the version match the POSITIVE filters but have no value for
+   * that dimension — the documents a removal leaves in place. The dry run
+   * reports them, so "remove everything not French" says how many documents of
+   * unknown language it kept. Empty when there is no `not`. One transaction,
+   * so the counts describe one state of the corpus.
+   */
+  static async notUnknownCounts(
+    projectId: string,
+    ref: "head" | "ingested" | { seq: number },
+    filters: CorpusFilterSet,
+  ): Promise<Record<string, number>> {
+    const { not, ...positive } = filters
+    if (not === undefined) return {}
+    const version = await CorpusQueries.resolveVersion(projectId, ref)
+    const paidOcr = await CorpusQueries.paidOcrEnabled(projectId)
+    const { sharedWhere } = buildCorpusWhere(version.id, paidOcr, positive)
+    const used = corpusNotPresence(not)
+    const counts = await prisma.$transaction(
+      used.map((p) => prisma.document.count({ where: { AND: [sharedWhere, p.unknown] } })),
+    )
+    return Object.fromEntries(used.map((p, i) => [p.dimension, counts[i]]))
   }
 
   /**

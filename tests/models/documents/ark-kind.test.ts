@@ -7,8 +7,8 @@
 // models/.
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { ARK_KIND, ARK_KIND_COLOR, DOC_TYPE, classifyArkKind } from "@/models/documents/schema"
-import { BUFFER_ARK_KIND_VALUES } from "@/models/buffer/schema"
+import { ARK_KIND, ARK_KIND_VALUES, classifyArkKind } from "@/lib/documents/ark-kind"
+import { ARK_KIND_COLOR, DOC_TYPE } from "@/models/documents/schema"
 
 test("rule 1: a collection entry (cb…/date before toFullArk) is a periodical collection", () => {
   assert.equal(
@@ -74,5 +74,5 @@ test("every kind has a colour and the new doc types exist in the vocabulary", ()
 })
 
 test("the buffer candidate schema accepts exactly the ARK_KIND values", () => {
-  assert.deepEqual([...BUFFER_ARK_KIND_VALUES].sort(), Object.values(ARK_KIND).sort())
+  assert.deepEqual([...ARK_KIND_VALUES].sort(), Object.values(ARK_KIND).sort())
 })

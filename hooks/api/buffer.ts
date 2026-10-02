@@ -8,20 +8,15 @@
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tanstack/react-query"
 import { apiFetch } from "@/lib/api-fetch"
 import { corpusKeys } from "./corpus"
-import type { BufferSnapshot } from "@/models/buffer/schema"
 import type { BufferCommitResult } from "@/models/buffer/service"
-import {
-  bufferFiltersToParams,
-  type BufferCommitInput,
-  type BufferDiscardInput,
-  type BufferFilters,
-} from "@/models/buffer/types"
+import type { BufferFilterSet, BufferSnapshot } from "@/models/buffer/schema"
+import { bufferFiltersToParams, type BufferCommitInput, type BufferDiscardInput } from "@/models/buffer/types"
 
 // ── Query keys ────────────────────────────────────────────────────────────────
 
 export const bufferKeys = {
   all: (projectId: string) => ["buffer", projectId] as const,
-  snapshot: (projectId: string, filters: BufferFilters) =>
+  snapshot: (projectId: string, filters: BufferFilterSet) =>
     ["buffer", projectId, "snapshot", filters] as const,
 }
 
@@ -30,7 +25,7 @@ export const bufferKeys = {
 /** The buffer comprehension snapshot (total + facets + candidate sample). */
 export function useBuffer(
   projectId: string,
-  filters: BufferFilters,
+  filters: BufferFilterSet,
   opts: { limit?: number; initialSnapshot?: BufferSnapshot } = {},
 ) {
   return useQuery<BufferSnapshot>({

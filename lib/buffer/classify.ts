@@ -8,7 +8,7 @@
 //
 // Pure: no I/O, no server-only, so every rule is unit-testable.
 import { GALLICA_FILTER_DOC_TYPE, GALLICA_SEARCHABLE_DOC_TYPE, canonicalDocTypeFromLabel, canonicalLang } from "@/lib/mcp/vocab"
-import { classifyArkKind, type ArkKind } from "@/models/documents/schema"
+import { classifyArkKind, type ArkKind } from "@/lib/documents/ark-kind"
 
 export type GallicaSearchDocType = (typeof GALLICA_SEARCHABLE_DOC_TYPE)[number]
 

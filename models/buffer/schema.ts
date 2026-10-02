@@ -1,9 +1,11 @@
 // models/buffer/schema.ts
 // Domain constants + derived types for the research buffer ("tampon").
 // No `import "server-only"` — schema is referenced by both client and server.
-// No imports from other model directories — schema.ts is the foundation layer.
+// No imports from other model directories — schema.ts is the foundation layer;
+// the record kind comes from lib/documents/ark-kind.ts, shared with the corpus.
 // See playbook/models.md import diagram.
 import type { BufferItem } from "@/lib/generated/prisma/client"
+import type { ArkKind } from "@/lib/documents/ark-kind"
 
 export type { BufferItem }
 
@@ -39,28 +41,6 @@ export const BUFFER_ENRICH_STATUS = {
 export type BufferEnrichStatus = (typeof BUFFER_ENRICH_STATUS)[keyof typeof BUFFER_ENRICH_STATUS]
 
 /**
- * The record kinds a buffer row can carry — ARK_KIND's values
- * (models/documents/schema.ts). Restated here because a model's schema.ts does
- * not import another model; tests/models/documents/ark-kind.test.ts pins the
- * two lists together.
- */
-export const BUFFER_ARK_KIND_VALUES = [
-  "periodical_issue",
-  "periodical_collection",
-  "monograph",
-  "image",
-  "catalogue_notice",
-  "other_document",
-  "unknown",
-] as const
-
-export type BufferArkKind = (typeof BUFFER_ARK_KIND_VALUES)[number]
-
-export function isBufferArkKind(value: string): value is BufferArkKind {
-  return (BUFFER_ARK_KIND_VALUES as readonly string[]).includes(value)
-}
-
-/**
  * One level of buffer filter criteria. Multi-selects and the text arrays are
  * OR-within / AND-across dimensions; `title` / `creator` / `subject` match a
  * candidate containing ANY of the strings (case-insensitive, accent-sensitive).
@@ -70,7 +50,7 @@ export function isBufferArkKind(value: string): value is BufferArkKind {
  */
 export type BufferFilterFields = {
   type?: string[]
-  kind?: BufferArkKind[]
+  kind?: ArkKind[]
   lang?: string[]
   source?: string[]
   title?: string[]
@@ -98,6 +78,9 @@ export type BufferFilterFields = {
  * reports how many were left out (`notUnknown`).
  */
 export type BufferFilterSet = BufferFilterFields & { not?: BufferFilterFields }
+
+/** DELETE /api/projects/:id/buffer — how many candidates were discarded. */
+export type BufferDiscardResult = { discarded: number }
 
 /** The facet dimensions buffer_stats can tabulate — the corpus set plus the
  *  record kind (arkKind). */

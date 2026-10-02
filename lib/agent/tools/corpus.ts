@@ -30,7 +30,9 @@ import { CorpusPolicy } from "@/models/corpus/policy"
 import { CorpusQueries } from "@/models/corpus/queries"
 import { CorpusService } from "@/models/corpus/service"
 import { arkSchema } from "@/models/corpus/types"
-import { ARK_KIND_VALUES, INDEXATION_OUTCOME, classifyOutcome } from "@/models/documents/schema"
+import { ARK_KIND_VALUES } from "@/lib/documents/ark-kind"
+import { textAnySchema } from "@/lib/filters"
+import { INDEXATION_OUTCOME, classifyOutcome } from "@/models/documents/schema"
 import type { DocumentRow } from "@/models/corpus/schema"
 import type { TurnScopedCtx } from "./registry-factory"
 import { authorizeProjectTool } from "./authorize"
@@ -56,8 +58,6 @@ const ingestClassEnum = z.enum(["ocr", "vision", "sans_texte", "non_numerise"])
  */
 const outcomeEnum = z.enum(["indexed", "failed", "excluded", "not_ingested"])
 
-/** Text criteria: contains-ANY, case-insensitive, accent-sensitive. */
-const textAnySchema = z.array(z.string().trim().min(2)).min(1).max(20)
 
 /**
  * One level of the metadata filter set the corpus agent passes to narrow a
@@ -150,7 +150,8 @@ const corpusFiltersSchema = corpusFilterFieldsSchema
       .optional()
       .describe(
         "EXCLUDE documents matching ALL these criteria. A document whose field is unknown for a " +
-          "criterion used here is never excluded.",
+          "criterion used here is never excluded: a read keeps it in view, and " +
+          "corpus_remove_by_filter never removes it (the dry run reports how many as `notUnknown`).",
       ),
   })
   .describe(

@@ -169,6 +169,18 @@ export const CORPUS_REASON_MAX_LEN = 1_000
 /** Candidate rows per page in a buffer list / snapshot sample. */
 export const BUFFER_SAMPLE_SIZE = 25
 
+/** Upper bound on one buffer page (buffer_list, GET /buffer `limit`). */
+export const BUFFER_LIST_MAX_LIMIT = 200
+
+/**
+ * Field-scoped text filters (`title`, `creator`, `subject` — buffer and
+ * corpus): each string at least this long, at most this many strings. A
+ * one-letter contains-any matches nearly everything; twenty variants is more
+ * than any real spelling list.
+ */
+export const TEXT_FILTER_MIN_CHARS = 2
+export const TEXT_FILTER_MAX_VALUES = 20
+
 /** Candidate rows the Constituer buffer panel requests (a curation buffer is
  *  bounded, so one page comfortably shows the working set). */
 export const BUFFER_PANEL_LIMIT = 100

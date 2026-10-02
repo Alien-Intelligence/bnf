@@ -4,6 +4,9 @@
 // the one filter→SQL translation (buildCorpusWhere) that snapshot, list,
 // crossFacets and removeByFilter share. `arkKindWhere` is the SQL mirror of
 // classifyArkKind; the parity test pins the two together over a fixture set.
+// Decision 4 for every `not` dimension: a document whose value is unknown is
+// never excluded by a read and never removed by a removal; the dry run
+// reports it (`notUnknown`).
 import "server-only"
 
 import { test, before, after } from "node:test"
@@ -12,14 +15,25 @@ import { prisma } from "@/lib/db"
 import type { Project, User } from "@/lib/generated/prisma/client"
 import { createTestUser, createTestProject, deleteTestUser } from "@/lib/testing/fixtures"
 import { cleanupProject } from "@/lib/testing/project-cleanup"
-import { CorpusQueries, arkKindWhere, type CorpusFilterSet } from "@/models/corpus/queries"
+import { CorpusQueries, type CorpusFilterSet } from "@/models/corpus/queries"
 import { CorpusService } from "@/models/corpus/service"
-import { ARK_KIND, classifyArkKind, type ArkKind } from "@/models/documents/schema"
+import { ARK_KIND, arkKindWhere, classifyArkKind, type ArkKind } from "@/lib/documents/ark-kind"
+import { DOCUMENT_RESOLVE_STATUS } from "@/models/documents/schema"
 
 let user: User
 let project: Project
 
-const DOCS: Array<{ ark: string; docType: string | null; title: string; author: string | null; lang: string | null; year: number | null }> = [
+type Fixture = {
+  ark: string
+  docType: string | null
+  title: string
+  author: string | null
+  lang: string | null
+  year: number | null
+  resolveStatus?: string
+}
+
+const DOCS: Fixture[] = [
   { ark: "ark:/12148/bpt6k9200001", docType: "press", title: "L'Écho d'Oran", author: null, lang: "fr", year: 1937 },
   { ark: "ark:/12148/bpt6k9200002", docType: "press", title: "Le Petit Marseillais", author: null, lang: "fr", year: 1937 },
   { ark: "ark:/12148/bpt6k9200003", docType: "book", title: "Die Alamannen", author: "Geuenich, Dieter", lang: "de", year: 1997 },
@@ -31,13 +45,31 @@ const DOCS: Array<{ ark: string; docType: string | null; title: string; author: 
   { ark: "ark:/12148/cb92000009z", docType: null, title: "Notice", author: "Clovis", lang: "fr", year: 1960 },
   { ark: "ark:/12148/cb92000010z", docType: "book", title: "Notice livre", author: null, lang: "fr", year: 1970 },
   { ark: "ark:/12148/bd6t9200011", docType: "press", title: "Numéro bd6t", author: null, lang: "fr", year: 1937 },
+  // A stub still waiting for its metadata: its ingestion class is unknown.
+  {
+    ark: "ark:/12148/bpt6k9200012",
+    docType: null,
+    title: "En attente",
+    author: null,
+    lang: "fr",
+    year: null,
+    resolveStatus: DOCUMENT_RESOLVE_STATUS.PENDING,
+  },
 ]
+
+const ALL = DOCS.map((d) => d.ark).sort()
+const except = (...arks: string[]) => ALL.filter((a) => !arks.includes(a))
 
 before(async () => {
   user = await createTestUser()
   project = await createTestProject(user.id, "corpus-filters")
   await prisma.document.createMany({
-    data: DOCS.map((d) => ({ ...d, projectId: project.id, source: "gallica", resolveStatus: "resolved" })),
+    data: DOCS.map((d) => ({
+      ...d,
+      projectId: project.id,
+      source: "gallica",
+      resolveStatus: d.resolveStatus ?? DOCUMENT_RESOLVE_STATUS.RESOLVED,
+    })),
   })
   await CorpusService.addArks(project, user, { arks: DOCS.map((d) => d.ark), reason: "fixture" })
 })
@@ -47,8 +79,14 @@ after(async () => {
   await deleteTestUser(user.id)
 })
 
+/** What a READ (list, snapshot, export) shows under `filters`. */
 async function arksFor(filters: CorpusFilterSet): Promise<string[]> {
-  return (await CorpusQueries.arksMatchingFilters(project.id, "head", filters)).sort()
+  return (await CorpusQueries.exportRows(project.id, "head", filters)).rows.map((r) => r.ark).sort()
+}
+
+/** What a remove-by-filter would remove under `filters`. */
+async function arksRemovedBy(filters: CorpusFilterSet): Promise<string[]> {
+  return (await CorpusQueries.arksToRemoveByFilter(project.id, "head", filters)).sort()
 }
 
 test("arkKindWhere is the SQL mirror of classifyArkKind", async () => {
@@ -78,10 +116,15 @@ test("title / creator are contains-any; kind selects record kinds", async () => 
   ])
 })
 
-test("not excludes what it matches and never matches an unknown field", async () => {
-  // Everything not French: the German book only — the two language-less
-  // documents are NOT matched by `not`.
-  assert.deepEqual(await arksFor({ not: { lang: ["fr"] } }), ["ark:/12148/bpt6k9200003"])
+test("not.lang: a read keeps documents of unknown language; a removal never removes them", async () => {
+  // Read: everything except the KNOWN French documents.
+  assert.deepEqual(await arksFor({ not: { lang: ["fr"] } }), [
+    "ark:/12148/bpt6k9200003",
+    "ark:/12148/bpt6k9200007",
+    "ark:/12148/btv1b9200004",
+  ])
+  // Removal of "everything not French": the German book only.
+  assert.deepEqual(await arksRemovedBy({ not: { lang: ["fr"] } }), ["ark:/12148/bpt6k9200003"])
   // Press issues except the colonial titles.
   assert.deepEqual(await arksFor({ kind: ["periodical_issue"], not: { title: ["Oran"] } }), [
     "ark:/12148/bd6t9200011",
@@ -89,12 +132,53 @@ test("not excludes what it matches and never matches an unknown field", async ()
   ])
 })
 
-test("remove_by_filter with not: the dry run counts exactly the matched set", async () => {
+test("not.q is two-valued: documents with no author or excerpt are not hidden", async () => {
+  // Every fixture has a title, none an excerpt, most no author: before the fix
+  // `NOT(title ILIKE … OR author ILIKE … OR excerpt ILIKE …)` was NULL for them.
+  assert.deepEqual(await arksFor({ not: { q: "Oran" } }), except("ark:/12148/bpt6k9200001"))
+  assert.deepEqual(await arksRemovedBy({ not: { q: "Oran" } }), except("ark:/12148/bpt6k9200001"))
+})
+
+test("not.kind agrees with classifyArkKind, NULL docType included", async () => {
+  for (const kind of Object.values(ARK_KIND) as ArkKind[]) {
+    const expected = DOCS.filter((d) => classifyArkKind({ ark: d.ark, collectionEntry: false, docType: d.docType }) !== kind)
+      .map((d) => d.ark)
+      .sort()
+    assert.deepEqual(await arksFor({ not: { kind: [kind] } }), expected, `read not.kind=${kind}`)
+    assert.deepEqual(await arksRemovedBy({ not: { kind: [kind] } }), expected, `remove not.kind=${kind}`)
+  }
+})
+
+test("not.ingest: an unresolved stub's class is unknown — kept by a read, never removed", async () => {
+  // The fixtures carry no IIIF manifest: every RESOLVED one is non_numerise.
+  assert.deepEqual(await arksFor({ not: { ingest: ["non_numerise"] } }), ["ark:/12148/bpt6k9200012"])
+  assert.deepEqual(await arksRemovedBy({ not: { ingest: ["non_numerise"] } }), [])
+  assert.deepEqual(await arksRemovedBy({ not: { ingest: ["ocr"] } }), except("ark:/12148/bpt6k9200012"))
+})
+
+test("not.outcome is always known: it partitions the corpus", async () => {
+  assert.deepEqual(await arksFor({ not: { outcome: ["indexed"] } }), ALL)
+  assert.deepEqual(await arksFor({ not: { outcome: ["not_ingested", "excluded"] } }), [])
+})
+
+test("remove_by_filter with not: the dry run counts the removal and reports what it left in place", async () => {
   const preview = await CorpusService.removeByFilter(project, user, {
-    filters: { not: { lang: ["fr"] } },
+    filters: { not: { lang: ["fr"], ingest: ["non_numerise"] } },
     reason: "aperçu",
     dryRun: true,
   })
   assert.equal(preview.status, "dry_run")
-  if (preview.status === "dry_run") assert.equal(preview.matched, 1)
+  if (preview.status !== "dry_run") return
+  assert.equal(preview.matched, 1, "the German book: known language, known class, not French")
+  assert.deepEqual(preview.notUnknown, { lang: 2, ingest: 1 })
+
+  const langOnly = await CorpusService.removeByFilter(project, user, {
+    filters: { not: { lang: ["fr"] } },
+    reason: "aperçu",
+    dryRun: true,
+  })
+  assert.equal(langOnly.status, "dry_run")
+  if (langOnly.status !== "dry_run") return
+  assert.equal(langOnly.matched, 1)
+  assert.deepEqual(langOnly.notUnknown, { lang: 2 })
 })

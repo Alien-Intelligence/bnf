@@ -12,7 +12,6 @@ import { prisma } from "@/lib/db"
 import type { Project, User } from "@/lib/generated/prisma/client"
 import { BufferService, explainRegistration } from "@/models/buffer/service"
 import { CorpusService } from "@/models/corpus/service"
-import { BufferQueries } from "@/models/buffer/queries"
 import { BUFFER_STATUS } from "@/models/buffer/schema"
 import { createTestUser, createTestProject, deleteTestUser } from "@/lib/testing/fixtures"
 import { cleanupProject } from "@/lib/testing/project-cleanup"
@@ -75,7 +74,7 @@ test("registerCandidates skips identifiers that are not valid ARKs", async () =>
   })
   assert.equal(result.added, 1)
   assert.equal(result.skipped, 2, "both malformed identifiers rejected")
-  const staged = await BufferQueries.candidateArks(project.id)
+  const staged = await BufferService.candidateArks(project.id)
   assert.deepEqual(staged, [ARK(10)])
 })
 
@@ -113,7 +112,7 @@ test("removeByFilter refuses an empty filter without mutating", async () => {
   })
   const result = await BufferService.removeByFilter(project.id, { filters: {}, dryRun: false })
   assert.equal(result.status, "empty_filter")
-  assert.equal(await BufferQueries.count(project.id), 1, "buffer untouched")
+  assert.equal(await BufferService.count(project.id), 1, "buffer untouched")
 })
 
 test("removeByFilter dry-run previews the match set WITHOUT removing", async () => {
@@ -134,7 +133,7 @@ test("removeByFilter dry-run previews the match set WITHOUT removing", async () 
   })
   assert.equal(preview.status, "dry_run")
   if (preview.status === "dry_run") assert.equal(preview.matched, 2)
-  assert.equal(await BufferQueries.count(project.id), 3, "dry-run mutated nothing")
+  assert.equal(await BufferService.count(project.id), 3, "dry-run mutated nothing")
 })
 
 test("removeByFilter (dryRun=false) discards the matching candidates", async () => {
@@ -154,7 +153,7 @@ test("removeByFilter (dryRun=false) discards the matching candidates", async () 
   })
   assert.equal(result.status, "removed")
   if (result.status === "removed") assert.equal(result.removed, 1)
-  const remaining = await BufferQueries.candidateArks(project.id)
+  const remaining = await BufferService.candidateArks(project.id)
   assert.deepEqual(remaining, [ARK(50)], "only the non-matching candidate remains")
 })
 
@@ -229,7 +228,7 @@ test("a committed ARK is not resurrected as a candidate by a later search", asyn
   })
   assert.equal(again.added, 0, "no new candidate row")
   assert.equal(again.alreadyInCorpus, 1, "reported as already in the corpus, not as a silent refresh")
-  const candidates = await BufferQueries.candidateArks(project.id)
+  const candidates = await BufferService.candidateArks(project.id)
   assert.deepEqual(candidates, [], "the committed ARK stays out of the candidate set")
 })
 
@@ -276,7 +275,7 @@ test("discard marks candidates discarded (only from the candidate set)", async (
   })
   const n = await BufferService.discard(project.id, [ARK(90)])
   assert.equal(n, 1)
-  assert.deepEqual(await BufferQueries.candidateArks(project.id), [ARK(91)])
+  assert.deepEqual(await BufferService.candidateArks(project.id), [ARK(91)])
   // Discarding again is a no-op (already left the candidate set).
   assert.equal(await BufferService.discard(project.id, [ARK(90)]), 0)
 })
@@ -335,7 +334,7 @@ test("a committed ARK removed from the corpus is restaged by a later search", as
   })
   assert.equal(again.added, 1)
   assert.equal(again.restaged, 1)
-  assert.deepEqual(await BufferQueries.candidateArks(project.id), [ARK(1_100)])
+  assert.deepEqual(await BufferService.candidateArks(project.id), [ARK(1_100)])
 })
 
 test("an ARK already in the corpus via corpus_add is not staged as a candidate", async () => {
@@ -350,7 +349,7 @@ test("an ARK already in the corpus via corpus_add is not staged as a candidate",
   })
   assert.equal(result.added, 1)
   assert.equal(result.alreadyInCorpus, 1)
-  assert.deepEqual(await BufferQueries.candidateArks(project.id), [ARK(1_201)])
+  assert.deepEqual(await BufferService.candidateArks(project.id), [ARK(1_201)])
   const row = await prisma.bufferItem.findFirstOrThrow({ where: { projectId: project.id, ark: ARK(1_200) } })
   assert.equal(row.status, BUFFER_STATUS.COMMITTED, "kept as provenance, outside the candidate set")
 })
@@ -373,7 +372,7 @@ test("a search never resurrects a discarded ARK; an explicit buffer_add does", a
   })
   assert.equal(searched.added, 0)
   assert.equal(searched.previouslyDiscarded, 1)
-  assert.deepEqual(await BufferQueries.candidateArks(project.id), [])
+  assert.deepEqual(await BufferService.candidateArks(project.id), [])
   assert.match(explainRegistration(1, searched) ?? "", /1 a été écarté plus tôt, non réintroduit/)
 
   const named = await BufferService.registerCandidates({
@@ -383,7 +382,7 @@ test("a search never resurrects a discarded ARK; an explicit buffer_add does", a
     candidates: [{ ark: ARK(1_300) }],
   })
   assert.equal(named.added, 1, "the librarian named it: it is staged again")
-  assert.deepEqual(await BufferQueries.candidateArks(project.id), [ARK(1_300)])
+  assert.deepEqual(await BufferService.candidateArks(project.id), [ARK(1_300)])
 })
 
 test("parallel registrations of overlapping batches count each ARK as added once", async () => {
@@ -472,7 +471,7 @@ async function filterFixture(label: string) {
 
 test("kind[] filters on the record kind", async () => {
   const project = await filterFixture("f-kind")
-  const arks = await BufferQueries.candidateArks(project.id, { kind: ["periodical_issue"] })
+  const arks = await BufferService.candidateArks(project.id, { kind: ["periodical_issue"] })
   assert.deepEqual(arks.sort(), [ARK(2_001), ARK(2_002), ARK(2_003)])
 })
 
@@ -488,7 +487,7 @@ test("title[] is contains-any, case-insensitive", async () => {
       { ark: ARK(2_103), title: "La Dépêche TUNISIENNE" },
     ],
   })
-  const arks = await BufferQueries.candidateArks(project.id, { title: ["oran", "tunisienne"] })
+  const arks = await BufferService.candidateArks(project.id, { title: ["oran", "tunisienne"] })
   assert.deepEqual(arks.sort(), [ARK(2_101), ARK(2_103)])
 })
 
@@ -500,7 +499,7 @@ test("not.title removes only the matching titles (the colonial-press case)", asy
   })
   assert.equal(result.status, "removed")
   if (result.status === "removed") assert.equal(result.removed, 2)
-  const kept = await BufferQueries.candidateArks(project.id, { not: { title: ["Oran", "tunisienne"] } })
+  const kept = await BufferService.candidateArks(project.id, { not: { title: ["Oran", "tunisienne"] } })
   assert.ok(kept.includes(ARK(2_002)), "the metropolitan title is kept")
   assert.ok(!kept.includes(ARK(2_001)))
 })
@@ -517,39 +516,51 @@ test("not.lang never matches a row whose language is unknown; the dry run says h
   assert.deepEqual(preview.arks, [ARK(2_004)])
   // Le Temps, the language-less book and the bare row have no language.
   assert.deepEqual(preview.notUnknown, { lang: 3 })
-  assert.equal(await BufferQueries.count(project.id), 7, "a dry run never mutates")
+  assert.equal(await BufferService.count(project.id), 7, "a dry run never mutates")
+})
+
+test("not.lang in a READ keeps the rows of unknown language visible", async () => {
+  const project = await filterFixture("f-not-lang-read")
+  const shown = await BufferService.candidateArks(project.id, { not: { lang: ["fr"] } })
+  // The German monograph, plus the three rows whose language is unknown — a
+  // read never hides a row the exclusion cannot judge (Decision 4).
+  assert.equal(shown.length, 4)
+  assert.ok(shown.includes(ARK(2_004)))
+  const removed = await BufferService.removeByFilter(project.id, { filters: { not: { lang: ["fr"] } }, dryRun: false })
+  assert.equal(removed.status, "removed")
+  if (removed.status === "removed") assert.equal(removed.removed, 1, "a removal only takes the known non-French row")
 })
 
 test("year ranges match by overlap: a 1861–1946 collection matches 1937", async () => {
   const project = await filterFixture("f-overlap")
-  const arks = await BufferQueries.candidateArks(project.id, { yearFrom: 1937, yearTo: 1937 })
+  const arks = await BufferService.candidateArks(project.id, { yearFrom: 1937, yearTo: 1937 })
   assert.deepEqual(arks.sort(), [ARK(2_001), ARK(2_002), ARK(2_003), ARK(2_005)].sort())
-  const later = await BufferQueries.candidateArks(project.id, { yearFrom: 1950 })
+  const later = await BufferService.candidateArks(project.id, { yearFrom: 1950 })
   assert.deepEqual(later, [ARK(2_004)], "the collection ended in 1946")
 })
 
 test("unresolved selects the rows still waiting for metadata", async () => {
   const project = await filterFixture("f-unresolved")
-  assert.deepEqual(await BufferQueries.candidateArks(project.id, { unresolved: true }), [ARK(2_007)])
-  const facets = await BufferQueries.facets(project.id)
+  assert.deepEqual(await BufferService.candidateArks(project.id, { unresolved: true }), [ARK(2_007)])
+  const facets = (await BufferService.snapshot(project.id)).facets
   assert.equal(facets.unresolved, 1)
   assert.equal(facets.kind.periodical_issue, 3)
 })
 
 test("subject[] matches the joined subject headings", async () => {
   const project = await filterFixture("f-subject")
-  assert.deepEqual(await BufferQueries.candidateArks(project.id, { subject: ["incendies de forêt"] }), [ARK(2_002)])
+  assert.deepEqual(await BufferService.candidateArks(project.id, { subject: ["incendies de forêt"] }), [ARK(2_002)])
 })
 
 test("creator[] and q reach the creator column", async () => {
   const project = await filterFixture("f-creator")
-  assert.deepEqual(await BufferQueries.candidateArks(project.id, { creator: ["geuenich"] }), [ARK(2_004)])
-  assert.deepEqual(await BufferQueries.candidateArks(project.id, { q: "Geuenich" }), [ARK(2_004)])
+  assert.deepEqual(await BufferService.candidateArks(project.id, { creator: ["geuenich"] }), [ARK(2_004)])
+  assert.deepEqual(await BufferService.candidateArks(project.id, { q: "Geuenich" }), [ARK(2_004)])
 })
 
 test("a lone `not` is a constraint; an empty `not` is not", async () => {
   const project = await filterFixture("f-empty-not")
   const empty = await BufferService.removeByFilter(project.id, { filters: { not: {} }, dryRun: false })
   assert.equal(empty.status, "empty_filter")
-  assert.equal(await BufferQueries.count(project.id), 7)
+  assert.equal(await BufferService.count(project.id), 7)
 })

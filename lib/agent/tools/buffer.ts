@@ -20,6 +20,7 @@ import "server-only"
 import { z } from "zod"
 import { defineTool } from "@alien/chat-sdk/claude"
 import {
+  BUFFER_LIST_MAX_LIMIT,
   BUFFER_SAMPLE_SIZE,
   BUFFER_SEARCH_DEFAULT_PAGE_SIZE_BY_SOURCE,
   BUFFER_SEARCH_MAX_PAGE_SIZE_BY_SOURCE,
@@ -51,101 +52,17 @@ import {
   gallicaSearchDocType,
   type GallicaSearchDocType,
 } from "@/lib/buffer/classify"
-import { classifyArkKind } from "@/models/documents/schema"
+import { classifyArkKind } from "@/lib/documents/ark-kind"
 import { BufferPolicy } from "@/models/buffer/policy"
 import { BufferQueries } from "@/models/buffer/queries"
 import { BufferService, explainRegistration, type BufferRegisterResult } from "@/models/buffer/service"
-import { BUFFER_ARK_KIND_VALUES } from "@/models/buffer/schema"
-import { arkSchema, type BufferCandidateInput } from "@/models/buffer/types"
+import { arkSchema, bufferFilterSetSchema as bufferFilterSchema, type BufferCandidateInput } from "@/models/buffer/types"
 import type { TurnScopedCtx } from "./registry-factory"
 import { authorizeProjectTool } from "./authorize"
 import { EMPTY_FILTER_REFUSAL, toolRefusal } from "./failure"
 import { emitDomainEvent } from "@/lib/agent/stream-events"
 import { AGENT_TOOLS } from "./constants"
 import { provisionalTotal } from "./provisional-total"
-
-// ---------------------------------------------------------------------------
-// Shared agent-facing filter schema (array-based, like corpus.ts). Distinct
-// from the CSV `bufferFiltersSchema` in models/buffer/types.ts, which is the
-// REST/UI query-string form.
-// ---------------------------------------------------------------------------
-
-/** Text criteria: contains-ANY, case-insensitive, accent-sensitive. */
-const textAnySchema = z.array(z.string().trim().min(2)).min(1).max(20)
-
-const bufferFilterFieldsSchema = z.object({
-  type: z
-    .array(z.string())
-    .optional()
-    .describe(
-      "Canonical doc-type codes to match: book | press | image | map | manuscript | score | " +
-        "audio | video | object | poster | estampe | enlum | charte | other | text (« texte " +
-        'imprimé, nature indéterminée »), e.g. ["press","book"].',
-    ),
-  kind: z
-    .array(z.enum(BUFFER_ARK_KIND_VALUES))
-    .optional()
-    .describe(
-      "Record kinds to match: periodical_issue | periodical_collection | monograph | image | " +
-        "catalogue_notice | other_document | unknown.",
-    ),
-  lang: z
-    .array(z.string())
-    .optional()
-    .describe('Language codes to match (ISO 639-1, e.g. ["fr","la","de"]).'),
-  source: z
-    .array(z.string())
-    .optional()
-    .describe('Sources to match: "gallica" | "catalogue" | "other".'),
-  title: textAnySchema
-    .optional()
-    .describe(
-      "Contains ANY of these strings in the title (case-insensitive, accent-sensitive — pass " +
-        'variants: ["Algérie","Algerie"]).',
-    ),
-  creator: textAnySchema
-    .optional()
-    .describe("Contains ANY of these strings in the creator/author (case-insensitive, accent-sensitive)."),
-  subject: textAnySchema
-    .optional()
-    .describe("Contains ANY of these strings in the subject headings (case-insensitive, accent-sensitive)."),
-  yearFrom: z
-    .number()
-    .int()
-    .optional()
-    .describe("Year lower bound, inclusive. A date RANGE matches when it overlaps (a 1861–1946 run matches 1937)."),
-  yearTo: z.number().int().optional().describe("Year upper bound, inclusive (overlap, as yearFrom)."),
-  undated: z
-    .boolean()
-    .optional()
-    .describe("With a year range: also match undated candidates. Alone: match only undated candidates."),
-  unresolved: z
-    .boolean()
-    .optional()
-    .describe(
-      "true: candidates whose metadata is still being resolved in the background (filters on " +
-        "title/type/date cannot see them yet); false: only resolved ones.",
-    ),
-  q: z
-    .string()
-    .trim()
-    .min(1)
-    .optional()
-    .describe("Free-text match over title, creator, snippet and subjects."),
-})
-
-const bufferFilterSchema = bufferFilterFieldsSchema
-  .extend({
-    not: bufferFilterFieldsSchema
-      .optional()
-      .describe(
-        "EXCLUDE candidates matching ALL these criteria. A candidate whose field is unknown for a " +
-          "criterion used here is never excluded (reported as notUnknown on a dry run).",
-      ),
-  })
-  .describe(
-    "Metadata filters over the buffer candidates, to MATCH. Omit a field to leave it unconstrained.",
-  )
 
 const facetDimensionEnum = z.enum(["period", "type", "kind", "lang", "source"])
 
@@ -182,7 +99,7 @@ async function emitBuffer(
   kind: "added" | "removed" | "committed" | "cleared",
   count: number,
 ): Promise<number> {
-  const total = await BufferQueries.count(projectId)
+  const total = await BufferService.count(projectId)
   emitDomainEvent(ctx, { type: "buffer_event", data: { kind, count, total } })
   return total
 }
@@ -213,13 +130,13 @@ export const bufferListTool = defineTool<
       .number()
       .int()
       .min(1)
-      .max(200)
+      .max(BUFFER_LIST_MAX_LIMIT)
       .optional()
-      .describe(`Page size (1–200, default ${BUFFER_SAMPLE_SIZE}).`),
+      .describe(`Page size (1–${BUFFER_LIST_MAX_LIMIT}, default ${BUFFER_SAMPLE_SIZE}).`),
   }),
   handler: async (input, ctx) => {
     const [{ total, rows }, enrich] = await Promise.all([
-      BufferQueries.list(ctx.projectId, input.filters, input.limit ?? BUFFER_SAMPLE_SIZE),
+      BufferService.list(ctx.projectId, input.filters, input.limit ?? BUFFER_SAMPLE_SIZE),
       BufferQueries.enrichCounts(ctx.projectId),
     ])
     return { total, ...enrich, candidates: rows }
@@ -261,14 +178,14 @@ export const bufferStatsTool = defineTool<
     const projectId = ctx.projectId
     const filters = input.filters
     const [snapshot, enrich] = await Promise.all([
-      BufferQueries.snapshot(projectId, filters, 0),
+      BufferService.snapshot(projectId, filters, 0),
       BufferQueries.enrichCounts(projectId),
     ])
     const stats = { total: snapshot.total, ...enrich, facets: snapshot.facets }
 
     if (!input.cross_facets) return stats
 
-    const cross = await BufferQueries.crossFacets(
+    const cross = await BufferService.crossFacets(
       projectId,
       [input.cross_facets[0], input.cross_facets[1]],
       filters,

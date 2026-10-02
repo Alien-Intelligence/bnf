@@ -100,7 +100,14 @@ export type CorpusPromoteResult =
  */
 export type CorpusRemoveByFilterResult =
   | { status: "empty_filter" }
-  | { status: "dry_run"; matched: number; arks: string[] }
+  | {
+      status: "dry_run"
+      matched: number
+      arks: string[]
+      /** With `not`: per dimension it names, the documents left in place
+       *  because their value is unknown (Decision 4). */
+      notUnknown?: Record<string, number>
+    }
   | {
       status: "removed"
       matched: number
@@ -444,17 +451,18 @@ export class CorpusService {
       return { status: "empty_filter" }
     }
 
-    const arks = await CorpusQueries.arksMatchingFilters(
-      project.id,
-      "head",
-      input.filters,
-    )
+    const arks = await CorpusQueries.arksToRemoveByFilter(project.id, "head", input.filters)
 
     if (input.dryRun) {
+      const notUnknown =
+        input.filters.not !== undefined
+          ? await CorpusQueries.notUnknownCounts(project.id, "head", input.filters)
+          : null
       return {
         status: "dry_run",
         matched: arks.length,
         arks: arks.slice(0, CORPUS_REMOVE_PREVIEW_LIMIT),
+        ...(notUnknown !== null ? { notUnknown } : {}),
       }
     }
 

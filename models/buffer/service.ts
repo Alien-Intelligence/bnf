@@ -3,12 +3,21 @@ import type { Prisma, Project, User } from "@/lib/generated/prisma/client"
 import { prisma } from "@/lib/db"
 import { CorpusQueries } from "@/models/corpus/queries"
 import { CorpusService, type CorpusAddResult } from "@/models/corpus/service"
-import { BUFFER_ENRICH_STATUS, BUFFER_STATUS } from "./schema"
-import { BufferQueries, bufferFieldClauses, type BufferFilterSet } from "./queries"
+import {
+  BUFFER_ENRICH_STATUS,
+  BUFFER_STATUS,
+  type BufferCrossFacets,
+  type BufferFacetDimension,
+  type BufferFilterFields,
+  type BufferFilterSet,
+  type BufferRow,
+  type BufferSnapshot,
+} from "./schema"
+import { BufferQueries } from "./queries"
 import { arkSchema, type BufferCandidateInput } from "./types"
-import { BUFFER_CLASSIFIER_VERSION, CORPUS_REMOVE_PREVIEW_LIMIT } from "@/lib/constants"
+import { BUFFER_CLASSIFIER_VERSION, BUFFER_SAMPLE_SIZE, CORPUS_REMOVE_PREVIEW_LIMIT } from "@/lib/constants"
 import { sourceFromArk } from "@/lib/mcp/vocab"
-import { classifyArkKind } from "@/models/documents/schema"
+import { classifyArkKind } from "@/lib/documents/ark-kind"
 
 /**
  * Result of registerCandidates() — what became of every hit, so a staging tool
@@ -220,7 +229,200 @@ function refreshData(c: BufferCandidateInput, row: ExistingRow): Prisma.BufferIt
   }
 }
 
+
+// ---------------------------------------------------------------------------
+// The buffer's filter→SQL translation — the ONE place filter semantics live
+// (BufferQueries only executes the `where` built here). Pure.
+// ---------------------------------------------------------------------------
+
+/** A text column the field-scoped filters match on. */
+type TextColumn = "title" | "creator" | "subjects"
+
+/** Contains-ANY over one text column, case-insensitive (ILIKE). */
+function containsAny(column: TextColumn, values: string[]): Prisma.BufferItemWhereInput {
+  const match = (v: string): Prisma.BufferItemWhereInput => {
+    const contains = { not: null, contains: v, mode: "insensitive" as const }
+    switch (column) {
+      case "title":
+        return { title: contains }
+      case "creator":
+        return { creator: contains }
+      case "subjects":
+        return { subjects: contains }
+    }
+  }
+  return { OR: values.map(match) }
+}
+
+/**
+ * Year bounds by OVERLAP with [year, yearEnd ?? year]: a periodical collection
+ * running 1861–1946 matches yearFrom 1937. `undated` widens a range to also
+ * admit null-dated rows; alone, it selects them.
+ */
+function yearClause(f: BufferFilterFields): Prisma.BufferItemWhereInput | null {
+  const hasRange = f.yearFrom !== undefined || f.yearTo !== undefined
+  if (!hasRange) return f.undated === true ? { year: null } : null
+  const bounds: Prisma.BufferItemWhereInput[] = []
+  if (f.yearTo !== undefined) bounds.push({ year: { lte: f.yearTo } })
+  if (f.yearFrom !== undefined) {
+    const from = f.yearFrom
+    bounds.push({ OR: [{ yearEnd: { gte: from } }, { yearEnd: null, year: { gte: from } }] })
+  }
+  const range: Prisma.BufferItemWhereInput = { year: { not: null }, AND: bounds }
+  return f.undated === true ? { OR: [range, { year: null }] } : range
+}
+
+/**
+ * One clause per constrained dimension (AND-ed by the caller). Pure — the one
+ * filter→SQL translation for the buffer, shared by the positive filters and
+ * the inside of `not`.
+ */
+function bufferFieldClauses(f: BufferFilterFields): Prisma.BufferItemWhereInput[] {
+  const clauses: Prisma.BufferItemWhereInput[] = []
+  if (f.type?.length) clauses.push({ docType: { in: f.type } })
+  if (f.kind?.length) clauses.push({ arkKind: { in: f.kind } })
+  if (f.lang?.length) clauses.push({ lang: { in: f.lang } })
+  if (f.source?.length) clauses.push({ source: { in: f.source } })
+  if (f.title?.length) clauses.push(containsAny("title", f.title))
+  if (f.creator?.length) clauses.push(containsAny("creator", f.creator))
+  if (f.subject?.length) clauses.push(containsAny("subjects", f.subject))
+  const year = yearClause(f)
+  if (year !== null) clauses.push(year)
+  if (f.unresolved === true) {
+    clauses.push({ enrichStatus: { in: [BUFFER_ENRICH_STATUS.PENDING, BUFFER_ENRICH_STATUS.FAILED] } })
+  } else if (f.unresolved === false) {
+    clauses.push({ OR: [{ enrichStatus: null }, { enrichStatus: BUFFER_ENRICH_STATUS.RESOLVED }] })
+  }
+  if (f.q) {
+    // Each arm FALSE (not SQL NULL) on a NULL column, so `not.q` is two-valued.
+    const contains = { not: null, contains: f.q, mode: "insensitive" as const }
+    clauses.push({
+      OR: [{ title: contains }, { creator: contains }, { snippet: contains }, { subjects: contains }],
+    })
+  }
+  return clauses
+}
+
+/** The dimensions of a `not` that read a nullable column, and that column. */
+const NOT_PRESENCE: ReadonlyArray<{
+  dimension: string
+  used: (f: BufferFilterFields) => boolean
+  present: Prisma.BufferItemWhereInput
+  unknown: Prisma.BufferItemWhereInput
+}> = [
+  { dimension: "type", used: (f) => !!f.type?.length, present: { docType: { not: null } }, unknown: { docType: null } },
+  { dimension: "kind", used: (f) => !!f.kind?.length, present: { arkKind: { not: null } }, unknown: { arkKind: null } },
+  { dimension: "lang", used: (f) => !!f.lang?.length, present: { lang: { not: null } }, unknown: { lang: null } },
+  { dimension: "source", used: (f) => !!f.source?.length, present: { source: { not: null } }, unknown: { source: null } },
+  { dimension: "title", used: (f) => !!f.title?.length, present: { title: { not: null } }, unknown: { title: null } },
+  { dimension: "creator", used: (f) => !!f.creator?.length, present: { creator: { not: null } }, unknown: { creator: null } },
+  { dimension: "subject", used: (f) => !!f.subject?.length, present: { subjects: { not: null } }, unknown: { subjects: null } },
+  {
+    dimension: "year",
+    used: (f) => f.yearFrom !== undefined || f.yearTo !== undefined,
+    present: { year: { not: null } },
+    unknown: { year: null },
+  },
+  {
+    dimension: "q",
+    used: (f) => !!f.q,
+    present: {
+      OR: [{ title: { not: null } }, { creator: { not: null } }, { snippet: { not: null } }, { subjects: { not: null } }],
+    },
+    unknown: { title: null, creator: null, snippet: null, subjects: null },
+  },
+]
+
+/**
+ * How a `not` reads (Decision 4) — the buffer's mirror of CORPUS_NOT_MODE:
+ *   - `read`   — list, snapshot, facets: the exclusion removes only rows KNOWN
+ *                to match it; a row with an unknown value stays visible.
+ *                NOT(known AND inner), the presence INSIDE the NOT.
+ *   - `remove` — remove-by-filter: additionally requires every named value to
+ *                be known, so "remove everything not French" never deletes a
+ *                row of unknown language. The dry run reports those as
+ *                `notUnknown`.
+ */
+export const BUFFER_NOT_MODE = { READ: "read", REMOVE: "remove" } as const
+export type BufferNotMode = (typeof BUFFER_NOT_MODE)[keyof typeof BUFFER_NOT_MODE]
+
+/** The `not` clauses for one mode, or none when the exclusion is empty. */
+function notClauses(not: BufferFilterFields, mode: BufferNotMode): Prisma.BufferItemWhereInput[] {
+  const inner = bufferFieldClauses(not)
+  if (inner.length === 0) return []
+  const known = NOT_PRESENCE.filter((p) => p.used(not)).map((p) => p.present)
+  const exclusion: Prisma.BufferItemWhereInput = { NOT: { AND: [...known, ...inner] } }
+  return mode === BUFFER_NOT_MODE.REMOVE ? [exclusion, ...known] : [exclusion]
+}
+
+
 export class BufferService {
+  /**
+   * The Prisma `where` for a project's CANDIDATE rows under `filters`: every
+   * positive clause AND the `not` clauses, read in `notMode` (BUFFER_NOT_MODE).
+   */
+  static where(
+    projectId: string,
+    filters: BufferFilterSet = {},
+    notMode: BufferNotMode = BUFFER_NOT_MODE.READ,
+  ): Prisma.BufferItemWhereInput {
+    const { not, ...positive } = filters
+    const clauses = [...bufferFieldClauses(positive), ...(not !== undefined ? notClauses(not, notMode) : [])]
+    return { ...BufferQueries.candidateScope(projectId), ...(clauses.length > 0 ? { AND: clauses } : {}) }
+  }
+
+  /**
+   * For a filter set with `not`: per dimension the exclusion names, how many
+   * candidates match the POSITIVE clauses but have no value in that column —
+   * the rows a removal leaves in place. A dry run reports them so "remove
+   * everything not French" says how many candidates of unknown language it
+   * kept. Empty when there is no `not`.
+   */
+  static async notUnknownCounts(projectId: string, filters: BufferFilterSet): Promise<Record<string, number>> {
+    const { not, ...positive } = filters
+    if (not === undefined) return {}
+    const base = BufferService.where(projectId, positive)
+    const used = NOT_PRESENCE.filter((p) => p.used(not))
+    const counts = await Promise.all(used.map((p) => BufferQueries.count({ AND: [base, p.unknown] })))
+    return Object.fromEntries(used.map((p, i) => [p.dimension, counts[i]]))
+  }
+
+  /** Candidates matching the filters. */
+  static async count(projectId: string, filters: BufferFilterSet = {}): Promise<number> {
+    return BufferQueries.count(BufferService.where(projectId, filters))
+  }
+
+  /** One page of candidates (newest first), plus the total match count. */
+  static async list(
+    projectId: string,
+    filters: BufferFilterSet = {},
+    limit: number = BUFFER_SAMPLE_SIZE,
+  ): Promise<{ total: number; rows: BufferRow[] }> {
+    return BufferQueries.list(BufferService.where(projectId, filters), limit)
+  }
+
+  /** total + facets + a bounded sample of the filtered candidates. */
+  static async snapshot(
+    projectId: string,
+    filters: BufferFilterSet = {},
+    sampleSize: number = BUFFER_SAMPLE_SIZE,
+  ): Promise<BufferSnapshot> {
+    return BufferQueries.snapshot(BufferService.where(projectId, filters), sampleSize)
+  }
+
+  /** A crossed-facet table over two dimensions of the filtered candidates. */
+  static async crossFacets(
+    projectId: string,
+    dims: [BufferFacetDimension, BufferFacetDimension],
+    filters: BufferFilterSet = {},
+  ): Promise<BufferCrossFacets> {
+    return BufferQueries.crossFacets(BufferService.where(projectId, filters), dims)
+  }
+
+  /** The candidate ARKs a read of `filters` shows. */
+  static async candidateArks(projectId: string, filters: BufferFilterSet = {}): Promise<string[]> {
+    return BufferQueries.arks(BufferService.where(projectId, filters))
+  }
   /**
    * Stage search hits, deduped by [projectId, ark]. The candidate set is
    * found ∖ head corpus ∖ discarded (Decision 9 of the Track E plan):
@@ -371,15 +573,8 @@ export class BufferService {
 
     const insertedCandidates = inserted.filter((r) => r.status === BUFFER_STATUS.CANDIDATE).length
     const [unresolved, total] = await Promise.all([
-      prisma.bufferItem.count({
-        where: {
-          projectId: args.projectId,
-          ark: { in: arks },
-          status: BUFFER_STATUS.CANDIDATE,
-          enrichStatus: BUFFER_ENRICH_STATUS.PENDING,
-        },
-      }),
-      BufferQueries.count(args.projectId),
+      BufferQueries.pendingEnrichAmong(args.projectId, arks),
+      BufferService.count(args.projectId),
     ])
 
     return {
@@ -417,11 +612,11 @@ export class BufferService {
   ): Promise<BufferRemoveByFilterResult> {
     if (!BufferService.hasConstraint(input.filters)) return { status: "empty_filter" }
 
-    const arks = await BufferQueries.candidateArks(projectId, input.filters)
+    const arks = await BufferQueries.arks(BufferService.where(projectId, input.filters, BUFFER_NOT_MODE.REMOVE))
 
     if (input.dryRun) {
       const notUnknown =
-        input.filters.not !== undefined ? await BufferQueries.notUnknownCounts(projectId, input.filters) : null
+        input.filters.not !== undefined ? await BufferService.notUnknownCounts(projectId, input.filters) : null
       return {
         status: "dry_run",
         matched: arks.length,
@@ -450,7 +645,7 @@ export class BufferService {
     // Belt and braces: registerCandidates already refuses malformed ARKs, but a
     // row staged before that guard existed must never poison a corpus version —
     // the service layer below does NOT re-run the route's Zod schema.
-    const staged = await BufferQueries.candidateArks(project.id)
+    const staged = await BufferService.candidateArks(project.id)
     const arks = staged.filter((a) => arkSchema.safeParse(a).success)
     if (arks.length === 0) {
       // Nothing to commit — reflect the corpus as-is without advancing a version.
@@ -472,14 +667,7 @@ export class BufferService {
 
     // Counted before the rows leave the candidate set: their metadata was
     // still being resolved, which the agent reports rather than hides.
-    const committedUnresolved = await prisma.bufferItem.count({
-      where: {
-        projectId: project.id,
-        ark: { in: arks },
-        status: BUFFER_STATUS.CANDIDATE,
-        enrichStatus: BUFFER_ENRICH_STATUS.PENDING,
-      },
-    })
+    const committedUnresolved = await BufferQueries.pendingEnrichAmong(project.id, arks)
 
     const corpus = await CorpusService.addArks(
       project,
