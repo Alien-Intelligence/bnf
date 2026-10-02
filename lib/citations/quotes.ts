@@ -311,25 +311,28 @@ function stripBlockquotePrefix(text: string): string {
 // Public API
 // ---------------------------------------------------------------------------
 
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+function squashWhitespace(s: string): string {
+  return s.replace(/\s+/g, " ").trim()
 }
 
 /**
- * Was this quote already present in `body` AS A QUOTE — the same text between
- * the same kind of marks (whitespace next to the marks aside), or the same
- * blockquote lines? The prior-body rule of the quote check skips such spans:
- * they were not written this turn. A bare substring test would also skip a new
- * quote that happens to be a sub-phrase of an old one, which IS new.
+ * Is `q` the same quotation as `p` — same text (whitespace aside), same kind
+ * of marks, and the same citation? The prior-body rule of the quote check
+ * skips a quote only when the prior body already held it in this sense: it
+ * was not written this turn. A quote that gained or changed its citation IS
+ * new (the agent attributed it this turn), and so is a new quote that happens
+ * to be a sub-phrase of an old one.
  */
-export function appearsQuotedIn(body: string, q: Pick<ExtractedQuote, "raw" | "form">): boolean {
-  // A span inside a multi-line blockquote is extracted without its `> `
-  // prefixes, so it is looked up in the prefix-stripped body as well.
-  const unprefixed = stripBlockquotePrefix(body)
-  if (q.form === "blockquote") return unprefixed.includes(q.raw)
-  const [open, close] = q.form === "guillemets" ? ["«", "»"] : ["“", "”"]
-  const marked = new RegExp(`${open}\\s*${escapeRegExp(q.raw)}\\s*${close}`, "u")
-  return marked.test(body) || marked.test(unprefixed)
+export function isSameQuote(
+  p: Pick<ExtractedQuote, "raw" | "form" | "citation">,
+  q: Pick<ExtractedQuote, "raw" | "form" | "citation">,
+): boolean {
+  return (
+    p.form === q.form &&
+    squashWhitespace(p.raw) === squashWhitespace(q.raw) &&
+    p.citation?.ark === q.citation?.ark &&
+    p.citation?.folio === q.citation?.folio
+  )
 }
 
 /** Every quotation span of a note body, in source order. */

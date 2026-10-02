@@ -210,3 +210,23 @@ test("the low-OCR lookup is consulted and correction_on_low_ocr surfaces", async
     [QUOTE_WARNING_REASON.CORRECTION_ON_LOW_OCR],
   )
 })
+
+test("prior-body rule: a quote that gains (or changes) its citation is re-checked", async () => {
+  const before = `Les témoins: « ${QUOTE} ».`
+  const res = await withFacade(
+    async () => found([[2, FOLIO_TEXT]]),
+    () =>
+      checkNoteQuotes({
+        corpusProjectId: PROJECT,
+        bodyMd: `Les témoins: « ${QUOTE} » ${cite(arkN(1), 3)}.`,
+        priorBodyMd: before,
+        signal: new AbortController().signal,
+      }),
+  )
+  assert.equal(res.checked, 1, "the newly cited quote is in scope")
+  assert.deepEqual(
+    res.warnings.map((w) => [w.reason, w.found_on_folio]),
+    [[QUOTE_WARNING_REASON.UNVERIFIABLE, undefined]],
+    "folio 3 is absent from the stub document: the new citation was actually checked",
+  )
+})

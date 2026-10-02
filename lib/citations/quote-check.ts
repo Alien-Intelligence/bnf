@@ -36,7 +36,7 @@ import {
   type QuoteUnverifiableCause,
   type QuoteWarningReason,
 } from "@/models/notes/schema"
-import { appearsQuotedIn, extractQuotes } from "./quotes"
+import { extractQuotes, isSameQuote } from "./quotes"
 import type { ExtractedQuote } from "./quotes"
 import { tokenizeFolios, verifyQuote } from "./quote-match"
 import type { SourceToken } from "./quote-match"
@@ -81,7 +81,7 @@ export type CheckNoteQuotesArgs = {
   corpusProjectId: string
   /** The text whose quotes are in scope (see the tool wiring in note.ts). */
   bodyMd: string
-  /** Quote spans present verbatim here (text AND marks) are skipped — they were not written this turn. */
+  /** Quotes already here with the same text, marks and citation are skipped — they were not written this turn. */
   priorBodyMd: string | null
   signal: AbortSignal
   lowOcrFolios?: LowOcrFoliosLookup
@@ -204,9 +204,9 @@ async function fetchDocument(
  * propagate.
  */
 export async function checkNoteQuotes(args: CheckNoteQuotesArgs): Promise<QuoteCheckResult> {
-  const prior = args.priorBodyMd
+  const prior = args.priorBodyMd === null ? [] : extractQuotes(args.priorBodyMd)
   const quotes = extractQuotes(args.bodyMd).filter(
-    (q) => q.words >= QUOTE_MIN_CHECKED_WORDS && !(prior !== null && appearsQuotedIn(prior, q)),
+    (q) => q.words >= QUOTE_MIN_CHECKED_WORDS && !prior.some((p) => isSameQuote(p, q)),
   )
   const warnings: Array<{ index: number; w: QuoteWarning }> = []
   const push = (q: ExtractedQuote, w: QuoteWarning) => warnings.push({ index: q.index, w })

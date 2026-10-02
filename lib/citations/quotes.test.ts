@@ -4,7 +4,7 @@
 // and tokens for the matcher.
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { appearsQuotedIn, extractQuotes, normalizeToken } from "./quotes"
+import { extractQuotes, isSameQuote, normalizeToken } from "./quotes"
 import type { ExtractedQuote } from "./quotes"
 
 const ARK = "ark:/12148/bpt6k822781z"
@@ -143,17 +143,24 @@ test("markdown emphasis around a quoted phrase does not change its tokens", () =
   assert.deepEqual(words(extractQuotes(md)[0]), ["accusent", "l'imprudence", "du", "personnel"])
 })
 
-test("appearsQuotedIn: the same span between marks counts, a sub-phrase of an old quote does not", () => {
-  const prior = `« Dès l'aube, une foule considérable se pressait » ${CITE(1)}\n\n> Bloc cité\n> sur deux lignes.`
-  assert.equal(appearsQuotedIn(prior, { raw: "Dès l'aube, une foule considérable se pressait", form: "guillemets" }), true)
-  assert.equal(appearsQuotedIn(prior, { raw: "une foule considérable se pressait", form: "guillemets" }), false)
-  assert.equal(appearsQuotedIn(prior, { raw: "Dès l'aube, une foule considérable se pressait", form: "curly" }), false)
-  assert.equal(appearsQuotedIn(prior, { raw: "Bloc cité\nsur deux lignes.", form: "blockquote" }), true)
+test("isSameQuote: same text, marks and citation; a sub-phrase or a new citation is a new quote", () => {
+  const [old] = extractQuotes(`« Dès l'aube, une foule considérable se pressait » ${CITE(1)}`)
+  const same = extractQuotes(`Il note : « Dès l'aube, une foule\nconsidérable se pressait » ${CITE(1)}.`)[0]
+  const sub = extractQuotes(`« une foule considérable se pressait » ${CITE(1)}`)[0]
+  const curly = extractQuotes(`“Dès l'aube, une foule considérable se pressait” ${CITE(1)}`)[0]
+  const recited = extractQuotes(`« Dès l'aube, une foule considérable se pressait » ${CITE(2)}`)[0]
+  const uncited = extractQuotes(`« Dès l'aube, une foule considérable se pressait »`)[0]
+  assert.equal(isSameQuote(old, same), true)
+  assert.equal(isSameQuote(old, sub), false)
+  assert.equal(isSameQuote(old, curly), false)
+  assert.equal(isSameQuote(old, recited), false)
+  assert.equal(isSameQuote(uncited, old), false, "gaining a citation makes it new")
 })
 
-test("appearsQuotedIn: a guillemet span that wraps inside a blockquote is found in the prior body", () => {
-  const prior = `> Le journal écrit : « un court-circuit a\n> provoqué le sinistre » ${CITE(2)}`
-  const [q] = extractQuotes(prior)
-  assert.equal(q.raw, "un court-circuit a\nprovoqué le sinistre")
-  assert.equal(appearsQuotedIn(prior, q), true)
+test("isSameQuote: a guillemet span that wraps inside a blockquote matches its re-sent self", () => {
+  const body = `> Le journal écrit : « un court-circuit a\n> provoqué le sinistre » ${CITE(2)}`
+  const [a] = extractQuotes(body)
+  const [b] = extractQuotes(`${body}\n\nUn ajout.`)
+  assert.equal(a.raw, "un court-circuit a\nprovoqué le sinistre")
+  assert.equal(isSameQuote(a, b), true)
 })
