@@ -8,16 +8,16 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet"
 import { Separator } from "@/components/ui/separator"
-import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
+import { CardSharedLoadError } from "@/components/cards/shared/load-error"
 import { ArrowUpRight, BookOpen, Eye, TriangleAlert } from "lucide-react"
 import { iiifImageUrl, gallicaItemUrl, gallicaViewerUrl } from "@/lib/citations/external"
 // gallicaViewerUrl → IIIF (view3if) viewer; gallicaItemUrl → classic Gallica item page.
-import { ocrPercent } from "@/lib/citations/ocr"
+import { buildOcrIndex, folioOcrState, ocrPercent, type FolioOcrState } from "@/lib/ocr/quality"
 import { useCitationsForArk } from "@/hooks/api/citations"
 import { useDocumentOcr } from "@/hooks/api/documents"
 import { cn } from "@/lib/utils"
-import { OCR_SOURCE, type DocumentOcrView } from "@/models/documents/schema"
+import { OCR_SOURCE, OCR_STATUS_PENDING, type DocumentOcrView } from "@/models/documents/schema"
 import type { CitationUsage } from "@/models/notes/schema"
 import { useTranslations } from "next-intl"
 
@@ -39,7 +39,6 @@ export function SheetCitationSource({
   onOpenChange,
 }: SheetCitationSourceProps) {
   const t = useTranslations("citations.panel")
-  const tCommon = useTranslations("common")
   const usagesQuery = useCitationsForArk(projectId, ark)
   const ocrQuery = useDocumentOcr(projectId, ark)
   const usages = usagesQuery.data
@@ -48,8 +47,9 @@ export function SheetCitationSource({
   // narrows `folio` to a number. Folio is mandatory on a citation, but the
   // guard lets a malformed one degrade to the document-level Gallica viewer.
   const hasFolio = ark != null && folio != null
-  // Document-level Gallica item page — used when the folio is missing/malformed.
-  const gallicaUrl = ark ? gallicaItemUrl(ark, 1) : null
+  // Document-level Gallica viewer — used when the folio is missing/malformed.
+  // Never a guessed folio: the viewer opens the document itself.
+  const gallicaUrl = ark ? gallicaViewerUrl(ark) : null
 
   // Dedupe by note — a note citing the same ARK on several folios returns one
   // usage row per citation, which previously rendered as N identical lines.
@@ -147,50 +147,74 @@ export function SheetCitationSource({
 
           {/* Other notes citing this ARK. Found bug B4: its loading and error
               states used to be dropped — an error read as "no other note". */}
-          {usagesQuery.isLoading ? (
-            <>
-              <Separator />
-              <div className="space-y-2">
-                <Skeleton className="h-4 w-1/3" />
-                <Skeleton className="h-4 w-2/3" />
-              </div>
-            </>
-          ) : usagesQuery.isError ? (
-            <>
-              <Separator />
-              <div className="flex items-center gap-3 text-sm text-muted-foreground">
-                <span className="min-w-0 flex-1">{t("usagesLoadError")}</span>
-                <Button variant="outline" size="sm" onClick={() => void usagesQuery.refetch()}>
-                  {tCommon("tryAgain")}
-                </Button>
-              </div>
-            </>
-          ) : otherNotes.length > 0 ? (
-            <>
-              <Separator />
-              <div>
-                <p className="mb-2 text-sm font-medium">{t("usages")}</p>
-                <ul className="space-y-1 text-sm text-muted-foreground">
-                  {otherNotes.map((u) => (
-                    <li key={u.noteId} className="truncate">
-                      {u.noteTitle}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            </>
-          ) : null}
+          <SectionCitationUsages
+            isLoading={usagesQuery.isLoading}
+            isError={usagesQuery.isError}
+            onRetry={() => void usagesQuery.refetch()}
+            otherNotes={otherNotes}
+          />
         </div>
       </SheetContent>
     </Sheet>
   )
 }
 
-// The "Qualité OCR" block (feedback 2026-09-29 #7): what produced the cited
-// folio's text and, for BnF ALTO, its measured quality — with the low marker
-// when it is below the threshold — plus the document's "Taux OCR". A folio with
-// no stored quality (not synced yet, being built, or unavailable) says so; that
-// is distinct from "not low".
+// "Utilisé dans d'autres notes" — loading → error → empty (nothing shown: the
+// block only exists to list other notes) → content.
+function SectionCitationUsages({
+  isLoading,
+  isError,
+  onRetry,
+  otherNotes,
+}: {
+  isLoading: boolean
+  isError: boolean
+  onRetry: () => void
+  otherNotes: CitationUsage[]
+}) {
+  const t = useTranslations("citations.panel")
+  if (isLoading) {
+    return (
+      <>
+        <Separator />
+        <div className="space-y-2">
+          <Skeleton className="h-4 w-1/3" />
+          <Skeleton className="h-4 w-2/3" />
+        </div>
+      </>
+    )
+  }
+  if (isError) {
+    return (
+      <>
+        <Separator />
+        <CardSharedLoadError layout="inline" message={t("usagesLoadError")} onRetry={onRetry} />
+      </>
+    )
+  }
+  if (otherNotes.length === 0) return null
+  return (
+    <>
+      <Separator />
+      <div>
+        <p className="mb-2 text-sm font-medium">{t("usages")}</p>
+        <ul className="space-y-1 text-sm text-muted-foreground">
+          {otherNotes.map((u) => (
+            <li key={u.noteId} className="truncate">
+              {u.noteTitle}
+            </li>
+          ))}
+        </ul>
+      </div>
+    </>
+  )
+}
+
+// The "Qualité OCR" block (feedback 2026-09-29 #7): the cited folio's OCR
+// state (lib/ocr/quality.ts) — what produced its text and, for BnF ALTO, its
+// measured quality with the low marker — plus the document's "Taux OCR". A
+// folio whose quality is not available (document not synced, or no row for
+// that folio) says so in its own words: never read as "not low".
 function SectionCitationOcr({
   ocr,
   isLoading,
@@ -205,7 +229,6 @@ function SectionCitationOcr({
   folio: number | null
 }) {
   const t = useTranslations("citations.ocr")
-  const tCommon = useTranslations("common")
 
   if (isLoading) {
     return (
@@ -216,30 +239,21 @@ function SectionCitationOcr({
     )
   }
   if (isError || ocr === undefined) {
-    return (
-      <div className="flex items-center gap-3 text-[12.5px] text-muted-foreground">
-        <span className="min-w-0 flex-1">{t("loadError")}</span>
-        <Button variant="outline" size="sm" onClick={onRetry}>
-          {tCommon("tryAgain")}
-        </Button>
-      </div>
-    )
+    return <CardSharedLoadError layout="inline" message={t("loadError")} onRetry={onRetry} />
   }
 
-  const view = folio === null ? undefined : ocr.folios.find((f) => f.folio === folio)
-  const folioLine = (() => {
-    if (view === undefined) return t("unavailable")
-    if (view.ocrSource === OCR_SOURCE.MISTRAL) return t("folioMistral")
-    if (view.ocrSource === OCR_SOURCE.VISION) return t("folioVision")
-    if (view.ocrQuality === null || view.wordCount === null) return t("folioAltoUnscored")
-    return t("folioAlto", { quality: ocrPercent(view.ocrQuality), words: view.wordCount })
-  })()
+  const index = buildOcrIndex(
+    ocr.folios,
+    ocr.status === OCR_STATUS_PENDING ? [] : [{ ark: ocr.ark, status: ocr.status }],
+  )
+  const state = folioOcrState(index, ocr.ark, folio)
+  const low = state.kind === "recorded" && state.view.low
 
   return (
     <div>
       <div className="mono-eyebrow mb-1.5 text-neutral-600">{t("sheetTitle")}</div>
-      <p className="text-[12.5px] text-foreground">{folioLine}</p>
-      {view?.low ? (
+      <p className="text-[12.5px] text-foreground">{folioOcrLine(state, t)}</p>
+      {low ? (
         <p className="mt-1.5 flex items-center gap-1.5 text-[12px] text-warning">
           <TriangleAlert className="size-3.5 shrink-0" strokeWidth={1.8} aria-hidden />
           {t("lowFolio")}
@@ -252,6 +266,20 @@ function SectionCitationOcr({
       ) : null}
     </div>
   )
+}
+
+/** The one-line description of a folio's OCR state. */
+function folioOcrLine(
+  state: FolioOcrState,
+  t: (key: string, values?: Record<string, string | number>) => string,
+): string {
+  if (state.kind === "no_folio" || state.kind === "not_synced") return t("unavailable")
+  if (state.kind === "not_recorded") return t("folioNotRecorded")
+  const { view } = state
+  if (view.ocrSource === OCR_SOURCE.MISTRAL) return t("folioMistral")
+  if (view.ocrSource === OCR_SOURCE.VISION) return t("folioVision")
+  if (view.ocrQuality === null || view.wordCount === null) return t("folioAltoUnscored")
+  return t("folioAlto", { quality: ocrPercent(view.ocrQuality), words: view.wordCount })
 }
 
 // A rich external-link row. `primary` gives the teal-highlighted treatment the

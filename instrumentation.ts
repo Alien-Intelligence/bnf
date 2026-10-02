@@ -55,8 +55,10 @@ export async function register() {
   // OCR-quality sync (feedback 2026-09-29 #7): boot resume + periodic sweep that
   // pulls the worker's per-ARK OCR-quality artifacts into DocumentOcr /
   // DocumentFolio, and through it drives the backfill of documents indexed
-  // before the feature. The terminal ingest callback kicks it for its own ARKs.
-  // No-op (one log line) unless CLUSTER_MODE=real. See lib/documents/ocr-sync.ts.
+  // before the feature. An ingest commit persists resync requests for its ARKs
+  // and triggers a drain. The timer is unref'd and kept by the module, which
+  // replaces it on a re-run of register(). No-op (one log line) unless
+  // CLUSTER_MODE=real. See lib/documents/ocr-sync.ts.
   const { startOcrSync } = await import("@/lib/documents/ocr-sync")
   startOcrSync()
 

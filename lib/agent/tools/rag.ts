@@ -3,21 +3,24 @@
  * ingested corpus, all scoped server-side to the project's cluster dataset:
  *
  *   - rag_query          — semantic (vector) search → ARK + folio + char-range
- *                          passages + entryId.
+ *                          passages + entryId, each with its folio's OCR quality.
  *   - rag_keyword_search — typo-tolerant keyword search → entry-level hits with
- *                          facet filters (type / lang / source).
- *   - rag_get_text       — selective full-text retrieval by entryId and a
- *                          character range (pull context around a passage).
+ *                          facet filters (type / lang / source) and each
+ *                          document's OCR summary.
+ *   - rag_get_text       — selective full-text retrieval by entryId AND the ARK
+ *                          of the same search result, plus the OCR quality of
+ *                          every folio heading inside the slice.
  *
  * Each tool checks that the project has a committed ingested version before
  * delegating to ClusterRagClient. If not, it returns a structured error so the
  * agent can explain the situation to the user rather than crashing.
  *
- * Every result carries the OCR quality of the folios it returns (feedback
- * 2026-09-29 #7 — see rag-ocr.ts): `ocrLow` is decided by code, and an
- * `ocrNotice` rides along when anything is low. A failed quality read throws;
- * the chat-sdk coerces it into an isError tool result, so the model sees the
- * failure instead of a silently unannotated result.
+ * OCR quality (feedback 2026-09-29 #7 — see rag-ocr.ts): `ocrLow` is decided by
+ * code, every folio carries an explicit `ocrState` so "not known" never reads
+ * as "fine", and an `ocrNotice` rides along when anything is low. The reads are
+ * corpus-gated, bounded and tied to the turn's signal; a failure throws and the
+ * chat-sdk turns it into an isError tool result, so the model sees the failure
+ * instead of a silently unannotated result.
  */
 import "server-only"
 
@@ -27,23 +30,19 @@ import { ClusterRagClient } from "@/lib/cluster/rag"
 import type { TurnScopedCtx } from "./registry-factory"
 import { AGENT_TOOLS } from "./constants"
 import { NOT_INGESTED_ERROR, resolveIngestedCorpus } from "./ingestion-guard"
+import { withDeadline } from "@/lib/async/deadline"
 import { foliosInSlice } from "@/lib/citations/ocr"
-import { arkSchema } from "@/models/corpus/types"
+import { OCR_DB_TIMEOUT_MS } from "@/lib/constants"
+import { arkSchema } from "@/lib/validation/ark"
 import { DocumentQueries } from "@/models/documents/queries"
+import { ARK_NOT_IN_CORPUS_ERROR } from "./constants"
 import {
   annotateKeywordHits,
   annotatePassages,
   annotateTextSlice,
   loadDocOcrIndex,
-  loadFolioIndex,
+  loadOcrIndex,
 } from "./rag-ocr"
-
-/**
- * rag_get_text's ARK is not an indexed document of this corpus. Structured
- * output, never a throw: the model recovers by passing the ARK of the same
- * search result as the entryId (CLAUDE_ERROR_PATTERNS §15).
- */
-export const ARK_NOT_IN_CORPUS_ERROR = "ark_not_in_corpus"
 
 // ---------------------------------------------------------------------------
 // rag_query
@@ -69,10 +68,12 @@ export const ragQueryTool = defineTool<
   description:
     "Search the ingested corpus by semantic similarity. " +
     "Returns passages with ARK, folio, snippet, and relevance score. " +
-    "Each passage also carries its folio's OCR quality: ocrQuality (mean word " +
-    "confidence 0–1, null when not measured), ocrSource (alto | mistral | vision; " +
-    "null = quality not synced yet) and ocrLow (true = the folio's text is poorly " +
-    "recognised — an ocrNotice then explains it). " +
+    "Each passage also carries its folio's OCR quality: ocrState (recorded | " +
+    "not_synced | not_recorded | no_folio — only `recorded` means the quality is " +
+    "known; any other state is UNKNOWN, never 'good'), ocrQuality (mean word " +
+    "confidence 0–1, null when not measured), ocrSource (alto | mistral | vision) " +
+    "and ocrLow (true = the folio's text is poorly recognised — an ocrNotice then " +
+    "explains it). " +
     "Use focused, specific queries — one concept per call — rather than broad questions. " +
     "Apply filters (type, lang, source, yearFrom/yearTo) when the question is scoped. " +
     "Returns an empty passages array when no ingestion has been committed — " +
@@ -115,9 +116,11 @@ export const ragQueryTool = defineTool<
       k: input.k,
       filters: input.filters,
     })
-    // Passages come from this project's own dataset — the D8 corpus gate.
-    const index = await loadFolioIndex(
+    // Passages come from this corpus' own dataset; the read is gated on it too.
+    const index = await loadOcrIndex(
+      ctx.corpusProjectId,
       result.passages.flatMap((p) => (p.folio === null ? [] : [{ ark: p.ark, folio: p.folio }])),
+      ctx.signal,
     )
     return { ...result, ...annotatePassages(result.passages, index) }
   },
@@ -150,8 +153,10 @@ export const ragKeywordSearchTool = defineTool<
     "lives here, not on rag_query. Use the returned entryId with rag_get_text " +
     "to read the surrounding full text. " +
     "Each hit also carries its document's OCR quality: ocrStatus (available | " +
-    "building | unavailable | pending), ocrRate (the BnF \"Taux OCR\", 0–1) and " +
-    "ocrLowFolios / ocrLowFolioCount (the folios whose text is poorly recognised). " +
+    "building | unavailable | quarantined | pending — only `available` means the " +
+    "low-folio list is known; otherwise the quality is UNKNOWN, never 'good'), " +
+    "ocrRate (the BnF \"Taux OCR\", 0–1) and ocrLowFolios / ocrLowFolioCount (the " +
+    "folios whose text is poorly recognised). " +
     "Returns an empty hits array (with an error field) when nothing is ingested.",
   inputSchema: z.object({
     query: z
@@ -188,8 +193,12 @@ export const ragKeywordSearchTool = defineTool<
       limit: input.limit,
       filters: input.filters,
     })
-    // Hits come from this project's own dataset — the D8 corpus gate.
-    const docIndex = await loadDocOcrIndex(result.hits.map((h) => h.ark))
+    // Hits come from this corpus' own dataset; the read is gated on it too.
+    const docIndex = await loadDocOcrIndex(
+      ctx.corpusProjectId,
+      result.hits.map((h) => h.ark),
+      ctx.signal,
+    )
     return { ...result, ...annotateKeywordHits(result.hits, docIndex) }
   },
 })
@@ -215,11 +224,13 @@ export const ragGetTextTool = defineTool<
     "(e.g. charOffset slightly before its start). charLimit 0 returns the rest " +
     "of the document; keep slices to a few thousand characters. Returns text, " +
     "totalLength, hasMore and nextOffset for pagination. " +
-    "Also pass the ARK of that same search result: the result then carries " +
-    "ocr.folios — the OCR quality (ocrQuality, ocrSource, ocrLow) of each folio " +
-    "whose \"## Folio N\" heading falls inside the slice — and " +
-    "ocr.leadingFolioKnown (false when the slice starts mid-folio; that folio's " +
-    "quality is then unknown).",
+    "Also pass the ARK of that SAME search result (required): the result then " +
+    "carries ocr.folios — the OCR quality (ocrState, ocrQuality, ocrSource, " +
+    "ocrLow) of each folio whose \"## Folio N\" heading falls inside the slice — " +
+    "and ocr.leadingFolioKnown (false when the slice starts mid-folio; that " +
+    "folio's quality is then unknown). The cluster cannot confirm that the " +
+    "entryId belongs to that ARK (entryArkVerified: false): the quality reported " +
+    "is the given ARK's, so always pass the pair from one search result.",
   inputSchema: z.object({
     entryId: z
       .number()
@@ -248,9 +259,13 @@ export const ragGetTextTool = defineTool<
       return { text: "", error: corpus.error }
     }
 
-    // D8/D12: the quality table is global, so the ARK must be an indexed
-    // document of THIS corpus before anything is read for it.
-    if (!(await DocumentQueries.isIndexedInCorpus(ctx.corpusProjectId, input.ark))) {
+    // D8/D12: the ARK must be an indexed document of THIS corpus before
+    // anything is read for it.
+    const indexed = await withDeadline(
+      DocumentQueries.isIndexedInCorpus(ctx.corpusProjectId, input.ark),
+      { label: "rag_get_text corpus check", ms: OCR_DB_TIMEOUT_MS, signal: ctx.signal },
+    )
+    if (!indexed) {
       return { text: "", error: ARK_NOT_IN_CORPUS_ERROR, ark: input.ark }
     }
 
@@ -261,8 +276,19 @@ export const ragGetTextTool = defineTool<
       charLimit: input.charLimit,
     })
     const { folios } = foliosInSlice(content.text)
-    const index = await loadFolioIndex(folios.map((folio) => ({ ark: input.ark, folio })))
-    return { ...content, ark: input.ark, ...annotateTextSlice(content.text, input.ark, index) }
+    const index = await loadOcrIndex(
+      ctx.corpusProjectId,
+      folios.map((folio) => ({ ark: input.ark, folio })),
+      ctx.signal,
+    )
+    return {
+      ...content,
+      ark: input.ark,
+      // The cluster's entry content carries no ARK: the pairing is the model's
+      // (plan D12). Said so explicitly rather than implied.
+      entryArkVerified: false,
+      ...annotateTextSlice(content.text, input.ark, index),
+    }
   },
 })
 

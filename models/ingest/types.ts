@@ -3,16 +3,97 @@
 // No `import "server-only"` — the schema is shared by client-side form
 // validation and server-side request parsing.
 import { z } from "zod"
-import type {
-  ClusterProgressEvent,
-  ClusterQueueProgress,
-} from "@/lib/cluster/contracts"
-import type {
-  IngestJob,
-  IngestStage,
-  IngestStatus,
-  PaidOcrEstimate,
+import {
+  CLUSTER_TERMINAL_STAGE,
+  INGEST_STAGE,
+  type IngestJob,
+  type IngestStage,
+  type IngestStatus,
+  type PaidOcrEstimate,
 } from "./schema"
+
+// ---------------------------------------------------------------------------
+// Worker → app wire contracts. These Zod schemas are the SINGLE source of the
+// types: lib/cluster/contracts.ts re-exports the inferred types for the
+// cluster client and the UI, and no hand-kept copy exists.
+// ---------------------------------------------------------------------------
+
+const clusterQueueStageSchema = z.object({
+  done: z.number().int().nonnegative(),
+  running: z.number().int().nonnegative(),
+  queued: z.number().int().nonnegative(),
+  failed: z.number().int().nonnegative(),
+})
+
+/**
+ * Live queue-status read-model returned by the worker's `GET /progress/:runId`
+ * (worker-v2 `buildProgress`). Polled by the Ingérer page to render the staged
+ * pipeline as it drains — the BnF fetch bucket is the headline bottleneck. A
+ * LIVE-UX payload only; NOT the commit signal (that is the terminal
+ * ClusterProgressEvent below). Mirror of the worker's ProgressReport.
+ */
+export const clusterQueueProgressSchema = z.object({
+  /** Per-doc status counts (the headline reconciliation), keyed by worker DocStatus. */
+  docs: z.record(z.string(), z.number().int().nonnegative()),
+  docsTotal: z.number().int().nonnegative(),
+  /** Docs fully registered into the index. */
+  docsFinished: z.number().int().nonnegative(),
+  /** Per-stage bucket counts, keyed by worker stage name (fetch, metadata, …). */
+  stages: z.record(z.string(), clusterQueueStageSchema),
+  /** Run-scoped BnF-fetch folio tally — `expected` grows as metadata resolves more docs. */
+  folios: z.object({
+    expected: z.number().int().nonnegative(),
+    done: z.number().int().nonnegative(),
+    failed: z.number().int().nonnegative(),
+  }),
+  /** Folios from OTHER concurrent runs still pending in the shared BnF-fetch
+   *  queue (the work "ahead of you"). Optional: older workers don't send it. */
+  foliosAhead: z.number().int().nonnegative().optional(),
+  /** The binding BnF fetch rate (folios/min) the ETA assumes. */
+  fetchRatePerMin: z.number().nonnegative(),
+  /** The IIIF manifest rate (manifests/min) — the metadata lane's binding cap. */
+  manifestRatePerMin: z.number().nonnegative(),
+  /** Estimated seconds remaining, or null when not computable. */
+  etaSeconds: z.number().nonnegative().nullable(),
+  /** True iff the doc totals reconcile (a UI guard against under-reporting). */
+  reconciles: z.boolean(),
+})
+export type ClusterQueueStage = z.infer<typeof clusterQueueStageSchema>
+export type ClusterQueueProgress = z.infer<typeof clusterQueueProgressSchema>
+
+/**
+ * POST /api/internal/ingest/[job_id]/progress body (found bug B2, feedback
+ * 2026-09-29 Track B), validated AFTER the HMAC check. `stats` /
+ * `partialStats` stay loose records because the V1 and V2 worker shapes
+ * differ; IngestService reads `stats.errors[]` through its own tolerant parser
+ * (parseErrorEntries).
+ */
+export const clusterProgressEventSchema = z.discriminatedUnion("stage", [
+  z.object({
+    stage: z.enum([
+      INGEST_STAGE.EXTRACT,
+      INGEST_STAGE.CHUNK,
+      INGEST_STAGE.EMBED,
+      INGEST_STAGE.INDEX,
+    ]),
+    fraction: z.number().min(0).max(1),
+    counters: z.record(z.string(), z.number()),
+  }),
+  z.object({
+    stage: z.literal(CLUSTER_TERMINAL_STAGE.DONE),
+    chunksWritten: z.number().int().nonnegative(),
+    stats: z.record(z.string(), z.unknown()),
+  }),
+  z.object({
+    stage: z.literal(CLUSTER_TERMINAL_STAGE.FAILED),
+    error: z.string(),
+    partialStats: z.record(z.string(), z.unknown()).optional(),
+  }),
+])
+export type ClusterProgressEvent = z.infer<typeof clusterProgressEventSchema>
+
+/** POST /api/internal/ingest/[job_id]/progress — the event was applied. */
+export type ProgressCallbackAck = { accepted: true }
 
 /**
  * Client-safe shape of an IngestJob — the only ingest-job type that may cross
@@ -177,36 +258,3 @@ export type IngestResults = {
   chunksWritten: number
   stats: Record<string, unknown>
 }
-
-// ---------------------------------------------------------------------------
-// Cluster progress callback body (found bug B2, feedback 2026-09-29 Track B)
-// ---------------------------------------------------------------------------
-
-/**
- * POST /api/internal/ingest/[job_id]/progress body, validated AFTER the HMAC
- * check. Mirrors `ClusterProgressEvent` (lib/cluster/contracts.ts) — the
- * `satisfies` binds the two, so a contract change that this schema does not
- * follow is a type error. `stats` / `partialStats` stay loose records because
- * the V1 and V2 worker shapes differ; IngestService reads `stats.errors[]`
- * through its own tolerant parser (parseErrorEntries).
- */
-export const clusterProgressEventSchema = z.discriminatedUnion("stage", [
-  z.object({
-    stage: z.enum(["extract", "chunk", "embed", "index"]),
-    fraction: z.number().min(0).max(1),
-    counters: z.record(z.string(), z.number()),
-  }),
-  z.object({
-    stage: z.literal("done"),
-    chunksWritten: z.number().int().nonnegative(),
-    stats: z.record(z.string(), z.unknown()),
-  }),
-  z.object({
-    stage: z.literal("failed"),
-    error: z.string(),
-    partialStats: z.record(z.string(), z.unknown()).optional(),
-  }),
-]) satisfies z.ZodType<ClusterProgressEvent>
-
-/** POST /api/internal/ingest/[job_id]/progress — the event was applied. */
-export type ProgressCallbackAck = { accepted: true }

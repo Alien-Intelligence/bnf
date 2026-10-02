@@ -19,7 +19,8 @@ import { resolveCorpusProject } from "@/app/api/_corpus-source"
 import { ok, notFound } from "@/lib/api-response"
 import { DocumentPolicy } from "@/models/documents/policy"
 import { DocumentQueries } from "@/models/documents/queries"
-import { toDocumentOcrView, type DocumentOcrView } from "@/models/documents/schema"
+import { toDocumentOcrView } from "@/lib/ocr/quality"
+import type { DocumentOcrView } from "@/models/documents/schema"
 import { documentOcrQuerySchema } from "@/models/documents/types"
 import { ProjectQueries } from "@/models/projects/queries"
 
@@ -40,6 +41,6 @@ export const GET = withAuth(async (req, _user, bouncer, ctx: RouteCtx) => {
   const doc = await DocumentQueries.getByArk(corpusId, parsed.ark)
   if (!doc) return notFound("Document introuvable dans ce corpus")
 
-  const row = await DocumentQueries.ocrForArk(parsed.ark)
+  const row = await DocumentQueries.ocrForArk(corpusId, parsed.ark)
   return ok<DocumentOcrView>(toDocumentOcrView(parsed.ark, row))
 })

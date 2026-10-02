@@ -6,15 +6,14 @@ import "server-only"
 import { prisma } from "@/lib/db"
 import {
   type Document,
-  OCR_SYNC_STATUS,
   documentFolioRow,
+  documentOcrStatusRow,
   documentOcrWithFolios,
   type DocumentFolioRow,
+  type DocumentOcrStatusRow,
   type DocumentOcrWithFolios,
+  type FolioRef,
 } from "./schema"
-
-/** One cited (or retrieved) folio — the input of DocumentQueries.ocrForRefs. */
-export type FolioRef = { ark: string; folio: number }
 
 export class DocumentQueries {
   /**
@@ -52,106 +51,142 @@ export class DocumentQueries {
 
   // -------------------------------------------------------------------------
   // OCR quality (DocumentOcr / DocumentFolio — global per ARK, plan D8).
-  // These read the global tables WITHOUT a corpus filter: every caller gates on
-  // the reader's corpus first (Citation rows, isIndexedInCorpus, or the
-  // project's own RAG dataset).
+  // Every user-facing read takes the reader's CORPUS project (resolved through
+  // lib/authz/corpus-source.ts) and only ever returns rows for ARKs that are
+  // Documents of that corpus: no caller can turn the global table into an
+  // oracle for another project's corpus, even one that forgot its own gate.
   // -------------------------------------------------------------------------
 
+  /** The subset of `arks` that are Documents of the corpus. */
+  private static async arksInCorpus(corpusProjectId: string, arks: string[]): Promise<string[]> {
+    if (arks.length === 0) return []
+    const rows = await prisma.document.findMany({
+      where: { projectId: corpusProjectId, ark: { in: [...new Set(arks)] } },
+      select: { ark: true },
+    })
+    return rows.map((r) => r.ark)
+  }
+
   /**
-   * The stored quality of the given (ark, folio) pairs — one PK-scoped query.
-   * Pairs with no stored folio are simply absent from the result (pending).
+   * The stored quality of the given (ark, folio) pairs plus the sync status of
+   * their documents — the rows an OcrIndex is built from (lib/ocr/quality.ts).
+   * PK-scoped. A pair with no stored folio is absent; an ARK with no status
+   * row is pending; an ARK outside the corpus contributes nothing.
    */
-  static async ocrForRefs(refs: FolioRef[]): Promise<DocumentFolioRow[]> {
-    if (refs.length === 0) return []
+  static async ocrIndexRows(
+    corpusProjectId: string,
+    refs: FolioRef[],
+  ): Promise<{ folios: DocumentFolioRow[]; documents: DocumentOcrStatusRow[] }> {
+    const allowed = new Set(
+      await DocumentQueries.arksInCorpus(corpusProjectId, refs.map((r) => r.ark)),
+    )
     const byArk = new Map<string, Set<number>>()
     for (const r of refs) {
+      if (!allowed.has(r.ark)) continue
       const folios = byArk.get(r.ark) ?? new Set<number>()
       folios.add(r.folio)
       byArk.set(r.ark, folios)
     }
-    return prisma.documentFolio.findMany({
-      where: {
-        OR: [...byArk].map(([ark, folios]) => ({ ark, folio: { in: [...folios] } })),
-      },
-      ...documentFolioRow,
-    })
+    if (byArk.size === 0) return { folios: [], documents: [] }
+    const [folios, documents] = await Promise.all([
+      prisma.documentFolio.findMany({
+        where: {
+          OR: [...byArk].map(([ark, folios]) => ({ ark, folio: { in: [...folios] } })),
+        },
+        ...documentFolioRow,
+      }),
+      prisma.documentOcr.findMany({
+        where: { ark: { in: [...byArk.keys()] } },
+        ...documentOcrStatusRow,
+      }),
+    ])
+    return { folios, documents }
   }
 
-  /** A document's OCR summary with every stored folio, or null (pending). */
-  static async ocrForArk(ark: string): Promise<DocumentOcrWithFolios | null> {
+  /**
+   * A corpus document's OCR summary with every stored folio; null when the
+   * document has no row yet (pending) or is not a Document of the corpus.
+   * Callers that must tell those apart (a 404) check getByArk first.
+   */
+  static async ocrForArk(
+    corpusProjectId: string,
+    ark: string,
+  ): Promise<DocumentOcrWithFolios | null> {
+    const [allowed] = await DocumentQueries.arksInCorpus(corpusProjectId, [ark])
+    if (allowed === undefined) return null
     return prisma.documentOcr.findUnique({ where: { ark }, ...documentOcrWithFolios })
   }
 
-  /** The OCR summaries of several ARKs with their folios (rag_keyword_search hits). */
-  static async ocrForArks(arks: string[]): Promise<DocumentOcrWithFolios[]> {
-    if (arks.length === 0) return []
+  /** The OCR summaries (with folios) of the given corpus documents; absent = pending. */
+  static async ocrForArks(
+    corpusProjectId: string,
+    arks: string[],
+  ): Promise<DocumentOcrWithFolios[]> {
+    const allowed = await DocumentQueries.arksInCorpus(corpusProjectId, arks)
+    if (allowed.length === 0) return []
     return prisma.documentOcr.findMany({
-      where: { ark: { in: arks } },
+      where: { ark: { in: allowed } },
       ...documentOcrWithFolios,
     })
   }
 
   /**
-   * Indexed ARKs (in any project) whose OCR quality the sync must (re)ask the
-   * worker about:
-   *   - no DocumentOcr row yet (pending) — first;
-   *   - `building` rows checked before `buildingCutoff`;
-   *   - `unavailable` rows checked before `unavailableCutoff`.
-   * Cited ARKs come before uncited ones so the trust-critical documents (the
-   * ones a note already quotes) converge first, then the oldest check.
+   * The ARKs the OCR-quality sweep must ask the worker about — a SYSTEM read
+   * (lib/documents/ocr-sync.ts), never exposed to a user. Every indexed ARK
+   * (any project) that has no DocumentOcr row, or whose row is due
+   * (`next_check_at <= now`: building / unavailable / backing off, or a
+   * re-ingest's resync request). Never-asked and resync-requested ARKs come
+   * first, then cited ones (the trust-critical documents a note already
+   * quotes), then the longest-due.
    *
    * The one raw query of the model: Prisma cannot anti-join `document` (keyed
    * per project) to `document_ocr` (keyed per ARK), which share no relation.
    * The tagged template parameterizes every interpolation.
    */
-  static async pendingOcrArks(opts: {
-    limit: number
-    buildingCutoff: Date
-    unavailableCutoff: Date
-  }): Promise<string[]> {
+  static async pendingOcrArks(opts: { limit: number; now: Date }): Promise<string[]> {
     const rows = await prisma.$queryRaw<Array<{ ark: string }>>`
       SELECT d.ark
       FROM (SELECT DISTINCT ark FROM document WHERE indexed_at IS NOT NULL) d
       LEFT JOIN document_ocr o ON o.ark = d.ark
-      WHERE o.ark IS NULL
-         OR (o.status = ${OCR_SYNC_STATUS.BUILDING} AND o.checked_at < ${opts.buildingCutoff})
-         OR (o.status = ${OCR_SYNC_STATUS.UNAVAILABLE} AND o.checked_at < ${opts.unavailableCutoff})
-      ORDER BY (o.ark IS NULL) DESC,
+      WHERE o.ark IS NULL OR o.next_check_at <= ${opts.now}
+      ORDER BY (o.ark IS NULL OR o.resync_requested_at IS NOT NULL) DESC,
                EXISTS (SELECT 1 FROM citation c WHERE c.ark = d.ark) DESC,
-               o.checked_at ASC NULLS FIRST,
+               o.next_check_at ASC NULLS FIRST,
                d.ark
       LIMIT ${opts.limit}
     `
     return rows.map((r) => r.ark)
   }
 
-  /**
-   * How many ARKs pendingOcrArks would offer with the same cutoffs (no limit) —
-   * the `pending-left` of the sync cycle's progress log line.
-   */
-  static async countPendingOcrArks(opts: {
-    buildingCutoff: Date
-    unavailableCutoff: Date
-  }): Promise<number> {
-    const [row] = await prisma.$queryRaw<Array<{ n: bigint }>>`
+  /** How many ARKs pendingOcrArks would offer (no limit) — the cycle log's `pending-left`. */
+  static async countPendingOcrArks(opts: { now: Date }): Promise<number> {
+    const rows = await prisma.$queryRaw<Array<{ n: bigint }>>`
       SELECT count(*) AS n
       FROM (SELECT DISTINCT ark FROM document WHERE indexed_at IS NOT NULL) d
       LEFT JOIN document_ocr o ON o.ark = d.ark
-      WHERE o.ark IS NULL
-         OR (o.status = ${OCR_SYNC_STATUS.BUILDING} AND o.checked_at < ${opts.buildingCutoff})
-         OR (o.status = ${OCR_SYNC_STATUS.UNAVAILABLE} AND o.checked_at < ${opts.unavailableCutoff})
+      WHERE o.ark IS NULL OR o.next_check_at <= ${opts.now}
     `
+    const [row] = rows
     if (row === undefined) throw new Error("countPendingOcrArks: COUNT returned no row")
     return Number(row.n)
   }
 
+  /** The sync bookkeeping of some ARKs (the drainer's contract-failure accounting). */
+  static async ocrSyncAttempts(arks: string[]): Promise<Array<{ ark: string; syncAttempts: number }>> {
+    if (arks.length === 0) return []
+    return prisma.documentOcr.findMany({
+      where: { ark: { in: arks } },
+      select: { ark: true, syncAttempts: true },
+    })
+  }
+
   /**
    * Whether `ark` is an INDEXED document of the corpus owned by
-   * `corpusProjectId` — the D8 gate before rag_get_text reads an ARK's OCR
-   * quality (only indexed documents have retrievable text). The documents/ocr
-   * route and doc_get gate on the Document row itself (getByArk). Callers
-   * resolve `corpusProjectId` through lib/authz/corpus-source.ts, never
-   * ctx.projectId.
+   * `corpusProjectId` — the gate before rag_get_text reads an ARK's text and
+   * OCR quality (only indexed documents have retrievable text). The
+   * documents/ocr route and doc_get gate on the Document row itself
+   * (getByArk). Callers resolve `corpusProjectId` through
+   * lib/authz/corpus-source.ts, never ctx.projectId.
    */
   static async isIndexedInCorpus(corpusProjectId: string, ark: string): Promise<boolean> {
     const row = await prisma.document.findFirst({

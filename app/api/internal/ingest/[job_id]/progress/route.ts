@@ -40,7 +40,6 @@ import {
   type ProgressCallbackAck,
 } from "@/models/ingest/types"
 import { verifyCallback } from "@/lib/cluster/callback-auth"
-import { kickOcrSync } from "@/lib/documents/ocr-sync"
 
 export async function POST(
   req: Request,
@@ -83,11 +82,8 @@ export async function POST(
   const event = clusterProgressEventSchema.safeParse(raw)
   if (!event.success) return badRequest("invalid event", event.error.issues)
 
+  // A `done` event commits the version AND (inside IngestService) requests a
+  // fresh OCR-quality pull for the run's documents.
   await IngestService.applyProgress(job, event.data)
-  // The run's artifacts were written at each lane's convergence point, before
-  // this terminal event: pull their OCR quality now (forced — a re-ingest may
-  // have re-OCR'd). ARKs that failed have no artifact and come back
-  // `unavailable`, which is harmless. Runs after the response (after()).
-  if (event.data.stage === "done") kickOcrSync(job.addedArks)
   return ok<ProgressCallbackAck>({ accepted: true })
 }

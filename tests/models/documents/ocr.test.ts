@@ -1,13 +1,13 @@
 // tests/models/documents/ocr.test.ts
 // The pure halves of the OCR-quality feature (feedback 2026-09-29 #7, Track B):
 //
-//   - toFolioOcrView / isLowOcr — the ONE "low OCR" decision (strict < the
-//     threshold, unscored folios never low — plan D3/D10);
+//   - lib/ocr/quality.ts — the ONE "low OCR" decision (strict < the
+//     threshold, unscored folios never low — plan D3/D10), the views, and the
+//     four per-folio states that keep "not synced" apart from "not low";
 //   - workerOcrQualitySyncResponseSchema — the worker↔app wire contract (D2
 //     invariants enforced in Zod, never trusted);
-//   - planOcrSyncWrites — what DocumentService.recordOcrSync writes per ARK;
-//   - toDocumentOcrView — "no row" reads as pending, never as "not low";
-//   - lib/citations/ocr — the per-note low-citation selection (image embeds
+//   - planOcrSyncWrites / rejectionOutcome — what DocumentService writes;
+//   - lib/citations/ocr — the per-note citation classification (image embeds
 //     excluded, D11) and the folio headings of a rag_get_text slice (D12).
 //
 // No Prisma, same precedent as tests/models/ingest/service.test.ts.
@@ -16,24 +16,31 @@ import "server-only"
 import { test } from "node:test"
 import assert from "node:assert/strict"
 
-import { OCR_LOW_QUALITY_THRESHOLD } from "@/lib/constants"
 import {
+  OCR_LOW_QUALITY_THRESHOLD,
+  OCR_SYNC_BATCH_SIZE,
+  OCR_SYNC_MAX_ATTEMPTS,
+  OCR_SYNC_REJECT_BACKOFF_BASE_MS,
+  OCR_SYNC_REJECT_BACKOFF_MAX_MS,
+} from "@/lib/constants"
+import { citationOcrSummary, foliosInSlice } from "@/lib/citations/ocr"
+import { workerOcrQualitySyncResponseSchema } from "@/lib/cluster/ocr-quality"
+import {
+  buildOcrIndex,
   folioOcrKey,
-  foliosInSlice,
-  indexFolioOcr,
-  lowOcrCitations,
-} from "@/lib/citations/ocr"
+  folioOcrState,
+  isLowOcr,
+  ocrPercent,
+  toDocumentOcrView,
+  toFolioOcrView,
+} from "@/lib/ocr/quality"
 import {
   OCR_SOURCE,
   OCR_STATUS_PENDING,
   OCR_SYNC_STATUS,
-  isLowOcr,
-  toDocumentOcrView,
-  toFolioOcrView,
   type DocumentFolioRow,
 } from "@/models/documents/schema"
-import { planOcrSyncWrites } from "@/models/documents/service"
-import { workerOcrQualitySyncResponseSchema } from "@/models/documents/types"
+import { planOcrSyncWrites, rejectionOutcome } from "@/models/documents/service"
 
 const ARK = "ark:/12148/bpt6k841545p"
 const ARK_VISION = "ark:/12148/btv1b100524476"
@@ -58,12 +65,18 @@ test("the threshold is 0.8 (Leo, 2026-09-30)", () => {
   assert.equal(OCR_LOW_QUALITY_THRESHOLD, 0.8)
 })
 
-test("toFolioOcrView: 0.7999 is low", () => {
-  assert.equal(toFolioOcrView(folioRow({ ocrQuality: 0.7999 })).low, true)
+test("toFolioOcrView: just below the threshold is low", () => {
+  assert.equal(toFolioOcrView(folioRow({ ocrQuality: OCR_LOW_QUALITY_THRESHOLD - 0.0001 })).low, true)
 })
 
-test("toFolioOcrView: 0.8 is NOT low (strict <)", () => {
-  assert.equal(toFolioOcrView(folioRow({ ocrQuality: 0.8 })).low, false)
+test("toFolioOcrView: the threshold itself is NOT low (strict <)", () => {
+  assert.equal(toFolioOcrView(folioRow({ ocrQuality: OCR_LOW_QUALITY_THRESHOLD })).low, false)
+})
+
+test("ocrPercent: whole percentage, rounded", () => {
+  assert.equal(ocrPercent(0.661), 66)
+  assert.equal(ocrPercent(0.7821), 78)
+  assert.equal(ocrPercent(OCR_LOW_QUALITY_THRESHOLD), 80)
 })
 
 test("toFolioOcrView: an ALTO folio without a score is not low", () => {
@@ -295,40 +308,69 @@ test("toDocumentOcrView: an unknown stored status is a corrupt row and throws", 
 })
 
 // ---------------------------------------------------------------------------
-// lib/citations/ocr
+// The per-folio states and lib/citations/ocr
 // ---------------------------------------------------------------------------
 
-const GOLDEN_INDEX = indexFolioOcr([
-  toFolioOcrView(folioRow({ ark: ARK_GOLDEN, folio: 1, ocrQuality: 0.932, wordCount: 5106 })),
-  toFolioOcrView(folioRow({ ark: ARK_GOLDEN, folio: 2, ocrQuality: 0.661, wordCount: 4016 })),
-  toFolioOcrView(folioRow({ ark: ARK_VISION, folio: 1, ocrSource: OCR_SOURCE.VISION, ocrQuality: null, wordCount: null })),
-])
+const GOLDEN_INDEX = buildOcrIndex(
+  [
+    folioRow({ ark: ARK_GOLDEN, folio: 1, ocrQuality: 0.932, wordCount: 5106 }),
+    folioRow({ ark: ARK_GOLDEN, folio: 2, ocrQuality: 0.661, wordCount: 4016 }),
+    folioRow({ ark: ARK_VISION, folio: 1, ocrSource: OCR_SOURCE.VISION, ocrQuality: null, wordCount: null }),
+  ],
+  [
+    { ark: ARK_GOLDEN, status: OCR_SYNC_STATUS.AVAILABLE },
+    { ark: ARK_VISION, status: OCR_SYNC_STATUS.AVAILABLE },
+    { ark: ARK, status: OCR_SYNC_STATUS.BUILDING },
+  ],
+)
 
-test("indexFolioOcr: keyed by (ark, folio)", () => {
-  assert.equal(GOLDEN_INDEX.get(folioOcrKey(ARK_GOLDEN, 2))?.ocrQuality, 0.661)
-  assert.equal(GOLDEN_INDEX.get(folioOcrKey(ARK_GOLDEN, 3)), undefined)
+test("buildOcrIndex: folios keyed by (ark, folio)", () => {
+  assert.equal(GOLDEN_INDEX.folios.get(folioOcrKey(ARK_GOLDEN, 2))?.ocrQuality, 0.661)
+  assert.equal(GOLDEN_INDEX.folios.get(folioOcrKey(ARK_GOLDEN, 3)), undefined)
 })
 
-test("lowOcrCitations: f2 (0.661) is low, f1 (0.932) is not", () => {
+test("buildOcrIndex: an unknown stored status is a corrupt row and throws", () => {
+  assert.throws(() => buildOcrIndex([], [{ ark: ARK, status: "done" }]), /done/)
+})
+
+test("folioOcrState: the four states are never collapsed", () => {
+  assert.deepEqual(folioOcrState(GOLDEN_INDEX, ARK_GOLDEN, null), { kind: "no_folio" })
+  assert.equal(folioOcrState(GOLDEN_INDEX, ARK_GOLDEN, 2).kind, "recorded")
+  assert.deepEqual(folioOcrState(GOLDEN_INDEX, ARK_GOLDEN, 9), { kind: "not_recorded" })
+  assert.deepEqual(folioOcrState(GOLDEN_INDEX, ARK, 1), {
+    kind: "not_synced",
+    status: OCR_SYNC_STATUS.BUILDING,
+  })
+  assert.deepEqual(folioOcrState(GOLDEN_INDEX, "ark:/12148/bpt6k000001", 1), {
+    kind: "not_synced",
+    status: OCR_STATUS_PENDING,
+  })
+})
+
+test("citationOcrSummary: f2 (0.661) is low, f1 (0.932) is neither low nor unknown", () => {
   const body = `Voir [[${ARK_GOLDEN}|L'Auto-vélo|1]] et [[${ARK_GOLDEN}|L'Auto-vélo|f2]].`
-  const low = lowOcrCitations(body, GOLDEN_INDEX)
-  assert.deepEqual(
-    low.map((c) => [c.ark, c.folio]),
-    [[ARK_GOLDEN, 2]],
-  )
+  const { low, unknown } = citationOcrSummary(body, GOLDEN_INDEX)
+  assert.deepEqual(low.map((c) => [c.ark, c.folio]), [[ARK_GOLDEN, 2]])
+  assert.deepEqual(unknown, [])
 })
 
-test("lowOcrCitations: a note citing only f1 has none", () => {
-  assert.deepEqual(lowOcrCitations(`[[${ARK_GOLDEN}|L'Auto-vélo|1]]`, GOLDEN_INDEX), [])
+test("citationOcrSummary: an image embed of a low folio never counts (D11)", () => {
+  // The same low folio as a text citation IS reported; as an embed it is not.
+  assert.equal(citationOcrSummary(`[[${ARK_GOLDEN}|Une|2]]`, GOLDEN_INDEX).low.length, 1)
+  assert.deepEqual(citationOcrSummary(`![[${ARK_GOLDEN}|Une|2]]`, GOLDEN_INDEX), {
+    low: [],
+    unknown: [],
+  })
 })
 
-test("lowOcrCitations: image embeds never count (D11)", () => {
-  assert.deepEqual(lowOcrCitations(`![[${ARK_GOLDEN}|Une|2]]`, GOLDEN_INDEX), [])
-})
-
-test("lowOcrCitations: vision and unsynced folios are not low", () => {
-  const body = `[[${ARK_VISION}|Estampe|1]] [[${ARK}|Inconnu|9]]`
-  assert.deepEqual(lowOcrCitations(body, GOLDEN_INDEX), [])
+test("citationOcrSummary: not-synced and not-recorded folios are UNKNOWN, never 'not low'", () => {
+  const body = `[[${ARK}|Inconnu|9]] [[${ARK_GOLDEN}|Absent|7]] [[${ARK_VISION}|Estampe|1]]`
+  const { low, unknown } = citationOcrSummary(body, GOLDEN_INDEX)
+  assert.deepEqual(low, [])
+  assert.deepEqual(unknown.map((c) => [c.ark, c.folio]), [
+    [ARK, 9],
+    [ARK_GOLDEN, 7],
+  ])
 })
 
 test("foliosInSlice: the headings inside the slice, in order", () => {
@@ -352,4 +394,47 @@ test("foliosInSlice: is stable across calls (the shared /g regex is never .exec'
 
 test("foliosInSlice: a heading-like line inside a paragraph is not a heading", () => {
   assert.deepEqual(foliosInSlice("texte ## Folio 3 suite"), { folios: [], leadingFolioKnown: false })
+})
+
+// ---------------------------------------------------------------------------
+// rejectionOutcome — the poison-ARK backoff and quarantine
+// ---------------------------------------------------------------------------
+
+test("rejectionOutcome: exponential backoff from the base, capped", () => {
+  const now = new Date("2026-10-02T09:00:00Z")
+  const first = rejectionOutcome(0, now)
+  assert.deepEqual(first, {
+    attempts: 1,
+    quarantined: false,
+    nextCheckAt: new Date(now.getTime() + OCR_SYNC_REJECT_BACKOFF_BASE_MS),
+  })
+  const second = rejectionOutcome(1, now)
+  assert.deepEqual(second.nextCheckAt, new Date(now.getTime() + 2 * OCR_SYNC_REJECT_BACKOFF_BASE_MS))
+  for (let prior = 0; prior < OCR_SYNC_MAX_ATTEMPTS - 1; prior += 1) {
+    const out = rejectionOutcome(prior, now)
+    assert.ok(out.nextCheckAt !== null)
+    assert.ok(out.nextCheckAt.getTime() - now.getTime() <= OCR_SYNC_REJECT_BACKOFF_MAX_MS)
+  }
+})
+
+test("rejectionOutcome: quarantined at OCR_SYNC_MAX_ATTEMPTS, no next check", () => {
+  const now = new Date("2026-10-02T09:00:00Z")
+  assert.deepEqual(rejectionOutcome(OCR_SYNC_MAX_ATTEMPTS - 1, now), {
+    attempts: OCR_SYNC_MAX_ATTEMPTS,
+    quarantined: true,
+    nextCheckAt: null,
+  })
+})
+
+test("rejectionOutcome: a corrupt attempt count throws", () => {
+  assert.throws(() => rejectionOutcome(-1, new Date()))
+  assert.throws(() => rejectionOutcome(1.5, new Date()))
+})
+
+test("schema: rejects more ARKs than one batch", () => {
+  const building = Array.from({ length: OCR_SYNC_BATCH_SIZE + 1 }, (_, i) => `ark:/12148/bpt6k${String(i).padStart(6, "0")}`)
+  assert.equal(
+    workerOcrQualitySyncResponseSchema.safeParse({ documents: [], building, unavailable: [] }).success,
+    false,
+  )
 })

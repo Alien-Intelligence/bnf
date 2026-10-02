@@ -46,7 +46,9 @@ import {
 import { usePromoteNotice, useRemoveFromCorpus, useRetryResolve } from "@/hooks/api/corpus"
 import { useDocumentOcr } from "@/hooks/api/documents"
 import { Skeleton } from "@/components/ui/skeleton"
-import { ocrPercent } from "@/lib/citations/ocr"
+import { CardSharedLoadError } from "@/components/cards/shared/load-error"
+import { ocrPercent } from "@/lib/ocr/quality"
+import { OCR_STATUS_PENDING, OCR_SYNC_STATUS, type DocumentOcrView } from "@/models/documents/schema"
 import {
   DOC_TYPE,
   DOCUMENT_CANONICAL_STATUS,
@@ -75,50 +77,65 @@ function Field({ label, value }: { label: string; value: string }) {
   )
 }
 
-// The OCR field: the text-layer label plus, once the document is ingested and
-// synced, its "Taux OCR" (feedback 2026-09-29 #7) — with its own loading and
-// error states, so a failed lookup never reads as "no rate".
+// The OCR field: the text-layer label plus the document's OCR quality status
+// (feedback 2026-09-29 #7) — its "Taux OCR" once synced, or why it is not
+// there (waiting for the sync, being computed, unavailable, sync suspended, or
+// no rate published) — with its own loading and error states, so a failed
+// lookup never reads as "no rate".
 function FieldOcr({
   label,
   value,
-  ocrRate,
+  ocr,
   isLoading,
   isError,
   onRetry,
 }: {
   label: string
   value: string
-  ocrRate: number | null | undefined
+  ocr: DocumentOcrView | undefined
   isLoading: boolean
   isError: boolean
   onRetry: () => void
 }) {
-  const t = useTranslations("citations.ocr")
-  const tCommon = useTranslations("common")
   return (
     <div className="flex flex-col gap-1">
       <span className="mono-eyebrow">{label}</span>
       <span className="text-[12.5px] text-foreground">{value}</span>
-      {isLoading ? (
-        <Skeleton className="h-3.5 w-28" />
-      ) : isError ? (
-        <span className="flex items-center gap-2 text-[11px] text-muted-foreground">
-          {t("loadError")}
-          <button
-            type="button"
-            onClick={onRetry}
-            className="text-brand-teal underline underline-offset-2 hover:text-brand-teal/80"
-          >
-            {tCommon("tryAgain")}
-          </button>
-        </span>
-      ) : ocrRate !== null && ocrRate !== undefined ? (
-        <span className="text-[11px] text-muted-foreground">
-          {t("docRate", { rate: ocrPercent(ocrRate) })}
-        </span>
-      ) : null}
+      <FieldOcrQuality ocr={ocr} isLoading={isLoading} isError={isError} onRetry={onRetry} />
     </div>
   )
+}
+
+function FieldOcrQuality({
+  ocr,
+  isLoading,
+  isError,
+  onRetry,
+}: {
+  ocr: DocumentOcrView | undefined
+  isLoading: boolean
+  isError: boolean
+  onRetry: () => void
+}) {
+  const t = useTranslations("corpus.documents.detail.ocrQuality")
+  if (isLoading) return <Skeleton className="h-3.5 w-28" />
+  if (isError || ocr === undefined) {
+    return <CardSharedLoadError layout="inline" message={t("loadError")} onRetry={onRetry} />
+  }
+  return <span className="text-[11px] text-muted-foreground">{ocrStatusLine(ocr, t)}</span>
+}
+
+/** The document's OCR status in one line, distinct for every state. */
+function ocrStatusLine(
+  ocr: DocumentOcrView,
+  t: (key: string, values?: Record<string, string | number>) => string,
+): string {
+  if (ocr.status === OCR_STATUS_PENDING) return t("pending")
+  if (ocr.status === OCR_SYNC_STATUS.BUILDING) return t("building")
+  if (ocr.status === OCR_SYNC_STATUS.UNAVAILABLE) return t("unavailable")
+  if (ocr.status === OCR_SYNC_STATUS.QUARANTINED) return t("quarantined")
+  if (ocr.ocrRate === null) return t("noRate")
+  return t("docRate", { rate: ocrPercent(ocr.ocrRate) })
 }
 
 // One "Consulter sur la BnF" deep-link card.
@@ -359,7 +376,7 @@ export function SheetDocumentDetail({ doc, projectId, open, onOpenChange }: Prop
                 <FieldOcr
                   label={t("detail.fields.ocr")}
                   value={ocrLabel}
-                  ocrRate={ocrQuery.data?.ocrRate}
+                  ocr={ocrQuery.data}
                   isLoading={ocrQuery.isLoading}
                   isError={ocrQuery.isError}
                   onRetry={() => void ocrQuery.refetch()}

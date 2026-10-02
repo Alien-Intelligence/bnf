@@ -5,44 +5,33 @@
 import "server-only"
 
 import { prisma } from "@/lib/db"
+import type { Prisma } from "@/lib/generated/prisma/client"
 import {
   DOCUMENT_RESOLVE_STATUS,
   OCR_SYNC_STATUS,
   type DocumentUpsertData,
-  type OcrSource,
+  type OcrSyncWritePlan,
 } from "./schema"
-import type { WorkerOcrQualitySyncResponse } from "./types"
+import {
+  OCR_SYNC_BUILDING_RECHECK_MS,
+  OCR_SYNC_MAX_ATTEMPTS,
+  OCR_SYNC_REJECT_BACKOFF_BASE_MS,
+  OCR_SYNC_REJECT_BACKOFF_MAX_MS,
+  OCR_SYNC_UNAVAILABLE_RECHECK_MS,
+} from "@/lib/constants"
+import {
+  OcrSyncContractError,
+  type WorkerOcrQualitySyncResponse,
+} from "@/lib/cluster/ocr-quality"
 import { ClusterRunner } from "@/lib/cluster/runner"
 import { iiifManifestUrl, sourceFromArk } from "@/lib/mcp/vocab"
-
-/**
- * What one worker sync answer writes, per ARK (DocumentService.recordOcrSync):
- *   available   → replace the ARK's folios and mark it available;
- *   building    → status only (folios left as they are);
- *   unavailable → status + reason only (folios left as they are).
- * `checkedAt` is the time of the answer, stamped on every row.
- */
-export type OcrSyncWritePlan = {
-  checkedAt: Date
-  available: Array<{
-    ark: string
-    ocrRate: number | null
-    folios: Array<{
-      folio: number
-      ocrSource: OcrSource
-      ocrQuality: number | null
-      wordCount: number | null
-    }>
-  }>
-  building: string[]
-  unavailable: Array<{ ark: string; reason: string }>
-}
 
 /**
  * The worker must answer each asked ARK exactly once (the schema already
  * guarantees "at most once"). An ARK left unanswered would stay pending and be
  * re-asked every sweep; an ARK nobody asked for is a contract break. Both
- * throw — nothing of that answer is written. Pure, exported for the tests.
+ * throw OcrSyncContractError — nothing of that answer is written. Pure,
+ * exported for the tests.
  */
 export function assertSyncCoverage(
   asked: string[],
@@ -57,7 +46,7 @@ export function assertSyncCoverage(
   const missing = [...askedSet].filter((a) => !answered.has(a))
   const extra = [...answered].filter((a) => !askedSet.has(a))
   if (missing.length > 0 || extra.length > 0) {
-    throw new Error(
+    throw new OcrSyncContractError(
       `ocr-quality sync answer does not match the request: missing=[${missing.join(", ")}] unexpected=[${extra.join(", ")}]`,
     )
   }
@@ -86,6 +75,33 @@ export function planOcrSyncWrites(
     building: [...response.building],
     unavailable: response.unavailable.map((u) => ({ ark: u.ark, reason: u.reason })),
   }
+}
+
+/**
+ * Pure: what a contract failure of one ARK's sync does to its bookkeeping.
+ * `priorAttempts` consecutive failures before this one. At
+ * OCR_SYNC_MAX_ATTEMPTS the ARK is quarantined (no automatic recheck);
+ * before that it backs off exponentially from the sweep interval, capped.
+ */
+export function rejectionOutcome(
+  priorAttempts: number,
+  now: Date,
+): { attempts: number; quarantined: boolean; nextCheckAt: Date | null } {
+  if (!Number.isInteger(priorAttempts) || priorAttempts < 0) {
+    throw new Error(`rejectionOutcome: priorAttempts must be a non-negative integer, got ${priorAttempts}`)
+  }
+  const attempts = priorAttempts + 1
+  if (attempts >= OCR_SYNC_MAX_ATTEMPTS) return { attempts, quarantined: true, nextCheckAt: null }
+  const delay = Math.min(
+    OCR_SYNC_REJECT_BACKOFF_BASE_MS * 2 ** (attempts - 1),
+    OCR_SYNC_REJECT_BACKOFF_MAX_MS,
+  )
+  return { attempts, quarantined: false, nextCheckAt: new Date(now.getTime() + delay) }
+}
+
+/** The reason stored for an ARK whose sync broke the worker contract. */
+export function syncRejectedReason(message: string): string {
+  return `sync_rejected: ${message}`
 }
 
 
@@ -195,9 +211,10 @@ export class DocumentService {
   /**
    * One sync batch: ask the worker about `arks` (≤ OCR_SYNC_BATCH_SIZE), check
    * the answer covers exactly them, and persist it. Returns the plan that was
-   * written so the drainer can tally it. Any failure — transport, non-2xx,
-   * invalid body, coverage, DB — throws to the caller; the rows stay as they
-   * were and the next sweep re-asks.
+   * written so the drainer can tally it. Throws OcrSyncUnavailableError (worker
+   * not reachable — nothing is written, nothing is penalised) or
+   * OcrSyncContractError (the answer breaks the contract — the drainer
+   * isolates and penalises the ARK at fault); a DB failure throws as is.
    */
   static async syncOcrBatch(arks: string[]): Promise<OcrSyncWritePlan> {
     const response = await ClusterRunner.ocrQualitySync(arks)
@@ -208,56 +225,158 @@ export class DocumentService {
   }
 
   /**
-   * Persist one OCR-quality sync answer (lib/documents/ocr-sync.ts).
-   *
-   * Transactional PER ARK and idempotent: an available ARK's summary upsert,
-   * folio delete and folio insert commit together, so a reader never sees a
-   * half-replaced document; a replayed answer rewrites the same rows and a
-   * re-OCR'd document's folios are replaced wholesale. Building / unavailable
-   * entries only re-status the summary row — the folios a previous artifact
-   * stored stay valid until a new artifact replaces them.
+   * Persist one valid sync answer. Transactional PER ARK and idempotent: an
+   * available ARK's summary upsert, folio delete and folio insert commit
+   * together, so a reader never sees a half-replaced document; a replayed
+   * answer rewrites the same rows and a re-OCR'd document's folios are
+   * replaced wholesale. Building / unavailable answers only re-status the
+   * summary row — the folios a previous artifact stored stay valid until a
+   * new artifact replaces them. Every valid answer resets the contract-failure
+   * count; only an `available` answer satisfies a pending resync request (one
+   * made AFTER the question stays due).
    */
   static async recordOcrSync(plan: OcrSyncWritePlan): Promise<void> {
     const { checkedAt } = plan
     for (const doc of plan.available) {
+      const summary = {
+        status: OCR_SYNC_STATUS.AVAILABLE,
+        ocrRate: doc.ocrRate,
+        reason: null,
+        checkedAt,
+        syncedAt: checkedAt,
+        nextCheckAt: null,
+        syncAttempts: 0,
+      }
       await prisma.$transaction([
         prisma.documentOcr.upsert({
           where: { ark: doc.ark },
-          create: {
-            ark: doc.ark,
-            status: OCR_SYNC_STATUS.AVAILABLE,
-            ocrRate: doc.ocrRate,
-            reason: null,
-            checkedAt,
-            syncedAt: checkedAt,
-          },
-          update: {
-            status: OCR_SYNC_STATUS.AVAILABLE,
-            ocrRate: doc.ocrRate,
-            reason: null,
-            checkedAt,
-            syncedAt: checkedAt,
-          },
+          create: { ark: doc.ark, ...summary },
+          update: summary,
         }),
         prisma.documentFolio.deleteMany({ where: { ark: doc.ark } }),
         prisma.documentFolio.createMany({
           data: doc.folios.map((f) => ({ ark: doc.ark, ...f })),
         }),
+        // A resync requested before this question is now satisfied…
+        prisma.documentOcr.updateMany({
+          where: { ark: doc.ark, resyncRequestedAt: { lte: checkedAt } },
+          data: { resyncRequestedAt: null },
+        }),
+        // …one requested while it was in flight keeps the row due.
+        prisma.documentOcr.updateMany({
+          where: { ark: doc.ark, resyncRequestedAt: { gt: checkedAt } },
+          data: { nextCheckAt: checkedAt },
+        }),
       ])
     }
+    const buildingNext = new Date(checkedAt.getTime() + OCR_SYNC_BUILDING_RECHECK_MS)
     for (const ark of plan.building) {
+      const summary = {
+        status: OCR_SYNC_STATUS.BUILDING,
+        reason: null,
+        checkedAt,
+        nextCheckAt: buildingNext,
+        syncAttempts: 0,
+      }
       await prisma.documentOcr.upsert({
         where: { ark },
-        create: { ark, status: OCR_SYNC_STATUS.BUILDING, reason: null, checkedAt },
-        update: { status: OCR_SYNC_STATUS.BUILDING, reason: null, checkedAt },
+        create: { ark, ...summary },
+        update: summary,
       })
     }
+    const unavailableNext = new Date(checkedAt.getTime() + OCR_SYNC_UNAVAILABLE_RECHECK_MS)
     for (const { ark, reason } of plan.unavailable) {
+      const summary = {
+        status: OCR_SYNC_STATUS.UNAVAILABLE,
+        reason,
+        checkedAt,
+        nextCheckAt: unavailableNext,
+        syncAttempts: 0,
+      }
       await prisma.documentOcr.upsert({
         where: { ark },
-        create: { ark, status: OCR_SYNC_STATUS.UNAVAILABLE, reason, checkedAt },
-        update: { status: OCR_SYNC_STATUS.UNAVAILABLE, reason, checkedAt },
+        create: { ark, ...summary },
+        update: summary,
       })
     }
+  }
+
+  /**
+   * Record that the worker's answer for this ONE ARK broke the contract (the
+   * drainer isolated it by splitting the batch). The ARK backs off and, after
+   * OCR_SYNC_MAX_ATTEMPTS consecutive failures, is quarantined — no automatic
+   * recheck until a re-ingest requests a resync. A row that is `available`
+   * keeps its status and folios (they are still valid) and only backs off; a
+   * never-synced ARK becomes `unavailable` with the reason. Read-modify-write
+   * in one transaction.
+   */
+  static async recordOcrRejection(ark: string, message: string, now: Date): Promise<void> {
+    await prisma.$transaction(async (tx) => {
+      const row = await tx.documentOcr.findUnique({
+        where: { ark },
+        select: { status: true, syncAttempts: true },
+      })
+      const prior = row === null ? 0 : row.syncAttempts
+      const outcome = rejectionOutcome(prior, now)
+      const reason = syncRejectedReason(message)
+      if (outcome.quarantined) {
+        await tx.documentOcr.upsert({
+          where: { ark },
+          create: {
+            ark,
+            status: OCR_SYNC_STATUS.QUARANTINED,
+            reason,
+            checkedAt: now,
+            nextCheckAt: null,
+            syncAttempts: outcome.attempts,
+          },
+          update: {
+            status: OCR_SYNC_STATUS.QUARANTINED,
+            reason,
+            checkedAt: now,
+            nextCheckAt: null,
+            resyncRequestedAt: null,
+            syncAttempts: outcome.attempts,
+          },
+        })
+        return
+      }
+      if (row === null) {
+        await tx.documentOcr.create({
+          data: {
+            ark,
+            status: OCR_SYNC_STATUS.UNAVAILABLE,
+            reason,
+            checkedAt: now,
+            nextCheckAt: outcome.nextCheckAt,
+            syncAttempts: outcome.attempts,
+          },
+        })
+        return
+      }
+      await tx.documentOcr.update({
+        where: { ark },
+        data: {
+          ...(row.status === OCR_SYNC_STATUS.AVAILABLE ? {} : { reason }),
+          checkedAt: now,
+          nextCheckAt: outcome.nextCheckAt,
+          syncAttempts: outcome.attempts,
+        },
+      })
+    })
+  }
+
+  /**
+   * The write a re-ingest commit adds to its own transaction
+   * (IngestService.commit / commitPartialFailure): every committed ARK that
+   * already has a DocumentOcr row is due again NOW and gets a fresh attempt
+   * budget, because the re-run may have re-OCR'd it. Persisted, so a restart
+   * or a worker outage loses nothing; ARKs without a row are pending anyway.
+   */
+  static ocrResyncOp(arks: string[], now: Date): Prisma.PrismaPromise<Prisma.BatchPayload> {
+    return prisma.documentOcr.updateMany({
+      where: { ark: { in: arks } },
+      data: { resyncRequestedAt: now, nextCheckAt: now, syncAttempts: 0 },
+    })
   }
 }

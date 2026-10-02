@@ -8,15 +8,22 @@ import "server-only"
 //   WORKER_RUNNER_TIMEOUT_MS   — per-request timeout in ms (default 30000 when
 //                                unset; a set but invalid value throws).
 //
+// Every worker call — request AND response body — is bounded by
+// WORKER_RUNNER_TIMEOUT_MS: the body is read before the deadline is cleared.
 // On any non-2xx response or transport error, throws an Error with enough
-// context for IngestService.submit to mark the parent job failed.
+// context for IngestService.submit to mark the parent job failed; the
+// OCR-quality sync throws the typed OcrSyncUnavailableError /
+// OcrSyncContractError (lib/cluster/ocr-quality.ts) the drainer acts on.
 import { z } from "zod"
 
+import { clusterQueueProgressSchema } from "@/models/ingest/types"
+import type { ClusterIngestRequest, ClusterQueueProgress } from "./contracts"
 import {
+  OcrSyncContractError,
+  OcrSyncUnavailableError,
   workerOcrQualitySyncResponseSchema,
   type WorkerOcrQualitySyncResponse,
-} from "@/models/documents/types"
-import type { ClusterIngestRequest, ClusterQueueProgress } from "./contracts"
+} from "./ocr-quality"
 
 const DEFAULT_TIMEOUT_MS = 30_000
 
@@ -51,32 +58,68 @@ function timeoutMs(): number {
   return parseWorkerTimeoutMs(process.env.WORKER_RUNNER_TIMEOUT_MS)
 }
 
-async function postJson(path: string, body: unknown): Promise<Response> {
+/** A worker answer with its body already read (within the deadline). */
+type WorkerResponse = { ok: boolean; status: number; statusText: string; text: string }
+
+/** Transport failure or timeout reaching the worker (no HTTP answer at all). */
+class WorkerTransportError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options)
+    this.name = "WorkerTransportError"
+  }
+}
+
+/**
+ * One request to the worker, headers AND body bounded by one deadline: the
+ * timer is cleared only after the body has been read, so a worker that sends
+ * headers and then stalls cannot hang the caller.
+ */
+async function requestWorker(path: string, init: RequestInit): Promise<WorkerResponse> {
   const base = workerUrl()
+  const ms = timeoutMs()
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs())
+  const timer = setTimeout(() => controller.abort(), ms)
   try {
-    return await fetch(`${base}${path}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    })
+    const res = await fetch(`${base}${path}`, { ...init, signal: controller.signal })
+    const text = await res.text()
+    return { ok: res.ok, status: res.status, statusText: res.statusText, text }
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") {
-      throw new Error(
-        `ClusterClient: request to ${base}${path} timed out after ${timeoutMs()}ms`,
-      )
+      throw new WorkerTransportError(`ClusterClient: ${base}${path} timed out after ${ms}ms`, {
+        cause: err,
+      })
     }
-    throw new Error(
+    throw new WorkerTransportError(
       `ClusterClient: request to ${base}${path} failed: ${
         err instanceof Error ? err.message : String(err)
       }`,
+      { cause: err },
     )
   } finally {
     clearTimeout(timer)
   }
 }
+
+function postJson(path: string, body: unknown): Promise<WorkerResponse> {
+  return requestWorker(path, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  })
+}
+
+/** Parse a worker body as JSON, or say exactly why it is not. */
+function parseJsonBody(label: string, text: string): unknown {
+  try {
+    return JSON.parse(text)
+  } catch (err) {
+    throw new Error(
+      `${label}: worker response is not JSON: ${err instanceof Error ? err.message : String(err)}`,
+    )
+  }
+}
+
+const submitResponseSchema = z.object({ clusterJobId: z.string().min(1) })
 
 export class ClusterClient {
   static async submit(
@@ -84,77 +127,97 @@ export class ClusterClient {
   ): Promise<{ clusterJobId: string }> {
     const res = await postJson("/ingest", req)
     if (!res.ok) {
-      const text = await res.text().catch(() => "")
       throw new Error(
-        `ClusterClient.submit: worker returned ${res.status} ${res.statusText}: ${text}`,
+        `ClusterClient.submit: worker returned ${res.status} ${res.statusText}: ${res.text}`,
       )
     }
-    const json = (await res.json().catch(() => null)) as
-      | { clusterJobId?: unknown }
-      | null
-    if (!json || typeof json.clusterJobId !== "string") {
-      throw new Error(
-        "ClusterClient.submit: worker response missing clusterJobId",
-      )
+    const parsed = submitResponseSchema.safeParse(parseJsonBody("ClusterClient.submit", res.text))
+    if (!parsed.success) {
+      throw new Error(`ClusterClient.submit: invalid worker response: ${z.prettifyError(parsed.error)}`)
     }
-    return { clusterJobId: json.clusterJobId }
+    return parsed.data
   }
 
   /**
-   * Fetch the worker's live queue-status read-model for a run. Best-effort: this
-   * drives the Ingérer live view, NOT the version commit (that rides the terminal
-   * callback). A 404 (run unknown / already pruned) or any transport error
-   * resolves to null so the page degrades to the reassurance banner rather than
-   * erroring — the commit path is unaffected.
+   * Fetch the worker's live queue-status read-model for a run. Best-effort: it
+   * drives the Ingérer live view and the watchdog's staleness clock, NOT the
+   * version commit (that rides the terminal callback). A 404 (run unknown or
+   * already pruned) is null. An unreachable worker or a non-2xx is ALSO null —
+   * the watchdog reads null as "the worker is silent" — but it is logged, never
+   * swallowed. A body that is not a valid read-model is a contract break and
+   * throws.
    */
   static async progress(
     clusterJobId: string,
   ): Promise<ClusterQueueProgress | null> {
-    const base = workerUrl()
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), timeoutMs())
+    const path = `/progress/${encodeURIComponent(clusterJobId)}`
+    let res: WorkerResponse
     try {
-      const res = await fetch(
-        `${base}/progress/${encodeURIComponent(clusterJobId)}`,
-        { signal: controller.signal },
-      )
-      if (!res.ok) return null
-      return (await res.json()) as ClusterQueueProgress
-    } catch {
+      res = await requestWorker(path, { method: "GET" })
+    } catch (err) {
+      if (!(err instanceof WorkerTransportError)) throw err
+      console.warn(`[cluster] progress ${clusterJobId}: worker unreachable —`, err.message)
       return null
-    } finally {
-      clearTimeout(timer)
     }
+    if (res.status === 404) return null
+    if (!res.ok) {
+      console.warn(
+        `[cluster] progress ${clusterJobId}: worker returned ${res.status} ${res.statusText}: ${res.text}`,
+      )
+      return null
+    }
+    const parsed = clusterQueueProgressSchema.safeParse(
+      parseJsonBody("ClusterClient.progress", res.text),
+    )
+    if (!parsed.success) {
+      throw new Error(
+        `ClusterClient.progress: invalid worker read-model: ${z.prettifyError(parsed.error)}`,
+      )
+    }
+    return parsed.data
   }
 
   /**
    * POST /ocr-quality/sync — the per-ARK OCR-quality artifacts for `arks`
    * (lib/documents/ocr-sync.ts, plan D7). The worker returns the artifacts it
-   * has and queues a rate-gated build for the others. A non-2xx throws with the
-   * body; a body that is not a valid sync response throws with the Zod issues —
-   * a contract break is never written to the app DB.
+   * has and queues a rate-gated build for the others.
+   *   - no answer, a timeout, a 5xx, or a 404 (a worker older than the
+   *     endpoint) → OcrSyncUnavailableError: retry later, nobody at fault;
+   *   - any other non-2xx (a 400 refusing an ARK), a non-JSON body or one that
+   *     is not a valid sync response → OcrSyncContractError, with the body or
+   *     the Zod issues. A contract break is never written to the app DB.
    */
   static async ocrQualitySync(arks: string[]): Promise<WorkerOcrQualitySyncResponse> {
-    const res = await postJson("/ocr-quality/sync", { arks })
-    const text = await res.text()
+    let res: WorkerResponse
+    try {
+      res = await postJson("/ocr-quality/sync", { arks })
+    } catch (err) {
+      if (err instanceof WorkerTransportError) {
+        throw new OcrSyncUnavailableError(err.message, { cause: err })
+      }
+      throw err
+    }
+    if (res.status >= 500 || res.status === 404) {
+      throw new OcrSyncUnavailableError(
+        `ClusterClient.ocrQualitySync: worker returned ${res.status} ${res.statusText}: ${res.text}`,
+      )
+    }
     if (!res.ok) {
-      throw new Error(
-        `ClusterClient.ocrQualitySync: worker returned ${res.status} ${res.statusText}: ${text}`,
+      throw new OcrSyncContractError(
+        `ClusterClient.ocrQualitySync: worker refused the batch (${res.status} ${res.statusText}): ${res.text}`,
       )
     }
     let json: unknown
     try {
-      json = JSON.parse(text)
+      json = parseJsonBody("ClusterClient.ocrQualitySync", res.text)
     } catch (err) {
-      throw new Error(
-        `ClusterClient.ocrQualitySync: worker response is not JSON: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      )
+      throw new OcrSyncContractError(err instanceof Error ? err.message : String(err), {
+        cause: err,
+      })
     }
     const parsed = workerOcrQualitySyncResponseSchema.safeParse(json)
     if (!parsed.success) {
-      throw new Error(
+      throw new OcrSyncContractError(
         `ClusterClient.ocrQualitySync: invalid worker response: ${z.prettifyError(parsed.error)}`,
       )
     }
@@ -162,15 +225,11 @@ export class ClusterClient {
   }
 
   static async cancel(clusterJobId: string): Promise<void> {
-    const res = await postJson(
-      `/ingest/${encodeURIComponent(clusterJobId)}/cancel`,
-      {},
-    )
+    const res = await postJson(`/ingest/${encodeURIComponent(clusterJobId)}/cancel`, {})
     if (!res.ok && res.status !== 404) {
       // 404 is acceptable: the job may have already terminated or never existed.
-      const text = await res.text().catch(() => "")
       throw new Error(
-        `ClusterClient.cancel: worker returned ${res.status} ${res.statusText}: ${text}`,
+        `ClusterClient.cancel: worker returned ${res.status} ${res.statusText}: ${res.text}`,
       )
     }
   }

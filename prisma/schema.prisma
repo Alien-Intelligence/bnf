@@ -333,27 +333,39 @@ model Document {
 // DocumentOcr — OCR quality of a BnF document, keyed by ARK ALONE (not per
 // project): it is a property of the BnF content, which the worker caches and
 // shares across projects (worker-v2/src/domain/keys.ts). Mirrors the worker's
-// ocr-quality/<slug>.json artifact; written only by DocumentService.recordOcrSync
-// (lib/documents/ocr-sync.ts drives it). Every user-facing read is gated on the
-// reader's corpus (Citation rows, Document existence or the project's own RAG
-// dataset), so this global table is never an oracle for another project's corpus.
-// status: available | building | unavailable (OCR_SYNC_STATUS). No row = pending.
+// ocr-quality/<slug>.json artifact; written only by DocumentService (driven by
+// lib/documents/ocr-sync.ts and IngestService's commit). Every read takes the
+// reader's corpus project (DocumentQueries), so this global table is never an
+// oracle for another project's corpus.
+// status: available | building | unavailable | quarantined (OCR_SYNC_STATUS).
+// No row = pending. The sync bookkeeping (next check, resync request, attempts,
+// last error) is persisted so a restart loses nothing and a poison ARK backs
+// off and is quarantined instead of starving the sweep.
 // -----------------------------------------------------------------------------
 model DocumentOcr {
-  ark       String    @id
-  status    String
+  ark               String    @id
+  status            String
   // "Taux OCR" / 100 from the IIIF manifest; null when BnF publishes none.
-  ocrRate   Float?    @map("ocr_rate")
-  // Why the worker could not build the artifact (status=unavailable only).
-  reason    String?
-  // Last time the worker was asked about this ARK (drives the recheck cadence).
-  checkedAt DateTime  @map("checked_at")
+  ocrRate           Float?    @map("ocr_rate")
+  // Why the quality is not available (status unavailable / quarantined).
+  reason            String?
+  // Last time the worker was asked about this ARK.
+  checkedAt         DateTime  @map("checked_at")
   // Last time the folios below were replaced from an artifact (status=available).
-  syncedAt  DateTime? @map("synced_at")
-  folios    DocumentFolio[]
+  syncedAt          DateTime? @map("synced_at")
+  // When the sweep asks again; null = not before a resync request
+  // (available, quarantined).
+  nextCheckAt       DateTime? @map("next_check_at")
+  // Set by a re-ingest commit: re-pull even though the row is available (the
+  // document may have been re-OCR'd). Cleared by the next successful answer.
+  resyncRequestedAt DateTime? @map("resync_requested_at")
+  // Consecutive contract failures of this ARK's sync; quarantined at
+  // OCR_SYNC_MAX_ATTEMPTS. Reset by any valid answer and by a resync request.
+  syncAttempts      Int       @default(0) @map("sync_attempts")
+  folios            DocumentFolio[]
 
-  // Sweep lookup: building/unavailable rows due for a recheck.
-  @@index([status, checkedAt])
+  // Sweep lookup: rows due for a recheck.
+  @@index([nextCheckAt])
   @@map("document_ocr")
 }
 
@@ -362,7 +374,7 @@ model DocumentOcr {
 // ALTO word confidence (WC) in [0,1]; null when unscored (a mistral/vision page,
 // or an ALTO page without WC). wordCount is the ALTO word count, null for
 // non-ALTO sources. "Low" is NOT stored: it is ocrQuality <
-// OCR_LOW_QUALITY_THRESHOLD, decided at read time (isLowOcr).
+// OCR_LOW_QUALITY_THRESHOLD, decided at read time (lib/ocr/quality.ts isLowOcr).
 // -----------------------------------------------------------------------------
 model DocumentFolio {
   ark        String

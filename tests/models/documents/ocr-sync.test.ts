@@ -1,61 +1,20 @@
 // tests/models/documents/ocr-sync.test.ts
-// The pure planning behind the OCR-quality sync (feedback 2026-09-29 #7,
-// Track B, Phase 4): how the drainer batches forced ARKs, when a sweep cycle
-// stops, and the check that the worker answered exactly what was asked.
-// Pure, no Prisma and no worker — the I/O shell is exercised manually and by
-// ocr-record.test.ts against the dev database.
+// The pure planning behind the OCR-quality sync drainer (feedback 2026-09-29
+// #7, Track B): when a sweep cycle stops, how a contract-breaking batch is
+// split to isolate the ARK at fault, and the coverage check that turns an
+// incomplete worker answer into a typed contract error. The I/O shell is
+// exercised by ocr-record.test.ts against the dev database and manually.
 import "server-only"
 
 import { test } from "node:test"
 import assert from "node:assert/strict"
 
-import {
-  OCR_SYNC_BATCH_SIZE,
-  OCR_SYNC_BUILDING_RECHECK_MS,
-  OCR_SYNC_MAX_BATCHES_PER_CYCLE,
-  OCR_SYNC_UNAVAILABLE_RECHECK_MS,
-} from "@/lib/constants"
-import {
-  chunk,
-  planForcedBatches,
-  recheckCutoffs,
-  shouldContinueCycle,
-} from "@/lib/documents/ocr-sync"
+import { OCR_SYNC_BATCH_SIZE, OCR_SYNC_MAX_BATCHES_PER_CYCLE } from "@/lib/constants"
+import { OcrSyncContractError } from "@/lib/cluster/ocr-quality"
+import { remainingMs, shouldContinueCycle, splitBatch } from "@/lib/documents/ocr-sync"
 import { assertSyncCoverage } from "@/models/documents/service"
 
 const ark = (i: number) => `ark:/12148/bpt6k${String(i).padStart(6, "0")}`
-
-test("chunk: splits into OCR_SYNC_BATCH_SIZE batches, last one partial", () => {
-  const arks = Array.from({ length: OCR_SYNC_BATCH_SIZE * 2 + 5 }, (_, i) => ark(i))
-  const batches = chunk(arks, OCR_SYNC_BATCH_SIZE)
-  assert.deepEqual(
-    batches.map((b) => b.length),
-    [OCR_SYNC_BATCH_SIZE, OCR_SYNC_BATCH_SIZE, 5],
-  )
-  assert.deepEqual(batches.flat(), arks)
-})
-
-test("chunk: empty input → no batch", () => {
-  assert.deepEqual(chunk([], OCR_SYNC_BATCH_SIZE), [])
-})
-
-test("chunk: a non-positive size is a programming error", () => {
-  assert.throws(() => chunk([ark(1)], 0))
-})
-
-test("planForcedBatches: forced kick ARKs are batched as given, deduped — no pending filter", () => {
-  // A re-ingest kick re-pulls ARKs that are already `available`: the plan is
-  // built from the kick's ARKs alone, never from the pending query.
-  assert.deepEqual(planForcedBatches([ark(1), ark(2), ark(1)]), [[ark(1), ark(2)]])
-})
-
-test("planForcedBatches: more than one batch", () => {
-  const arks = Array.from({ length: OCR_SYNC_BATCH_SIZE + 1 }, (_, i) => ark(i))
-  assert.deepEqual(
-    planForcedBatches(arks).map((b) => b.length),
-    [OCR_SYNC_BATCH_SIZE, 1],
-  )
-})
 
 test("shouldContinueCycle: a full batch continues", () => {
   assert.equal(shouldContinueCycle({ batchesDone: 1, lastBatchSize: OCR_SYNC_BATCH_SIZE }), true)
@@ -68,27 +27,39 @@ test("shouldContinueCycle: a partial batch means the pending set is exhausted", 
 
 test("shouldContinueCycle: stops after OCR_SYNC_MAX_BATCHES_PER_CYCLE full batches", () => {
   assert.equal(
-    shouldContinueCycle({
-      batchesDone: OCR_SYNC_MAX_BATCHES_PER_CYCLE - 1,
-      lastBatchSize: OCR_SYNC_BATCH_SIZE,
-    }),
+    shouldContinueCycle({ batchesDone: OCR_SYNC_MAX_BATCHES_PER_CYCLE - 1, lastBatchSize: OCR_SYNC_BATCH_SIZE }),
     true,
   )
   assert.equal(
-    shouldContinueCycle({
-      batchesDone: OCR_SYNC_MAX_BATCHES_PER_CYCLE,
-      lastBatchSize: OCR_SYNC_BATCH_SIZE,
-    }),
+    shouldContinueCycle({ batchesDone: OCR_SYNC_MAX_BATCHES_PER_CYCLE, lastBatchSize: OCR_SYNC_BATCH_SIZE }),
     false,
   )
 })
 
-test("recheckCutoffs: building and unavailable windows", () => {
-  const now = new Date("2026-10-02T12:00:00Z")
-  assert.deepEqual(recheckCutoffs(now), {
-    buildingCutoff: new Date(now.getTime() - OCR_SYNC_BUILDING_RECHECK_MS),
-    unavailableCutoff: new Date(now.getTime() - OCR_SYNC_UNAVAILABLE_RECHECK_MS),
-  })
+test("splitBatch: two halves that cover the batch exactly", () => {
+  const arks = [ark(1), ark(2), ark(3), ark(4), ark(5)]
+  const [a, b] = splitBatch(arks)
+  assert.deepEqual(a, [ark(1), ark(2), ark(3)])
+  assert.deepEqual(b, [ark(4), ark(5)])
+})
+
+test("splitBatch: repeated halving isolates one ARK in log2(n) steps", () => {
+  let batch = Array.from({ length: OCR_SYNC_BATCH_SIZE }, (_, i) => ark(i))
+  let steps = 0
+  while (batch.length > 1) {
+    batch = splitBatch(batch)[1]
+    steps += 1
+  }
+  assert.ok(steps <= Math.ceil(Math.log2(OCR_SYNC_BATCH_SIZE)))
+})
+
+test("splitBatch: a single ARK cannot be split (it is the culprit)", () => {
+  assert.throws(() => splitBatch([ark(1)]))
+})
+
+test("remainingMs: never negative", () => {
+  assert.equal(remainingMs(1_000, 400), 600)
+  assert.equal(remainingMs(1_000, 5_000), 0)
 })
 
 test("assertSyncCoverage: exactly the asked ARKs → ok", () => {
@@ -103,16 +74,16 @@ test("assertSyncCoverage: exactly the asked ARKs → ok", () => {
   )
 })
 
-test("assertSyncCoverage: a missing ARK throws (it would stay pending forever)", () => {
+test("assertSyncCoverage: a missing ARK is a contract error (it would stay pending forever)", () => {
   assert.throws(
     () => assertSyncCoverage([ark(1), ark(2)], { documents: [], building: [ark(1)], unavailable: [] }),
-    /bpt6k000002/,
+    (err: unknown) => err instanceof OcrSyncContractError && /bpt6k000002/.test(err.message),
   )
 })
 
-test("assertSyncCoverage: an ARK nobody asked for throws", () => {
+test("assertSyncCoverage: an ARK nobody asked for is a contract error", () => {
   assert.throws(
     () => assertSyncCoverage([ark(1)], { documents: [], building: [ark(1), ark(9)], unavailable: [] }),
-    /bpt6k000009/,
+    (err: unknown) => err instanceof OcrSyncContractError && /bpt6k000009/.test(err.message),
   )
 })

@@ -24,11 +24,20 @@ import {
   unescapeCitationText,
 } from "@/lib/citations/syntax"
 import { gallicaItemUrl, iiifImageUrl } from "@/lib/citations/external"
-import { folioOcrKey, indexFolioOcr, lowOcrCitations } from "@/lib/citations/ocr"
-import { toFolioOcrView, type DocumentFolioRow, type FolioOcrView } from "@/models/documents/schema"
+import { citationOcrSummary } from "@/lib/citations/ocr"
+import { buildOcrIndex, folioOcrState, type OcrIndex } from "@/lib/ocr/quality"
+import type { DocumentFolioRow, DocumentOcrStatusRow } from "@/models/documents/schema"
 
-/** A note as the exports need it: its body and the stored quality of its cited folios. */
-type ExportableNote = { title: string; body_md: string | null; folioOcr: DocumentFolioRow[] }
+/**
+ * A note as the exports need it: its body, the stored quality of its cited
+ * folios and the sync status of the documents it cites (NoteDetail).
+ */
+type ExportableNote = {
+  title: string
+  body_md: string | null
+  folioOcr: DocumentFolioRow[]
+  documentOcr: DocumentOcrStatusRow[]
+}
 
 /** The translated low-OCR strings, in the UI's current locale (`citations.ocr`). */
 export type ExportCopy = {
@@ -55,7 +64,7 @@ function escapeLinkText(label: string): string {
  */
 function toPortableMarkdown(
   body: string,
-  index: Map<string, FolioOcrView>,
+  index: OcrIndex,
   copy: ExportCopy,
 ): string {
   return body
@@ -68,7 +77,10 @@ function toPortableMarkdown(
       const f = Number(folio)
       const caption = escapeLinkText(unescapeCitationText(label))
       const link = `[${caption}](${gallicaItemUrl(ark, f)})`
-      return index.get(folioOcrKey(ark, f))?.low === true ? `${link} ${copy.lowMarker}` : link
+      // Only a MEASURED low folio is marked; a folio whose quality is not
+      // available is not claimed either way (plan D3).
+      const state = folioOcrState(index, ark, f)
+      return state.kind === "recorded" && state.view.low ? `${link} ${copy.lowMarker}` : link
     })
     .replace(NOTELINK_REGEX, (_m, _id: string, label: string) => {
       return `**${escapeLinkText(unescapeCitationText(label))}**`
@@ -81,9 +93,9 @@ function toPortableMarkdown(
  */
 function noteSection(note: ExportableNote, heading: string, copy: ExportCopy): string {
   const body = note.body_md ?? ""
-  const index = indexFolioOcr(note.folioOcr.map(toFolioOcrView))
+  const index = buildOcrIndex(note.folioOcr, note.documentOcr)
   const disclaimer =
-    lowOcrCitations(body, index).length > 0 ? `> ${copy.disclaimer}\n\n` : ""
+    citationOcrSummary(body, index).low.length > 0 ? `> ${copy.disclaimer}\n\n` : ""
   return `${heading} ${note.title}\n\n${disclaimer}${toPortableMarkdown(body, index, copy)}\n`
 }
 

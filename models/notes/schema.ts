@@ -6,6 +6,7 @@ import type {
   NoteVersion,
   Citation,
   DocumentFolio,
+  DocumentOcr,
 } from "@/lib/generated/prisma/client"
 
 export type { Note, NoteVersion, Citation }
@@ -13,31 +14,27 @@ export type { Note, NoteVersion, Citation }
 export type NoteWithCitations = Note & { citations: Citation[] }
 export type NoteListItem = Pick<Note, "id" | "title" | "updatedAt" | "citationCount" | "pinned" | "createdAt">
 
-/** DELETE /api/notes/:nid */
-export type NoteDeleted = { deleted: true }
-
 /** Lightweight row returned by GET /api/notes/:nid/versions */
 export type NoteVersionListItem = Pick<NoteVersion, "id" | "seq" | "createdAt">
 
 /**
- * The stored OCR quality of one folio a note cites (feedback 2026-09-29 #7).
- * Typed from the Prisma client rather than imported from the documents model
- * (playbook/models.md: no sideways model imports); it is the same shape as
- * models/documents/schema.ts DocumentFolioRow, which renderers turn into a
- * FolioOcrView.
+ * A note as every note view reads it (feedback 2026-09-29 #7): its citations,
+ * the stored OCR quality of each cited folio, and the sync status of each
+ * cited document — so a view can tell "low", "not low" and "not available yet"
+ * apart. Built by NoteService.detail from the Citation rows only (the
+ * corpus-validated ARKs) and read on the note's corpus (plan D8).
+ *
+ * `folioOcr` is the Prisma `DocumentFolio` row — every scalar column of the
+ * table, the same shape as models/documents/schema.ts `DocumentFolioRow` —
+ * typed from the client because schema.ts imports no other model.
  */
-export type NoteFolioOcr = Pick<
-  DocumentFolio,
-  "ark" | "folio" | "ocrSource" | "ocrQuality" | "wordCount"
->
+export type NoteDetail = NoteWithCitations & {
+  folioOcr: DocumentFolio[]
+  documentOcr: Array<Pick<DocumentOcr, "ark" | "status">>
+}
 
-/**
- * A note as every note view reads it: its citations plus the stored OCR
- * quality of each cited (ark, folio). Loaded only through those Citation rows,
- * which hold the corpus-validated ARKs alone — so the per-ARK quality table is
- * never read for an ARK outside the note's corpus (plan D8).
- */
-export type NoteDetail = NoteWithCitations & { folioOcr: NoteFolioOcr[] }
+/** DELETE /api/notes/:nid */
+export type NoteDeleted = { deleted: true }
 
 /** One note citing an ARK — GET /api/projects/:id/citations?ark= (NoteQueries.citationsForArk). */
 export type CitationUsage = {
@@ -45,22 +42,4 @@ export type CitationUsage = {
   folio: number | null
   label: string | null
   noteTitle: string
-}
-
-/**
- * The cited (ark, folio) pairs of some Citation rows, grouped by ARK with
- * deduped folios in first-seen order. A row without a folio cites no page and
- * is skipped. The input of the folio-quality lookup in NoteQueries.
- */
-export function citationRefs(
-  citations: Array<Pick<Citation, "ark" | "folio">>,
-): Array<{ ark: string; folios: number[] }> {
-  const byArk = new Map<string, number[]>()
-  for (const c of citations) {
-    if (c.folio === null) continue
-    const folios = byArk.get(c.ark) ?? []
-    if (!folios.includes(c.folio)) folios.push(c.folio)
-    byArk.set(c.ark, folios)
-  }
-  return [...byArk].map(([ark, folios]) => ({ ark, folios }))
 }

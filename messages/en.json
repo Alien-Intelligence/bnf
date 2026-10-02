@@ -520,6 +520,15 @@
           "ingestSansTexte": "No text · not ingested",
           "ingestNonNumerise": "Not ingested",
           "unknown": "—"
+        },
+        "ocrQuality": {
+          "docRate": "Document OCR rate: {rate} %",
+          "noRate": "No OCR rate published by the BnF",
+          "pending": "OCR quality: waiting for synchronisation",
+          "building": "OCR quality: being computed",
+          "unavailable": "OCR quality not available",
+          "quarantined": "OCR quality not available (synchronisation suspended)",
+          "loadError": "Could not load the OCR quality."
         }
       },
       "indexation": {
@@ -795,7 +804,9 @@
       "empty": "No notes in this notebook.",
       "loadError": "Could not load this note.",
       "exportBlocked": "Some notes could not be loaded: reload them before exporting.",
-      "retryLoad": "Reload the notes"
+      "retryLoad": "Reload the notes",
+      "loadListError": "Could not load the list of notes.",
+      "exportPartial": "Every note must be loaded before exporting."
     },
     "revoked": {
       "title": "Corpus access revoked",
@@ -830,7 +841,9 @@
       "lowFolio": "Low quality — check the quotation against the source",
       "unavailable": "OCR quality not available",
       "docRate": "Document OCR rate: {rate} %",
-      "loadError": "Could not load the OCR quality."
+      "loadError": "Could not load the OCR quality.",
+      "pillUnavailable": "OCR quality not available for this folio",
+      "folioNotRecorded": "No OCR quality recorded for this folio"
     }
   },
   "ingest": {

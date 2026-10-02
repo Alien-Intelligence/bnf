@@ -11,6 +11,7 @@
  * list (see playbook/mcp-client.md).
  */
 import { OCR_LOW_QUALITY_THRESHOLD } from "@/lib/constants"
+import { ocrPercent } from "@/lib/ocr/quality"
 
 export const AGENT_TOOLS = {
   // --- Corpus tools -----------------------------------------------------------
@@ -89,17 +90,45 @@ export type AgentToolName = (typeof AGENT_TOOLS)[keyof typeof AGENT_TOOLS]
 // from OCR_LOW_QUALITY_THRESHOLD, never a literal.
 // ---------------------------------------------------------------------------
 
-const OCR_LOW_PERCENT = `${Math.round(OCR_LOW_QUALITY_THRESHOLD * 100)} %`
+const OCR_LOW_PERCENT = `${ocrPercent(OCR_LOW_QUALITY_THRESHOLD)} %`
 
-/** Attached to a rag_query / rag_keyword_search / rag_get_text result when any folio in it is low. */
+/** Attached to a rag_query / rag_get_text result when any folio in it has ocrLow=true. */
 export const RAG_OCR_LOW_NOTICE =
   `ocrLow=true : la reconnaissance du texte de ce folio est peu fiable ` +
   `(qualité OCR moyenne < ${OCR_LOW_PERCENT}). Toute note qui cite ce folio ` +
   `portera automatiquement la mise en garde de la BnF.`
 
-/** Attached to a note_create / note_update / note_append result that cites a low folio. */
+/** Attached to a rag_keyword_search result when any hit has ocrLowFolioCount > 0. */
+export const RAG_KEYWORD_OCR_LOW_NOTICE =
+  `ocrLowFolios : les folios de ce document dont la reconnaissance du texte est ` +
+  `peu fiable (qualité OCR moyenne < ${OCR_LOW_PERCENT}). Toute note qui cite ` +
+  `l'un d'eux portera automatiquement la mise en garde de la BnF.`
+
+/** Attached to a note write / note_get result that cites a low folio. */
 export const NOTE_LOW_OCR_NOTICE =
   `Ces citations renvoient à des folios dont la reconnaissance du texte est peu ` +
   `fiable (qualité OCR moyenne < ${OCR_LOW_PERCENT}). La note affiche ` +
   `automatiquement la mise en garde de la BnF et signale ces citations : ` +
   `n'ajoute pas de mise en garde toi-même.`
+
+/** Attached when some cited folios have no OCR quality available yet. */
+export const NOTE_OCR_UNKNOWN_NOTICE =
+  `La qualité OCR de ces folios n'est pas encore disponible : elle n'est ni ` +
+  `bonne ni mauvaise à ce stade. Ne la présente pas comme vérifiée.`
+
+/**
+ * Attached to a COMMITTED note write when the OCR-quality check afterwards
+ * failed: the note is written — never retry the write — only the check is
+ * missing.
+ */
+export const NOTE_OCR_CHECK_FAILED_NOTICE =
+  `La note est bien enregistrée, mais la vérification de la qualité OCR de ses ` +
+  `citations a échoué. Ne relance pas l'écriture de la note.`
+
+/**
+ * The ARK given to a corpus-text tool is not a Document (indexed, for
+ * rag_get_text) of this project's corpus. Structured output, never a throw:
+ * the model recovers by passing an ARK taken from a search result
+ * (CLAUDE_ERROR_PATTERNS §15).
+ */
+export const ARK_NOT_IN_CORPUS_ERROR = "ark_not_in_corpus"

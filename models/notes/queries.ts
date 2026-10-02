@@ -1,10 +1,7 @@
 import "server-only"
 import { prisma } from "@/lib/db"
 import {
-  citationRefs,
   type CitationUsage,
-  type NoteDetail,
-  type NoteFolioOcr,
   type NoteWithCitations,
   type NoteListItem,
   type NoteVersionListItem,
@@ -34,51 +31,15 @@ export class NoteQueries {
   }
 
   /**
-   * A note with its citations AND the stored OCR quality of every cited folio
-   * — what every note view renders (pill markers, the low-OCR banner, the
-   * exports). Null when no note has this id. Two Prisma calls in the owning
-   * model (playbook/models.md, "a join across models").
+   * Every note of the project with its citations, oldest first — the
+   * standalone Carnet reads the notebook front to back (NoteService.details
+   * adds the cited folios' OCR quality).
    */
-  static async getDetail(id: string): Promise<NoteDetail | null> {
-    const note = await prisma.note.findUnique({ where: { id }, include: { citations: true } })
-    if (!note) return null
-    return { ...note, folioOcr: await NoteQueries.folioOcrFor(note.citations) }
-  }
-
-  /**
-   * Every note of the project as a NoteDetail, oldest first — the standalone
-   * Carnet. One folio-quality query covers all the notes' citations.
-   */
-  static async listDetailsForProject(projectId: string): Promise<NoteDetail[]> {
-    const notes = await prisma.note.findMany({
+  static async listWithCitationsForProject(projectId: string): Promise<NoteWithCitations[]> {
+    return prisma.note.findMany({
       where: { projectId },
       orderBy: { createdAt: "asc" },
       include: { citations: true },
-    })
-    const rows = await NoteQueries.folioOcrFor(notes.flatMap((n) => n.citations))
-    return notes.map((note) => {
-      const refs = citationRefs(note.citations)
-      return {
-        ...note,
-        folioOcr: rows.filter((r) =>
-          refs.some((ref) => ref.ark === r.ark && ref.folios.includes(r.folio)),
-        ),
-      }
-    })
-  }
-
-  /**
-   * The stored quality of the cited (ark, folio) pairs — read ONLY through
-   * Citation rows, which hold corpus-validated ARKs (plan D8). PK-scoped.
-   */
-  private static async folioOcrFor(
-    citations: Array<{ ark: string; folio: number | null }>,
-  ): Promise<NoteFolioOcr[]> {
-    const refs = citationRefs(citations)
-    if (refs.length === 0) return []
-    return prisma.documentFolio.findMany({
-      where: { OR: refs.map(({ ark, folios }) => ({ ark, folio: { in: folios } })) },
-      select: { ark: true, folio: true, ocrSource: true, ocrQuality: true, wordCount: true },
     })
   }
 

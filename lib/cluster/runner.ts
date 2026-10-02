@@ -1,24 +1,24 @@
 import "server-only"
 // lib/cluster/runner.ts
 // Facade that routes to the real ClusterClient or the FakeClusterRunner
-// based on the CLUSTER_MODE env variable.
+// based on CLUSTER_MODE (lib/cluster/mode.ts — unset fails, never defaults):
 //
-// CLUSTER_MODE=fake  (default) → FakeClusterRunner (in-process, no real HTTP)
-// CLUSTER_MODE=real             → ClusterClient (real cluster API)
+// CLUSTER_MODE=fake → FakeClusterRunner (in-process, no real HTTP)
+// CLUSTER_MODE=real → ClusterClient (real cluster API)
 //
 // All app code submits and cancels jobs through this facade; it never imports
 // ClusterClient or FakeClusterRunner directly.
-import type { WorkerOcrQualitySyncResponse } from "@/models/documents/types"
+import type { WorkerOcrQualitySyncResponse } from "./ocr-quality"
 import type { ClusterIngestRequest, ClusterQueueProgress } from "./contracts"
 import { ClusterClient } from "./client"
 import { FakeClusterRunner } from "./fake"
+import { CLUSTER_MODE, clusterMode } from "./mode"
 
 export const ClusterRunner = {
   async submit(
     req: ClusterIngestRequest,
   ): Promise<{ clusterJobId: string }> {
-    const mode = process.env.CLUSTER_MODE ?? "fake"
-    return mode === "real"
+    return clusterMode() === CLUSTER_MODE.REAL
       ? ClusterClient.submit(req)
       : FakeClusterRunner.submit(req)
   },
@@ -31,8 +31,7 @@ export const ClusterRunner = {
   async progress(
     clusterJobId: string,
   ): Promise<ClusterQueueProgress | null> {
-    const mode = process.env.CLUSTER_MODE ?? "fake"
-    return mode === "real" ? ClusterClient.progress(clusterJobId) : null
+    return clusterMode() === CLUSTER_MODE.REAL ? ClusterClient.progress(clusterJobId) : null
   },
 
   /**
@@ -42,8 +41,8 @@ export const ClusterRunner = {
    * wiring bug and throws.
    */
   async ocrQualitySync(arks: string[]): Promise<WorkerOcrQualitySyncResponse> {
-    const mode = process.env.CLUSTER_MODE ?? "fake"
-    if (mode !== "real") {
+    const mode = clusterMode()
+    if (mode !== CLUSTER_MODE.REAL) {
       throw new Error(
         `ClusterRunner.ocrQualitySync: no worker in CLUSTER_MODE=${mode} — the OCR sync runs in real mode only`,
       )
@@ -52,8 +51,7 @@ export const ClusterRunner = {
   },
 
   async cancel(clusterJobId: string): Promise<void> {
-    const mode = process.env.CLUSTER_MODE ?? "fake"
-    return mode === "real"
+    return clusterMode() === CLUSTER_MODE.REAL
       ? ClusterClient.cancel(clusterJobId)
       : FakeClusterRunner.cancel(clusterJobId)
   },

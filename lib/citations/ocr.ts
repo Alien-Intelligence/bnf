@@ -1,46 +1,44 @@
 /**
  * lib/citations/ocr.ts
  *
- * Pure OCR-quality helpers over citations and processed text — no server-only
- * imports; safe client-side (note pills, banner, exports) and server-side
- * (agent tools). Feedback 2026-09-29 #7, Track B.
+ * Pure OCR-quality helpers over note citations and processed text — no
+ * server-only imports; safe client-side (pills, banner, exports) and
+ * server-side (agent tools). Feedback 2026-09-29 #7, Track B.
  *
- * "Low" itself is decided in ONE place, models/documents/schema.ts isLowOcr()
- * (via toFolioOcrView); these helpers only look views up.
+ * "Low" and the per-folio states are decided in lib/ocr/quality.ts; these
+ * helpers only classify citations and slices against an OcrIndex.
  */
 import { PROCESSED_TEXT_FOLIO_HEADING } from "@/lib/constants"
-import type { FolioOcrView } from "@/models/documents/schema"
+import { folioOcrState, type OcrIndex } from "@/lib/ocr/quality"
 
 import { parseCitations, type ParsedCitation } from "./syntax"
 
-/** A [0, 1] quality or rate as the whole percentage the UI shows (0.661 → 66). */
-export function ocrPercent(fraction: number): number {
-  return Math.round(fraction * 100)
-}
-
-/** Map key of one (ark, folio). */
-export function folioOcrKey(ark: string, folio: number): string {
-  return `${ark}#${folio}`
-}
-
-/** Index folio views by (ark, folio) for O(1) lookups while rendering a note. */
-export function indexFolioOcr(views: FolioOcrView[]): Map<string, FolioOcrView> {
-  return new Map(views.map((v) => [folioOcrKey(v.ark, v.folio), v]))
-}
-
 /**
- * The TEXT citations of a note body whose folio is low OCR, in body order.
- * Image embeds `![[…]]` are excluded (plan D11): they show the page image
- * itself and carry no transcription. A citation whose folio has no stored
- * quality (not synced yet, or a mistral/vision page) is not low.
+ * The TEXT citations of a note body, split by what is known of their folio's
+ * OCR (image embeds `![[…]]` are excluded, plan D11 — they show the page image
+ * and carry no transcription):
+ *   low     — measured below the threshold: pill marker, banner, export marker;
+ *   unknown — the folio's quality is not available (document not synced, or
+ *             no stored row for that folio). Never shown as "not low": the
+ *             agent and the side panel say "non disponible".
+ * Everything else (measured and not low, or a recorded mistral/vision page)
+ * is in neither list.
  */
-export function lowOcrCitations(
+export function citationOcrSummary(
   body: string,
-  index: Map<string, FolioOcrView>,
-): ParsedCitation[] {
-  return parseCitations(body).filter(
-    (c) => index.get(folioOcrKey(c.ark, c.folio))?.low === true,
-  )
+  index: OcrIndex,
+): { low: ParsedCitation[]; unknown: ParsedCitation[] } {
+  const low: ParsedCitation[] = []
+  const unknown: ParsedCitation[] = []
+  for (const c of parseCitations(body)) {
+    const state = folioOcrState(index, c.ark, c.folio)
+    if (state.kind === "recorded") {
+      if (state.view.low) low.push(c)
+    } else {
+      unknown.push(c)
+    }
+  }
+  return { low, unknown }
 }
 
 /**

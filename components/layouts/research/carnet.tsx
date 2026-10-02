@@ -1,54 +1,75 @@
 "use client"
 
+// components/layouts/research/carnet.tsx
+// LayoutCarnet — the standalone Carnet page: a TOC rail and every note of the
+// project stitched front to back. The note set and each note load
+// independently (CarnetClient, found bug B8), so the layout renders explicit
+// states (playbook/ui-states.md): the list is loading / failed / empty /
+// ready, and inside a ready list each entry is loading / failed (retry that
+// note) / ready. The export is offered only when every entry is ready — a
+// partial carnet is never exported (found bug B5's rule).
+
 import { useMemo } from "react"
-import { CarnetEntry } from "@/components/cards/notes/carnet-entry"
-import { Separator } from "@/components/ui/separator"
-import { Button } from "@/components/ui/button"
-import { Skeleton } from "@/components/ui/skeleton"
 import { Download } from "lucide-react"
 import { useTranslations } from "next-intl"
+import { CarnetEntry } from "@/components/cards/notes/carnet-entry"
+import { CardSharedLoadError } from "@/components/cards/shared/load-error"
+import { Button } from "@/components/ui/button"
+import { Separator } from "@/components/ui/separator"
+import { Skeleton } from "@/components/ui/skeleton"
 import type { ParsedCitation } from "@/lib/citations/syntax"
-import { notesToMarkdown, downloadMarkdown } from "@/lib/notes/export"
+import { CARNET_EXPORT_FILENAME } from "@/lib/constants"
+import { downloadMarkdown, notesToMarkdown } from "@/lib/notes/export"
 import { useNoteExportCopy } from "@/lib/notes/export-copy"
 import type { NoteDetail } from "@/models/notes/schema"
 
+/** One note of the carnet. */
+export type CarnetEntryState =
+  | { kind: "loading" }
+  | { kind: "error"; retry: () => void }
+  | { kind: "ready"; note: NoteDetail }
+
+/** The carnet's note set. */
+export type CarnetListState =
+  | { kind: "loading" }
+  | { kind: "error"; retry: () => void }
+  | {
+      kind: "ready"
+      entries: Array<{ id: string; title: string; state: CarnetEntryState }>
+    }
+
 interface LayoutCarnetProps {
-  /** Every note of the carnet, oldest first; undefined until all of them are loaded. */
-  notes: NoteDetail[] | undefined
-  /** At least one note failed to load — the carnet says so and offers a retry. */
-  isError: boolean
-  onRetry: () => void
+  list: CarnetListState
   onCitationClick: (c: ParsedCitation) => void
 }
 
-export function LayoutCarnet({ notes, isError, onRetry, onCitationClick }: LayoutCarnetProps) {
+/** Rows of the TOC rail while the note set loads. */
+const TOC_SKELETON_ROWS = 5
+
+export function LayoutCarnet({ list, onCitationClick }: LayoutCarnetProps) {
   const t = useTranslations("research.carnet")
-  const tCommon = useTranslations("common")
   const exportCopy = useNoteExportCopy()
 
+  const entries = list.kind === "ready" ? list.entries : []
   // Ids present in this carnet — a note-link pill greys out when its target is
   // absent, and scrolls to the entry's anchor when present (no view switch).
-  const knownNoteIds = useMemo(() => new Set((notes ?? []).map((n) => n.id)), [notes])
+  const knownNoteIds = useMemo(
+    () => new Set(list.kind === "ready" ? list.entries.map((e) => e.id) : []),
+    [list],
+  )
+  const readyNotes = entries.flatMap((e) => (e.state.kind === "ready" ? [e.state.note] : []))
+  const exportable = list.kind === "ready" && entries.length > 0 && readyNotes.length === entries.length
+
   const scrollToEntry = (noteId: string) => {
     document.getElementById(noteId)?.scrollIntoView({ behavior: "smooth", block: "start" })
   }
-
-  const isLoading = notes === undefined && !isError
 
   return (
     <div className="flex h-full">
       {/* Sidebar TOC */}
       <aside className="w-64 shrink-0 border-r overflow-y-auto p-4 space-y-1">
         <p className="mono-eyebrow mb-3 block">{t("title")}</p>
-        {(notes ?? []).map((note) => (
-          <a
-            key={note.id}
-            href={`#${note.id}`}
-            className="block text-sm text-muted-foreground hover:text-foreground truncate py-0.5"
-          >
-            {note.title}
-          </a>
-        ))}
+        <CarnetToc list={list} />
       </aside>
 
       {/* Main content */}
@@ -59,52 +80,140 @@ export function LayoutCarnet({ notes, isError, onRetry, onCitationClick }: Layou
             <Button
               variant="outline"
               size="sm"
-              onClick={() => {
-                if (notes === undefined) return
-                downloadMarkdown("carnet-de-recherche.md", notesToMarkdown(notes, exportCopy))
-              }}
-              // Only a complete carnet is exported (found bug B5's rule): never
-              // while a note is loading or failed to load.
-              disabled={notes === undefined || notes.length === 0 || isError}
+              onClick={() => downloadMarkdown(CARNET_EXPORT_FILENAME, notesToMarkdown(readyNotes, exportCopy))}
+              disabled={!exportable}
+              title={exportable ? undefined : t("exportPartial")}
             >
               <Download className="mr-2 h-4 w-4" />
               {t("export")}
             </Button>
           </div>
 
-          {isLoading ? (
-            <div className="space-y-3">
-              <Skeleton className="h-6 w-1/2" />
-              <Skeleton className="h-4 w-full" />
-              <Skeleton className="h-4 w-5/6" />
-              <Skeleton className="h-4 w-2/3" />
-            </div>
-          ) : isError || notes === undefined ? (
-            <div className="flex flex-col items-center gap-3 py-16 text-center">
-              <p className="text-sm text-destructive">{t("exportBlocked")}</p>
-              <Button variant="outline" size="sm" onClick={onRetry}>
-                {tCommon("tryAgain")}
-              </Button>
-            </div>
-          ) : notes.length === 0 ? (
-            <p className="text-muted-foreground text-sm">{t("empty")}</p>
-          ) : (
-            <div className="space-y-8">
-              {notes.map((note, i) => (
-                <div key={note.id}>
-                  <CarnetEntry
-                    note={note}
-                    onCitationClick={onCitationClick}
-                    onNoteLinkClick={scrollToEntry}
-                    knownNoteIds={knownNoteIds}
-                  />
-                  {i < notes.length - 1 && <Separator className="mt-8" />}
-                </div>
-              ))}
-            </div>
-          )}
+          <CarnetBody
+            list={list}
+            knownNoteIds={knownNoteIds}
+            onCitationClick={onCitationClick}
+            onNoteLinkClick={scrollToEntry}
+          />
         </div>
       </div>
+    </div>
+  )
+}
+
+function CarnetToc({ list }: { list: CarnetListState }) {
+  if (list.kind === "loading") {
+    return (
+      <div className="space-y-2 py-0.5">
+        {Array.from({ length: TOC_SKELETON_ROWS }).map((_, i) => (
+          <Skeleton key={i} className="h-4 w-full" />
+        ))}
+      </div>
+    )
+  }
+  if (list.kind === "error") return null
+  return (
+    <>
+      {list.entries.map((e) => (
+        <a
+          key={e.id}
+          href={`#${e.id}`}
+          className="block text-sm text-muted-foreground hover:text-foreground truncate py-0.5"
+        >
+          {e.title}
+        </a>
+      ))}
+    </>
+  )
+}
+
+function CarnetBody({
+  list,
+  knownNoteIds,
+  onCitationClick,
+  onNoteLinkClick,
+}: {
+  list: CarnetListState
+  knownNoteIds: ReadonlySet<string>
+  onCitationClick: (c: ParsedCitation) => void
+  onNoteLinkClick: (noteId: string) => void
+}) {
+  const t = useTranslations("research.carnet")
+
+  if (list.kind === "loading") {
+    return (
+      <div className="space-y-8">
+        <CarnetEntrySkeleton />
+        <CarnetEntrySkeleton />
+      </div>
+    )
+  }
+  if (list.kind === "error") {
+    return <CardSharedLoadError layout="block" message={t("loadListError")} onRetry={list.retry} />
+  }
+  if (list.entries.length === 0) {
+    return <p className="text-muted-foreground text-sm">{t("empty")}</p>
+  }
+  return (
+    <div className="space-y-8">
+      {list.entries.map((e, i) => (
+        <div key={e.id} id={e.id} className="scroll-mt-4">
+          <CarnetEntrySlot
+            title={e.title}
+            state={e.state}
+            knownNoteIds={knownNoteIds}
+            onCitationClick={onCitationClick}
+            onNoteLinkClick={onNoteLinkClick}
+          />
+          {i < list.entries.length - 1 && <Separator className="mt-8" />}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function CarnetEntrySlot({
+  title,
+  state,
+  knownNoteIds,
+  onCitationClick,
+  onNoteLinkClick,
+}: {
+  title: string
+  state: CarnetEntryState
+  knownNoteIds: ReadonlySet<string>
+  onCitationClick: (c: ParsedCitation) => void
+  onNoteLinkClick: (noteId: string) => void
+}) {
+  const t = useTranslations("research.carnet")
+  if (state.kind === "loading") return <CarnetEntrySkeleton />
+  if (state.kind === "error") {
+    return (
+      <div>
+        <h2 className="text-xl font-semibold mb-4">{title}</h2>
+        <CardSharedLoadError layout="inline" message={t("loadError")} onRetry={state.retry} />
+      </div>
+    )
+  }
+  return (
+    <CarnetEntry
+      note={state.note}
+      onCitationClick={onCitationClick}
+      onNoteLinkClick={onNoteLinkClick}
+      knownNoteIds={knownNoteIds}
+    />
+  )
+}
+
+/** Mirrors CarnetEntry: title, date line, a few body lines. */
+function CarnetEntrySkeleton() {
+  return (
+    <div className="space-y-2">
+      <Skeleton className="h-6 w-1/2" />
+      <Skeleton className="mb-4 h-3 w-28" />
+      <Skeleton className="h-4 w-full" />
+      <Skeleton className="h-4 w-5/6" />
+      <Skeleton className="h-4 w-2/3" />
     </div>
   )
 }

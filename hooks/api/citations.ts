@@ -7,10 +7,16 @@ import { useQuery } from "@tanstack/react-query"
 import { apiFetch } from "@/lib/api-fetch"
 import type { CitationUsage } from "@/models/notes/schema"
 
+// ── Endpoints ─────────────────────────────────────────────────────────────────
+
+const CITATIONS_FOR_ARK_ENDPOINT = (projectId: string, ark: string) =>
+  `/api/projects/${projectId}/citations?ark=${encodeURIComponent(ark)}`
+
 // ── Query keys ────────────────────────────────────────────────────────────────
 
 export const citationKeys = {
-  forArk: (projectId: string, ark: string) =>
+  /** null = no ARK selected (the query is disabled). */
+  forArk: (projectId: string, ark: string | null) =>
     ["citations", projectId, ark] as const,
 }
 
@@ -22,12 +28,10 @@ export const citationKeys = {
  */
 export function useCitationsForArk(projectId: string, ark: string | null) {
   return useQuery<CitationUsage[]>({
-    queryKey: ark ? citationKeys.forArk(projectId, ark) : ["citations", projectId, null],
+    queryKey: citationKeys.forArk(projectId, ark),
     queryFn: async () => {
       if (ark === null) throw new Error("useCitationsForArk: queryFn ran without an ARK")
-      const res = await apiFetch(
-        `/api/projects/${projectId}/citations?ark=${encodeURIComponent(ark)}`,
-      )
+      const res = await apiFetch(CITATIONS_FOR_ARK_ENDPOINT(projectId, ark))
       if (!res.ok) throw new Error("Failed to fetch citation usages")
       return res.json() as Promise<CitationUsage[]>
     },

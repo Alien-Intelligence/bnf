@@ -31,7 +31,6 @@ export type DocumentUpsertData = Omit<
   projectId: string
   ark: string
 }
-import { OCR_LOW_QUALITY_THRESHOLD } from "@/lib/constants"
 
 /** One entry in a facet vocabulary map. */
 export type VocabEntry = {
@@ -465,10 +464,13 @@ export function isLatinScriptLang(lang: string | null | undefined): boolean {
 // OCR quality — DocumentOcr / DocumentFolio (feedback 2026-09-29 #7, Track B)
 //
 // Per ARK, global across projects (plan D8): the OCR quality is a property of
-// the BnF content, not of a project. Every user-facing read is gated on the
-// reader's corpus — see DocumentQueries.isIndexedInCorpus and the notes model.
+// the BnF content, not of a project. Every read takes the reader's corpus
+// project and returns nothing for an ARK outside it (DocumentQueries).
 // Values mirror worker-v2/src/domain/types.ts (OCR_SOURCE, DocOcrQuality); the
-// wire schema in ./types.ts validates them. Change both sides together.
+// wire schema in lib/cluster/ocr-quality.ts validates them. Change both sides
+// together. The "low" decision and the views are pure functions in
+// lib/ocr/quality.ts (they need the app-wide threshold constant, which this
+// foundation file may not import).
 // ---------------------------------------------------------------------------
 
 /**
@@ -485,15 +487,20 @@ export const OCR_SOURCE = {
 export type OcrSource = (typeof OCR_SOURCE)[keyof typeof OCR_SOURCE]
 
 /**
- * DocumentOcr.status — what the worker answered for the ARK (plan D18):
+ * DocumentOcr.status (plan D18, plus the app-side quarantine):
  *   available   — the folios are stored;
  *   building    — the worker is building the artifact (backfill), recheck later;
- *   unavailable — the worker cannot build it; `reason` says why.
+ *   unavailable — the worker cannot build it, or the app could not sync it
+ *                 (`reason` says which), recheck later;
+ *   quarantined — the app's sync of this ARK broke the worker contract
+ *                 OCR_SYNC_MAX_ATTEMPTS times in a row; no automatic recheck
+ *                 until a re-ingest asks for a resync.
  */
 export const OCR_SYNC_STATUS = {
   AVAILABLE: "available",
   BUILDING: "building",
   UNAVAILABLE: "unavailable",
+  QUARANTINED: "quarantined",
 } as const
 export type OcrSyncStatus = (typeof OCR_SYNC_STATUS)[keyof typeof OCR_SYNC_STATUS]
 
@@ -504,18 +511,10 @@ export type OcrSyncStatus = (typeof OCR_SYNC_STATUS)[keyof typeof OCR_SYNC_STATU
 export const OCR_STATUS_PENDING = "pending" as const
 export type DocumentOcrStatus = OcrSyncStatus | typeof OCR_STATUS_PENDING
 
-const OCR_SOURCES = new Set<string>(Object.values(OCR_SOURCE))
-const OCR_SYNC_STATUSES = new Set<string>(Object.values(OCR_SYNC_STATUS))
+/** One (ark, folio) whose stored quality a reader wants. */
+export type FolioRef = { ark: string; folio: number }
 
-function isOcrSource(v: string): v is OcrSource {
-  return OCR_SOURCES.has(v)
-}
-
-function isOcrSyncStatus(v: string): v is OcrSyncStatus {
-  return OCR_SYNC_STATUSES.has(v)
-}
-
-/** Query shape: one folio's stored quality. */
+/** Query shape: one folio's stored quality (every scalar column of DocumentFolio). */
 export const documentFolioRow = {
   select: {
     ark: true,
@@ -526,6 +525,12 @@ export const documentFolioRow = {
   },
 } satisfies Prisma.DocumentFolioDefaultArgs
 export type DocumentFolioRow = Prisma.DocumentFolioGetPayload<typeof documentFolioRow>
+
+/** Query shape: a document's sync status only (no folios). */
+export const documentOcrStatusRow = {
+  select: { ark: true, status: true },
+} satisfies Prisma.DocumentOcrDefaultArgs
+export type DocumentOcrStatusRow = Prisma.DocumentOcrGetPayload<typeof documentOcrStatusRow>
 
 /** Query shape: a document's OCR summary with every stored folio. */
 export const documentOcrWithFolios = {
@@ -539,15 +544,6 @@ export const documentOcrWithFolios = {
 } satisfies Prisma.DocumentOcrDefaultArgs
 export type DocumentOcrWithFolios = Prisma.DocumentOcrGetPayload<typeof documentOcrWithFolios>
 
-/**
- * THE "low OCR" decision (plan D10): a measured quality strictly below
- * OCR_LOW_QUALITY_THRESHOLD. An unscored folio (null — non-ALTO source, ALTO
- * without WC) is never low. Computed at read time, never stored.
- */
-export function isLowOcr(ocrQuality: number | null): boolean {
-  return ocrQuality !== null && ocrQuality < OCR_LOW_QUALITY_THRESHOLD
-}
-
 /** One folio's OCR quality as every reader (tools, pills, sheet, export) sees it. */
 export type FolioOcrView = {
   ark: string
@@ -557,29 +553,8 @@ export type FolioOcrView = {
   ocrQuality: number | null
   /** ALTO word count; null for non-ALTO sources. */
   wordCount: number | null
-  /** isLowOcr(ocrQuality). */
+  /** isLowOcr(ocrQuality) — lib/ocr/quality.ts. */
   low: boolean
-}
-
-/**
- * Stored row → view. The source column is a closed vocabulary written only from
- * a Zod-validated worker response, so an unknown value is a corrupt row: it
- * throws rather than being read as "not low".
- */
-export function toFolioOcrView(row: DocumentFolioRow): FolioOcrView {
-  if (!isOcrSource(row.ocrSource)) {
-    throw new Error(
-      `document_folio ${row.ark} f${row.folio}: unknown ocr_source "${row.ocrSource}"`,
-    )
-  }
-  return {
-    ark: row.ark,
-    folio: row.folio,
-    ocrSource: row.ocrSource,
-    ocrQuality: row.ocrQuality,
-    wordCount: row.wordCount,
-    low: isLowOcr(row.ocrQuality),
-  }
 }
 
 /** A document's OCR summary — GET /api/projects/[id]/documents/ocr and doc_get. */
@@ -588,32 +563,31 @@ export type DocumentOcrView = {
   status: DocumentOcrStatus
   /** The manifest "Taux OCR" / 100; null when BnF publishes none or not synced. */
   ocrRate: number | null
-  /** Why the worker could not build the artifact (status=unavailable only). */
+  /** Why the document's quality is not available (unavailable / quarantined). */
   reason: string | null
   /** Every stored folio, folio-ascending. Empty while pending. */
   folios: FolioOcrView[]
 }
 
 /**
- * Stored row (or its absence) → view. No row is `pending`. Folios are kept
- * whatever the status: a `building` row that was once `available` still holds
- * valid folios until the next artifact replaces them.
+ * What one worker sync answer writes, per ARK (DocumentService.recordOcrSync):
+ *   available   → replace the ARK's folios and mark it available;
+ *   building    → status only (folios left as they are);
+ *   unavailable → status + reason only (folios left as they are).
+ * `checkedAt` is the time of the answer, stamped on every row.
  */
-export function toDocumentOcrView(
-  ark: string,
-  row: DocumentOcrWithFolios | null,
-): DocumentOcrView {
-  if (row === null) {
-    return { ark, status: OCR_STATUS_PENDING, ocrRate: null, reason: null, folios: [] }
-  }
-  if (!isOcrSyncStatus(row.status)) {
-    throw new Error(`document_ocr ${row.ark}: unknown status "${row.status}"`)
-  }
-  return {
-    ark: row.ark,
-    status: row.status,
-    ocrRate: row.ocrRate,
-    reason: row.reason,
-    folios: row.folios.map(toFolioOcrView).sort((a, b) => a.folio - b.folio),
-  }
+export type OcrSyncWritePlan = {
+  checkedAt: Date
+  available: Array<{
+    ark: string
+    ocrRate: number | null
+    folios: Array<{
+      folio: number
+      ocrSource: OcrSource
+      ocrQuality: number | null
+      wordCount: number | null
+    }>
+  }>
+  building: string[]
+  unavailable: Array<{ ark: string; reason: string }>
 }

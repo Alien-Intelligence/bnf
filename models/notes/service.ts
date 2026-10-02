@@ -2,7 +2,51 @@ import "server-only"
 import { prisma } from "@/lib/db"
 import type { Note, Prisma } from "@/lib/generated/prisma/client"
 import { parseCitations } from "@/lib/citations/syntax"
+import { folioOcrKey } from "@/lib/ocr/quality"
 import { CorpusQueries } from "@/models/corpus/queries"
+import { DocumentQueries } from "@/models/documents/queries"
+import type {
+  DocumentFolioRow,
+  DocumentOcrStatusRow,
+  FolioRef,
+} from "@/models/documents/schema"
+import type { Citation, NoteDetail, NoteWithCitations } from "./schema"
+
+/**
+ * The cited (ark, folio) pairs of some Citation rows, deduped, in first-seen
+ * order. A row without a folio cites no page and is skipped. The input of the
+ * folio-quality read. Pure, exported for the tests.
+ */
+export function citationRefs(citations: Array<Pick<Citation, "ark" | "folio">>): FolioRef[] {
+  const seen = new Set<string>()
+  const refs: FolioRef[] = []
+  for (const c of citations) {
+    if (c.folio === null) continue
+    const key = folioOcrKey(c.ark, c.folio)
+    if (seen.has(key)) continue
+    seen.add(key)
+    refs.push({ ark: c.ark, folio: c.folio })
+  }
+  return refs
+}
+
+/**
+ * One note's slice of a shared OCR read: the folio rows its citations name and
+ * the status rows of the documents it cites. Pure, exported for the tests.
+ */
+export function attachNoteOcr(
+  note: NoteWithCitations,
+  rows: { folios: DocumentFolioRow[]; documents: DocumentOcrStatusRow[] },
+): NoteDetail {
+  const refs = citationRefs(note.citations)
+  const cited = new Set(refs.map((r) => folioOcrKey(r.ark, r.folio)))
+  const arks = new Set(refs.map((r) => r.ark))
+  return {
+    ...note,
+    folioOcr: rows.folios.filter((f) => cited.has(folioOcrKey(f.ark, f.folio))),
+    documentOcr: rows.documents.filter((d) => arks.has(d.ark)),
+  }
+}
 
 /**
  * A write, plus the ARKs it refused to record.
@@ -17,6 +61,28 @@ import { CorpusQueries } from "@/models/corpus/queries"
 export type NoteWriteResult = { note: Note; rejected: string[] }
 
 export class NoteService {
+  /**
+   * A loaded (and already authorized) note as a NoteDetail: its citations plus
+   * the OCR quality of the cited folios, read on `corpusProjectId` — the corpus
+   * the note's citations were validated against (plan D8).
+   */
+  static async detail(note: NoteWithCitations, corpusProjectId: string): Promise<NoteDetail> {
+    const rows = await DocumentQueries.ocrIndexRows(corpusProjectId, citationRefs(note.citations))
+    return attachNoteOcr(note, rows)
+  }
+
+  /** Several notes of one corpus as NoteDetails, with ONE OCR read for all of them. */
+  static async details(
+    notes: NoteWithCitations[],
+    corpusProjectId: string,
+  ): Promise<NoteDetail[]> {
+    const rows = await DocumentQueries.ocrIndexRows(
+      corpusProjectId,
+      citationRefs(notes.flatMap((n) => n.citations)),
+    )
+    return notes.map((n) => attachNoteOcr(n, rows))
+  }
+
   /**
    * `corpusProjectId` is the project whose corpus the citations are validated
    * against — the SOURCE's when the note lives in a derived workspace, since

@@ -27,7 +27,7 @@ import {
   isIngestableClass,
   isLatinScriptLang,
 } from "@/models/documents/schema"
-import { estimatePaidOcrCostUsd, INGEST_STATUS } from "./schema"
+import { CLUSTER_TERMINAL_STAGE, estimatePaidOcrCostUsd, INGEST_STATUS } from "./schema"
 import type { PaidOcrEstimate } from "./schema"
 import type {
   IngestDeltaPreview,
@@ -40,6 +40,8 @@ import type {
   ClusterQueueProgress,
 } from "@/lib/cluster/contracts"
 import { ClusterRunner } from "@/lib/cluster/runner"
+import { triggerOcrSync } from "@/lib/documents/ocr-sync"
+import { DocumentService } from "@/models/documents/service"
 import { PAID_OCR_DEFAULT_BUDGET_USD } from "@/lib/constants"
 import { env } from "@/lib/env"
 
@@ -482,7 +484,7 @@ export class IngestService {
     job: IngestJob,
     event: ClusterProgressEvent,
   ): Promise<void> {
-    if (event.stage === "done") {
+    if (event.stage === CLUSTER_TERMINAL_STAGE.DONE) {
       // The job reached "done": commit (all succeeded) or commitPartialFailure
       // (some failed). BOTH advance the baseline pointer — the per-doc
       // Document.indexedAt carries which docs actually made it, so a partial run
@@ -508,7 +510,7 @@ export class IngestService {
           stats: event.stats,
         })
       }
-    } else if (event.stage === "failed") {
+    } else if (event.stage === CLUSTER_TERMINAL_STAGE.FAILED) {
       await prisma.ingestJob.update({
         where: { id: job.id },
         data: {
@@ -616,7 +618,12 @@ export class IngestService {
         }),
       )
     }
+    // OCR quality (feedback 2026-09-29 #7): the run's documents may have been
+    // re-OCR'd, so their stored quality is due again — persisted in the same
+    // transaction as the commit, then pulled at once (lib/documents/ocr-sync.ts).
+    ops.push(DocumentService.ocrResyncOp(job.addedArks, now))
     await prisma.$transaction(ops)
+    triggerOcrSync()
 
     // The research prompt embeds ÉTAT DU CORPUS, so a commit makes it stale:
     // without this the agent keeps saying the corpus is not ingested and
@@ -731,7 +738,12 @@ export class IngestService {
         }),
       )
     }
+    // OCR quality (feedback 2026-09-29 #7): the run's documents may have been
+    // re-OCR'd, so their stored quality is due again — persisted in the same
+    // transaction as the commit, then pulled at once (lib/documents/ocr-sync.ts).
+    ops.push(DocumentService.ocrResyncOp(job.addedArks, now))
     await prisma.$transaction(ops)
+    triggerOcrSync()
 
     // The research prompt embeds ÉTAT DU CORPUS, so a commit makes it stale:
     // without this the agent keeps saying the corpus is not ingested and

@@ -1,11 +1,15 @@
 "use client"
 
-import { useState } from "react"
+import { useMemo, useState } from "react"
 import { WorkspaceHeader } from "@/components/layouts/workspace/header"
-import { LayoutCarnet } from "@/components/layouts/research/carnet"
+import {
+  LayoutCarnet,
+  type CarnetEntryState,
+  type CarnetListState,
+} from "@/components/layouts/research/carnet"
 import { SheetCitationSource } from "@/components/sheets/citations/source"
-import { useNoteDetails } from "@/hooks/api/notes"
-import type { NoteDetail } from "@/models/notes/schema"
+import { useNoteDetails, useNotes } from "@/hooks/api/notes"
+import type { NoteDetail, NoteListItem } from "@/models/notes/schema"
 import type { ParsedCitation } from "@/lib/citations/syntax"
 import type { WorkspaceStep } from "@/lib/constants"
 
@@ -14,28 +18,53 @@ interface CarnetClientProps {
   initialUser: { name?: string | null; email: string }
   /** The steps this user has on this project — see LayoutWorkspaceStepNav. */
   initialWorkspaceSteps: readonly WorkspaceStep[]
-  initialNotes: NoteDetail[]
+  /** The project's notes (the carnet's note set), seeding useNotes. */
+  initialNoteList: NoteListItem[]
+  /** Every note's body + citations + OCR quality, seeding the per-note cache. */
+  initialNoteDetails: NoteDetail[]
 }
 
 export function CarnetClient({
   projectId,
   initialUser,
   initialWorkspaceSteps,
-  initialNotes,
+  initialNoteList,
+  initialNoteDetails,
 }: CarnetClientProps) {
   const [selectedCitation, setSelectedCitation] =
     useState<ParsedCitation | null>(null)
 
-  // Found bug B8: the notes used to render from frozen server props. They now
-  // go through the per-note query cache, seeded with the server-loaded details,
-  // so they refetch and stay in sync with the Atelier like every other view.
-  const results = useNoteDetails(
-    initialNotes.map((n) => n.id),
-    { initialData: initialNotes },
+  // Found bug B8: the carnet used to render frozen server props. The note SET
+  // comes from the notes list query and each body from the per-note cache,
+  // both seeded with the server-loaded data, so a note added or deleted later
+  // (in the Atelier, by the agent) shows up here too. The carnet reads front
+  // to back, so the list is ordered by creation date.
+  const list = useNotes(projectId, { initialData: initialNoteList })
+  const ordered = useMemo(
+    () =>
+      [...(list.data ?? [])].sort(
+        (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+      ),
+    [list.data],
   )
-  const details = results.map((r) => r.data)
-  const failed = results.filter((r) => r.isError)
-  const notes = details.every((d): d is NoteDetail => d !== undefined) ? details : undefined
+  const results = useNoteDetails(
+    ordered.map((n) => n.id),
+    { initialData: initialNoteDetails },
+  )
+  const entries = ordered.map((n, i) => {
+    const r = results[i]
+    // A background refetch that fails while data is in hand keeps showing it:
+    // only a note with nothing to show is an error.
+    let state: CarnetEntryState
+    if (r.data !== undefined) state = { kind: "ready", note: r.data }
+    else if (r.isError) state = { kind: "error", retry: () => void r.refetch() }
+    else state = { kind: "loading" }
+    return { id: n.id, title: n.title, state }
+  })
+  let listState: CarnetListState
+  if (list.data !== undefined) listState = { kind: "ready", entries }
+  else if (list.isError) listState = { kind: "error", retry: () => void list.refetch() }
+  else listState = { kind: "loading" }
 
   const user: { name?: string; email: string } = {
     name: initialUser.name ?? undefined,
@@ -51,11 +80,7 @@ export function CarnetClient({
       />
       <div className="flex-1 overflow-hidden">
         <LayoutCarnet
-          notes={notes}
-          isError={failed.length > 0}
-          onRetry={() => {
-            for (const r of failed) void r.refetch()
-          }}
+          list={listState}
           onCitationClick={setSelectedCitation}
         />
       </div>

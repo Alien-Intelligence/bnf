@@ -10,8 +10,21 @@ import { test, before, after } from "node:test"
 import assert from "node:assert/strict"
 import { randomUUID } from "node:crypto"
 import { prisma } from "@/lib/db"
-import { noteCreateTool, noteUpdateTool, noteAppendTool, noteResult } from "./note"
-import { NOTE_LOW_OCR_NOTICE } from "./constants"
+import {
+  noteAppendTool,
+  noteCreateTool,
+  noteGetTool,
+  noteListTool,
+  noteResult,
+  noteUpdateTool,
+  type NoteOcrOutcome,
+} from "./note"
+import {
+  NOTE_LOW_OCR_NOTICE,
+  NOTE_OCR_CHECK_FAILED_NOTICE,
+  NOTE_OCR_UNKNOWN_NOTICE,
+} from "./constants"
+import { OCR_SOURCE, OCR_SYNC_STATUS } from "@/models/documents/schema"
 import { NOTE_NOT_INGESTED_ERROR } from "./ingestion-guard"
 import type { TurnScopedCtx } from "./registry-factory"
 import {
@@ -118,24 +131,115 @@ test("note_create succeeds once the project has an ingested version", async () =
   )
 })
 
-// --- OCR quality in the write result (feedback 2026-09-29 #7) --------------
+// --- OCR quality in the note results (feedback 2026-09-29 #7) -------------
 
 const WRITTEN = { id: "00000000-0000-4000-8000-000000000001", title: "Note", citationCount: 2 }
+const NOTHING: NoteOcrOutcome = { kind: "checked", report: { low: [], unknown: [] } }
 
-test("noteResult without low-OCR citations is byte-identical to before", () => {
+test("noteResult with nothing to say about OCR is byte-identical to before", () => {
   assert.equal(
-    JSON.stringify(noteResult(WRITTEN, [], [])),
+    JSON.stringify(noteResult(WRITTEN, [], NOTHING)),
     JSON.stringify({ note_id: WRITTEN.id, title: WRITTEN.title, citation_count: 2 }),
   )
 })
 
-test("noteResult with low-OCR citations reports them and the notice", () => {
+test("noteResult reports low and unknown citations with their notices", () => {
   const low = [{ ark: "ark:/12148/bpt6k4625753w", folio: 2, ocr_quality: 0.661 }]
-  assert.deepEqual(noteResult(WRITTEN, [], low), {
+  const unknown = [{ ark: "ark:/12148/bpt6k4625753w", folio: 5, ocr_state: "not_synced" as const }]
+  assert.deepEqual(noteResult(WRITTEN, [], { kind: "checked", report: { low, unknown } }), {
     note_id: WRITTEN.id,
     title: WRITTEN.title,
     citation_count: 2,
     low_ocr_citations: { citations: low, message: NOTE_LOW_OCR_NOTICE },
+    ocr_unknown_citations: { citations: unknown, message: NOTE_OCR_UNKNOWN_NOTICE },
   })
 })
 
+test("noteResult after a failed OCR check still reports the write, never an error", () => {
+  const result = noteResult(WRITTEN, [], { kind: "check_failed" })
+  assert.equal(result.note_id, WRITTEN.id)
+  assert.deepEqual(result.ocr_check, { status: "failed", message: NOTE_OCR_CHECK_FAILED_NOTICE })
+})
+
+// --- Handlers against stored DocumentFolio rows ----------------------------
+
+const OCR_ARK = `ark:/12148/zznoteocr${randomUUID().replaceAll("-", "").slice(0, 8)}`
+
+async function seedOcrDocument(): Promise<void> {
+  const project = await prisma.project.findUniqueOrThrow({
+    where: { id: projectId },
+    select: { headVersionId: true },
+  })
+  assert.ok(project.headVersionId, "fixture project has a head version")
+  await prisma.document.create({ data: { projectId, ark: OCR_ARK, indexedAt: new Date() } })
+  await prisma.corpusMembership.create({
+    data: { versionId: project.headVersionId, ark: OCR_ARK, projectId },
+  })
+  await prisma.documentOcr.create({
+    data: {
+      ark: OCR_ARK,
+      status: OCR_SYNC_STATUS.AVAILABLE,
+      ocrRate: 0.7821,
+      checkedAt: new Date(),
+      syncedAt: new Date(),
+      folios: {
+        create: [
+          { folio: 1, ocrSource: OCR_SOURCE.ALTO, ocrQuality: 0.932, wordCount: 5106 },
+          { folio: 2, ocrSource: OCR_SOURCE.ALTO, ocrQuality: 0.661, wordCount: 4016 },
+        ],
+      },
+    },
+  })
+}
+
+after(async () => {
+  await prisma.documentOcr.deleteMany({ where: { ark: OCR_ARK } })
+})
+
+test("note_create reports the stored low folio and the unrecorded one", async () => {
+  await seedOcrDocument()
+  const result = (await noteCreateTool.handler(
+    {
+      title: "Note OCR",
+      body_md: `[[${OCR_ARK}|Source|2]] [[${OCR_ARK}|Source|1]] [[${OCR_ARK}|Source|7]]`,
+    },
+    ctxFor(),
+  )) as Record<string, unknown>
+  assert.deepEqual(result["low_ocr_citations"], {
+    citations: [{ ark: OCR_ARK, folio: 2, ocr_quality: 0.661 }],
+    message: NOTE_LOW_OCR_NOTICE,
+  })
+  assert.deepEqual(result["ocr_unknown_citations"], {
+    citations: [{ ark: OCR_ARK, folio: 7, ocr_state: "not_recorded" }],
+    message: NOTE_OCR_UNKNOWN_NOTICE,
+  })
+})
+
+test("note_get and note_list carry the same OCR state", async () => {
+  const note = await prisma.note.findFirstOrThrow({ where: { projectId, title: "Note OCR" } })
+  const got = (await noteGetTool.handler({ id: note.id }, ctxFor())) as Record<string, unknown>
+  assert.deepEqual(got["low_ocr_citations"], {
+    citations: [{ ark: OCR_ARK, folio: 2, ocr_quality: 0.661 }],
+    message: NOTE_LOW_OCR_NOTICE,
+  })
+  const listed = (await noteListTool.handler({}, ctxFor())) as {
+    notes: Array<{ id: string; low_ocr_citation_count: number; ocr_unknown_citation_count: number }>
+  }
+  const row = listed.notes.find((n) => n.id === note.id)
+  assert.ok(row, "the note is listed")
+  assert.equal(row.low_ocr_citation_count, 1)
+  assert.equal(row.ocr_unknown_citation_count, 1)
+})
+
+test("a committed note_create whose OCR check fails is still a success, never isError", async () => {
+  const aborted = new AbortController()
+  aborted.abort()
+  const before = await prisma.note.count({ where: { projectId } })
+  const result = (await noteCreateTool.handler(
+    { title: "Note OCR check failed", body_md: `[[${OCR_ARK}|Source|2]]` },
+    { ...ctxFor(), signal: aborted.signal },
+  )) as Record<string, unknown>
+  assert.equal(await prisma.note.count({ where: { projectId } }), before + 1, "the note is written")
+  assert.ok(typeof result["note_id"] === "string")
+  assert.deepEqual(result["ocr_check"], { status: "failed", message: NOTE_OCR_CHECK_FAILED_NOTICE })
+})

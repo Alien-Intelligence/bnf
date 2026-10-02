@@ -16,6 +16,7 @@ import { ProjectQueries } from "@/models/projects/queries"
 import { NoteQueries } from "@/models/notes/queries"
 import { NoteService } from "@/models/notes/service"
 import { corpusProjectId } from "@/lib/authz/corpus-source"
+import { resolveCorpusProject } from "@/app/api/_corpus-source"
 import { updateNoteSchema } from "@/models/notes/types"
 import type { NoteDeleted, NoteDetail } from "@/models/notes/schema"
 
@@ -24,14 +25,17 @@ type RouteCtx = { params: Promise<{ nid: string }> }
 export const GET = withAuth(async (req, _user, bouncer, ctx: RouteCtx) => {
   const { nid } = await ctx.params
 
-  const note = await NoteQueries.getDetail(nid)
+  const note = await NoteQueries.get(nid)
   if (!note) return notFound("Note introuvable")
 
   const project = await ProjectQueries.get(note.projectId)
   if (!project) return notFound("Projet introuvable")
   await bouncer.with(NotePolicy).authorize("read", project)
 
-  return ok<NoteDetail>(note)
+  // Authorized: now add the cited folios' OCR quality, read on the corpus the
+  // note's citations were validated against. A revoked derived workspace keeps
+  // reading its own notes (and the quality of the folios they already cite).
+  return ok<NoteDetail>(await NoteService.detail(note, corpusProjectId(project)))
 })
 
 export const PUT = withAuth(async (req, _user, bouncer, ctx: RouteCtx) => {
@@ -47,8 +51,12 @@ export const PUT = withAuth(async (req, _user, bouncer, ctx: RouteCtx) => {
   await bouncer.with(NotePolicy).authorize("update", project, note)
 
   // Citations are validated against the corpus the note's project reads —
-  // the source's when that project is a derived workspace.
-  const updated = await NoteService.update(nid, corpusProjectId(project), {
+  // the source's when that project is a derived workspace; a revoked grant is
+  // a 409, never a write validated against a corpus no longer reachable.
+  const corpusId = resolveCorpusProject(project)
+  if (corpusId instanceof Response) return corpusId
+
+  const updated = await NoteService.update(nid, corpusId, {
     title: parsed.title,
     bodyMd: parsed.bodyMd,
   })
@@ -56,10 +64,10 @@ export const PUT = withAuth(async (req, _user, bouncer, ctx: RouteCtx) => {
   if (!updated) return notFound("Note introuvable")
 
   // Re-fetch to include fresh citations (and their folios' OCR quality).
-  const full = await NoteQueries.getDetail(updated.note.id)
+  const full = await NoteQueries.get(updated.note.id)
   // Deleted between the write and the re-read.
   if (!full) return notFound("Note introuvable")
-  return ok<NoteDetail>(full)
+  return ok<NoteDetail>(await NoteService.detail(full, corpusId))
 })
 
 export const DELETE = withAuth(async (req, _user, bouncer, ctx: RouteCtx) => {

@@ -434,6 +434,31 @@ export const OCR_SYNC_BUILDING_RECHECK_MS = OCR_SYNC_SWEEP_INTERVAL_MS
 export const OCR_SYNC_UNAVAILABLE_RECHECK_MS = 24 * 60 * 60 * 1_000
 
 /**
+ * Consecutive contract failures (the worker refused the ARK or answered it
+ * outside the contract) after which an ARK is `quarantined`: no automatic
+ * recheck until a re-ingest requests a resync. One poison ARK must never
+ * starve the sweep (CLAUDE_ERROR_PATTERNS §10).
+ */
+export const OCR_SYNC_MAX_ATTEMPTS = 5
+
+/** Backoff of a contract-failing ARK: base × 2^(attempt − 1), capped. */
+export const OCR_SYNC_REJECT_BACKOFF_BASE_MS = OCR_SYNC_SWEEP_INTERVAL_MS
+export const OCR_SYNC_REJECT_BACKOFF_MAX_MS = OCR_SYNC_UNAVAILABLE_RECHECK_MS
+
+/**
+ * Wall-clock ceiling of one drain (forced + sweep), checked between batches.
+ * Below the sweep interval so a drain never overlaps the next tick by design.
+ */
+export const OCR_SYNC_DRAIN_DEADLINE_MS = 2 * 60 * 1_000
+
+/**
+ * Ceiling on one database await in the OCR-quality paths (the drainer and the
+ * agent-tool reads). Prisma takes no per-query signal, so the await is raced
+ * against this deadline (lib/async/deadline.ts) and fails loudly.
+ */
+export const OCR_DB_TIMEOUT_MS = 10_000
+
+/**
  * Sanity cap on the folios one worker artifact may carry — above any worker
  * MAX_OCR_PAGES. A response beyond it is a contract break, not a big document.
  */
@@ -450,6 +475,9 @@ export const RAG_OCR_LOW_FOLIOS_MAX = 20
  * this shared instance — it is a stateful /g regex.
  */
 export const PROCESSED_TEXT_FOLIO_HEADING = /^## Folio (\d+)$/gm
+
+/** File name of a whole-carnet Markdown export (in-espace Carnet and the Carnet page). */
+export const CARNET_EXPORT_FILENAME = "carnet-de-recherche.md"
 
 // ---------------------------------------------------------------------------
 // Agent runtime

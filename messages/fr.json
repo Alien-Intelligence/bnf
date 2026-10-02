@@ -520,6 +520,15 @@
           "ingestSansTexte": "Sans texte · non ingéré",
           "ingestNonNumerise": "Non ingéré",
           "unknown": "—"
+        },
+        "ocrQuality": {
+          "docRate": "Taux OCR du document : {rate} %",
+          "noRate": "Taux OCR non publié par la BnF",
+          "pending": "Qualité OCR : en attente de synchronisation",
+          "building": "Qualité OCR : calcul en cours",
+          "unavailable": "Qualité OCR non disponible",
+          "quarantined": "Qualité OCR non disponible (synchronisation suspendue)",
+          "loadError": "Impossible de charger la qualité OCR."
         }
       },
       "indexation": {
@@ -795,7 +804,9 @@
       "empty": "Aucune note dans ce carnet.",
       "loadError": "Impossible de charger cette note.",
       "exportBlocked": "Certaines notes n'ont pas pu être chargées : rechargez-les avant d'exporter.",
-      "retryLoad": "Recharger les notes"
+      "retryLoad": "Recharger les notes",
+      "loadListError": "Impossible de charger la liste des notes.",
+      "exportPartial": "Toutes les notes doivent être chargées avant l'export."
     },
     "revoked": {
       "title": "Accès au corpus révoqué",
@@ -830,7 +841,9 @@
       "lowFolio": "Qualité faible — vérifiez la citation sur la source",
       "unavailable": "Qualité OCR non disponible",
       "docRate": "Taux OCR du document : {rate} %",
-      "loadError": "Impossible de charger la qualité OCR."
+      "loadError": "Impossible de charger la qualité OCR.",
+      "pillUnavailable": "qualité OCR non disponible pour ce folio",
+      "folioNotRecorded": "Qualité OCR non enregistrée pour ce folio"
     }
   },
   "ingest": {

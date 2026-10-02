@@ -13,12 +13,14 @@ import "server-only"
 
 import { z } from "zod"
 import { defineTool } from "@alien/chat-sdk/claude"
-import { prisma } from "@/lib/db"
+import { withDeadline } from "@/lib/async/deadline"
+import { OCR_DB_TIMEOUT_MS } from "@/lib/constants"
+import { arkSchema } from "@/lib/validation/ark"
 import { DocumentQueries } from "@/models/documents/queries"
-import { toDocumentOcrView } from "@/models/documents/schema"
 import type { TurnScopedCtx } from "./registry-factory"
-import { AGENT_TOOLS } from "./constants"
-import { docOcrSummary } from "./rag-ocr"
+import { AGENT_TOOLS, ARK_NOT_IN_CORPUS_ERROR } from "./constants"
+import { CORPUS_ACCESS_REVOKED_ERROR } from "./ingestion-guard"
+import { loadDocOcrSummary } from "./rag-ocr"
 
 // ---------------------------------------------------------------------------
 // doc_get
@@ -32,29 +34,30 @@ export const docGetTool = defineTool<
   description:
     "Fetch a corpus document's metadata (title, author, year, type, language, source, " +
     "excerpt) and its IIIF manifest URL by ARK, plus its OCR quality summary " +
-    "(ocr: status, ocrRate = the BnF \"Taux OCR\" 0–1, scoredFolios, and the " +
-    "lowFolios / lowFolioCount whose text is poorly recognised). " +
+    "(ocr: status — only `available` means the quality is known, any other status " +
+    "means UNKNOWN, never 'good' —, ocrRate = the BnF \"Taux OCR\" 0–1, scoredFolios, " +
+    "and the lowFolios / lowFolioCount whose text is poorly recognised). " +
     "Only documents already in this project's corpus can be retrieved — " +
     "pass an ARK from rag_query results or from the user's own reference. " +
     "Returns an error if the ARK is not in the corpus.",
   inputSchema: z.object({
-    ark: z
-      .string()
-      .describe(
-        "The BnF ARK identifier (e.g. \"ark:/12148/bpt6k2839841\"). " +
-          "Never fabricate or alter an ARK.",
-      ),
+    ark: arkSchema.describe(
+      "The BnF ARK identifier (e.g. \"ark:/12148/bpt6k2839841\"). " +
+        "Never fabricate or alter an ARK.",
+    ),
   }),
   handler: async (input, ctx) => {
-    const doc = await prisma.document.findUnique({
-      where: {
-        projectId_ark: { projectId: ctx.corpusProjectId, ark: input.ark },
-      },
-    })
+    // A derived workspace whose grant was revoked no longer reads the source.
+    if (!ctx.corpusReachable) return { error: CORPUS_ACCESS_REVOKED_ERROR }
 
+    const doc = await withDeadline(DocumentQueries.getByArk(ctx.corpusProjectId, input.ark), {
+      label: "doc_get document read",
+      ms: OCR_DB_TIMEOUT_MS,
+      signal: ctx.signal,
+    })
     if (!doc) {
       return {
-        error: "ark_not_in_corpus",
+        error: ARK_NOT_IN_CORPUS_ERROR,
         ark: input.ark,
         message:
           "Ce document ne fait pas partie du corpus de ce projet. " +
@@ -62,10 +65,8 @@ export const docGetTool = defineTool<
       }
     }
 
-    // Gated by the corpus Document lookup above (plan D8).
-    const ocr = docOcrSummary(
-      toDocumentOcrView(input.ark, await DocumentQueries.ocrForArk(input.ark)),
-    )
+    // Gated by the corpus Document lookup above and, again, inside the read (D8).
+    const ocr = await loadDocOcrSummary(ctx.corpusProjectId, input.ark, ctx.signal)
     return { document: doc, ocr }
   },
 })

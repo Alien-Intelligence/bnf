@@ -28,9 +28,21 @@ import { defineTool } from "@alien/chat-sdk/claude"
 import { NoteService } from "@/models/notes/service"
 import { NoteQueries } from "@/models/notes/queries"
 import { parseCitations } from "@/lib/citations/syntax"
+import { folioOcrKey, folioOcrState, type OcrIndex } from "@/lib/ocr/quality"
+import type { Citation } from "@/models/notes/schema"
 import type { TurnScopedCtx } from "./registry-factory"
-import { AGENT_TOOLS, NOTE_LOW_OCR_NOTICE } from "./constants"
-import { loadFolioIndex, lowOcrForNoteResult, type LowOcrCitation } from "./rag-ocr"
+import {
+  AGENT_TOOLS,
+  NOTE_LOW_OCR_NOTICE,
+  NOTE_OCR_CHECK_FAILED_NOTICE,
+  NOTE_OCR_UNKNOWN_NOTICE,
+} from "./constants"
+import {
+  loadOcrIndex,
+  noteCitationRefs,
+  noteOcrReport,
+  type NoteOcrReport,
+} from "./rag-ocr"
 import { NOTE_NOT_INGESTED_ERROR, resolveIngestedCorpus } from "./ingestion-guard"
 
 /**
@@ -43,27 +55,50 @@ import { NOTE_NOT_INGESTED_ERROR, resolveIngestedCorpus } from "./ingestion-guar
 export const NOTE_NOT_FOUND_ERROR = "note_not_found"
 
 /**
+ * What is known of a note's citations' OCR quality (feedback 2026-09-29 #7):
+ * the report, or — for a write, where the note is ALREADY committed — the fact
+ * that the check itself failed. A failed check never turns a committed write
+ * into an error the model would retry (CLAUDE_ERROR_PATTERNS §15).
+ */
+export type NoteOcrOutcome = { kind: "checked"; report: NoteOcrReport } | { kind: "check_failed" }
+
+/** The OCR fields of a note tool result; none at all when nothing is to be said. */
+export function noteOcrFields(outcome: NoteOcrOutcome) {
+  if (outcome.kind === "check_failed") {
+    return { ocr_check: { status: "failed" as const, message: NOTE_OCR_CHECK_FAILED_NOTICE } }
+  }
+  const { low, unknown } = outcome.report
+  return {
+    ...(low.length > 0
+      ? { low_ocr_citations: { citations: low, message: NOTE_LOW_OCR_NOTICE } }
+      : {}),
+    ...(unknown.length > 0
+      ? { ocr_unknown_citations: { citations: unknown, message: NOTE_OCR_UNKNOWN_NOTICE } }
+      : {}),
+  }
+}
+
+/**
  * The tool result for a write, naming any citation the corpus could not vouch
  * for. A rejected ARK is not a failure — the note was written, and its body
  * still contains the text — but the agent must be told, or it will believe it
  * cited a source it actually invented (playbook/citations.md).
  *
- * It also names the citations of low-OCR folios (feedback 2026-09-29 #7), so
- * the agent knows the BnF disclaimer is added to the note BY CODE and does not
- * write its own. Without any, the result is unchanged. Exported for the tests.
+ * It also names the citations of low-OCR folios and those whose quality is not
+ * available yet, so the agent knows the BnF disclaimer is added BY CODE (and
+ * does not write its own) and never presents an unknown quality as verified.
+ * With nothing to say, the result is unchanged. Exported for the tests.
  */
 export function noteResult(
   note: { id: string; title: string; citationCount: number },
   rejected: string[],
-  lowOcr: LowOcrCitation[],
+  ocr: NoteOcrOutcome,
 ) {
   const base = {
     note_id: note.id,
     title: note.title,
     citation_count: note.citationCount,
-    ...(lowOcr.length > 0
-      ? { low_ocr_citations: { citations: lowOcr, message: NOTE_LOW_OCR_NOTICE } }
-      : {}),
+    ...noteOcrFields(ocr),
   }
   if (rejected.length === 0) return base
   return {
@@ -79,15 +114,61 @@ export function noteResult(
 }
 
 /**
- * The written note's low-OCR citations. Only the citations the corpus vouched
- * for are looked up (rejected ARKs never reach the global quality table).
+ * The OCR check of a COMMITTED write: the written body's corpus-vouched
+ * citations against the stored quality. Its failure is logged and reported in
+ * the result (`ocr_check: failed`), never thrown — the note exists.
  */
-async function lowOcrOf(body: string, rejected: string[]): Promise<LowOcrCitation[]> {
-  const excluded = new Set(rejected)
-  const refs = parseCitations(body)
-    .filter((c) => !excluded.has(c.ark))
-    .map((c) => ({ ark: c.ark, folio: c.folio }))
-  return lowOcrForNoteResult(body, await loadFolioIndex(refs), rejected)
+async function checkWrittenNoteOcr(
+  body: string,
+  rejected: string[],
+  ctx: TurnScopedCtx,
+): Promise<NoteOcrOutcome> {
+  try {
+    const index = await loadOcrIndex(ctx.corpusProjectId, noteCitationRefs(body, rejected), ctx.signal)
+    return { kind: "checked", report: noteOcrReport(body, index, rejected) }
+  } catch (err) {
+    console.error("[note] OCR-quality check after a committed write failed:", err)
+    return { kind: "check_failed" }
+  }
+}
+
+/**
+ * The body ARKs a note's Citation rows do NOT hold — the ones the corpus
+ * refused when the note was written. They are never looked up.
+ */
+function uncitedArks(body: string, citations: Array<Pick<Citation, "ark">>): string[] {
+  const vouched = new Set(citations.map((c) => c.ark))
+  return [...new Set(parseCitations(body).map((c) => c.ark))].filter((a) => !vouched.has(a))
+}
+
+/** Pinned first, then most recently updated — the order of NoteQueries.listForProject. */
+function sortLikeNoteList<T extends { pinned: boolean; updatedAt: Date }>(notes: T[]): T[] {
+  return [...notes].sort(
+    (a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt.getTime() - a.updatedAt.getTime(),
+  )
+}
+
+/** Low / unknown counts of some Citation rows against an index, one per (ark, folio). */
+export function citationOcrCounts(
+  citations: Array<Pick<Citation, "ark" | "folio">>,
+  index: OcrIndex,
+): { low: number; unknown: number } {
+  const seen = new Set<string>()
+  let low = 0
+  let unknown = 0
+  for (const c of citations) {
+    if (c.folio === null) continue
+    const key = folioOcrKey(c.ark, c.folio)
+    if (seen.has(key)) continue
+    seen.add(key)
+    const state = folioOcrState(index, c.ark, c.folio)
+    if (state.kind === "recorded") {
+      if (state.view.low) low += 1
+    } else {
+      unknown += 1
+    }
+  }
+  return { low, unknown }
 }
 
 // ---------------------------------------------------------------------------
@@ -100,11 +181,36 @@ export const noteListTool = defineTool<z.ZodObject<Record<never, never>>, TurnSc
     "List all research notes for this project, ordered most-recently-updated first. " +
     "Call this before note_create to check whether a closely related note already exists — " +
     "prefer note_update over creating a near-duplicate. " +
-    "Each note's id is the value to use when linking to it with [[note:<id>|<label>]].",
+    "Each note's id is the value to use when linking to it with [[note:<id>|<label>]]. " +
+    "Each note also carries low_ocr_citation_count (citations of poorly recognised " +
+    "folios — the note shows the BnF disclaimer) and ocr_unknown_citation_count " +
+    "(citations whose OCR quality is not available yet — unknown, not 'good').",
   inputSchema: z.object({}),
   handler: async (_input, ctx) => {
-    const notes = await NoteQueries.listForProject(ctx.projectId)
-    return { notes }
+    // One read (notes + their Citation rows), ordered as NoteQueries.listForProject.
+    const notes = sortLikeNoteList(await NoteQueries.listWithCitationsForProject(ctx.projectId))
+    const index = await loadOcrIndex(
+      ctx.corpusProjectId,
+      notes.flatMap((n) =>
+        n.citations.flatMap((c) => (c.folio === null ? [] : [{ ark: c.ark, folio: c.folio }])),
+      ),
+      ctx.signal,
+    )
+    return {
+      notes: notes.map((n) => {
+        const counts = citationOcrCounts(n.citations, index)
+        return {
+          id: n.id,
+          title: n.title,
+          updatedAt: n.updatedAt,
+          citationCount: n.citationCount,
+          pinned: n.pinned,
+          createdAt: n.createdAt,
+          low_ocr_citation_count: counts.low,
+          ocr_unknown_citation_count: counts.unknown,
+        }
+      }),
+    }
   },
 })
 
@@ -119,14 +225,26 @@ export const noteGetTool = defineTool<
   name: AGENT_TOOLS.noteGet,
   description:
     "Fetch the full body and citations of a single note by its id. " +
-    "Use this to read a note before deciding whether to update it.",
+    "Use this to read a note before deciding whether to update it. " +
+    "The result also names its low_ocr_citations (poorly recognised folios — the " +
+    "note shows the BnF disclaimer) and ocr_unknown_citations (quality not " +
+    "available yet — unknown, not 'good').",
   inputSchema: z.object({
     id: z.string().uuid().describe("The note's UUID."),
   }),
   handler: async (input, ctx) => {
     const note = await NoteQueries.getForProject(input.id, ctx.projectId)
     if (!note) return { error: NOTE_NOT_FOUND_ERROR }
-    return { note }
+    const refused = uncitedArks(note.body_md, note.citations)
+    const index = await loadOcrIndex(
+      ctx.corpusProjectId,
+      noteCitationRefs(note.body_md, refused),
+      ctx.signal,
+    )
+    return {
+      note,
+      ...noteOcrFields({ kind: "checked", report: noteOcrReport(note.body_md, index, refused) }),
+    }
   },
 })
 
@@ -190,7 +308,7 @@ export const noteCreateTool = defineTool<
       data: { kind: "created", noteId: note.id, title: note.title },
     })
 
-    return noteResult(note, rejected, await lowOcrOf(note.body_md, rejected))
+    return noteResult(note, rejected, await checkWrittenNoteOcr(note.body_md, rejected, ctx))
   },
 })
 
@@ -257,7 +375,7 @@ export const noteUpdateTool = defineTool<
     return noteResult(
       written.note,
       written.rejected,
-      await lowOcrOf(written.note.body_md, written.rejected),
+      await checkWrittenNoteOcr(written.note.body_md, written.rejected, ctx),
     )
   },
 })
@@ -317,7 +435,7 @@ export const noteAppendTool = defineTool<
     return noteResult(
       written.note,
       written.rejected,
-      await lowOcrOf(written.note.body_md, written.rejected),
+      await checkWrittenNoteOcr(written.note.body_md, written.rejected, ctx),
     )
   },
 })

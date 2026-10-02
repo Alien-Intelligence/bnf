@@ -3,217 +3,258 @@
 // artifacts into DocumentOcr / DocumentFolio (feedback 2026-09-29 #7, Track B,
 // plan D7: the app pulls; the terminal callback is not used).
 //
-// Three triggers, the lib/documents/resolver.ts pattern:
-//   - kickOcrSync(arks)   — after() a terminal ingest commit, FORCED: the
-//                           ARKs are re-pulled even when already available,
-//                           because a re-ingest may have re-OCR'd them;
-//   - startOcrSync()      — boot resume + a periodic sweep every
-//                           OCR_SYNC_SWEEP_INTERVAL_MS (instrumentation.ts);
-//   - the sweep itself    — every indexed ARK still pending (no row, or a
-//                           building / unavailable row past its recheck
-//                           window), cited ones first. This is also what drives
-//                           the backfill of documents indexed before the
-//                           feature: the worker queues a rate-gated build for
-//                           each missing artifact and answers `building`.
+// All the work to do is PERSISTED in the database, never in process memory, so
+// a restart or a worker outage loses nothing:
+//   - an indexed ARK with no DocumentOcr row is pending;
+//   - a row is due again at `next_check_at` (building, unavailable, backing off
+//     after a contract failure);
+//   - a re-ingest commit marks its ARKs due with a resync request, in the same
+//     transaction as the commit (IngestService → DocumentService.ocrResyncOp),
+//     then calls triggerOcrSync() so the pull happens within seconds.
+// The sweep (boot + every OCR_SYNC_SWEEP_INTERVAL_MS) drains whatever is due,
+// cited ARKs first; it is also what drives the backfill of documents indexed
+// before the feature (the worker answers `building` and builds them).
 //
-// One drain runs at a time (a process-wide guard); a trigger that arrives
-// while one is active is folded into it. Bounded per cycle
-// (OCR_SYNC_MAX_BATCHES_PER_CYCLE, CLAUDE_ERROR_PATTERNS §14), and every worker
-// call is bounded by WORKER_RUNNER_TIMEOUT_MS. A failed batch is logged with
-// its ARKs and re-thrown to the caller: its rows are untouched, so the next
-// sweep re-asks them — and a failed forced batch goes back on the forced queue.
+// Failure handling (CLAUDE_ERROR_PATTERNS §10/§14):
+//   - OcrSyncUnavailableError (worker unreachable, 5xx, old worker): the drain
+//     stops; nothing is written, nobody is penalised; the next sweep retries.
+//   - OcrSyncContractError (a 400, an invalid answer): the batch is split in
+//     halves until the ARK at fault is isolated; that ARK backs off
+//     exponentially and is quarantined after OCR_SYNC_MAX_ATTEMPTS, so one
+//     poison ARK can never starve the sweep. The healthy halves are written.
+//   - every database await is bounded by OCR_DB_TIMEOUT_MS and the whole drain
+//     by OCR_SYNC_DRAIN_DEADLINE_MS; the running guard is released in `finally`.
 //
-// A no-op unless CLUSTER_MODE=real: the fake runner prepares no pages, so
-// there is nothing to sync.
+// Layering: a background drainer is a system entry point, the way a route is a
+// user one — it calls DocumentService for every write (the only writer of the
+// two tables) and DocumentQueries for its reads, never Prisma itself, exactly
+// as lib/ingest/watchdog.ts drives IngestService. A no-op unless
+// CLUSTER_MODE=real: the fake runner prepares no pages.
 import "server-only"
 
-import { after } from "next/server"
-
+import { withDeadline } from "@/lib/async/deadline"
+import { CLUSTER_MODE, clusterMode } from "@/lib/cluster/mode"
+import { OcrSyncContractError } from "@/lib/cluster/ocr-quality"
 import {
+  OCR_DB_TIMEOUT_MS,
   OCR_SYNC_BATCH_SIZE,
-  OCR_SYNC_BUILDING_RECHECK_MS,
+  OCR_SYNC_DRAIN_DEADLINE_MS,
   OCR_SYNC_MAX_BATCHES_PER_CYCLE,
   OCR_SYNC_SWEEP_INTERVAL_MS,
-  OCR_SYNC_UNAVAILABLE_RECHECK_MS,
 } from "@/lib/constants"
 import { DocumentQueries } from "@/models/documents/queries"
-import { DocumentService, type OcrSyncWritePlan } from "@/models/documents/service"
+import { DocumentService } from "@/models/documents/service"
+import type { OcrSyncWritePlan } from "@/models/documents/schema"
 
 /** Structured log line for the sync. Prefix lets ops grep `[ocr-sync]`. */
 function log(msg: string): void {
   console.log(`[ocr-sync] ${msg}`)
 }
 
-function syncEnabled(): boolean {
-  return process.env.CLUSTER_MODE === "real"
-}
-
 // ---------------------------------------------------------------------------
 // Pure planning (tests/models/documents/ocr-sync.test.ts)
 // ---------------------------------------------------------------------------
 
-export function chunk<T>(items: T[], size: number): T[][] {
-  if (!Number.isInteger(size) || size < 1) {
-    throw new Error(`chunk: size must be a positive integer, got ${size}`)
-  }
-  const out: T[][] = []
-  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size))
-  return out
-}
-
-/** Forced ARKs are batched exactly as given (deduped) — the pending filter never applies. */
-export function planForcedBatches(arks: string[]): string[][] {
-  return chunk([...new Set(arks)], OCR_SYNC_BATCH_SIZE)
-}
-
 /**
- * Whether a sweep cycle asks for another pending batch: the last one was full
- * (a partial batch means the pending set is exhausted) and the per-cycle
- * budget is not spent.
+ * Whether a sweep asks for another pending batch: the last one was full (a
+ * partial batch means the pending set is exhausted) and the per-cycle budget
+ * is not spent.
  */
 export function shouldContinueCycle(p: { batchesDone: number; lastBatchSize: number }): boolean {
   return p.lastBatchSize === OCR_SYNC_BATCH_SIZE && p.batchesDone < OCR_SYNC_MAX_BATCHES_PER_CYCLE
 }
 
-/** The checked_at cutoffs before which building / unavailable rows are re-asked. */
-export function recheckCutoffs(now: Date): { buildingCutoff: Date; unavailableCutoff: Date } {
-  return {
-    buildingCutoff: new Date(now.getTime() - OCR_SYNC_BUILDING_RECHECK_MS),
-    unavailableCutoff: new Date(now.getTime() - OCR_SYNC_UNAVAILABLE_RECHECK_MS),
-  }
+/** Split a batch that broke the contract in two halves to isolate the ARK at fault. */
+export function splitBatch(arks: string[]): [string[], string[]] {
+  if (arks.length < 2) throw new Error(`splitBatch: cannot split a batch of ${arks.length}`)
+  const mid = Math.ceil(arks.length / 2)
+  return [arks.slice(0, mid), arks.slice(mid)]
+}
+
+/** Milliseconds left before `deadline`, never negative. */
+export function remainingMs(deadline: number, now: number): number {
+  return Math.max(0, deadline - now)
 }
 
 // ---------------------------------------------------------------------------
 // I/O shell
 // ---------------------------------------------------------------------------
 
-type Tally = { available: number; building: number; unavailable: number }
+export type OcrSyncTally = {
+  available: number
+  building: number
+  unavailable: number
+  /** ARKs isolated as breaking the contract this drain (backed off or quarantined). */
+  rejected: number
+}
 
-function addToTally(tally: Tally, plan: OcrSyncWritePlan): void {
+function emptyTally(): OcrSyncTally {
+  return { available: 0, building: 0, unavailable: 0, rejected: 0 }
+}
+
+function addPlan(tally: OcrSyncTally, plan: OcrSyncWritePlan): void {
   tally.available += plan.available.length
   tally.building += plan.building.length
   tally.unavailable += plan.unavailable.length
 }
 
-/** One batch, logged with its ARKs on failure and re-thrown. */
-async function syncBatch(arks: string[], tally: Tally): Promise<void> {
-  try {
-    addToTally(tally, await DocumentService.syncOcrBatch(arks))
-  } catch (err) {
-    console.error(`[ocr-sync] batch of ${arks.length} failed (${arks.join(", ")}):`, err)
-    throw err
-  }
+/** A drain stops at its deadline or when its owner aborts it. */
+type DrainBudget = { deadline: number; signal: AbortSignal }
+
+function budgetLeft(budget: DrainBudget): boolean {
+  return !budget.signal.aborted && remainingMs(budget.deadline, Date.now()) > 0
 }
 
 /**
- * Sync the given ARKs now, batch by batch, regardless of their stored state.
- * Throws on the first failed batch (already logged); earlier batches stay
- * written.
+ * Sync one batch; on a contract break, bisect until the ARK at fault is
+ * isolated and record its rejection. Anything else (worker unavailable,
+ * deadline, database) is logged with the batch's ARKs and re-thrown.
  */
-export async function syncOcrForArks(arks: string[]): Promise<Tally> {
-  const tally: Tally = { available: 0, building: 0, unavailable: 0 }
-  for (const batch of planForcedBatches(arks)) await syncBatch(batch, tally)
+async function syncIsolating(arks: string[], tally: OcrSyncTally, budget: DrainBudget): Promise<void> {
+  try {
+    const plan = await withDeadline(DocumentService.syncOcrBatch(arks), {
+      label: `[ocr-sync] batch of ${arks.length}`,
+      ms: remainingMs(budget.deadline, Date.now()),
+      signal: budget.signal,
+    })
+    addPlan(tally, plan)
+  } catch (err) {
+    if (!(err instanceof OcrSyncContractError)) {
+      console.error(`[ocr-sync] batch of ${arks.length} failed (${arks.join(", ")}):`, err)
+      throw err
+    }
+    if (arks.length === 1) {
+      const [ark] = arks
+      console.error(`[ocr-sync] ${ark} breaks the worker contract:`, err.message)
+      await withDeadline(DocumentService.recordOcrRejection(ark, err.message, new Date()), {
+        label: `[ocr-sync] record rejection of ${ark}`,
+        ms: OCR_DB_TIMEOUT_MS,
+        signal: budget.signal,
+      })
+      tally.rejected += 1
+      return
+    }
+    for (const half of splitBatch(arks)) {
+      if (!budgetLeft(budget)) return
+      await syncIsolating(half, tally, budget)
+    }
+  }
+}
+
+/** One bounded sweep over the due ARKs. */
+async function sweepCycle(budget: DrainBudget): Promise<OcrSyncTally> {
+  const tally = emptyTally()
+  let batchesDone = 0
+  let lastBatchSize = 0
+  do {
+    if (!budgetLeft(budget)) break
+    const pending = await withDeadline(
+      DocumentQueries.pendingOcrArks({ limit: OCR_SYNC_BATCH_SIZE, now: new Date() }),
+      { label: "[ocr-sync] pending ARKs", ms: OCR_DB_TIMEOUT_MS, signal: budget.signal },
+    )
+    lastBatchSize = pending.length
+    if (pending.length > 0) await syncIsolating(pending, tally, budget)
+    batchesDone += 1
+  } while (shouldContinueCycle({ batchesDone, lastBatchSize }))
   return tally
 }
 
-/** One bounded sweep cycle over the pending ARKs. */
-async function sweepCycle(): Promise<void> {
-  const tally: Tally = { available: 0, building: 0, unavailable: 0 }
-  let batchesDone = 0
-  let lastBatchSize: number
-  do {
-    const pending = await DocumentQueries.pendingOcrArks({
-      limit: OCR_SYNC_BATCH_SIZE,
-      ...recheckCutoffs(new Date()),
-    })
-    lastBatchSize = pending.length
-    if (pending.length > 0) await syncBatch(pending, tally)
-    batchesDone += 1
-  } while (shouldContinueCycle({ batchesDone, lastBatchSize }))
-
-  if (tally.available + tally.building + tally.unavailable === 0) return
-  const left = await DocumentQueries.countPendingOcrArks(recheckCutoffs(new Date()))
-  log(
-    `cycle: available=${tally.available}, building=${tally.building}, unavailable=${tally.unavailable}, pending-left=${left}`,
-  )
+// Process-wide re-entrancy guard: one drain at a time; a trigger that arrives
+// while one runs sets `rerun` so the active drain sweeps again (the due rows
+// are in the database, so nothing is lost either way).
+const state = { running: false, rerun: false }
+const lifecycle: { controller: AbortController; stop: (() => void) | null } = {
+  controller: new AbortController(),
+  stop: null,
 }
 
-// Process-wide re-entrancy guard: one drain at a time. Triggers that arrive
-// while it runs are folded in — forced ARKs through the queue, a sweep through
-// the flag — and the active drain loops until both are empty.
-const forcedQueue = new Set<string>()
-const state = { running: false, sweepRequested: false }
-
 async function drain(): Promise<void> {
-  if (state.running) return
+  if (state.running) {
+    state.rerun = true
+    return
+  }
   state.running = true
+  const budget: DrainBudget = {
+    deadline: Date.now() + OCR_SYNC_DRAIN_DEADLINE_MS,
+    signal: lifecycle.controller.signal,
+  }
   try {
-    while (forcedQueue.size > 0 || state.sweepRequested) {
-      if (forcedQueue.size > 0) {
-        const arks = [...forcedQueue]
-        forcedQueue.clear()
-        try {
-          const tally = await syncOcrForArks(arks)
-          log(
-            `kick: ${arks.length} ARK(s) — available=${tally.available}, building=${tally.building}, unavailable=${tally.unavailable}`,
-          )
-        } catch (err) {
-          // Back on the queue: the next sweep's drain re-pulls them, so a
-          // re-OCR'd document is not left with its old folios.
-          for (const ark of arks) forcedQueue.add(ark)
-          throw err
-        }
-      }
-      if (state.sweepRequested) {
-        state.sweepRequested = false
-        await sweepCycle()
-      }
-    }
+    do {
+      state.rerun = false
+      const tally = await sweepCycle(budget)
+      if (tally.available + tally.building + tally.unavailable + tally.rejected === 0) continue
+      const left = await withDeadline(DocumentQueries.countPendingOcrArks({ now: new Date() }), {
+        label: "[ocr-sync] pending count",
+        ms: OCR_DB_TIMEOUT_MS,
+        signal: budget.signal,
+      })
+      log(
+        `cycle: available=${tally.available}, building=${tally.building}, unavailable=${tally.unavailable}, rejected=${tally.rejected}, pending-left=${left}`,
+      )
+    } while (state.rerun && budgetLeft(budget))
   } finally {
     state.running = false
   }
 }
 
+function syncEnabled(): boolean {
+  return clusterMode() === CLUSTER_MODE.REAL
+}
+
 /**
- * Re-pull `arks` after the current response is flushed — called once a
- * terminal ingest commit lands. Must run inside a request scope (`after`).
+ * Ask for a drain now — called right after an ingest commit has persisted its
+ * resync requests (IngestService). Fire-and-forget by design: the work is in
+ * the database, so a lost trigger only delays it to the next sweep. Safe
+ * outside a request scope (the watchdog's commits).
  */
-export function kickOcrSync(arks: string[]): void {
-  if (!syncEnabled() || arks.length === 0) return
-  for (const ark of arks) forcedQueue.add(ark)
-  after(async () => {
-    await drain().catch((err: unknown) => {
-      console.error("[ocr-sync] kicked drain failed:", err)
-    })
+export function triggerOcrSync(): void {
+  if (!syncEnabled()) return
+  void drain().catch((err: unknown) => {
+    console.error("[ocr-sync] triggered drain failed:", err)
   })
 }
 
 /**
- * Sweep the pending ARKs (plus any forced ARKs left by a failed kick). Throws
- * what the drain threw; the caller logs it. Resolves immediately when a drain
- * is already active — the flag makes that drain run the sweep.
+ * Drain whatever is due. Throws what the drain threw; the caller logs it.
+ * Resolves at once when a drain is already active (that drain sweeps again).
  */
 export async function resumePendingOcrSync(): Promise<void> {
   if (!syncEnabled()) return
-  state.sweepRequested = true
   await drain()
 }
 
 /**
- * Boot resume + periodic sweep (instrumentation.ts). One boot log line and no
- * timer outside real mode.
+ * Boot resume + periodic sweep (instrumentation.ts). Returns a stop handle
+ * that clears the timer and aborts an in-flight drain at its next await. The
+ * timer is unref'd so it never holds the process open on shutdown. No signal
+ * handler is installed here: a SIGTERM listener would remove Node's default
+ * exit; the platform's shutdown ends the process and the unref'd timer with it.
+ * One log line and no timer outside real mode.
  */
-export function startOcrSync(): void {
+export function startOcrSync(): { stop: () => void } {
   if (!syncEnabled()) {
     log("disabled: CLUSTER_MODE is not real (no worker artifacts to sync)")
-    return
+    return { stop: () => {} }
   }
+  // A second start (dev hot-reload re-running register()) replaces the first
+  // timer instead of stacking another one.
+  lifecycle.stop?.()
+  lifecycle.controller = new AbortController()
   void resumePendingOcrSync().catch((err: unknown) => {
     console.error("[ocr-sync] boot sweep failed:", err)
   })
-  setInterval(() => {
+  const timer = setInterval(() => {
     void resumePendingOcrSync().catch((err: unknown) => {
       console.error("[ocr-sync] periodic sweep failed:", err)
     })
   }, OCR_SYNC_SWEEP_INTERVAL_MS)
+  timer.unref()
+  const controller = lifecycle.controller
+  const stop = () => {
+    clearInterval(timer)
+    controller.abort()
+    if (lifecycle.stop === stop) lifecycle.stop = null
+  }
+  lifecycle.stop = stop
+  return { stop }
 }

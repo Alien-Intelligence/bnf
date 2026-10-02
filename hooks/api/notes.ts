@@ -3,20 +3,34 @@
 // hooks/api/notes.ts
 // TanStack Query hooks for the notes model.
 // All HTTP calls go through apiFetch — never raw fetch().
-// Query keys are defined once at the top; never inlined at the call site.
+// Endpoints and query keys are defined once at the top; never inlined at the
+// call site (a disabled query's key comes from the same factory, with null).
 
 import { useQuery, useQueries, useMutation, useQueryClient } from "@tanstack/react-query"
 import { apiFetch } from "@/lib/api-fetch"
-import type { NoteDetail, NoteListItem, NoteVersionListItem } from "@/models/notes/schema"
+import type {
+  NoteDeleted,
+  NoteDetail,
+  NoteListItem,
+  NoteVersionListItem,
+} from "@/models/notes/schema"
 import type { CreateNoteInput, UpdateNoteInput } from "@/models/notes/types"
+
+// ── Endpoints ─────────────────────────────────────────────────────────────────
+
+const PROJECT_NOTES_ENDPOINT = (projectId: string) => `/api/projects/${projectId}/notes`
+const NOTE_ENDPOINT = (noteId: string) => `/api/notes/${noteId}`
+const NOTE_VERSIONS_ENDPOINT = (noteId: string) => `/api/notes/${noteId}/versions`
 
 // ── Query keys ────────────────────────────────────────────────────────────────
 
 export const noteKeys = {
   all: (projectId: string) => ["notes", projectId] as const,
   list: (projectId: string) => ["notes", projectId, "list"] as const,
-  detail: (noteId: string) => ["notes", "detail", noteId] as const,
-  versions: (noteId: string) => ["notes", "versions", noteId] as const,
+  /** null = no note selected (the query is disabled). */
+  detail: (noteId: string | null) => ["notes", "detail", noteId] as const,
+  /** null = no note selected (the query is disabled). */
+  versions: (noteId: string | null) => ["notes", "versions", noteId] as const,
 }
 
 // ── Read hooks ────────────────────────────────────────────────────────────────
@@ -28,7 +42,7 @@ export function useNotes(
   return useQuery<NoteListItem[]>({
     queryKey: noteKeys.list(projectId),
     queryFn: async () => {
-      const res = await apiFetch(`/api/projects/${projectId}/notes`)
+      const res = await apiFetch(PROJECT_NOTES_ENDPOINT(projectId))
       if (!res.ok) throw new Error(`Failed to fetch notes: ${res.status}`)
       return res.json() as Promise<NoteListItem[]>
     },
@@ -38,26 +52,27 @@ export function useNotes(
 
 export function useNoteVersions(noteId: string | null) {
   return useQuery<{ versions: NoteVersionListItem[] }>({
-    queryKey: noteId ? noteKeys.versions(noteId) : ["notes", "versions", null],
+    queryKey: noteKeys.versions(noteId),
     queryFn: async () => {
-      const res = await apiFetch(`/api/notes/${noteId!}/versions`)
+      if (noteId === null) throw new Error("useNoteVersions: queryFn ran without a note id")
+      const res = await apiFetch(NOTE_VERSIONS_ENDPOINT(noteId))
       if (!res.ok) throw new Error(`Failed to fetch note versions: ${res.status}`)
       return res.json() as Promise<{ versions: NoteVersionListItem[] }>
     },
-    enabled: !!noteId,
+    enabled: noteId !== null,
   })
 }
 
 /** GET /api/notes/:nid — the note with its citations and their folios' OCR quality. */
 async function fetchNoteDetail(noteId: string): Promise<NoteDetail> {
-  const res = await apiFetch(`/api/notes/${noteId}`)
+  const res = await apiFetch(NOTE_ENDPOINT(noteId))
   if (!res.ok) throw new Error(`Failed to fetch note: ${res.status}`)
   return res.json() as Promise<NoteDetail>
 }
 
 export function useNote(noteId: string | null) {
   return useQuery<NoteDetail>({
-    queryKey: noteId ? noteKeys.detail(noteId) : ["notes", "detail", null],
+    queryKey: noteKeys.detail(noteId),
     queryFn: () => {
       if (noteId === null) throw new Error("useNote: queryFn ran without a note id")
       return fetchNoteDetail(noteId)
@@ -93,7 +108,7 @@ export function useCreateNote(projectId: string) {
   const qc = useQueryClient()
   return useMutation<NoteDetail, Error, CreateNoteInput>({
     mutationFn: async (body) => {
-      const res = await apiFetch(`/api/projects/${projectId}/notes`, {
+      const res = await apiFetch(PROJECT_NOTES_ENDPOINT(projectId), {
         method: "POST",
         body: JSON.stringify(body),
       })
@@ -108,7 +123,7 @@ export function useUpdateNote(noteId: string) {
   const qc = useQueryClient()
   return useMutation<NoteDetail, Error, UpdateNoteInput & { projectId: string }>({
     mutationFn: async ({ projectId: _projectId, ...body }) => {
-      const res = await apiFetch(`/api/notes/${noteId}`, {
+      const res = await apiFetch(NOTE_ENDPOINT(noteId), {
         method: "PUT",
         body: JSON.stringify(body),
       })
@@ -124,12 +139,18 @@ export function useUpdateNote(noteId: string) {
 
 export function useDeleteNote(projectId: string) {
   const qc = useQueryClient()
-  return useMutation<{ deleted: true }, Error, { noteId: string }>({
+  return useMutation<NoteDeleted, Error, { noteId: string }>({
     mutationFn: async ({ noteId }) => {
-      const res = await apiFetch(`/api/notes/${noteId}`, { method: "DELETE" })
+      const res = await apiFetch(NOTE_ENDPOINT(noteId), { method: "DELETE" })
       if (!res.ok) throw new Error(`Failed to delete note: ${res.status}`)
-      return res.json() as Promise<{ deleted: true }>
+      return res.json() as Promise<NoteDeleted>
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: noteKeys.list(projectId) }),
+    onSuccess: (_data, { noteId }) => {
+      // The deleted note's detail entry must not linger: the Carnet would keep
+      // rendering (or refetching into a 404) a note that no longer exists.
+      qc.removeQueries({ queryKey: noteKeys.detail(noteId) })
+      qc.removeQueries({ queryKey: noteKeys.versions(noteId) })
+      return qc.invalidateQueries({ queryKey: noteKeys.list(projectId) })
+    },
   })
 }
