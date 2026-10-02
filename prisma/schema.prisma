@@ -330,6 +330,53 @@ model Document {
 }
 
 // -----------------------------------------------------------------------------
+// DocumentOcr — OCR quality of a BnF document, keyed by ARK ALONE (not per
+// project): it is a property of the BnF content, which the worker caches and
+// shares across projects (worker-v2/src/domain/keys.ts). Mirrors the worker's
+// ocr-quality/<slug>.json artifact; written only by DocumentService.recordOcrSync
+// (lib/documents/ocr-sync.ts drives it). Every user-facing read is gated on the
+// reader's corpus (Citation rows, Document existence or the project's own RAG
+// dataset), so this global table is never an oracle for another project's corpus.
+// status: available | building | unavailable (OCR_SYNC_STATUS). No row = pending.
+// -----------------------------------------------------------------------------
+model DocumentOcr {
+  ark       String    @id
+  status    String
+  // "Taux OCR" / 100 from the IIIF manifest; null when BnF publishes none.
+  ocrRate   Float?    @map("ocr_rate")
+  // Why the worker could not build the artifact (status=unavailable only).
+  reason    String?
+  // Last time the worker was asked about this ARK (drives the recheck cadence).
+  checkedAt DateTime  @map("checked_at")
+  // Last time the folios below were replaced from an artifact (status=available).
+  syncedAt  DateTime? @map("synced_at")
+  folios    DocumentFolio[]
+
+  // Sweep lookup: building/unavailable rows due for a recheck.
+  @@index([status, checkedAt])
+  @@map("document_ocr")
+}
+
+// -----------------------------------------------------------------------------
+// DocumentFolio — per-folio OCR quality of one prepared page. ocrQuality = mean
+// ALTO word confidence (WC) in [0,1]; null when unscored (a mistral/vision page,
+// or an ALTO page without WC). wordCount is the ALTO word count, null for
+// non-ALTO sources. "Low" is NOT stored: it is ocrQuality <
+// OCR_LOW_QUALITY_THRESHOLD, decided at read time (isLowOcr).
+// -----------------------------------------------------------------------------
+model DocumentFolio {
+  ark        String
+  folio      Int
+  ocrSource  String      @map("ocr_source") // alto | mistral | vision (OCR_SOURCE)
+  ocrQuality Float?      @map("ocr_quality")
+  wordCount  Int?        @map("word_count")
+  document   DocumentOcr @relation(fields: [ark], references: [ark], onDelete: Cascade)
+
+  @@id([ark, folio])
+  @@map("document_folio")
+}
+
+// -----------------------------------------------------------------------------
 // CorpusVersion — immutable membership snapshot.
 // seq: monotonic per project (1, 2, 3 …).
 // status: draft | sealed | ingested | failed  (enums in models/corpus/schema.ts).

@@ -19,6 +19,9 @@
 //
 // No imports from other model directories — schema.ts is the foundation layer.
 
+import type { Prisma } from "@/lib/generated/prisma/client"
+import { OCR_LOW_QUALITY_THRESHOLD } from "@/lib/constants"
+
 /** One entry in a facet vocabulary map. */
 export type VocabEntry = {
   /** i18n key suffix used to look up the display label. */
@@ -445,4 +448,161 @@ const NON_LATIN_SCRIPT_LANGS = new Set<string>(NON_LATIN_SCRIPT_LANG_CODES)
 export function isLatinScriptLang(lang: string | null | undefined): boolean {
   if (!lang) return true
   return !NON_LATIN_SCRIPT_LANGS.has(lang.trim().toLowerCase())
+}
+
+// ---------------------------------------------------------------------------
+// OCR quality — DocumentOcr / DocumentFolio (feedback 2026-09-29 #7, Track B)
+//
+// Per ARK, global across projects (plan D8): the OCR quality is a property of
+// the BnF content, not of a project. Every user-facing read is gated on the
+// reader's corpus — see DocumentQueries.isIndexedInCorpus and the notes model.
+// Values mirror worker-v2/src/domain/types.ts (OCR_SOURCE, DocOcrQuality); the
+// wire schema in ./types.ts validates them. Change both sides together.
+// ---------------------------------------------------------------------------
+
+/**
+ * What produced a prepared folio's text. Only `alto` carries a measured quality
+ * (the mean ALTO word confidence); a Mistral page's own confidence does not
+ * flag hallucinations and a vision page is a description, so both are recorded
+ * with a null quality and are never "low" (plan D2/D3).
+ */
+export const OCR_SOURCE = {
+  ALTO: "alto",
+  MISTRAL: "mistral",
+  VISION: "vision",
+} as const
+export type OcrSource = (typeof OCR_SOURCE)[keyof typeof OCR_SOURCE]
+
+/**
+ * DocumentOcr.status — what the worker answered for the ARK (plan D18):
+ *   available   — the folios are stored;
+ *   building    — the worker is building the artifact (backfill), recheck later;
+ *   unavailable — the worker cannot build it; `reason` says why.
+ */
+export const OCR_SYNC_STATUS = {
+  AVAILABLE: "available",
+  BUILDING: "building",
+  UNAVAILABLE: "unavailable",
+} as const
+export type OcrSyncStatus = (typeof OCR_SYNC_STATUS)[keyof typeof OCR_SYNC_STATUS]
+
+/**
+ * The status a reader sees for an ARK with NO DocumentOcr row yet. Never
+ * stored: the absence of the row is the state. Distinct from "not low".
+ */
+export const OCR_STATUS_PENDING = "pending" as const
+export type DocumentOcrStatus = OcrSyncStatus | typeof OCR_STATUS_PENDING
+
+const OCR_SOURCES = new Set<string>(Object.values(OCR_SOURCE))
+const OCR_SYNC_STATUSES = new Set<string>(Object.values(OCR_SYNC_STATUS))
+
+function isOcrSource(v: string): v is OcrSource {
+  return OCR_SOURCES.has(v)
+}
+
+function isOcrSyncStatus(v: string): v is OcrSyncStatus {
+  return OCR_SYNC_STATUSES.has(v)
+}
+
+/** Query shape: one folio's stored quality. */
+export const documentFolioRow = {
+  select: {
+    ark: true,
+    folio: true,
+    ocrSource: true,
+    ocrQuality: true,
+    wordCount: true,
+  },
+} satisfies Prisma.DocumentFolioDefaultArgs
+export type DocumentFolioRow = Prisma.DocumentFolioGetPayload<typeof documentFolioRow>
+
+/** Query shape: a document's OCR summary with every stored folio. */
+export const documentOcrWithFolios = {
+  select: {
+    ark: true,
+    status: true,
+    ocrRate: true,
+    reason: true,
+    folios: documentFolioRow,
+  },
+} satisfies Prisma.DocumentOcrDefaultArgs
+export type DocumentOcrWithFolios = Prisma.DocumentOcrGetPayload<typeof documentOcrWithFolios>
+
+/**
+ * THE "low OCR" decision (plan D10): a measured quality strictly below
+ * OCR_LOW_QUALITY_THRESHOLD. An unscored folio (null — non-ALTO source, ALTO
+ * without WC) is never low. Computed at read time, never stored.
+ */
+export function isLowOcr(ocrQuality: number | null): boolean {
+  return ocrQuality !== null && ocrQuality < OCR_LOW_QUALITY_THRESHOLD
+}
+
+/** One folio's OCR quality as every reader (tools, pills, sheet, export) sees it. */
+export type FolioOcrView = {
+  ark: string
+  folio: number
+  ocrSource: OcrSource
+  /** Mean ALTO word confidence in [0, 1]; null when unscored. */
+  ocrQuality: number | null
+  /** ALTO word count; null for non-ALTO sources. */
+  wordCount: number | null
+  /** isLowOcr(ocrQuality). */
+  low: boolean
+}
+
+/**
+ * Stored row → view. The source column is a closed vocabulary written only from
+ * a Zod-validated worker response, so an unknown value is a corrupt row: it
+ * throws rather than being read as "not low".
+ */
+export function toFolioOcrView(row: DocumentFolioRow): FolioOcrView {
+  if (!isOcrSource(row.ocrSource)) {
+    throw new Error(
+      `document_folio ${row.ark} f${row.folio}: unknown ocr_source "${row.ocrSource}"`,
+    )
+  }
+  return {
+    ark: row.ark,
+    folio: row.folio,
+    ocrSource: row.ocrSource,
+    ocrQuality: row.ocrQuality,
+    wordCount: row.wordCount,
+    low: isLowOcr(row.ocrQuality),
+  }
+}
+
+/** A document's OCR summary — GET /api/projects/[id]/documents/ocr and doc_get. */
+export type DocumentOcrView = {
+  ark: string
+  status: DocumentOcrStatus
+  /** The manifest "Taux OCR" / 100; null when BnF publishes none or not synced. */
+  ocrRate: number | null
+  /** Why the worker could not build the artifact (status=unavailable only). */
+  reason: string | null
+  /** Every stored folio, folio-ascending. Empty while pending. */
+  folios: FolioOcrView[]
+}
+
+/**
+ * Stored row (or its absence) → view. No row is `pending`. Folios are kept
+ * whatever the status: a `building` row that was once `available` still holds
+ * valid folios until the next artifact replaces them.
+ */
+export function toDocumentOcrView(
+  ark: string,
+  row: DocumentOcrWithFolios | null,
+): DocumentOcrView {
+  if (row === null) {
+    return { ark, status: OCR_STATUS_PENDING, ocrRate: null, reason: null, folios: [] }
+  }
+  if (!isOcrSyncStatus(row.status)) {
+    throw new Error(`document_ocr ${row.ark}: unknown status "${row.status}"`)
+  }
+  return {
+    ark: row.ark,
+    status: row.status,
+    ocrRate: row.ocrRate,
+    reason: row.reason,
+    folios: row.folios.map(toFolioOcrView).sort((a, b) => a.folio - b.folio),
+  }
 }

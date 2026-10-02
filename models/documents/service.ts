@@ -6,8 +6,57 @@ import "server-only"
 
 import { prisma } from "@/lib/db"
 import type { Prisma } from "@/lib/generated/prisma/client"
-import { DOCUMENT_RESOLVE_STATUS } from "./schema"
+import { DOCUMENT_RESOLVE_STATUS, OCR_SYNC_STATUS, type OcrSource } from "./schema"
+import type { WorkerOcrQualitySyncResponse } from "./types"
 import { iiifManifestUrl, sourceFromArk } from "@/lib/mcp/vocab"
+
+/**
+ * What one worker sync answer writes, per ARK (DocumentService.recordOcrSync):
+ *   available   → replace the ARK's folios and mark it available;
+ *   building    → status only (folios left as they are);
+ *   unavailable → status + reason only (folios left as they are).
+ * `checkedAt` is the time of the answer, stamped on every row.
+ */
+export type OcrSyncWritePlan = {
+  checkedAt: Date
+  available: Array<{
+    ark: string
+    ocrRate: number | null
+    folios: Array<{
+      folio: number
+      ocrSource: OcrSource
+      ocrQuality: number | null
+      wordCount: number | null
+    }>
+  }>
+  building: string[]
+  unavailable: Array<{ ark: string; reason: string }>
+}
+
+/**
+ * Pure: a validated worker answer → the write plan. Exported for the tests
+ * (tests/models/documents/ocr.test.ts) — the no-Prisma-mocking precedent.
+ */
+export function planOcrSyncWrites(
+  response: WorkerOcrQualitySyncResponse,
+  now: Date,
+): OcrSyncWritePlan {
+  return {
+    checkedAt: now,
+    available: response.documents.map((d) => ({
+      ark: d.ark,
+      ocrRate: d.ocrRate,
+      folios: d.folios.map((f) => ({
+        folio: f.ordre,
+        ocrSource: f.ocrSource,
+        ocrQuality: f.ocrQuality,
+        wordCount: f.wordCount,
+      })),
+    })),
+    building: [...response.building],
+    unavailable: response.unavailable.map((u) => ({ ark: u.ark, reason: u.reason })),
+  }
+}
 
 /** Shape of a document to upsert. Mirrors the Document table columns. */
 export type DocumentUpsertData = Omit<
@@ -119,5 +168,59 @@ export class DocumentService {
       },
     })
     return { retried: res.count }
+  }
+
+  /**
+   * Persist one OCR-quality sync answer (lib/documents/ocr-sync.ts).
+   *
+   * Transactional PER ARK and idempotent: an available ARK's summary upsert,
+   * folio delete and folio insert commit together, so a reader never sees a
+   * half-replaced document; a replayed answer rewrites the same rows and a
+   * re-OCR'd document's folios are replaced wholesale. Building / unavailable
+   * entries only re-status the summary row — the folios a previous artifact
+   * stored stay valid until a new artifact replaces them.
+   */
+  static async recordOcrSync(plan: OcrSyncWritePlan): Promise<void> {
+    const { checkedAt } = plan
+    for (const doc of plan.available) {
+      await prisma.$transaction([
+        prisma.documentOcr.upsert({
+          where: { ark: doc.ark },
+          create: {
+            ark: doc.ark,
+            status: OCR_SYNC_STATUS.AVAILABLE,
+            ocrRate: doc.ocrRate,
+            reason: null,
+            checkedAt,
+            syncedAt: checkedAt,
+          },
+          update: {
+            status: OCR_SYNC_STATUS.AVAILABLE,
+            ocrRate: doc.ocrRate,
+            reason: null,
+            checkedAt,
+            syncedAt: checkedAt,
+          },
+        }),
+        prisma.documentFolio.deleteMany({ where: { ark: doc.ark } }),
+        prisma.documentFolio.createMany({
+          data: doc.folios.map((f) => ({ ark: doc.ark, ...f })),
+        }),
+      ])
+    }
+    for (const ark of plan.building) {
+      await prisma.documentOcr.upsert({
+        where: { ark },
+        create: { ark, status: OCR_SYNC_STATUS.BUILDING, reason: null, checkedAt },
+        update: { status: OCR_SYNC_STATUS.BUILDING, reason: null, checkedAt },
+      })
+    }
+    for (const { ark, reason } of plan.unavailable) {
+      await prisma.documentOcr.upsert({
+        where: { ark },
+        create: { ark, status: OCR_SYNC_STATUS.UNAVAILABLE, reason, checkedAt },
+        update: { status: OCR_SYNC_STATUS.UNAVAILABLE, reason, checkedAt },
+      })
+    }
   }
 }

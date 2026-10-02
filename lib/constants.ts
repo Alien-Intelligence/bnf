@@ -391,6 +391,67 @@ export const CANONICALIZE_BATCH_SIZE = 25
 export const CANONICALIZE_SWEEP_INTERVAL_MS = RESOLVE_SWEEP_INTERVAL_MS
 
 // ---------------------------------------------------------------------------
+// OCR quality (feedback 2026-09-29 #7 — ai-memories/tech/repos/bnf/
+// feedback-2026-09-29, Track B)
+// ---------------------------------------------------------------------------
+// The worker records each prepared folio's OCR source and, for ALTO folios,
+// the mean word confidence (WC) in its per-ARK `ocr-quality/<slug>.json`
+// artifact. The app pulls those artifacts into DocumentOcr / DocumentFolio
+// (lib/documents/ocr-sync.ts) and decides "low" at READ time against the
+// threshold below, so changing it applies retroactively to every note.
+
+/**
+ * Per-folio mean ALTO word confidence (WC) below which a cited folio is "low
+ * OCR": a marker on its citation pill plus the note-level BnF disclaimer.
+ * Strict `<` (0.80 itself is not low). Leo, 2026-09-30. The ONLY place the
+ * number appears — every comparison goes through isLowOcr()
+ * (models/documents/schema.ts).
+ */
+export const OCR_LOW_QUALITY_THRESHOLD = 0.8
+
+/**
+ * Cadence of the OCR-quality sync sweep (instrumentation.ts). The terminal
+ * ingest callback kicks a sync for its ARKs; the sweep re-pulls every indexed
+ * ARK still pending (and, through it, drives the backfill of documents indexed
+ * before the feature). Shares the resolver's 3-min cadence.
+ */
+export const OCR_SYNC_SWEEP_INTERVAL_MS = RESOLVE_SWEEP_INTERVAL_MS
+
+/** ARKs per POST /ocr-quality/sync call — equals the worker's OCR_SYNC_MAX_ARKS. */
+export const OCR_SYNC_BATCH_SIZE = 100
+
+/**
+ * Safety bound on one sync cycle: at most this many batches, so a single sweep
+ * can never spin unboundedly (CLAUDE_ERROR_PATTERNS §14). What is still pending
+ * afterwards is picked up by the next sweep.
+ */
+export const OCR_SYNC_MAX_BATCHES_PER_CYCLE = 10
+
+/** A `building` row is asked again after this long (the worker is still building it). */
+export const OCR_SYNC_BUILDING_RECHECK_MS = OCR_SYNC_SWEEP_INTERVAL_MS
+
+/** An `unavailable` row is asked again after this long (24 h). */
+export const OCR_SYNC_UNAVAILABLE_RECHECK_MS = 24 * 60 * 60 * 1_000
+
+/**
+ * Sanity cap on the folios one worker artifact may carry — above any worker
+ * MAX_OCR_PAGES. A response beyond it is a contract break, not a big document.
+ */
+export const OCR_SYNC_MAX_FOLIOS_PER_DOC = 1_000
+
+/** Low-OCR folio numbers listed per document in a rag_keyword_search hit / doc_get result. */
+export const RAG_OCR_LOW_FOLIOS_MAX = 20
+
+/**
+ * The folio heading worker-v2's assembleMarkdown writes into an entry's
+ * processed text (worker-v2/src/live/cluster.ts, `## Folio N`). A worker
+ * contract: rag_get_text reads the folios of a text slice from it. Iterate it
+ * with String.prototype.matchAll (which clones the regex), never with .exec on
+ * this shared instance — it is a stateful /g regex.
+ */
+export const PROCESSED_TEXT_FOLIO_HEADING = /^## Folio (\d+)$/gm
+
+// ---------------------------------------------------------------------------
 // Agent runtime
 // ---------------------------------------------------------------------------
 
