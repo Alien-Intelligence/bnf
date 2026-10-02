@@ -50,6 +50,7 @@ ENV BETTER_AUTH_SECRET=build-time-placeholder-build-time-placeholder
 ENV BETTER_AUTH_URL=http://localhost:3000
 ENV ANTHROPIC_API_KEY=build-time-placeholder
 ENV APP_URL=http://localhost:3000
+ENV BNF_API_BASE_URL=http://localhost:3000
 
 # Generate the Prisma client (output: lib/generated/prisma/client, gitignored
 # so it is absent from the COPY . . layer and must be produced here).
