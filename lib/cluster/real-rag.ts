@@ -164,7 +164,14 @@ export const RealRagRunner = {
       .map(keywordHitToRag)
       .filter((h): h is RagKeywordHit => h !== null)
 
-    return { hits, total: data.pagination?.total ?? hits.length }
+    // `total` is the cluster's count of matching entries, which mcp-datacluster
+    // always reports (keyword_search.py). Without it the response is not one
+    // the contract allows; `hits.length` would understate any paged search.
+    const total = data.pagination?.total
+    if (total === undefined) {
+      throw new DataclusterMcpProtocolError("datacluster_keyword_search returned no pagination.total")
+    }
+    return { hits, total }
   },
 
   async getEntryContent(req: RagEntryContentRequest): Promise<RagEntryContent> {

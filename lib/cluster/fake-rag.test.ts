@@ -108,3 +108,11 @@ test("getDocumentFolios resolves an ARK to its folio map, and reports an unknown
   })
   assert.deepEqual(missing, { status: "entry_not_found" })
 })
+
+test("keywordSearch total counts every matching entry, not just the returned page", async () => {
+  const all = await FakeRagRunner.keywordSearch({ projectId: PROJECT, query: "exposition", limit: 100, signal: signal() })
+  const one = await FakeRagRunner.keywordSearch({ projectId: PROJECT, query: "exposition", limit: 1, signal: signal() })
+  assert.ok(all.hits.length > 1, "the query matches several entries")
+  assert.equal(one.hits.length, 1)
+  assert.equal(one.total, all.hits.length)
+})

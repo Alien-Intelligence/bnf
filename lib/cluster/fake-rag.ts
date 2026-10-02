@@ -214,7 +214,7 @@ export const FakeRagRunner = {
         }
       })
 
-    return { hits, total: hits.length }
+    return { hits, total: bestByArk.size }
   },
 
   async getEntryContent(req: RagEntryContentRequest): Promise<RagEntryContent> {

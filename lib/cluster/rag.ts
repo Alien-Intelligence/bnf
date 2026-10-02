@@ -118,6 +118,7 @@ export interface RagKeywordHit {
 
 export interface RagKeywordResponse {
   hits: RagKeywordHit[]
+  /** Entries the search matched in all (may exceed `hits.length` when limited). */
   total: number
 }
 
