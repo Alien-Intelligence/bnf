@@ -12,6 +12,8 @@
 // use-router.md). A soft navigation after sign-out would let Back show a cached
 // authenticated page with its data. A document navigation discards every
 // cached route — and is the only thing that can cross to Authentik's origin.
+// The one cache it does not reach is the browser's back/forward cache, hence
+// leaveForGood() below.
 
 import { useTranslations } from "next-intl"
 import { Button } from "@/components/ui/button"
@@ -33,7 +35,10 @@ export function ButtonAuthSignOut() {
         disabled={busy}
         onClick={() =>
           signOut.mutate(undefined, {
-            onSuccess: (result) => window.location.assign(result.redirectTo),
+            onSuccess: (result) => {
+              leaveForGood()
+              window.location.assign(result.redirectTo)
+            },
           })
         }
       >
@@ -45,5 +50,22 @@ export function ButtonAuthSignOut() {
         </span>
       )}
     </div>
+  )
+}
+
+/**
+ * The browser's back/forward cache can still restore THIS document, data and
+ * all, when the user presses Back after signing out (observed in Chrome: the
+ * page came back with the button frozen on « Chargement… »). A restored page
+ * runs no request, so nothing re-checks the session. Reload it on restore:
+ * the server then sees no session and redirects to sign-in.
+ */
+function leaveForGood(): void {
+  window.addEventListener(
+    "pageshow",
+    (event) => {
+      if (event.persisted) window.location.reload()
+    },
+    { once: true },
   )
 }
