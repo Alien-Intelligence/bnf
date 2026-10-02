@@ -8,7 +8,7 @@ import assert from "node:assert/strict"
 import { prisma } from "@/lib/db"
 import { createTestProject, createTestUser, deleteTestUser } from "@/lib/testing/fixtures"
 import { cleanupProject } from "@/lib/testing/project-cleanup"
-import { DataclusterMcpClient } from "./datacluster-mcp-client"
+import { DataclusterMcpClient, DataclusterMcpToolError } from "./datacluster-mcp-client"
 import { RAG_LOOKUP_STATUS } from "./rag"
 import { RealRagRunner } from "./real-rag"
 
@@ -19,7 +19,14 @@ const ARK = "ark:/12148/bpt6k822781z"
 let userId: string
 let projectId: string
 const proto = DataclusterMcpClient.prototype
-const original = { keywordSearch: proto.keywordSearch, getEntryContent: proto.getEntryContent }
+const original = {
+  keywordSearch: proto.keywordSearch,
+  getEntryContent: proto.getEntryContent,
+  getDataset: proto.getDataset,
+  listDatasets: proto.listDatasets,
+}
+/** The dataset the cluster currently has for the project; tests swap it. */
+let liveDatasetId = 4242
 const lookupOffsets: number[] = []
 
 before(async () => {
@@ -36,6 +43,13 @@ before(async () => {
       pagination: { total: ids.length },
     }
   }
+  proto.getDataset = async function (datasetId) {
+    if (datasetId !== liveDatasetId) throw new DataclusterMcpToolError("Dataset not found or access denied")
+    return { id: datasetId, name: "n", slug: `bnf-${projectId}`, entry_count: 1 }
+  }
+  proto.listDatasets = async function () {
+    return [{ id: liveDatasetId, name: "n", slug: `bnf-${projectId}`, entry_count: 1 }]
+  }
   proto.getEntryContent = async function (input) {
     return { entry_id: input.entryId, text: "## Folio 1\n\nTexte", char_offset: 0, char_limit: input.charLimit, total_length: 17, has_more: false, next_offset: null }
   }
@@ -43,6 +57,8 @@ before(async () => {
 after(async () => {
   proto.keywordSearch = original.keywordSearch
   proto.getEntryContent = original.getEntryContent
+  proto.getDataset = original.getDataset
+  proto.listDatasets = original.listDatasets
   await cleanupProject(projectId)
   await deleteTestUser(userId)
 })
@@ -66,4 +82,17 @@ test("the ARK lookup pages through more than one page of entries instead of fail
 test("rag_get_text reads only the live entry; a stale id of the same ARK is refused with the live id", async () => {
   const stale = await RealRagRunner.getEntryContent(request(103))
   assert.deepEqual(stale, { status: RAG_LOOKUP_STATUS.ENTRY_NOT_IN_CORPUS, liveEntryId: 124 })
+})
+
+test("a cached dataset id that no longer exists is re-resolved and re-cached, not read as an empty corpus", async () => {
+  liveDatasetId = 5151 // the dataset was recreated under a new id
+  try {
+    const live = await RealRagRunner.getEntryContent(request(124))
+    assert.equal(live.status, RAG_LOOKUP_STATUS.FOUND)
+    const project = await prisma.project.findUniqueOrThrow({ where: { id: projectId }, select: { clusterDatasetId: true } })
+    assert.equal(project.clusterDatasetId, 5151)
+  } finally {
+    liveDatasetId = 4242
+    await prisma.project.update({ where: { id: projectId }, data: { clusterDatasetId: 4242 } })
+  }
 })

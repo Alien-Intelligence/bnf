@@ -326,6 +326,15 @@ export class DataclusterMcpClient {
     return data.datasets
   }
 
+  /** One dataset by id (`datacluster_get_dataset`); a missing id is a tool error. */
+  async getDataset(datasetId: number): Promise<DataclusterDataset> {
+    return this.callData(
+      "datacluster_get_dataset",
+      { dataset_id: datasetId, response_format: "json" },
+      dataclusterDatasetSchema,
+    )
+  }
+
   /**
    * Semantic similarity search over chunks. Returns chunk-level hits with
    * ARK/folio in `metadata`. Filters: datasetIds, entryIds, scoreThreshold.

@@ -23,6 +23,7 @@ import {
   DataclusterMcpError,
   DataclusterMcpNotFoundError,
   DataclusterMcpProtocolError,
+  DataclusterMcpToolError,
 } from "./datacluster-mcp-client"
 import type { DataclusterKeywordHit } from "./datacluster-mcp-client"
 import { chunkToPassage, liveEntryIds, pickLiveEntryId, splitEntryText, toEntryContent } from "./rag-wire"
@@ -55,9 +56,10 @@ const ARK_LOOKUP_PAGE_SIZE = 20
 /**
  * Resolve the project's numeric cluster dataset id, persisting it on first use.
  *
- * Reads `Project.clusterDatasetId` first; on a miss, pages through the cluster's
- * dataset list matching slug `bnf-<projectId>`, writes the id back to the
- * project, and returns it.
+ * Reads `Project.clusterDatasetId` first and checks it still names dataset
+ * `bnf-<projectId>`; on a miss (or a stale id), pages through the cluster's
+ * dataset list matching that slug, writes the id back to the project, and
+ * returns it.
  *
  * Throws DataclusterMcpNotFoundError when the walk completed and no dataset
  * has the slug — an inconsistency, since the rag tools only call us after an
@@ -77,9 +79,18 @@ async function resolveDatasetId(
     }),
     signal,
   )
-  if (project.clusterDatasetId !== null) return project.clusterDatasetId
-
   const slug = `${DATACLUSTER_DATASET_SLUG_PREFIX}${projectId}`
+
+  // A cached id is checked before use: when the dataset was recreated (the
+  // worker re-registers after `register_receipt_stale`), the old id names a
+  // dead or foreign dataset, and every read would look like an empty corpus.
+  if (project.clusterDatasetId !== null) {
+    const cached = await cachedDatasetStillLive(client, project.clusterDatasetId, slug)
+    if (cached) return project.clusterDatasetId
+    console.warn(
+      `[rag] project ${projectId}: cached cluster dataset ${project.clusterDatasetId} is no longer "${slug}"; re-resolving`,
+    )
+  }
 
   for (let page = 0; page < MAX_DATASET_PAGES; page++) {
     const offset = page * DATACLUSTER_LIST_PAGE_SIZE
@@ -108,6 +119,20 @@ async function resolveDatasetId(
     `Gave up resolving the data-cluster dataset of project ${projectId} (slug "${slug}") after ` +
       `${MAX_DATASET_PAGES} pages of ${DATACLUSTER_LIST_PAGE_SIZE} datasets without reaching the end of the list`,
   )
+}
+
+/**
+ * Is the cached dataset id still this project's dataset? A tool error from
+ * `datacluster_get_dataset` (the dataset is gone) or another slug means no.
+ * Any other failure (transport, auth, protocol) propagates.
+ */
+async function cachedDatasetStillLive(client: DataclusterMcpClient, datasetId: number, slug: string): Promise<boolean> {
+  try {
+    return (await client.getDataset(datasetId)).slug === slug
+  } catch (err) {
+    if (err instanceof DataclusterMcpToolError) return false
+    throw err
+  }
 }
 
 /**
