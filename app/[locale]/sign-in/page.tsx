@@ -12,6 +12,7 @@ import { findSessionUser } from "@/lib/auth-helpers"
 import { safeNextPath, singleSearchParam } from "@/lib/auth-redirect"
 import { AUTH_QUERY } from "@/lib/constants"
 import { ssoEnabled } from "@/lib/env"
+import { signedOutNoticeSchema } from "@/models/users/types"
 import { SignInClient } from "./client"
 
 export async function generateMetadata(): Promise<Metadata> {
@@ -28,6 +29,12 @@ export default async function SignInPage({
 }) {
   const [{ locale }, query] = await Promise.all([params, searchParams])
   const nextPath = safeNextPath(singleSearchParam(query[AUTH_QUERY.NEXT]))
+  // Set by UserService.signOut. An unknown value renders no notice rather
+  // than a wrong one.
+  const notice = signedOutNoticeSchema.safeParse(
+    singleSearchParam(query[AUTH_QUERY.SIGNED_OUT]),
+  )
+  const signedOutNotice = notice.success ? notice.data : null
 
   const user = await findSessionUser()
   if (user) redirect({ href: nextPath, locale })
@@ -35,5 +42,11 @@ export default async function SignInPage({
   // Computed server-side: the SSO button only renders when Alien Auth is
   // configured (lib/env.ssoEnabled). Passed as a plain boolean so the client
   // bundle never references the AUTHENTIK_* secrets.
-  return <SignInClient ssoEnabled={ssoEnabled} nextPath={nextPath} />
+  return (
+    <SignInClient
+      ssoEnabled={ssoEnabled}
+      nextPath={nextPath}
+      signedOutNotice={signedOutNotice}
+    />
+  )
 }

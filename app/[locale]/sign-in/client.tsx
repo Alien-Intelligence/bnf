@@ -9,6 +9,7 @@ import { apiFetch } from "@/lib/api-fetch"
 import { authClient } from "@/lib/auth-client"
 import { OAUTH_PROVIDER_ID, ROUTES } from "@/lib/constants"
 import { signInSchema, type SignInInput } from "@/models/users/types"
+import { SIGNED_OUT_NOTICE, type SignedOutNotice } from "@/models/users/schema"
 import {
   Form,
   FormControl,
@@ -35,9 +36,15 @@ interface SignInClientProps {
    * (lib/auth-redirect.ts safeNextPath): always an in-app, locale-less path.
    */
   nextPath: string
+  /** How the previous session ended, from `?signedOut=` (validated by the page). */
+  signedOutNotice: SignedOutNotice | null
 }
 
-export function SignInClient({ ssoEnabled, nextPath }: SignInClientProps) {
+export function SignInClient({
+  ssoEnabled,
+  nextPath,
+  signedOutNotice,
+}: SignInClientProps) {
   const t = useTranslations("auth.signIn")
   const tSignUp = useTranslations("auth.signUp")
   const locale = useLocale()
@@ -106,6 +113,19 @@ export function SignInClient({ ssoEnabled, nextPath }: SignInClientProps) {
           <CardTitle>{t("title")}</CardTitle>
         </CardHeader>
         <CardContent>
+          {signedOutNotice === SIGNED_OUT_NOTICE.DONE && (
+            <p role="status" className="mb-4 text-sm text-muted-foreground">
+              {t("signedOut")}
+            </p>
+          )}
+          {signedOutNotice === SIGNED_OUT_NOTICE.SSO_UNAVAILABLE && (
+            <div
+              role="alert"
+              className="mb-4 rounded-md border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive"
+            >
+              {t("signedOutSsoUnavailable")}
+            </div>
+          )}
           {serverError !== null && (
             <div
               role="alert"

@@ -82,11 +82,13 @@ export const OAUTH_PROVIDER_ID = "authentik"
 
 /**
  * Query keys the auth pages read and write. `next` is the post-sign-in
- * destination, always passed through `safeNextPath` (lib/auth-redirect.ts).
- * Written by `requireSessionUser`, read by the sign-in page and the auth e2e
- * script, so the spelling lives in one place.
+ * destination, always passed through `safeNextPath` (lib/auth-redirect.ts);
+ * written by `requireSessionUser`, read by the sign-in page. `signedOut`
+ * tells the sign-in page how the previous session ended (SIGNED_OUT_NOTICE in
+ * models/users/schema.ts); written by UserService.signOut, read by the
+ * sign-in page. The auth e2e script asserts on both.
  */
-export const AUTH_QUERY = { NEXT: "next" } as const
+export const AUTH_QUERY = { NEXT: "next", SIGNED_OUT: "signedOut" } as const
 
 /**
  * Wall-clock ceiling on fetching Authentik's OIDC discovery document during

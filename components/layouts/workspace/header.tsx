@@ -19,7 +19,7 @@ import { LayoutWorkspaceStepNav } from "./step-nav"
 import { LayoutWorkspaceProjectSwitcher } from "./project-switcher"
 import { LayoutWorkspaceLangToggle } from "./lang-toggle"
 import { WorkspaceHealthStatus } from "./health-status"
-import { SignOutButton } from "./sign-out-button"
+import { ButtonAuthSignOut } from "@/components/buttons/auth/sign-out"
 
 interface WorkspaceHeaderProps {
   user: { name?: string; email: string }
@@ -131,7 +131,7 @@ export function WorkspaceHeader({
         >
           {initials(user)}
         </span>
-        <SignOutButton />
+        <ButtonAuthSignOut />
       </div>
     </header>
   )

@@ -14,8 +14,10 @@
 // .env.local by the npm script). No silent default — a wrong port would make
 // every assertion read as a regression.
 import { randomUUID } from "node:crypto"
+import { z } from "zod"
 import { prisma } from "@/lib/db"
 import { AUTH_QUERY, ROUTES } from "@/lib/constants"
+import { LOGIN_METHOD, SIGNED_OUT_NOTICE, SSO_LOGOUT } from "@/models/users/schema"
 import { check, printVerdict, requireServer, section } from "./e2e/harness"
 
 const BASE = resolveBase()
@@ -80,6 +82,81 @@ function expectRedirect(name: string, got: { status: number; location: string | 
   check(name, ok, `expected 307 → ${expected}, got ${got.status} → ${got.location ?? "(no location)"}`)
 }
 
+/** The sign-out response as the client reads it (SignOutResult). */
+const signOutBodySchema = z.object({ redirectTo: z.string(), ssoLogout: z.string() })
+
+/** A JSON API call as the browser issues it (same-origin, cookie attached). */
+async function api(path: string, cookie: string, init: RequestInit = {}): Promise<Response> {
+  return fetch(`${BASE}${path}`, {
+    ...init,
+    headers: { "Content-Type": "application/json", origin: BASE, cookie, ...init.headers },
+  })
+}
+
+function sessionToken(cookie: string): string {
+  const pair = cookie.split("; ").find((c) => c.startsWith("better-auth.session_token="))
+  if (!pair) throw new Error("no better-auth.session_token in the cookie")
+  // The cookie value is `<token>.<signature>`, URL-encoded; the DB stores the token.
+  return decodeURIComponent(pair.slice("better-auth.session_token=".length)).split(".")[0]
+}
+
+async function signOutRoundTrip(account: Account): Promise<void> {
+  // 10. A fresh email sign-in, so the session row carries the login method.
+  const signIn = await fetch(`${BASE}/api/auth/sign-in/email`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", origin: BASE },
+    body: JSON.stringify({ email: account.email, password: PW }),
+  })
+  const cookie = cookieHeader(signIn)
+  check("10. POST /api/auth/sign-in/email → a fresh session cookie", signIn.ok && cookie.length > 0, `status=${signIn.status}`)
+  const token = sessionToken(cookie)
+
+  // 11. The hook stamped the method.
+  const row = await prisma.session.findUnique({ where: { token }, select: { loginMethod: true } })
+  check("11. the session row records loginMethod=email", row?.loginMethod === LOGIN_METHOD.EMAIL, `loginMethod=${String(row?.loginMethod)}`)
+
+  // 12. The cookie works.
+  const before = await api("/api/projects", cookie)
+  check("12. GET /api/projects with the cookie → 200", before.status === 200, `status=${before.status}`)
+
+  // 13. Our sign-out route.
+  const out = await api("/api/sign-out", cookie, { method: "POST", body: JSON.stringify({ locale: "fr" }) })
+  // Parse only a 200: on main the route does not exist and answers an HTML 404.
+  const outBody = out.ok ? signOutBodySchema.safeParse(await out.json()) : null
+  const expectedRedirect = `${ROUTES.signIn}?${AUTH_QUERY.SIGNED_OUT}=${SIGNED_OUT_NOTICE.DONE}`
+  check(
+    "13. POST /api/sign-out {locale: fr} → 200 { redirectTo: /sign-in?signedOut=done, ssoLogout: not_applicable }",
+    outBody?.success === true &&
+      outBody.data.redirectTo === expectedRedirect &&
+      outBody.data.ssoLogout === SSO_LOGOUT.NOT_APPLICABLE,
+    `status=${out.status} body=${JSON.stringify(outBody?.success ? outBody.data : outBody?.error.issues ?? null)}`,
+  )
+  const clearing = out.headers.getSetCookie().filter((c) => c.startsWith("better-auth.session_token=") && /Max-Age=0|Expires=/i.test(c))
+  check("13b. the response expires the session cookie", clearing.length === 1, out.headers.getSetCookie().join(" | ").slice(0, 200))
+
+  // 14. The row is gone.
+  const count = await prisma.session.count({ where: { token } })
+  check("14. the session row is deleted", count === 0, `count=${count}`)
+
+  // 15–17. The old cookie is dead everywhere.
+  const after = await api("/api/projects", cookie)
+  check("15. GET /api/projects with the OLD cookie → 401", after.status === 401, `status=${after.status}`)
+  expectRedirect("16. GET / with the old cookie → /sign-in", await page("/", cookie), ROUTES.signIn)
+  const again = await api("/api/sign-out", cookie, { method: "POST", body: JSON.stringify({ locale: "fr" }) })
+  check("17. POST /api/sign-out with the old cookie → 401 (idempotent)", again.status === 401, `status=${again.status}`)
+
+  // 18. parseBody refuses a bad locale, with a valid cookie.
+  const fresh = cookieHeader(
+    await fetch(`${BASE}/api/auth/sign-in/email`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", origin: BASE },
+      body: JSON.stringify({ email: account.email, password: PW }),
+    }),
+  )
+  const bad = await api("/api/sign-out", fresh, { method: "POST", body: JSON.stringify({ locale: "xx" }) })
+  check("18. POST /api/sign-out {locale: xx} → 400", bad.status === 400, `status=${bad.status}`)
+}
+
 async function main(): Promise<void> {
   await requireServer(BASE)
 
@@ -110,6 +187,9 @@ async function main(): Promise<void> {
       await page(`/en${ROUTES.projects}`, null),
       `/en${ROUTES.signIn}?${AUTH_QUERY.NEXT}=${encodeURIComponent(ROUTES.projects)}`,
     )
+
+    section("Phase 2 — sign-out ends the session server-side (#3)")
+    await signOutRoundTrip(account)
   } finally {
     section("Teardown")
     // user.delete cascades to sessions and accounts (prisma/schema.prisma).

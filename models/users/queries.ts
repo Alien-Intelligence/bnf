@@ -1,7 +1,13 @@
 import "server-only"
 
 import { prisma } from "@/lib/db"
-import type { AdminAccountStat, User } from "./schema"
+import {
+  LOGIN_METHOD,
+  accountIdToken,
+  type AccountIdToken,
+  type AdminAccountStat,
+  type User,
+} from "./schema"
 
 export class UserQueries {
   static async get(id: string): Promise<User | null> {
@@ -10,6 +16,20 @@ export class UserQueries {
 
   static async getByEmail(email: string): Promise<User | null> {
     return prisma.user.findUnique({ where: { email } })
+  }
+
+  /**
+   * The user's Alien Auth (Authentik) account, if they have one, with the
+   * id_token better-auth stored at their last SSO sign-in. Sign-out passes it
+   * as `id_token_hint` to Authentik's end-session endpoint. `null` when the
+   * user has never signed in through Authentik.
+   */
+  static async authentikAccount(userId: string): Promise<AccountIdToken | null> {
+    // LOGIN_METHOD.AUTHENTIK is the OAuth provider id (models/users/schema.ts).
+    return prisma.account.findFirst({
+      where: { userId, providerId: LOGIN_METHOD.AUTHENTIK },
+      ...accountIdToken,
+    })
   }
 
   /**

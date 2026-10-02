@@ -170,6 +170,7 @@
     "signIn": "Sign in",
     "signUp": "Create an account",
     "signOut": "Sign out",
+    "signOutError": "Sign-out failed. Please try again.",
     "welcome": "Welcome, {name}",
     "gotIt": "Got it"
   },
@@ -235,7 +236,9 @@
       "forgotPassword": "Forgot password?",
       "submitting": "Signing in…",
       "ssoButton": "Sign in with Alien",
-      "or": "or"
+      "or": "or",
+      "signedOut": "You are signed out.",
+      "signedOutSsoUnavailable": "You are signed out of the app, but your Alien session could not be closed. On a shared computer, also sign out of your Alien account."
     },
     "signUp": {
       "title": "Create an account",

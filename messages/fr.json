@@ -170,6 +170,7 @@
     "signIn": "Se connecter",
     "signUp": "Créer un compte",
     "signOut": "Se déconnecter",
+    "signOutError": "La déconnexion a échoué. Réessayez.",
     "welcome": "Bienvenue, {name}",
     "gotIt": "J'ai compris"
   },
@@ -235,7 +236,9 @@
       "forgotPassword": "Mot de passe oublié ?",
       "submitting": "Connexion en cours…",
       "ssoButton": "Se connecter avec Alien",
-      "or": "ou"
+      "or": "ou",
+      "signedOut": "Vous êtes déconnecté.",
+      "signedOutSsoUnavailable": "Vous êtes déconnecté de l'application, mais votre session Alien n'a pas pu être fermée. Sur un poste partagé, déconnectez-vous aussi de votre compte Alien."
     },
     "signUp": {
       "title": "Créer un compte",
