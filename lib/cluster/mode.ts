@@ -1,9 +1,10 @@
 // lib/cluster/mode.ts
 // CLUSTER_MODE — which cluster the app drives: `real` (the worker-v2 HTTP API
-// and the data-cluster RAG) or `fake` (in-process fixtures). Read through this
-// one function so an unset or misspelt value fails loudly as "not set" instead
-// of silently running the fake runner in production (CLAUDE_ERROR_PATTERNS §10:
-// no default for environment).
+// and the data-cluster RAG) or `fake` (in-process fixtures). Every reader goes
+// through this one function (runner, OCR sync, ingest watchdog, health probe;
+// lib/cluster/rag.ts moves to it with Track C) so an unset or misspelt value
+// fails loudly as "not set" instead of silently running the fake runner in
+// production (CLAUDE_ERROR_PATTERNS §10: no default for environment).
 
 export const CLUSTER_MODE = {
   REAL: "real",

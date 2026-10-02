@@ -128,8 +128,9 @@ export type WorkerOcrQualitySyncResponse = z.infer<typeof workerOcrQualitySyncRe
 
 /**
  * The worker could not be asked: transport error, timeout, a 5xx, or a 404
- * from a worker older than the endpoint. Says nothing about the ARKs — the
- * cycle stops and the next sweep asks again; no ARK is penalised.
+ * from a worker older than the endpoint. Says nothing about the contract —
+ * the drainer backs the batch's ARKs off (so the next sweep asks OTHER ARKs
+ * first) without counting it against their contract-failure budget.
  */
 export class OcrSyncUnavailableError extends Error {
   constructor(message: string, options?: { cause?: unknown }) {
@@ -138,16 +139,36 @@ export class OcrSyncUnavailableError extends Error {
   }
 }
 
+/** Who a contract break is about: the whole exchange, or named ARKs of the batch. */
+export const OCR_SYNC_FAULT_SCOPE = {
+  /** The exchange itself breaks the contract (version skew, 401/403/413, a
+   *  body that is not a sync response at all): no ARK is at fault. */
+  EXCHANGE: "exchange",
+  /** Some ARKs of the batch break it; `culprits` names them when known. */
+  ARKS: "arks",
+} as const
+export type OcrSyncFaultScope = (typeof OCR_SYNC_FAULT_SCOPE)[keyof typeof OCR_SYNC_FAULT_SCOPE]
+
 /**
- * The worker answered, but the answer breaks the contract: a 400 (an ARK it
- * refuses), a body that is not a valid sync response, or one that does not
- * answer exactly the ARKs asked. Deterministic for the batch — the drainer
- * splits the batch to isolate the ARK at fault and quarantines it after
- * repeated failures, so one poison ARK cannot starve the sweep.
+ * The worker answered, but the answer breaks the contract. The scope decides
+ * what the drainer does (lib/documents/ocr-sync.ts):
+ *   - EXCHANGE → the sync itself pauses (backoff) and resumes on its own when
+ *     the worker answers validly again; no ARK is penalised;
+ *   - ARKS with named `culprits` → those ARKs are rejected (backoff, then
+ *     quarantine) and the rest of the batch is asked again;
+ *   - ARKS without culprits → the batch is bisected to find them.
  */
 export class OcrSyncContractError extends Error {
-  constructor(message: string, options?: { cause?: unknown }) {
+  readonly scope: OcrSyncFaultScope
+  readonly culprits: string[]
+  constructor(
+    message: string,
+    fault: { scope: OcrSyncFaultScope; culprits: string[] },
+    options?: { cause?: unknown },
+  ) {
     super(message, options)
     this.name = "OcrSyncContractError"
+    this.scope = fault.scope
+    this.culprits = fault.culprits
   }
 }

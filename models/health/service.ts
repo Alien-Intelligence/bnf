@@ -17,6 +17,7 @@ import "server-only"
 import { openMcpSession } from "@/lib/mcp/session"
 import { requireMcpEnv, requireClusterEnv } from "@/lib/env"
 import { HEALTH_PROBE_TIMEOUT_MS, HEALTH_PROBE_TTL_MS } from "@/lib/constants"
+import { CLUSTER_MODE, clusterMode } from "@/lib/cluster/mode"
 import { HealthQueries } from "./queries"
 import type { HealthSnapshot } from "./schema"
 
@@ -58,7 +59,7 @@ async function probeConnectivity(now: number): Promise<Connectivity> {
   // Data-cluster MCP — only meaningful under CLUSTER_MODE=real (fake mode has no
   // real cluster, so it is healthy by definition).
   let dataclusterDown = false
-  if ((process.env.CLUSTER_MODE ?? "fake") === "real") {
+  if (clusterMode() === CLUSTER_MODE.REAL) {
     try {
       const env = requireClusterEnv()
       dataclusterDown = !(await reachable(

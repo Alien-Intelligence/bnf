@@ -35,8 +35,9 @@ test("set but invalid throws instead of silently defaulting", () => {
 import { createServer, type Server } from "node:http"
 import type { AddressInfo } from "node:net"
 
-import { ClusterClient } from "./client"
-import { OcrSyncContractError, OcrSyncUnavailableError } from "./ocr-quality"
+import { ClusterClient, culpritsOf } from "./client"
+import { CLUSTER_POLL } from "./contracts"
+import { OCR_SYNC_FAULT_SCOPE, OcrSyncContractError, OcrSyncUnavailableError } from "./ocr-quality"
 
 /** process.env stores strings: assigning undefined would store "undefined". */
 function restoreEnv(name: string, value: string | undefined): void {
@@ -110,14 +111,97 @@ test("ocrQualitySync: a body that stalls after the headers times out → unavail
   })
 })
 
-for (const [label, reply] of [
-  ["a 400 refusing the batch", { status: 400, body: '{"error":"arks[0]: bad"}' }],
-  ["a non-JSON 200", { status: 200, body: "<html>oops</html>" }],
-  ["a 200 outside the schema", { status: 200, body: '{"documents":[{"v":2}],"building":[],"unavailable":[]}' }],
+for (const [label, reply, scope] of [
+  ["a 400 naming arks[0]", { status: 400, body: '{"error":"arks[0]: bad"}' }, OCR_SYNC_FAULT_SCOPE.ARKS],
+  ["a 400 that names no ARK (unknown key)", { status: 400, body: '{"error":"unknown keys: x"}' }, OCR_SYNC_FAULT_SCOPE.EXCHANGE],
+  ["a 401", { status: 401, body: "no" }, OCR_SYNC_FAULT_SCOPE.EXCHANGE],
+  ["a 413", { status: 413, body: '{"error":"body exceeds"}' }, OCR_SYNC_FAULT_SCOPE.EXCHANGE],
+  ["a non-JSON 200", { status: 200, body: "<html>oops</html>" }, OCR_SYNC_FAULT_SCOPE.EXCHANGE],
+  ["a 200 missing a top-level key", { status: 200, body: '{"documents":[],"building":[]}' }, OCR_SYNC_FAULT_SCOPE.EXCHANGE],
+  [
+    "a 200 with one invalid document",
+    { status: 200, body: JSON.stringify({ documents: [{ v: 2, ark: ARK }], building: [], unavailable: [] }) },
+    OCR_SYNC_FAULT_SCOPE.ARKS,
+  ],
 ] as const) {
-  test(`ocrQualitySync: ${label} → OcrSyncContractError`, async () => {
+  test(`ocrQualitySync: ${label} → OcrSyncContractError on ${scope}`, async () => {
     await withStubWorker(reply, async () => {
-      await assert.rejects(ClusterClient.ocrQualitySync([ARK]), OcrSyncContractError)
+      await assert.rejects(
+        ClusterClient.ocrQualitySync([ARK]),
+        (err: unknown) =>
+          err instanceof OcrSyncContractError &&
+          err.scope === scope &&
+          (scope === OCR_SYNC_FAULT_SCOPE.ARKS ? err.culprits.join() === ARK : err.culprits.length === 0),
+      )
     })
   })
 }
+
+test("ocrQualitySync: a caller's abort cancels the request", async () => {
+  await withStubWorker("stall-body", async () => {
+    const controller = new AbortController()
+    const pending = ClusterClient.ocrQualitySync([ARK], controller.signal)
+    controller.abort()
+    await assert.rejects(pending, OcrSyncUnavailableError)
+  })
+})
+
+test("culpritsOf: an invalid entry outside the asked ARKs is the exchange's fault", () => {
+  assert.deepEqual(
+    culpritsOf([ARK], {
+      kind: "invalid",
+      raw: { documents: [{ ark: "ark:/12148/other" }] },
+      issuePaths: [["documents", 0, "v"]],
+    }),
+    [],
+  )
+})
+
+// ---------------------------------------------------------------------------
+// progress(): four outcomes, never "run gone" for an outage
+// ---------------------------------------------------------------------------
+
+const READ_MODEL = {
+  docs: { done: 1 },
+  docsTotal: 1,
+  docsFinished: 1,
+  stages: {},
+  folios: { expected: 1, done: 1, failed: 0 },
+  fetchRatePerMin: 1000,
+  manifestRatePerMin: 42,
+  etaSeconds: null,
+  reconciles: true,
+}
+
+test("progress: a read-model → progress", async () => {
+  await withStubWorker({ status: 200, body: JSON.stringify(READ_MODEL) }, async () => {
+    const poll = await ClusterClient.progress("run-1")
+    assert.equal(poll.kind, CLUSTER_POLL.PROGRESS)
+  })
+})
+
+test("progress: 404 → run_unknown; 503 → worker_error", async () => {
+  await withStubWorker({ status: 404, body: "" }, async () => {
+    assert.deepEqual(await ClusterClient.progress("run-1"), { kind: CLUSTER_POLL.RUN_UNKNOWN })
+  })
+  await withStubWorker({ status: 503, body: "busy" }, async () => {
+    assert.deepEqual(await ClusterClient.progress("run-1"), { kind: CLUSTER_POLL.WORKER_ERROR, status: 503 })
+  })
+})
+
+test("progress: no worker listening → worker_unreachable", async () => {
+  const saved = process.env.WORKER_RUNNER_URL
+  process.env.WORKER_RUNNER_URL = "http://127.0.0.1:1"
+  try {
+    const poll = await ClusterClient.progress("run-1")
+    assert.equal(poll.kind, CLUSTER_POLL.WORKER_UNREACHABLE)
+  } finally {
+    restoreEnv("WORKER_RUNNER_URL", saved)
+  }
+})
+
+test("progress: a 200 that is not a read-model is a contract break and throws", async () => {
+  await withStubWorker({ status: 200, body: '{"docs":"nope"}' }, async () => {
+    await assert.rejects(ClusterClient.progress("run-1"), /invalid worker read-model/)
+  })
+})

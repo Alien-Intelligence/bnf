@@ -17,8 +17,13 @@ import "server-only"
 import { z } from "zod"
 
 import { clusterQueueProgressSchema } from "@/models/ingest/types"
-import type { ClusterIngestRequest, ClusterQueueProgress } from "./contracts"
 import {
+  CLUSTER_POLL,
+  type ClusterIngestRequest,
+  type ClusterProgressPoll,
+} from "./contracts"
+import {
+  OCR_SYNC_FAULT_SCOPE,
   OcrSyncContractError,
   OcrSyncUnavailableError,
   workerOcrQualitySyncResponseSchema,
@@ -54,7 +59,8 @@ export function parseWorkerTimeoutMs(raw: string | undefined): number {
   return n
 }
 
-function timeoutMs(): number {
+/** The per-request ceiling of every worker call (WORKER_RUNNER_TIMEOUT_MS). */
+export function workerRequestTimeoutMs(): number {
   return parseWorkerTimeoutMs(process.env.WORKER_RUNNER_TIMEOUT_MS)
 }
 
@@ -72,18 +78,29 @@ class WorkerTransportError extends Error {
 /**
  * One request to the worker, headers AND body bounded by one deadline: the
  * timer is cleared only after the body has been read, so a worker that sends
- * headers and then stalls cannot hang the caller.
+ * headers and then stalls cannot hang the caller. A caller's `signal` (a
+ * drain's deadline) cancels the request too.
  */
-async function requestWorker(path: string, init: RequestInit): Promise<WorkerResponse> {
+async function requestWorker(
+  path: string,
+  init: RequestInit,
+  signal?: AbortSignal,
+): Promise<WorkerResponse> {
   const base = workerUrl()
-  const ms = timeoutMs()
+  const ms = workerRequestTimeoutMs()
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), ms)
+  const combined = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal
   try {
-    const res = await fetch(`${base}${path}`, { ...init, signal: controller.signal })
+    const res = await fetch(`${base}${path}`, { ...init, signal: combined })
     const text = await res.text()
     return { ok: res.ok, status: res.status, statusText: res.statusText, text }
   } catch (err) {
+    if (signal?.aborted) {
+      throw new WorkerTransportError(`ClusterClient: ${base}${path} cancelled by the caller`, {
+        cause: err,
+      })
+    }
     if (err instanceof Error && err.name === "AbortError") {
       throw new WorkerTransportError(`ClusterClient: ${base}${path} timed out after ${ms}ms`, {
         cause: err,
@@ -100,12 +117,69 @@ async function requestWorker(path: string, init: RequestInit): Promise<WorkerRes
   }
 }
 
-function postJson(path: string, body: unknown): Promise<WorkerResponse> {
-  return requestWorker(path, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  })
+function postJson(path: string, body: unknown, signal?: AbortSignal): Promise<WorkerResponse> {
+  return requestWorker(
+    path,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    },
+    signal,
+  )
+}
+
+/** A worker 400 naming one request entry: `{"error":"arks[<i>]…"}`. */
+const ARK_REFUSAL = /^arks\[(\d+)\]/
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return v !== null && typeof v === "object" && !Array.isArray(v)
+}
+
+/** Parse text as JSON, or undefined when it is not JSON. */
+function tryJson(text: string): unknown {
+  try {
+    return JSON.parse(text)
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * The ARKs a refused or invalid answer can be pinned on, or [] when the
+ * fault is the exchange itself. Exported for the tests.
+ */
+export function culpritsOf(
+  asked: string[],
+  failure:
+    | { kind: "refusal"; body: string }
+    | { kind: "invalid"; raw: unknown; issuePaths: PropertyKey[][] },
+): string[] {
+  if (failure.kind === "refusal") {
+    const body = tryJson(failure.body)
+    if (!isRecord(body) || typeof body.error !== "string") return []
+    const m = ARK_REFUSAL.exec(body.error)
+    if (m === null) return []
+    const ark = asked[Number(m[1])]
+    return ark === undefined ? [] : [ark]
+  }
+  // An invalid answer: pin each issue on the ARK of the entry it is in, when
+  // that entry names an ARK we asked about. An issue outside such an entry
+  // (a missing top-level key, a wrong type) is the exchange's fault.
+  if (!isRecord(failure.raw)) return []
+  const askedSet = new Set(asked)
+  const culprits = new Set<string>()
+  for (const path of failure.issuePaths) {
+    const [bucket, index] = path
+    if (typeof bucket !== "string" || typeof index !== "number") return []
+    const entries = failure.raw[bucket]
+    if (!Array.isArray(entries)) return []
+    const entry: unknown = entries[index]
+    const ark = typeof entry === "string" ? entry : isRecord(entry) ? entry.ark : undefined
+    if (typeof ark !== "string" || !askedSet.has(ark)) return []
+    culprits.add(ark)
+  }
+  return [...culprits]
 }
 
 /** Parse a worker body as JSON, or say exactly why it is not. */
@@ -139,17 +213,14 @@ export class ClusterClient {
   }
 
   /**
-   * Fetch the worker's live queue-status read-model for a run. Best-effort: it
-   * drives the Ingérer live view and the watchdog's staleness clock, NOT the
-   * version commit (that rides the terminal callback). A 404 (run unknown or
-   * already pruned) is null. An unreachable worker or a non-2xx is ALSO null —
-   * the watchdog reads null as "the worker is silent" — but it is logged, never
-   * swallowed. A body that is not a valid read-model is a contract break and
-   * throws.
+   * Poll the worker's live queue-status read-model for a run. It drives the
+   * Ingérer live view and the watchdog's staleness clock, NOT the version
+   * commit (that rides the terminal callback). The four outcomes stay apart so
+   * an outage is never read as "the run is gone": 404 → run_unknown; no answer
+   * → worker_unreachable; any other non-2xx → worker_error (logged). A 2xx body
+   * that is not a valid read-model is a contract break and throws.
    */
-  static async progress(
-    clusterJobId: string,
-  ): Promise<ClusterQueueProgress | null> {
+  static async progress(clusterJobId: string): Promise<ClusterProgressPoll> {
     const path = `/progress/${encodeURIComponent(clusterJobId)}`
     let res: WorkerResponse
     try {
@@ -157,14 +228,14 @@ export class ClusterClient {
     } catch (err) {
       if (!(err instanceof WorkerTransportError)) throw err
       console.warn(`[cluster] progress ${clusterJobId}: worker unreachable —`, err.message)
-      return null
+      return { kind: CLUSTER_POLL.WORKER_UNREACHABLE, detail: err.message }
     }
-    if (res.status === 404) return null
+    if (res.status === 404) return { kind: CLUSTER_POLL.RUN_UNKNOWN }
     if (!res.ok) {
       console.warn(
         `[cluster] progress ${clusterJobId}: worker returned ${res.status} ${res.statusText}: ${res.text}`,
       )
-      return null
+      return { kind: CLUSTER_POLL.WORKER_ERROR, status: res.status }
     }
     const parsed = clusterQueueProgressSchema.safeParse(
       parseJsonBody("ClusterClient.progress", res.text),
@@ -174,23 +245,30 @@ export class ClusterClient {
         `ClusterClient.progress: invalid worker read-model: ${z.prettifyError(parsed.error)}`,
       )
     }
-    return parsed.data
+    return { kind: CLUSTER_POLL.PROGRESS, progress: parsed.data }
   }
 
   /**
    * POST /ocr-quality/sync — the per-ARK OCR-quality artifacts for `arks`
    * (lib/documents/ocr-sync.ts, plan D7). The worker returns the artifacts it
-   * has and queues a rate-gated build for the others.
+   * has and queues a rate-gated build for the others. `signal` (the drain's
+   * deadline) cancels the request.
    *   - no answer, a timeout, a 5xx, or a 404 (a worker older than the
-   *     endpoint) → OcrSyncUnavailableError: retry later, nobody at fault;
-   *   - any other non-2xx (a 400 refusing an ARK), a non-JSON body or one that
-   *     is not a valid sync response → OcrSyncContractError, with the body or
-   *     the Zod issues. A contract break is never written to the app DB.
+   *     endpoint) → OcrSyncUnavailableError;
+   *   - a 400 naming `arks[i]` → OcrSyncContractError pinned on that ARK; any
+   *     other 4xx (401, 403, 413, an unknown key…) or a body that is not JSON
+   *     → OcrSyncContractError on the EXCHANGE;
+   *   - a body outside the schema → pinned on the ARKs of the invalid entries
+   *     when they can be named, else on the exchange.
+   * A contract break is never written to the app DB.
    */
-  static async ocrQualitySync(arks: string[]): Promise<WorkerOcrQualitySyncResponse> {
+  static async ocrQualitySync(
+    arks: string[],
+    signal?: AbortSignal,
+  ): Promise<WorkerOcrQualitySyncResponse> {
     let res: WorkerResponse
     try {
-      res = await postJson("/ocr-quality/sync", { arks })
+      res = await postJson("/ocr-quality/sync", { arks }, signal)
     } catch (err) {
       if (err instanceof WorkerTransportError) {
         throw new OcrSyncUnavailableError(err.message, { cause: err })
@@ -203,22 +281,36 @@ export class ClusterClient {
       )
     }
     if (!res.ok) {
+      const culprits = res.status === 400 ? culpritsOf(arks, { kind: "refusal", body: res.text }) : []
       throw new OcrSyncContractError(
         `ClusterClient.ocrQualitySync: worker refused the batch (${res.status} ${res.statusText}): ${res.text}`,
+        culprits.length > 0
+          ? { scope: OCR_SYNC_FAULT_SCOPE.ARKS, culprits }
+          : { scope: OCR_SYNC_FAULT_SCOPE.EXCHANGE, culprits: [] },
       )
     }
     let json: unknown
     try {
       json = parseJsonBody("ClusterClient.ocrQualitySync", res.text)
     } catch (err) {
-      throw new OcrSyncContractError(err instanceof Error ? err.message : String(err), {
-        cause: err,
-      })
+      throw new OcrSyncContractError(
+        err instanceof Error ? err.message : String(err),
+        { scope: OCR_SYNC_FAULT_SCOPE.EXCHANGE, culprits: [] },
+        { cause: err },
+      )
     }
     const parsed = workerOcrQualitySyncResponseSchema.safeParse(json)
     if (!parsed.success) {
+      const culprits = culpritsOf(arks, {
+        kind: "invalid",
+        raw: json,
+        issuePaths: parsed.error.issues.map((i) => i.path),
+      })
       throw new OcrSyncContractError(
         `ClusterClient.ocrQualitySync: invalid worker response: ${z.prettifyError(parsed.error)}`,
+        culprits.length > 0
+          ? { scope: OCR_SYNC_FAULT_SCOPE.ARKS, culprits }
+          : { scope: OCR_SYNC_FAULT_SCOPE.EXCHANGE, culprits: [] },
       )
     }
     return parsed.data

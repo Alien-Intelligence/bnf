@@ -8,6 +8,7 @@ import { prisma } from "@/lib/db"
 import type { Prisma } from "@/lib/generated/prisma/client"
 import {
   DOCUMENT_RESOLVE_STATUS,
+  OCR_SYNC_REASON,
   OCR_SYNC_STATUS,
   type DocumentUpsertData,
   type OcrSyncWritePlan,
@@ -15,11 +16,13 @@ import {
 import {
   OCR_SYNC_BUILDING_RECHECK_MS,
   OCR_SYNC_MAX_ATTEMPTS,
+  OCR_SYNC_OUTAGE_BACKOFF_MS,
   OCR_SYNC_REJECT_BACKOFF_BASE_MS,
   OCR_SYNC_REJECT_BACKOFF_MAX_MS,
   OCR_SYNC_UNAVAILABLE_RECHECK_MS,
 } from "@/lib/constants"
 import {
+  OCR_SYNC_FAULT_SCOPE,
   OcrSyncContractError,
   type WorkerOcrQualitySyncResponse,
 } from "@/lib/cluster/ocr-quality"
@@ -45,11 +48,16 @@ export function assertSyncCoverage(
   const askedSet = new Set(asked)
   const missing = [...askedSet].filter((a) => !answered.has(a))
   const extra = [...answered].filter((a) => !askedSet.has(a))
-  if (missing.length > 0 || extra.length > 0) {
-    throw new OcrSyncContractError(
-      `ocr-quality sync answer does not match the request: missing=[${missing.join(", ")}] unexpected=[${extra.join(", ")}]`,
-    )
-  }
+  if (missing.length === 0 && extra.length === 0) return
+  const message = `ocr-quality sync answer does not match the request: missing=[${missing.join(", ")}] unexpected=[${extra.join(", ")}]`
+  // An ARK nobody asked for is the exchange's fault; ARKs left unanswered are
+  // pinned on themselves (the rest of the batch can be asked again).
+  throw new OcrSyncContractError(
+    message,
+    extra.length > 0
+      ? { scope: OCR_SYNC_FAULT_SCOPE.EXCHANGE, culprits: [] }
+      : { scope: OCR_SYNC_FAULT_SCOPE.ARKS, culprits: missing },
+  )
 }
 
 /**
@@ -101,7 +109,12 @@ export function rejectionOutcome(
 
 /** The reason stored for an ARK whose sync broke the worker contract. */
 export function syncRejectedReason(message: string): string {
-  return `sync_rejected: ${message}`
+  return `${OCR_SYNC_REASON.REJECTED}: ${message}`
+}
+
+/** The reason stored for a never-synced ARK whose batch found the worker unreachable. */
+export function syncUnavailableReason(message: string): string {
+  return `${OCR_SYNC_REASON.WORKER_UNAVAILABLE}: ${message}`
 }
 
 
@@ -216,11 +229,14 @@ export class DocumentService {
    * OcrSyncContractError (the answer breaks the contract — the drainer
    * isolates and penalises the ARK at fault); a DB failure throws as is.
    */
-  static async syncOcrBatch(arks: string[]): Promise<OcrSyncWritePlan> {
-    const response = await ClusterRunner.ocrQualitySync(arks)
+  static async syncOcrBatch(arks: string[], signal: AbortSignal): Promise<OcrSyncWritePlan> {
+    // Stamped BEFORE the question: a resync a commit requests while the
+    // question is in flight is newer than the answer and stays due.
+    const askedAt = new Date()
+    const response = await ClusterRunner.ocrQualitySync(arks, signal)
     assertSyncCoverage(arks, response)
-    const plan = planOcrSyncWrites(response, new Date())
-    await DocumentService.recordOcrSync(plan)
+    const plan = planOcrSyncWrites(response, askedAt)
+    await DocumentService.recordOcrSync(plan, signal)
     return plan
   }
 
@@ -235,9 +251,11 @@ export class DocumentService {
    * count; only an `available` answer satisfies a pending resync request (one
    * made AFTER the question stays due).
    */
-  static async recordOcrSync(plan: OcrSyncWritePlan): Promise<void> {
+  static async recordOcrSync(plan: OcrSyncWritePlan, signal: AbortSignal): Promise<void> {
     const { checkedAt } = plan
     for (const doc of plan.available) {
+      // Cancellation point between per-ARK transactions (a drain's deadline).
+      signal.throwIfAborted()
       const summary = {
         status: OCR_SYNC_STATUS.AVAILABLE,
         ocrRate: doc.ocrRate,
@@ -271,6 +289,7 @@ export class DocumentService {
     }
     const buildingNext = new Date(checkedAt.getTime() + OCR_SYNC_BUILDING_RECHECK_MS)
     for (const ark of plan.building) {
+      signal.throwIfAborted()
       const summary = {
         status: OCR_SYNC_STATUS.BUILDING,
         reason: null,
@@ -286,6 +305,7 @@ export class DocumentService {
     }
     const unavailableNext = new Date(checkedAt.getTime() + OCR_SYNC_UNAVAILABLE_RECHECK_MS)
     for (const { ark, reason } of plan.unavailable) {
+      signal.throwIfAborted()
       const summary = {
         status: OCR_SYNC_STATUS.UNAVAILABLE,
         reason,
@@ -310,7 +330,13 @@ export class DocumentService {
    * never-synced ARK becomes `unavailable` with the reason. Read-modify-write
    * in one transaction.
    */
-  static async recordOcrRejection(ark: string, message: string, now: Date): Promise<void> {
+  static async recordOcrRejection(
+    ark: string,
+    message: string,
+    now: Date,
+    signal: AbortSignal,
+  ): Promise<void> {
+    signal.throwIfAborted()
     await prisma.$transaction(async (tx) => {
       const row = await tx.documentOcr.findUnique({
         where: { ark },
@@ -364,6 +390,36 @@ export class DocumentService {
         },
       })
     })
+  }
+
+  /**
+   * Record that the worker could not be ASKED about these ARKs (unreachable,
+   * timeout, a 5xx): they back off for OCR_SYNC_OUTAGE_BACKOFF_MS so the next
+   * sweep asks other ARKs first, but their contract-failure budget is not
+   * touched (an outage says nothing about them). A row keeps its status and
+   * folios; a never-synced ARK becomes `unavailable` with the reason.
+   */
+  static async recordOcrUnavailable(
+    arks: string[],
+    message: string,
+    now: Date,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const nextCheckAt = new Date(now.getTime() + OCR_SYNC_OUTAGE_BACKOFF_MS)
+    for (const ark of arks) {
+      signal.throwIfAborted()
+      await prisma.documentOcr.upsert({
+        where: { ark },
+        create: {
+          ark,
+          status: OCR_SYNC_STATUS.UNAVAILABLE,
+          reason: syncUnavailableReason(message),
+          checkedAt: now,
+          nextCheckAt,
+        },
+        update: { nextCheckAt },
+      })
+    }
   }
 
   /**

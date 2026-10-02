@@ -51,8 +51,10 @@ function plan(over: Partial<OcrSyncWritePlan>): OcrSyncWritePlan {
 }
 
 function pendingAt(now: Date) {
-  return DocumentQueries.pendingOcrArks({ limit: ALL, now })
+  return DocumentQueries.pendingOcrArks({ corpusProjectId: projectId, limit: ALL, now })
 }
+
+const ALIVE = new AbortController().signal
 
 const LATER = () => new Date(Date.now() + 365 * 24 * 60 * 60 * 1_000)
 
@@ -96,8 +98,7 @@ test("recordOcrSync: available stores the folios; building stores a status", asy
         },
       ],
       building: [ARK_B],
-    }),
-  )
+    }), ALIVE)
   const a = await DocumentQueries.ocrForArk(projectId, ARK_A)
   assert.equal(a?.status, OCR_SYNC_STATUS.AVAILABLE)
   assert.equal(a?.ocrRate, 0.7821)
@@ -136,8 +137,7 @@ test("corpus gate: an ARK outside the reader's corpus reads as nothing, even whe
           folios: [{ folio: 1, ocrSource: OCR_SOURCE.ALTO, ocrQuality: 0.2, wordCount: 10 }],
         },
       ],
-    }),
-  )
+    }), ALIVE)
   assert.equal(await DocumentQueries.ocrForArk(projectId, ARK_OUT), null)
   assert.deepEqual(await DocumentQueries.ocrForArks(projectId, [ARK_OUT]), [])
   assert.deepEqual(await DocumentQueries.ocrIndexRows(projectId, [{ ark: ARK_OUT, folio: 1 }]), {
@@ -167,8 +167,7 @@ test("ocrResyncOp: a re-ingest makes an available ARK due now; an answer clears 
           folios: [{ folio: 1, ocrSource: OCR_SOURCE.ALTO, ocrQuality: 0.95, wordCount: 5000 }],
         },
       ],
-    }),
-  )
+    }), ALIVE)
   const row = await prisma.documentOcr.findUniqueOrThrow({ where: { ark: ARK_A } })
   assert.equal(row.resyncRequestedAt, null)
   assert.equal(row.nextCheckAt, null)
@@ -185,8 +184,8 @@ test("recordOcrSync: a re-OCR replaces the folios wholesale; a replay is idempot
       },
     ],
   })
-  await DocumentService.recordOcrSync(reocr)
-  await DocumentService.recordOcrSync(reocr)
+  await DocumentService.recordOcrSync(reocr, ALIVE)
+  await DocumentService.recordOcrSync(reocr, ALIVE)
   const a = await DocumentQueries.ocrForArk(projectId, ARK_A)
   assert.deepEqual(
     a?.folios.map((f) => [f.folio, f.ocrQuality]),
@@ -196,8 +195,7 @@ test("recordOcrSync: a re-OCR replaces the folios wholesale; a replay is idempot
 
 test("recordOcrSync: unavailable records the reason and keeps existing folios", async () => {
   await DocumentService.recordOcrSync(
-    plan({ unavailable: [{ ark: ARK_A, reason: "no_pages_artifact" }] }),
-  )
+    plan({ unavailable: [{ ark: ARK_A, reason: "no_pages_artifact" }] }), ALIVE)
   const a = await DocumentQueries.ocrForArk(projectId, ARK_A)
   assert.equal(a?.status, OCR_SYNC_STATUS.UNAVAILABLE)
   assert.equal(a?.reason, "no_pages_artifact")
@@ -207,14 +205,14 @@ test("recordOcrSync: unavailable records the reason and keeps existing folios", 
 test("recordOcrRejection: backs off, then quarantines after OCR_SYNC_MAX_ATTEMPTS", async () => {
   await prisma.documentOcr.deleteMany({ where: { ark: ARK_B } })
   for (let i = 1; i < OCR_SYNC_MAX_ATTEMPTS; i += 1) {
-    await DocumentService.recordOcrRejection(ARK_B, "worker refused", new Date())
+    await DocumentService.recordOcrRejection(ARK_B, "worker refused", new Date(), ALIVE)
     const row = await prisma.documentOcr.findUniqueOrThrow({ where: { ark: ARK_B } })
     assert.equal(row.syncAttempts, i)
     assert.equal(row.status, OCR_SYNC_STATUS.UNAVAILABLE)
     assert.ok(row.nextCheckAt !== null && row.nextCheckAt > new Date(), "backs off into the future")
     assert.ok(!(await pendingAt(new Date())).includes(ARK_B), "not offered while backing off")
   }
-  await DocumentService.recordOcrRejection(ARK_B, "worker refused", new Date())
+  await DocumentService.recordOcrRejection(ARK_B, "worker refused", new Date(), ALIVE)
   const row = await prisma.documentOcr.findUniqueOrThrow({ where: { ark: ARK_B } })
   assert.equal(row.status, OCR_SYNC_STATUS.QUARANTINED)
   assert.equal(row.nextCheckAt, null)
@@ -237,9 +235,8 @@ test("recordOcrRejection: an available row keeps its status and folios while bac
           folios: [{ folio: 1, ocrSource: OCR_SOURCE.ALTO, ocrQuality: 0.95, wordCount: 5000 }],
         },
       ],
-    }),
-  )
-  await DocumentService.recordOcrRejection(ARK_A, "bad answer", new Date())
+    }), ALIVE)
+  await DocumentService.recordOcrRejection(ARK_A, "bad answer", new Date(), ALIVE)
   const a = await DocumentQueries.ocrForArk(projectId, ARK_A)
   assert.equal(a?.status, OCR_SYNC_STATUS.AVAILABLE)
   assert.equal(a?.reason, null)
@@ -251,3 +248,54 @@ test("isIndexedInCorpus: indexed in this corpus only", async () => {
   assert.equal(await DocumentQueries.isIndexedInCorpus(projectId, ARK_C), false)
   assert.equal(await DocumentQueries.isIndexedInCorpus("no-such-project", ARK_A), false)
 })
+
+test("ocrPendingByCorpus: names the corpus with due work, never an ARK", async () => {
+  await prisma.documentOcr.deleteMany({ where: { ark: ARK_A } })
+  const rows = await DocumentQueries.ocrPendingByCorpus(new Date())
+  const mine = rows.find((r) => r.corpusProjectId === projectId)
+  assert.ok(mine !== undefined && mine.pending >= 1)
+  assert.deepEqual(Object.keys(mine).sort(), ["corpusProjectId", "pending"])
+})
+
+test("recordOcrUnavailable: backs the ARK off without touching its contract budget", async () => {
+  await prisma.documentOcr.deleteMany({ where: { ark: ARK_A } })
+  await DocumentService.recordOcrUnavailable([ARK_A], "ECONNREFUSED", new Date(), ALIVE)
+  const row = await prisma.documentOcr.findUniqueOrThrow({ where: { ark: ARK_A } })
+  assert.equal(row.status, OCR_SYNC_STATUS.UNAVAILABLE)
+  assert.equal(row.syncAttempts, 0)
+  assert.ok(row.nextCheckAt !== null && row.nextCheckAt > new Date())
+  assert.ok(!(await pendingAt(new Date())).includes(ARK_A), "not offered while backing off")
+})
+
+test("a resync requested while the question is in flight stays due after the answer", async () => {
+  const askedAt = new Date(Date.now() - 1_000)
+  await DocumentService.ocrResyncOp([ARK_A], new Date())
+  await DocumentService.recordOcrSync(
+    {
+      checkedAt: askedAt,
+      available: [
+        {
+          ark: ARK_A,
+          ocrRate: 0.8,
+          folios: [{ folio: 1, ocrSource: OCR_SOURCE.ALTO, ocrQuality: 0.95, wordCount: 5000 }],
+        },
+      ],
+      building: [],
+      unavailable: [],
+    },
+    ALIVE,
+  )
+  const row = await prisma.documentOcr.findUniqueOrThrow({ where: { ark: ARK_A } })
+  assert.ok(row.resyncRequestedAt !== null, "the newer request is kept")
+  assert.ok((await pendingAt(new Date())).includes(ARK_A), "and the ARK is due again")
+})
+
+test("recordOcrSync stops between ARKs once the drain is aborted", async () => {
+  const aborted = new AbortController()
+  aborted.abort()
+  await assert.rejects(
+    DocumentService.recordOcrSync(plan({ building: [ARK_B] }), aborted.signal),
+    (err: unknown) => err instanceof Error && err.name === "AbortError",
+  )
+})
+

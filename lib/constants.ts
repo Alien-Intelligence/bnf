@@ -441,15 +441,35 @@ export const OCR_SYNC_UNAVAILABLE_RECHECK_MS = 24 * 60 * 60 * 1_000
  */
 export const OCR_SYNC_MAX_ATTEMPTS = 5
 
+/**
+ * Backoff of the ARKs of a batch the worker could not answer (unreachable,
+ * timeout, 5xx): long enough for the next sweeps to ask other ARKs first,
+ * without counting against the ARKs' contract-failure budget.
+ */
+export const OCR_SYNC_OUTAGE_BACKOFF_MS = 30 * 60 * 1_000
+
 /** Backoff of a contract-failing ARK: base × 2^(attempt − 1), capped. */
 export const OCR_SYNC_REJECT_BACKOFF_BASE_MS = OCR_SYNC_SWEEP_INTERVAL_MS
 export const OCR_SYNC_REJECT_BACKOFF_MAX_MS = OCR_SYNC_UNAVAILABLE_RECHECK_MS
 
 /**
- * Wall-clock ceiling of one drain (forced + sweep), checked between batches.
- * Below the sweep interval so a drain never overlaps the next tick by design.
+ * Wall-clock ceiling of one drain. Every request and write of the drain is
+ * cancelled at this deadline, and no batch starts unless its worst-case cost
+ * (OCR_SYNC_BATCH_WRITE_MARGIN_MS + the worker request timeout) still fits.
+ * A sweep that fires while a drain runs is folded into it (re-entrancy guard).
  */
-export const OCR_SYNC_DRAIN_DEADLINE_MS = 2 * 60 * 1_000
+export const OCR_SYNC_DRAIN_DEADLINE_MS = 10 * 60 * 1_000
+
+/** Worst-case time to write one batch's answer (≤ OCR_SYNC_BATCH_SIZE per-ARK transactions). */
+export const OCR_SYNC_BATCH_WRITE_MARGIN_MS = 15_000
+
+/**
+ * Backoff of the WHOLE sync after the worker's answer breaks the contract at
+ * the exchange level (version skew, 401/403/413): base × 2^(failures − 1),
+ * capped. No ARK is penalised; the first valid answer resumes it.
+ */
+export const OCR_SYNC_EXCHANGE_BACKOFF_BASE_MS = OCR_SYNC_SWEEP_INTERVAL_MS
+export const OCR_SYNC_EXCHANGE_BACKOFF_MAX_MS = 60 * 60 * 1_000
 
 /**
  * Ceiling on one database await in the OCR-quality paths (the drainer and the

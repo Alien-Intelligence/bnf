@@ -9,7 +9,7 @@ import "server-only"
 // All app code submits and cancels jobs through this facade; it never imports
 // ClusterClient or FakeClusterRunner directly.
 import type { WorkerOcrQualitySyncResponse } from "./ocr-quality"
-import type { ClusterIngestRequest, ClusterQueueProgress } from "./contracts"
+import { CLUSTER_POLL, type ClusterIngestRequest, type ClusterProgressPoll } from "./contracts"
 import { ClusterClient } from "./client"
 import { FakeClusterRunner } from "./fake"
 import { CLUSTER_MODE, clusterMode } from "./mode"
@@ -24,14 +24,15 @@ export const ClusterRunner = {
   },
 
   /**
-   * Live queue-status read-model for a run. Fake mode has no real pipeline to
-   * report on (the FakeClusterRunner drives terminal progress directly), so it
-   * returns null and the UI falls back to the reassurance banner.
+   * Poll the live queue-status read-model for a run. Fake mode has no real
+   * pipeline to report on (the FakeClusterRunner drives terminal progress
+   * directly): the run is reported unknown and the UI falls back to the
+   * reassurance banner.
    */
-  async progress(
-    clusterJobId: string,
-  ): Promise<ClusterQueueProgress | null> {
-    return clusterMode() === CLUSTER_MODE.REAL ? ClusterClient.progress(clusterJobId) : null
+  async progress(clusterJobId: string): Promise<ClusterProgressPoll> {
+    return clusterMode() === CLUSTER_MODE.REAL
+      ? ClusterClient.progress(clusterJobId)
+      : { kind: CLUSTER_POLL.RUN_UNKNOWN }
   },
 
   /**
@@ -40,14 +41,17 @@ export const ClusterRunner = {
    * sync drainer is a no-op outside real mode; reaching this in fake mode is a
    * wiring bug and throws.
    */
-  async ocrQualitySync(arks: string[]): Promise<WorkerOcrQualitySyncResponse> {
+  async ocrQualitySync(
+    arks: string[],
+    signal: AbortSignal,
+  ): Promise<WorkerOcrQualitySyncResponse> {
     const mode = clusterMode()
     if (mode !== CLUSTER_MODE.REAL) {
       throw new Error(
         `ClusterRunner.ocrQualitySync: no worker in CLUSTER_MODE=${mode} — the OCR sync runs in real mode only`,
       )
     }
-    return ClusterClient.ocrQualitySync(arks)
+    return ClusterClient.ocrQualitySync(arks, signal)
   },
 
   async cancel(clusterJobId: string): Promise<void> {

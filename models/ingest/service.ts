@@ -35,12 +35,13 @@ import type {
   IngestSubmitInput,
   IngestSubmitOutcome,
 } from "./types"
-import type {
-  ClusterProgressEvent,
-  ClusterQueueProgress,
+import {
+  CLUSTER_POLL,
+  type ClusterProgressEvent,
+  type ClusterQueueProgress,
 } from "@/lib/cluster/contracts"
 import { ClusterRunner } from "@/lib/cluster/runner"
-import { triggerOcrSync } from "@/lib/documents/ocr-sync"
+import { requestOcrSync } from "@/lib/documents/ocr-sync-signal"
 import { DocumentService } from "@/models/documents/service"
 import { PAID_OCR_DEFAULT_BUDGET_USD } from "@/lib/constants"
 import { env } from "@/lib/env"
@@ -458,7 +459,11 @@ export class IngestService {
     if (job.status !== INGEST_STATUS.RUNNING && job.status !== INGEST_STATUS.QUEUED) {
       return null
     }
-    return ClusterRunner.progress(job.clusterJobId)
+    // Best-effort live view: only a read-model is shown; a run the worker does
+    // not know, an unreachable worker or a worker error all degrade to the
+    // banner (the watchdog, not this view, acts on the difference).
+    const poll = await ClusterRunner.progress(job.clusterJobId)
+    return poll.kind === CLUSTER_POLL.PROGRESS ? poll.progress : null
   }
 
   /**
@@ -620,10 +625,11 @@ export class IngestService {
     }
     // OCR quality (feedback 2026-09-29 #7): the run's documents may have been
     // re-OCR'd, so their stored quality is due again — persisted in the same
-    // transaction as the commit, then pulled at once (lib/documents/ocr-sync.ts).
+    // transaction as the commit, then signalled to the drainer, which pulls at
+    // once (lib/documents/ocr-sync-signal.ts → lib/documents/ocr-sync.ts).
     ops.push(DocumentService.ocrResyncOp(job.addedArks, now))
     await prisma.$transaction(ops)
-    triggerOcrSync()
+    requestOcrSync()
 
     // The research prompt embeds ÉTAT DU CORPUS, so a commit makes it stale:
     // without this the agent keeps saying the corpus is not ingested and
@@ -740,10 +746,11 @@ export class IngestService {
     }
     // OCR quality (feedback 2026-09-29 #7): the run's documents may have been
     // re-OCR'd, so their stored quality is due again — persisted in the same
-    // transaction as the commit, then pulled at once (lib/documents/ocr-sync.ts).
+    // transaction as the commit, then signalled to the drainer, which pulls at
+    // once (lib/documents/ocr-sync-signal.ts → lib/documents/ocr-sync.ts).
     ops.push(DocumentService.ocrResyncOp(job.addedArks, now))
     await prisma.$transaction(ops)
-    triggerOcrSync()
+    requestOcrSync()
 
     // The research prompt embeds ÉTAT DU CORPUS, so a commit makes it stale:
     // without this the agent keeps saying the corpus is not ingested and

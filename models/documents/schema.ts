@@ -510,6 +510,14 @@ export const OCR_SYNC_STATUS = {
 } as const
 export type OcrSyncStatus = (typeof OCR_SYNC_STATUS)[keyof typeof OCR_SYNC_STATUS]
 
+/** The app-side reason prefixes stored in DocumentOcr.reason (the worker's own reasons are stored as sent). */
+export const OCR_SYNC_REASON = {
+  /** The worker's answer for this ARK broke the contract (backoff, then quarantine). */
+  REJECTED: "sync_rejected",
+  /** The worker could not be asked (unreachable, timeout, 5xx); retried after a backoff. */
+  WORKER_UNAVAILABLE: "sync_worker_unavailable",
+} as const
+
 /**
  * The status a reader sees for an ARK with NO DocumentOcr row yet. Never
  * stored: the absence of the row is the state. Distinct from "not low".

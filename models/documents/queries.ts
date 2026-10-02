@@ -131,24 +131,50 @@ export class DocumentQueries {
   }
 
   /**
-   * The ARKs the OCR-quality sweep must ask the worker about — a SYSTEM read
-   * (lib/documents/ocr-sync.ts), never exposed to a user. Every indexed ARK
-   * (any project) that has no DocumentOcr row, or whose row is due
-   * (`next_check_at <= now`: building / unavailable / backing off, or a
-   * re-ingest's resync request). Never-asked and resync-requested ARKs come
-   * first, then cited ones (the trust-critical documents a note already
-   * quotes), then the longest-due.
+   * The corpus projects that have OCR-quality work due, with how much — the
+   * sweep's work list (lib/documents/ocr-sync.ts). A SYSTEM read that returns
+   * project ids and counts only, never an ARK or a quality: every ARK-level
+   * read below is scoped to one corpus. An ARK indexed in several corpora is
+   * counted in each; it is synced once, through whichever is drained first.
    *
-   * The one raw query of the model: Prisma cannot anti-join `document` (keyed
-   * per project) to `document_ocr` (keyed per ARK), which share no relation.
-   * The tagged template parameterizes every interpolation.
+   * Due = indexed in that corpus, and either no DocumentOcr row yet or a row
+   * whose `next_check_at` has passed (building, unavailable, backing off, or a
+   * re-ingest's resync request).
    */
-  static async pendingOcrArks(opts: { limit: number; now: Date }): Promise<string[]> {
+  static async ocrPendingByCorpus(now: Date): Promise<Array<{ corpusProjectId: string; pending: number }>> {
+    const rows = await prisma.$queryRaw<Array<{ project_id: string; n: bigint }>>`
+      SELECT d.project_id, count(*) AS n
+      FROM document d
+      LEFT JOIN document_ocr o ON o.ark = d.ark
+      WHERE d.indexed_at IS NOT NULL
+        AND (o.ark IS NULL OR o.next_check_at <= ${now})
+      GROUP BY d.project_id
+      ORDER BY d.project_id
+    `
+    return rows.map((r) => ({ corpusProjectId: r.project_id, pending: Number(r.n) }))
+  }
+
+  /**
+   * The due ARKs of ONE corpus (see ocrPendingByCorpus), never-asked and
+   * resync-requested first, then the ones a note already cites (the
+   * trust-critical documents), then the longest-due.
+   *
+   * Raw SQL because Prisma cannot anti-join `document` (keyed per project) to
+   * `document_ocr` (keyed per ARK), which share no relation. The tagged
+   * template parameterizes every interpolation.
+   */
+  static async pendingOcrArks(opts: {
+    corpusProjectId: string
+    limit: number
+    now: Date
+  }): Promise<string[]> {
     const rows = await prisma.$queryRaw<Array<{ ark: string }>>`
       SELECT d.ark
-      FROM (SELECT DISTINCT ark FROM document WHERE indexed_at IS NOT NULL) d
+      FROM document d
       LEFT JOIN document_ocr o ON o.ark = d.ark
-      WHERE o.ark IS NULL OR o.next_check_at <= ${opts.now}
+      WHERE d.project_id = ${opts.corpusProjectId}
+        AND d.indexed_at IS NOT NULL
+        AND (o.ark IS NULL OR o.next_check_at <= ${opts.now})
       ORDER BY (o.ark IS NULL OR o.resync_requested_at IS NOT NULL) DESC,
                EXISTS (SELECT 1 FROM citation c WHERE c.ark = d.ark) DESC,
                o.next_check_at ASC NULLS FIRST,
@@ -156,28 +182,6 @@ export class DocumentQueries {
       LIMIT ${opts.limit}
     `
     return rows.map((r) => r.ark)
-  }
-
-  /** How many ARKs pendingOcrArks would offer (no limit) — the cycle log's `pending-left`. */
-  static async countPendingOcrArks(opts: { now: Date }): Promise<number> {
-    const rows = await prisma.$queryRaw<Array<{ n: bigint }>>`
-      SELECT count(*) AS n
-      FROM (SELECT DISTINCT ark FROM document WHERE indexed_at IS NOT NULL) d
-      LEFT JOIN document_ocr o ON o.ark = d.ark
-      WHERE o.ark IS NULL OR o.next_check_at <= ${opts.now}
-    `
-    const [row] = rows
-    if (row === undefined) throw new Error("countPendingOcrArks: COUNT returned no row")
-    return Number(row.n)
-  }
-
-  /** The sync bookkeeping of some ARKs (the drainer's contract-failure accounting). */
-  static async ocrSyncAttempts(arks: string[]): Promise<Array<{ ark: string; syncAttempts: number }>> {
-    if (arks.length === 0) return []
-    return prisma.documentOcr.findMany({
-      where: { ark: { in: arks } },
-      select: { ark: true, syncAttempts: true },
-    })
   }
 
   /**

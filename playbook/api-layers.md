@@ -232,7 +232,8 @@ export class CorpusService {
 
 Rules:
 - Services are called from route handlers only — never from client components,
-  pages, or other services in a cycle.
+  pages, or other services in a cycle. The one other caller allowed is a
+  background drainer (below).
 - Services throw typed errors (not `Response` objects) — `withAuth` or the
   handler catches and maps them.
 - Services may call: queries from `models/<model>/queries.ts`, the MCP client,
@@ -241,6 +242,32 @@ Rules:
 - Services are the only place that calls `lib/mcp/` and `lib/cluster/`.
 - Services operate on resources already loaded by the handler for the policy
   check — they do not re-fetch what the handler already loaded.
+
+## Background drainers — the second kind of entry point
+
+A background drainer is work the app runs on a timer (and on a nudge), with no
+user and no request: it is an entry point like a route handler, and it may call
+services for the same reason a route does — the service is the only writer of
+its tables. Each drainer is listed here; a new one is added to this list in the
+same change.
+
+| Drainer | Calls | Nudged by |
+|---|---|---|
+| `lib/documents/ocr-sync.ts` (OCR-quality sync) | `DocumentService` (writes), `DocumentQueries` (reads) | `lib/documents/ocr-sync-signal.ts` |
+
+Rules:
+- A drainer reads through `queries.ts` and writes through `service.ts`; it never
+  calls Prisma itself.
+- A service never imports a drainer. When a service's write should wake a
+  drainer up, it persists the work in its own transaction and raises the
+  drainer's signal — a module that imports nothing from `models/` — so the
+  dependency points from the drainer to the signal, never back.
+- Every await of a drainer is bounded (CLAUDE_ERROR_PATTERNS §14) and the drainer
+  is a no-op unless the infrastructure it drives is configured.
+
+(`lib/documents/resolver.ts`, `canonicalizer.ts` and `lib/ingest/watchdog.ts`
+predate this rule and still write through Prisma directly; they are not
+precedents.)
 
 ## The resulting route handler
 
