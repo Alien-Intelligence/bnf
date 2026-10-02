@@ -2,10 +2,11 @@ import "server-only"
 // lib/cluster/fake-rag.ts
 // In-process RAG implementation for CLUSTER_MODE=fake.
 //
-// Scoring is purely lexical — no embedding model needed:
-//   - Each topic keyword that appears in the query adds +0.30 to the raw score.
-//   - Each query word (length > 3) found in the snippet adds +0.10.
-//   - Raw score is clamped to [0, 1].
+// Scoring is purely lexical — no embedding model needed (weights named below):
+//   - each topic keyword that appears in the query adds TOPIC_MATCH_WEIGHT;
+//   - each query word of MIN_MATCH_WORD_LENGTH or more found in the snippet
+//     adds WORD_MATCH_WEIGHT;
+//   - the score is clamped to MAX_SCORE.
 //
 // Passages with a raw score of 0 are excluded from results (nothing matched).
 // Remaining passages are sorted descending by score, then sliced to k.
@@ -124,6 +125,19 @@ function entryContentPayload(
   return { text }
 }
 
+// --- Lexical scoring ---------------------------------------------------------
+
+/** Added per fixture topic that appears in the query. */
+const TOPIC_MATCH_WEIGHT = 0.3
+/** Added per query word found in the snippet. */
+const WORD_MATCH_WEIGHT = 0.1
+/** Query words this short ("le", "des", "the") are ignored by the word match. */
+const MIN_MATCH_WORD_LENGTH = 4
+/** Scores are similarities: never above this. */
+const MAX_SCORE = 1
+/** Snippets a keyword hit carries, at most (one per matching page). */
+const MAX_SNIPPETS_PER_HIT = 3
+
 function scoreAgainstQuery(
   query: string,
   topics: string[],
@@ -132,23 +146,17 @@ function scoreAgainstQuery(
   const q = query.toLowerCase()
   let score = 0
 
-  // Topic match: +0.30 per topic keyword present in the query string.
   for (const t of topics) {
-    if (q.includes(t.toLowerCase())) {
-      score += 0.3
-    }
+    if (q.includes(t.toLowerCase())) score += TOPIC_MATCH_WEIGHT
   }
 
-  // Snippet word match: +0.10 per query word (length > 3) found in snippet.
   const snippetLower = snippet.toLowerCase()
-  const qWords = q.split(/\s+/).filter((w) => w.length > 3)
+  const qWords = q.split(/\s+/).filter((w) => w.length >= MIN_MATCH_WORD_LENGTH)
   for (const w of qWords) {
-    if (snippetLower.includes(w)) {
-      score += 0.1
-    }
+    if (snippetLower.includes(w)) score += WORD_MATCH_WEIGHT
   }
 
-  return Math.min(1, score)
+  return Math.min(MAX_SCORE, score)
 }
 
 export const FakeRagRunner = {
@@ -191,7 +199,7 @@ export const FakeRagRunner = {
         bestByArk.set(f.ark, { score: s, snippets: [f.snippet] })
       } else {
         cur.score = Math.max(cur.score, s)
-        if (cur.snippets.length < 3) cur.snippets.push(f.snippet)
+        if (cur.snippets.length < MAX_SNIPPETS_PER_HIT) cur.snippets.push(f.snippet)
       }
     }
 
