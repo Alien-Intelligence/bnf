@@ -24,6 +24,7 @@ import { markHeadIngested } from "@/lib/testing/mark-ingested"
 import { cleanupProject } from "@/lib/testing/project-cleanup"
 import { SESSION_SCOPE } from "@/models/sessions/schema"
 
+let user: TurnScopedCtx["user"]
 let userId: string
 let projectId: string
 let derivedId: string
@@ -39,7 +40,7 @@ function ctxFor(signal: AbortSignal = new AbortController().signal): TurnScopedC
     signal,
     request: new Request("http://localhost/test"),
     db: prisma,
-    user: { id: userId } as TurnScopedCtx["user"],
+    user,
     appSessionId: sessionId,
     projectId: derivedId,
     corpusProjectId: projectId,
@@ -49,7 +50,7 @@ function ctxFor(signal: AbortSignal = new AbortController().signal): TurnScopedC
 }
 
 before(async () => {
-  const user = await createTestUser()
+  user = await createTestUser()
   userId = user.id
   const project = await createTestProject(userId, "rag-get-text")
   projectId = project.id

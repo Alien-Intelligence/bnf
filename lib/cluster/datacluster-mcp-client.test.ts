@@ -5,7 +5,11 @@ import "server-only"
 
 import { test, before, after } from "node:test"
 import assert from "node:assert/strict"
+import { z } from "zod"
 import { DataclusterMcpClient, DataclusterMcpProtocolError } from "./datacluster-mcp-client"
+
+/** The part of a JSON-RPC request the stub routes on. */
+const rpcRequestSchema = z.object({ method: z.string() })
 
 // The client needs a URL and a token to exist; the stub answers every call.
 process.env.DATACLUSTER_MCP_URL ??= "https://cluster.invalid/mcp"
@@ -17,7 +21,7 @@ let initializeCalls = 0
 
 before(() => {
   globalThis.fetch = async (_input: RequestInfo | URL, init?: RequestInit) => {
-    const body = JSON.parse(String(init?.body)) as { method: string }
+    const body = rpcRequestSchema.parse(JSON.parse(String(init?.body)))
     if (body.method === "initialize") initializeCalls++
     return handler(body)
   }
