@@ -26,6 +26,7 @@
 
 import {
   ELISION_MAX_GAP_WORDS,
+  QUOTE_MATCH_DEADLINE_STRIDE,
   QUOTE_FUZZY_MAX_EDIT,
   QUOTE_FUZZY_WORD_RATIO,
   QUOTE_ILLEGIBLE_MAX_WORDS,
@@ -54,7 +55,25 @@ export type QuoteVerdict =
   | { ok: true; matchedFolio: number; fuzzyTokens: number }
   | { ok: false; reason: QuoteWarningReason; foundOnFolio?: number }
 
+/**
+ * Thrown from inside the matcher when the caller's deadline has passed: the
+ * alignment of a long document is synchronous, so the deadline has to be
+ * checked inside it, not only between quotes. The caller turns it into
+ * `unverifiable / budget_exceeded`.
+ */
+export class QuoteMatchDeadlineError extends Error {
+  constructor() {
+    super("quote matching passed its deadline")
+    this.name = "QuoteMatchDeadlineError"
+  }
+}
+
+/** `true` once the work must stop (a deadline passed, the turn was cancelled). */
+export type OutOfTime = () => boolean
+
 export type VerifyOptions = {
+  /** Checked every QUOTE_MATCH_DEADLINE_STRIDE candidate starts. */
+  outOfTime: OutOfTime
   citedFolio: number
   marking: OcrCorrectionMarking
   /**
@@ -101,9 +120,14 @@ function tokenizeFolio(folio: number, text: string): SourceToken[] {
 }
 
 /** The whole document's tokens, folio by folio in map (document) order. */
-export function tokenizeFolios(folios: DocumentFolios): SourceToken[] {
+export function tokenizeFolios(folios: DocumentFolios, outOfTime: OutOfTime): SourceToken[] {
   const out: SourceToken[] = []
-  for (const [folio, text] of folios) out.push(...tokenizeFolio(folio, text))
+  for (const [folio, text] of folios) {
+    if (outOfTime()) throw new QuoteMatchDeadlineError()
+    // Not `push(...tokens)`: spreading a large page's tokens as arguments
+    // overflows the call stack (one 300 000-token page is enough).
+    for (const token of tokenizeFolio(folio, text)) out.push(token)
+  }
   return out
 }
 
@@ -230,9 +254,17 @@ function canStartAt(seg: QuoteSegment, doc: SourceToken[], j: number): boolean {
 }
 
 /** Earliest alignment of `seg` whose start lies in [lo, hi). */
-function locate(seg: QuoteSegment, doc: SourceToken[], lo: number, hi: number): SegmentMatch | null {
+function locate(
+  seg: QuoteSegment,
+  doc: SourceToken[],
+  lo: number,
+  hi: number,
+  outOfTime: OutOfTime,
+): SegmentMatch | null {
   const budget = fuzzyBudget(seg)
-  for (let j = Math.max(0, lo); j < Math.min(hi, doc.length); j++) {
+  const from = Math.max(0, lo)
+  for (let j = from; j < Math.min(hi, doc.length); j++) {
+    if ((j - from) % QUOTE_MATCH_DEADLINE_STRIDE === 0 && outOfTime()) throw new QuoteMatchDeadlineError()
     if (!canStartAt(seg, doc, j)) continue
     const a = alignAt(seg, doc, j, budget)
     if (a) return { start: j, end: a.end, fuzzyTokens: a.fuzzy, tokens: a.tokens }
@@ -303,9 +335,9 @@ export function verifyQuote(q: ExtractedQuote, doc: SourceToken[], opts: VerifyO
     // builds one by hand has a bug, and a silent `ok` would hide it.
     throw new Error("verifyQuote: a quote must have at least one segment")
   }
-  let primary = cited ? locate(first, doc, cited[0], cited[1]) : null
+  let primary = cited ? locate(first, doc, cited[0], cited[1], opts.outOfTime) : null
   if (!primary) {
-    const elsewhere = locate(first, doc, 0, doc.length)
+    const elsewhere = locate(first, doc, 0, doc.length, opts.outOfTime)
     if (elsewhere) flag(QUOTE_WARNING_REASON.FOUND_ON_OTHER_FOLIO, doc[elsewhere.start].folio)
     else flag(QUOTE_WARNING_REASON.NOT_IN_CITED_FOLIO)
     primary = elsewhere
@@ -316,7 +348,7 @@ export function verifyQuote(q: ExtractedQuote, doc: SourceToken[], opts: VerifyO
   // Later segments: only after the previous one, in reach, on the same folio.
   let prev = primary
   for (const seg of rest) {
-    const next = locate(seg, doc, prev.end, doc.length)
+    const next = locate(seg, doc, prev.end, doc.length, opts.outOfTime)
     if (next) {
       const prevFolio = doc[prev.end - 1].folio
       if (doc[next.start].folio !== prevFolio) flag(QUOTE_WARNING_REASON.ELISION_ACROSS_FOLIOS)
@@ -325,7 +357,7 @@ export function verifyQuote(q: ExtractedQuote, doc: SourceToken[], opts: VerifyO
       prev = next
       continue
     }
-    const earlier = locate(seg, doc, 0, prev.start)
+    const earlier = locate(seg, doc, 0, prev.start, opts.outOfTime)
     if (earlier) {
       flag(QUOTE_WARNING_REASON.ELISION_OUT_OF_ORDER)
       matches.push(earlier)

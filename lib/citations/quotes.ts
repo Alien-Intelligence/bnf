@@ -29,6 +29,7 @@
  * characters stay, so an OCR `ma:son` remains one token and is compared as is.
  */
 
+import { QUOTE_UNBALANCED_MARKS_MAX_PER_BLOCK } from "@/lib/constants"
 import { QUOTE_FORM, type QuoteCitation, type QuoteForm } from "@/models/notes/schema"
 import { CITATION_REGEX, IMAGE_CITATION_REGEX, NOTELINK_REGEX, parseCitations } from "./syntax"
 
@@ -258,6 +259,9 @@ type Span = { form: QuoteForm; open: number; close: number; innerStart: number; 
  * later quote of the block as its content. The scan records it as unbalanced
  * and restarts just after it, so the quotes that follow are still found — and
  * the caller reports the unclosed mark instead of silently checking nothing.
+ * Each restart rescans the rest of the block, so at most
+ * QUOTE_UNBALANCED_MARKS_MAX_PER_BLOCK restarts are made; past that, the rest
+ * of the block is left unscanned and its marks stay reported.
  */
 function scanSpans(text: string, base: number): { spans: Span[]; unbalanced: number[] } {
   const unbalanced: number[] = []
@@ -294,6 +298,11 @@ function scanSpans(text: string, base: number): { spans: Span[]; unbalanced: num
     if (stuck.length === 0) return { spans, unbalanced }
     const at = Math.min(...stuck)
     unbalanced.push(base + at)
+    if (unbalanced.length >= QUOTE_UNBALANCED_MARKS_MAX_PER_BLOCK) {
+      // Each recovery rescans the rest of the block: bound the work. The
+      // quotes before this mark are kept; the rest of the block is not scanned.
+      return { spans: spans.filter((sp) => sp.open < base + at), unbalanced }
+    }
     from = at + 1
   }
 }

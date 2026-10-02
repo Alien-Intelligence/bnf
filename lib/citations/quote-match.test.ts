@@ -6,7 +6,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { extractQuotes } from "./quotes"
-import { tokenizeFolios, verifyQuote } from "./quote-match"
+import { QuoteMatchDeadlineError, tokenizeFolios, verifyQuote } from "./quote-match"
 import type { QuoteVerdict } from "./quote-match"
 import {
   OCR_CORRECTION_MARKING_MODE,
@@ -33,7 +33,9 @@ const FOLIOS = new Map<number, string>([
   [5, "Première phrase du rapport. Deuxième phrase du rapport. Troisième phrase du rapport ici même."],
   [7, "Nous ne reviendrons pas sur les causes exactes de cet incendie dramatique."],
 ])
-const DOC = tokenizeFolios(FOLIOS)
+/** A clock that never runs out, for tests where time is not the subject. */
+const neverOutOfTime = () => false
+const DOC = tokenizeFolios(FOLIOS, neverOutOfTime)
 
 type Row = {
   label: string
@@ -196,6 +198,19 @@ const ROWS: Row[] = [
     expect: [QUOTE_WARNING_REASON.UNMARKED_CORRECTION],
   },
   {
+    label: "with no quality data (null), a bracketed word on the low page is not judged for low OCR",
+    md: `« n'est plus qu'un amas de [ruines] fumantes » ${CITE(2)}`,
+    cited: 2,
+    expect: "ok",
+  },
+  {
+    label: "with quality data saying no folio is low, the same quote passes too",
+    md: `« n'est plus qu'un amas de [ruines] fumantes » ${CITE(2)}`,
+    cited: 2,
+    low: [],
+    expect: "ok",
+  },
+  {
     label: "a quote that runs across the page break without an elision passes",
     md: `« un court-circuit a provoqué le sinistre le Palais de Cr#stal » ${CITE(1)}`,
     cited: 1,
@@ -208,9 +223,11 @@ for (const row of ROWS) {
     const quotes = extractQuotes(row.md)
     assert.equal(quotes.length, 1, "one quote extracted")
     const verdicts: QuoteVerdict[] = verifyQuote(quotes[0], DOC, {
+      outOfTime: neverOutOfTime,
       citedFolio: row.cited,
       marking: row.marking ?? OCR_CORRECTION_MARKING_MODE.BRACKETED_WORD,
-      lowOcrFolios: new Set(row.low ?? []),
+      // `low` absent = no quality data at all (null), distinct from "no low folio".
+      lowOcrFolios: row.low === undefined ? null : new Set(row.low),
     })
     if (row.expect === "ok") {
       assert.deepEqual(
@@ -233,7 +250,7 @@ for (const row of ROWS) {
 }
 
 test("tokenizeFolios marks paragraph breaks and sentence ends, and joins printed hyphenation", () => {
-  const doc = tokenizeFolios(new Map([[1, "La répu-\nblique est une. Elle vit.\n\nNouveau paragraphe ici."]]))
+  const doc = tokenizeFolios(new Map([[1, "La répu-\nblique est une. Elle vit.\n\nNouveau paragraphe ici."]]), neverOutOfTime)
   const norms = doc.map((t) => t.norm)
   assert.deepEqual(norms, ["la", "république", "est", "une", "elle", "vit", "nouveau", "paragraphe", "ici"])
   assert.equal(doc[3].sentenceEndAfter, true, "'une.' ends a sentence before 'Elle'")
@@ -247,6 +264,7 @@ test("verifyQuote returns every applicable reason in one run", () => {
   const md = `« Le maire (…) a déclaré […] hier soir […] que la maison forestière avait brûlé » ${CITE(1)}`
   const q = extractQuotes(md)[0]
   const reasons = verifyQuote(q, DOC, {
+    outOfTime: neverOutOfTime,
     citedFolio: 1,
     marking: OCR_CORRECTION_MARKING_MODE.BRACKETED_WORD,
     lowOcrFolios: new Set(),
@@ -255,4 +273,20 @@ test("verifyQuote returns every applicable reason in one run", () => {
   assert.ok(reasons.includes(QUOTE_WARNING_REASON.NONSTANDARD_ELISION_MARKER))
   assert.ok(reasons.includes(QUOTE_WARNING_REASON.UNMARKED_CORRECTION))
   assert.ok(!reasons.includes("ok"))
+})
+
+test("the matcher stops at the deadline: tokenizing and aligning throw QuoteMatchDeadlineError", () => {
+  const outOfTime = () => true
+  assert.throws(() => tokenizeFolios(FOLIOS, outOfTime), QuoteMatchDeadlineError)
+  const [q] = extractQuotes(`« Les premiers témoins accusent l'imprudence » ${CITE(1)}`)
+  assert.throws(
+    () =>
+      verifyQuote(q, DOC, {
+        outOfTime,
+        citedFolio: 1,
+        marking: OCR_CORRECTION_MARKING_MODE.BRACKETED_WORD,
+        lowOcrFolios: null,
+      }),
+    QuoteMatchDeadlineError,
+  )
 })

@@ -4,6 +4,7 @@
 // and tokens for the matcher.
 import { test } from "node:test"
 import assert from "node:assert/strict"
+import { QUOTE_UNBALANCED_MARKS_MAX_PER_BLOCK } from "@/lib/constants"
 import { QUOTE_FORM } from "@/models/notes/schema"
 import { extractQuotes, findUnbalancedQuoteMarks, isSameQuote, normalizeToken } from "./quotes"
 import type { ExtractedQuote } from "./quotes"
@@ -187,4 +188,11 @@ test("balanced marks report nothing", () => {
 test("a citation with folio 0 is not a citation: the quote stays uncited", () => {
   const md = `« un court-circuit a provoqué le sinistre » [[${ARK}|Le Populaire|0]]`
   assert.equal(extractQuotes(md)[0].citation, null)
+})
+
+test("recovery from unclosed marks is capped per block, keeping the quotes before the cap", () => {
+  const stray = Array.from({ length: QUOTE_UNBALANCED_MARKS_MAX_PER_BLOCK + 10 }, (_, i) => `« ouvert${i}`).join(" ")
+  const md = `« un court-circuit a provoqué le sinistre » ${CITE(2)} ${stray} « jamais vu après le plafond »`
+  assert.equal(findUnbalancedQuoteMarks(md, 20).length, QUOTE_UNBALANCED_MARKS_MAX_PER_BLOCK)
+  assert.deepEqual(extractQuotes(md).map((q) => q.raw), ["un court-circuit a provoqué le sinistre"])
 })

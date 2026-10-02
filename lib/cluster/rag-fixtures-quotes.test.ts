@@ -99,7 +99,9 @@ async function reasonsFor(md: string): Promise<Array<QuoteWarningReason | "ok">>
   const doc = await FakeRagRunner.getDocumentFolios({ projectId: PROJECT, ark: q.citation.ark, signal: new AbortController().signal })
   assert.equal(doc.status, RAG_LOOKUP_STATUS.FOUND)
   if (doc.status !== RAG_LOOKUP_STATUS.FOUND) return []
-  return verifyQuote(q, tokenizeFolios(doc.folios), {
+  const neverOutOfTime = () => false
+  return verifyQuote(q, tokenizeFolios(doc.folios, neverOutOfTime), {
+    outOfTime: neverOutOfTime,
     citedFolio: q.citation.folio,
     marking: OCR_CORRECTION_MARKING_MODE.BRACKETED_WORD,
     lowOcrFolios: LOW_FOLIOS.get(q.citation.ark) ?? new Set(),

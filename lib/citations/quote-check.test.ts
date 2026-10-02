@@ -237,6 +237,7 @@ test("an unclosed « is reported, and does not hide the quote after it", async (
   )
   assert.equal(res.checked, 1, "the closed quote after the unclosed mark is still checked")
   assert.deepEqual(res.warnings.map((w) => w.reason), [QUOTE_WARNING_REASON.UNBALANCED_QUOTE_MARK])
+  assert.equal(res.status, QUOTE_CHECK_STATUS.PARTIAL, "text behind an unclosed mark went unchecked")
 })
 
 test("the low-OCR lookup is consulted and correction_on_low_ocr surfaces", async () => {
@@ -265,4 +266,28 @@ test("prior-body rule: a quote that gains (or changes) its citation is re-checke
     [[QUOTE_WARNING_REASON.UNVERIFIABLE, QUOTE_UNVERIFIABLE_CAUSE.FOLIO_ABSENT]],
     "folio 3 is absent from the stub document: the new citation was actually checked",
   )
+})
+
+test("budgetMs must be a positive integer (NaN would disable the deadline)", async () => {
+  for (const budgetMs of [Number.NaN, 0, -5, 1.5]) {
+    await assert.rejects(checkNoteQuotes(args({ bodyMd: "Rien.", budgetMs })), RangeError)
+  }
+})
+
+test("the deadline interrupts the alignment of a large document, not just the gaps between quotes", async () => {
+  // ~300 000 source tokens, none of which match: aligning a quote against it
+  // is long synchronous work that only an in-loop deadline check can stop.
+  const huge = Array.from({ length: 300_000 }, (_, i) => `mot${i % 997}`).join(" ")
+  const body = Array.from({ length: 20 }, (_, i) => `« quatre mots absents numero${i} ici » ${cite(arkN(1), 2)}`).join("\n\n")
+  const started = Date.now()
+  const res = await withFacade(
+    async () => found([[2, huge]]),
+    () => checkNoteQuotes(args({ bodyMd: body, budgetMs: 200 })),
+  )
+  assert.ok(Date.now() - started < 5_000, `stopped promptly (${Date.now() - started} ms)`)
+  assert.ok(
+    res.warnings.some((w) => w.cause === QUOTE_UNVERIFIABLE_CAUSE.BUDGET_EXCEEDED),
+    "the quotes left when the deadline passed are budget_exceeded",
+  )
+  assert.equal(res.status, QUOTE_CHECK_STATUS.PARTIAL)
 })

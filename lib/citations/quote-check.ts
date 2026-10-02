@@ -34,6 +34,7 @@ import "server-only"
 import { QUOTE_CHECK_CONCURRENCY, QUOTE_CHECK_MAX_SOURCES, QUOTE_MIN_CHECKED_WORDS, QUOTE_WARNING_EXCERPT_CHARS, OCR_CORRECTION_MARKING } from "@/lib/constants"
 import { QUOTE_WARNING_DETAIL } from "@/lib/agent/prompts/quote-warnings"
 import { DataclusterMcpError } from "@/lib/cluster/datacluster-mcp-client"
+import { raceAbort } from "@/lib/mcp/abort"
 import { ClusterRagClient, RAG_LOOKUP_STATUS } from "@/lib/cluster/rag"
 import type { DocumentFolios } from "@/lib/cluster/folio-text"
 import {
@@ -48,7 +49,8 @@ import {
 } from "@/models/notes/schema"
 import { extractQuotes, findUnbalancedQuoteMarks, isSameQuote } from "./quotes"
 import type { ExtractedQuote } from "./quotes"
-import { tokenizeFolios, verifyQuote } from "./quote-match"
+import { QuoteMatchDeadlineError, tokenizeFolios, verifyQuote } from "./quote-match"
+import type { SourceToken } from "./quote-match"
 
 /**
  * Per-folio OCR quality: which of the cited folios of a document are poorly
@@ -83,25 +85,6 @@ export type CheckNoteQuotesArgs = {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/** Resolve with `p`, or reject with the signal's reason the moment it aborts. */
-function raced<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
-  if (signal.aborted) return Promise.reject(signal.reason)
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(signal.reason)
-    signal.addEventListener("abort", onAbort, { once: true })
-    p.then(
-      (v) => {
-        signal.removeEventListener("abort", onAbort)
-        resolve(v)
-      },
-      (e: unknown) => {
-        signal.removeEventListener("abort", onAbort)
-        reject(e)
-      },
-    )
-  })
-}
 
 /** Run `fn` over `items` with at most `limit` in flight; results keep order. */
 async function mapConcurrent<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
@@ -163,7 +146,7 @@ async function fetchDocument(
   signals: CheckSignals,
 ): Promise<FetchOutcome> {
   try {
-    const result = await raced(
+    const result = await raceAbort(
       ClusterRagClient.getDocumentFolios({ projectId: args.corpusProjectId, ark, signal: signals.any }),
       signals.any,
     )
@@ -171,7 +154,7 @@ async function fetchDocument(
       return { kind: "unverifiable", cause: QUOTE_UNVERIFIABLE_CAUSE.ENTRY_NOT_FOUND }
     }
     const low = args.lowOcrFolios
-      ? await raced(args.lowOcrFolios({ corpusProjectId: args.corpusProjectId, ark, folios: citedFolios }), signals.any)
+      ? await raceAbort(args.lowOcrFolios({ corpusProjectId: args.corpusProjectId, ark, folios: citedFolios }), signals.any)
       : null
     return { kind: "found", folios: result.folios, low }
   } catch (err) {
@@ -203,7 +186,23 @@ async function fetchDocument(
  * propagate.
  */
 export async function checkNoteQuotes(args: CheckNoteQuotesArgs): Promise<QuoteCheckResult> {
+  if (!Number.isSafeInteger(args.budgetMs) || args.budgetMs <= 0) {
+    // A caller bug, not a quote problem: NaN would disable the deadline and
+    // abort every fetch at once.
+    throw new RangeError(`checkNoteQuotes: budgetMs must be a positive integer, got ${args.budgetMs}`)
+  }
+  // ONE clock for the whole check: the abort signal that bounds the awaits
+  // and the deadline that bounds the synchronous work start together.
+  const budget = AbortSignal.timeout(args.budgetMs)
   const deadline = Date.now() + args.budgetMs
+  const outOfTime = (): QuoteUnverifiableCause | null =>
+    args.signal.aborted
+      ? QUOTE_UNVERIFIABLE_CAUSE.CANCELLED
+      : Date.now() >= deadline
+        ? QUOTE_UNVERIFIABLE_CAUSE.BUDGET_EXCEEDED
+        : null
+  const stopMatching = () => outOfTime() !== null
+
   const prior = args.priorBodyMd === null ? [] : extractQuotes(args.priorBodyMd)
   const quotes = extractQuotes(args.bodyMd).filter(
     (q) => q.words >= QUOTE_MIN_CHECKED_WORDS && !prior.some((p) => isSameQuote(p, q)),
@@ -238,8 +237,12 @@ export async function checkNoteQuotes(args: CheckNoteQuotesArgs): Promise<QuoteC
   }
 
   const fetched = groups.slice(0, QUOTE_CHECK_MAX_SOURCES)
-  if (fetched.length > 0) {
-    const budget = AbortSignal.timeout(args.budgetMs)
+  // Extraction is synchronous too: if it alone ran past the deadline, nothing
+  // is fetched and every grouped quote is reported as stopped.
+  const stoppedEarly = outOfTime()
+  if (stoppedEarly !== null) {
+    for (const [, list] of fetched) for (const { q } of list) push(q.index, unverifiable(q, stoppedEarly))
+  } else if (fetched.length > 0) {
     const siblings = new AbortController()
     const signals: CheckSignals = {
       caller: args.signal,
@@ -251,59 +254,87 @@ export async function checkNoteQuotes(args: CheckNoteQuotesArgs): Promise<QuoteC
       fetchDocument(args, ark, new Set(list.map((x) => x.citation.folio)), signals),
     )
 
-    // The synchronous work is bounded by the same budget, as a deadline.
-    const outOfTime = (): QuoteUnverifiableCause | null =>
-      args.signal.aborted
-        ? QUOTE_UNVERIFIABLE_CAUSE.CANCELLED
-        : Date.now() >= deadline
-          ? QUOTE_UNVERIFIABLE_CAUSE.BUDGET_EXCEEDED
-          : null
-
     for (const [i, [, list]] of fetched.entries()) {
       const outcome = outcomes[i]
       if (outcome.kind === "unverifiable") {
         for (const { q } of list) push(q.index, unverifiable(q, outcome.cause))
         continue
       }
-      const stopped = outOfTime()
-      if (stopped !== null) {
-        for (const { q } of list) push(q.index, unverifiable(q, stopped))
-        continue
-      }
-      const doc = tokenizeFolios(outcome.folios)
-      for (const { q, citation } of list) {
-        const late = outOfTime()
-        if (late !== null) {
-          push(q.index, unverifiable(q, late))
-          continue
-        }
-        if (!outcome.folios.has(citation.folio)) {
-          push(q.index, unverifiable(q, QUOTE_UNVERIFIABLE_CAUSE.FOLIO_ABSENT))
-          continue
-        }
-        for (const v of verifyQuote(q, doc, {
-          citedFolio: citation.folio,
-          marking: OCR_CORRECTION_MARKING,
-          lowOcrFolios: outcome.low,
-        })) {
-          if (v.ok) continue
-          push(
-            q.index,
-            warning(q.raw, citation, v.reason, v.foundOnFolio === undefined ? {} : { found_on_folio: v.foundOnFolio }),
-          )
-        }
-      }
+      for (const w of verifyDocument(list, outcome, stopMatching, outOfTime)) push(w.index, w.w)
     }
   }
 
   const unevaluated: QuoteWarningReason[] =
     args.lowOcrFolios === null && quotes.length > 0 ? [QUOTE_WARNING_REASON.CORRECTION_ON_LOW_OCR] : []
   const ordered = warnings.sort((a, b) => a.index - b.index).map((x) => x.w)
-  const partial = unevaluated.length > 0 || ordered.some((w) => w.reason === QUOTE_WARNING_REASON.UNVERIFIABLE)
+  // A quote that could not be checked — unverifiable, or behind an unclosed
+  // mark — means the result does not cover the whole body.
+  const partial =
+    unevaluated.length > 0 ||
+    ordered.some(
+      (w) => w.reason === QUOTE_WARNING_REASON.UNVERIFIABLE || w.reason === QUOTE_WARNING_REASON.UNBALANCED_QUOTE_MARK,
+    )
   return {
     status: partial ? QUOTE_CHECK_STATUS.PARTIAL : QUOTE_CHECK_STATUS.COMPLETE,
     checked: quotes.length,
     warnings: ordered,
     unevaluated_rules: unevaluated,
   }
+}
+
+/**
+ * Match one fetched document's quotes. The deadline is checked before the
+ * document is tokenised, before each quote, and inside the matcher; whatever
+ * is left when it passes is `unverifiable` with the cause.
+ */
+function verifyDocument(
+  list: ReadonlyArray<{ q: ExtractedQuote; citation: QuoteCitation }>,
+  outcome: Extract<FetchOutcome, { kind: "found" }>,
+  stopMatching: () => boolean,
+  outOfTime: () => QuoteUnverifiableCause | null,
+): Array<{ index: number; w: QuoteWarning }> {
+  const out: Array<{ index: number; w: QuoteWarning }> = []
+  const stopAll = (from: number, cause: QuoteUnverifiableCause) => {
+    for (const { q } of list.slice(from)) out.push({ index: q.index, w: unverifiable(q, cause) })
+  }
+  let doc: SourceToken[]
+  try {
+    doc = tokenizeFolios(outcome.folios, stopMatching)
+  } catch (err) {
+    if (!(err instanceof QuoteMatchDeadlineError)) throw err
+    stopAll(0, outOfTime() ?? QUOTE_UNVERIFIABLE_CAUSE.BUDGET_EXCEEDED)
+    return out
+  }
+  for (const [n, { q, citation }] of list.entries()) {
+    const late = outOfTime()
+    if (late !== null) {
+      stopAll(n, late)
+      return out
+    }
+    if (!outcome.folios.has(citation.folio)) {
+      out.push({ index: q.index, w: unverifiable(q, QUOTE_UNVERIFIABLE_CAUSE.FOLIO_ABSENT) })
+      continue
+    }
+    let verdicts
+    try {
+      verdicts = verifyQuote(q, doc, {
+        outOfTime: stopMatching,
+        citedFolio: citation.folio,
+        marking: OCR_CORRECTION_MARKING,
+        lowOcrFolios: outcome.low,
+      })
+    } catch (err) {
+      if (!(err instanceof QuoteMatchDeadlineError)) throw err
+      stopAll(n, outOfTime() ?? QUOTE_UNVERIFIABLE_CAUSE.BUDGET_EXCEEDED)
+      return out
+    }
+    for (const v of verdicts) {
+      if (v.ok) continue
+      out.push({
+        index: q.index,
+        w: warning(q.raw, citation, v.reason, v.foundOnFolio === undefined ? {} : { found_on_folio: v.foundOnFolio }),
+      })
+    }
+  }
+  return out
 }
