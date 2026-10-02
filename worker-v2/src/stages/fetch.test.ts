@@ -32,6 +32,7 @@ interface Harness {
   /** Every FolioResult the stage emitted onto Q.monitor, in arrival order. */
   emitted: FolioResult[];
   seed: (item: FolioItem) => Promise<void>;
+  lines: Array<Record<string, unknown>>;
 }
 
 const ARK = "ark:/12148/cb12345678x";
@@ -40,7 +41,7 @@ const ARK = "ark:/12148/cb12345678x";
 async function setup(spec: FakeDocSpec): Promise<Harness> {
   const q = new MemoryQueue();
   const blob = new MemoryBlobStore();
-  const { logger } = createMemoryLogger();
+  const { logger, lines } = createMemoryLogger();
   const bnf = new FakeBnfClient().add(spec);
 
   const emitted: FolioResult[] = [];
@@ -56,7 +57,7 @@ async function setup(spec: FakeDocSpec): Promise<Harness> {
   const stage = new FetchStage({ queue: q, blob, log: logger }, bnf, undefined);
   await stage.start();
 
-  return { q, blob, bnf, emitted, seed: (item) => q.send(Q.fetch, item) };
+  return { q, blob, bnf, emitted, lines, seed: (item) => q.send(Q.fetch, item) };
 }
 
 /** A folio item for the shared ARK. */
@@ -280,3 +281,16 @@ test("alto: a fresh fetch writes the sidecar from the parsed WC (mean carried fr
   assert.ok(quality.wordCount > 0);
   assert.equal(quality.scoredWordCount, quality.wordCount);
 });
+
+test("alto: invalid WC values are excluded from the mean and logged (the fake runs the real parser)", async () => {
+  // The fake's text has 6 words; two WC values are unusable.
+  const h = await setup(altoSpec({ folioWc: { 4: ["1", "abc", "0.5", "1.5", "1", "0.5"] } }));
+  await h.seed(folio("alto", 4));
+  await h.q.idle();
+
+  const quality = await h.blob.getJson<AltoFolioQuality>(keys.altoQuality(ARK, 4));
+  assert.deepEqual(quality, { v: 1, wordCount: 6, scoredWordCount: 4, meanWc: 0.75 });
+  const line = h.lines.find((l) => l.event === "alto_invalid_wc");
+  assert.equal(line?.count, 2);
+});
+

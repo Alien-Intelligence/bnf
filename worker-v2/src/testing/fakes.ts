@@ -6,7 +6,7 @@
  * BnF quota. The live clients (ported from V1) implement the same interfaces.
  */
 import { PermanentBnfError, TransientBnfError } from "../bnf/errors.js";
-import { emptyAltoFolio } from "../bnf/parse.js";
+import { altoFolioFromParse, emptyAltoFolio, parseAlto } from "../bnf/parse.js";
 import { DOC_INFO_SOURCE, type AltoFolio, type BnfClient, type BnfDocInfo, type Manifest } from "../bnf/types.js";
 import type { ClusterSink, Describer, Embedder, OcrEngine, OcrBatchStatus } from "../ports.js";
 import type { PreparedPage } from "../domain/types.js";
@@ -55,6 +55,13 @@ export interface FakeDocSpec {
    */
   folioMeanWc?: Record<number, number | null>;
   /**
+   * Raw WC attribute values, one per word of the folio's fake text (6 words),
+   * written verbatim into the fake ALTO — so a test can script values the real
+   * parser must reject ("abc", "1.5") and see invalidWcCount. Overrides
+   * folioMeanWc for that folio; null omits WC on that word.
+   */
+  folioWc?: Record<number, Array<string | null>>;
+  /**
    * The raw "Taux OCR" metadata value the fake manifest publishes when
    * `ocrAvailable` (default "100%"). Any string — "78.21 %", "n/a", "150 %" — so
    * tests can drive every parseOcrRate outcome through the real parsing path.
@@ -78,6 +85,19 @@ export interface FakeDocSpec {
   oaiFault?: Fault;
   /** Faults per folio fetch (ALTO or image), keyed by ordre. */
   folioFaults?: Record<number, Fault>;
+}
+
+/** The mean WC a fake ALTO word carries unless the spec says otherwise: fully
+ *  confident, so every unrelated test reads "not low". `null` = no WC at all. */
+const FAKE_DEFAULT_WC = "1";
+
+function fakeMeanWc(mean: number | null | undefined): string | null {
+  if (mean === undefined) return FAKE_DEFAULT_WC;
+  return mean === null ? null : String(mean);
+}
+
+function xmlAttr(v: string): string {
+  return v.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
 }
 
 /** The Taux OCR a fake text document publishes unless its spec says otherwise. */
@@ -147,21 +167,22 @@ export class FakeBnfClient implements BnfClient {
     const s = this.spec(ark);
     this.faults.hit(`folio:${ark}:${ordre}`, s.folioFaults?.[ordre]);
     if (s.emptyFolios?.includes(ordre)) return emptyAltoFolio();
-    const text = `ALTO text of ${ark} folio ${ordre}`;
-    const wordCount = text.split(/\s+/).length;
-    const override = s.folioMeanWc?.[ordre];
-    const meanWc = override === undefined ? 1 : override;
-    return {
-      text,
-      empty: false,
-      quality: {
-        v: 1,
-        wordCount,
-        scoredWordCount: meanWc === null ? 0 : wordCount,
-        meanWc,
-      },
-      invalidWcCount: 0,
-    };
+    // A real ALTO document, parsed by the REAL parser (range check, invalid WC
+    // count, rounding) and mapped by the SAME altoFolioFromParse the live
+    // client uses — so the fake cannot report a quality the client never could.
+    const words = `ALTO text of ${ark} folio ${ordre}`.split(" ");
+    const wcs = s.folioWc?.[ordre] ?? words.map(() => fakeMeanWc(s.folioMeanWc?.[ordre]));
+    if (wcs.length !== words.length) {
+      throw new Error(`fake folioWc[${ordre}] must hold ${words.length} values, got ${wcs.length}`);
+    }
+    const strings = words
+      .map((w, i) => {
+        const wc = wcs[i];
+        return `<String CONTENT="${xmlAttr(w)}"${wc === null || wc === undefined ? "" : ` WC="${xmlAttr(wc)}"`}/>`;
+      })
+      .join("");
+    const xml = `<alto><Layout><Page><PrintSpace><TextBlock><TextLine>${strings}</TextLine></TextBlock></PrintSpace></Page></Layout></alto>`;
+    return altoFolioFromParse(parseAlto(xml));
   }
 
   async fetchImageFolio(ark: string, ordre: number, _size?: string): Promise<Buffer> {
