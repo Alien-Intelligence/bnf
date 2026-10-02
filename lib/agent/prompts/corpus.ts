@@ -1,7 +1,7 @@
 import "server-only"
 import type { Project } from "@/lib/generated/prisma/client"
 import type { AppLocale } from "@/i18n/routing"
-import { renderSharedPreamble, type MemorySnapshot } from "./shared"
+import { renderSharedPreamble, type CrossScopeMemory, type MemorySnapshot } from "./shared"
 import {
   BNF_CATALOGUE_GUIDE,
   BNF_COLLECTIONS_GUIDE,
@@ -37,10 +37,11 @@ function describePeriod(periodMap: Record<string, number>): string {
 export function renderCorpusPrompt(
   project: Project,
   memory: MemorySnapshot,
+  crossScope: CrossScopeMemory,
   snapshot: CorpusSnapshot,
   locale: AppLocale,
 ): string {
-  const preamble = renderSharedPreamble(project, memory, locale)
+  const preamble = renderSharedPreamble(project, memory, crossScope, locale)
   // Working-language restatements inside the (French) prompt body — the
   // LANGUAGE directive in the preamble is authoritative; these keep the RÔLE
   // and STYLE sections from contradicting it in an EN session.

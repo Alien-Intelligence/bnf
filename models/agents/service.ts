@@ -29,10 +29,12 @@ export class AgentService {
    * Builds (or returns the cached) system prompt for the given session, in the
    * given working language.
    *
-   * Delegates to `PromptBuilder.buildForSession`, which reads memory + corpus
-   * snapshot and caches the result in `AppSession.systemPrompt` (tagged with
-   * `promptLocale`). The cache is invalidated whenever `memory_write` is
-   * called, and rebuilt when the requested locale differs from the cached one.
+   * Delegates to `PromptBuilder.buildForSession`, which reads both scopes'
+   * memory + the corpus snapshot and caches the result in
+   * `AppSession.systemPrompt` (tagged with `promptLocale`). Every memory change
+   * — the agent's memory_write and the memory dialog alike — goes through
+   * MemoryService, which clears the cached prompts of all the project's
+   * sessions; the cache is also rebuilt when the requested locale differs.
    *
    * Uses a dynamic import so this module does not take a hard static dependency
    * on the prompts module at evaluation time. The prompts module is always

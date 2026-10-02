@@ -6,17 +6,16 @@
  *   - memory_write — upsert a curated fact into project memory
  *
  * Memory is small and durable (not the conversation context). It is
- * re-injected at the start of every session via the system prompt.
+ * re-injected at the start of every session via the system prompt — the
+ * session's own scope, plus the OTHER step's memory as a read-only section.
  * The `memory_read` tool exists for explicit re-reads during long sessions
- * after a `memory_write` — the agent does NOT need to call it at session
- * start (the system prompt already carries the snapshot).
+ * after a `memory_write`, or to read past the other scope's prompt cap.
  *
- * `memory_write` publishes a `memory_event` via `ctx.emit` so the memory
- * dialog (if open) re-renders without polling.
- *
- * NOTE: MemoryQueries and MemoryService are stubs in this branch.
- * This module compiles against the Prisma client directly for now and will
- * wire up through the service layer once models/memory is merged.
+ * `memory_write` authorises through MemoryPolicy, then writes through
+ * MemoryService.write (playbook/memory.md: dedup, near-duplicate merge, and the
+ * prompt-cache invalidation of every session of the project, awaited). It
+ * always records into the session's OWN scope. It publishes a `memory_event`
+ * via `ctx.emit` so the memory dialog (if open) re-renders without polling.
  *
  * See playbook/memory.md for the full memory model.
  */
@@ -24,38 +23,16 @@ import "server-only"
 
 import { z } from "zod"
 import { defineTool } from "@alien/chat-sdk/claude"
-import { prisma } from "@/lib/db"
 import { MemoryPolicy } from "@/models/memory/policy"
+import { MemoryQueries } from "@/models/memory/queries"
 import { MEMORY_SCOPE, type MemoryScope } from "@/models/memory/schema"
+import { MemoryService } from "@/models/memory/service"
 import type { TurnScopedCtx } from "./registry-factory"
 import { authorizeProjectTool } from "./authorize"
 import { AGENT_TOOLS } from "./constants"
 
-// ---------------------------------------------------------------------------
-// Helper
-// ---------------------------------------------------------------------------
-
-/**
- * Resolve both projectId and session scope from the appSession row.
- *
- * A direct Prisma query rather than a service call avoids circular imports.
- * The lookup hits a primary-key index and is effectively free.
- */
-async function sessionMeta(
-  appSessionId: string,
-): Promise<{ projectId: string; scope: string }> {
-  const session = await prisma.appSession.findUniqueOrThrow({
-    where: { id: appSessionId },
-    select: { projectId: true, scope: true },
-  })
-  return { projectId: session.projectId, scope: session.scope }
-}
-
 // Zod enum for memory scopes built from the domain constant.
-const memoryScopeEnum = z.enum([
-  MEMORY_SCOPE.CORPUS,
-  MEMORY_SCOPE.RESEARCH,
-] as [MemoryScope, ...MemoryScope[]])
+const memoryScopeEnum = z.enum([MEMORY_SCOPE.CORPUS, MEMORY_SCOPE.RESEARCH] as [MemoryScope, ...MemoryScope[]])
 
 // ---------------------------------------------------------------------------
 // memory_read
@@ -67,10 +44,11 @@ export const memoryReadTool = defineTool<
 >({
   name: AGENT_TOOLS.memoryRead,
   description:
-    "Read the project memory for the current session scope. " +
-    "Call this only when you need a fresh snapshot mid-session — the memory is " +
-    "already injected into your system prompt at session start. " +
-    "Omit `scope` to use the current session's scope (corpus or research).",
+    "Read the project memory for a scope. " +
+    "Call this only when you need a fresh snapshot mid-session — your step's memory is " +
+    "already injected into your system prompt at session start, and the other step's " +
+    "memory too (read-only, capped). " +
+    "Omit `scope` to read the current session's scope (corpus or research).",
   inputSchema: z.object({
     scope: memoryScopeEnum
       .optional()
@@ -80,23 +58,7 @@ export const memoryReadTool = defineTool<
       ),
   }),
   handler: async (input, ctx: TurnScopedCtx) => {
-    const { projectId, scope: sessionScope } = await sessionMeta(ctx.appSessionId)
-    const resolvedScope = input.scope ?? sessionScope
-
-    const rows = await prisma.memoryItem.findMany({
-      where: { projectId, scope: resolvedScope },
-      orderBy: [{ section: "asc" }, { position: "asc" }, { createdAt: "asc" }],
-    })
-
-    const sections: Record<string, { title: string; items: typeof rows }> = {}
-    for (const item of rows) {
-      if (!sections[item.section]) {
-        sections[item.section] = { title: item.section, items: [] }
-      }
-      sections[item.section].items.push(item)
-    }
-
-    return { sections: Object.values(sections) }
+    return MemoryQueries.snapshot(ctx.projectId, input.scope ?? ctx.scope)
   },
 })
 
@@ -120,8 +82,10 @@ export const memoryWriteTool = defineTool<
     "enumeration here: record the takeaway in one sentence (e.g. \"Turing & Shannon " +
     "absents de Gallica — uniquement des notices catalogue\"). If you have several " +
     "distinct facts, make several short memory_write calls — do not concatenate them. " +
-    "Near-duplicate facts (same normalised text) are merged rather than duplicated. " +
+    "Near-duplicate facts (same section, nearly the same text) are merged rather than duplicated. " +
     "Group related facts under the same section (e.g. \"Périmètre temporel\", \"Thèmes\", \"Sources\"). " +
+    "It always records into YOUR step's memory; the other step's agent sees it, read-only, " +
+    "from its next turn on. " +
     "After writing, a memory_event is emitted so the memory dialog updates in real time.",
   inputSchema: z.object({
     section: z
@@ -156,73 +120,24 @@ export const memoryWriteTool = defineTool<
   handler: async (input, ctx: TurnScopedCtx) => {
     const gate = await authorizeProjectTool(ctx, MemoryPolicy, "write")
     if (!gate.ok) return gate.result
-    const { projectId, scope } = await sessionMeta(ctx.appSessionId)
 
-    // Inline near-dedup: exact normalised-text match within the same section.
-    // MemoryService.write will replace this once models/memory is fully merged.
-    const existing = await prisma.memoryItem.findMany({
-      where: { projectId, scope, section: input.section },
+    // MemoryService.write dedups (near-duplicates merge), applies the
+    // documented "deduit" origin fallback, and invalidates every cached prompt
+    // of the project before it returns.
+    const item = await MemoryService.write({
+      projectId: ctx.projectId,
+      scope: ctx.scope,
+      section: input.section,
+      text: input.text,
+      origin: input.origin ?? null,
     })
-
-    const norm = (s: string) => s.trim().toLowerCase().replace(/\s+/g, " ")
-    const target = norm(input.text)
-    const match = existing.find(
-      (e: (typeof existing)[number]) => norm(e.text) === target,
-    )
-
-    let item: (typeof existing)[number]
-    if (match) {
-      item = await prisma.memoryItem.update({
-        where: { id: match.id },
-        data: {
-          text:   input.text,
-          origin: input.origin ?? match.origin ?? "deduit",
-        },
-      })
-    } else {
-      item = await prisma.memoryItem.create({
-        data: {
-          projectId,
-          scope,
-          section:  input.section,
-          text:     input.text,
-          origin:   input.origin ?? "deduit",
-          position: existing.length,
-        },
-      })
-    }
 
     ctx.emit?.({
       type: "memory_event",
-      data: {
-        kind:    "write",
-        scope,
-        section: item.section,
-        itemId:  item.id,
-      },
+      data: { kind: "write", scope: ctx.scope, section: item.section, itemId: item.id },
     })
 
-    // Prompt-cache invalidation: the cached system prompt now contains stale
-    // memory. The prompt-builder caches per (projectId, scope); invalidation
-    // is best-effort — if the path doesn't exist yet (parallel commit), we
-    // swallow the error and rely on the next session-start rebuild.
-    try {
-      const builderPath = "@/lib/agent/prompts/builder" as string
-      const builderMod: { PromptBuilder?: { invalidate?: (p: string, s: string) => void } } | null =
-        await import(/* webpackIgnore: true */ builderPath).catch(() => null)
-      if (typeof builderMod?.PromptBuilder?.invalidate === "function") {
-        builderMod.PromptBuilder.invalidate(projectId, scope)
-      }
-    } catch {
-      // Non-fatal: the next session start will rebuild the prompt from fresh memory.
-    }
-
-    return {
-      itemId:  item.id,
-      section: item.section,
-      text:    item.text,
-      origin:  item.origin,
-    }
+    return { itemId: item.id, section: item.section, text: item.text, origin: item.origin }
   },
 })
 

@@ -756,3 +756,17 @@ export const NOTE_IMAGE_IIIF_SIZE = "843,"
 export function IIIF_MANIFEST_URL(ark: string): string {
   return `https://gallica.bnf.fr/iiif/${ark}/manifest.json`
 }
+
+// ---------------------------------------------------------------------------
+// Cross-scope project memory (Track E Phase 11, feedback #10d)
+// ---------------------------------------------------------------------------
+
+/**
+ * Each agent's system prompt shows the OTHER step's memory as a read-only
+ * section (a research-scope "source à risque" must reach the corpus agent), at
+ * most this many items and characters — past the cap it says how many items
+ * are not shown and how to read them (memory_read). The own-scope memory is
+ * never capped: memory is curated, not trimmed (playbook/memory.md).
+ */
+export const MEMORY_CROSS_SCOPE_MAX_ITEMS = 20
+export const MEMORY_CROSS_SCOPE_MAX_CHARS = 3_000

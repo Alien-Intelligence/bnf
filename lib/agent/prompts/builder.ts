@@ -36,18 +36,15 @@ export class PromptBuilder {
   }
 
   /**
-   * Invalidate the cached system prompt for all sessions that belong to the
-   * given project and scope. Called by `memory_write` when a fact is added —
-   * the cached prompt now contains stale memory and must be rebuilt on the
-   * next turn.
-   *
-   * Invalidates by project+scope rather than by session so that any session
-   * opened on this project (e.g. a background worker resuming) picks up the
-   * fresh memory too.
+   * Invalidate the cached system prompt of every session of the project, in
+   * BOTH scopes. Each prompt now embeds both memories (its own, and the other
+   * step's as a read-only section), so a memory change makes every one stale.
+   * Called by MemoryService after every write — the agent tool and the memory
+   * dialog alike — and awaited: a failure propagates, never swallowed.
    */
-  static async invalidate(projectId: string, scope: string): Promise<void> {
+  static async invalidateProject(projectId: string): Promise<void> {
     await prisma.appSession.updateMany({
-      where: { projectId, scope },
+      where: { projectId },
       data: { systemPrompt: null },
     })
   }
@@ -62,12 +59,19 @@ export class PromptBuilder {
     // Memory is the project's own; the corpus belongs to the source when this
     // project is derived. Conflating the two is the modelling error this whole
     // feature is built to avoid — see lib/authz/corpus-source.ts.
-    const memory = await MemoryQueries.snapshot(session.projectId, session.scope)
+    // Both scopes' memory: the session's own, and the other step's, rendered
+    // read-only (a research "source à risque" must reach the corpus agent).
+    const otherScope = session.scope === SESSION_SCOPE.CORPUS ? SESSION_SCOPE.RESEARCH : SESSION_SCOPE.CORPUS
+    const [memory, otherMemory] = await Promise.all([
+      MemoryQueries.snapshot(session.projectId, session.scope),
+      MemoryQueries.snapshot(session.projectId, otherScope),
+    ])
+    const crossScope = { scope: otherScope, snapshot: otherMemory }
     const corpusId = corpusProjectId(project)
 
     if (session.scope === SESSION_SCOPE.CORPUS) {
       const snapshot = await this.loadCorpusSnapshot(corpusId)
-      return renderCorpusPrompt(project, memory, snapshot, locale)
+      return renderCorpusPrompt(project, memory, crossScope, snapshot, locale)
     }
 
     const source = isDerived(project)
@@ -84,7 +88,7 @@ export class PromptBuilder {
         ? ({ ingested: false } as const)
         : await this.loadIngestStatus(corpusId)
 
-    return renderResearchPrompt(project, memory, ingestStatus, locale, source)
+    return renderResearchPrompt(project, memory, crossScope, ingestStatus, locale, source)
   }
 
   private static async loadIngestStatus(projectId: string) {

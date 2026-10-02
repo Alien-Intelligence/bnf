@@ -1,6 +1,7 @@
 import "server-only"
 import type { Project } from "@/lib/generated/prisma/client"
 import type { AppLocale } from "@/i18n/routing"
+import { MEMORY_CROSS_SCOPE_MAX_CHARS, MEMORY_CROSS_SCOPE_MAX_ITEMS } from "@/lib/constants"
 
 /** English name of the working language, for prompt sentences written in
  *  English ("Write the questions and options in French/English."). */
@@ -34,9 +35,46 @@ export function renderMemoryForPrompt(snapshot: MemorySnapshot): string {
     .join("\n\n")
 }
 
+/** The other step's memory, rendered read-only into this agent's prompt. */
+export type CrossScopeMemory = { scope: "corpus" | "research"; snapshot: MemorySnapshot }
+
+/**
+ * The other scope's memory, in section order, until MEMORY_CROSS_SCOPE_MAX_ITEMS
+ * items or MEMORY_CROSS_SCOPE_MAX_CHARS characters; past the cap it says how
+ * many items are not shown and how to read them. Empty → `(aucun élément)`.
+ */
+export function renderCrossScopeMemory(cross: CrossScopeMemory): string {
+  const total = cross.snapshot.sections.reduce((n, s) => n + s.items.length, 0)
+  if (total === 0) return "(aucun élément)"
+  const blocks: string[] = []
+  let shown = 0
+  let chars = 0
+  for (const section of cross.snapshot.sections) {
+    const lines: string[] = []
+    for (const item of section.items) {
+      const line = `- ${item.text}`
+      if (shown >= MEMORY_CROSS_SCOPE_MAX_ITEMS || chars + line.length > MEMORY_CROSS_SCOPE_MAX_CHARS) break
+      lines.push(line)
+      shown += 1
+      chars += line.length
+    }
+    if (lines.length > 0) blocks.push(`### ${section.title}\n${lines.join("\n")}`)
+    if (shown >= MEMORY_CROSS_SCOPE_MAX_ITEMS || chars >= MEMORY_CROSS_SCOPE_MAX_CHARS) break
+  }
+  const hidden = total - shown
+  const tail = hidden > 0 ? `\n\n(+${hidden} éléments non affichés — memory_read scope="${cross.scope}")` : ""
+  return `${blocks.join("\n\n")}${tail}`
+}
+
+const STEP_AGENT_NAME: Record<CrossScopeMemory["scope"], string> = {
+  corpus: "corpus-building",
+  research: "research",
+}
+
 export function renderSharedPreamble(
   project: Project,
   memory: MemorySnapshot,
+  crossScope: CrossScopeMemory,
   locale: AppLocale,
 ): string {
   return `You are a research assistant embedded in the Bibliothèque nationale de France corpus workspace, on the Alien Intelligence platform.
@@ -47,6 +85,9 @@ Project: ${project.name}${project.subtitle ? ` — ${project.subtitle}` : ""}
 
 PROJECT MEMORY (durable facts about this project, carried across all sessions — treat as authoritative unless the user overrides):
 ${renderMemoryForPrompt(memory)}
+
+PROJECT MEMORY — OTHER STEP (READ-ONLY). Facts recorded by the ${STEP_AGENT_NAME[crossScope.scope]} agent of this project. Take them into account (e.g. a source flagged as risky, a scope decision), but never rewrite or contradict them with memory_write — your memory_write always records into YOUR step's memory:
+${renderCrossScopeMemory(crossScope)}
 
 Operating principles:
 - WHO YOU'RE TALKING TO: the user is an expert librarian or scholar who is NEW to AI agents. Never patronize them on library science or scholarship — they know their field better than you. DO scaffold the AI interaction: the first time a technical term appears in a session (ARK, folio, ingestion/indexation, version du corpus, facette, recherche sémantique…), gloss it in one short clause. Before a long or irreversible operation, say in one sentence what you are about to do and why. If the user is vague or stuck, don't just wait for a request — propose two or three concrete next steps drawn from the project subject and memory.

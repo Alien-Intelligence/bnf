@@ -1,5 +1,6 @@
 import "server-only"
 import { prisma } from "@/lib/db"
+import { PromptBuilder } from "@/lib/agent/prompts/builder"
 import type { MemoryItem } from "@/lib/generated/prisma/client"
 
 const NEAR_DUP_THRESHOLD = 4 // Levenshtein
@@ -27,7 +28,16 @@ function levenshtein(a: string, b: string): number {
   return dp[m][n]
 }
 
+/**
+ * Every memory change goes through this service, and every one of them
+ * invalidates the cached system prompts of ALL the project's sessions before
+ * it returns: each prompt embeds both scopes' memory (Track E Phase 11). The
+ * invalidation is awaited and a failure propagates — on 0.18.1 memory_write
+ * invalidated through a dynamic import that never resolved, and the error was
+ * swallowed, so a fact never reached the other sessions' cached prompts.
+ */
 export class MemoryService {
+  /** Upsert a fact; near-duplicates in the same (scope, section) merge. */
   static async write(args: {
     projectId: string
     scope: string
@@ -42,27 +52,28 @@ export class MemoryService {
     const match = existing.find(
       (e) => norm(e.text) === target || levenshtein(norm(e.text), target) < NEAR_DUP_THRESHOLD,
     )
-    if (match) {
-      return prisma.memoryItem.update({
-        where: { id: match.id },
-        data: { text: args.text, origin: args.origin ?? match.origin ?? "deduit" },
-      })
-    }
-    const position = existing.length
-    return prisma.memoryItem.create({
-      data: {
-        projectId: args.projectId,
-        scope: args.scope,
-        section: args.section,
-        text: args.text,
-        origin: args.origin ?? "deduit",
-        position,
-      },
-    })
+    const item = match
+      ? await prisma.memoryItem.update({
+          where: { id: match.id },
+          data: { text: args.text, origin: args.origin ?? match.origin ?? "deduit" },
+        })
+      : await prisma.memoryItem.create({
+          data: {
+            projectId: args.projectId,
+            scope: args.scope,
+            section: args.section,
+            text: args.text,
+            origin: args.origin ?? "deduit",
+            position: existing.length,
+          },
+        })
+    await PromptBuilder.invalidateProject(args.projectId)
+    return item
   }
 
   static async forget(projectId: string, scope: string, itemId: string): Promise<void> {
     await prisma.memoryItem.deleteMany({ where: { id: itemId, projectId, scope } })
+    await PromptBuilder.invalidateProject(projectId)
   }
 
   /**
@@ -87,13 +98,15 @@ export class MemoryService {
     itemId: string,
     args: { text?: string; section?: string },
   ): Promise<MemoryItem> {
-    return prisma.memoryItem.update({
+    const item = await prisma.memoryItem.update({
       where: { id: itemId },
       data: {
         ...(args.text !== undefined ? { text: args.text } : {}),
         ...(args.section !== undefined ? { section: args.section } : {}),
       },
     })
+    await PromptBuilder.invalidateProject(item.projectId)
+    return item
   }
 
   /**
@@ -101,9 +114,11 @@ export class MemoryService {
    * The caller computes the target position (e.g. current ± 1).
    */
   static async reorder(itemId: string, position: number): Promise<MemoryItem> {
-    return prisma.memoryItem.update({
+    const item = await prisma.memoryItem.update({
       where: { id: itemId },
       data: { position },
     })
+    await PromptBuilder.invalidateProject(item.projectId)
+    return item
   }
 }

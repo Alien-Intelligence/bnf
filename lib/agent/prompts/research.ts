@@ -2,7 +2,7 @@ import "server-only"
 
 import type { Project } from "@/lib/generated/prisma/client"
 import type { AppLocale } from "@/i18n/routing"
-import { renderSharedPreamble, type MemorySnapshot } from "./shared"
+import { renderSharedPreamble, type CrossScopeMemory, type MemorySnapshot } from "./shared"
 import {
   CORPUS_SOURCE_STATE,
   type CorpusSourceState,
@@ -23,6 +23,7 @@ type CorpusSource = { name: string; state: CorpusSourceState } | null
 export function renderResearchPrompt(
   project: Project,
   memory: MemorySnapshot,
+  crossScope: CrossScopeMemory,
   ingestStatus: IngestStatus,
   locale: AppLocale,
   source: CorpusSource = null,
@@ -81,7 +82,7 @@ Le corpus que tu interroges appartient au projet « ${source.name} » ; il a ét
 ---
 `
 
-  return `${renderSharedPreamble(project, memory, locale)}
+  return `${renderSharedPreamble(project, memory, crossScope, locale)}
 
 ---
 
