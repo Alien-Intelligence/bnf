@@ -17,8 +17,20 @@ function applyJitter(ms: number): number {
   return ms + (Math.random() * 2 - 1) * delta
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
+/** Wait `ms`, or reject with the signal's reason the moment it aborts. */
+function delay(ms: number, signal: AbortSignal | undefined): Promise<void> {
+  if (signal?.aborted) return Promise.reject(signal.reason)
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(signal?.reason)
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort)
+      resolve()
+    }, ms)
+    signal?.addEventListener("abort", onAbort, { once: true })
+  })
 }
 
 export interface RetryOptions {
@@ -35,6 +47,12 @@ export interface RetryOptions {
    * on their own error classes so they can reuse this backoff loop verbatim.
    */
   isTerminal?: (err: unknown) => boolean
+  /**
+   * The caller's signal. Once it aborts, nothing is retried: the failure that
+   * follows is re-thrown at once, a pending backoff wait rejects with the
+   * signal's reason, and no new attempt starts with an aborted signal.
+   */
+  signal?: AbortSignal
 }
 
 /** Default terminal classification: BnF MCP auth (401/403) and not-found (404). */
@@ -68,13 +86,14 @@ export async function withRetry<T>(
   let lastError: unknown
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    opts.signal?.throwIfAborted()
     try {
       return await fn()
     } catch (err) {
       lastError = err
 
-      // Terminal — never retry these.
-      if (isTerminal(err)) {
+      // Terminal — never retry these, nor anything once the caller aborted.
+      if (isTerminal(err) || opts.signal?.aborted) {
         throw err
       }
 
@@ -90,7 +109,7 @@ export async function withRetry<T>(
         waitMs = applyJitter(Math.min(exponential, capMs))
       }
 
-      await delay(waitMs)
+      await delay(waitMs, opts.signal)
     }
   }
 
