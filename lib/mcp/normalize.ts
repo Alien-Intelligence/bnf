@@ -130,6 +130,7 @@ function normalizeCenturyLabel(roman: string): string | null {
  * |--------------------------------------------|-------------|----------------------------|
  * | null / ""                                  | null        | null                       |
  * | "1862"  (exactly 4 digits)                 | 1862        | null                       |
+ * | "1937-07-12" / "1937-07" (ISO date)        | 1937        | "1937-07-12" (verbatim)    |
  * | "vers 1890" / "circa 1890" / "ca 1890"     | 1890        | "vers 1890" (normalised)   |
  * | "1850–1860" / "1850-1860" / "1850/1860"    | 1850        | "1850–1860" (en-dash)      |
  * | "XIXe siècle" / "XIXème siècle"            | null        | "XIXe siècle"              |
@@ -147,6 +148,15 @@ export function parseBnfDate(
   // 1. Exact 4-digit year —————————————————————————————————————————————————
   if (/^\d{4}$/.test(s)) {
     return { year: parseInt(s, 10), label: null }
+  }
+
+  // 1b. Full ISO date "YYYY-MM-DD" or "YYYY-MM" — how Gallica dates a press
+  //     ISSUE. Without this rule an issue fell to "unparseable" (year null)
+  //     and vanished from year filters and the period histogram. The label
+  //     keeps the full date: it is what tells two issues of a title apart.
+  const isoMatch = /^(\d{4})-(0[1-9]|1[0-2])(?:-(0[1-9]|[12]\d|3[01]))?$/.exec(s)
+  if (isoMatch) {
+    return { year: parseInt(isoMatch[1], 10), label: s }
   }
 
   // 2. Approximate year: "vers 1890" / "circa 1890" / "ca. 1890" / "ca 1890"
