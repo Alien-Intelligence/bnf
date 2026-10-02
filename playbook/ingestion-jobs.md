@@ -165,10 +165,11 @@ ingested, project pointer) happen atomically.
 `runner.cancel(jobId)`. The cluster script must observe its own cancellation
 signal and stop within ~30s 🔶. Partial writes are tolerated:
 
-- Vectors written for the canceled job's `addedArks` may remain in the index.
-  They are unreferenced by `project.ingestedVersionId` (still pointing at
-  `base`) so `rag.query` does not return them — *but* a future job for a
-  superset target will treat them as already-written (chunk idempotency).
+- Vectors written for the canceled job's `addedArks` may remain in the index,
+  and **`rag_query` / `rag_keyword_search` / `rag_get_text` DO return them**:
+  the cluster has no notion of a corpus version (see "RAG reads are not
+  version-scoped" below). A future job for a superset target treats them as
+  already-written (chunk idempotency).
 - The next successful job reconciles: chunks for ARKs still in the corpus
   remain; the index is left consistent.
 
@@ -259,9 +260,32 @@ Changing the embedding model is **not** a delta. It is a separate operation:
 Which: creates a new "model migration" job that targets `head` with
 `base = null` (treating every doc as new), invokes a special script flag
 `--reembed-only`, and on success swings `ingestedVersionId` once the new
-embeddings replace the old. Until then `rag.query` continues to use the
-old index 🔶. This is a documented, manually-triggered path — not something
+embeddings replace the old. Until then the RAG tools read whatever the
+dataset holds at that moment — old and new entries alike (see below) 🔶. This is a documented, manually-triggered path — not something
 agents or normal users do.
+
+## RAG reads are not version-scoped (known gap) ⛔
+
+The contract the code actually has — not the one this playbook used to state:
+
+- The data cluster has **no notion of a corpus version**. Chunks and entries
+  carry no version field (worker-v2 `IndexChunkMetadata`, entry metadata) and
+  no mcp-datacluster tool filters by one. A RAG read therefore sees the
+  project dataset's **current** entries: the committed ingestion's, plus any
+  entry an in-flight (or canceled) ingest has already written, minus any it
+  has already tombstoned.
+- `ClusterRagClient` requests carry no `ingestedVersionId`; they do not
+  pretend to scope (lib/cluster/rag.ts header).
+- **Mitigation the tools apply:** every rag tool and every note write first
+  requires the corpus project to HAVE a committed ingestion
+  (`resolveIngestedCorpus`, lib/agent/tools/ingestion-guard.ts). That keeps
+  the agent off a never-ingested corpus; it does not hide a half-written
+  re-ingest.
+- **Gap:** while an ingest is running (or after a cancel), research answers
+  and quote checks may read documents that are not in `ingestedVersionId`.
+  Closing it needs a cluster capability (a version or ingest-job tag on
+  entries and a filter on it), tracked as a ticket — see Track C's
+  implementation log, "Known gap: version-scoped RAG reads".
 
 ## Forbidden patterns
 
@@ -285,8 +309,9 @@ await prisma.project.update({ data: { ingestedVersionId: ... } })
 if (oneOcrFailed) throw new Error("ingest failed")
 // → record in stats.docErrors[], continue
 
-// ❌ Calling rag.query during an in-flight ingest against the target version
-// → rag targets ingestedVersionId; nothing else
+// ❌ Claiming a RAG read is scoped to ingestedVersionId (or passing the id as
+//    if the cluster honoured it) — it cannot be; see "RAG reads are not
+//    version-scoped". Gate on a committed ingestion with resolveIngestedCorpus.
 ```
 
 ## Relation to other rules
