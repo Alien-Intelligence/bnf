@@ -2,8 +2,9 @@
 
 // components/dialogs/projects/share.tsx
 // DialogProjectShare — grant a group read or write access to a project, and
-// revoke existing grants. Owner-only; the tile only offers it when the caller
-// resolves to `owner`, and POST /api/projects/:id/shares enforces the same.
+// revoke existing grants. Owner-only; the tile and the workspace header only
+// offer it when the caller may share (ProjectPolicy.share), and
+// POST /api/projects/:id/shares enforces the same.
 
 import { useState } from "react"
 import { useTranslations } from "next-intl"
@@ -25,17 +26,18 @@ import {
 } from "@/hooks/api/projects"
 import { PROJECT_ACCESS } from "@/lib/authz/project-access"
 import { CardProjectShareRow } from "@/components/cards/projects/share-row"
-import type { ProjectListItem } from "@/models/projects/schema"
 import type { ShareProjectInput } from "@/models/projects/types"
 
 interface DialogProjectShareProps {
-  project: ProjectListItem
+  projectId: string
+  projectName: string
   open: boolean
   onOpenChange: (open: boolean) => void
 }
 
 export function DialogProjectShare({
-  project,
+  projectId,
+  projectName,
   open,
   onOpenChange,
 }: DialogProjectShareProps) {
@@ -43,9 +45,9 @@ export function DialogProjectShare({
   const tCommon = useTranslations("common")
 
   const groups = useGroups()
-  const shares = useProjectShares(project.id, open)
-  const shareProject = useShareProject(project.id)
-  const unshareProject = useUnshareProject(project.id)
+  const shares = useProjectShares(projectId, open)
+  const shareProject = useShareProject(projectId)
+  const unshareProject = useUnshareProject(projectId)
 
   // Granting and revoking fail for different reasons and are read in different
   // places, so each keeps its own message rather than overwriting the other's.
@@ -94,7 +96,7 @@ export function DialogProjectShare({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-lg">
         <DialogHeader>
-          <DialogTitle>{t("title", { name: project.name })}</DialogTitle>
+          <DialogTitle>{t("title", { name: projectName })}</DialogTitle>
           <DialogDescription>{t("description")}</DialogDescription>
         </DialogHeader>
 

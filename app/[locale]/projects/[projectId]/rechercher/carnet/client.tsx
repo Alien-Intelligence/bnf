@@ -1,43 +1,24 @@
 "use client"
 
 import { useState } from "react"
-import { WorkspaceHeader } from "@/components/layouts/workspace/header"
 import { LayoutCarnet } from "@/components/layouts/research/carnet"
 import { SheetCitationSource } from "@/components/sheets/citations/source"
 import type { Note } from "@/models/notes/schema"
 import type { ParsedCitation } from "@/lib/citations/syntax"
-import type { WorkspaceStep } from "@/lib/constants"
 
 interface CarnetClientProps {
   projectId: string
-  initialUser: { name?: string | null; email: string }
-  /** The steps this user has on this project — see LayoutWorkspaceStepNav. */
-  initialWorkspaceSteps: readonly WorkspaceStep[]
   initialNotes: Note[]
 }
 
-export function CarnetClient({
-  projectId,
-  initialUser,
-  initialWorkspaceSteps,
-  initialNotes,
-}: CarnetClientProps) {
+export function CarnetClient({ projectId, initialNotes }: CarnetClientProps) {
   const [selectedCitation, setSelectedCitation] =
     useState<ParsedCitation | null>(null)
 
-  const user: { name?: string; email: string } = {
-    name: initialUser.name ?? undefined,
-    email: initialUser.email,
-  }
-
+  // The header is the project layout's; this fills its min-h-0 flex-1 slot.
   return (
-    <div className="flex flex-col h-screen">
-      <WorkspaceHeader
-        user={user}
-        projectId={projectId}
-        workspaceSteps={initialWorkspaceSteps}
-      />
-      <div className="flex-1 overflow-hidden">
+    <>
+      <div className="min-h-0 flex-1 overflow-hidden">
         <LayoutCarnet
           notes={initialNotes}
           onCitationClick={setSelectedCitation}
@@ -54,6 +35,6 @@ export function CarnetClient({
           if (!o) setSelectedCitation(null)
         }}
       />
-    </div>
+    </>
   )
 }

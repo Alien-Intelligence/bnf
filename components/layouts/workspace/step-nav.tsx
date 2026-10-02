@@ -50,7 +50,7 @@ export function LayoutWorkspaceStepNav({
   if (steps.length < 2) return null
 
   return (
-    <nav className="flex items-center gap-1" aria-label={t("constituer")}>
+    <nav className="flex items-center gap-1" aria-label={t("steps")}>
       {steps.map((step, index) => {
         const isDone = index < activeIndex
         const isActive = index === activeIndex

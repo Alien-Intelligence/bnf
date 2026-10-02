@@ -5,7 +5,6 @@
 import { notFound } from "next/navigation"
 import { requireSessionUser } from "@/lib/auth-helpers"
 import { canReadProject } from "@/lib/authz/project-access"
-import { workspaceStepsFor } from "@/lib/authz/workspace-steps"
 import { ProjectQueries } from "@/models/projects/queries"
 import { NoteQueries } from "@/models/notes/queries"
 import { CarnetClient } from "./client"
@@ -32,8 +31,6 @@ export default async function CarnetPage({
   return (
     <CarnetClient
       projectId={projectId}
-      initialUser={{ name: user.name, email: user.email }}
-      initialWorkspaceSteps={workspaceStepsFor(user, project)}
       initialNotes={notes}
     />
   )

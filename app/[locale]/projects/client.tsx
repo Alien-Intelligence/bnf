@@ -17,7 +17,7 @@ import { useState } from "react"
 import { FolderOpen, Plus } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { useProjects } from "@/hooks/api/projects"
-import { WorkspaceHeader } from "@/components/layouts/workspace/header"
+import { LayoutWorkspaceHeader } from "@/components/layouts/workspace/header"
 import { CardProjectTile } from "@/components/cards/projects/tile"
 import { DialogProjectCreate } from "@/components/dialogs/projects/create"
 import { DialogProjectShare } from "@/components/dialogs/projects/share"
@@ -29,14 +29,14 @@ import type { ProjectListItem } from "@/models/projects/schema"
 
 interface ProjectsClientProps {
   initialProjects: ProjectListItem[]
-  user: { id: string; name?: string; email: string }
-  isAdmin?: boolean
+  user: { id: string; name: string; email: string }
+  isAdmin: boolean
 }
 
 export function ProjectsClient({
   initialProjects,
   user,
-  isAdmin = false,
+  isAdmin,
 }: ProjectsClientProps) {
   const t = useTranslations("projects")
   const [createOpen, setCreateOpen] = useState(false)
@@ -66,7 +66,11 @@ export function ProjectsClient({
 
   return (
     <div className="flex min-h-screen flex-col">
-      <WorkspaceHeader user={user} isAdmin={isAdmin} />
+      <LayoutWorkspaceHeader
+        user={{ name: user.name, email: user.email }}
+        isAdmin={isAdmin}
+        project={null}
+      />
 
       <main className="mx-auto w-full max-w-7xl px-6 py-12">
         <div className="mb-8 flex items-end justify-between gap-4">
@@ -135,7 +139,8 @@ export function ProjectsClient({
 
       {sharing && (
         <DialogProjectShare
-          project={sharing}
+          projectId={sharing.id}
+          projectName={sharing.name}
           open
           onOpenChange={(open) => {
             if (!open) setSharing(null)

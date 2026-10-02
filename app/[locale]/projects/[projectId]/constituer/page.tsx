@@ -61,7 +61,6 @@ export default async function ConstituerPage({
       locale={locale}
       projectId={projectId}
       initialCorpus={initialCorpus}
-      initialUser={{ name: user.name, email: user.email }}
       initialSessionId={initialSessionId}
       initialSessions={initialSessions}
       introSeen={seenIntros.includes(ONBOARDING_INTRO.CORPUS)}

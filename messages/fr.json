@@ -183,7 +183,11 @@
     "newProject": "Nouveau projet",
     "allProjects": "Tous les projets",
     "switchProject": "Changer de projet",
-    "userMenu": "Menu utilisateur",
+    "homeLink": "Retour à la liste des projets",
+    "projectsCrumb": "Projets",
+    "share": "Partager",
+    "steps": "Étapes du projet",
+    "signedInAs": "Connecté en tant que {name}",
     "language": "Langue",
     "admin": "Administration"
   },

@@ -18,6 +18,8 @@ import { z } from "zod"
 import { prisma } from "@/lib/db"
 import { AUTH_QUERY, ROUTES } from "@/lib/constants"
 import { LOGIN_METHOD, SIGNED_OUT_NOTICE, SSO_LOGOUT } from "@/models/users/schema"
+import fr from "@/messages/fr.json"
+import { cleanupProject } from "@/lib/testing/project-cleanup"
 import { check, printVerdict, requireServer, section } from "./e2e/harness"
 
 const BASE = resolveBase()
@@ -84,6 +86,9 @@ function expectRedirect(name: string, got: { status: number; location: string | 
 
 /** The sign-out response as the client reads it (SignOutResult). */
 const signOutBodySchema = z.object({ redirectTo: z.string(), ssoLogout: z.string() })
+
+/** The one field of POST /api/projects' answer the shell check needs. */
+const projectIdSchema = z.object({ id: z.string() })
 
 /** A JSON API call as the browser issues it (same-origin, cookie attached). */
 async function api(path: string, cookie: string, init: RequestInit = {}): Promise<Response> {
@@ -157,6 +162,53 @@ async function signOutRoundTrip(account: Account): Promise<void> {
   check("18. POST /api/sign-out {locale: xx} → 400", bad.status === 400, `status=${bad.status}`)
 }
 
+/** The share button's text as the default (French) locale renders it. */
+const SHARE_LABEL = `>${fr.nav.share}<`
+
+/** The rendered `<header>…</header>` of a page, or null when it has none. */
+function headerHtml(html: string): string | null {
+  const start = html.indexOf("<header")
+  if (start === -1) return null
+  const end = html.indexOf("</header>", start)
+  return end === -1 ? null : html.slice(start, end)
+}
+
+async function workspaceShell(account: Account): Promise<void> {
+  const created = await api("/api/projects", account.cookie, {
+    method: "POST",
+    body: JSON.stringify({ name: `e2e auth shell ${randomUUID().slice(0, 8)}` }),
+  })
+  if (created.status !== 201) throw new Error(`POST /api/projects: ${created.status} ${await created.text()}`)
+  const { id } = projectIdSchema.parse(await created.json())
+  try {
+    // 19. The project shell: the layout renders the header once, for every step.
+    const res = await page(ROUTES.rechercher(id), account.cookie)
+    const header = headerHtml(await res.text())
+    check(
+      "19. GET /projects/<id>/rechercher → 200 with a link to /projects in the <header>",
+      res.status === 200 && header !== null && header.includes(`href="${ROUTES.projects}"`),
+      `status=${res.status} header=${header === null ? "none" : "present"}`,
+    )
+    // 19b. The owner of an own-corpus project may share it, from inside it (#1).
+    check(
+      "19b. …and the owner sees « Partager » in that header",
+      header !== null && header.includes(SHARE_LABEL),
+      header === null ? "no header" : "no share button",
+    )
+    // 19c. A project that does not exist: the page 404s and the layout adds no
+    // header, so a 404 never carries a project's name or its share button.
+    const missing = await page(ROUTES.rechercher(randomUUID()), account.cookie)
+    const missingHtml = await missing.text()
+    check(
+      "19c. GET /projects/<unknown id>/rechercher → 404 without the project header",
+      missing.status === 404 && !missingHtml.includes(SHARE_LABEL),
+      `status=${missing.status}`,
+    )
+  } finally {
+    await cleanupProject(id)
+  }
+}
+
 async function main(): Promise<void> {
   await requireServer(BASE)
 
@@ -187,6 +239,9 @@ async function main(): Promise<void> {
       await page(`/en${ROUTES.projects}`, null),
       `/en${ROUTES.signIn}?${AUTH_QUERY.NEXT}=${encodeURIComponent(ROUTES.projects)}`,
     )
+
+    section("Phase 3 — the project shell (#1, #2, #6)")
+    await workspaceShell(account)
 
     section("Phase 2 — sign-out ends the session server-side (#3)")
     await signOutRoundTrip(account)

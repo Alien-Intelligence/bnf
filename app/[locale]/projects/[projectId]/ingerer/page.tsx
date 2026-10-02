@@ -43,7 +43,6 @@ export default async function IngererPage({
   return (
     <IngererClient
       projectId={projectId}
-      initialUser={{ name: user.name ?? undefined, email: user.email }}
       initialDeltaPreview={deltaPreview}
       initialActiveJobId={activeJob?.id ?? null}
       initialRecentJobs={recentJobs.map(({ targetVersion, baseVersion, ...job }) => ({

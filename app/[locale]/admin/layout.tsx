@@ -7,7 +7,7 @@
 
 import type { ReactNode } from "react"
 import { requireAdminUser } from "@/lib/auth-helpers"
-import { WorkspaceHeader } from "@/components/layouts/workspace/header"
+import { LayoutWorkspaceHeader } from "@/components/layouts/workspace/header"
 import { LayoutAdminTabs } from "@/components/layouts/admin/tabs"
 
 export default async function AdminLayout({
@@ -19,9 +19,10 @@ export default async function AdminLayout({
 
   return (
     <div className="flex min-h-screen flex-col">
-      <WorkspaceHeader
+      <LayoutWorkspaceHeader
         user={{ name: user.name, email: user.email }}
         isAdmin
+        project={null}
       />
       <LayoutAdminTabs />
       {/* Wider than the workspace pages: admin tables (Accounts has 11 columns)

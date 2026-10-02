@@ -2,6 +2,7 @@ import { getTranslations } from "next-intl/server"
 import type { Metadata } from "next"
 import { requireSessionUser } from "@/lib/auth-helpers"
 import { listProjectsForUser } from "@/models/projects/service"
+import { USER_ROLE } from "@/models/users/schema"
 import { ProjectsClient } from "./client"
 
 export async function generateMetadata(): Promise<Metadata> {
@@ -17,7 +18,7 @@ export default async function ProjectsPage() {
     <ProjectsClient
       initialProjects={projects}
       user={{ id: user.id, name: user.name, email: user.email }}
-      isAdmin={user.role === "admin"}
+      isAdmin={user.role === USER_ROLE.ADMIN}
     />
   )
 }

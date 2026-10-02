@@ -6,7 +6,6 @@
 import { notFound } from "next/navigation"
 import { requireSessionUser } from "@/lib/auth-helpers"
 import { canReadProject } from "@/lib/authz/project-access"
-import { workspaceStepsFor } from "@/lib/authz/workspace-steps"
 import {
   CORPUS_SOURCE_STATE,
   corpusProjectId,
@@ -44,8 +43,6 @@ export default async function RechercherPage({
   const corpusId = corpusProjectId(project)
   const sourceState = corpusSourceState(project)
   const revoked = sourceState === CORPUS_SOURCE_STATE.REVOKED
-
-  const workspaceSteps = workspaceStepsFor(user, project)
 
   const [session, initialNotes, seenIntros] = await Promise.all([
     SessionService.ensureDefaultForScope(projectId, SESSION_SCOPE.RESEARCH),
@@ -86,12 +83,10 @@ export default async function RechercherPage({
       projectId={projectId}
       locale={locale}
       projectName={project.name}
-      initialUser={{ name: user.name, email: user.email }}
       initialSessionId={initialSessionId}
       initialSessions={initialSessions}
       initialNotes={initialNotes}
       initialIsIngested={isIngested}
-      initialWorkspaceSteps={workspaceSteps}
       initialCorpusSourceState={sourceState}
       initialCorpusSourceName={corpusProject?.name ?? null}
       initialClusterId={RAG_CLUSTER_ID}
