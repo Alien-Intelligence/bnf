@@ -3,6 +3,7 @@
 import { useState } from "react"
 import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
+import { AUTH_MESSAGE_TONE, AlertAuthMessage } from "@/components/alerts/auth/message"
 import { useTranslations } from "next-intl"
 import { Link, useRouter } from "@/i18n/navigation"
 import { apiFetch } from "@/lib/api-fetch"
@@ -81,12 +82,7 @@ export function SignUpClient() {
         </CardHeader>
         <CardContent>
           {serverError !== null && (
-            <div
-              role="alert"
-              className="mb-4 rounded-md border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive"
-            >
-              {serverError}
-            </div>
+            <AlertAuthMessage tone={AUTH_MESSAGE_TONE.ERROR} message={serverError} />
           )}
           <Form {...form}>
             <form

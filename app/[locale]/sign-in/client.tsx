@@ -28,6 +28,7 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { LayoutAuthShell } from "@/components/layouts/auth/shell"
+import { AUTH_MESSAGE_TONE, AlertAuthMessage } from "@/components/alerts/auth/message"
 
 interface SignInClientProps {
   ssoEnabled: boolean
@@ -114,25 +115,16 @@ export function SignInClient({
         </CardHeader>
         <CardContent>
           {signedOutNotice === SIGNED_OUT_NOTICE.DONE && (
-            <p role="status" className="mb-4 text-sm text-muted-foreground">
-              {t("signedOut")}
-            </p>
+            <AlertAuthMessage tone={AUTH_MESSAGE_TONE.INFO} message={t("signedOut")} />
           )}
           {signedOutNotice === SIGNED_OUT_NOTICE.SSO_UNAVAILABLE && (
-            <div
-              role="alert"
-              className="mb-4 rounded-md border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive"
-            >
-              {t("signedOutSsoUnavailable")}
-            </div>
+            <AlertAuthMessage
+              tone={AUTH_MESSAGE_TONE.ERROR}
+              message={t("signedOutSsoUnavailable")}
+            />
           )}
           {serverError !== null && (
-            <div
-              role="alert"
-              className="mb-4 rounded-md border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive"
-            >
-              {serverError}
-            </div>
+            <AlertAuthMessage tone={AUTH_MESSAGE_TONE.ERROR} message={serverError} />
           )}
           {ssoEnabled && (
             <div className="mb-4 flex flex-col gap-4">
