@@ -28,7 +28,7 @@
  *   E2E_QUOTES_CASES        comma-separated subset, e.g. "C1,C3" (default: all)
  *   E2E_QUOTES_CONCURRENCY  runs in flight (default 1)
  *   E2E_QUOTES_OUT          write the full evidence as JSON to this path
- *   E2E_CLEANUP=1           delete the throwaway project afterwards
+ *   E2E_CLEANUP=1           delete the throwaway projects (one per run) afterwards
  */
 import { randomUUID } from "node:crypto"
 import { writeFile } from "node:fs/promises"
@@ -241,6 +241,7 @@ function replayWrites(calls: CallRow[], bodies: Map<string, string>): WriteRecor
 type RunReport = {
   caseId: string
   run: number
+  projectId: string
   sessionId: string
   evidence: RunEvidence
   assistantText: string
@@ -252,12 +253,40 @@ type RunReport = {
   finalNotes: Array<{ noteId: string; body: string; warnings: QuoteWarning[] }>
 }
 
+/**
+ * A fresh project for ONE run, seeded with the fixture documents and marked
+ * ingested. Notes are per project, so runs sharing a project see each other's
+ * notes: an agent then appends to another run's note, or stops to ask which
+ * note to edit, and the run measures nothing of its own.
+ */
+async function createRunProject(ownerId: string, label: string): Promise<string> {
+  const project = await ProjectService.create({
+    name: `E2E quotes ${label} ${new Date().toISOString()}`,
+    subtitle: "quote-integrity harness (feedback 2026-09-29 #7, #8)",
+    ownerId,
+  })
+  await seedCorpusDocuments(
+    project.id,
+    QUOTE_FIXTURE_DOCUMENTS.map((d) => ({
+      ark: d.ark,
+      title: d.title,
+      year: d.year,
+      resolveStatus: DOCUMENT_RESOLVE_STATUS.RESOLVED,
+      indexedAt: new Date(),
+    })),
+    `user:${ownerId}`,
+  )
+  await markHeadIngested(project.id)
+  return project.id
+}
+
 async function runCase(
-  projectId: string,
+  ownerId: string,
   cookie: string,
   c: QuoteCase,
   run: number,
 ): Promise<RunReport> {
+  const projectId = await createRunProject(ownerId, `${c.id}#${run}`)
   const session = await prisma.appSession.create({
     data: {
       id: randomUUID(),
@@ -316,6 +345,7 @@ async function runCase(
   return {
     caseId: c.id,
     run,
+    projectId,
     sessionId: session.id,
     evidence,
     assistantText,
@@ -401,30 +431,13 @@ async function main(): Promise<void> {
   const cases = selectedCases()
   const cookie = await signInCookie(EMAIL, PASSWORD, "E2E Quotes")
   const user = await prisma.user.findUniqueOrThrow({ where: { email: EMAIL } })
-  const project = await ProjectService.create({
-    name: `E2E quotes ${new Date().toISOString()}`,
-    subtitle: "quote-integrity harness (feedback 2026-09-29 #7, #8)",
-    ownerId: user.id,
-  })
-  await seedCorpusDocuments(
-    project.id,
-    QUOTE_FIXTURE_DOCUMENTS.map((d) => ({
-      ark: d.ark,
-      title: d.title,
-      year: d.year,
-      resolveStatus: DOCUMENT_RESOLVE_STATUS.RESOLVED,
-      indexedAt: new Date(),
-    })),
-    `user:${user.id}`,
-  )
-  await markHeadIngested(project.id)
   console.log(`  BASE_URL=${BASE_URL}  MODEL=${MODEL}  REPEAT=${REPEAT}  CONCURRENCY=${CONCURRENCY}`)
-  console.log(`  project=${project.id}  cases=${cases.map((c) => c.id).join(",")}`)
+  console.log(`  cases=${cases.map((c) => c.id).join(",")}  (one fresh project per run)`)
 
   const jobs = cases.flatMap((c) => Array.from({ length: REPEAT }, (_, i) => ({ c, run: i + 1 })))
   const reports = await pool(jobs, CONCURRENCY, async ({ c, run }) => {
-    const r = await runCase(project.id, cookie, c, run)
-    console.log(`  done ${c.id} run ${run} (session ${r.sessionId})`)
+    const r = await runCase(user.id, cookie, c, run)
+    console.log(`  done ${c.id} run ${run} (project ${r.projectId}, session ${r.sessionId})`)
     return r
   })
 
@@ -474,12 +487,12 @@ async function main(): Promise<void> {
   console.log(`  runs that wrote no note: ${reports.filter((r) => !r.evidence.noteWritten).length}`)
 
   if (OUT) {
-    await writeFile(OUT, JSON.stringify({ project: project.id, model: MODEL, repeat: REPEAT, reports }, null, 2))
+    await writeFile(OUT, JSON.stringify({ model: MODEL, repeat: REPEAT, reports }, null, 2))
     console.log(`  evidence written to ${OUT}`)
   }
 
-  if (CLEANUP) await cleanupProject(project.id)
-  printVerdict({ project: project.id, model: MODEL })
+  if (CLEANUP) for (const r of reports) await cleanupProject(r.projectId)
+  printVerdict({ model: MODEL, runs: String(reports.length) })
 }
 
 main()
