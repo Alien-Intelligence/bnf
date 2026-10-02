@@ -5,9 +5,9 @@
  *   export const GET = withAuth(async (req, user, bouncer, ctx: RouteCtx) => { … })
  *
  * The fifth argument is the better-auth session row withAuth resolved the user
- * from. Almost every route ignores it; POST /api/sign-out authorizes and acts
- * on it (the session IS the resource there), so nothing downstream has to
- * resolve the session a second time.
+ * from. Almost every route ignores it; POST /api/sign-out acts on it (the
+ * session IS the resource there), so nothing downstream has to resolve the
+ * session a second time.
  *
  * This file is colocated in app/api/ as a private utility (underscore prefix).
  * Next.js only routes files named route.ts/page.tsx — this file is never
@@ -21,9 +21,9 @@
  *   breaking the admin rule inside lib/authz/project-access.ts.
  *   Fetching the full row from Prisma is the only correct fix.
  */
-import { auth, type AuthSession } from "@/lib/auth"
+import { auth, OrphanedSessionError, type AuthSession } from "@/lib/auth"
 import { bouncer, type Bouncer, AuthorizationError } from "@/lib/bouncer"
-import { unauthorized, forbidden, notFound } from "@/lib/api-response"
+import { unauthorized, forbidden } from "@/lib/api-response"
 import { UserQueries } from "@/models/users/queries"
 import { GroupQueries } from "@/models/groups/queries"
 import type { PolicyUser } from "@/models/users/schema"
@@ -49,7 +49,14 @@ export function withAuth<C = unknown>(handler: AuthedHandler<C>) {
       UserQueries.get(session.user.id),
       GroupQueries.groupIdsForUser(session.user.id),
     ])
-    if (!row) return notFound("Utilisateur introuvable")
+    // A live session without its user row is a data-integrity fault (the FK
+    // cascades on user deletion), not an unknown visitor: raise it, logged,
+    // as the page path does (lib/auth-helpers.ts findSessionUser).
+    if (!row) {
+      const error = new OrphanedSessionError(session.user.id)
+      console.error("[withAuth]", error)
+      throw error
+    }
 
     const user: PolicyUser = { ...row, groupIds }
 

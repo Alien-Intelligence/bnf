@@ -6,8 +6,10 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 
-import { safeNextPath, singleSearchParam } from "./auth-redirect"
+import { localePrefixedPath, safeNextPath, signedOutNotice, singleSearchParam } from "./auth-redirect"
 import { ROUTES, SAFE_NEXT_MAX_LENGTH } from "./constants"
+import { routing } from "@/i18n/routing"
+import { SIGNED_OUT_NOTICE } from "@/models/users/schema"
 
 test("absent or empty → the projects list", () => {
   assert.equal(safeNextPath(null), ROUTES.projects)
@@ -54,4 +56,19 @@ test("a repeated query key is refused, not guessed", () => {
   assert.equal(singleSearchParam(["/a", "/b"]), null)
   assert.equal(singleSearchParam(undefined), null)
   assert.equal(singleSearchParam("/a"), "/a")
+})
+
+test("signedOutNotice: a known value is the notice, anything else is none", () => {
+  assert.equal(signedOutNotice(SIGNED_OUT_NOTICE.DONE), SIGNED_OUT_NOTICE.DONE)
+  assert.equal(signedOutNotice(SIGNED_OUT_NOTICE.SSO_UNAVAILABLE), SIGNED_OUT_NOTICE.SSO_UNAVAILABLE)
+  assert.equal(signedOutNotice("pwned"), null)
+  assert.equal(signedOutNotice(null), null)
+})
+
+test("localePrefixedPath: no prefix for the default locale, a prefix otherwise", () => {
+  assert.equal(localePrefixedPath(ROUTES.projects, routing.defaultLocale), ROUTES.projects)
+  for (const locale of routing.locales.filter((l) => l !== routing.defaultLocale)) {
+    assert.equal(localePrefixedPath(ROUTES.projects, locale), `/${locale}${ROUTES.projects}`)
+    assert.equal(localePrefixedPath("/", locale), `/${locale}`)
+  }
 })

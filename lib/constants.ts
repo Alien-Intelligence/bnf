@@ -3,6 +3,8 @@
 // Rule: no magic numbers in routes, services, or components — import from here.
 // See playbook/constants.md.
 
+import { LOGIN_METHOD } from "@/models/users/schema"
+
 // ---------------------------------------------------------------------------
 // Routes — single source of truth for in-app navigation paths.
 // Locale prefix is handled by next-intl's <Link>; these are locale-agnostic.
@@ -77,36 +79,40 @@ export const RESEARCH_ONLY_STEPS = ["rechercher"] as const satisfies readonly Wo
  * verbatim with the alien-agents demo so the OAuth callback path
  * (`/api/auth/oauth2/callback/authentik`) matches the redirect URI registered
  * on the shared Authentik application. Used server-side (lib/auth.ts) and
- * client-side (the sign-in button).
+ * client-side (the sign-in button). It IS the SSO login method stored on
+ * `session.login_method` (models/users/schema.ts LOGIN_METHOD), so the value
+ * is spelled once, there.
  */
-export const OAUTH_PROVIDER_ID = "authentik"
-
-/**
- * How a session was opened, stored on `session.login_method` by the
- * better-auth session.create hook (lib/auth.ts → lib/auth-login-method.ts).
- * The SSO value IS the OAuth provider id, so the column reads the same as
- * `account.provider_id` and "authentik" is spelled once. A row may also be
- * `null`: opened before the column existed, or by an endpoint the app does not
- * expose; sign-out then falls back to "has an Authentik account"
- * (lib/auth-sso.ts shouldEndSsoSession). Zod enum and type:
- * lib/auth-login-method.ts.
- */
-export const LOGIN_METHOD = { EMAIL: "email", AUTHENTIK: OAUTH_PROVIDER_ID } as const
+export const OAUTH_PROVIDER_ID = LOGIN_METHOD.AUTHENTIK
 
 /**
  * Query keys the auth pages read and write. `next` is the post-sign-in
  * destination, always passed through `safeNextPath` (lib/auth-redirect.ts);
  * written by `requireSessionUser`, read by the sign-in page. `signedOut`
- * carries a SIGNED_OUT_NOTICE; written by POST /api/sign-out, read by the
- * sign-in page. The auth e2e script asserts on both.
+ * carries a SIGNED_OUT_NOTICE (models/users/schema.ts); written by
+ * UserService.signOut, read by the sign-in page. The auth e2e script asserts
+ * on both.
  */
 export const AUTH_QUERY = { NEXT: "next", SIGNED_OUT: "signedOut" } as const
 
 /**
- * The `?signedOut=` values: how the previous session ended, so the sign-in
- * page can say so. Zod enum and type: lib/auth-redirect.ts.
+ * The auth endpoints the app's own clients call: better-auth's email sign-up
+ * and sign-in (its catch-all under /api/auth), and the app's sign-out route.
+ * Used by the sign-in/sign-up clients, the sign-out hook and the e2e scripts.
  */
-export const SIGNED_OUT_NOTICE = { DONE: "done", SSO_UNAVAILABLE: "sso-unavailable" } as const
+export const AUTH_ENDPOINT = {
+  SIGN_UP_EMAIL: "/api/auth/sign-up/email",
+  SIGN_IN_EMAIL: "/api/auth/sign-in/email",
+  SIGN_OUT: "/api/sign-out",
+} as const
+
+/**
+ * The UI locales, French first and default. i18n/routing.ts builds next-intl's
+ * routing from these, and models/users/types.ts validates a client-sent locale
+ * against them.
+ */
+export const APP_LOCALES = ["fr", "en"] as const
+export const DEFAULT_LOCALE = "fr" satisfies (typeof APP_LOCALES)[number]
 
 /**
  * Wall-clock ceiling on fetching Authentik's OIDC discovery document during

@@ -7,21 +7,16 @@
 // query value, so `?next=https://evil.example` sent a freshly signed-in user
 // off-site (an open redirect).
 //
-// It also owns the rest of the auth URL contract: the `?signedOut=` notice and
-// the sign-out request body, which carries the UI locale so the server can
-// build locale-correct sign-in URLs (a route handler has no request locale).
+// It also reads the `?signedOut=` notice and renders locale-prefixed paths for
+// code that cannot load next-intl's navigation (scripts, node tests).
 //
-// No `server-only`: the sign-in page (server), the sign-in client and the
-// sign-out hook all use it, and it is pure. It imports `@/i18n/routing` (the locale list), never
+// No `server-only`: the sign-in page (server) and the sign-in client both use
+// it, and it is pure. It imports `@/i18n/routing` (the locale list), never
 // `@/i18n/navigation`, so it also runs under `node --test`.
 
-import { z } from "zod"
-import { routing } from "@/i18n/routing"
-import {
-  ROUTES,
-  SAFE_NEXT_MAX_LENGTH,
-  SIGNED_OUT_NOTICE,
-} from "@/lib/constants"
+import { routing, type AppLocale } from "@/i18n/routing"
+import { ROUTES, SAFE_NEXT_MAX_LENGTH } from "@/lib/constants"
+import { signedOutNoticeSchema, type SignedOutNotice } from "@/models/users/types"
 
 // A base that can never match a real origin, so "did parsing keep us on it?"
 // is the same-origin test.
@@ -83,22 +78,23 @@ export function singleSearchParam(
   return typeof value === "string" ? value : null
 }
 
-/** `?signedOut=` on the sign-in page — the SIGNED_OUT_NOTICE values. */
-export const signedOutNoticeSchema = z.enum([
-  SIGNED_OUT_NOTICE.DONE,
-  SIGNED_OUT_NOTICE.SSO_UNAVAILABLE,
-])
-export type SignedOutNotice = z.infer<typeof signedOutNoticeSchema>
-
 /**
- * The notice the sign-in page shows, or null when there is none. An unknown
- * value renders no notice rather than a wrong one.
+ * The notice the sign-in page shows for a `?signedOut=` value, or null when
+ * there is none. An unknown value renders no notice rather than a wrong one.
  */
 export function signedOutNotice(raw: string | null): SignedOutNotice | null {
   const parsed = signedOutNoticeSchema.safeParse(raw)
   return parsed.success ? parsed.data : null
 }
 
-/** POST /api/sign-out body: the UI locale the sign-in URLs are built in. */
-export const signOutRequestSchema = z.object({ locale: z.enum(routing.locales) })
-export type SignOutRequest = z.infer<typeof signOutRequestSchema>
+/**
+ * The browser path of an in-app path in a locale, as next-intl's
+ * `localePrefix: "as-needed"` routing renders it: the default locale has no
+ * prefix, every other locale does. Pure, so scripts and node tests can build
+ * the same URLs the app's getPathname does (they cannot import
+ * @/i18n/navigation, which needs the React client runtime).
+ */
+export function localePrefixedPath(path: string, locale: AppLocale): string {
+  if (locale === routing.defaultLocale) return path
+  return path === "/" ? `/${locale}` : `/${locale}${path}`
+}

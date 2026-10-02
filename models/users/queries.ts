@@ -3,7 +3,6 @@ import "server-only"
 import { prisma } from "@/lib/db"
 import {
   accountIdToken,
-  parseUserRole,
   type AccountIdToken,
   type AdminAccountStat,
   type User,
@@ -116,7 +115,7 @@ export class UserQueries {
         id: u.id,
         name: u.name,
         email: u.email,
-        role: parseUserRole(u.role),
+        role: u.role,
         createdAt: u.createdAt.toISOString(),
         projectCount: acc?.projectCount ?? 0,
         sessionCount: acc?.sessionCount ?? 0,

@@ -11,13 +11,9 @@
 //
 // Pure: no `server-only`, unit-tested in auth-login-method.test.ts.
 
-import { z } from "zod"
-import { LOGIN_METHOD, OAUTH_PROVIDER_ID } from "@/lib/constants"
-
-/** `session.login_method` as stored. An unknown value is a corrupt row, so
- *  parsing it throws rather than guessing a method. */
-export const loginMethodSchema = z.enum([LOGIN_METHOD.EMAIL, LOGIN_METHOD.AUTHENTIK])
-export type LoginMethod = z.infer<typeof loginMethodSchema>
+import { OAUTH_PROVIDER_ID } from "@/lib/constants"
+import { LOGIN_METHOD } from "@/models/users/schema"
+import type { LoginMethod } from "@/models/users/types"
 
 const OAUTH_CALLBACK_PREFIX = "/oauth2/callback/"
 const EMAIL_PATHS: ReadonlySet<string> = new Set(["/sign-in/email", "/sign-up/email"])

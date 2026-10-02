@@ -7,8 +7,9 @@ import { useLocale, useTranslations } from "next-intl"
 import { Link, getPathname, useRouter } from "@/i18n/navigation"
 import { apiFetch } from "@/lib/api-fetch"
 import { authClient } from "@/lib/auth-client"
-import { OAUTH_PROVIDER_ID, ROUTES, SIGNED_OUT_NOTICE } from "@/lib/constants"
-import type { SignedOutNotice } from "@/lib/auth-redirect"
+import { OAUTH_PROVIDER_ID, ROUTES } from "@/lib/constants"
+import { SIGNED_OUT_NOTICE } from "@/models/users/schema"
+import type { SignedOutNotice } from "@/models/users/types"
 import { signInSchema, type SignInInput } from "@/models/users/types"
 import {
   Form,

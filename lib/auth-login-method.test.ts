@@ -7,8 +7,10 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 
-import { loginMethodFromAuthPath, loginMethodSchema } from "./auth-login-method"
-import { LOGIN_METHOD, OAUTH_PROVIDER_ID } from "./constants"
+import { loginMethodFromAuthPath } from "./auth-login-method"
+import { OAUTH_PROVIDER_ID } from "./constants"
+import { LOGIN_METHOD } from "@/models/users/schema"
+import { loginMethodSchema } from "@/models/users/types"
 
 test("a stored value outside LOGIN_METHOD is refused, not guessed", () => {
   assert.equal(loginMethodSchema.safeParse(LOGIN_METHOD.EMAIL).success, true)

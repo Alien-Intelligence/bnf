@@ -14,14 +14,9 @@ import "server-only"
 
 import { z } from "zod"
 import type { AuthentikConfig } from "@/lib/env"
-import {
-  LOGIN_METHOD,
-  OIDC_DISCOVERY_TIMEOUT_MS,
-  SIGNED_OUT_NOTICE,
-} from "@/lib/constants"
-import type { LoginMethod } from "@/lib/auth-login-method"
-import type { SignedOutNotice } from "@/lib/auth-redirect"
-import { SSO_LOGOUT } from "@/models/users/schema"
+import { OIDC_DISCOVERY_TIMEOUT_MS } from "@/lib/constants"
+import { LOGIN_METHOD, SIGNED_OUT_NOTICE, SSO_LOGOUT } from "@/models/users/schema"
+import type { LoginMethod, SignedOutNotice } from "@/models/users/types"
 
 /**
  * Authentik's discovery document could not be obtained: the request failed or

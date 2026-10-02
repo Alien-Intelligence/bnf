@@ -3,25 +3,13 @@ import { cache } from "react"
 import { headers } from "next/headers"
 import { notFound } from "next/navigation"
 import { getLocale } from "next-intl/server"
-import { auth } from "./auth"
+import { auth, OrphanedSessionError } from "./auth"
 import { redirect } from "@/i18n/navigation"
 import { AUTH_QUERY, ROUTES } from "@/lib/constants"
 import { GroupQueries } from "@/models/groups/queries"
 import { UserQueries } from "@/models/users/queries"
 import { mayOpenAdminConsole } from "@/lib/authz/workspace-header"
 import type { PolicyUser } from "@/models/users/schema"
-
-/**
- * A live session whose user row does not exist. The session table's foreign
- * key cascades on user deletion, so this is a data-integrity fault, not a
- * signed-out visitor: it is raised, never rendered as "please sign in".
- */
-export class OrphanedSessionError extends Error {
-  constructor(readonly userId: string) {
-    super(`Live session for user ${userId}, who has no user row`)
-    this.name = "OrphanedSessionError"
-  }
-}
 
 /**
  * The signed-in user as a PolicyUser — the User row plus the ids of the groups

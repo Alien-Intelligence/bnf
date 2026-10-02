@@ -8,7 +8,7 @@ import "server-only"
 
 import { getPathname } from "@/i18n/navigation"
 import { AUTH_QUERY, ROUTES } from "@/lib/constants"
-import type { SignedOutNotice } from "@/lib/auth-redirect"
+import type { SignedOutNotice } from "@/models/users/types"
 import type { AppLocale } from "@/i18n/routing"
 
 /** "/sign-in?signedOut=done", or "/en/sign-in?signedOut=done" for English. */

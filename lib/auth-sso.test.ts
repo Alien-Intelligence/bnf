@@ -15,8 +15,7 @@ import {
   signOutRedirect,
   type OidcDiscovery,
 } from "./auth-sso"
-import { LOGIN_METHOD, SIGNED_OUT_NOTICE } from "./constants"
-import { SSO_LOGOUT } from "@/models/users/schema"
+import { LOGIN_METHOD, SIGNED_OUT_NOTICE, SSO_LOGOUT } from "@/models/users/schema"
 
 const cfg = {
   baseUrl: "https://auth.example",

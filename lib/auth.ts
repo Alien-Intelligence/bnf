@@ -1,4 +1,5 @@
 import "server-only"
+import { NextResponse } from "next/server"
 import { betterAuth } from "better-auth"
 import { prismaAdapter } from "better-auth/adapters/prisma"
 import { genericOAuth } from "better-auth/plugins"
@@ -74,14 +75,52 @@ export const auth = betterAuth({
 export type AuthSession = typeof auth.$Infer.Session
 
 /**
- * End the app session the request's cookie names: better-auth deletes the
- * session row and answers with the Set-Cookie lines that expire every auth
- * cookie it owns (session token, session data chunks, dont-remember). The
- * route forwards those lines, so the browser drops the cookie with the same
- * response that tells it where to go. Cookie names and attributes stay
- * better-auth's business; this module is the only place that calls it.
+ * The Set-Cookie lines that expire every auth cookie better-auth set for a
+ * session: the session token, the session-data cache and the dont-remember
+ * marker. Names and attributes (secure prefix, path, SameSite, HttpOnly) come
+ * from better-auth's own cookie configuration, so they always match what it
+ * issued; Next's response-cookie serializer writes them.
+ *
+ * Used by UserService.signOut after it has deleted the session row itself:
+ * better-auth's cookie-based sign-out would re-resolve the session from the
+ * cookie and swallow a failed delete.
  */
-export async function endAppSession(requestHeaders: Headers): Promise<string[]> {
-  const { headers } = await auth.api.signOut({ headers: requestHeaders, returnHeaders: true })
-  return headers.getSetCookie()
+export async function sessionCookieExpiry(): Promise<string[]> {
+  const { authCookies } = await auth.$context
+  const res = new NextResponse(null)
+  for (const cookie of [authCookies.sessionToken, authCookies.sessionData, authCookies.dontRememberToken]) {
+    const { sameSite, ...attributes } = cookie.attributes
+    res.cookies.set(cookie.name, "", {
+      ...attributes,
+      sameSite: sameSite === undefined ? undefined : toSameSite(sameSite),
+      maxAge: 0,
+    })
+  }
+  return res.headers.getSetCookie()
+}
+
+type BetterAuthSameSite = "Strict" | "Lax" | "None" | "strict" | "lax" | "none"
+const SAME_SITE: Record<BetterAuthSameSite, "strict" | "lax" | "none"> = {
+  Strict: "strict",
+  strict: "strict",
+  Lax: "lax",
+  lax: "lax",
+  None: "none",
+  none: "none",
+}
+function toSameSite(value: BetterAuthSameSite): "strict" | "lax" | "none" {
+  return SAME_SITE[value]
+}
+
+/**
+ * A live session whose user row does not exist. The session table's foreign
+ * key cascades on user deletion, so this is a data-integrity fault, not a
+ * signed-out visitor: raised (500 + log) by withAuth and findSessionUser alike,
+ * never rendered as "please sign in".
+ */
+export class OrphanedSessionError extends Error {
+  constructor(readonly userId: string) {
+    super(`Live session for user ${userId}, who has no user row`)
+    this.name = "OrphanedSessionError"
+  }
 }

@@ -19,18 +19,24 @@ export const USER_ROLE = {
 
 export type UserRole = (typeof USER_ROLE)[keyof typeof USER_ROLE]
 
-function isUserRole(value: string): value is UserRole {
-  return value === USER_ROLE.ADMIN || value === USER_ROLE.MEMBER || value === USER_ROLE.GUEST
-}
+/**
+ * How a session was opened — stored on `session.login_method` by the
+ * better-auth session.create hook (lib/auth.ts → lib/auth-login-method.ts).
+ * The SSO value is the OAuth provider id (lib/constants.ts OAUTH_PROVIDER_ID
+ * is defined FROM this), so the column reads the same as
+ * `account.provider_id`. A row may also be `null`: opened before the column
+ * existed, or by an endpoint the app does not expose; sign-out then falls back
+ * to "has an Authentik account" (lib/auth-sso.ts shouldEndSsoSession). Zod
+ * enum and type: ./types.ts.
+ */
+export const LOGIN_METHOD = { EMAIL: "email", AUTHENTIK: "authentik" } as const
 
 /**
- * `user.role` is a plain String column; this is the one place that narrows it.
- * An unknown stored value is a corrupt row and throws, never guessed.
+ * The `?signedOut=` values: how the previous session ended, so the sign-in
+ * page can say so. Written by UserService.signOut, read by the sign-in page.
+ * Zod enum and type: ./types.ts.
  */
-export function parseUserRole(value: string): UserRole {
-  if (!isUserRole(value)) throw new Error(`Unknown user role "${value}"`)
-  return value
-}
+export const SIGNED_OUT_NOTICE = { DONE: "done", SSO_UNAVAILABLE: "sso-unavailable" } as const
 
 /**
  * The one column sign-out needs from an OAuth account row: the id_token
@@ -52,13 +58,6 @@ export const SSO_LOGOUT = {
   UNAVAILABLE: "unavailable",
 } as const
 export type SsoLogout = (typeof SSO_LOGOUT)[keyof typeof SSO_LOGOUT]
-
-/**
- * What POST /api/sign-out answers: the URL the browser must load next (the
- * sign-in page, or Authentik's end-session endpoint) and what happened to the
- * Authentik session.
- */
-export type SignOutResult = { redirectTo: string; ssoLogout: SsoLogout }
 
 /**
  * The better-auth session row a signed-in request carries, as withAuth hands
@@ -89,7 +88,9 @@ export type AdminAccountStat = {
   id: string
   name: string
   email: string
-  role: UserRole
+  /** The stored role, as Prisma types it (a String column); the accounts table
+   *  validates it with userRoleSchema before choosing a label. */
+  role: User["role"]
   createdAt: string
   projectCount: number
   sessionCount: number

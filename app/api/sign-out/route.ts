@@ -2,10 +2,10 @@
  * POST /api/sign-out — end the caller's session and, for an SSO session, send
  * the browser through Authentik's RP-initiated logout.
  *
- * withAuth → parseBody → UserPolicy.signOut(session) → UserService.signOut
- * (the SSO decision) → endAppSession (better-auth deletes the row and expires
- * its cookies) → ok<SignOutResult>. The decision runs first: if it fails, the
- * session is still live and the client can retry.
+ * withAuth → parseBody → UserService.signOut → ok<SignOutResult> with the
+ * cookie-expiring Set-Cookie lines. No policy: the resource is the
+ * authenticated session itself, so withAuth IS the authorization (the
+ * documented exemption in playbook/api-layers.md).
  *
  * Why not better-auth's own /api/auth/sign-out: it ends the better-auth session
  * only. The Authentik session survives it, and the client cannot know whether
@@ -13,35 +13,21 @@
  */
 import { withAuth } from "@/app/api/_middleware"
 import { parseBody } from "@/app/api/_helpers"
-import { ok } from "@/lib/api-response"
-import { endAppSession } from "@/lib/auth"
-import { signOutRequestSchema } from "@/lib/auth-redirect"
-import { signOutRedirect } from "@/lib/auth-sso"
-import { signedOutPath } from "@/lib/auth-sign-out"
-import { env } from "@/lib/env"
-import { UserPolicy } from "@/models/users/policy"
-import { UserService } from "@/models/users/service"
-import type { SignOutResult } from "@/models/users/schema"
+import { ok, unauthorized } from "@/lib/api-response"
+import { SignOutSessionGoneError, UserService } from "@/models/users/service"
+import { signOutRequestSchema, type SignOutResult } from "@/models/users/types"
 
-export const POST = withAuth(async (req, user, bouncer, _ctx, session) => {
+export const POST = withAuth(async (req, user, _bouncer, _ctx, session) => {
   const parsed = await parseBody(req, signOutRequestSchema)
   if (parsed instanceof Response) return parsed
 
-  await bouncer.with(UserPolicy).authorize("signOut", session)
-
-  const decision = await UserService.signOut(user, session)
-  const setCookie = await endAppSession(req.headers)
-
-  const headers = new Headers()
-  for (const line of setCookie) headers.append("set-cookie", line)
-  return ok<SignOutResult>(
-    {
-      ssoLogout: decision.ssoLogout,
-      redirectTo: signOutRedirect(decision, {
-        signedOutPath: (notice) => signedOutPath(notice, parsed.locale),
-        appUrl: env.APP_URL,
-      }),
-    },
-    { headers },
-  )
+  try {
+    const { result, setCookie } = await UserService.signOut(user, session, parsed.locale)
+    const headers = new Headers()
+    for (const line of setCookie) headers.append("set-cookie", line)
+    return ok<SignOutResult>(result, { headers })
+  } catch (e) {
+    if (e instanceof SignOutSessionGoneError) return unauthorized()
+    throw e
+  }
 })

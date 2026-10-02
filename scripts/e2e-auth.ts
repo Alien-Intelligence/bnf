@@ -17,8 +17,8 @@ import { randomUUID } from "node:crypto"
 import { z } from "zod"
 import { routing } from "@/i18n/routing"
 import { prisma } from "@/lib/db"
-import { AUTH_QUERY, LOGIN_METHOD, ROUTES, SIGNED_OUT_NOTICE } from "@/lib/constants"
-import { SSO_LOGOUT } from "@/models/users/schema"
+import { AUTH_QUERY, ROUTES } from "@/lib/constants"
+import { LOGIN_METHOD, SIGNED_OUT_NOTICE, SSO_LOGOUT } from "@/models/users/schema"
 import fr from "@/messages/fr.json"
 import { cleanupProject } from "@/lib/testing/project-cleanup"
 import { check, printVerdict, requireServer, section } from "./e2e/harness"
@@ -214,6 +214,15 @@ async function signOutRoundTrip(account: Account): Promise<void> {
   expectRedirect("16. GET / with the old cookie → /sign-in", await page("/", cookie), ROUTES.signIn)
   const again = await api(ENDPOINT.signOut, cookie, { method: "POST", body: JSON.stringify({ locale: DEFAULT_LOCALE }) })
   check("17. POST /api/sign-out with the old cookie → 401 (idempotent)", again.status === 401, `status=${again.status}`)
+
+  // 17b. No session at all: withAuth is the authorization for this route.
+  const anonymous = await fetch(`${BASE}${ENDPOINT.signOut}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", origin: BASE },
+    body: JSON.stringify({ locale: DEFAULT_LOCALE }),
+    signal: bounded(),
+  })
+  check("17b. POST /api/sign-out without a session → 401", anonymous.status === 401, `status=${anonymous.status}`)
 
   // 18. parseBody refuses a bad locale, with a valid cookie.
   const fresh = await signInEmail(account)

@@ -212,16 +212,24 @@ Rules:
 ## Import diagram
 
 ```
-types.ts      ← zod (no internal imports)
+types.ts      ← zod, ./schema, @/lib/constants (nothing else internal)
 schema.ts     ← @/lib/generated/prisma/client (no internal imports)
 queries.ts    ← @/lib/db, ./schema
 policy.ts     ← ./schema (types only)
-service.ts    ← ./queries, ./types, lib/mcp, lib/cluster, other models' queries
+service.ts    ← ./queries, ./schema, ./types, lib/mcp, lib/cluster, lib/ pure helpers, other models' queries
 ─────────────────────────────────────────────────────────────
 app/api/      ← ./queries (reads), ./service (writes), ./policy, ./types
 hooks/        ← ./types (inputs) + ./schema (response types) — types only
 components/   ← ./types (inputs to feed mutation hooks)
 ```
+
+`types.ts` may import zod, `./schema` (to derive Zod enums from the domain
+const objects there, e.g. `z.enum(LOGIN_METHOD)`) and `@/lib/constants`; it may
+not import `app/`, `components/`, `lib/mcp`, `lib/cluster` or another model.
+A service may import `lib/` pure helpers — for page URLs, the single
+locale-path helper `lib/auth-sign-out.ts` (`signedOutPath`, which wraps
+next-intl's `getPathname`); a service imports nothing else from `@/i18n`
+(types aside).
 
 Arrows are one-directional. Nothing below the line imports from `app/` or
 `components/`. Nothing in `queries.ts` or `schema.ts` reaches sideways.
