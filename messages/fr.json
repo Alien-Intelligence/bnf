@@ -348,7 +348,17 @@
       "clearConfirmBody": "Les {count} candidat(s) rassemblé(s) seront écartés. Le corpus n'est pas affecté.",
       "clearConfirmCancel": "Annuler",
       "clearConfirmOk": "Vider",
-      "foundBy": "Trouvé par la recherche : {query}"
+      "foundBy": "Trouvé par la recherche : {query}",
+      "kinds": {
+        "periodical_issue": "Numéro de périodique",
+        "periodical_collection": "Titre de périodique (collection)",
+        "monograph": "Monographie",
+        "image": "Image",
+        "catalogue_notice": "Notice catalogue",
+        "other_document": "Autre document numérisé",
+        "unknown": "Nature indéterminée"
+      },
+      "enrichPending": "métadonnées en cours"
     },
     "export": {
       "label": "Exporter (CSV)",
@@ -551,7 +561,9 @@
       "other": "Autre",
       "estampe": "Estampe",
       "enlum": "Enluminure",
-      "charte": "Charte"
+      "charte": "Charte",
+      "text": "Texte imprimé (nature indéterminée)",
+      "object": "Objet"
     },
     "langs": {
       "fr": "Français",

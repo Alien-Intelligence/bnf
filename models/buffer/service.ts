@@ -4,7 +4,7 @@ import { prisma } from "@/lib/db"
 import { CorpusQueries } from "@/models/corpus/queries"
 import { CorpusService, type CorpusAddResult } from "@/models/corpus/service"
 import { BUFFER_ENRICH_STATUS, BUFFER_STATUS } from "./schema"
-import { BufferQueries, type BufferFilterSet } from "./queries"
+import { BufferQueries, bufferFieldClauses, type BufferFilterSet } from "./queries"
 import { arkSchema, type BufferCandidateInput } from "./types"
 import { BUFFER_CLASSIFIER_VERSION, CORPUS_REMOVE_PREVIEW_LIMIT } from "@/lib/constants"
 import { sourceFromArk } from "@/lib/mcp/vocab"
@@ -95,7 +95,14 @@ export function explainRegistration(found: number, r: BufferRegisterResult): str
  */
 export type BufferRemoveByFilterResult =
   | { status: "empty_filter" }
-  | { status: "dry_run"; matched: number; arks: string[] }
+  | {
+      status: "dry_run"
+      matched: number
+      arks: string[]
+      /** With `not`: per excluded dimension, candidates of UNKNOWN value that
+       *  the exclusion deliberately left alone (Decision 4). */
+      notUnknown?: Record<string, number>
+    }
   | { status: "removed"; matched: number; removed: number }
 
 /**
@@ -413,10 +420,13 @@ export class BufferService {
     const arks = await BufferQueries.candidateArks(projectId, input.filters)
 
     if (input.dryRun) {
+      const notUnknown =
+        input.filters.not !== undefined ? await BufferQueries.notUnknownCounts(projectId, input.filters) : null
       return {
         status: "dry_run",
         matched: arks.length,
         arks: arks.slice(0, CORPUS_REMOVE_PREVIEW_LIMIT),
+        ...(notUnknown !== null ? { notUnknown } : {}),
       }
     }
 
@@ -519,16 +529,10 @@ export class BufferService {
     return result.count
   }
 
-  /** True when at least one filter field carries a constraint. */
+  /** True when at least one filter field carries a constraint — a non-empty
+   *  `not` counts ("remove everything not French" is a real constraint). */
   private static hasConstraint(filters: BufferFilterSet): boolean {
-    return !!(
-      filters.type?.length ||
-      filters.lang?.length ||
-      filters.source?.length ||
-      filters.yearFrom !== undefined ||
-      filters.yearTo !== undefined ||
-      filters.undated === true ||
-      filters.q
-    )
+    const { not, ...positive } = filters
+    return bufferFieldClauses(positive).length > 0 || (not !== undefined && bufferFieldClauses(not).length > 0)
   }
 }

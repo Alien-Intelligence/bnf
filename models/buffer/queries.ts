@@ -6,27 +6,13 @@ import type {
   BufferCrossFacets,
   BufferFacetDimension,
   BufferFacets,
+  BufferFilterFields,
+  BufferFilterSet,
   BufferRow,
   BufferSnapshot,
 } from "./schema"
 
-/**
- * The canonical (array-based) buffer filter set — the buffer's counterpart to
- * `CorpusFilterSet`. Queries, the BufferService, and the agent buffer tools all
- * speak this shape; the CSV `BufferFilters` in types.ts is only the REST/UI
- * query-string boundary form (converted via splitCsv in the route). All fields
- * optional; absent means "no constraint on this dimension".
- */
-export type BufferFilterSet = {
-  type?: string[]
-  lang?: string[]
-  source?: string[]
-  yearFrom?: number
-  yearTo?: number
-  /** Include candidates with no date. Ignored when yearFrom/yearTo is set. */
-  undated?: boolean
-  q?: string
-}
+export type { BufferFilterFields, BufferFilterSet } from "./schema"
 
 /** Fields projected for the buffer panel + buffer_list tool. */
 const bufferRowSelect = {
@@ -47,6 +33,109 @@ const bufferRowSelect = {
   enrichStatus: true,
 } satisfies Prisma.BufferItemSelect
 
+/** A text column the field-scoped filters match on. */
+type TextColumn = "title" | "creator" | "subjects"
+
+/** Contains-ANY over one text column, case-insensitive (ILIKE). */
+function containsAny(column: TextColumn, values: string[]): Prisma.BufferItemWhereInput {
+  const match = (v: string): Prisma.BufferItemWhereInput => {
+    const contains = { contains: v, mode: "insensitive" as const }
+    switch (column) {
+      case "title":
+        return { title: contains }
+      case "creator":
+        return { creator: contains }
+      case "subjects":
+        return { subjects: contains }
+    }
+  }
+  return { OR: values.map(match) }
+}
+
+/**
+ * Year bounds by OVERLAP with [year, yearEnd ?? year]: a periodical collection
+ * running 1861–1946 matches yearFrom 1937. `undated` widens a range to also
+ * admit null-dated rows; alone, it selects them.
+ */
+function yearClause(f: BufferFilterFields): Prisma.BufferItemWhereInput | null {
+  const hasRange = f.yearFrom !== undefined || f.yearTo !== undefined
+  if (!hasRange) return f.undated === true ? { year: null } : null
+  const bounds: Prisma.BufferItemWhereInput[] = []
+  if (f.yearTo !== undefined) bounds.push({ year: { lte: f.yearTo } })
+  if (f.yearFrom !== undefined) {
+    const from = f.yearFrom
+    bounds.push({ OR: [{ yearEnd: { gte: from } }, { yearEnd: null, year: { gte: from } }] })
+  }
+  const range: Prisma.BufferItemWhereInput = { year: { not: null }, AND: bounds }
+  return f.undated === true ? { OR: [range, { year: null }] } : range
+}
+
+/**
+ * One clause per constrained dimension (AND-ed by the caller). Pure — the one
+ * filter→SQL translation for the buffer, shared by the positive filters and
+ * the inside of `not`.
+ */
+export function bufferFieldClauses(f: BufferFilterFields): Prisma.BufferItemWhereInput[] {
+  const clauses: Prisma.BufferItemWhereInput[] = []
+  if (f.type?.length) clauses.push({ docType: { in: f.type } })
+  if (f.kind?.length) clauses.push({ arkKind: { in: f.kind } })
+  if (f.lang?.length) clauses.push({ lang: { in: f.lang } })
+  if (f.source?.length) clauses.push({ source: { in: f.source } })
+  if (f.title?.length) clauses.push(containsAny("title", f.title))
+  if (f.creator?.length) clauses.push(containsAny("creator", f.creator))
+  if (f.subject?.length) clauses.push(containsAny("subjects", f.subject))
+  const year = yearClause(f)
+  if (year !== null) clauses.push(year)
+  if (f.unresolved === true) {
+    clauses.push({ enrichStatus: { in: [BUFFER_ENRICH_STATUS.PENDING, BUFFER_ENRICH_STATUS.FAILED] } })
+  } else if (f.unresolved === false) {
+    clauses.push({ OR: [{ enrichStatus: null }, { enrichStatus: BUFFER_ENRICH_STATUS.RESOLVED }] })
+  }
+  if (f.q) {
+    const contains = { contains: f.q, mode: "insensitive" as const }
+    clauses.push({
+      OR: [{ title: contains }, { creator: contains }, { snippet: contains }, { subjects: contains }],
+    })
+  }
+  return clauses
+}
+
+/** The dimensions of a `not` that read a nullable column, and that column. */
+const NOT_PRESENCE: ReadonlyArray<{
+  dimension: string
+  used: (f: BufferFilterFields) => boolean
+  present: Prisma.BufferItemWhereInput
+  unknown: Prisma.BufferItemWhereInput
+}> = [
+  { dimension: "type", used: (f) => !!f.type?.length, present: { docType: { not: null } }, unknown: { docType: null } },
+  { dimension: "kind", used: (f) => !!f.kind?.length, present: { arkKind: { not: null } }, unknown: { arkKind: null } },
+  { dimension: "lang", used: (f) => !!f.lang?.length, present: { lang: { not: null } }, unknown: { lang: null } },
+  { dimension: "source", used: (f) => !!f.source?.length, present: { source: { not: null } }, unknown: { source: null } },
+  { dimension: "title", used: (f) => !!f.title?.length, present: { title: { not: null } }, unknown: { title: null } },
+  { dimension: "creator", used: (f) => !!f.creator?.length, present: { creator: { not: null } }, unknown: { creator: null } },
+  { dimension: "subject", used: (f) => !!f.subject?.length, present: { subjects: { not: null } }, unknown: { subjects: null } },
+  {
+    dimension: "year",
+    used: (f) => f.yearFrom !== undefined || f.yearTo !== undefined,
+    present: { year: { not: null } },
+    unknown: { year: null },
+  },
+]
+
+/**
+ * The `not` clause: the row HAS a value for every dimension the exclusion
+ * names, AND it does not match them. Decision 4: a row whose field is unknown
+ * is never matched by `not` — written out explicitly rather than left to SQL
+ * NULL semantics, so "remove everything not French" can never delete a row of
+ * unknown language.
+ */
+function notClause(not: BufferFilterFields): Prisma.BufferItemWhereInput | null {
+  const inner = bufferFieldClauses(not)
+  if (inner.length === 0) return null
+  const presence = NOT_PRESENCE.filter((p) => p.used(not)).map((p) => p.present)
+  return { AND: [...presence, { NOT: { AND: inner } }] }
+}
+
 /** Decade bucket label for a year, e.g. 1887 → "1880s". */
 function decadeBucket(year: number): string {
   return `${Math.floor(year / 10) * 10}s`
@@ -54,45 +143,37 @@ function decadeBucket(year: number): string {
 
 export class BufferQueries {
   /**
-   * Prisma `where` for a project's CANDIDATE rows under the active filters.
-   * Multi-selects (type/lang/source) are OR-within / AND-across dimensions; the
-   * year range and `undated` combine so an explicit `undated` widens a bounded
-   * range to also admit null-dated candidates.
+   * Prisma `where` for a project's CANDIDATE rows under the active filters:
+   * every positive clause AND the `not` clause. Pure — see bufferFieldClauses.
    */
   static where(projectId: string, filters: BufferFilterSet = {}): Prisma.BufferItemWhereInput {
-    const where: Prisma.BufferItemWhereInput = {
+    const { not, ...positive } = filters
+    const clauses = bufferFieldClauses(positive)
+    const exclusion = not !== undefined ? notClause(not) : null
+    if (exclusion !== null) clauses.push(exclusion)
+    return {
       projectId,
       status: BUFFER_STATUS.CANDIDATE,
+      ...(clauses.length > 0 ? { AND: clauses } : {}),
     }
+  }
 
-    if (filters.type?.length) where.docType = { in: filters.type }
-    if (filters.lang?.length) where.lang = { in: filters.lang }
-    if (filters.source?.length) where.source = { in: filters.source }
-
-    const hasRange = filters.yearFrom !== undefined || filters.yearTo !== undefined
-    if (hasRange) {
-      const range: Prisma.IntNullableFilter = {}
-      if (filters.yearFrom !== undefined) range.gte = filters.yearFrom
-      if (filters.yearTo !== undefined) range.lte = filters.yearTo
-      where.OR = filters.undated ? [{ year: range }, { year: null }] : [{ year: range }]
-    } else if (filters.undated === true) {
-      where.year = null
-    }
-
-    if (filters.q) {
-      const q = filters.q
-      // Text search is a separate AND clause so it composes with the year OR.
-      where.AND = [
-        {
-          OR: [
-            { title: { contains: q, mode: "insensitive" } },
-            { snippet: { contains: q, mode: "insensitive" } },
-          ],
-        },
-      ]
-    }
-
-    return where
+  /**
+   * For a filter set with `not`: per dimension the exclusion names, how many
+   * candidates match the POSITIVE clauses but have no value in that column —
+   * the rows `not` deliberately left alone. A dry run reports them so "remove
+   * everything not French" says how many candidates of unknown language it
+   * kept. Empty when there is no `not`.
+   */
+  static async notUnknownCounts(projectId: string, filters: BufferFilterSet): Promise<Record<string, number>> {
+    const { not, ...positive } = filters
+    if (not === undefined) return {}
+    const base = BufferQueries.where(projectId, positive)
+    const used = NOT_PRESENCE.filter((p) => p.used(not))
+    const counts = await Promise.all(
+      used.map((p) => prisma.bufferItem.count({ where: { AND: [base, p.unknown] } })),
+    )
+    return Object.fromEntries(used.map((p, i) => [p.dimension, counts[i]]))
   }
 
   /** Count of candidates matching the filters. */

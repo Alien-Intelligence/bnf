@@ -52,8 +52,9 @@ import {
 } from "@/lib/buffer/classify"
 import { classifyArkKind } from "@/models/documents/schema"
 import { BufferPolicy } from "@/models/buffer/policy"
-import { BufferQueries, type BufferFilterSet } from "@/models/buffer/queries"
+import { BufferQueries } from "@/models/buffer/queries"
 import { BufferService, explainRegistration, type BufferRegisterResult } from "@/models/buffer/service"
+import { BUFFER_ARK_KIND_VALUES } from "@/models/buffer/schema"
 import { arkSchema, type BufferCandidateInput } from "@/models/buffer/types"
 import type { TurnScopedCtx } from "./registry-factory"
 import { authorizeProjectTool } from "./authorize"
@@ -66,31 +67,84 @@ import { provisionalTotal } from "./provisional-total"
 // REST/UI query-string form.
 // ---------------------------------------------------------------------------
 
-const bufferFilterSchema = z
-  .object({
-    type: z
-      .array(z.string())
-      .optional()
-      .describe('Doc-type codes to match, e.g. ["press","book"].'),
-    lang: z
-      .array(z.string())
-      .optional()
-      .describe('BCP-47 language codes to match, e.g. ["fr","la"].'),
-    source: z
-      .array(z.string())
-      .optional()
-      .describe('Sources to match: "gallica" | "catalogue" | "other".'),
-    yearFrom: z.number().int().optional().describe("Year lower bound, inclusive."),
-    yearTo: z.number().int().optional().describe("Year upper bound, inclusive."),
-    undated: z
-      .boolean()
-      .optional()
-      .describe("Match candidates with no date. Ignored when yearFrom/yearTo is set."),
-    q: z.string().trim().min(1).optional().describe("Free-text match over title + snippet."),
-  })
-  .describe("Metadata filters over the buffer candidates. Omit a field to leave it unconstrained.")
+/** Text criteria: contains-ANY, case-insensitive, accent-sensitive. */
+const textAnySchema = z.array(z.string().trim().min(2)).min(1).max(20)
 
-const facetDimensionEnum = z.enum(["period", "type", "lang", "source"])
+const bufferFilterFieldsSchema = z.object({
+  type: z
+    .array(z.string())
+    .optional()
+    .describe(
+      "Canonical doc-type codes to match: book | press | image | map | manuscript | score | " +
+        "audio | video | object | poster | estampe | enlum | charte | other | text (« texte " +
+        'imprimé, nature indéterminée »), e.g. ["press","book"].',
+    ),
+  kind: z
+    .array(z.enum(BUFFER_ARK_KIND_VALUES))
+    .optional()
+    .describe(
+      "Record kinds to match: periodical_issue | periodical_collection | monograph | image | " +
+        "catalogue_notice | other_document | unknown.",
+    ),
+  lang: z
+    .array(z.string())
+    .optional()
+    .describe('Language codes to match (ISO 639-1, e.g. ["fr","la","de"]).'),
+  source: z
+    .array(z.string())
+    .optional()
+    .describe('Sources to match: "gallica" | "catalogue" | "other".'),
+  title: textAnySchema
+    .optional()
+    .describe(
+      "Contains ANY of these strings in the title (case-insensitive, accent-sensitive — pass " +
+        'variants: ["Algérie","Algerie"]).',
+    ),
+  creator: textAnySchema
+    .optional()
+    .describe("Contains ANY of these strings in the creator/author (case-insensitive, accent-sensitive)."),
+  subject: textAnySchema
+    .optional()
+    .describe("Contains ANY of these strings in the subject headings (case-insensitive, accent-sensitive)."),
+  yearFrom: z
+    .number()
+    .int()
+    .optional()
+    .describe("Year lower bound, inclusive. A date RANGE matches when it overlaps (a 1861–1946 run matches 1937)."),
+  yearTo: z.number().int().optional().describe("Year upper bound, inclusive (overlap, as yearFrom)."),
+  undated: z
+    .boolean()
+    .optional()
+    .describe("With a year range: also match undated candidates. Alone: match only undated candidates."),
+  unresolved: z
+    .boolean()
+    .optional()
+    .describe(
+      "true: candidates whose metadata is still being resolved in the background (filters on " +
+        "title/type/date cannot see them yet); false: only resolved ones.",
+    ),
+  q: z
+    .string()
+    .trim()
+    .min(1)
+    .optional()
+    .describe("Free-text match over title, creator, snippet and subjects."),
+})
+
+const bufferFilterSchema = bufferFilterFieldsSchema
+  .extend({
+    not: bufferFilterFieldsSchema
+      .optional()
+      .describe(
+        "EXCLUDE candidates matching ALL these criteria. A candidate whose field is unknown for a " +
+          "criterion used here is never excluded (reported as notUnknown on a dry run).",
+      ),
+  })
+  .describe(
+    "Metadata filters over the buffer candidates, to MATCH. Omit a field to leave it unconstrained.",
+  )
+
+const facetDimensionEnum = z.enum(["period", "type", "kind", "lang", "source"])
 
 /**
  * The counts every staging tool returns, so it always says what became of each
@@ -163,7 +217,7 @@ export const bufferListTool = defineTool<
   handler: async (input, ctx) => {
     const { total, rows } = await BufferQueries.list(
       ctx.projectId,
-      input.filters as BufferFilterSet | undefined,
+      input.filters,
       input.limit ?? BUFFER_SAMPLE_SIZE,
     )
     return { total, candidates: rows }
@@ -203,7 +257,7 @@ export const bufferStatsTool = defineTool<
   }),
   handler: async (input, ctx) => {
     const projectId = ctx.projectId
-    const filters = input.filters as BufferFilterSet | undefined
+    const filters = input.filters
     const snapshot = await BufferQueries.snapshot(projectId, filters, 0)
     const stats = { total: snapshot.total, facets: snapshot.facets }
 
@@ -232,9 +286,13 @@ export const bufferRemoveByFilterTool = defineTool<
   name: AGENT_TOOLS.bufferRemoveByFilter,
   description:
     "Remove EVERY candidate matching a metadata filter from the buffer — the way " +
-    "to prune a sub-population before committing (e.g. drop everything outside the " +
-    "wanted period: `{\"filters\":{\"lang\":[\"en\"]}}`). Same semantics as " +
-    "corpus_remove_by_filter: it removes what MATCHES the filter. ALWAYS preview " +
+    "to prune a sub-population before committing. Same semantics as " +
+    "corpus_remove_by_filter: it removes what MATCHES the filter. Examples — drop the " +
+    "colonial press: `{\"filters\":{\"kind\":[\"periodical_issue\"],\"title\":[\"Oran\"," +
+    "\"Alger\",\"Constantine\",\"Maroc\",\"Tunis\",\"Indochine\",\"Madagascar\"," +
+    "\"Tananarive\",\"Dakar\"]}}`; drop everything not in French: " +
+    "`{\"filters\":{\"not\":{\"lang\":[\"fr\"]}}}` — candidates of unknown language are " +
+    "KEPT and the dry run reports them as `notUnknown.lang`. ALWAYS preview " +
     "first with dry_run=true (the default) — it returns `matched` (how many would " +
     "be removed) and a sample of their ARKs WITHOUT changing anything; show the " +
     "librarian that count, then call again with dry_run=false to commit the " +
@@ -258,7 +316,7 @@ export const bufferRemoveByFilterTool = defineTool<
     const projectId = gate.project.id
 
     const result = await BufferService.removeByFilter(projectId, {
-      filters: input.filters as BufferFilterSet,
+      filters: input.filters,
       dryRun,
     })
 

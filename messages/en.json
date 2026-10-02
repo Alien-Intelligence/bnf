@@ -348,7 +348,17 @@
       "clearConfirmBody": "The {count} gathered candidate(s) will be discarded. The corpus is not affected.",
       "clearConfirmCancel": "Cancel",
       "clearConfirmOk": "Clear",
-      "foundBy": "Found by the search: {query}"
+      "foundBy": "Found by the search: {query}",
+      "kinds": {
+        "periodical_issue": "Periodical issue",
+        "periodical_collection": "Periodical title (collection)",
+        "monograph": "Monograph",
+        "image": "Image",
+        "catalogue_notice": "Catalogue record",
+        "other_document": "Other digitized document",
+        "unknown": "Kind undetermined"
+      },
+      "enrichPending": "metadata pending"
     },
     "export": {
       "label": "Export (CSV)",
@@ -551,7 +561,9 @@
       "other": "Other",
       "estampe": "Print",
       "enlum": "Illumination",
-      "charte": "Charter"
+      "charte": "Charter",
+      "text": "Printed text (kind undetermined)",
+      "object": "Object"
     },
     "langs": {
       "fr": "French",

@@ -5,14 +5,9 @@
  * candidate count, facets (type / language / source / period), and a bounded
  * candidate sample. Mirrors GET /corpus but over the pre-commit staging area.
  *
- * Query params (all optional; missing means "no filter"):
- *   type     — comma-separated doc-type codes
- *   lang     — comma-separated BCP-47 codes
- *   source   — comma-separated source identifiers
- *   yearFrom — decade start (inclusive)
- *   yearTo   — decade end (inclusive)
- *   undated  — "true"/"1" → candidates with year IS NULL
- *   q        — free-text over title + snippet
+ * Query params: the shared `bufferFiltersSchema` (models/buffer/types.ts) —
+ * type / kind / lang / source / title / creator / subject as CSV, yearFrom /
+ * yearTo (overlap), undated ("true"/"1" or "false"/"0"), q — plus
  *   limit    — sample size, 1–200 (default: BUFFER_SAMPLE_SIZE)
  *
  * DELETE /api/projects/:id/buffer  { arks: string[] }
@@ -28,31 +23,16 @@ import { z } from "zod"
 import { BUFFER_SAMPLE_SIZE } from "@/lib/constants"
 import { ProjectQueries } from "@/models/projects/queries"
 import { BufferPolicy } from "@/models/buffer/policy"
-import { BufferQueries, type BufferFilterSet } from "@/models/buffer/queries"
+import { BufferQueries } from "@/models/buffer/queries"
 import { BufferService } from "@/models/buffer/service"
-import { bufferDiscardSchema } from "@/models/buffer/types"
+import { bufferDiscardSchema, bufferFiltersSchema, bufferFiltersToSet } from "@/models/buffer/types"
 import type { BufferSnapshot } from "@/models/buffer/schema"
 
-const bufferQuerySchema = z.object({
-  type: z.string().optional(),
-  lang: z.string().optional(),
-  source: z.string().optional(),
-  yearFrom: z.coerce.number().int().optional(),
-  yearTo: z.coerce.number().int().optional(),
-  undated: z.coerce.boolean().optional(),
-  q: z.string().trim().min(1).optional(),
+// The shared boundary schema, never a local copy: a second copy is how the
+// "undated=false parsed as true" bug lived in this route.
+const bufferQuerySchema = bufferFiltersSchema.extend({
   limit: z.coerce.number().int().min(1).max(200).optional(),
 })
-
-/** Split a CSV query value into a trimmed, non-empty array, or undefined. */
-function splitCsv(value: string | undefined): string[] | undefined {
-  if (!value) return undefined
-  const parts = value
-    .split(",")
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0)
-  return parts.length > 0 ? parts : undefined
-}
 
 type RouteCtx = { params: Promise<{ id: string }> }
 
@@ -65,20 +45,13 @@ export const GET = withAuth(async (req, user, bouncer, ctx: RouteCtx) => {
   if (!project) return notFound("Projet introuvable")
   await bouncer.with(BufferPolicy).authorize("read", project)
 
-  const filters: BufferFilterSet = {
-    type: splitCsv(parsed.type),
-    lang: splitCsv(parsed.lang),
-    source: splitCsv(parsed.source),
-    yearFrom: parsed.yearFrom,
-    yearTo: parsed.yearTo,
-    undated: parsed.undated,
-    q: parsed.q,
-  }
+  const { limit, ...filterParams } = parsed
+  const filters = bufferFiltersToSet(filterParams)
 
   const snapshot = await BufferQueries.snapshot(
     projectId,
     filters,
-    parsed.limit ?? BUFFER_SAMPLE_SIZE,
+    limit ?? BUFFER_SAMPLE_SIZE,
   )
   return ok<BufferSnapshot>(snapshot)
 })

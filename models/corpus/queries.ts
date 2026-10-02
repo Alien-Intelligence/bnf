@@ -8,6 +8,11 @@ import { prisma } from "@/lib/db"
 import type { Prisma } from "@/lib/generated/prisma/client"
 import { CORPUS_SAMPLE_SIZE } from "@/lib/constants"
 import {
+  ARK_KIND,
+  ARK_KIND_IMAGE_TYPES,
+  ARK_KIND_OTHER_DOCUMENT_TYPES,
+  GALLICA_ARK_PREFIXES,
+  type ArkKind,
   DOCUMENT_CANONICAL_STATUS,
   DOCUMENT_RESOLVE_STATUS,
   INDEXATION_OUTCOME,
@@ -189,6 +194,85 @@ export type CorpusFilterSet = {
   yearTo?: number
   undated?: boolean
   q?: string
+  /** Contains-ANY over the title (case-insensitive, accent-sensitive). */
+  title?: string[]
+  /** Contains-ANY over the author (the agent's `creator`, as in the buffer). */
+  creator?: string[]
+  /** Record kinds — ARK_KIND values, through arkKindWhere. */
+  kind?: ArkKind[]
+  /**
+   * One-level exclusion: documents matching ALL these criteria are left out.
+   * A document whose field is unknown (NULL) for a dimension named here is
+   * never matched by `not`, exactly as in the buffer (Decision 4).
+   */
+  not?: Omit<CorpusFilterSet, "not" | "session">
+}
+
+/** The "id starts with <prefix>" test over a full ARK. An ARK is
+ *  `ark:/<NAAN>/<id>` with no slash inside the id (arkSchema), so `/<prefix>`
+ *  can only occur at the start of the id. */
+function arkIdStartsWith(prefix: string): Prisma.DocumentWhereInput {
+  return { ark: { contains: `/${prefix}` } }
+}
+
+/**
+ * Prisma WHERE fragment matching one record kind — the SQL mirror of
+ * classifyArkKind (models/documents/schema.ts) over Document, which has no
+ * collection-entry form: `cb…` + press is a periodical title, other `cb…` a
+ * catalogue notice, a digitized prefix takes its kind from docType. A parity
+ * test (tests/models/corpus/filters.test.ts) pins the two together; the
+ * prefix and type lists are imported from the classifier, never restated.
+ */
+export function arkKindWhere(kind: ArkKind): Prisma.DocumentWhereInput {
+  const cb = arkIdStartsWith("cb")
+  const digitized: Prisma.DocumentWhereInput = { OR: GALLICA_ARK_PREFIXES.map(arkIdStartsWith) }
+  const known = ["press", "book", ...ARK_KIND_IMAGE_TYPES, ...ARK_KIND_OTHER_DOCUMENT_TYPES]
+  switch (kind) {
+    case ARK_KIND.PERIODICAL_COLLECTION:
+      return { AND: [cb, { docType: "press" }] }
+    case ARK_KIND.CATALOGUE_NOTICE:
+      // `not: "press"` is SQL `<>`, which a NULL type never satisfies: the
+      // null arm is spelled out, as classifyArkKind treats null as "not press".
+      return { AND: [cb, { OR: [{ docType: null }, { docType: { not: "press" } }] }] }
+    case ARK_KIND.PERIODICAL_ISSUE:
+      return { AND: [digitized, { docType: "press" }] }
+    case ARK_KIND.MONOGRAPH:
+      return { AND: [digitized, { docType: "book" }] }
+    case ARK_KIND.IMAGE:
+      return { AND: [digitized, { docType: { in: [...ARK_KIND_IMAGE_TYPES] } }] }
+    case ARK_KIND.OTHER_DOCUMENT:
+      return { AND: [digitized, { docType: { in: [...ARK_KIND_OTHER_DOCUMENT_TYPES] } }] }
+    case ARK_KIND.UNKNOWN:
+      return {
+        OR: [
+          { AND: [digitized, { OR: [{ docType: null }, { docType: { notIn: known } }] }] },
+          { AND: [{ NOT: cb }, { NOT: digitized }] },
+        ],
+      }
+  }
+}
+
+/** Contains-ANY over a Document text column. */
+function documentContainsAny(column: "title" | "author", values: string[]): Prisma.DocumentWhereInput {
+  return {
+    OR: values.map((v) =>
+      column === "title"
+        ? { title: { contains: v, mode: "insensitive" as const } }
+        : { author: { contains: v, mode: "insensitive" as const } },
+    ),
+  }
+}
+
+/** The nullable columns a corpus `not` reads, per dimension (Decision 4). */
+function corpusNotPresence(not: Omit<CorpusFilterSet, "not" | "session">): Prisma.DocumentWhereInput[] {
+  const presence: Prisma.DocumentWhereInput[] = []
+  if (not.type?.length) presence.push({ docType: { not: null } })
+  if (not.lang?.length) presence.push({ lang: { not: null } })
+  if (not.source?.length) presence.push({ source: { not: null } })
+  if (not.title?.length) presence.push({ title: { not: null } })
+  if (not.creator?.length) presence.push({ author: { not: null } })
+  if (not.yearFrom !== undefined || not.yearTo !== undefined) presence.push({ year: { not: null } })
+  return presence
 }
 
 /**
@@ -318,6 +402,19 @@ function buildCorpusWhere(
   if (filters?.q && filters.q.trim().length > 0) andClauses.push(fullTextWhere)
   if (ingestWhere) andClauses.push(ingestWhere)
   if (outcomeFilterWhere) andClauses.push(outcomeFilterWhere)
+  if (filters?.title && filters.title.length > 0) andClauses.push(documentContainsAny("title", filters.title))
+  if (filters?.creator && filters.creator.length > 0) {
+    andClauses.push(documentContainsAny("author", filters.creator))
+  }
+  if (filters?.kind && filters.kind.length > 0) andClauses.push({ OR: filters.kind.map(arkKindWhere) })
+  // `not` reuses THIS translation for its inside, so an exclusion means
+  // exactly what the same filter means positively. The inner predicate carries
+  // the membership clause too; under the outer membership clause NOT(member
+  // AND inner) reduces to NOT(inner).
+  if (filters?.not) {
+    const inner = buildCorpusWhere(versionId, paidOcrEnabled, filters.not).sharedWhere
+    andClauses.push({ AND: [...corpusNotPresence(filters.not), { NOT: inner }] })
+  }
 
   const base: Prisma.DocumentWhereInput = {
     membership: { some: { versionId } },

@@ -8,7 +8,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { ARK_KIND, ARK_KIND_COLOR, DOC_TYPE, classifyArkKind } from "@/models/documents/schema"
-import { BUFFER_ARK_KIND_VALUES } from "@/models/buffer/types"
+import { BUFFER_ARK_KIND_VALUES } from "@/models/buffer/schema"
 
 test("rule 1: a collection entry (cb…/date before toFullArk) is a periodical collection", () => {
   assert.equal(

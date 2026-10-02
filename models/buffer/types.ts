@@ -7,6 +7,7 @@
 // is redefined here rather than imported from models/corpus (the import diagram
 // forbids sideways model imports in types.ts).
 import { z } from "zod"
+import { BUFFER_ARK_KIND_VALUES, isBufferArkKind, type BufferFilterSet } from "./schema"
 
 // ---------------------------------------------------------------------------
 // ARK validation (opaque identifier — never constructed, never mutated)
@@ -20,29 +21,94 @@ export const arkSchema = z.string().regex(/^ark:\/\d+\/[A-Za-z0-9]+$/, "ARK inva
 // trimmed to the columns denormalised on a candidate row.
 // ---------------------------------------------------------------------------
 
+/** Split a CSV query value into a trimmed, non-empty array, or undefined. */
+function splitCsv(value: string | undefined): string[] | undefined {
+  if (value === undefined) return undefined
+  const parts = value
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+  return parts.length > 0 ? parts : undefined
+}
+
+/**
+ * A query-string boolean. `z.coerce.boolean()` turns the STRING "false" into
+ * `true` (any non-empty string is truthy) — the found bug that made
+ * `?undated=false` return the undated candidates.
+ */
+const queryBooleanSchema = z
+  .enum(["true", "false", "1", "0"])
+  .transform((v) => v === "true" || v === "1")
+
 export const bufferFiltersSchema = z.object({
   /** Comma-separated doc-type codes, e.g. "press,book". */
   type: z.string().optional(),
+  /** Comma-separated record kinds (ARK_KIND values), e.g. "periodical_issue". */
+  kind: z
+    .string()
+    .refine((v) => (splitCsv(v) ?? []).every(isBufferArkKind), {
+      message: `record kinds: ${BUFFER_ARK_KIND_VALUES.join(", ")}`,
+    })
+    .optional(),
   /** Comma-separated BCP-47 language codes, e.g. "fr,la". */
   lang: z.string().optional(),
   /** Comma-separated source identifiers, e.g. "gallica,catalogue". */
   source: z.string().optional(),
-  /** Decade start (inclusive), e.g. 1880. */
+  /** Comma-separated strings, a candidate matches when its title contains ANY. */
+  title: z.string().optional(),
+  /** Same, over the creator. */
+  creator: z.string().optional(),
+  /** Same, over the subject headings. */
+  subject: z.string().optional(),
+  /** Year lower bound (inclusive); matches by overlap with a range label. */
   yearFrom: z.coerce.number().int().optional(),
-  /** Decade end (inclusive), e.g. 1889. */
+  /** Year upper bound (inclusive). */
   yearTo: z.coerce.number().int().optional(),
-  /** When true, include candidates with no date in the result set. */
-  undated: z.coerce.boolean().optional(),
-  /** Free-text query over title + snippet; empty string is treated as absent. */
+  /** "true"/"1": include candidates with no date; "false"/"0": do not. */
+  undated: queryBooleanSchema.optional(),
+  /** Free-text query over title, creator, snippet and subjects; empty is absent. */
   q: z.string().trim().min(1).optional(),
 })
 
 export type BufferFilters = z.infer<typeof bufferFiltersSchema>
 
+/**
+ * The CSV boundary form → the canonical filter set the queries take. Pure; the
+ * one conversion the REST route uses (it used to redefine the schema and split
+ * the CSV itself).
+ */
+export function bufferFiltersToSet(f: BufferFilters): BufferFilterSet {
+  const type = splitCsv(f.type)
+  const kind = splitCsv(f.kind)?.filter(isBufferArkKind)
+  const lang = splitCsv(f.lang)
+  const source = splitCsv(f.source)
+  const title = splitCsv(f.title)
+  const creator = splitCsv(f.creator)
+  const subject = splitCsv(f.subject)
+  // Absent keys, not `undefined` values: the set states only what was asked.
+  return {
+    ...(type !== undefined ? { type } : {}),
+    ...(kind !== undefined && kind.length > 0 ? { kind } : {}),
+    ...(lang !== undefined ? { lang } : {}),
+    ...(source !== undefined ? { source } : {}),
+    ...(title !== undefined ? { title } : {}),
+    ...(creator !== undefined ? { creator } : {}),
+    ...(subject !== undefined ? { subject } : {}),
+    ...(f.yearFrom !== undefined ? { yearFrom: f.yearFrom } : {}),
+    ...(f.yearTo !== undefined ? { yearTo: f.yearTo } : {}),
+    ...(f.undated !== undefined ? { undated: f.undated } : {}),
+    ...(f.q !== undefined ? { q: f.q } : {}),
+  }
+}
+
 /** True when at least one filter value is set. */
 export function hasActiveBufferFilters(filters: BufferFilters): boolean {
   return (
     (!!filters.type && filters.type.length > 0) ||
+    (!!filters.kind && filters.kind.length > 0) ||
+    (!!filters.title && filters.title.length > 0) ||
+    (!!filters.creator && filters.creator.length > 0) ||
+    (!!filters.subject && filters.subject.length > 0) ||
     (!!filters.lang && filters.lang.length > 0) ||
     (!!filters.source && filters.source.length > 0) ||
     filters.yearFrom !== undefined ||
@@ -56,6 +122,10 @@ export function hasActiveBufferFilters(filters: BufferFilters): boolean {
 export function bufferFiltersToParams(filters: BufferFilters): URLSearchParams {
   const p = new URLSearchParams()
   if (filters.type) p.set("type", filters.type)
+  if (filters.kind) p.set("kind", filters.kind)
+  if (filters.title) p.set("title", filters.title)
+  if (filters.creator) p.set("creator", filters.creator)
+  if (filters.subject) p.set("subject", filters.subject)
   if (filters.lang) p.set("lang", filters.lang)
   if (filters.source) p.set("source", filters.source)
   if (filters.yearFrom !== undefined) p.set("yearFrom", String(filters.yearFrom))
@@ -75,19 +145,6 @@ export function bufferFiltersFromParams(params: URLSearchParams): BufferFilters 
 // ---------------------------------------------------------------------------
 // Mutation inputs
 // ---------------------------------------------------------------------------
-
-/** The record kinds a candidate may carry — ARK_KIND's values (the enum lives
- *  in models/documents/schema.ts; types.ts may not import another model, so the
- *  list is restated and pinned to it by tests/models/documents/ark-kind.test.ts). */
-export const BUFFER_ARK_KIND_VALUES = [
-  "periodical_issue",
-  "periodical_collection",
-  "monograph",
-  "image",
-  "catalogue_notice",
-  "other_document",
-  "unknown",
-] as const
 
 /** A candidate hit written to the buffer by a search tool. Metadata is optional
  *  (nullable columns); only the ARK is required. `docType` and `lang` are the

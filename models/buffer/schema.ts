@@ -38,6 +38,67 @@ export const BUFFER_ENRICH_STATUS = {
 
 export type BufferEnrichStatus = (typeof BUFFER_ENRICH_STATUS)[keyof typeof BUFFER_ENRICH_STATUS]
 
+/**
+ * The record kinds a buffer row can carry — ARK_KIND's values
+ * (models/documents/schema.ts). Restated here because a model's schema.ts does
+ * not import another model; tests/models/documents/ark-kind.test.ts pins the
+ * two lists together.
+ */
+export const BUFFER_ARK_KIND_VALUES = [
+  "periodical_issue",
+  "periodical_collection",
+  "monograph",
+  "image",
+  "catalogue_notice",
+  "other_document",
+  "unknown",
+] as const
+
+export type BufferArkKind = (typeof BUFFER_ARK_KIND_VALUES)[number]
+
+export function isBufferArkKind(value: string): value is BufferArkKind {
+  return (BUFFER_ARK_KIND_VALUES as readonly string[]).includes(value)
+}
+
+/**
+ * One level of buffer filter criteria. Multi-selects and the text arrays are
+ * OR-within / AND-across dimensions; `title` / `creator` / `subject` match a
+ * candidate containing ANY of the strings (case-insensitive, accent-sensitive).
+ * Year bounds match by OVERLAP with [year, yearEnd ?? year], so a periodical
+ * collection running 1861–1946 matches 1937. All fields optional; absent means
+ * "no constraint on this dimension".
+ */
+export type BufferFilterFields = {
+  type?: string[]
+  kind?: BufferArkKind[]
+  lang?: string[]
+  source?: string[]
+  title?: string[]
+  creator?: string[]
+  subject?: string[]
+  yearFrom?: number
+  yearTo?: number
+  /** Include candidates with no date. Widens a year range; alone, selects them. */
+  undated?: boolean
+  /** true: candidates still waiting for background metadata (pending/failed);
+   *  false: only resolved ones. */
+  unresolved?: boolean
+  /** Free text over title, creator, snippet and subjects. */
+  q?: string
+}
+
+/**
+ * The canonical (array-based) buffer filter set — the buffer's counterpart to
+ * CorpusFilterSet. Queries, BufferService and the agent tools speak it; the
+ * CSV `BufferFilters` (types.ts) is only the REST/UI boundary form, converted
+ * by bufferFiltersToSet. `not` is a ONE-level exclusion: match = positive
+ * clauses AND NOT(all `not` clauses). A candidate whose field is unknown (NULL)
+ * for a dimension used in `not` is never matched by `not` — so "remove
+ * everything not French" never deletes rows of unknown language; a dry run
+ * reports how many were left out (`notUnknown`).
+ */
+export type BufferFilterSet = BufferFilterFields & { not?: BufferFilterFields }
+
 /** The facet dimensions buffer_stats can tabulate — the corpus set plus the
  *  record kind (arkKind). */
 export type BufferFacetDimension = "period" | "type" | "lang" | "source" | "kind"

@@ -496,10 +496,17 @@ export class CorpusService {
       hasArray(filters.source) ||
       hasArray(filters.session) ||
       hasArray(filters.ingest) ||
+      // Found bug: a lone `outcome` filter was refused as empty, so
+      // "remove the documents that failed to index" could not be expressed.
+      hasArray(filters.outcome) ||
+      hasArray(filters.title) ||
+      hasArray(filters.creator) ||
+      hasArray(filters.kind) ||
       filters.yearFrom !== undefined ||
       filters.yearTo !== undefined ||
       filters.undated === true ||
-      (typeof filters.q === "string" && filters.q.trim().length > 0)
+      (typeof filters.q === "string" && filters.q.trim().length > 0) ||
+      (filters.not !== undefined && !CorpusService.isEmptyFilterSet(filters.not))
     )
   }
 }

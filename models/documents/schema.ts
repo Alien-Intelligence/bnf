@@ -142,6 +142,16 @@ export const ARK_KIND = {
   UNKNOWN: "unknown",
 } as const
 export type ArkKind = (typeof ARK_KIND)[keyof typeof ARK_KIND]
+/** ARK_KIND's values as a tuple, for z.enum. */
+export const ARK_KIND_VALUES = [
+  ARK_KIND.PERIODICAL_ISSUE,
+  ARK_KIND.PERIODICAL_COLLECTION,
+  ARK_KIND.MONOGRAPH,
+  ARK_KIND.IMAGE,
+  ARK_KIND.CATALOGUE_NOTICE,
+  ARK_KIND.OTHER_DOCUMENT,
+  ARK_KIND.UNKNOWN,
+] as const satisfies readonly ArkKind[]
 
 /** Canonical docTypes whose digitized document is an image. */
 export const ARK_KIND_IMAGE_TYPES = ["image", "poster", "estampe", "enlum"] as const

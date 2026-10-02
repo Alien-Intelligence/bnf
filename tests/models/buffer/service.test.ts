@@ -439,3 +439,117 @@ test("a bare candidate is reported unresolved, and a search that brings its titl
   const row = await prisma.bufferItem.findFirstOrThrow({ where: { projectId: project.id, ark: ARK(1_600) } })
   assert.equal(row.enrichStatus, "resolved")
 })
+
+// --- Buffer filters (Track E Phase 8) ----------------------------------------
+// What the prod thinking blocks asked for and could not express: record kinds,
+// field-scoped text, "everything except", overlapping year ranges.
+
+/** A curated fixture buffer for the filter tests. */
+async function filterFixture(label: string) {
+  const project = await freshProject(label)
+  await BufferService.registerCandidates({
+    projectId: project.id,
+    originTool: "corpus_search",
+    restageDiscarded: false,
+    candidates: [
+      { ark: ARK(2_001), title: "L'Écho d'Oran", docType: "press", arkKind: "periodical_issue", lang: "fr", year: 1937, dateLabel: "1937-07-12" },
+      { ark: ARK(2_002), title: "Le Petit Marseillais", docType: "press", arkKind: "periodical_issue", lang: "fr", year: 1937, dateLabel: "1937-07-14", subjects: "Incendies de forêt -- France" },
+      { ark: ARK(2_003), title: "La Dépêche tunisienne", docType: "press", arkKind: "periodical_issue", lang: "fr", year: 1937 },
+      { ark: ARK(2_004), title: "Die Alamannen", creator: "Geuenich, Dieter", docType: "book", arkKind: "monograph", lang: "de", year: 1997 },
+      { ark: ARK(2_005), title: "Le Temps", docType: "press", arkKind: "periodical_collection", year: 1861, yearEnd: 1946, dateLabel: "1861-1946" },
+      { ark: ARK(2_006), title: "Sans langue connue", docType: "book", arkKind: "monograph", year: 1900 },
+    ],
+  })
+  // A bare row, still resolving.
+  await BufferService.registerCandidates({
+    projectId: project.id,
+    originTool: "buffer_add",
+    restageDiscarded: true,
+    candidates: [{ ark: ARK(2_007) }],
+  })
+  return project
+}
+
+test("kind[] filters on the record kind", async () => {
+  const project = await filterFixture("f-kind")
+  const arks = await BufferQueries.candidateArks(project.id, { kind: ["periodical_issue"] })
+  assert.deepEqual(arks.sort(), [ARK(2_001), ARK(2_002), ARK(2_003)])
+})
+
+test("title[] is contains-any, case-insensitive", async () => {
+  const project = await freshProject("f-title")
+  await BufferService.registerCandidates({
+    projectId: project.id,
+    originTool: "corpus_search",
+    restageDiscarded: false,
+    candidates: [
+      { ark: ARK(2_101), title: "L'Écho d'Oran" },
+      { ark: ARK(2_102), title: "Le Petit Marseillais" },
+      { ark: ARK(2_103), title: "La Dépêche TUNISIENNE" },
+    ],
+  })
+  const arks = await BufferQueries.candidateArks(project.id, { title: ["oran", "tunisienne"] })
+  assert.deepEqual(arks.sort(), [ARK(2_101), ARK(2_103)])
+})
+
+test("not.title removes only the matching titles (the colonial-press case)", async () => {
+  const project = await filterFixture("f-not-title")
+  const result = await BufferService.removeByFilter(project.id, {
+    filters: { kind: ["periodical_issue"], title: ["Oran", "tunisienne"] },
+    dryRun: false,
+  })
+  assert.equal(result.status, "removed")
+  if (result.status === "removed") assert.equal(result.removed, 2)
+  const kept = await BufferQueries.candidateArks(project.id, { not: { title: ["Oran", "tunisienne"] } })
+  assert.ok(kept.includes(ARK(2_002)), "the metropolitan title is kept")
+  assert.ok(!kept.includes(ARK(2_001)))
+})
+
+test("not.lang never matches a row whose language is unknown; the dry run says how many", async () => {
+  const project = await filterFixture("f-not-lang")
+  const preview = await BufferService.removeByFilter(project.id, {
+    filters: { not: { lang: ["fr"] } },
+    dryRun: true,
+  })
+  assert.equal(preview.status, "dry_run")
+  if (preview.status !== "dry_run") return
+  assert.equal(preview.matched, 1, "only the German monograph is 'not French'")
+  assert.deepEqual(preview.arks, [ARK(2_004)])
+  // Le Temps, the language-less book and the bare row have no language.
+  assert.deepEqual(preview.notUnknown, { lang: 3 })
+  assert.equal(await BufferQueries.count(project.id), 7, "a dry run never mutates")
+})
+
+test("year ranges match by overlap: a 1861–1946 collection matches 1937", async () => {
+  const project = await filterFixture("f-overlap")
+  const arks = await BufferQueries.candidateArks(project.id, { yearFrom: 1937, yearTo: 1937 })
+  assert.deepEqual(arks.sort(), [ARK(2_001), ARK(2_002), ARK(2_003), ARK(2_005)].sort())
+  const later = await BufferQueries.candidateArks(project.id, { yearFrom: 1950 })
+  assert.deepEqual(later, [ARK(2_004)], "the collection ended in 1946")
+})
+
+test("unresolved selects the rows still waiting for metadata", async () => {
+  const project = await filterFixture("f-unresolved")
+  assert.deepEqual(await BufferQueries.candidateArks(project.id, { unresolved: true }), [ARK(2_007)])
+  const facets = await BufferQueries.facets(project.id)
+  assert.equal(facets.unresolved, 1)
+  assert.equal(facets.kind.periodical_issue, 3)
+})
+
+test("subject[] matches the joined subject headings", async () => {
+  const project = await filterFixture("f-subject")
+  assert.deepEqual(await BufferQueries.candidateArks(project.id, { subject: ["incendies de forêt"] }), [ARK(2_002)])
+})
+
+test("creator[] and q reach the creator column", async () => {
+  const project = await filterFixture("f-creator")
+  assert.deepEqual(await BufferQueries.candidateArks(project.id, { creator: ["geuenich"] }), [ARK(2_004)])
+  assert.deepEqual(await BufferQueries.candidateArks(project.id, { q: "Geuenich" }), [ARK(2_004)])
+})
+
+test("a lone `not` is a constraint; an empty `not` is not", async () => {
+  const project = await filterFixture("f-empty-not")
+  const empty = await BufferService.removeByFilter(project.id, { filters: { not: {} }, dryRun: false })
+  assert.equal(empty.status, "empty_filter")
+  assert.equal(await BufferQueries.count(project.id), 7)
+})

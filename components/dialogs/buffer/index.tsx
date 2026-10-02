@@ -30,7 +30,7 @@ import {
   useDiscardCandidates,
 } from "@/hooks/api/buffer"
 import { BUFFER_PANEL_LIMIT } from "@/lib/constants"
-import type { BufferRow } from "@/models/buffer/schema"
+import { BUFFER_ENRICH_STATUS, type BufferRow } from "@/models/buffer/schema"
 
 interface Props {
   open: boolean
@@ -50,7 +50,13 @@ function periodRange(period: Record<string, number>): string | null {
 
 export function DialogBuffer({ open, onOpenChange, projectId }: Props) {
   const t = useTranslations("corpus.buffer")
+  const tType = useTranslations("corpus.docTypes")
+  const tKind = useTranslations("corpus.buffer.kinds")
   const tCommon = useTranslations("common")
+  // Canonical codes are labelled; a code the vocabulary does not know yet is
+  // shown raw rather than hidden (the [vocab] warn on the server says why).
+  const typeLabel = (code: string) => (tType.has(code) ? tType(code) : code)
+  const kindLabel = (kind: string) => (tKind.has(kind) ? tKind(kind) : kind)
   const { data, isLoading, isError, refetch } = useBuffer(
     projectId,
     {},
@@ -77,7 +83,7 @@ export function DialogBuffer({ open, onOpenChange, projectId }: Props) {
       ? t("emptyHint")
       : `${t("subtitle")}${range ? ` · ${range}` : ""}${
           topTypes.length > 0
-            ? ` · ${topTypes.map(([code, n]) => `${code} (${n})`).join(", ")}`
+            ? ` · ${topTypes.map(([code, n]) => `${typeLabel(code)} (${n})`).join(", ")}`
             : ""
         }`
 
@@ -124,6 +130,9 @@ export function DialogBuffer({ open, onOpenChange, projectId }: Props) {
                 <CandidateRow
                   key={row.id}
                   row={row}
+                  typeLabel={typeLabel}
+                  kindLabel={kindLabel}
+                  pendingLabel={t("enrichPending")}
                   noTitle={t("noTitle")}
                   discardLabel={t("discard")}
                   disabled={isBusy || discard.isPending}
@@ -201,6 +210,9 @@ export function DialogBuffer({ open, onOpenChange, projectId }: Props) {
 
 interface RowProps {
   row: BufferRow
+  typeLabel: (code: string) => string
+  kindLabel: (kind: string) => string
+  pendingLabel: string
   noTitle: string
   discardLabel: string
   foundByLabel: (query: string) => string
@@ -210,13 +222,26 @@ interface RowProps {
 
 function CandidateRow({
   row,
+  typeLabel,
+  kindLabel,
+  pendingLabel,
   noTitle,
   discardLabel,
   foundByLabel,
   disabled,
   onDiscard,
 }: RowProps) {
-  const meta = [row.year?.toString(), row.docType].filter(Boolean).join(" · ")
+  // The BnF date label ("1937-07-12", "1861-1946") says more than the year.
+  const date = row.dateLabel ?? row.year?.toString()
+  const meta = [
+    date,
+    row.docType ? typeLabel(row.docType) : undefined,
+    row.arkKind ? kindLabel(row.arkKind) : undefined,
+    row.creator ?? undefined,
+  ]
+    .filter(Boolean)
+    .join(" · ")
+  const pending = row.enrichStatus === BUFFER_ENRICH_STATUS.PENDING
   // The query that surfaced this candidate — CQL once the agent used it. A
   // buffer mixes results from many searches, so provenance belongs per row, and
   // a librarian reads CQL faster than we could paraphrase it. Kept to the title
@@ -225,8 +250,13 @@ function CandidateRow({
   return (
     <div className="group flex items-center gap-2 rounded px-1.5 py-1 text-sm hover:bg-muted/50">
       <div className="min-w-0 flex-1">
-        <p className="truncate" title={foundBy}>
-          {row.title ?? noTitle}
+        <p className="flex items-center gap-1.5" title={foundBy}>
+          <span className="truncate">{row.title ?? noTitle}</span>
+          {pending ? (
+            <Badge variant="outline" className="shrink-0 text-[10px] font-normal text-muted-foreground">
+              {pendingLabel}
+            </Badge>
+          ) : null}
         </p>
         {meta ? <p className="truncate text-xs text-muted-foreground">{meta}</p> : null}
       </div>
