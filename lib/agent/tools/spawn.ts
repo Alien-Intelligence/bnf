@@ -487,7 +487,9 @@ export const spawnResearchTool = defineTool<
       .describe(
         "Optional subset of tool names the sub-agent may use. Omit for a safe " +
           "default (corpus: corpus_search + buffer_add/list/stats; research: rag_* " +
-          "+ doc_get). spawn_research is never available to the child.",
+          "+ doc_get). spawn_research is never available to the child. Never " +
+          "bnf__bnf_search_*: a child sweeps with corpus_search, which stages every hit " +
+          "with its metadata.",
       ),
   }),
   handler: (input, ctx) => runSpawn(input, ctx, realDeps),

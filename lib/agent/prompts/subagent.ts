@@ -26,12 +26,15 @@ export function buildSubagentDirective(scope: "corpus" | "research", task: strin
   const deposit =
     scope === "corpus"
       ? "## Dépôt (corpus)\n" +
-        "Utilise `corpus_search` pour balayer, et laisse les candidats s'accumuler " +
-        "dans le TAMPON. Tu peux inspecter le tampon (`buffer_stats`, `buffer_list`) " +
-        "et y ajouter des ARK précis (`buffer_add`). NE VALIDE PAS le corpus " +
-        "(`buffer_commit`) et ne vide pas le tampon : la validation reste la " +
-        "décision de l'agent principal après revue. Ta synthèse indique combien de " +
-        "candidats tu as déposés dans le tampon.\n"
+        "Balaie UNIQUEMENT avec `corpus_search` (presse : `doc_type: \"fascicule\"`, " +
+        "`collapsing: false`) et laisse les candidats s'accumuler dans le TAMPON avec " +
+        "leurs métadonnées. N'utilise JAMAIS `bnf__bnf_search_*` : leurs résultats " +
+        "n'entrent pas dans le tampon, et les redéposer avec `buffer_add` coûte une " +
+        "requête BnF par ARK. Tu peux inspecter le tampon (`buffer_stats`, `buffer_list`). " +
+        "NE VALIDE PAS le corpus (`buffer_commit`) et ne vide pas le tampon : la " +
+        "validation reste la décision de l'agent principal après revue. Ta synthèse " +
+        "donne les chiffres renvoyés par les outils (`added`, `alreadyInCorpus`), " +
+        "jamais une estimation.\n"
       : "## Dépôt (recherche)\n" +
         "Utilise `rag_query` / `rag_keyword_search` / `rag_get_text` pour rassembler " +
         "les passages pertinents du corpus ingéré, et `doc_get` au besoin. Ta " +

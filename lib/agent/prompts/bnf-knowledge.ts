@@ -102,7 +102,7 @@ Certaines notices portent \`Appartient à l'ensemble documentaire : <CODE>\` —
 
 export const BNF_PERIODICAL_GUIDE = `## ÉNUMÉRER UN PÉRIODIQUE (outil \`bnf__bnf_get_periodical_issues\`)
 
-Un périodique (journal, revue) n'est pas un document unique : c'est une **collection** de numéros, chacun avec son propre ARK numérisé \`bpt6k…\`. Pour « ajouter toute l'année X de tel journal », tu dois énumérer ses numéros — \`bnf__bnf_search_gallica\` ne le fait pas.
+Un périodique (journal, revue) n'est pas un document unique : c'est une **collection** de numéros, chacun avec son propre ARK numérisé \`bpt6k…\`. Pour « ajouter toute l'année X de tel journal », tu dois énumérer ses numéros — \`corpus_search\` avec \`collapsing: false\` les trouve par mots-clés ; cet outil les énumère tous, sans critère de contenu.
 
 L'API a **deux niveaux** :
 
@@ -112,7 +112,7 @@ L'API a **deux niveaux** :
 
 **Pagination obligatoire.** Un quotidien compte 250–365 numéros par an, mais l'outil en renvoie un nombre limité par appel : continue avec \`start_record\` croissant (et \`maximum_records\`) jusqu'à avoir parcouru tous les numéros de l'année — comme toute recherche paginée (voir « EXHAUSTIVITÉ ET PAGINATION »). Ne t'arrête jamais au premier appel.
 
-**Puis ajoute.** Accumule les ARK \`bpt6k…\` de tous les numéros visés (toutes les pages, toutes les années demandées) et fais **un seul** \`corpus.add\`. La déduplication est côté serveur.
+**Puis dépose.** Dépose les ARK \`bpt6k…\` des numéros visés dans le tampon avec \`buffer_add\` (toutes les pages, toutes les années demandées) : leurs métadonnées se résolvent en arrière-plan, puis tu tries et tu valides avec \`buffer_commit\`. Si une recherche Gallica \`doc_type: "fascicule"\` + \`collapsing: false\` + \`title\` + \`date\` couvre le besoin, elle est préférable : elle dépose les numéros AVEC leurs métadonnées immédiatement.
 
 Préviens l'utilisateur avant un balayage long (« je parcours l'ensemble des numéros de 1889, cela peut prendre un instant ») et, pour de très gros volumes, annonce le total et propose de confirmer le périmètre (une année ? plusieurs ? tout ?) avant de tout tirer.`
 
