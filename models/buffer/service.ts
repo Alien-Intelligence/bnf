@@ -6,6 +6,7 @@ import { BUFFER_STATUS } from "./schema"
 import { BufferQueries, type BufferFilterSet } from "./queries"
 import { arkSchema, type BufferCandidateInput } from "./types"
 import { BUFFER_CLASSIFIER_VERSION, CORPUS_REMOVE_PREVIEW_LIMIT } from "@/lib/constants"
+import { sourceFromArk } from "@/lib/mcp/vocab"
 import { classifyArkKind } from "@/models/documents/schema"
 
 /**
@@ -48,6 +49,9 @@ export type BufferRemoveByFilterResult =
 export type BufferCommitResult = {
   /** Candidate ARKs submitted to the corpus. */
   committed: number
+  /** Of those, catalogue notices (`cb…`) — queued for cb→Gallica
+   *  canonicalisation, so the caller knows whether to kick that drain. */
+  catalogueNotices: number
   /** ARKs already present in the corpus (skipped by addArks dedupe). */
   duplicates: number
   corpus: CorpusAddResult
@@ -210,7 +214,7 @@ export class BufferService {
         { arks: [], reason: args.reason },
         args.sessionId ?? undefined,
       )
-      return { committed: 0, duplicates: 0, corpus: snapshot }
+      return { committed: 0, catalogueNotices: 0, duplicates: 0, corpus: snapshot }
     }
 
     const corpus = await CorpusService.addArks(
@@ -226,7 +230,12 @@ export class BufferService {
       data: { status: BUFFER_STATUS.COMMITTED },
     })
 
-    return { committed: arks.length, duplicates: corpus.duplicates, corpus }
+    return {
+      committed: arks.length,
+      catalogueNotices: arks.filter((a) => sourceFromArk(a) === "catalogue").length,
+      duplicates: corpus.duplicates,
+      corpus,
+    }
   }
 
   /**

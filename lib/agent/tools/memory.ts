@@ -25,8 +25,10 @@ import "server-only"
 import { z } from "zod"
 import { defineTool } from "@alien/chat-sdk/claude"
 import { prisma } from "@/lib/db"
+import { MemoryPolicy } from "@/models/memory/policy"
 import { MEMORY_SCOPE, type MemoryScope } from "@/models/memory/schema"
 import type { TurnScopedCtx } from "./registry-factory"
+import { authorizeProjectTool } from "./authorize"
 import { AGENT_TOOLS } from "./constants"
 
 // ---------------------------------------------------------------------------
@@ -152,6 +154,8 @@ export const memoryWriteTool = defineTool<
       ),
   }),
   handler: async (input, ctx: TurnScopedCtx) => {
+    const gate = await authorizeProjectTool(ctx, MemoryPolicy, "write")
+    if (!gate.ok) return gate.result
     const { projectId, scope } = await sessionMeta(ctx.appSessionId)
 
     // Inline near-dedup: exact normalised-text match within the same section.

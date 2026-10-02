@@ -11,20 +11,22 @@
  * Every mutating tool publishes a `corpus_event` via `ctx.emit` so connected
  * SSE clients receive real-time feedback without polling.
  *
- * ProjectId resolution: resolved lazily from the session row rather than
- * baked into the closure at registry-construction time. This keeps the lookup
- * parallel-safe (no shared mutable state) and avoids a stale projectId if a
- * session were somehow re-used across projects.
+ * Project resolution: the read tools use `ctx.projectId`, which the chat route
+ * resolved from the session row once per turn. The mutating tools authorise
+ * through CorpusPolicy first (lib/agent/tools/authorize.ts) and act on the
+ * project it returns, loaded WITH its shares — never a bare
+ * `prisma.project.findUniqueOrThrow`, which would make every shared member's
+ * access undecidable.
  */
 import "server-only"
 
 import { z } from "zod"
 import { defineTool } from "@alien/chat-sdk/claude"
 import { CORPUS_REASON_MAX_LEN } from "@/lib/constants"
-import { prisma } from "@/lib/db"
 import { kickCanonicalize } from "@/lib/documents/canonicalizer"
 import { kickResolve } from "@/lib/documents/resolver"
 import { sourceFromArk } from "@/lib/mcp/vocab"
+import { CorpusPolicy } from "@/models/corpus/policy"
 import { CorpusQueries } from "@/models/corpus/queries"
 import { CorpusService } from "@/models/corpus/service"
 import { arkSchema } from "@/models/corpus/types"
@@ -32,6 +34,7 @@ import { INDEXATION_OUTCOME, classifyOutcome } from "@/models/documents/schema"
 import type { DocumentRow } from "@/models/corpus/schema"
 import type { CorpusFilterSet } from "@/models/corpus/queries"
 import type { TurnScopedCtx } from "./registry-factory"
+import { authorizeProjectTool } from "./authorize"
 import { AGENT_TOOLS } from "./constants"
 
 // ---------------------------------------------------------------------------
@@ -168,27 +171,6 @@ function agentDocumentView(doc: DocumentRow, paidOcrEnabled: boolean) {
 }
 
 // ---------------------------------------------------------------------------
-// Helper
-// ---------------------------------------------------------------------------
-
-/**
- * Resolve the projectId for a given appSession.
- *
- * Using a direct Prisma query rather than a service method keeps this module
- * free of circular imports. The lookup is a single primary-key read — cheap.
- *
- * Throws if the session does not exist (programming error; sessions are created
- * before the registry is built).
- */
-async function projectIdFromSession(appSessionId: string): Promise<string> {
-  const session = await prisma.appSession.findUniqueOrThrow({
-    where: { id: appSessionId },
-    select: { projectId: true },
-  })
-  return session.projectId
-}
-
-// ---------------------------------------------------------------------------
 // corpus_get_state
 // ---------------------------------------------------------------------------
 
@@ -228,7 +210,7 @@ export const corpusGetStateTool = defineTool<
     const includeSample = input.include_sample ?? true
     const sampleLimit = input.sample_limit
     const filters = input.filters as CorpusFilterSet | undefined
-    const projectId = await projectIdFromSession(ctx.appSessionId)
+    const projectId = ctx.projectId
     const snapshot = await CorpusQueries.snapshot(
       projectId,
       "head",
@@ -295,8 +277,7 @@ export const corpusListTool = defineTool<
   }),
   handler: async (input, ctx) => {
     const filters = input.filters as CorpusFilterSet | undefined
-    const projectId = await projectIdFromSession(ctx.appSessionId)
-    const page = await CorpusQueries.list(projectId, "head", {
+    const page = await CorpusQueries.list(ctx.projectId, "head", {
       filters,
       cursor: input.cursor,
       limit: input.limit,
@@ -386,11 +367,10 @@ export const corpusAddTool = defineTool<
       ),
   }),
   handler: async (input, ctx) => {
-    const projectId = await projectIdFromSession(ctx.appSessionId)
-
-    const project = await prisma.project.findUniqueOrThrow({
-      where: { id: projectId },
-    })
+    const gate = await authorizeProjectTool(ctx, CorpusPolicy, "mutate")
+    if (!gate.ok) return gate.result
+    const project = gate.project
+    const projectId = project.id
 
     const result = await CorpusService.addArks(
       project,
@@ -477,11 +457,9 @@ export const corpusRemoveTool = defineTool<
       ),
   }),
   handler: async (input, ctx) => {
-    const projectId = await projectIdFromSession(ctx.appSessionId)
-
-    const project = await prisma.project.findUniqueOrThrow({
-      where: { id: projectId },
-    })
+    const gate = await authorizeProjectTool(ctx, CorpusPolicy, "mutate")
+    if (!gate.ok) return gate.result
+    const project = gate.project
 
     const result = await CorpusService.removeArks(project, ctx.user, {
       arks: input.arks,
@@ -551,14 +529,12 @@ export const corpusRemoveByFilterTool = defineTool<
       ),
   }),
   handler: async (input, ctx) => {
-    const projectId = await projectIdFromSession(ctx.appSessionId)
-    const project = await prisma.project.findUniqueOrThrow({
-      where: { id: projectId },
-    })
-
     // Preview-first: dry_run defaults to true so an unconfirmed call never
-    // mutates the corpus.
+    // mutates the corpus. A dry run only reads, so it needs only read access.
     const dryRun = input.dry_run ?? true
+    const gate = await authorizeProjectTool(ctx, CorpusPolicy, dryRun ? "read" : "mutate")
+    if (!gate.ok) return gate.result
+    const project = gate.project
 
     const result = await CorpusService.removeByFilter(project, ctx.user, {
       filters: input.filters as CorpusFilterSet,
@@ -623,7 +599,7 @@ export const corpusStatsTool = defineTool<
   }),
   handler: async (input, ctx) => {
     const filters = input.filters as CorpusFilterSet | undefined
-    const projectId = await projectIdFromSession(ctx.appSessionId)
+    const projectId = ctx.projectId
     const snapshot = await CorpusQueries.snapshot(projectId, "head", {
       filters,
       limit: 0,
@@ -670,8 +646,7 @@ export const corpusDiffTool = defineTool<
       .describe("The later version sequence number (to)."),
   }),
   handler: async (input, ctx) => {
-    const projectId = await projectIdFromSession(ctx.appSessionId)
-    return CorpusQueries.diff(projectId, input.from_seq, input.to_seq)
+    return CorpusQueries.diff(ctx.projectId, input.from_seq, input.to_seq)
   },
 })
 

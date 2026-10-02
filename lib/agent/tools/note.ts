@@ -25,9 +25,11 @@ import "server-only"
 
 import { z } from "zod"
 import { defineTool } from "@alien/chat-sdk/claude"
+import { NotePolicy } from "@/models/notes/policy"
 import { NoteService } from "@/models/notes/service"
 import { NoteQueries } from "@/models/notes/queries"
 import type { TurnScopedCtx } from "./registry-factory"
+import { authorizeProjectTool } from "./authorize"
 import { AGENT_TOOLS } from "./constants"
 import { NOTE_NOT_INGESTED_ERROR, resolveIngestedCorpus } from "./ingestion-guard"
 
@@ -148,6 +150,9 @@ export const noteCreateTool = defineTool<
       ),
   }),
   handler: async (input, ctx) => {
+    const gate = await authorizeProjectTool(ctx, NotePolicy, "create")
+    if (!gate.ok) return gate.result
+
     // Structural guard: a note must rest on the ingested corpus, never on
     // general knowledge before any retrieval exists (design item 4).
     const corpus = await resolveIngestedCorpus(ctx, NOTE_NOT_INGESTED_ERROR)
@@ -218,6 +223,8 @@ export const noteUpdateTool = defineTool<
     // in the database, not necessarily one this project owns.
     const target = await NoteQueries.getForProject(input.id, ctx.projectId)
     if (!target) return { error: NOTE_NOT_FOUND_ERROR }
+    const gate = await authorizeProjectTool(ctx, NotePolicy, "update", target)
+    if (!gate.ok) return gate.result
 
     const written = await NoteService.update(input.id, ctx.corpusProjectId, {
       title: input.title,
@@ -277,6 +284,8 @@ export const noteAppendTool = defineTool<
     // Scope before mutating — see note_update.
     const target = await NoteQueries.getForProject(input.id, ctx.projectId)
     if (!target) return { error: NOTE_NOT_FOUND_ERROR }
+    const gate = await authorizeProjectTool(ctx, NotePolicy, "update", target)
+    if (!gate.ok) return gate.result
 
     const written = await NoteService.append(input.id, ctx.corpusProjectId, {
       bodyMd: input.body_md,

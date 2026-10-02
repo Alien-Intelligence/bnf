@@ -10,8 +10,10 @@
  *
  * Every mutating tool publishes a `buffer_event` via `ctx.emit` so the buffer
  * panel live-updates; `buffer_commit` also publishes a `corpus_event` because it
- * advances the corpus. ProjectId is resolved lazily from the session row (same
- * discipline as corpus.ts) to stay parallel-safe.
+ * advances the corpus. Every MUTATING tool authorises through BufferPolicy
+ * first (lib/agent/tools/authorize.ts) and acts on the project it returns —
+ * loaded with its shares; the read tools use `ctx.projectId`, which the route
+ * resolved from the session row once per turn.
  */
 import "server-only"
 
@@ -23,7 +25,6 @@ import {
   BUFFER_SEARCH_MAX_PAGE_SIZE_BY_SOURCE,
   CORPUS_REASON_MAX_LEN,
 } from "@/lib/constants"
-import { prisma } from "@/lib/db"
 import { kickCanonicalize } from "@/lib/documents/canonicalizer"
 import { kickResolve } from "@/lib/documents/resolver"
 import { requireMcpEnv } from "@/lib/env"
@@ -39,10 +40,12 @@ import { BNF_SEARCH_TOOL } from "@/lib/mcp/tools"
 import { GALLICA_SEARCHABLE_DOC_TYPE, canonicalLang, sourceFromArk } from "@/lib/mcp/vocab"
 import { canonicalBufferDocType, gallicaSearchDocType } from "@/lib/buffer/classify"
 import { classifyArkKind } from "@/models/documents/schema"
+import { BufferPolicy } from "@/models/buffer/policy"
 import { BufferQueries, type BufferFilterSet } from "@/models/buffer/queries"
 import { BufferService } from "@/models/buffer/service"
 import { arkSchema, type BufferCandidateInput } from "@/models/buffer/types"
 import type { TurnScopedCtx } from "./registry-factory"
+import { authorizeProjectTool } from "./authorize"
 import { AGENT_TOOLS } from "./constants"
 
 // ---------------------------------------------------------------------------
@@ -76,15 +79,6 @@ const bufferFilterSchema = z
   .describe("Metadata filters over the buffer candidates. Omit a field to leave it unconstrained.")
 
 const facetDimensionEnum = z.enum(["period", "type", "lang", "source"])
-
-/** Resolve the projectId for an appSession (single PK read; no circular import). */
-async function projectIdFromSession(appSessionId: string): Promise<string> {
-  const session = await prisma.appSession.findUniqueOrThrow({
-    where: { id: appSessionId },
-    select: { projectId: true },
-  })
-  return session.projectId
-}
 
 /** Publish a buffer_event carrying the post-op candidate total. */
 async function emitBuffer(
@@ -129,9 +123,8 @@ export const bufferListTool = defineTool<
       .describe(`Page size (1–200, default ${BUFFER_SAMPLE_SIZE}).`),
   }),
   handler: async (input, ctx) => {
-    const projectId = await projectIdFromSession(ctx.appSessionId)
     const { total, rows } = await BufferQueries.list(
-      projectId,
+      ctx.projectId,
       input.filters as BufferFilterSet | undefined,
       input.limit ?? BUFFER_SAMPLE_SIZE,
     )
@@ -171,7 +164,7 @@ export const bufferStatsTool = defineTool<
       .describe('Two dimensions to cross-tabulate, e.g. ["period","type"].'),
   }),
   handler: async (input, ctx) => {
-    const projectId = await projectIdFromSession(ctx.appSessionId)
+    const projectId = ctx.projectId
     const filters = input.filters as BufferFilterSet | undefined
     const snapshot = await BufferQueries.snapshot(projectId, filters, 0)
     const stats = { total: snapshot.total, facets: snapshot.facets }
@@ -220,8 +213,11 @@ export const bufferRemoveByFilterTool = defineTool<
       ),
   }),
   handler: async (input, ctx) => {
-    const projectId = await projectIdFromSession(ctx.appSessionId)
     const dryRun = input.dry_run ?? true
+    // A dry run only reads; the removal itself mutates the buffer.
+    const gate = await authorizeProjectTool(ctx, BufferPolicy, dryRun ? "read" : "mutate")
+    if (!gate.ok) return gate.result
+    const projectId = gate.project.id
 
     const result = await BufferService.removeByFilter(projectId, {
       filters: input.filters as BufferFilterSet,
@@ -260,7 +256,9 @@ export const bufferAddTool = defineTool<
       .describe('BnF ARK identifiers to stage, e.g. ["ark:/12148/bpt6k2839841"].'),
   }),
   handler: async (input, ctx) => {
-    const projectId = await projectIdFromSession(ctx.appSessionId)
+    const gate = await authorizeProjectTool(ctx, BufferPolicy, "mutate")
+    if (!gate.ok) return gate.result
+    const projectId = gate.project.id
     const result = await BufferService.registerCandidates({
       projectId,
       sessionId: ctx.appSessionId,
@@ -295,7 +293,9 @@ export const bufferDiscardTool = defineTool<
       .describe("BnF ARK identifiers to discard from the buffer."),
   }),
   handler: async (input, ctx) => {
-    const projectId = await projectIdFromSession(ctx.appSessionId)
+    const gate = await authorizeProjectTool(ctx, BufferPolicy, "mutate")
+    if (!gate.ok) return gate.result
+    const projectId = gate.project.id
     const discarded = await BufferService.discard(projectId, input.arks)
     const total = await emitBuffer(ctx, projectId, "removed", discarded)
     return { discarded, total }
@@ -334,8 +334,10 @@ export const bufferCommitTool = defineTool<
       ),
   }),
   handler: async (input, ctx) => {
-    const projectId = await projectIdFromSession(ctx.appSessionId)
-    const project = await prisma.project.findUniqueOrThrow({ where: { id: projectId } })
+    const gate = await authorizeProjectTool(ctx, BufferPolicy, "mutate")
+    if (!gate.ok) return gate.result
+    const project = gate.project
+    const projectId = project.id
 
     const result = await BufferService.commit(project, ctx.user, {
       sessionId: ctx.appSessionId,
@@ -343,10 +345,10 @@ export const bufferCommitTool = defineTool<
     })
 
     // Background metadata resolution for the newly-added stubs + cb→Gallica
-    // upgrade for any catalogue notices — same detachment/discipline as
-    // corpus_add. kickCanonicalize is a fast no-op when nothing is pending.
+    // upgrade for any committed catalogue notices — same detachment and the
+    // same conditions as corpus_add: nothing is scheduled when nothing waits.
     if (result.corpus.pending > 0) kickResolve(projectId)
-    kickCanonicalize(projectId)
+    if (result.catalogueNotices > 0) kickCanonicalize(projectId)
 
     // The corpus grew → refresh the corpus panel; the buffer emptied → refresh
     // the buffer panel.
@@ -386,7 +388,9 @@ export const bufferClearTool = defineTool<z.ZodObject<Record<string, never>>, Tu
     "search from scratch. Returns `cleared` (rows removed).",
   inputSchema: z.object({}),
   handler: async (_input, ctx) => {
-    const projectId = await projectIdFromSession(ctx.appSessionId)
+    const gate = await authorizeProjectTool(ctx, BufferPolicy, "mutate")
+    if (!gate.ok) return gate.result
+    const projectId = gate.project.id
     const cleared = await BufferService.clear(projectId)
     await emitBuffer(ctx, projectId, "cleared", cleared)
     return { cleared }
@@ -943,6 +947,12 @@ export const corpusSearchTool = defineTool<
       ),
   }),
   handler: async (input, ctx) => {
+    // Staging writes the project's buffer: authorise before anything else,
+    // BnF egress included.
+    const gate = await authorizeProjectTool(ctx, BufferPolicy, "mutate")
+    if (!gate.ok) return gate.result
+    const projectId = gate.project.id
+
     // Criteria and page size are checked here, not in the Zod schema, so a
     // failure is a clean tool result the agent can react to — never a hard
     // validation throw, never a silent clamp (incident 2026-09-30, root causes
@@ -965,7 +975,6 @@ export const corpusSearchTool = defineTool<
       }
     }
 
-    const projectId = await projectIdFromSession(ctx.appSessionId)
     const args = buildSearchArgs(input, page.pageSize)
 
     let candidates: BufferCandidateInput[]

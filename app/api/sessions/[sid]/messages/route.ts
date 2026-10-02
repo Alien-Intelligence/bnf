@@ -43,6 +43,8 @@ import {
   sessionWithProjectOrThrow,
 } from "@/models/agents/service"
 import { UserQueries } from "@/models/users/queries"
+import type { PolicyUser } from "@/models/users/schema"
+import { GroupQueries } from "@/models/groups/queries"
 import { resolveRequestLocale } from "@/lib/locale"
 import { canReachCorpus, corpusProjectId } from "@/lib/authz/corpus-source"
 import { createPrismaChatAdapter } from "@/lib/agent/persistence/prisma-adapter"
@@ -77,12 +79,18 @@ function sidFromUrl(req: Request): string {
  * has already happened by the time these run; this only hydrates the full
  * Prisma row the tool handlers need.
  */
-async function resolveUser(req: Request) {
+async function resolveUser(req: Request): Promise<PolicyUser> {
   const session = await auth.api.getSession({ headers: req.headers })
   if (!session) throw new Error("No authenticated session on chat request")
-  const user = await UserQueries.get(session.user.id)
+  // Group membership resolved here, once, exactly as withAuth does: the
+  // mutating tools authorise through their Policy (lib/agent/tools/authorize.ts),
+  // and a policy decides a shared member's access from `groupIds`.
+  const [user, groupIds] = await Promise.all([
+    UserQueries.get(session.user.id),
+    GroupQueries.groupIdsForUser(session.user.id),
+  ])
   if (!user) throw new Error("Authenticated user not found")
-  return user
+  return { ...user, groupIds }
 }
 
 // Module-scoped singleton: the runtime must be shared across POST (start) and

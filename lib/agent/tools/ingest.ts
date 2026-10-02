@@ -4,8 +4,9 @@ import { z } from "zod"
 import { defineTool } from "@alien/chat-sdk/claude"
 import type { TurnScopedCtx } from "./registry-factory"
 import { AGENT_TOOLS } from "./constants"
-import { ProjectQueries } from "@/models/projects/queries"
+import { IngestPolicy } from "@/models/ingest/policy"
 import { IngestService } from "@/models/ingest/service"
+import { authorizeProjectTool } from "./authorize"
 
 const inputSchema = z.object({
   target_version: z.number().int().positive().optional().describe(
@@ -22,8 +23,9 @@ export const ingestSubmitTool = defineTool<typeof inputSchema, TurnScopedCtx>({
     "Call this only after the librarian has confirmed the corpus is ready to ingest.",
   inputSchema,
   handler: async (input, ctx) => {
-    const project = await ProjectQueries.get(ctx.projectId)
-    if (!project) return { error: "project_not_found" }
+    const gate = await authorizeProjectTool(ctx, IngestPolicy, "submit")
+    if (!gate.ok) return gate.result
+    const project = gate.project
     try {
       // The agent ingests the REGULAR delta only — it never opts into paid OCR
       // (confirmPaidOcr stays unset), so the `sans_texte` docs are left untouched

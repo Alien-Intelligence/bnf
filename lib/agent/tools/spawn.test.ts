@@ -116,7 +116,7 @@ function makeCtx(appSessionId: string, emitted: Emitted[]): TurnScopedCtx {
     request: new Request("http://localhost/test"),
     emit: (e) => emitted.push(e),
     db: prisma,
-    user,
+    user: { ...user, groupIds: [] },
     appSessionId,
     projectId: project.id,
     corpusProjectId: project.id,

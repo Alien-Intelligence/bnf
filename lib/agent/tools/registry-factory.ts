@@ -5,7 +5,7 @@ import { prisma } from "@/lib/db"
 import { withBnfRateLimit } from "@/lib/mcp/rate-limited-registry"
 import { resolveMcpServers } from "./mcp-servers"
 import { toolsForScope } from "./index"
-import type { User } from "@/lib/generated/prisma/client"
+import type { PolicyUser } from "@/models/users/schema"
 
 /**
  * Per-turn tool context threaded into every tool handler.
@@ -22,7 +22,12 @@ import type { User } from "@/lib/generated/prisma/client"
  */
 export interface TurnScopedCtx extends ToolContext {
   db: typeof prisma
-  user: User
+  /**
+   * The acting user WITH their groupIds — what every Policy takes. Mutating
+   * tools authorise through it (lib/agent/tools/authorize.ts); a bare User
+   * would make a shared member's access undecidable.
+   */
+  user: PolicyUser
   appSessionId: string
   /** The project this session belongs to. Notes, memory and sessions are its. */
   projectId: string
@@ -42,10 +47,16 @@ export interface TurnScopedCtx extends ToolContext {
   corpusReachable: boolean
   /** Whether this is a corpus-building or RAG research session. */
   scope: "corpus" | "research"
+  /**
+   * Set only on a spawn_research CHILD's context: the staging tools add their
+   * exact `added` count here, so the child reports what IT staged — not a
+   * project-wide candidate delta that parallel siblings and clears distort.
+   */
+  stagingTally?: { added: number }
 }
 
 export interface BuildTurnCtxOpts {
-  user: User
+  user: PolicyUser
   appSessionId: string
   /** The project this session belongs to. */
   projectId: string
