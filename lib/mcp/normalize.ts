@@ -17,7 +17,7 @@
 import type { BnfMcpDocumentDetail } from "@/lib/bnf/types"
 import {
   GALLICA_DOC_TYPE,
-  MARC_TO_ISO_LANG,
+  canonicalLang,
   gallicaSubtype,
   iiifManifestUrl,
   mapCatalogueDocType,
@@ -198,8 +198,8 @@ export function parseBnfDate(
  *    null (caller — normalizeMany — drops the record).
  * 4. `author` — prefer `author`, fall back to `creator`.
  * 5. `parseBnfDate(mcp.date)` → `{ year, label: dateLabel }`.
- * 6. `lang` — map MARC 639-2 via MARC_TO_ISO_LANG; preserve unknown codes
- *    verbatim.
+ * 6. `lang` — canonicalLang: MARC 639-2 (both columns) → ISO 639-1, language
+ *    names → code; unknown codes preserved lowercased.
  * 7. `docType` — Gallica enum key → GALLICA_DOC_TYPE[key]; Catalogue
  *    free-text → mapCatalogueDocType(); missing → "book" for catalogue,
  *    "other" for anything else; unknown free-text → "other" + hook.
@@ -258,14 +258,10 @@ export function normalizeDocument(
   const { year, label: dateLabel } = parseBnfDate(rawDate)
 
   // ── 6. Language ───────────────────────────────────────────────────────────
-  const rawLang =
-    typeof mcp.language === "string" && mcp.language.trim() !== ""
-      ? mcp.language.trim()
-      : null
-  const lang =
-    rawLang !== null
-      ? (MARC_TO_ISO_LANG[rawLang] ?? rawLang) // preserve unknown codes verbatim
-      : null
+  // canonicalLang knows both ISO 639-2 columns: MARC records carry the
+  // bibliographic codes (`ger`, `dut`), which the old terminology-only lookup
+  // left verbatim — so German documents were `ger`, matched by no `de` filter.
+  const lang = canonicalLang(typeof mcp.language === "string" ? mcp.language : null)
 
   // ── 7. docType + subtype ──────────────────────────────────────────────────
   // The Gallica typedoc set (OAI-PMH record header) is the AUTHORITATIVE

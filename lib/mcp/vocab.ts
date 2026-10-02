@@ -7,8 +7,16 @@
  * MARC 639-2 → ISO 639-1 language code mapping.
  * Unknown codes are stored as-is in Document.lang and logged at WARN.
  * Extend this table as we observe new codes in production.
+ *
+ * Both ISO 639-2 columns are present. MARC records (what the catalogue SRU and
+ * OAI-PMH actually carry) use the BIBLIOGRAPHIC codes — `ger`, `dut`, `cze`,
+ * `rum`, `per` — while the first version of this table only had the
+ * terminology codes (`deu`, `nld`), so German documents stayed `ger` in
+ * Document.lang and no `lang: ["de"]` filter ever matched them (Track E found
+ * bug; session 1ade61e9… hit `matched: 0` on `lang:["ger"]`).
  */
 export const MARC_TO_ISO_LANG: Record<string, string> = {
+  // Terminology codes
   fre: "fr",
   eng: "en",
   lat: "la",
@@ -24,6 +32,78 @@ export const MARC_TO_ISO_LANG: Record<string, string> = {
   chi: "zh",
   ara: "ar",
   heb: "he",
+  // Bibliographic codes (MARC 21 / UNIMARC)
+  ger: "de",
+  dut: "nl",
+  cze: "cs",
+  rum: "ro",
+  per: "fa",
+  fra: "fr",
+  slo: "sk",
+  scc: "sr",
+  scr: "hr",
+  wel: "cy",
+  ice: "is",
+  arm: "hy",
+  geo: "ka",
+  may: "ms",
+  tib: "bo",
+  baq: "eu",
+  alb: "sq",
+  mac: "mk",
+  bur: "my",
+  mao: "mi",
+}
+
+/** Casefold for vocabulary matching: trim, lowercase, diacritics removed. */
+function foldLabel(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+}
+
+/**
+ * French and English language NAMES that show up where a code should be
+ * (catalogue free text, hand-typed filters). Folded keys.
+ */
+const LANGUAGE_NAME_TO_ISO: Record<string, string> = {
+  francais: "fr",
+  french: "fr",
+  anglais: "en",
+  english: "en",
+  allemand: "de",
+  german: "de",
+  latin: "la",
+  italien: "it",
+  italian: "it",
+  espagnol: "es",
+  spanish: "es",
+  grec: "el",
+  neerlandais: "nl",
+  russe: "ru",
+}
+
+/**
+ * The canonical language code for a raw BnF language value, or null for an
+ * empty one. MARC codes (both columns) map to ISO 639-1; a 2-letter code
+ * passes through lowercased; French/English language names map to their code;
+ * anything else is kept as the lowercased raw value — the raw-lowercase
+ * fallback playbook/mcp-client.md requires, never null/empty for a value that
+ * was there.
+ */
+export function canonicalLang(raw: string | null | undefined): string | null {
+  if (typeof raw !== "string") return null
+  const trimmed = raw.trim()
+  if (trimmed === "") return null
+  const folded = foldLabel(trimmed)
+  const marc = MARC_TO_ISO_LANG[folded]
+  if (marc !== undefined) return marc
+  if (/^[a-z]{2}$/.test(folded)) return folded
+  const named = LANGUAGE_NAME_TO_ISO[folded]
+  if (named !== undefined) return named
+  return trimmed.toLowerCase()
 }
 
 /**
@@ -69,6 +149,76 @@ export const GALLICA_SEARCHABLE_DOC_TYPE = [
   "partition",
   "sonore",
 ] as const
+
+/**
+ * Strict search-filter → canonical docType map, for a hit staged by a
+ * corpus_search that was run WITH a `doc_type` filter: the filter the search
+ * was run with says more about every hit than the hit's own dc:type label
+ * (Gallica labels press issues and monographs alike as `text`). `satisfies`
+ * makes a new searchable value without a mapping a type error.
+ */
+export const GALLICA_FILTER_DOC_TYPE = {
+  fascicule: "press",
+  monographie: "book",
+  image: "image",
+  objet: "object",
+  manuscrit: "manuscript",
+  carte: "map",
+  partition: "score",
+  sonore: "audio",
+} as const satisfies Record<(typeof GALLICA_SEARCHABLE_DOC_TYPE)[number], string>
+
+/** GALLICA_DOC_TYPE keyed by its folded label, for a case-insensitive lookup. */
+const GALLICA_DOC_TYPE_FOLDED: Record<string, string> = Object.fromEntries(
+  Object.entries(GALLICA_DOC_TYPE).map(([k, v]) => [foldLabel(k), v]),
+)
+
+/**
+ * Canonical docType for a free-text dc:type label, from a search hit or an
+ * old buffer row. The 86 765 prod buffer rows carried 25 distinct raw labels
+ * (`text`, `image fixe`, `Monographie imprimée`, `Genre musical : valse`,
+ * `manuscript cartographic resource`, …) — this is the table that folds them.
+ *
+ * `code` is null for an empty label (nothing to classify — not an error);
+ * `known` is false when the label matched no rule and fell to `other`, so the
+ * caller can log it and the table can grow. `text`/`texte`/`printed text` map
+ * to the code `text` ("texte imprimé, nature indéterminée"): Gallica gives
+ * monographs and press issues the same label, so calling it `book` would
+ * mislabel press as books.
+ *
+ * Rules run in order, and the order matters: cartographic before manuscript
+ * ("manuscript cartographic resource" is a map), music before manuscript
+ * ("manuscript music" is a score), affiche before image. Only the part before
+ * the first " | " is classified (Gallica joins several labels that way).
+ */
+export function canonicalDocTypeFromLabel(
+  raw: string | null | undefined,
+): { code: string | null; known: boolean } {
+  if (typeof raw !== "string" || raw.trim() === "") return { code: null, known: true }
+  const label = foldLabel(raw.split(" | ")[0])
+  if (label === "") return { code: null, known: true }
+
+  const enumMatch = GALLICA_DOC_TYPE_FOLDED[label]
+  if (enumMatch !== undefined) return { code: enumMatch, known: true }
+
+  const rules: Array<[RegExp, string]> = [
+    [/cartograph|^carte|^map$|^plan$/, "map"],
+    [/^genre musical|musique|notated music|partition|manuscript music/, "score"],
+    [/manuscri/, "manuscript"],
+    [/affiche/, "poster"],
+    [/^image|still image|photograph|estampe|dessin/, "image"],
+    [/^sound|sonore|enregistrement sonore/, "audio"],
+    [/^objet|^object|three dimensional/, "object"],
+    [/^video|moving image|film/, "video"],
+    [/monographie|livre|colloque/, "book"],
+    [/^text$|^texte$|printed text|texte imprime/, "text"],
+    [/archival material|archives/, "other"],
+  ]
+  for (const [re, code] of rules) {
+    if (re.test(label)) return { code, known: true }
+  }
+  return { code: "other", known: false }
+}
 
 /**
  * Gallica OAI-PMH typedoc set → our canonical docType.

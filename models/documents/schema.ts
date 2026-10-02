@@ -93,9 +93,122 @@ export const DOC_TYPE: Record<string, VocabEntry> = {
   estampe: { label: "estampe", color: "bg-dataset-6/15 text-dataset-6" },
   enlum: { label: "enlum", color: "bg-dataset-1/15 text-dataset-1" },
   charte: { label: "charte", color: "bg-dataset-4/15 text-dataset-4" },
+  // Gallica's `objet` maps here (lib/mcp/vocab.ts GALLICA_DOC_TYPE); it was
+  // missing from this map, so the UI rendered the raw code.
+  object: { label: "object", color: "bg-dataset-5/15 text-dataset-5" },
+  // Printed text of undetermined nature. Gallica labels monographs AND press
+  // issues `text` when a search is run without a doc_type filter; mapping that
+  // to `book` would mislabel press as books, so the ambiguity is kept visible
+  // (canonicalDocTypeFromLabel in lib/mcp/vocab.ts) and corpus_search asks for
+  // a rerun with doc_type.
+  text: { label: "text", color: "bg-dataset-2/15 text-dataset-2" },
   // Catch-all for Catalogue free-text types that do not match any known pattern
   other: { label: "other", color: "bg-muted text-muted-foreground" },
 } as const
+
+// ---------------------------------------------------------------------------
+// Record kind (BufferItem.arkKind, and the SQL mirror arkKindWhere over
+// Document) — WHAT a BnF record is, as opposed to what its content is (docType).
+//
+// dc:type cannot tell a press issue from a monograph: Gallica marks both as
+// plain `text`. The signals that can are structural — the identifier form and
+// the type the search was run with:
+//
+//   - A Gallica SRU search with `collapsing: true` (the default) returns a
+//     matching periodical as its COLLECTION entry, `cb…/date`. With
+//     `collapsing: false` it returns the individual ISSUES, `bpt6k…`. Collapsing
+//     decides which identifier comes back; it does not change what an
+//     identifier is, so the kind is read from the identifier form plus the
+//     type, and collapsing is recorded in provenance only
+//     (BufferItem.searchCollapsing).
+//   - `cb…` is a catalogue notice. Typed `press` it is a periodical title
+//     (collection); otherwise a notice of whatever it describes.
+//   - `bpt6k…`, `btv1b…`, `bd6t…` are digitized documents whose kind follows
+//     the canonical docType.
+//
+// Seven values. Leo's list named five; `other_document` (digitized maps,
+// manuscripts, scores, audio, video, objects) and `unknown` (a digitized ARK
+// whose type is `text`, `other` or null) are added because forcing those into
+// the five would be false data.
+// ---------------------------------------------------------------------------
+
+export const ARK_KIND = {
+  PERIODICAL_ISSUE: "periodical_issue",
+  PERIODICAL_COLLECTION: "periodical_collection",
+  MONOGRAPH: "monograph",
+  IMAGE: "image",
+  CATALOGUE_NOTICE: "catalogue_notice",
+  OTHER_DOCUMENT: "other_document",
+  UNKNOWN: "unknown",
+} as const
+export type ArkKind = (typeof ARK_KIND)[keyof typeof ARK_KIND]
+
+/** Canonical docTypes whose digitized document is an image. */
+export const ARK_KIND_IMAGE_TYPES = ["image", "poster", "estampe", "enlum"] as const
+/** Canonical docTypes whose digitized document is neither text nor image. */
+export const ARK_KIND_OTHER_DOCUMENT_TYPES = [
+  "map",
+  "manuscript",
+  "score",
+  "audio",
+  "video",
+  "object",
+  "charte",
+] as const
+/** Gallica digitized-document ARK prefixes (the complement of `cb`). */
+export const GALLICA_ARK_PREFIXES = ["bpt6k", "btv1b", "bd6t"] as const
+
+const IMAGE_TYPES = new Set<string>(ARK_KIND_IMAGE_TYPES)
+const OTHER_DOCUMENT_TYPES = new Set<string>(ARK_KIND_OTHER_DOCUMENT_TYPES)
+
+/**
+ * Classify a record's kind. Rules, in order:
+ *   1. `collectionEntry` (the raw hit identifier ended in `/date`, read BEFORE
+ *      toFullArk strips it) → periodical_collection.
+ *   2. The id starts with `cb`: `press` → periodical_collection; otherwise →
+ *      catalogue_notice.
+ *   3. The id starts with `bpt6k`, `btv1b` or `bd6t`: press → periodical_issue;
+ *      book → monograph; image-like → image; map/manuscript/score/audio/video/
+ *      object/charte → other_document; text/other/null → unknown.
+ *   4. Anything else → unknown.
+ *
+ * `ark` may be the full `ark:/12148/<id>` form or the bare id. The exported
+ * prefix/type lists above are what models/corpus/queries.ts arkKindWhere()
+ * mirrors in SQL — keep the two in step (a parity test pins it).
+ */
+export function classifyArkKind(d: {
+  ark: string
+  collectionEntry: boolean
+  docType: string | null
+}): ArkKind {
+  if (d.collectionEntry) return ARK_KIND.PERIODICAL_COLLECTION
+  const id = d.ark.replace(/^ark:\/\d+\//, "")
+  if (id.startsWith("cb")) {
+    return d.docType === "press" ? ARK_KIND.PERIODICAL_COLLECTION : ARK_KIND.CATALOGUE_NOTICE
+  }
+  if (GALLICA_ARK_PREFIXES.some((p) => id.startsWith(p))) {
+    if (d.docType === "press") return ARK_KIND.PERIODICAL_ISSUE
+    if (d.docType === "book") return ARK_KIND.MONOGRAPH
+    if (d.docType !== null && IMAGE_TYPES.has(d.docType)) return ARK_KIND.IMAGE
+    if (d.docType !== null && OTHER_DOCUMENT_TYPES.has(d.docType)) return ARK_KIND.OTHER_DOCUMENT
+    return ARK_KIND.UNKNOWN
+  }
+  return ARK_KIND.UNKNOWN
+}
+
+/**
+ * Kind → hue for the buffer's kind facet. `satisfies` binds the map to the
+ * enum, as INGESTION_CLASS_COLOR does: a kind without a colour is a type error.
+ */
+export const ARK_KIND_COLOR = {
+  [ARK_KIND.PERIODICAL_ISSUE]: "var(--dataset-3)",
+  [ARK_KIND.PERIODICAL_COLLECTION]: "var(--dataset-6)",
+  [ARK_KIND.MONOGRAPH]: "var(--dataset-2)",
+  [ARK_KIND.IMAGE]: "var(--dataset-1)",
+  [ARK_KIND.CATALOGUE_NOTICE]: "var(--dataset-4)",
+  [ARK_KIND.OTHER_DOCUMENT]: "var(--dataset-7)",
+  [ARK_KIND.UNKNOWN]: "var(--neutral-500)",
+} satisfies Record<ArkKind, string>
 
 // ---------------------------------------------------------------------------
 // Language vocabulary (lang column)
