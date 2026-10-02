@@ -3,7 +3,10 @@
 // No `import "server-only"` — the schema is shared by client-side form
 // validation and server-side request parsing.
 import { z } from "zod"
-import type { ClusterQueueProgress } from "@/lib/cluster/contracts"
+import type {
+  ClusterProgressEvent,
+  ClusterQueueProgress,
+} from "@/lib/cluster/contracts"
 import type {
   IngestJob,
   IngestStage,
@@ -174,3 +177,33 @@ export type IngestResults = {
   chunksWritten: number
   stats: Record<string, unknown>
 }
+
+// ---------------------------------------------------------------------------
+// Cluster progress callback body (found bug B2, feedback 2026-09-29 Track B)
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /api/internal/ingest/[job_id]/progress body, validated AFTER the HMAC
+ * check. Mirrors `ClusterProgressEvent` (lib/cluster/contracts.ts) — the
+ * `satisfies` binds the two, so a contract change that this schema does not
+ * follow is a type error. `stats` / `partialStats` stay loose records because
+ * the V1 and V2 worker shapes differ; IngestService reads `stats.errors[]`
+ * through its own tolerant parser (parseErrorEntries).
+ */
+export const clusterProgressEventSchema = z.discriminatedUnion("stage", [
+  z.object({
+    stage: z.enum(["extract", "chunk", "embed", "index"]),
+    fraction: z.number().min(0).max(1),
+    counters: z.record(z.string(), z.number()),
+  }),
+  z.object({
+    stage: z.literal("done"),
+    chunksWritten: z.number().int().nonnegative(),
+    stats: z.record(z.string(), z.unknown()),
+  }),
+  z.object({
+    stage: z.literal("failed"),
+    error: z.string(),
+    partialStats: z.record(z.string(), z.unknown()).optional(),
+  }),
+]) satisfies z.ZodType<ClusterProgressEvent>

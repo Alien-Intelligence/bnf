@@ -26,14 +26,17 @@
  *  - Verification is constant-time (crypto.timingSafeEqual inside verifyCallback).
  *  - A missing or blank callbackSecret on the job row is rejected with 401.
  *  - Malformed JSON after a valid HMAC is rejected with 400; the cluster must fix its payload.
+ *  - So is a well-formed body that is not a ClusterProgressEvent
+ *    (clusterProgressEventSchema, found bug B2): 400 with the Zod issues. The
+ *    HMAC is still verified first, over the raw bytes, before anything is parsed.
  *
  * See playbook/ingestion-jobs.md §"The cluster ingest script contract".
  */
-import { ok, notFound, unauthorized } from "@/lib/api-response"
+import { badRequest, ok, notFound, unauthorized } from "@/lib/api-response"
 import { IngestQueries } from "@/models/ingest/queries"
 import { IngestService } from "@/models/ingest/service"
+import { clusterProgressEventSchema } from "@/models/ingest/types"
 import { verifyCallback } from "@/lib/cluster/callback-auth"
-import type { ClusterProgressEvent } from "@/lib/cluster/contracts"
 
 export async function POST(
   req: Request,
@@ -62,14 +65,17 @@ export async function POST(
     return unauthorized("invalid callback signature")
   }
 
-  let event: ClusterProgressEvent
+  // Body was signed correctly but is not valid JSON / not a progress event —
+  // a cluster bug, not ours: refuse it before anything is written.
+  let raw: unknown
   try {
-    event = JSON.parse(bodyText) as ClusterProgressEvent
+    raw = JSON.parse(bodyText)
   } catch {
-    // Body was signed correctly but is not valid JSON — cluster bug, not ours.
-    return ok({ accepted: false }, 400)
+    return badRequest("invalid JSON")
   }
+  const event = clusterProgressEventSchema.safeParse(raw)
+  if (!event.success) return badRequest("invalid event", event.error.issues)
 
-  await IngestService.applyProgress(job, event)
+  await IngestService.applyProgress(job, event.data)
   return ok({ accepted: true })
 }
