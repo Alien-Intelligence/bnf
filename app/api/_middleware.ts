@@ -4,6 +4,11 @@
  * Usage:
  *   export const GET = withAuth(async (req, user, bouncer, ctx: RouteCtx) => { … })
  *
+ * The fifth argument is the better-auth session row withAuth resolved the user
+ * from. Almost every route ignores it; POST /api/sign-out authorizes and acts
+ * on it (the session IS the resource there), so nothing downstream has to
+ * resolve the session a second time.
+ *
  * This file is colocated in app/api/ as a private utility (underscore prefix).
  * Next.js only routes files named route.ts/page.tsx — this file is never
  * exposed as an HTTP endpoint.
@@ -16,7 +21,7 @@
  *   breaking the admin rule inside lib/authz/project-access.ts.
  *   Fetching the full row from Prisma is the only correct fix.
  */
-import { auth } from "@/lib/auth"
+import { auth, type AuthSession } from "@/lib/auth"
 import { bouncer, type Bouncer, AuthorizationError } from "@/lib/bouncer"
 import { unauthorized, forbidden, notFound } from "@/lib/api-response"
 import { UserQueries } from "@/models/users/queries"
@@ -28,6 +33,7 @@ type AuthedHandler<C = unknown> = (
   user: PolicyUser,
   bouncer: Bouncer,
   ctx: C,
+  session: AuthSession["session"],
 ) => Promise<Response>
 
 export function withAuth<C = unknown>(handler: AuthedHandler<C>) {
@@ -48,7 +54,7 @@ export function withAuth<C = unknown>(handler: AuthedHandler<C>) {
     const user: PolicyUser = { ...row, groupIds }
 
     try {
-      return await handler(req, user, bouncer(user), ctx)
+      return await handler(req, user, bouncer(user), ctx, session.session)
     } catch (e) {
       if (e instanceof AuthorizationError) return forbidden()
       throw e

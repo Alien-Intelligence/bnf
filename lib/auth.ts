@@ -69,3 +69,19 @@ export const auth = betterAuth({
   },
   plugins: oauthPlugins,
 })
+
+/** A signed-in request's session as better-auth resolves it. */
+export type AuthSession = typeof auth.$Infer.Session
+
+/**
+ * End the app session the request's cookie names: better-auth deletes the
+ * session row and answers with the Set-Cookie lines that expire every auth
+ * cookie it owns (session token, session data chunks, dont-remember). The
+ * route forwards those lines, so the browser drops the cookie with the same
+ * response that tells it where to go. Cookie names and attributes stay
+ * better-auth's business; this module is the only place that calls it.
+ */
+export async function endAppSession(requestHeaders: Headers): Promise<string[]> {
+  const { headers } = await auth.api.signOut({ headers: requestHeaders, returnHeaders: true })
+  return headers.getSetCookie()
+}

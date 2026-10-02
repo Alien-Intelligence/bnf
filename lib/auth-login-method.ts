@@ -11,7 +11,13 @@
 //
 // Pure: no `server-only`, unit-tested in auth-login-method.test.ts.
 
-import { LOGIN_METHOD, type LoginMethod } from "@/models/users/schema"
+import { z } from "zod"
+import { LOGIN_METHOD, OAUTH_PROVIDER_ID } from "@/lib/constants"
+
+/** `session.login_method` as stored. An unknown value is a corrupt row, so
+ *  parsing it throws rather than guessing a method. */
+export const loginMethodSchema = z.enum([LOGIN_METHOD.EMAIL, LOGIN_METHOD.AUTHENTIK])
+export type LoginMethod = z.infer<typeof loginMethodSchema>
 
 const OAUTH_CALLBACK_PREFIX = "/oauth2/callback/"
 const EMAIL_PATHS: ReadonlySet<string> = new Set(["/sign-in/email", "/sign-up/email"])
@@ -28,9 +34,7 @@ export function loginMethodFromAuthPath(
 ): LoginMethod | null {
   if (path === undefined) return null
   if (path.startsWith(OAUTH_CALLBACK_PREFIX)) {
-    // LOGIN_METHOD.AUTHENTIK is the provider id itself (the test pins it to
-    // OAUTH_PROVIDER_ID), so the comparison and the stored value are one token.
-    return providerId === LOGIN_METHOD.AUTHENTIK ? LOGIN_METHOD.AUTHENTIK : null
+    return providerId === OAUTH_PROVIDER_ID ? LOGIN_METHOD.AUTHENTIK : null
   }
   if (EMAIL_PATHS.has(path)) return LOGIN_METHOD.EMAIL
   return null

@@ -7,13 +7,16 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 
 import {
+  OidcDiscoveryError,
   authentikDiscoveryUrl,
   endSessionUrl,
   loadAuthentikDiscovery,
   shouldEndSsoSession,
+  signOutRedirect,
   type OidcDiscovery,
 } from "./auth-sso"
-import { LOGIN_METHOD } from "@/models/users/schema"
+import { LOGIN_METHOD, SIGNED_OUT_NOTICE } from "./constants"
+import { SSO_LOGOUT } from "@/models/users/schema"
 
 const cfg = {
   baseUrl: "https://auth.example",
@@ -107,7 +110,10 @@ const json = (body: unknown, status = 200) => () =>
 test("a non-OK discovery response rejects with the status, and is not memoized", async () => {
   const stub = fetchStub([json({ error: "down" }, 500), json(discovery)])
   const key = { ...cfg, appSlug: "non-ok" }
-  await assert.rejects(loadAuthentikDiscovery(key, stub.impl), /500/)
+  await assert.rejects(
+    loadAuthentikDiscovery(key, stub.impl),
+    (e: unknown) => e instanceof OidcDiscoveryError && /500/.test(e.message),
+  )
   const second = await loadAuthentikDiscovery(key, stub.impl)
   assert.equal(second.end_session_endpoint, discovery.end_session_endpoint)
   assert.equal(stub.calls.length, 2, "the rejection must not be cached")
@@ -115,7 +121,10 @@ test("a non-OK discovery response rejects with the status, and is not memoized",
 
 test("a document without end_session_endpoint is a parse error, never a guessed path", async () => {
   const stub = fetchStub([json({ issuer: discovery.issuer })])
-  await assert.rejects(loadAuthentikDiscovery({ ...cfg, appSlug: "no-end-session" }, stub.impl))
+  await assert.rejects(
+    loadAuthentikDiscovery({ ...cfg, appSlug: "no-end-session" }, stub.impl),
+    OidcDiscoveryError,
+  )
 })
 
 test("a successful discovery is memoized for the process", async () => {
@@ -131,4 +140,54 @@ test("the fetch is bounded by an AbortSignal", async () => {
   const stub = fetchStub([json(discovery)])
   await loadAuthentikDiscovery({ ...cfg, appSlug: "signal" }, stub.impl)
   assert.ok(stub.calls[0]?.init?.signal instanceof AbortSignal)
+})
+
+test("a network failure or timeout is an OidcDiscoveryError carrying the cause", async () => {
+  const cause = new DOMException("The operation was aborted due to timeout", "TimeoutError")
+  const impl: FetchImpl = async () => {
+    throw cause
+  }
+  await assert.rejects(
+    loadAuthentikDiscovery({ ...cfg, appSlug: "timeout" }, impl),
+    (e: unknown) => e instanceof OidcDiscoveryError && e.cause === cause,
+  )
+})
+
+test("a non-JSON body is an OidcDiscoveryError", async () => {
+  const impl: FetchImpl = async () => new Response("<html>proxy</html>", { status: 200 })
+  await assert.rejects(loadAuthentikDiscovery({ ...cfg, appSlug: "html" }, impl), OidcDiscoveryError)
+})
+
+// --- where the browser goes -------------------------------------------------
+
+const signedOutPath = (notice: string) => `/en/sign-in?signedOut=${notice}`
+const ctx = { signedOutPath, appUrl: "https://bnf.example" }
+
+test("no SSO hop → the signed-out sign-in page", () => {
+  assert.equal(
+    signOutRedirect({ ssoLogout: SSO_LOGOUT.NOT_APPLICABLE }, ctx),
+    `/en/sign-in?signedOut=${SIGNED_OUT_NOTICE.DONE}`,
+  )
+})
+
+test("discovery unavailable → the sign-in page that says the Alien session stayed open", () => {
+  assert.equal(
+    signOutRedirect({ ssoLogout: SSO_LOGOUT.UNAVAILABLE }, ctx),
+    `/en/sign-in?signedOut=${SIGNED_OUT_NOTICE.SSO_UNAVAILABLE}`,
+  )
+})
+
+test("SSO hop → Authentik's end-session URL, coming back to the absolute signed-out page", () => {
+  const url = new URL(
+    signOutRedirect(
+      { ssoLogout: SSO_LOGOUT.INITIATED, discovery, idTokenHint: "eyJ.id", clientId: cfg.clientId },
+      ctx,
+    ),
+  )
+  assert.equal(`${url.origin}${url.pathname}`, discovery.end_session_endpoint)
+  assert.equal(url.searchParams.get("id_token_hint"), "eyJ.id")
+  assert.equal(
+    url.searchParams.get("post_logout_redirect_uri"),
+    `https://bnf.example/en/sign-in?signedOut=${SIGNED_OUT_NOTICE.DONE}`,
+  )
 })

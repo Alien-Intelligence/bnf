@@ -2,7 +2,6 @@ import "server-only"
 
 import { prisma } from "@/lib/db"
 import {
-  LOGIN_METHOD,
   accountIdToken,
   type AccountIdToken,
   type AdminAccountStat,
@@ -19,15 +18,14 @@ export class UserQueries {
   }
 
   /**
-   * The user's Alien Auth (Authentik) account, if they have one, with the
-   * id_token better-auth stored at their last SSO sign-in. Sign-out passes it
-   * as `id_token_hint` to Authentik's end-session endpoint. `null` when the
-   * user has never signed in through Authentik.
+   * The user's account with an OAuth provider, if they have one, with the
+   * id_token better-auth stored at their last sign-in through it. Sign-out
+   * passes it as `id_token_hint` to Authentik's end-session endpoint. `null`
+   * when the user has never signed in through that provider.
    */
-  static async authentikAccount(userId: string): Promise<AccountIdToken | null> {
-    // LOGIN_METHOD.AUTHENTIK is the OAuth provider id (models/users/schema.ts).
+  static async oauthAccount(userId: string, providerId: string): Promise<AccountIdToken | null> {
     return prisma.account.findFirst({
-      where: { userId, providerId: LOGIN_METHOD.AUTHENTIK },
+      where: { userId, providerId },
       ...accountIdToken,
     })
   }

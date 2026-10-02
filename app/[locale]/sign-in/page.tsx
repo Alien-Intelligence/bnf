@@ -9,10 +9,9 @@ import { getTranslations } from "next-intl/server"
 import type { Metadata } from "next"
 import { redirect } from "@/i18n/navigation"
 import { findSessionUser } from "@/lib/auth-helpers"
-import { safeNextPath, singleSearchParam } from "@/lib/auth-redirect"
+import { safeNextPath, signedOutNotice, singleSearchParam } from "@/lib/auth-redirect"
 import { AUTH_QUERY } from "@/lib/constants"
 import { ssoEnabled } from "@/lib/env"
-import { signedOutNoticeSchema } from "@/models/users/types"
 import { SignInClient } from "./client"
 
 export async function generateMetadata(): Promise<Metadata> {
@@ -29,12 +28,8 @@ export default async function SignInPage({
 }) {
   const [{ locale }, query] = await Promise.all([params, searchParams])
   const nextPath = safeNextPath(singleSearchParam(query[AUTH_QUERY.NEXT]))
-  // Set by UserService.signOut. An unknown value renders no notice rather
-  // than a wrong one.
-  const notice = signedOutNoticeSchema.safeParse(
-    singleSearchParam(query[AUTH_QUERY.SIGNED_OUT]),
-  )
-  const signedOutNotice = notice.success ? notice.data : null
+  // Set by POST /api/sign-out.
+  const notice = signedOutNotice(singleSearchParam(query[AUTH_QUERY.SIGNED_OUT]))
 
   const user = await findSessionUser()
   if (user) redirect({ href: nextPath, locale })
@@ -46,7 +41,7 @@ export default async function SignInPage({
     <SignInClient
       ssoEnabled={ssoEnabled}
       nextPath={nextPath}
-      signedOutNotice={signedOutNotice}
+      signedOutNotice={notice}
     />
   )
 }

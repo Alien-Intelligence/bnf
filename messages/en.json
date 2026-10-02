@@ -169,8 +169,6 @@
     "empty": "Empty",
     "signIn": "Sign in",
     "signUp": "Create an account",
-    "signOut": "Sign out",
-    "signOutError": "Sign-out failed. Please try again.",
     "welcome": "Welcome, {name}",
     "gotIt": "Got it"
   },
@@ -243,6 +241,11 @@
       "or": "or",
       "signedOut": "You are signed out.",
       "signedOutSsoUnavailable": "You are signed out of the app, but your Alien session could not be closed. On a shared computer, also sign out of your Alien account."
+    },
+    "signOut": {
+      "action": "Sign out",
+      "pending": "Signing out…",
+      "error": "Sign-out failed. Please try again."
     },
     "signUp": {
       "title": "Create an account",

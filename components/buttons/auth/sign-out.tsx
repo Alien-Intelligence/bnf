@@ -15,17 +15,26 @@
 // The one cache it does not reach is the browser's back/forward cache, hence
 // leaveForGood() below.
 
-import { useTranslations } from "next-intl"
+import { useLocale, useTranslations } from "next-intl"
 import { Button } from "@/components/ui/button"
-import { useSignOut } from "@/hooks/api/users"
+import { getPathname } from "@/i18n/navigation"
+import { ROUTES } from "@/lib/constants"
+import { SessionAlreadyEndedError, useSignOut } from "@/hooks/api/users"
 
 export function ButtonAuthSignOut() {
-  const t = useTranslations("common")
+  const t = useTranslations("auth.signOut")
+  const locale = useLocale()
   const signOut = useSignOut()
+  const alreadyEnded = signOut.error instanceof SessionAlreadyEndedError
   // Success is not "idle again": the document navigation is still in flight,
   // so the button stays busy until the page unloads (no second click, no
-  // flash of « Se déconnecter »).
-  const busy = signOut.isPending || signOut.isSuccess
+  // flash of « Se déconnecter »). Same when the session had already ended.
+  const busy = signOut.isPending || signOut.isSuccess || alreadyEnded
+
+  const leave = (href: string) => {
+    leaveForGood()
+    window.location.assign(href)
+  }
 
   return (
     <div className="flex flex-col items-end gap-1">
@@ -35,18 +44,23 @@ export function ButtonAuthSignOut() {
         disabled={busy}
         onClick={() =>
           signOut.mutate(undefined, {
-            onSuccess: (result) => {
-              leaveForGood()
-              window.location.assign(result.redirectTo)
+            onSuccess: (result) => leave(result.redirectTo),
+            // The goal — no live session — was already met before this click
+            // (another tab, or expiry). Go to plain sign-in: no « déconnecté »
+            // notice, because this request ended nothing.
+            onError: (error) => {
+              if (error instanceof SessionAlreadyEndedError) {
+                leave(getPathname({ href: ROUTES.signIn, locale }))
+              }
             },
           })
         }
       >
-        {busy ? t("loading") : t("signOut")}
+        {busy ? t("pending") : t("action")}
       </Button>
-      {signOut.isError && (
+      {signOut.isError && !alreadyEnded && (
         <span role="alert" className="text-xs text-destructive">
-          {t("signOutError")}
+          {t("error")}
         </span>
       )}
     </div>

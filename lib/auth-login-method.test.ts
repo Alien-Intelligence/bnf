@@ -7,12 +7,13 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 
-import { loginMethodFromAuthPath } from "./auth-login-method"
-import { LOGIN_METHOD } from "@/models/users/schema"
-import { OAUTH_PROVIDER_ID } from "./constants"
+import { loginMethodFromAuthPath, loginMethodSchema } from "./auth-login-method"
+import { LOGIN_METHOD, OAUTH_PROVIDER_ID } from "./constants"
 
-test("the stored SSO method IS the OAuth provider id (schema.ts cannot import constants)", () => {
-  assert.equal(LOGIN_METHOD.AUTHENTIK, OAUTH_PROVIDER_ID)
+test("a stored value outside LOGIN_METHOD is refused, not guessed", () => {
+  assert.equal(loginMethodSchema.safeParse(LOGIN_METHOD.EMAIL).success, true)
+  assert.equal(loginMethodSchema.safeParse(LOGIN_METHOD.AUTHENTIK).success, true)
+  assert.equal(loginMethodSchema.safeParse("magic-link").success, false)
 })
 
 test("the Authentik OAuth callback → authentik", () => {

@@ -1,36 +1,47 @@
 /**
- * POST /api/sign-out — end the caller's session; for an SSO session, hand
- * back Authentik's RP-initiated logout URL for the browser to load.
+ * POST /api/sign-out — end the caller's session and, for an SSO session, send
+ * the browser through Authentik's RP-initiated logout.
  *
- * Self-scoped like /api/onboarding: the only actor who can reach the resource
- * is the cookie holder withAuth resolved, so there is no resource to authorize
- * beyond that and no policy class (a `return true` policy would be a lie —
- * playbook/api-layers.md). The locale rides the body because a route handler
- * has no request locale of its own.
+ * withAuth → parseBody → UserPolicy.signOut(session) → UserService.signOut
+ * (the SSO decision) → endAppSession (better-auth deletes the row and expires
+ * its cookies) → ok<SignOutResult>. The decision runs first: if it fails, the
+ * session is still live and the client can retry.
  *
  * Why not better-auth's own /api/auth/sign-out: it ends the better-auth session
  * only. The Authentik session survives it, and the client cannot know whether
- * it needs the Authentik hop. See plan Decision 3.
+ * it needs the Authentik hop.
  */
 import { withAuth } from "@/app/api/_middleware"
 import { parseBody } from "@/app/api/_helpers"
-import { ok, unauthorized } from "@/lib/api-response"
-import { NoActiveSessionError, UserService } from "@/models/users/service"
-import { signOutSchema, type SignOutResult } from "@/models/users/types"
+import { ok } from "@/lib/api-response"
+import { endAppSession } from "@/lib/auth"
+import { signOutRequestSchema } from "@/lib/auth-redirect"
+import { signOutRedirect } from "@/lib/auth-sso"
+import { signedOutPath } from "@/lib/auth-sign-out"
+import { env } from "@/lib/env"
+import { UserPolicy } from "@/models/users/policy"
+import { UserService } from "@/models/users/service"
+import type { SignOutResult } from "@/models/users/schema"
 
-export const POST = withAuth(async (req) => {
-  const parsed = await parseBody(req, signOutSchema)
+export const POST = withAuth(async (req, user, bouncer, _ctx, session) => {
+  const parsed = await parseBody(req, signOutRequestSchema)
   if (parsed instanceof Response) return parsed
 
-  try {
-    const { result, setCookie } = await UserService.signOut(req.headers, parsed)
-    // Forward better-auth's cookie-clearing lines: the browser must drop the
-    // session cookie with the same response that tells it where to go.
-    const headers = new Headers()
-    for (const line of setCookie) headers.append("set-cookie", line)
-    return ok<SignOutResult>(result, { headers })
-  } catch (e) {
-    if (e instanceof NoActiveSessionError) return unauthorized()
-    throw e
-  }
+  await bouncer.with(UserPolicy).authorize("signOut", session)
+
+  const decision = await UserService.signOut(user, session)
+  const setCookie = await endAppSession(req.headers)
+
+  const headers = new Headers()
+  for (const line of setCookie) headers.append("set-cookie", line)
+  return ok<SignOutResult>(
+    {
+      ssoLogout: decision.ssoLogout,
+      redirectTo: signOutRedirect(decision, {
+        signedOutPath: (notice) => signedOutPath(notice, parsed.locale),
+        appUrl: env.APP_URL,
+      }),
+    },
+    { headers },
+  )
 })

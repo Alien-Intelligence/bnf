@@ -5,6 +5,7 @@
 
 import {
   type Prisma,
+  type Session as PrismaSession,
   type User as PrismaUser,
 } from "@/lib/generated/prisma/client"
 
@@ -17,20 +18,6 @@ export const USER_ROLE = {
 } as const
 
 export type UserRole = (typeof USER_ROLE)[keyof typeof USER_ROLE]
-
-/**
- * How a session was opened — stored on `session.login_method` by the
- * better-auth session.create hook (lib/auth.ts, lib/auth-login-method.ts).
- * The value for SSO is the OAuth provider id (`OAUTH_PROVIDER_ID` in
- * lib/constants.ts — spelled out here because schema.ts imports nothing
- * internal; lib/auth-login-method.test.ts pins the two equal) so the column
- * reads the same as `account.provider_id`. A row may also be `null`: a session
- * opened before the column existed, or by an endpoint the app does not expose.
- * Sign-out then falls back to "has an Authentik account" (lib/auth-sso.ts
- * shouldEndSsoSession).
- */
-export const LOGIN_METHOD = { EMAIL: "email", AUTHENTIK: "authentik" } as const
-export type LoginMethod = (typeof LOGIN_METHOD)[keyof typeof LOGIN_METHOD]
 
 /**
  * The one column sign-out needs from an OAuth account row: the id_token
@@ -53,9 +40,20 @@ export const SSO_LOGOUT = {
 } as const
 export type SsoLogout = (typeof SSO_LOGOUT)[keyof typeof SSO_LOGOUT]
 
-/** The `?signedOut=` values the sign-in page knows how to render. */
-export const SIGNED_OUT_NOTICE = { DONE: "done", SSO_UNAVAILABLE: "sso-unavailable" } as const
-export type SignedOutNotice = (typeof SIGNED_OUT_NOTICE)[keyof typeof SIGNED_OUT_NOTICE]
+/**
+ * What POST /api/sign-out answers: the URL the browser must load next (the
+ * sign-in page, or Authentik's end-session endpoint) and what happened to the
+ * Authentik session.
+ */
+export type SignOutResult = { redirectTo: string; ssoLogout: SsoLogout }
+
+/**
+ * The better-auth session row a signed-in request carries, as withAuth hands
+ * it over: the owner and how it was opened (`login_method`, possibly absent on
+ * a row better-auth built before the column existed).
+ */
+export type AuthSessionRow = Pick<PrismaSession, "id" | "userId"> &
+  Partial<Pick<PrismaSession, "loginMethod">>
 
 /**
  * The acting user as every authorization predicate sees them: the User row

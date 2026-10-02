@@ -81,14 +81,31 @@ export const RESEARCH_ONLY_STEPS = ["rechercher"] as const satisfies readonly Wo
 export const OAUTH_PROVIDER_ID = "authentik"
 
 /**
+ * How a session was opened, stored on `session.login_method` by the
+ * better-auth session.create hook (lib/auth.ts → lib/auth-login-method.ts).
+ * The SSO value IS the OAuth provider id, so the column reads the same as
+ * `account.provider_id` and "authentik" is spelled once. A row may also be
+ * `null`: opened before the column existed, or by an endpoint the app does not
+ * expose; sign-out then falls back to "has an Authentik account"
+ * (lib/auth-sso.ts shouldEndSsoSession). Zod enum and type:
+ * lib/auth-login-method.ts.
+ */
+export const LOGIN_METHOD = { EMAIL: "email", AUTHENTIK: OAUTH_PROVIDER_ID } as const
+
+/**
  * Query keys the auth pages read and write. `next` is the post-sign-in
  * destination, always passed through `safeNextPath` (lib/auth-redirect.ts);
  * written by `requireSessionUser`, read by the sign-in page. `signedOut`
- * tells the sign-in page how the previous session ended (SIGNED_OUT_NOTICE in
- * models/users/schema.ts); written by UserService.signOut, read by the
+ * carries a SIGNED_OUT_NOTICE; written by POST /api/sign-out, read by the
  * sign-in page. The auth e2e script asserts on both.
  */
 export const AUTH_QUERY = { NEXT: "next", SIGNED_OUT: "signedOut" } as const
+
+/**
+ * The `?signedOut=` values: how the previous session ended, so the sign-in
+ * page can say so. Zod enum and type: lib/auth-redirect.ts.
+ */
+export const SIGNED_OUT_NOTICE = { DONE: "done", SSO_UNAVAILABLE: "sso-unavailable" } as const
 
 /**
  * Wall-clock ceiling on fetching Authentik's OIDC discovery document during
