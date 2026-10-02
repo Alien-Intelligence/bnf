@@ -177,10 +177,6 @@
     "ingerer": "Ingest",
     "rechercher": "Research",
     "carnet": "Notebook",
-    "workspace": "BnF workspace",
-    "newProject": "New project",
-    "allProjects": "All projects",
-    "switchProject": "Switch project",
     "homeLink": "Back to the projects list",
     "projectsCrumb": "Projects",
     "share": "Share",
@@ -188,11 +184,22 @@
     "signedInAs": "Signed in as {name}",
     "language": "Language",
     "admin": "Administration",
-    "projectMeta": "{count} · {subtitle}",
-    "projectsError": "Could not load your projects.",
-    "projectsEmpty": "No projects in your list.",
-    "version": "Version {version}",
-    "versionWithSha": "Version {version} · {sha}"
+    "version": {
+      "title": "Version {version}",
+      "titleWithSha": "Version {version} · {sha}",
+      "label": "v{version}",
+      "labelWithSha": "v{version}·{sha}"
+    },
+    "switcher": {
+      "workspace": "BnF workspace",
+      "newProject": "New project",
+      "allProjects": "All projects",
+      "switchProject": "Switch project",
+      "projectMeta": "{count} · {subtitle}",
+      "projectsError": "Could not load your projects.",
+      "projectsEmpty": "No projects in your list.",
+      "createFirst": "Create your first project"
+    }
   },
   "health": {
     "aria": "Service health",

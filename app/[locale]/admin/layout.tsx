@@ -1,26 +1,29 @@
 // app/[locale]/admin/layout.tsx
 // Admin console shell — shared by every admin tab (overview, accounts,
 // feedback, usage, …). Owns the co-branded header, the tab-nav and the centred
-// main column, so each tab's client renders only its own content. It resolves
-// the admin for the header with requireAdminUser, but it is not the gate: a
-// layout does not re-render on client navigation between tabs (Next 16,
-// "Layouts and auth checks"), so every tab page runs its own
-// requireAdminUser(<its ROUTES path>). A non-admin gets notFound() (404, not
-// a visible 403).
+// main column, so each tab's client renders only its own content.
+//
+// It never gates (playbook/page-structure.md « Project shell », same rule): a
+// layout does not re-render on client navigation between tabs and cannot see
+// the pathname (Next 16, "Layouts and auth checks"), so it could neither keep
+// the check fresh nor build the right `?next=`. Every tab page runs its own
+// requireAdminUser(ROUTES.<tab>). Without an admin session the layout renders
+// the page bare, and the page redirects to sign-in (with its own path) or
+// answers notFound() (404, not a visible 403).
 
-import { ROUTES } from "@/lib/constants"
 import type { ReactNode } from "react"
-import { requireAdminUser } from "@/lib/auth-helpers"
+import { findSessionUser } from "@/lib/auth-helpers"
 import { LayoutWorkspaceHeader } from "@/components/layouts/workspace/header"
 import { LayoutAdminTabs } from "@/components/layouts/admin/tabs"
-import { workspaceHeaderViewer } from "@/lib/authz/workspace-header"
+import { mayOpenAdminConsole, workspaceHeaderViewer } from "@/lib/authz/workspace-header"
 
 export default async function AdminLayout({
   children,
 }: {
   children: ReactNode
 }) {
-  const user = await requireAdminUser(ROUTES.admin)
+  const user = await findSessionUser()
+  if (!user || !mayOpenAdminConsole(user)) return children
 
   return (
     <div className="flex min-h-screen flex-col">

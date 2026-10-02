@@ -177,10 +177,6 @@
     "ingerer": "Ingérer",
     "rechercher": "Rechercher",
     "carnet": "Carnet",
-    "workspace": "Espace de travail BnF",
-    "newProject": "Nouveau projet",
-    "allProjects": "Tous les projets",
-    "switchProject": "Changer de projet",
     "homeLink": "Retour à la liste des projets",
     "projectsCrumb": "Projets",
     "share": "Partager",
@@ -188,11 +184,22 @@
     "signedInAs": "Connecté en tant que {name}",
     "language": "Langue",
     "admin": "Administration",
-    "projectMeta": "{count} · {subtitle}",
-    "projectsError": "Impossible de charger vos projets.",
-    "projectsEmpty": "Aucun projet dans votre liste.",
-    "version": "Version {version}",
-    "versionWithSha": "Version {version} · {sha}"
+    "version": {
+      "title": "Version {version}",
+      "titleWithSha": "Version {version} · {sha}",
+      "label": "v{version}",
+      "labelWithSha": "v{version}·{sha}"
+    },
+    "switcher": {
+      "workspace": "Espace de travail BnF",
+      "newProject": "Nouveau projet",
+      "allProjects": "Tous les projets",
+      "switchProject": "Changer de projet",
+      "projectMeta": "{count} · {subtitle}",
+      "projectsError": "Impossible de charger vos projets.",
+      "projectsEmpty": "Aucun projet dans votre liste.",
+      "createFirst": "Créer votre premier projet"
+    }
   },
   "health": {
     "aria": "État des services",

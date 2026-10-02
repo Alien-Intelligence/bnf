@@ -23,7 +23,7 @@ import Image from "next/image"
 import { ShieldUser } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { Link } from "@/i18n/navigation"
-import { ROUTES } from "@/lib/constants"
+import { BRAND_ASSET, ROUTES } from "@/lib/constants"
 import type {
   WorkspaceHeaderProject,
   WorkspaceHeaderViewer,
@@ -33,6 +33,9 @@ import { LayoutWorkspaceProjectNav } from "./project-nav"
 import { LayoutWorkspaceLangToggle } from "./lang-toggle"
 import { WorkspaceHealthStatus } from "./health-status"
 import { ButtonAuthSignOut } from "@/components/buttons/auth/sign-out"
+import { Avatar, AvatarFallback } from "@/components/ui/avatar"
+import { buttonVariants } from "@/components/ui/button"
+import { Separator } from "@/components/ui/separator"
 
 type HeaderUser = Pick<WorkspaceHeaderViewer, "name" | "email">
 
@@ -64,17 +67,16 @@ function initials(user: HeaderUser): string {
  *  git short SHA when available. Both inlined at build (next.config.ts). Helps
  *  pin down which build is running when debugging. */
 function AppVersion() {
-  const t = useTranslations("nav")
+  const t = useTranslations("nav.version")
   const version = process.env.NEXT_PUBLIC_APP_VERSION
   if (!version) return null
   const sha = process.env.NEXT_PUBLIC_GIT_SHA
-  const label = sha ? `v${version}·${sha}` : `v${version}`
   return (
     <span
       className="hidden font-mono text-[10px] text-muted-foreground/60 select-none sm:inline"
-      title={sha ? t("versionWithSha", { version, sha }) : t("version", { version })}
+      title={sha ? t("titleWithSha", { version, sha }) : t("title", { version })}
     >
-      {label}
+      {sha ? t("labelWithSha", { version, sha }) : t("label", { version })}
     </span>
   )
 }
@@ -94,19 +96,19 @@ export function LayoutWorkspaceHeader({ viewer, project }: LayoutWorkspaceHeader
           className="flex items-center gap-3 rounded-md opacity-90 outline-none transition-opacity hover:opacity-100 focus-visible:ring-3 focus-visible:ring-ring/50"
         >
           <Image
-            src="/brand/logo-w.svg"
+            src={BRAND_ASSET.ALIEN_LOGO.src}
             alt={tBrand("alien")}
-            width={1048}
-            height={153}
+            width={BRAND_ASSET.ALIEN_LOGO.width}
+            height={BRAND_ASSET.ALIEN_LOGO.height}
             priority
             className="h-4.5 w-auto"
           />
-          <div className="h-6.5 w-px bg-border" aria-hidden />
+          <Separator orientation="vertical" className="data-vertical:h-6.5 data-vertical:self-center" />
           <Image
-            src="/brand/bnf-logo-w.png"
+            src={BRAND_ASSET.BNF_LOGO.src}
             alt={tBrand("bnf")}
-            width={960}
-            height={359}
+            width={BRAND_ASSET.BNF_LOGO.width}
+            height={BRAND_ASSET.BNF_LOGO.height}
             priority
             className="h-5 w-auto"
           />
@@ -127,7 +129,7 @@ export function LayoutWorkspaceHeader({ viewer, project }: LayoutWorkspaceHeader
             href={ROUTES.admin}
             title={t("admin")}
             aria-label={t("admin")}
-            className="flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+            className={buttonVariants({ variant: "ghost", size: "icon-sm" })}
           >
             <ShieldUser className="size-4" />
           </Link>
@@ -136,14 +138,16 @@ export function LayoutWorkspaceHeader({ viewer, project }: LayoutWorkspaceHeader
         <WorkspaceHealthStatus />
         {/* An avatar, not a menu: it opens nothing, so it says who is signed in
             rather than claiming to be a « Menu utilisateur ». */}
-        <span
+        <Avatar
+          size="sm"
           role="img"
-          className="flex size-7 items-center justify-center rounded-full bg-secondary text-[11px] font-semibold text-foreground"
           title={displayName(viewer)}
           aria-label={t("signedInAs", { name: displayName(viewer) })}
         >
-          {initials(viewer)}
-        </span>
+          <AvatarFallback className="text-[11px] font-semibold text-foreground">
+            {initials(viewer)}
+          </AvatarFallback>
+        </Avatar>
         <ButtonAuthSignOut />
       </div>
     </header>

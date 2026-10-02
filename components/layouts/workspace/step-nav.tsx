@@ -12,6 +12,8 @@ import { useTranslations } from "next-intl"
 import { Link, usePathname } from "@/i18n/navigation"
 import { ROUTES, WORKSPACE_STEPS, type WorkspaceStep } from "@/lib/constants"
 import { cn } from "@/lib/utils"
+import { Badge } from "@/components/ui/badge"
+import { Separator } from "@/components/ui/separator"
 
 interface LayoutWorkspaceStepNavProps {
   projectId: string
@@ -43,6 +45,13 @@ function activeStepFromPathname(pathname: string, projectId: string): WorkspaceS
   return step ?? null
 }
 
+/** Active step filled, completed steps outlined (with a check), later ones muted. */
+function stepBadgeVariant(isActive: boolean, isDone: boolean): "default" | "outline" | "secondary" {
+  if (isActive) return "default"
+  if (isDone) return "outline"
+  return "secondary"
+}
+
 export function LayoutWorkspaceStepNav({
   projectId,
   steps,
@@ -64,9 +73,7 @@ export function LayoutWorkspaceStepNav({
 
         return (
           <div key={step} className="flex items-center gap-1">
-            {index > 0 && (
-              <div className="mx-0.5 h-px w-6 bg-border" aria-hidden />
-            )}
+            {index > 0 && <Separator className="mx-0.5 data-horizontal:w-6" />}
             <Link
               href={STEP_HREF[step](projectId)}
               aria-current={isActive ? "step" : undefined}
@@ -77,16 +84,12 @@ export function LayoutWorkspaceStepNav({
                   : "text-muted-foreground hover:text-foreground",
               )}
             >
-              <span
-                className={cn(
-                  "flex size-5 items-center justify-center rounded-full font-mono text-[11px] font-semibold",
-                  isActive && "bg-primary text-primary-foreground",
-                  isDone && "bg-brand-teal/20 text-brand-teal",
-                  !isActive && !isDone && "bg-secondary text-muted-foreground",
-                )}
+              <Badge
+                variant={stepBadgeVariant(isActive, isDone)}
+                className="size-5 rounded-full p-0 font-mono text-[11px] font-semibold"
               >
-                {isDone ? <Check className="size-3" strokeWidth={3} /> : index + 1}
-              </span>
+                {isDone ? <Check strokeWidth={3} /> : index + 1}
+              </Badge>
               <span className={cn("font-medium", isActive && "text-foreground")}>
                 {t(step)}
               </span>

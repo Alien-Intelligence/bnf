@@ -9,8 +9,9 @@
 import { createContext, useContext } from "react"
 
 export type WorkspaceProjectDialogs = {
-  /** Opens the share dialog; only offered when the project's `mayShare`. */
-  openShare: () => void
+  /** Opens the share dialog; null when the viewer may not share this project
+   *  (the dialog is not mounted), so no caller can wire a dead button. */
+  openShare: (() => void) | null
   openCreateProject: () => void
 }
 

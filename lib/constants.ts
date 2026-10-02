@@ -80,6 +80,16 @@ export type WorkspaceStep = (typeof WORKSPACE_STEPS)[number]
 export const RESEARCH_ONLY_STEPS = [WORKSPACE_STEP.RECHERCHER] as const satisfies readonly WorkspaceStep[]
 
 // ---------------------------------------------------------------------------
+// Brand assets — the co-brand logos shown in the workspace header and on the
+// auth pages. Intrinsic sizes are the files' own, for next/image.
+// ---------------------------------------------------------------------------
+
+export const BRAND_ASSET = {
+  ALIEN_LOGO: { src: "/brand/logo-w.svg", width: 1048, height: 153 },
+  BNF_LOGO: { src: "/brand/bnf-logo-w.png", width: 960, height: 359 },
+} as const
+
+// ---------------------------------------------------------------------------
 // Authentication — Alien Auth (Authentik) SSO.
 // ---------------------------------------------------------------------------
 

@@ -40,10 +40,10 @@ export function LayoutWorkspaceProjectShell({
 
   const dialogs = useMemo<WorkspaceProjectDialogs>(
     () => ({
-      openShare: () => setShareOpen(true),
+      openShare: project.mayShare ? () => setShareOpen(true) : null,
       openCreateProject: () => setCreateOpen(true),
     }),
-    [],
+    [project.mayShare],
   )
 
   return (

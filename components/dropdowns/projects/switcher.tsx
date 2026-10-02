@@ -5,11 +5,14 @@
 // DropdownMenu (Base UI Menu: roving focus, typeahead, Escape and outside
 // click, focus return). The trigger shows the open project; the menu opens
 // with « Tous les projets » (back to the list), then the caller's projects
-// (loading, error with retry, empty, list), then « Nouveau projet ».
+// (loading, error with retry, empty with « Nouveau projet », list), then
+// « Nouveau projet ».
 //
 // The create dialog is not owned here: « Nouveau projet » calls
 // `onCreateProject`, and the project shell renders the dialog at its level.
 
+import type { ComponentProps } from "react"
+import { Menu as MenuPrimitive } from "@base-ui/react/menu"
 import { ArrowLeft, Check, ChevronDown, Plus, Rows3 } from "lucide-react"
 import { useLocale, useTranslations } from "next-intl"
 import { Link } from "@/i18n/navigation"
@@ -20,7 +23,6 @@ import {
   DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
-  DropdownMenuLinkItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
@@ -49,7 +51,7 @@ export function DropdownProjectSwitcher({
   projectName,
   onCreateProject,
 }: DropdownProjectSwitcherProps) {
-  const t = useTranslations("nav")
+  const t = useTranslations("nav.switcher")
 
   return (
     <DropdownMenu>
@@ -65,20 +67,16 @@ export function DropdownProjectSwitcher({
       </DropdownMenuTrigger>
 
       <DropdownMenuContent className="w-auto min-w-72.5">
-        <DropdownMenuLinkItem
-          closeOnClick
-          render={<Link href={ROUTES.projects} />}
-          className="gap-2.5 p-2 font-semibold"
-        >
+        <SwitcherLinkItem href={ROUTES.projects} className="gap-2.5 p-2 font-semibold">
           <ArrowLeft className="text-muted-foreground" />
           {t("allProjects")}
-        </DropdownMenuLinkItem>
+        </SwitcherLinkItem>
 
         <DropdownMenuSeparator />
 
         <DropdownMenuGroup>
           <DropdownMenuLabel className="mono-eyebrow">{t("workspace")}</DropdownMenuLabel>
-          <SwitcherProjects projectId={projectId} />
+          <SwitcherProjects projectId={projectId} onCreateProject={onCreateProject} />
         </DropdownMenuGroup>
 
         <DropdownMenuSeparator />
@@ -95,9 +93,40 @@ export function DropdownProjectSwitcher({
   )
 }
 
+/**
+ * A menu entry that navigates: Base UI's Menu.LinkItem rendering the
+ * locale-aware Link, styled like DropdownMenuItem. Local to the switcher until
+ * a third unrelated consumer earns it a place in components/ui
+ * (playbook/new-primitives.md, Gate 5).
+ */
+function SwitcherLinkItem({
+  href,
+  className,
+  children,
+}: { href: string } & Pick<ComponentProps<"a">, "className" | "children">) {
+  return (
+    <MenuPrimitive.LinkItem
+      closeOnClick
+      render={<Link href={href} />}
+      className={cn(
+        "relative flex cursor-default items-center gap-1.5 rounded-md px-1.5 py-1 text-sm outline-hidden select-none data-highlighted:bg-accent data-highlighted:text-accent-foreground [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+        className,
+      )}
+    >
+      {children}
+    </MenuPrimitive.LinkItem>
+  )
+}
+
 /** The caller's projects: loading → error → empty → list. */
-function SwitcherProjects({ projectId }: { projectId: string }) {
-  const t = useTranslations("nav")
+function SwitcherProjects({
+  projectId,
+  onCreateProject,
+}: {
+  projectId: string
+  onCreateProject: () => void
+}) {
+  const t = useTranslations("nav.switcher")
   const tCommon = useTranslations("common")
   const projects = useProjects()
 
@@ -106,7 +135,7 @@ function SwitcherProjects({ projectId }: { projectId: string }) {
       <div className="flex flex-col gap-1 p-1" aria-busy>
         {Array.from({ length: SWITCHER_SKELETON_ROWS }, (_, i) => (
           <div key={i} className="flex items-center gap-2.5 p-1">
-            <Skeleton className="size-7 rounded-md" />
+            <Skeleton className="size-4 rounded-sm" />
             <div className="flex flex-1 flex-col gap-1">
               <Skeleton className="h-3.5 w-2/3" />
               <Skeleton className="h-3 w-1/3" />
@@ -131,7 +160,15 @@ function SwitcherProjects({ projectId }: { projectId: string }) {
   }
 
   if (projects.data.length === 0) {
-    return <p className="px-2 py-1.5 text-xs text-muted-foreground">{t("projectsEmpty")}</p>
+    return (
+      <>
+        <p className="px-2 py-1.5 text-xs text-muted-foreground">{t("projectsEmpty")}</p>
+        <DropdownMenuItem onClick={onCreateProject} className="text-brand-teal">
+          <Plus />
+          {t("createFirst")}
+        </DropdownMenuItem>
+      </>
+    )
   }
 
   return projects.data.map((p) => (
@@ -140,24 +177,16 @@ function SwitcherProjects({ projectId }: { projectId: string }) {
 }
 
 function SwitcherProjectItem({ project, active }: { project: ProjectListItem; active: boolean }) {
-  const t = useTranslations("nav")
+  const t = useTranslations("nav.switcher")
   const locale = useLocale()
   const count = project.corpusSize.toLocaleString(locale)
 
   return (
-    <DropdownMenuLinkItem
-      closeOnClick
-      render={<Link href={ROUTES.constituer(project.id)} />}
+    <SwitcherLinkItem
+      href={ROUTES.constituer(project.id)}
       className={cn("gap-2.5 p-2", active && "bg-accent/50")}
     >
-      <span
-        className={cn(
-          "flex size-7 shrink-0 items-center justify-center rounded-md border",
-          active ? "border-brand-teal/45 text-brand-teal" : "text-muted-foreground",
-        )}
-      >
-        <Rows3 className="size-3.5" />
-      </span>
+      <Rows3 className={cn("size-4", active ? "text-brand-teal" : "text-muted-foreground")} />
       <span className="flex min-w-0 flex-1 flex-col text-left">
         <span className="truncate text-[13px] font-semibold text-foreground">{project.name}</span>
         <span className="truncate font-mono text-[10.5px] text-muted-foreground">
@@ -167,6 +196,6 @@ function SwitcherProjectItem({ project, active }: { project: ProjectListItem; ac
         </span>
       </span>
       {active && <Check className="size-3.5 text-brand-teal" />}
-    </DropdownMenuLinkItem>
+    </SwitcherLinkItem>
   )
 }

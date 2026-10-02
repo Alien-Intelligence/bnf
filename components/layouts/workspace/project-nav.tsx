@@ -11,6 +11,7 @@ import { useTranslations } from "next-intl"
 import { Link } from "@/i18n/navigation"
 import { ROUTES } from "@/lib/constants"
 import { ButtonProjectShare } from "@/components/buttons/projects/share"
+import { Separator } from "@/components/ui/separator"
 import { DropdownProjectSwitcher } from "@/components/dropdowns/projects/switcher"
 import { useWorkspaceProjectDialogs } from "./project-dialogs"
 import type { WorkspaceHeaderProject } from "@/lib/authz/workspace-header"
@@ -21,7 +22,7 @@ export function LayoutWorkspaceProjectNav({ project }: { project: WorkspaceHeade
 
   return (
     <>
-      <div className="h-6.5 w-px bg-border" aria-hidden />
+      <Separator orientation="vertical" className="data-vertical:h-6.5 data-vertical:self-center" />
       <div className="flex min-w-0 items-center gap-1.5">
         <Link
           href={ROUTES.projects}
@@ -36,7 +37,7 @@ export function LayoutWorkspaceProjectNav({ project }: { project: WorkspaceHeade
           onCreateProject={dialogs.openCreateProject}
         />
       </div>
-      {project.mayShare && <ButtonProjectShare onClick={dialogs.openShare} />}
+      {dialogs.openShare && <ButtonProjectShare onClick={dialogs.openShare} />}
     </>
   )
 }
