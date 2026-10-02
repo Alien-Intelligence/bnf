@@ -47,7 +47,8 @@ data:
   {{- end }}
   {{- with .Values.config.authentikBaseUrl }}
   # Alien Auth (Authentik) SSO — non-secret half. The client id/secret arrive
-  # via the -app-creds ExternalSecret. The app requires all four AUTHENTIK_*
+  # via the -authentik ExternalSecret (externalsecret.yaml, from the shared
+  # authentik-prod Scaleway secret). The app requires all four AUTHENTIK_*
   # or none (lib/env.ts superRefine): a partial set refuses to boot.
   AUTHENTIK_BASE_URL: {{ . | quote }}
   AUTHENTIK_APP_SLUG: {{ $.Values.config.authentikAppSlug | quote }}

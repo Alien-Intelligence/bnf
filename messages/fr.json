@@ -167,8 +167,6 @@
     "error": "Une erreur est survenue",
     "tryAgain": "Réessayer",
     "empty": "Vide",
-    "signIn": "Se connecter",
-    "signUp": "Créer un compte",
     "welcome": "Bienvenue, {name}",
     "gotIt": "J'ai compris"
   },
@@ -203,7 +201,7 @@
   },
   "health": {
     "aria": "État des services",
-    "app": "App",
+    "app": "Application",
     "alien": "Alien",
     "bnf": "BnF",
     "status": {

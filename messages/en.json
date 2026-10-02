@@ -167,8 +167,6 @@
     "error": "An error occurred",
     "tryAgain": "Try again",
     "empty": "Empty",
-    "signIn": "Sign in",
-    "signUp": "Create an account",
     "welcome": "Welcome, {name}",
     "gotIt": "Got it"
   },

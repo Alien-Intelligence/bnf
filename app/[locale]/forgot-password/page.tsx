@@ -1,3 +1,4 @@
+import { ROUTES } from "@/lib/constants"
 import { getTranslations } from "next-intl/server"
 import type { Metadata } from "next"
 import { Link } from "@/i18n/navigation"
@@ -29,7 +30,7 @@ export default async function ForgotPasswordPage() {
           <p className="text-sm text-muted-foreground">{t("body")}</p>
         </CardContent>
         <CardFooter className="flex justify-center">
-          <Link href="/sign-in" className="text-sm font-medium text-foreground underline">
+          <Link href={ROUTES.signIn} className="text-sm font-medium text-foreground underline">
             {tSignIn("title")}
           </Link>
         </CardFooter>
