@@ -32,7 +32,16 @@ BNF_MANIFEST_RPM=42
 MISTRAL_OCR_ENABLED=true                 # + MISTRAL_API_KEY … (mistral lane)
 # vision: SCW_API_KEY/SCW_GENAI_BASE_URL/HOLO_MODEL + GOOGLE_AI_API_KEY  (see src/live/*)
 # embed:  RunPod creds;  cluster: CLUSTER_* (mirrors V1 env.ts names)
+# OCR-quality backfill (optional; validated at startup — a malformed value throws):
+OCR_BACKFILL_ENABLED=true                # false: no backfill stage, /ocr-quality/sync queues nothing
+OCR_BACKFILL_CONCURRENCY=2               # in-flight backfill docs (positive integer; plan D6 default)
+OCR_BACKFILL_RETRY_FAILED_AFTER_MS=86400000  # base retry backoff, doubles per attempt (5 max)
 ```
+
+Each backfilled TEXT document costs one BnF ALTO call per indexed folio, once,
+through the same fetch gate as live ingests — locally, set
+`OCR_BACKFILL_ENABLED=false` unless you mean to spend that quota (see
+`helm/DEPLOY.md`, "OCR quality backfill").
 
 ```bash
 npm start                                # boots the worker (all stages long-poll forever)
@@ -70,9 +79,12 @@ SELECT ark FROM "Document" WHERE "ocrAvailable" = false
 
 ## Security posture
 
-The worker's HTTP ingress (`POST /ingest`, `POST /ingest/:id/cancel`) has **no
-authentication of its own** — it trusts the cluster network (any pod that can
-reach `:7777` can open or cancel a run). The broker it talks to has the same
+The worker's HTTP ingress (`POST /ingest`, `POST /ingest/:id/cancel`,
+`POST /ocr-quality/sync`) has **no authentication of its own** — it trusts the
+cluster network (any pod that can reach `:7777` can open or cancel a run, or ask
+for OCR-quality artifacts). `/ocr-quality/sync` can at most enqueue rate-gated,
+idempotent artifact builds, one row per ARK, with bounded retries (plan D17); its
+body is capped at 16 KiB and the request at 20 s. The broker it talks to has the same
 posture (see `../broker/README.md`). The one thing that IS authenticated is
 the terminal callback the worker POSTs back to the app: it's HMAC-signed
 (`x-callback-signature`, per-run secret) and the app verifies it byte-for-byte.

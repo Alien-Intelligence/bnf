@@ -113,6 +113,7 @@ data:
   # fetch gate. See values.yaml's comment and helm/DEPLOY.md "OCR quality backfill".
   OCR_BACKFILL_ENABLED: {{ .Values.worker.config.ocrBackfillEnabled | quote }}
   OCR_BACKFILL_CONCURRENCY: {{ .Values.worker.config.ocrBackfillConcurrency | quote }}
+  OCR_BACKFILL_RETRY_FAILED_AFTER_MS: {{ .Values.worker.config.ocrBackfillRetryFailedAfterMs | quote }}
 
   # --- Reconciliation sweep ---
   # The periodic re-drive of docs whose queue job vanished (pg-boss expiration, a

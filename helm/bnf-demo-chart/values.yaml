@@ -253,8 +253,14 @@ worker:
     # backlog faster; set enabled "false" to stop the BnF spend without a
     # rollback (existing artifacts stay served). Progress: `npm run status` in
     # the worker pod (ocrBackfill counts) and the app's [ocr-sync] log lines.
+    # Validated at startup: enabled "true"|"false"; concurrency and the retry
+    # backoff positive integers (a malformed value stops the worker).
     ocrBackfillEnabled: "true"
     ocrBackfillConcurrency: "2"
+    # Base backoff (ms) before a transiently failed build is retried; it doubles
+    # per attempt, up to 5 attempts. Permanent failures (no metadata, no pages)
+    # are never retried. 86400000 = 24 h.
+    ocrBackfillRetryFailedAfterMs: "86400000"
     # In-flight doc-jobs. This is the knob that keeps the fetch gate FED: each job
     # runs fetch→embed→index serially in its slot, so at a low value the docs move
     # as a synchronized cohort — fetch bursts to the rate cap, then every job

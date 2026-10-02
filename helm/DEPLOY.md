@@ -300,7 +300,8 @@ truth to avoid churn.)
 | `worker.config.clusterId` | Data cluster ID (must match the RAG dataset region) | `""` |
 | `worker.config.*` | Vision / embed / Gallica / reliability knobs | see values.yaml |
 | `worker.config.ocrBackfillEnabled` | Build missing OCR-quality artifacts (BnF spend; see below) | `"true"` |
-| `worker.config.ocrBackfillConcurrency` | In-flight backfill documents (≥ 1) | `"2"` |
+| `worker.config.ocrBackfillConcurrency` | In-flight backfill documents (positive integer) | `"2"` |
+| `worker.config.ocrBackfillRetryFailedAfterMs` | Base backoff before a transiently failed backfill build is retried (doubles per attempt, 5 attempts max) | `"86400000"` (24 h) |
 | `istio.hosts[].gateway` | `own` (provision gateway+cert) or `shared` | `own` |
 | `postgres.persistence.size` | Postgres PVC size | `10Gi` |
 
@@ -345,19 +346,29 @@ backfilled automatically — no manual step:
   must be re-fetched. Vision and Mistral documents cost nothing. The calls go
   through the broker and share the worker's fetch rate gate FIFO with live
   ingests; check the broker's `/calls.csv` for a 429 increase on live runs.
+- **Retries:** a build that fails transiently (BnF 5xx, a fetch-gate wait over
+  120 s) is retried with a backoff of `ocrBackfillRetryFailedAfterMs` doubling
+  per attempt, at most 5 attempts; a permanent failure (no metadata, no pages
+  artifact, unclassifiable, a permanent BnF error) is never retried and is
+  reported `unavailable` with its reason. A build pg-boss expired (the delivery
+  ran past 1 h) is re-queued after 6 h as one attempt, so nothing stays
+  `building` forever.
 - **How to speed it up:** raise `worker.config.ocrBackfillConcurrency` off-hours
   (default 2 ≈ 60–120 folios/min).
 - **How to stop the spend without a rollback:** set
   `worker.config.ocrBackfillEnabled: "false"`. The stage is not registered and
-  missing ARKs answer `unavailable: backfill_disabled` (rechecked by the app after
-  24 h); existing artifacts are still served.
+  missing ARKs answer `unavailable: backfill_disabled` (a stored failure keeps
+  its own reason; a corrupt artifact answers `artifact_corrupt`); the app
+  rechecks them after 24 h. Existing artifacts are still served.
+- **All knobs are validated at startup:** a malformed `OCR_BACKFILL_*` value
+  stops the worker with the variable's name rather than running on a guess.
 - **Rollout order:** the worker must be at least as new as the app (an old worker
   answers 404 on `/ocr-quality/sync`; the app logs the failed batch and retries
   every sweep). Roll the worker **between ingest runs**: a text document whose
   folios were fetched by the old worker and assembled by the new one has no ALTO
-  quality sidecars and fails with
-  `assemble_failed_after_retries: ocr_quality_missing_sidecar`. Retrying the
-  failed documents re-fetches them with sidecars.
+  quality sidecars and fails at once with `ocr_quality_missing_sidecar: …`
+  (a terminal failure, not retried). Retrying the failed documents re-fetches
+  them with sidecars.
 
 ---
 
