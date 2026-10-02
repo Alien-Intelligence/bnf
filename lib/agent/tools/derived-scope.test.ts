@@ -8,6 +8,7 @@ import "server-only"
 
 import { test } from "node:test"
 import assert from "node:assert/strict"
+import { Prisma } from "@/lib/generated/prisma/client"
 import { SessionPolicy } from "@/models/sessions/policy"
 import { SESSION_SCOPE } from "@/models/sessions/schema"
 import { CorpusPolicy } from "@/models/corpus/policy"
@@ -50,7 +51,8 @@ function project(over: Partial<ProjectWithShares> = {}): ProjectWithShares {
     clusterDatasetId: null,
     paidOcrEnabled: true,
     paidOcrBudgetUsd: null,
-    paidOcrSpentUsd: null as never,
+    // The column's real type and default (prisma/schema.prisma: Decimal @default(0)).
+    paidOcrSpentUsd: new Prisma.Decimal(0),
     corpusSourceId: "source-1",
     corpusSourceShareId: "share-1",
     createdAt: new Date(0),

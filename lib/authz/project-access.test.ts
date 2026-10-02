@@ -6,6 +6,7 @@
 
 import { test } from "node:test"
 import assert from "node:assert/strict"
+import { Prisma } from "@/lib/generated/prisma/client"
 
 import {
   PROJECT_ACCESS,
@@ -58,7 +59,8 @@ function project(
     clusterDatasetId: null,
     paidOcrEnabled: true,
     paidOcrBudgetUsd: null,
-    paidOcrSpentUsd: null as never,
+    // The column's real type and default (prisma/schema.prisma: Decimal @default(0)).
+    paidOcrSpentUsd: new Prisma.Decimal(0),
     corpusSourceId: null,
     corpusSourceShareId: null,
     createdAt: new Date(0),
