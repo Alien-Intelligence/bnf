@@ -178,6 +178,7 @@ before(async () => {
   await BufferService.registerCandidates({
     projectId: project.id,
     originTool: "corpus_search",
+    restageDiscarded: false,
     candidates: [
       { ark: ARK(1), title: "Un", source: "gallica" },
       { ark: ARK(2), title: "Deux", source: "gallica" },
@@ -243,6 +244,7 @@ test("positive control: the owner's same calls go through the gate", async () =>
       await BufferService.registerCandidates({
         projectId: project.id,
         originTool: "corpus_search",
+        restageDiscarded: false,
         candidates: [{ ark: ARK(30), title: "Trente", source: "gallica" }],
       })
     }

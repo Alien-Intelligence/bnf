@@ -8,6 +8,7 @@ import { prisma } from "@/lib/db"
 import type { Prisma } from "@/lib/generated/prisma/client"
 import { CORPUS_SAMPLE_SIZE } from "@/lib/constants"
 import {
+  DOCUMENT_CANONICAL_STATUS,
   DOCUMENT_RESOLVE_STATUS,
   INDEXATION_OUTCOME,
   INGESTION_CLASS,
@@ -440,6 +441,51 @@ export class CorpusQueries {
       distinct: ["ark"],
     })
     return rows.map((r) => r.ark)
+  }
+
+  /**
+   * Which of `arks` are members of the project's HEAD version. Bounded by the
+   * size of `arks` (a staging batch, ≤ 5 000) through the (versionId, ark)
+   * primary key — never loads the whole membership. The buffer uses it to keep
+   * documents already in the corpus out of the candidate set, and to restage
+   * ones removed from it since (models/buffer/service.ts registerCandidates).
+   */
+  static async headMembersAmong(projectId: string, arks: string[]): Promise<Set<string>> {
+    if (arks.length === 0) return new Set()
+    const project = await prisma.project.findUniqueOrThrow({
+      where: { id: projectId },
+      select: { headVersionId: true },
+    })
+    if (!project.headVersionId) {
+      throw new Error(`Project ${projectId} has no headVersionId — invariant 1 violated`)
+    }
+    const rows = await prisma.corpusMembership.findMany({
+      where: { versionId: project.headVersionId, ark: { in: arks } },
+      select: { ark: true },
+    })
+    return new Set(rows.map((r) => r.ark))
+  }
+
+  /**
+   * Head members still waiting for cb→Gallica canonicalisation: catalogue
+   * notices the background canonicaliser may yet REPLACE with their digitized
+   * document, merging duplicates — so the head total is provisional while this
+   * is above zero (lib/documents/canonicalizer.ts).
+   */
+  static async pendingCanonicalCount(projectId: string): Promise<number> {
+    const project = await prisma.project.findUniqueOrThrow({
+      where: { id: projectId },
+      select: { headVersionId: true },
+    })
+    if (!project.headVersionId) {
+      throw new Error(`Project ${projectId} has no headVersionId — invariant 1 violated`)
+    }
+    return prisma.corpusMembership.count({
+      where: {
+        versionId: project.headVersionId,
+        document: { canonicalStatus: DOCUMENT_CANONICAL_STATUS.PENDING },
+      },
+    })
   }
 
   /**

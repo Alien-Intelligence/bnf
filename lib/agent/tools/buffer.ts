@@ -42,11 +42,12 @@ import { canonicalBufferDocType, gallicaSearchDocType } from "@/lib/buffer/class
 import { classifyArkKind } from "@/models/documents/schema"
 import { BufferPolicy } from "@/models/buffer/policy"
 import { BufferQueries, type BufferFilterSet } from "@/models/buffer/queries"
-import { BufferService } from "@/models/buffer/service"
+import { BufferService, explainRegistration, type BufferRegisterResult } from "@/models/buffer/service"
 import { arkSchema, type BufferCandidateInput } from "@/models/buffer/types"
 import type { TurnScopedCtx } from "./registry-factory"
 import { authorizeProjectTool } from "./authorize"
 import { AGENT_TOOLS } from "./constants"
+import { provisionalTotal } from "./provisional-total"
 
 // ---------------------------------------------------------------------------
 // Shared agent-facing filter schema (array-based, like corpus.ts). Distinct
@@ -79,6 +80,23 @@ const bufferFilterSchema = z
   .describe("Metadata filters over the buffer candidates. Omit a field to leave it unconstrained.")
 
 const facetDimensionEnum = z.enum(["period", "type", "lang", "source"])
+
+/**
+ * The counts every staging tool returns, so it always says what became of each
+ * hit — and, whenever `added` is below what was found, why (`explanation`).
+ */
+function stagingCounts(found: number, r: BufferRegisterResult) {
+  const explanation = explainRegistration(found, r)
+  return {
+    added: r.added,
+    restaged: r.restaged,
+    refreshed: r.refreshed,
+    alreadyInCorpus: r.alreadyInCorpus,
+    previouslyDiscarded: r.previouslyDiscarded,
+    unresolved: r.unresolved,
+    ...(explanation !== null ? { explanation } : {}),
+  }
+}
 
 /** Publish a buffer_event carrying the post-op candidate total. */
 async function emitBuffer(
@@ -263,10 +281,16 @@ export const bufferAddTool = defineTool<
       projectId,
       sessionId: ctx.appSessionId,
       originTool: AGENT_TOOLS.bufferAdd,
+      // The librarian named these ARKs: a discarded one is staged again.
+      restageDiscarded: true,
       candidates: input.arks.map((ark) => ({ ark })),
     })
     const total = await emitBuffer(ctx, projectId, "added", result.added)
-    return { requested: result.requested, added: result.added, total }
+    return {
+      requested: result.requested,
+      ...stagingCounts(input.arks.length, result),
+      total,
+    }
   },
 })
 
@@ -321,7 +345,10 @@ export const bufferCommitTool = defineTool<
     "count and confirm with the librarian first (a commit grows the corpus and is " +
     "not trivially reversible). Result: `committed` (candidates moved in), " +
     "`duplicates` (already in the corpus), `versionSeq`, `total` (new corpus size), " +
-    "`pending` (added docs still resolving).",
+    "`pending` (added docs still resolving), `canonicalizationPending` (catalogue notices " +
+    "that may still be replaced by their digitized document) and `totalIsProvisional`. " +
+    "When `totalIsProvisional` is true the total WILL move: call corpus_get_state and " +
+    "quote that number, never this one.",
   inputSchema: z.object({
     reason: z
       .string()
@@ -370,6 +397,8 @@ export const bufferCommitTool = defineTool<
       versionSeq: result.corpus.versionSeq,
       total: result.corpus.total,
       pending: result.corpus.pending,
+      ...provisionalTotal(result.canonicalizationPending, result.corpus.pending),
+      ...(result.committedUnresolved > 0 ? { committedUnresolved: result.committedUnresolved } : {}),
       bufferRemaining: total,
     }
   },
@@ -385,7 +414,12 @@ export const bufferClearTool = defineTool<z.ZodObject<Record<string, never>>, Tu
     "Empty the research buffer for a fresh line of inquiry — drops all current " +
     "candidates (and previously-discarded rows). Does NOT touch the corpus (only " +
     "the pre-commit staging area). Use when the librarian wants to start a new " +
-    "search from scratch. Returns `cleared` (rows removed).",
+    "search from scratch. Returns `cleared` (rows removed). Committed candidates " +
+    "are NOT dropped: they stay as provenance. While an ARK is in the corpus, a " +
+    "search that finds it reports it in `alreadyInCorpus` (never as a new " +
+    "candidate); once it is removed from the corpus, a search stages it again. So " +
+    "clearing never makes `added` go up for documents already in the corpus — do " +
+    "not clear to 'retry' a search that returned `alreadyInCorpus`.",
   inputSchema: z.object({}),
   handler: async (_input, ctx) => {
     const gate = await authorizeProjectTool(ctx, BufferPolicy, "mutate")
@@ -1110,6 +1144,7 @@ export const corpusSearchTool = defineTool<
       // The EXECUTED CQL, not the agent's input: it is what the librarian needs
       // to judge a result set, and the only form that can be re-run verbatim.
       // Falls back to the raw criteria when talking to a pre-0.4.0 MCP.
+      restageDiscarded: false,
       originQuery:
         executedCql ??
         input.cql ??
@@ -1154,8 +1189,7 @@ export const corpusSearchTool = defineTool<
       total: pagination.total,
       ...(zeroResult !== null ? { zero_result: zeroResult } : {}),
       found: candidates.length,
-      added: registered.added,
-      refreshed: registered.refreshed,
+      ...stagingCounts(candidates.length, registered),
       // Hits dropped because they are not addressable documents (e.g. a
       // periodical COLLECTION entry): enumerate its issues with
       // bnf__bnf_get_periodical_issues, then stage those with buffer_add.

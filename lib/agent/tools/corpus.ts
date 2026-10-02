@@ -36,6 +36,7 @@ import type { CorpusFilterSet } from "@/models/corpus/queries"
 import type { TurnScopedCtx } from "./registry-factory"
 import { authorizeProjectTool } from "./authorize"
 import { AGENT_TOOLS } from "./constants"
+import { provisionalTotal } from "./provisional-total"
 
 // ---------------------------------------------------------------------------
 // Shared filter schema (corpus_get_state, corpus_list, corpus_stats,
@@ -412,6 +413,9 @@ export const corpusAddTool = defineTool<
     // Note: `result.nonIngestable` is intentionally NOT surfaced — ingestability
     // is an ingestion-step concern, not a corpus-building one. The agent must not
     // filter or warn on it here.
+    // The total is provisional while catalogue notices may still be replaced
+    // by their digitized document (feedback #10c) — say so, with what to do.
+    const canonicalizationPending = await CorpusQueries.pendingCanonicalCount(projectId)
     return {
       requested: result.requested,
       added: result.lastDeltaAdded,
@@ -419,6 +423,7 @@ export const corpusAddTool = defineTool<
       versionSeq: result.versionSeq,
       total: result.total,
       pending: result.pending,
+      ...provisionalTotal(canonicalizationPending, result.pending),
     }
   },
 })
