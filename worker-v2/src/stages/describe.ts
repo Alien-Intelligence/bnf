@@ -16,7 +16,7 @@ import { keys } from "../domain/keys.js";
 import { Q } from "../domain/queues.js";
 import type { DocReady, PreparedDoc, PreparedPage } from "../domain/types.js";
 import { failDoc } from "./doc-fail.js";
-import { writeOcrQualityArtifact } from "./ocr-quality.js";
+import { buildOcrQualityArtifact } from "./ocr-quality.js";
 
 export class DescribeStage extends PipelineStage<DocReady, PreparedDoc> {
   readonly name = "describe";
@@ -64,7 +64,8 @@ export class DescribeStage extends PipelineStage<DocReady, PreparedDoc> {
       ctx.log.info("describe_cache_hit", { ark: doc.ark, pages: cachedPages.length });
       // A pre-release doc re-ingested from its cached pages has no artifact
       // yet; the convergence point must build it on this branch too.
-      await writeOcrQualityArtifact(this.blob, { ark: doc.ark, lane: "vision", pages: cachedPages });
+      const artifact = await buildOcrQualityArtifact(this.blob, { ark: doc.ark, lane: "vision", pages: cachedPages });
+      if (!artifact.ok) return failDoc(this.docState, doc.docJobId, artifact.reason);
       return { kind: "emit", items: [this.prepared(doc, cachedPages)] };
     }
 
@@ -100,7 +101,8 @@ export class DescribeStage extends PipelineStage<DocReady, PreparedDoc> {
     }
     await this.blob.putJson(keys.pages(doc.ark), pages);
     // Convergence point: vision pages are descriptions, not OCR → null quality (D3).
-    await writeOcrQualityArtifact(this.blob, { ark: doc.ark, lane: "vision", pages });
+    const artifact = await buildOcrQualityArtifact(this.blob, { ark: doc.ark, lane: "vision", pages });
+    if (!artifact.ok) return failDoc(this.docState, doc.docJobId, artifact.reason);
     ctx.log.info("described", { ark: doc.ark, pages: pages.length });
     return { kind: "emit", items: [this.prepared(doc, pages)] };
   }

@@ -17,7 +17,7 @@ import { keys } from "../domain/keys.js";
 import { Q } from "../domain/queues.js";
 import type { DocReady, PreparedDoc, PreparedPage } from "../domain/types.js";
 import { failDoc } from "./doc-fail.js";
-import { writeOcrQualityArtifact } from "./ocr-quality.js";
+import { buildOcrQualityArtifact } from "./ocr-quality.js";
 
 export class AssembleStage extends PipelineStage<DocReady, PreparedDoc> {
   readonly name = "assemble";
@@ -54,7 +54,8 @@ export class AssembleStage extends PipelineStage<DocReady, PreparedDoc> {
     await this.blob.putJson(keys.pages(doc.ark), pages);
     // The convergence point builds the per-ARK OCR-quality artifact from the
     // same page set (text lane: the ALTO sidecars the fetch stage wrote).
-    await writeOcrQualityArtifact(this.blob, { ark: doc.ark, lane: "text", pages });
+    const artifact = await buildOcrQualityArtifact(this.blob, { ark: doc.ark, lane: "text", pages });
+    if (!artifact.ok) return failDoc(this.docState, doc.docJobId, artifact.reason);
     ctx.log.info("assembled", { ark: doc.ark, pages: pages.length });
     const prepared: PreparedDoc = {
       projectId: doc.projectId,

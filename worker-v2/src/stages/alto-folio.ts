@@ -34,15 +34,29 @@ export interface EnsuredAltoFolio {
   fetched: boolean;
 }
 
-/** Structural check on a cached sidecar — a corrupt one is a miss, not a crash. */
+function isCount(v: unknown): v is number {
+  return typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
+}
+
+/**
+ * Check a cached sidecar against the D1 invariants, not just its field types:
+ * non-negative integer counts with scoredWordCount <= wordCount, a mean WC that
+ * is a finite number in [0, 1], and a mean present exactly when at least one
+ * word is scored. A sidecar failing any of them is corrupt — ensureAltoFolio
+ * re-fetches it, the artifact build fails the document.
+ */
 export function isAltoFolioQuality(v: unknown): v is AltoFolioQuality {
-  if (v === null || typeof v !== "object") return false;
+  if (v === null || typeof v !== "object" || Array.isArray(v)) return false;
   const q = v as Record<string, unknown>;
+  if (q.v !== 1 || !isCount(q.wordCount) || !isCount(q.scoredWordCount)) return false;
+  if (q.scoredWordCount > q.wordCount) return false;
+  if (q.meanWc === null) return q.scoredWordCount === 0;
   return (
-    q.v === 1 &&
-    typeof q.wordCount === "number" &&
-    typeof q.scoredWordCount === "number" &&
-    (q.meanWc === null || typeof q.meanWc === "number")
+    typeof q.meanWc === "number" &&
+    Number.isFinite(q.meanWc) &&
+    q.meanWc >= 0 &&
+    q.meanWc <= 1 &&
+    q.scoredWordCount > 0
   );
 }
 

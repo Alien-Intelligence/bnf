@@ -1142,7 +1142,78 @@ test("assemble: a text page without its sidecar is an invariant break → the do
   assert.equal(await blob.getJson(keys.ocrQuality(ARK)), null, "no artifact");
   const row = await ds.get(DOC_JOB_ID);
   assert.equal(row?.status, "failed");
-  assert.match(row?.error ?? "", /assemble_failed_after_retries: .*sidecar/);
+  // A deterministic invariant break fails the doc on the FIRST delivery: it is
+  // not a transient error worth four retries.
+  assert.match(row?.error ?? "", /^ocr_quality_missing_sidecar: /);
+});
+
+test("assemble: a corrupt sidecar (mean WC outside [0, 1]) fails the doc terminally, distinct from a missing one", async () => {
+  const q = new MemoryQueue();
+  const blob = new MemoryBlobStore();
+  const ds = new MemoryDocState();
+  await readyRow(ds, "text", 1);
+  await blob.putJson(keys.metadata(ARK), metaBlob(0.5));
+  await blob.putBytes(keys.alto(ARK, 1), Buffer.from("text", "utf8"));
+  await blob.putJson(keys.altoQuality(ARK, 1), { v: 1, wordCount: 3, scoredWordCount: 3, meanWc: 93.2 });
+
+  const emitted = await collect<PreparedDoc>(q, Q.embed);
+  await new AssembleStage(deps(q, blob), ds).start();
+  await q.send(Q.assemble, docReady("text", [1]));
+  await q.idle();
+
+  assert.equal(emitted.length, 0);
+  const row = await ds.get(DOC_JOB_ID);
+  assert.equal(row?.status, "failed");
+  assert.match(row?.error ?? "", /^ocr_quality_corrupt_sidecar: /);
+});
+
+test("describe: no meta blob fails the doc terminally (ocr_quality_no_metadata) without re-paying the describer", async () => {
+  const q = new MemoryQueue();
+  const blob = new MemoryBlobStore();
+  const ds = new MemoryDocState();
+  await readyRow(ds, "vision", 2);
+  for (const ordre of [1, 2]) {
+    await blob.putBytes(keys.image(ARK, ordre), Buffer.from(`IMG f${ordre}`));
+  }
+  let calls = 0;
+  const describer = {
+    async describe(input: { ark: string; ordre: number }): Promise<string> {
+      calls += 1;
+      return `Description ${input.ordre}`;
+    },
+  };
+
+  const emitted = await collect<PreparedDoc>(q, Q.embed);
+  await new DescribeStage(deps(q, blob), describer, ds, undefined).start();
+  await q.send(Q.describe, docReady("vision", [1, 2]));
+  await q.idle();
+
+  assert.equal(emitted.length, 0);
+  assert.equal(calls, 2, "one describe call per folio, no retry");
+  const row = await ds.get(DOC_JOB_ID);
+  assert.equal(row?.status, "failed");
+  assert.match(row?.error ?? "", /^ocr_quality_no_metadata: /);
+});
+
+test("ocr-poll: a corrupt meta blob fails the doc terminally (ocr_quality_corrupt_metadata)", async () => {
+  const q = new MemoryQueue();
+  const blob = new MemoryBlobStore();
+  const ds = new MemoryDocState();
+  const ocr = new FakeOcrEngine();
+  await readyRow(ds, "mistral", 1);
+  await blob.putJson(keys.metadata(ARK), { ark: ARK, ocrAvailable: false, raw: { source: "sru" } });
+  await ocr.submitBatch({ ark: ARK, folios: [{ ordre: 1 }] });
+  await blob.putJson(keys.ocrBatch(ARK), { batchId: `batch-${ARK}`, folios: [1] });
+
+  const emitted = await collect<PreparedDoc>(q, Q.embed);
+  await new OcrPollStage(deps(q, blob), ocr, ds).start();
+  await q.send(Q.ocrPoll, ocrRef([1]));
+  await q.idle();
+
+  assert.equal(emitted.length, 0);
+  const row = await ds.get(DOC_JOB_ID);
+  assert.equal(row?.status, "failed");
+  assert.match(row?.error ?? "", /^ocr_quality_corrupt_metadata: /);
 });
 
 test("describe: artifact lane vision with null quality (fresh describe AND the cache-hit branch)", async () => {

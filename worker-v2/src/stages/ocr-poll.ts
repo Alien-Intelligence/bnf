@@ -39,7 +39,7 @@ import { keys } from "../domain/keys.js";
 import { Q } from "../domain/queues.js";
 import type { OcrBatchRef, PreparedDoc } from "../domain/types.js";
 import { failDoc } from "./doc-fail.js";
-import { writeOcrQualityArtifact } from "./ocr-quality.js";
+import { buildOcrQualityArtifact } from "./ocr-quality.js";
 
 export interface OcrPollOpts {
   /** Cap on poll iterations before declaring the batch stuck (terminal). */
@@ -173,7 +173,8 @@ export class OcrPollStage extends PipelineStage<OcrBatchRef, PreparedDoc> {
     // Convergence point: the OCR-quality artifact covers the SURVIVING pages
     // (dropped ones are not in the index, so they get no entry) with a null
     // quality — Mistral's confidence does not flag hallucinations (D2/D3).
-    await writeOcrQualityArtifact(this.blob, { ark: ref.ark, lane: "mistral", pages });
+    const artifact = await buildOcrQualityArtifact(this.blob, { ark: ref.ark, lane: "mistral", pages });
+    if (!artifact.ok) return failDoc(this.docState, ref.docJobId, artifact.reason);
     ctx.log.info("ocr_done", {
       ark: ref.ark,
       batchId: ref.batchId,

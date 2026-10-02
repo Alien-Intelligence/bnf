@@ -9,15 +9,17 @@
  *     (keys.altoQuality) the fetch stage wrote;
  *   - mistral / vision folios record their source with a null quality (D2/D3).
  *
- * A missing meta blob or a missing sidecar for a text page is an INVARIANT
- * break, not a degraded case: it throws, and the calling stage's retry /
- * onExhausted path surfaces it — never a silent null that would let a folio
- * read as "not low" because it was never measured.
+ * A missing or corrupt meta blob, and a missing or corrupt sidecar for a text
+ * page, are INVARIANT breaks, not degraded cases and not transient errors: they
+ * throw OcrQualityArtifactError, which every caller turns into a TERMINAL
+ * failure of the document (failDoc / the backfill store) on the first delivery —
+ * retrying cannot make a missing blob appear. Never a silent null that would
+ * let a folio read as "not low" because it was never measured.
  *
  * Idempotent and overwriting: the artifact always reflects the current pages.
  */
 import type { BlobStore } from "../core/types.js";
-import { normalizeCachedDocInfo } from "../bnf/doc-info.js";
+import { CorruptDocInfoError, normalizeCachedDocInfo } from "../bnf/doc-info.js";
 import { keys } from "../domain/keys.js";
 import type { Lane } from "../domain/queues.js";
 import {
@@ -36,6 +38,26 @@ const LANE_SOURCE: Record<Lane, OcrSource> = {
   mistral: OCR_SOURCE.MISTRAL,
 };
 
+/** Why an artifact could not be built — the failure reason's leading token. */
+export const OCR_QUALITY_FAILURE = {
+  NO_METADATA: "ocr_quality_no_metadata",
+  CORRUPT_METADATA: "ocr_quality_corrupt_metadata",
+  MISSING_SIDECAR: "ocr_quality_missing_sidecar",
+  CORRUPT_SIDECAR: "ocr_quality_corrupt_sidecar",
+} as const;
+export type OcrQualityFailure = (typeof OCR_QUALITY_FAILURE)[keyof typeof OCR_QUALITY_FAILURE];
+
+/** A deterministic artifact-build failure: terminal for the document, never retried. */
+export class OcrQualityArtifactError extends Error {
+  constructor(
+    readonly code: OcrQualityFailure,
+    detail: string,
+  ) {
+    super(`${code}: ${detail}`);
+    this.name = "OcrQualityArtifactError";
+  }
+}
+
 /** Structural check on a cached pages blob (keys.pages) — a JSON store is not a typed store. */
 export function isPreparedPages(v: unknown): v is PreparedPage[] {
   return (
@@ -50,24 +72,79 @@ export function isPreparedPages(v: unknown): v is PreparedPage[] {
   );
 }
 
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return v !== null && typeof v === "object" && !Array.isArray(v);
+}
+
+function isFolioOcrQuality(v: unknown, source: OcrSource): v is FolioOcrQuality {
+  if (!isRecord(v)) return false;
+  if (typeof v.ordre !== "number" || !Number.isSafeInteger(v.ordre) || v.ordre < 1) return false;
+  if (v.ocrSource !== source) return false;
+  if (source !== OCR_SOURCE.ALTO) return v.ocrQuality === null && v.wordCount === null;
+  const quality = v.ocrQuality;
+  const qualityOk =
+    quality === null ||
+    (typeof quality === "number" && Number.isFinite(quality) && quality >= 0 && quality <= 1);
+  const words = v.wordCount;
+  return qualityOk && typeof words === "number" && Number.isSafeInteger(words) && words >= 0;
+}
+
+/**
+ * Full validation of a stored artifact for `ark` — every field and every folio
+ * entry, mirroring what the builder writes (and what the app's Zod contract
+ * accepts): v1, the matching ARK, a known lane, an ocrRate in [0, 1] or null,
+ * unique positive folio numbers whose source matches the lane, ALTO qualities
+ * in [0, 1] with integer word counts, null quality and count otherwise.
+ */
+export function isDocOcrQuality(v: unknown, ark: string): v is DocOcrQuality {
+  if (!isRecord(v) || v.v !== 1 || v.ark !== ark) return false;
+  if (v.lane !== "text" && v.lane !== "vision" && v.lane !== "mistral") return false;
+  const rate = v.ocrRate;
+  if (rate !== null && !(typeof rate === "number" && Number.isFinite(rate) && rate >= 0 && rate <= 1)) {
+    return false;
+  }
+  if (typeof v.builtAt !== "string" || Number.isNaN(Date.parse(v.builtAt))) return false;
+  if (!Array.isArray(v.folios)) return false;
+  const source = LANE_SOURCE[v.lane];
+  const seen = new Set<number>();
+  for (const f of v.folios) {
+    if (!isFolioOcrQuality(f, source) || seen.has(f.ordre)) return false;
+    seen.add(f.ordre);
+  }
+  return true;
+}
+
 export async function writeOcrQualityArtifact(
   blob: BlobStore,
   doc: Pick<PreparedDoc, "ark" | "lane" | "pages">,
 ): Promise<DocOcrQuality> {
   const rawMeta = await blob.getJson<unknown>(keys.metadata(doc.ark));
   if (rawMeta === null) {
-    throw new Error(`ocr_quality_no_metadata: no meta blob for ${doc.ark}`);
+    throw new OcrQualityArtifactError(OCR_QUALITY_FAILURE.NO_METADATA, `no meta blob for ${doc.ark}`);
   }
-  const info = normalizeCachedDocInfo(rawMeta);
+  let ocrRate: number | null;
+  try {
+    ocrRate = normalizeCachedDocInfo(rawMeta).ocrRate;
+  } catch (e) {
+    if (!(e instanceof CorruptDocInfoError)) throw e;
+    throw new OcrQualityArtifactError(OCR_QUALITY_FAILURE.CORRUPT_METADATA, e.message);
+  }
   const source = LANE_SOURCE[doc.lane];
 
   const folios: FolioOcrQuality[] = [];
   for (const page of [...doc.pages].sort((a, b) => a.ordre - b.ordre)) {
     if (source === OCR_SOURCE.ALTO) {
       const sidecar = await blob.getJson<unknown>(keys.altoQuality(doc.ark, page.ordre));
-      if (sidecar === null || !isAltoFolioQuality(sidecar)) {
-        throw new Error(
-          `ocr_quality_missing_sidecar: ${doc.ark} f${page.ordre} has no ALTO quality sidecar`,
+      if (sidecar === null) {
+        throw new OcrQualityArtifactError(
+          OCR_QUALITY_FAILURE.MISSING_SIDECAR,
+          `${doc.ark} f${page.ordre} has no ALTO quality sidecar`,
+        );
+      }
+      if (!isAltoFolioQuality(sidecar)) {
+        throw new OcrQualityArtifactError(
+          OCR_QUALITY_FAILURE.CORRUPT_SIDECAR,
+          `${doc.ark} f${page.ordre}: the ALTO quality sidecar breaks the D1 invariants`,
         );
       }
       folios.push({
@@ -84,11 +161,30 @@ export async function writeOcrQualityArtifact(
   const artifact: DocOcrQuality = {
     v: 1,
     ark: doc.ark,
-    ocrRate: info.ocrRate,
+    ocrRate,
     lane: doc.lane,
     folios,
     builtAt: new Date().toISOString(),
   };
   await blob.putJson(keys.ocrQuality(doc.ark), artifact);
   return artifact;
+}
+
+/**
+ * The convergence-point wrapper: build the artifact, or return the TERMINAL
+ * failure reason when the build is impossible (OcrQualityArtifactError). Any
+ * other throw (an S3 blip) propagates and is retried like every other stage
+ * error. Callers fail the document with the reason (failDoc).
+ */
+export async function buildOcrQualityArtifact(
+  blob: BlobStore,
+  doc: Pick<PreparedDoc, "ark" | "lane" | "pages">,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  try {
+    await writeOcrQualityArtifact(blob, doc);
+    return { ok: true };
+  } catch (e) {
+    if (e instanceof OcrQualityArtifactError) return { ok: false, reason: e.message };
+    throw e;
+  }
 }
