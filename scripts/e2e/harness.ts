@@ -11,6 +11,7 @@
 import { auth } from "@/lib/auth"
 import { prisma } from "@/lib/db"
 import { LOCALE_HEADER } from "@/lib/constants"
+import type { AppLocale } from "@/i18n/routing"
 
 export const BASE_URL = (process.env["E2E_BASE_URL"] ?? "http://localhost:3939").replace(/\/+$/, "")
 /** Model id for the OpenRouter gateway. Defaults to the app's shipped default. */
@@ -101,10 +102,12 @@ export interface TurnResult {
   elapsedMs: number
 }
 
+/** `locale` is the UI locale the turn is sent under (the research prompt's language). */
 export async function runTurn(
   sessionId: string,
   cookie: string,
   history: ChatMessage[],
+  locale: AppLocale = "fr",
 ): Promise<TurnResult> {
   const started = Date.now()
   const controller = new AbortController()
@@ -112,7 +115,7 @@ export async function runTurn(
 
   const res = await fetch(`${BASE_URL}/api/sessions/${sessionId}/messages`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Cookie: cookie, [LOCALE_HEADER]: "fr" },
+    headers: { "Content-Type": "application/json", Cookie: cookie, [LOCALE_HEADER]: locale },
     body: JSON.stringify({ sessionId, mode: "claude", messages: history, model: MODEL }),
     signal: controller.signal,
   }).catch((err: unknown) => {
