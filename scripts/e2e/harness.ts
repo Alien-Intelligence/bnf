@@ -16,8 +16,10 @@
 import { z } from "zod"
 import { auth } from "@/lib/auth"
 import { prisma } from "@/lib/db"
+import { cleanupProject } from "@/lib/testing/project-cleanup"
 import { LOCALE_HEADER } from "@/lib/constants"
 import { routing, type AppLocale } from "@/i18n/routing"
+import { TOOL_CALL_STATUS } from "@/models/messages/schema"
 
 /**
  * A required setting. The harness drives a real server with a real model and
@@ -161,13 +163,36 @@ function parseFrame(raw: string): Frame {
   return frame.data
 }
 
+/** Ceiling on the cancel request sent when a turn is abandoned. */
+const CANCEL_TIMEOUT_MS = 10_000
+
+/**
+ * Cancel the session's active turn on the server (the messages route's
+ * DELETE). The agent turn runs detached from the SSE request, so dropping the
+ * stream does not stop it: without this, an abandoned turn keeps spending and
+ * writing while the caller moves on (or deletes its project).
+ */
+export async function cancelTurn(sessionId: string, cookie: string): Promise<void> {
+  const res = await fetch(`${BASE_URL}/api/sessions/${sessionId}/messages`, {
+    method: "DELETE",
+    headers: { Cookie: cookie },
+    signal: AbortSignal.timeout(CANCEL_TIMEOUT_MS),
+  })
+  if (!res.ok) {
+    throw new Error(`cancelling the turn of session ${sessionId} failed: HTTP ${res.status} ${(await res.text()).slice(0, 200)}`)
+  }
+}
+
 /**
  * One real agent turn over SSE. `locale` is the UI locale the turn is sent
  * under (the research prompt's language). Throws on a transport or protocol
- * failure — a non-JSON or untyped frame, or a stream that does not end with
- * the `closed` frame — so a broken turn is never scored as a quiet one. An
- * `error` frame, or a turn closed for any reason but `done`, is a turn-level
- * failure reported in `errors` for the caller to assert on.
+ * failure — a non-JSON or untyped frame, an unterminated trailing frame, a
+ * stream that does not end with the `closed` frame — or when the turn runs
+ * past TURN_TIMEOUT_MS; in every such case the request is aborted, the stream
+ * reader cancelled and the server-side turn cancelled before the error is
+ * raised, so a broken turn is never left running nor scored as a quiet one.
+ * An `error` frame, or a turn closed for any reason but `done`, is a
+ * turn-level failure reported in `errors` for the caller to assert on.
  */
 export async function runTurn(
   sessionId: string,
@@ -177,7 +202,8 @@ export async function runTurn(
 ): Promise<TurnResult> {
   const started = Date.now()
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), TURN_TIMEOUT_MS)
+  const timer = setTimeout(() => controller.abort(new Error(`turn timed out after ${TURN_TIMEOUT_MS} ms`)), TURN_TIMEOUT_MS)
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null
 
   try {
     const res = await fetch(`${BASE_URL}/api/sessions/${sessionId}/messages`, {
@@ -185,8 +211,6 @@ export async function runTurn(
       headers: { "Content-Type": "application/json", Cookie: cookie, [LOCALE_HEADER]: locale },
       body: JSON.stringify({ sessionId, mode: "claude", messages: history, model: MODEL }),
       signal: controller.signal,
-    }).catch((err: unknown) => {
-      throw new Error(`turn POST failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err })
     })
 
     if (!res.ok || !res.body) {
@@ -200,33 +224,40 @@ export async function runTurn(
     let text = ""
     let buf = ""
 
+    const handleBlock = (block: string) => {
+      for (const line of block.split("\n")) {
+        if (!line.startsWith("data:")) continue
+        const raw = line.slice(5).trim()
+        if (!raw || raw === "[DONE]") continue
+        const frame = parseFrame(raw)
+        frames.push(frame)
+        if (frame.type === "text-delta") {
+          if (typeof frame["text"] !== "string") throw new Error(`text-delta frame without text: ${raw.slice(0, 200)}`)
+          text += frame["text"]
+        } else if (frame.type === "error") {
+          const message = frame["message"]
+          errors.push(typeof message === "string" ? message : `error frame without a message: ${raw.slice(0, 200)}`)
+        } else if (frame.type.endsWith("_event")) {
+          domainEvents.push({ type: frame.type, data: frame["data"] })
+        }
+      }
+    }
+
     const decoder = new TextDecoder()
-    const reader = res.body.getReader()
+    reader = res.body.getReader()
     for (;;) {
       const { done, value } = await reader.read()
       if (done) break
       buf += decoder.decode(value, { stream: true })
       let sep: number
       while ((sep = buf.indexOf("\n\n")) !== -1) {
-        const block = buf.slice(0, sep)
+        handleBlock(buf.slice(0, sep))
         buf = buf.slice(sep + 2)
-        for (const line of block.split("\n")) {
-          if (!line.startsWith("data:")) continue
-          const raw = line.slice(5).trim()
-          if (!raw || raw === "[DONE]") continue
-          const frame = parseFrame(raw)
-          frames.push(frame)
-          if (frame.type === "text-delta") {
-            if (typeof frame["text"] !== "string") throw new Error(`text-delta frame without text: ${raw.slice(0, 200)}`)
-            text += frame["text"]
-          } else if (frame.type === "error") {
-            const message = frame["message"]
-            errors.push(typeof message === "string" ? message : `error frame without a message: ${raw.slice(0, 200)}`)
-          } else if (frame.type.endsWith("_event")) {
-            domainEvents.push({ type: frame.type, data: frame["data"] })
-          }
-        }
       }
+    }
+    buf += decoder.decode()
+    if (buf.trim() !== "") {
+      throw new Error(`turn stream ended inside an unterminated frame: ${buf.slice(0, 200)}`)
     }
 
     const last = frames.at(-1)
@@ -237,9 +268,83 @@ export async function runTurn(
       errors.push(`turn closed with reason ${JSON.stringify(last["reason"])}`)
     }
     return { text, frames, domainEvents, errors, elapsedMs: Date.now() - started }
+  } catch (err) {
+    // Stop everything this turn started before reporting why it failed.
+    const failure = controller.signal.aborted && controller.signal.reason instanceof Error ? controller.signal.reason : err
+    controller.abort(failure)
+    const cleanup: unknown[] = []
+    if (reader !== null) await reader.cancel(failure).catch((e: unknown) => cleanup.push(e))
+    await cancelTurn(sessionId, cookie).catch((e: unknown) => cleanup.push(e))
+    if (cleanup.length > 0) {
+      throw new AggregateError([failure, ...cleanup], `turn failed and could not be fully cancelled: ${String(failure)}`)
+    }
+    throw failure
   } finally {
     clearTimeout(timer)
   }
+}
+
+/**
+ * runTurn, plus a check that the turn ended cleanly (no error frame, closed
+ * with reason `done`). Every turn of a scenario goes through it, so a turn
+ * that broke is a failed assertion, not a log line under turn 1.
+ */
+export async function runCheckedTurn(
+  label: string,
+  sessionId: string,
+  cookie: string,
+  history: ChatMessage[],
+  locale: AppLocale = routing.defaultLocale,
+): Promise<TurnResult> {
+  const turn = await runTurn(sessionId, cookie, history, locale)
+  check(
+    `${label}: the turn ended without an error`,
+    turn.errors.length === 0,
+    turn.errors.length === 0 ? `${Math.round(turn.elapsedMs / 1000)} s` : turn.errors.join(" | ").slice(0, 300),
+  )
+  return turn
+}
+
+// ---------------------------------------------------------------------------
+// Throwaway projects and the run lifecycle
+// ---------------------------------------------------------------------------
+
+const trackedProjects: string[] = []
+
+/** Register a throwaway project for the end-of-run cleanup (see runE2e). */
+export function trackProject(projectId: string): void {
+  trackedProjects.push(projectId)
+}
+
+/**
+ * Run an e2e's main, then — whatever it did — clean up every tracked project
+ * (when E2E_CLEANUP is set; otherwise say what was kept), then disconnect.
+ * Runs only after main has settled: every turn has returned or been cancelled
+ * by runTurn, so nothing is deleted under a live turn. One project's cleanup
+ * failing does not skip the others; failures are reported and fail the run.
+ */
+export function runE2e(main: () => Promise<void>): void {
+  void (async () => {
+    try {
+      await main()
+    } catch (err) {
+      console.error(err)
+      process.exitCode = 1
+    }
+    if (CLEANUP) {
+      for (const id of trackedProjects) {
+        try {
+          await cleanupProject(id)
+        } catch (err) {
+          console.error(`cleanup of project ${id} failed:`, err)
+          process.exitCode = 1
+        }
+      }
+    } else if (trackedProjects.length > 0) {
+      console.log(`\nkept project(s) ${trackedProjects.join(", ")} for inspection (set E2E_CLEANUP=1 to remove)`)
+    }
+    await prisma.$disconnect()
+  })()
 }
 
 // ---------------------------------------------------------------------------
@@ -268,12 +373,13 @@ export function named(calls: CallRow[], tool: string): CallRow[] {
 /** Compact one-line trace of the tool sequence, for the report. */
 export function trace(calls: CallRow[]): string {
   if (calls.length === 0) return "(no tool calls)"
-  return calls.map((c) => `${c.tool}${c.status === "ok" ? "" : `!${c.status}`}`).join(" → ")
+  return calls.map((c) => `${c.tool}${c.status === TOOL_CALL_STATUS.OK ? "" : `!${c.status}`}`).join(" → ")
 }
 
-export function outputText(row: CallRow | undefined): string {
-  if (!row) return ""
-  return typeof row.output === "string" ? row.output : JSON.stringify(row.output ?? {})
+/** A call's stored output as text, for messages. A call without output says so. */
+export function outputText(row: CallRow): string {
+  if (row.output === null || row.output === undefined) return `(${row.tool} stored no output)`
+  return typeof row.output === "string" ? row.output : JSON.stringify(row.output)
 }
 
 /** How the runtime persists a tool result: the stringified result under `content`. */
