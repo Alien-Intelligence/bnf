@@ -151,6 +151,28 @@ export const GALLICA_SEARCHABLE_DOC_TYPE = [
 ] as const
 
 /**
+ * The `sort` keys bnf_search_gallica accepts, verbatim (mcp-bnf
+ * search_gallica.py `_SORT_KEYS`). Ignored by mcp-bnf when `cql` is given —
+ * corpus_search rejects that combination rather than dropping the sort.
+ */
+export const GALLICA_SORT_KEYS = [
+  "dc.date/sort.descending",
+  "dc.date/sort.ascending",
+  "dc.title/sort.ascending",
+  "dc.creator/sort.ascending",
+  "ocr.quality/sort.descending",
+  "indexationdate/sort.descending",
+] as const
+
+/**
+ * mcp-bnf's own default for Gallica `collapsing` (search_gallica.py ToolInput):
+ * the volumes/issues of one periodical come back as ONE collection record.
+ * Used only to record the mode of a search that did not set it, when an older
+ * mcp-bnf does not echo it back.
+ */
+export const GALLICA_COLLAPSING_DEFAULT = true
+
+/**
  * Strict search-filter → canonical docType map, for a hit staged by a
  * corpus_search that was run WITH a `doc_type` filter: the filter the search
  * was run with says more about every hit than the hit's own dc:type label

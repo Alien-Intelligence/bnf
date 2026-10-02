@@ -156,6 +156,14 @@ function insertData(
     lang: c.lang ?? null,
     source: c.source ?? null,
     snippet: c.snippet ?? null,
+    creator: c.creator ?? null,
+    publisher: c.publisher ?? null,
+    dateLabel: c.dateLabel ?? null,
+    yearEnd: c.yearEnd ?? null,
+    subjects: c.subjects ?? null,
+    gallicaUrl: c.gallicaUrl ?? null,
+    catalogueUrl: c.catalogueUrl ?? null,
+    searchCollapsing: c.searchCollapsing ?? null,
     classifierVersion: BUFFER_CLASSIFIER_VERSION,
     originTool: args.originTool,
     originQuery: args.originQuery ?? null,
@@ -190,6 +198,15 @@ function refreshData(c: BufferCandidateInput, row: ExistingRow): Prisma.BufferIt
     ...(c.lang !== undefined ? { lang: c.lang } : {}),
     ...(c.source !== undefined ? { source: c.source } : {}),
     ...(c.snippet !== undefined ? { snippet: c.snippet } : {}),
+    ...(c.creator !== undefined ? { creator: c.creator } : {}),
+    ...(c.publisher !== undefined ? { publisher: c.publisher } : {}),
+    // A new date label rewrites the range as a whole: a single-year label
+    // clears a stale end year rather than leaving a range it no longer has.
+    ...(c.dateLabel !== undefined ? { dateLabel: c.dateLabel, yearEnd: c.yearEnd ?? null } : {}),
+    ...(c.subjects !== undefined ? { subjects: c.subjects } : {}),
+    ...(c.gallicaUrl !== undefined ? { gallicaUrl: c.gallicaUrl } : {}),
+    ...(c.catalogueUrl !== undefined ? { catalogueUrl: c.catalogueUrl } : {}),
+    ...(c.searchCollapsing !== undefined ? { searchCollapsing: c.searchCollapsing } : {}),
     ...(c.title !== undefined && UNSETTLED_ENRICH.has(row.enrichStatus)
       ? { enrichStatus: BUFFER_ENRICH_STATUS.RESOLVED, enrichError: null }
       : {}),

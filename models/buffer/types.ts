@@ -105,6 +105,18 @@ export const bufferCandidateSchema = z.object({
   lang: z.string().trim().min(1).max(20).optional(),
   source: z.string().trim().min(1).max(80).optional(),
   snippet: z.string().trim().min(1).max(2_000).optional(),
+  creator: z.string().trim().min(1).max(500).optional(),
+  publisher: z.string().trim().min(1).max(500).optional(),
+  /** The BnF date string verbatim ("1861-1946", "1937-07-12"). */
+  dateLabel: z.string().trim().min(1).max(100).optional(),
+  /** Last year of a range label; absent for a single year. */
+  yearEnd: z.number().int().optional(),
+  /** Subject headings joined with " ; ". */
+  subjects: z.string().trim().min(1).max(2_000).optional(),
+  gallicaUrl: z.string().trim().min(1).max(500).optional(),
+  catalogueUrl: z.string().trim().min(1).max(500).optional(),
+  /** Provenance: the collapsing mode of the Gallica search that staged it. */
+  searchCollapsing: z.boolean().optional(),
 })
 
 export type BufferCandidateInput = z.infer<typeof bufferCandidateSchema>

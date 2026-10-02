@@ -37,8 +37,19 @@ import {
 import { parseBnfDate } from "@/lib/mcp/normalize"
 import { quotaSaturatedResult } from "@/lib/mcp/rate-limit"
 import { BNF_SEARCH_TOOL } from "@/lib/mcp/tools"
-import { GALLICA_SEARCHABLE_DOC_TYPE, canonicalLang, sourceFromArk } from "@/lib/mcp/vocab"
-import { canonicalBufferDocType, gallicaSearchDocType } from "@/lib/buffer/classify"
+import {
+  GALLICA_COLLAPSING_DEFAULT,
+  GALLICA_SEARCHABLE_DOC_TYPE,
+  GALLICA_SORT_KEYS,
+  canonicalLang,
+  sourceFromArk,
+} from "@/lib/mcp/vocab"
+import {
+  BUFFER_SUBJECTS_SEPARATOR,
+  canonicalBufferDocType,
+  gallicaSearchDocType,
+  type GallicaSearchDocType,
+} from "@/lib/buffer/classify"
 import { classifyArkKind } from "@/models/documents/schema"
 import { BufferPolicy } from "@/models/buffer/policy"
 import { BufferQueries, type BufferFilterSet } from "@/models/buffer/queries"
@@ -96,6 +107,15 @@ function stagingCounts(found: number, r: BufferRegisterResult) {
     unresolved: r.unresolved,
     ...(explanation !== null ? { explanation } : {}),
   }
+}
+
+/** Record kinds in one search page, for the compact result. */
+function countKinds(candidates: BufferCandidateInput[]): Record<string, number> {
+  const out: Record<string, number> = {}
+  for (const c of candidates) {
+    if (c.arkKind !== undefined) out[c.arkKind] = (out[c.arkKind] ?? 0) + 1
+  }
+  return out
 }
 
 /** Publish a buffer_event carrying the post-op candidate total. */
@@ -443,24 +463,31 @@ interface BnfSearchPagination {
   next_start_record?: number
   start_record: number
 }
-/** One Gallica hit (bnf_search_gallica → data.data.results[]). */
-interface GallicaHit {
+/** One Gallica hit (bnf_search_gallica → data.data.results[], search_gallica.py). */
+export interface GallicaHit {
   ark: string
   title: string | null
   creator: string | null
   date: string | null
+  subject: string[] | null
   description: string | null
   doc_type: string | null
   language: string | null
+  gallica_url: string | null
 }
-/** One catalogue hit (bnf_search_catalogue → data.data.records[]). No doc_type. */
-interface CatalogueHit {
+/** One catalogue hit (bnf_search_catalogue → data.data.records[]). No doc_type.
+ *  `isbn` / `issn` are read but not stored (no filter needs them). */
+export interface CatalogueHit {
   ark: string
   title: string | null
   author: string | null
   date: string | null
   publisher: string | null
   language: string | null
+  isbn: string | null
+  issn: string | null
+  catalogue_url: string | null
+  gallica_url: string | null
 }
 /** One thing the BnF refused, in its own words (mcp-bnf >= 0.4.0). */
 interface BnfDiagnostic {
@@ -514,6 +541,87 @@ function clean(value: string | null | undefined): string | undefined {
 /** Map a search hit's free-text date to a year, or undefined. */
 function toYear(date: string | null): number | undefined {
   return parseBnfDate(date).year ?? undefined
+}
+
+/** The last year of a range label ("1861-1946" → 1946), when it is after `year`. */
+function toYearEnd(date: string | null, year: number | undefined): number | undefined {
+  const m = /(\d{4})\D+(\d{4})/.exec(date ?? "")
+  if (m === null || year === undefined) return undefined
+  const end = Number(m[2])
+  return end > year ? end : undefined
+}
+
+/** The `cb…/date` form: a Gallica PERIODICAL collection entry, not a document.
+ *  Must be read on the raw identifier, before toFullArk strips the suffix. */
+function isCollectionEntry(rawArk: string): boolean {
+  return /\/date\/?$/.test(rawArk.trim())
+}
+
+/**
+ * A Gallica hit → the buffer candidate, or null when it carries no usable
+ * identifier. Every useful field is kept (feedback #10a: the filters need
+ * them), and the type and kind are canonical at staging time:
+ *   - docType: the search's own doc_type filter, else the folded dc:type label
+ *     (Decision 2); the raw label is kept in docTypeRaw.
+ *   - arkKind from the identifier form + type — the `/date` collection form is
+ *     read before toFullArk strips it.
+ *   - `typeAmbiguous`: a `text` hit from a search without doc_type — a
+ *     monograph or a press issue, Gallica does not say which.
+ */
+export function candidateFromGallicaHit(
+  h: GallicaHit,
+  search: { docTypeFilter: GallicaSearchDocType | null; collapsing: boolean },
+): (BufferCandidateInput & { typeAmbiguous: boolean }) | null {
+  const ark = toFullArk(h.ark)
+  if (ark === null) return null
+  const docTypeRaw = clean(h.doc_type)
+  const docType = canonicalBufferDocType(docTypeRaw, search.docTypeFilter)
+  if (!docType.known) console.warn(`[corpus_search] unknown dc:type "${docTypeRaw}" → other`)
+  const year = toYear(h.date)
+  const subjects = (h.subject ?? []).map((v) => v.trim()).filter((v) => v !== "")
+  return {
+    ark,
+    title: clean(h.title),
+    creator: clean(h.creator),
+    year,
+    yearEnd: toYearEnd(h.date, year),
+    dateLabel: clean(h.date),
+    docType: docType.code ?? undefined,
+    docTypeRaw,
+    arkKind: classifyArkKind({ ark, collectionEntry: isCollectionEntry(h.ark), docType: docType.code }),
+    lang: canonicalLang(h.language) ?? undefined,
+    source: sourceFromArk(ark),
+    snippet: clean(h.description),
+    subjects: subjects.length > 0 ? subjects.join(BUFFER_SUBJECTS_SEPARATOR) : undefined,
+    gallicaUrl: clean(h.gallica_url),
+    searchCollapsing: search.collapsing,
+    typeAmbiguous: docType.code === "text",
+  }
+}
+
+/**
+ * A catalogue hit → the buffer candidate. The payload carries no type, so
+ * docType stays unset (enrichment or the resolver fills it after commit) and
+ * the kind is that of a `cb…` notice.
+ */
+export function candidateFromCatalogueHit(h: CatalogueHit): BufferCandidateInput | null {
+  const ark = toFullArk(h.ark)
+  if (ark === null) return null
+  const year = toYear(h.date)
+  return {
+    ark,
+    title: clean(h.title),
+    creator: clean(h.author),
+    publisher: clean(h.publisher),
+    year,
+    yearEnd: toYearEnd(h.date, year),
+    dateLabel: clean(h.date),
+    arkKind: classifyArkKind({ ark, collectionEntry: false, docType: null }),
+    lang: canonicalLang(h.language) ?? undefined,
+    source: sourceFromArk(ark),
+    catalogueUrl: clean(h.catalogue_url),
+    gallicaUrl: clean(h.gallica_url),
+  }
 }
 
 /**
@@ -757,6 +865,9 @@ async function zeroResultDiagnostic(
 }
 
 const searchSourceEnum = z.enum(["gallica", "catalogue"])
+const gallicaSortEnum = z.enum(GALLICA_SORT_KEYS)
+/** A 4-digit year, the form bib.publicationdate takes. */
+const yearStringSchema = z.string().trim().regex(/^\d{4}$/, "année sur 4 chiffres, ex. \"1960\"")
 type SearchSource = z.infer<typeof searchSourceEnum>
 
 /** The criteria part of a corpus_search input — what the pure helpers below read. */
@@ -770,12 +881,94 @@ export type CorpusSearchCriteria = {
   author?: string
   subject?: string
   date?: string
+  shelfmark?: string
+  /** Catalogue only — bib.publicationdate range. */
+  date_from?: string
+  date_to?: string
+  /** Gallica only. */
   doc_type?: string
+  collapsing?: boolean
+  sort?: (typeof GALLICA_SORT_KEYS)[number]
   language?: string
 }
 
 /** Every criterion that satisfies "give at least one", in the order the message lists them. */
-const SEARCH_CRITERIA = ["cql", "query", "title", "creator", "author", "subject", "date"] as const
+const SEARCH_CRITERIA = [
+  "cql",
+  "query",
+  "title",
+  "creator",
+  "author",
+  "subject",
+  "date",
+  "shelfmark",
+  "date_from",
+  "date_to",
+] as const
+
+/** The simple criteria a raw `cql` replaces — sending both would AND two queries. */
+const CQL_EXCLUSIVE = [
+  "query",
+  "title",
+  "creator",
+  "author",
+  "subject",
+  "shelfmark",
+  "date",
+  "date_from",
+  "date_to",
+  "doc_type",
+  "language",
+] as const
+
+/** True when an optional criterion was actually given. */
+function given(value: string | boolean | undefined): boolean {
+  return value !== undefined && value !== ""
+}
+
+/**
+ * Parameters the chosen source (or a raw `cql`) cannot honour, as French
+ * problems the agent can fix — empty when the combination is valid. Found bug:
+ * these used to be DROPPED silently (doc_type on the catalogue, every simple
+ * criterion next to `cql`, and mcp-bnf ignores `sort` when `cql` is given), so
+ * the agent believed a filter applied that never reached the BnF. `collapsing`
+ * is compatible with `cql`: it is a request parameter, not a CQL clause.
+ */
+export function incompatibleSearchParams(input: CorpusSearchCriteria): string[] {
+  const problems: string[] = []
+  if (input.source === "catalogue") {
+    const gallicaOnly = (["doc_type", "collapsing", "sort"] as const).filter((k) => given(input[k]))
+    if (gallicaOnly.length > 0) {
+      problems.push(
+        `${gallicaOnly.map((k) => `\`${k}\``).join(", ")} n'existe(nt) que pour Gallica : retire-le(s) ` +
+          "pour le catalogue, ou passe `source: \"gallica\"`.",
+      )
+    }
+  } else if (given(input.date_from) || given(input.date_to)) {
+    const from = input.date_from ?? "1850"
+    const to = input.date_to ?? "1860"
+    problems.push(
+      "`date_from` / `date_to` n'existent que pour le catalogue. Sur Gallica, exprime l'intervalle en CQL : " +
+        `\`cql: dc.date >= "${from}" and dc.date <= "${to}"\` (avec tes autres critères dans le même CQL).`,
+    )
+  }
+  if (given(input.cql)) {
+    const mixed = CQL_EXCLUSIVE.filter((k) => given(input[k]))
+    if (mixed.length > 0) {
+      problems.push(
+        `\`cql\` remplace les critères simples, qui seraient ignorés : ${mixed.map((k) => `\`${k}\``).join(", ")}. ` +
+          "Intègre ces critères dans le CQL, ou retire `cql`.",
+      )
+    }
+    if (given(input.sort)) {
+      problems.push(
+        `\`sort\` est ignoré quand \`cql\` est donné : ajoute \`sortBy ${input.sort}\` au CQL ` +
+          "(par exemple `sortBy dc.date/sort.ascending`).",
+      )
+    }
+  }
+  return problems
+}
 
 /**
  * Problems with the criteria themselves — none given, or `creator` and its alias
@@ -829,6 +1022,8 @@ export function buildSearchArgs(
     start_record: input.start_record ?? 1,
     maximum_records: pageSize,
   }
+  // `collapsing` is a Gallica request parameter, honoured with or without cql.
+  if (input.source === "gallica" && input.collapsing !== undefined) args.collapsing = input.collapsing
   if (input.cql) {
     args.cql = input.cql
     return args
@@ -836,14 +1031,18 @@ export function buildSearchArgs(
   if (input.query) args.query = input.query
   if (input.title) args.title = input.title
   if (input.subject) args.subject = input.subject
+  if (input.shelfmark) args.shelfmark = input.shelfmark
   if (input.date) args.date = input.date
   if (input.language) args.language = input.language
   const person = input.creator ?? input.author
   if (input.source === "gallica") {
     if (person) args.creator = person
     if (input.doc_type) args.doc_type = input.doc_type
-  } else if (person) {
-    args.author = person
+    if (input.sort) args.sort = input.sort
+  } else {
+    if (person) args.author = person
+    if (input.date_from) args.date_from = input.date_from
+    if (input.date_to) args.date_to = input.date_to
   }
   return args
 }
@@ -858,7 +1057,12 @@ export const corpusSearchTool = defineTool<
     author: z.ZodOptional<z.ZodString>
     subject: z.ZodOptional<z.ZodString>
     date: z.ZodOptional<z.ZodString>
+    shelfmark: z.ZodOptional<z.ZodString>
+    date_from: z.ZodOptional<typeof yearStringSchema>
+    date_to: z.ZodOptional<typeof yearStringSchema>
     doc_type: z.ZodOptional<z.ZodString>
+    collapsing: z.ZodOptional<z.ZodBoolean>
+    sort: z.ZodOptional<typeof gallicaSortEnum>
     language: z.ZodOptional<z.ZodString>
     start_record: z.ZodOptional<z.ZodNumber>
     maximum_records: z.ZodOptional<z.ZodNumber>
@@ -871,9 +1075,13 @@ export const corpusSearchTool = defineTool<
     "the research buffer in one step — this is your PRIMARY way to find documents. " +
     "Prefer it over the raw bnf_search_* tools: it persists candidates to the " +
     "visible buffer (so the librarian can curate them) instead of returning a long " +
-    "list into the conversation. Pick `source`: \"gallica\" for digitised full-text " +
+    "list into the conversation. COST: raw bnf__bnf_search_* calls cost the same BnF " +
+    "quota but stage nothing; re-adding their ARKs with buffer_add costs one more BnF " +
+    "lookup PER ARK to recover the metadata. Pick `source`: \"gallica\" for digitised full-text " +
     "documents, \"catalogue\" for bibliographic records. Give at least one of " +
-    "query / title / creator / subject / date. It returns a COMPACT summary — total available, " +
+    "query / title / creator / subject / date / shelfmark (catalogue: date_from / date_to). " +
+    "A parameter the chosen source cannot honour is REFUSED with `invalid_params` and " +
+    "the fix — never silently dropped. It returns a COMPACT summary — total available, " +
     "how many were added to the buffer, the buffer size, and a small sample — NOT " +
     "the full result list; inspect the staged candidates with buffer_stats / " +
     "buffer_list. To gather more, call again with `start_record` advanced by the " +
@@ -890,12 +1098,20 @@ export const corpusSearchTool = defineTool<
     "Narrowing the words will not fix it, and neither will `date`: a run covering " +
     "1861-1946 satisfies any year inside it. Only `doc_type` separates the two lanes. " +
     'Want readable documents? doc_type: "monographie" (measured: 13 of 20 hits were ' +
-    "collections, 0 of 20 after). Want the press — publicité, comptes rendus, " +
-    'réception? Keep the periodical lane, but treat a "fascicule" hit as a TITLE to ' +
-    "drill into with bnf__bnf_get_periodical_issues, never as a document you found. " +
+    "collections, 0 of 20 after). PRESS: for the press, search " +
+    '`doc_type: "fascicule"` with `collapsing: false`: hits are then individual ISSUES ' +
+    "(kind periodical_issue) with their date and title, ready to filter — never " +
+    "enumerate issues with bnf__bnf_get_periodical_issues + buffer_add when a search " +
+    "can stage them with their metadata. With the default `collapsing: true` each " +
+    "press title is ONE collection record (cb…, kind periodical_collection): a TITLE, " +
+    "not a document you found. " +
     "For a named person use `creator`, not `query`: free text gave 1131 hits with none " +
     "on target where the creator index gave 23 that were all correct. " +
-    "Curate with buffer_remove_by_filter, then buffer_commit to add them to the corpus.",
+    "The result says what became of every hit — `added`, `alreadyInCorpus`, " +
+    "`previouslyDiscarded`, `refreshed`, and an `explanation` whenever `added` is below " +
+    "`found` (read it: `alreadyInCorpus` is not a malfunction) — plus `kinds` (record " +
+    "kinds in this page) and `type_ambiguous` when Gallica could not tell press from " +
+    "books. Curate with buffer_remove_by_filter, then buffer_commit to add them to the corpus.",
   inputSchema: z.object({
     source: searchSourceEnum.describe(
       'Which BnF index: "gallica" (digitised full text) or "catalogue" (bibliographic).',
@@ -935,6 +1151,21 @@ export const corpusSearchTool = defineTool<
         "Subject heading (Rameau / dc.subject): bib.subject on the catalogue, dc.subject on " +
           "Gallica. The catalogue's subject index is far more selective than `query`.",
       ),
+    shelfmark: z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .describe('Shelfmark (cote): bib.cote on the catalogue, dc.source on Gallica, e.g. "8-LC2-151".'),
+    date_from: yearStringSchema
+      .optional()
+      .describe(
+        'Catalogue only — publication year lower bound, inclusive, e.g. "1960" (bib.publicationdate). ' +
+          "On Gallica, write the range in `cql` instead.",
+      ),
+    date_to: yearStringSchema
+      .optional()
+      .describe('Catalogue only — publication year upper bound, inclusive, e.g. "1990".'),
     date: z
       .string()
       .trim()
@@ -952,14 +1183,32 @@ export const corpusSearchTool = defineTool<
         // offering a dead one (typeAffiche, son, video) returns 0 — which the agent
         // reads as absence.
         `Gallica only — one of: ${GALLICA_SEARCHABLE_DOC_TYPE.join(", ")}. ` +
-          "Ignored for the catalogue. " +
+          "Refused for the catalogue (its payload carries no type). " +
           "This is the strongest precision lever Gallica has: it splits located " +
           'documents ("monographie" and the other item types) from periodical ' +
           'COLLECTION records ("fascicule"), which is where nearly all apparent ' +
           "volume — and nearly all noise — comes from. Reach for it before you start " +
           "rewording the query.",
       ),
-    language: z.string().trim().min(1).optional().describe("Language code to restrict to."),
+    collapsing: z
+      .boolean()
+      .optional()
+      .describe(
+        "Gallica only. Default true: volumes/issues of one periodical are grouped into ONE " +
+          "collection record (cb…). Set false to get the INDIVIDUAL ISSUES (bpt6k…) — required " +
+          "for any press corpus (articles of a given year, coverage of an event): with true you " +
+          "stage periodical TITLES, not the issues that carry the text. The reported total moves " +
+          "a lot between modes; quote it with the mode.",
+      ),
+    sort: gallicaSortEnum
+      .optional()
+      .describe("Gallica only — result order. Not with `cql` (write `sortBy …` in the CQL instead)."),
+    language: z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .describe('3-letter BnF language code, e.g. "fre", "lat", "ger".'),
     start_record: z
       .number()
       .int()
@@ -995,6 +1244,8 @@ export const corpusSearchTool = defineTool<
     if (criterionProblems.length > 0) {
       return { success: false, invalid_params: true, problems: criterionProblems }
     }
+    const incompatible = incompatibleSearchParams(input)
+    if (incompatible.length > 0) return { success: false, invalid_params: true, problems: incompatible }
     const page = resolveSearchPageSize(input.source, input.maximum_records)
     if (!page.ok) return { success: false, invalid_params: true, problems: page.problems }
 
@@ -1018,6 +1269,7 @@ export const corpusSearchTool = defineTool<
     let endpoint: string | undefined
     let collapsing: boolean | undefined
     let diagnostics: BnfDiagnostic[] = []
+    let typeAmbiguous = 0
     try {
       if (input.source === "gallica") {
         const payload = await callBnfTool<GallicaPayload>(
@@ -1040,33 +1292,17 @@ export const corpusSearchTool = defineTool<
         }
         // The search's own doc_type filter classifies every hit better than
         // the hit's label (Gallica labels press issues and monographs alike
-        // `text`); the `/date` collection-entry form must be read BEFORE
-        // toFullArk strips it.
-        const searchDocType = gallicaSearchDocType(input.doc_type, executedCql ?? input.cql)
-        candidates = payload.data.results.flatMap((h) => {
-          const ark = toFullArk(h.ark)
-          if (ark === null) return []
-          const docTypeRaw = clean(h.doc_type)
-          const docType = canonicalBufferDocType(docTypeRaw, searchDocType)
-          if (!docType.known) console.warn(`[corpus_search] unknown dc:type "${docTypeRaw}" → other`)
-          return [
-            {
-              ark,
-              title: clean(h.title),
-              year: toYear(h.date),
-              docType: docType.code ?? undefined,
-              docTypeRaw,
-              arkKind: classifyArkKind({
-                ark,
-                collectionEntry: /\/date\/?$/.test(h.ark.trim()),
-                docType: docType.code,
-              }),
-              lang: canonicalLang(h.language) ?? undefined,
-              source: sourceFromArk(ark),
-              snippet: clean(h.description),
-            },
-          ]
+        // `text`). The collapsing mode is recorded as provenance only.
+        const search = {
+          docTypeFilter: gallicaSearchDocType(input.doc_type, executedCql ?? input.cql),
+          collapsing: collapsing ?? input.collapsing ?? GALLICA_COLLAPSING_DEFAULT,
+        }
+        const mapped = payload.data.results.flatMap((h) => {
+          const c = candidateFromGallicaHit(h, search)
+          return c === null ? [] : [c]
         })
+        typeAmbiguous = mapped.filter((c) => c.typeAmbiguous).length
+        candidates = mapped.map(({ typeAmbiguous: _ambiguous, ...c }) => c)
       } else {
         const payload = await callBnfTool<CataloguePayload>(
           mcpEnv.BNF_MCP_URL,
@@ -1086,20 +1322,8 @@ export const corpusSearchTool = defineTool<
           throw new BnfMcpError(`${BNF_SEARCH_TOOL.catalogue}: payload carried no records array`)
         }
         candidates = payload.data.records.flatMap((h) => {
-          const ark = toFullArk(h.ark)
-          if (ark === null) return []
-          return [
-            {
-              ark,
-              title: clean(h.title),
-              year: toYear(h.date),
-              // The catalogue payload carries no doc_type; leave it for the
-              // background resolver to fill in after commit. The kind is
-              // derived from the ARK by registerCandidates (a cb… notice).
-              lang: canonicalLang(h.language) ?? undefined,
-              source: sourceFromArk(ark),
-            },
-          ]
+          const c = candidateFromCatalogueHit(h)
+          return c === null ? [] : [c]
         })
       }
     } catch (err) {
@@ -1199,10 +1423,21 @@ export const corpusSearchTool = defineTool<
       ...(pagination.next_start_record !== undefined
         ? { next_start_record: pagination.next_start_record }
         : {}),
+      kinds: countKinds(candidates),
+      ...(typeAmbiguous > 0
+        ? {
+            type_ambiguous: typeAmbiguous,
+            type_ambiguous_hint:
+              `${typeAmbiguous} résultat(s) sont de type « texte » sans précision : relance avec ` +
+              '`doc_type: "fascicule"` (presse) ou `"monographie"` (livres) pour les distinguer.',
+          }
+        : {}),
       sample: candidates.slice(0, 8).map((c) => ({
         ark: c.ark,
         title: c.title ?? null,
         year: c.year ?? null,
+        kind: c.arkKind ?? null,
+        creator: c.creator ?? null,
       })),
     }
   },
