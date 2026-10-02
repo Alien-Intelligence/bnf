@@ -296,6 +296,13 @@ export const DATACLUSTER_LIST_PAGE_SIZE = 100
 export const RAG_DEFAULT_K = 12
 
 /**
+ * `modelVersion` the fake cluster (CLUSTER_MODE=fake) reports on every
+ * rag_query. The quote harness refuses to score a run whose rag_query answered
+ * with anything else: a real cluster would make its fixtures meaningless.
+ */
+export const FAKE_RAG_MODEL_VERSION = "fake-rag-v1"
+
+/**
  * Characters `rag_get_text` returns when the agent omits `charLimit`. The
  * upstream MCP's own default is the opposite (0 = the whole document), so the
  * app applies its documented default itself rather than inherit a whole

@@ -1,8 +1,9 @@
 // lib/agent/tools/rag.test.ts
-// rag_get_text documents a 4 000-character default. The upstream MCP's own
-// default is the opposite (char_limit 0 = the whole document), so the app must
-// apply its documented default itself — otherwise "read the surrounding
-// context" hands the agent an entire multi-hundred-folio volume.
+// The rag tools' read path. rag_get_text documents a 4 000-character default;
+// the upstream MCP's own default is the opposite (char_limit 0 = the whole
+// document), so the handler applies it — once, here — or "read the
+// surrounding context" hands the agent an entire multi-hundred-folio volume.
+// Every tool must address the CORPUS project and forward the turn's signal.
 import "server-only"
 
 import { test, before, after } from "node:test"
@@ -11,7 +12,7 @@ import { prisma } from "@/lib/db"
 import { ClusterRagClient } from "@/lib/cluster/rag"
 import type { RagEntryContentRequest } from "@/lib/cluster/rag"
 import { RAG_GET_TEXT_DEFAULT_CHAR_LIMIT } from "@/lib/constants"
-import { ragGetTextTool } from "./rag"
+import { ragGetTextTool, ragKeywordSearchTool, ragQueryTool } from "./rag"
 import type { TurnScopedCtx } from "./registry-factory"
 import {
   createTestUser,
@@ -25,16 +26,22 @@ import { SESSION_SCOPE } from "@/models/sessions/schema"
 
 let userId: string
 let projectId: string
+let derivedId: string
 let sessionId: string
 
-function ctxFor(): TurnScopedCtx {
+/**
+ * A derived-shaped context: the turn runs in workspace `derivedId`, but its
+ * corpus is `projectId`'s. Every rag tool must address the CORPUS project; a
+ * regression to `ctx.projectId` would read a dataset the workspace has none of.
+ */
+function ctxFor(signal: AbortSignal = new AbortController().signal): TurnScopedCtx {
   return {
-    signal: new AbortController().signal,
+    signal,
     request: new Request("http://localhost/test"),
     db: prisma,
     user: { id: userId } as TurnScopedCtx["user"],
     appSessionId: sessionId,
-    projectId,
+    projectId: derivedId,
     corpusProjectId: projectId,
     corpusReachable: true,
     scope: "research",
@@ -46,61 +53,88 @@ before(async () => {
   userId = user.id
   const project = await createTestProject(userId, "rag-get-text")
   projectId = project.id
-  sessionId = await createTestSession(projectId, SESSION_SCOPE.RESEARCH)
+  const derived = await createTestProject(userId, "rag-get-text-workspace")
+  derivedId = derived.id
+  sessionId = await createTestSession(derivedId, SESSION_SCOPE.RESEARCH)
   await markHeadIngested(projectId)
 })
 
 after(async () => {
+  await cleanupProject(derivedId)
   await cleanupProject(projectId)
   await deleteTestUser(userId)
 })
 
-test("rag_get_text forwards charLimit 4000 when the agent omits it", async () => {
+/** Replace the facade's getEntryContent for one call, capturing the request. */
+async function captureGetText(input: Parameters<typeof ragGetTextTool.handler>[0], signal?: AbortSignal) {
   const original = ClusterRagClient.getEntryContent
-  let captured: RagEntryContentRequest | null = null
+  const seen: RagEntryContentRequest[] = []
   ClusterRagClient.getEntryContent = async (req) => {
-    captured = req
+    seen.push(req)
     return {
       entryId: req.entryId,
       text: "",
-      charOffset: req.charOffset ?? 0,
-      charLimit: req.charLimit ?? 0,
+      charOffset: req.charOffset,
+      charLimit: req.charLimit,
       totalLength: 0,
       hasMore: false,
       nextOffset: 0,
     }
   }
   try {
-    await ragGetTextTool.handler({ entryId: 3 }, ctxFor())
+    await ragGetTextTool.handler(input, ctxFor(signal))
   } finally {
     ClusterRagClient.getEntryContent = original
   }
-  assert.ok(captured, "the facade was called")
+  const [req] = seen
+  assert.ok(req, "the facade was called")
+  return req
+}
+
+test("rag_get_text forwards charLimit 4000 and offset 0 when the agent omits them", async () => {
+  const req = await captureGetText({ entryId: 3 })
   assert.equal(RAG_GET_TEXT_DEFAULT_CHAR_LIMIT, 4_000)
-  assert.equal((captured as RagEntryContentRequest).charLimit, RAG_GET_TEXT_DEFAULT_CHAR_LIMIT)
-  assert.equal((captured as RagEntryContentRequest).entryId, 3)
+  assert.equal(req.charLimit, RAG_GET_TEXT_DEFAULT_CHAR_LIMIT)
+  assert.equal(req.charOffset, 0)
+  assert.equal(req.entryId, 3)
 })
 
 test("rag_get_text keeps an explicit charLimit, including 0 (the rest of the document)", async () => {
-  const original = ClusterRagClient.getEntryContent
-  const seen: number[] = []
-  ClusterRagClient.getEntryContent = async (req) => {
-    seen.push(req.charLimit ?? -1)
-    return {
-      entryId: req.entryId,
-      text: "",
-      charOffset: 0,
-      charLimit: req.charLimit ?? 0,
-      totalLength: 0,
-      hasMore: false,
-      nextOffset: 0,
-    }
+  assert.equal((await captureGetText({ entryId: 3, charLimit: 0 })).charLimit, 0)
+  assert.equal((await captureGetText({ entryId: 3, charLimit: 1_200 })).charLimit, 1_200)
+})
+
+test("rag_get_text reads the CORPUS project with the turn's signal", async () => {
+  const controller = new AbortController()
+  const req = await captureGetText({ entryId: 3 }, controller.signal)
+  assert.equal(req.projectId, projectId, "corpus project, not the workspace")
+  assert.notEqual(req.projectId, derivedId)
+  assert.equal(req.signal, controller.signal)
+})
+
+test("rag_query and rag_keyword_search read the CORPUS project with the turn's signal", async () => {
+  const controller = new AbortController()
+  const originalQuery = ClusterRagClient.query
+  const originalKeyword = ClusterRagClient.keywordSearch
+  const seen: Array<{ projectId: string; signal: AbortSignal }> = []
+  ClusterRagClient.query = async (req) => {
+    seen.push(req)
+    return { passages: [], total: 0, modelVersion: "test" }
+  }
+  ClusterRagClient.keywordSearch = async (req) => {
+    seen.push(req)
+    return { hits: [], total: 0 }
   }
   try {
-    await ragGetTextTool.handler({ entryId: 3, charLimit: 0 }, ctxFor())
-    await ragGetTextTool.handler({ entryId: 3, charLimit: 1_200 }, ctxFor())
+    await ragQueryTool.handler({ query: "incendie" }, ctxFor(controller.signal))
+    await ragKeywordSearchTool.handler({ query: "incendie" }, ctxFor(controller.signal))
   } finally {
-    ClusterRagClient.getEntryContent = original
+    ClusterRagClient.query = originalQuery
+    ClusterRagClient.keywordSearch = originalKeyword
   }
-  assert.deepEqual(seen, [0, 1_200])
+  assert.equal(seen.length, 2)
+  for (const req of seen) {
+    assert.equal(req.projectId, projectId)
+    assert.equal(req.signal, controller.signal)
+  }
 })

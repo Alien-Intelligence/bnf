@@ -84,10 +84,10 @@ export const ragQueryTool = defineTool<
 
     return ClusterRagClient.query({
       projectId: ctx.corpusProjectId,
-      ingestedVersionId: corpus.versionId,
       query: input.query,
       k: input.k,
       filters: input.filters,
+      signal: ctx.signal,
     })
   },
 })
@@ -149,10 +149,10 @@ export const ragKeywordSearchTool = defineTool<
 
     return ClusterRagClient.keywordSearch({
       projectId: ctx.corpusProjectId,
-      ingestedVersionId: corpus.versionId,
       query: input.query,
       limit: input.limit,
       filters: input.filters,
+      signal: ctx.signal,
     })
   },
 })
@@ -203,13 +203,15 @@ export const ragGetTextTool = defineTool<
       return { text: "", error: corpus.error }
     }
 
-    // The documented default is the app's to apply: left undefined, the
-    // upstream MCP reads it as 0 and returns the rest of the document.
+    // The defaults are applied HERE and nowhere else: the facade and both
+    // runners take explicit values. Left undefined, the upstream MCP would read
+    // the limit as 0 and return the rest of the document.
     return ClusterRagClient.getEntryContent({
       projectId: ctx.corpusProjectId,
       entryId: input.entryId,
-      charOffset: input.charOffset,
+      charOffset: input.charOffset ?? 0,
       charLimit: input.charLimit ?? RAG_GET_TEXT_DEFAULT_CHAR_LIMIT,
+      signal: ctx.signal,
     })
   },
 })

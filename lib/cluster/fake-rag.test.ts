@@ -1,87 +1,110 @@
 // lib/cluster/fake-rag.test.ts
-// Fake/real parity for entry text: the fake runner must serve the same
-// folio-headed document shape worker-v2 writes, so anything that reads folio
-// text (the quote check, the agent's rag_get_text) behaves identically in both
-// cluster modes.
+// Fake/real parity: the fake runner must serve the same folio-headed text,
+// the same passage shape and the same entry-slice semantics as the real
+// cluster, so anything that reads folio text (the quote check, the agent's
+// rag_get_text) behaves identically in both cluster modes.
 import "server-only"
 
 import { test } from "node:test"
 import assert from "node:assert/strict"
+import { DataclusterMcpNotFoundError } from "./datacluster-mcp-client"
 import { FakeRagRunner } from "./fake-rag"
 import { RAG_FIXTURES } from "./rag-fixtures"
-import { splitEntryFolios } from "./folio-text"
+import { codePointLength, sliceCodePoints, splitEntryFolios } from "./folio-text"
 
 // Le Figaro, 6 mai 1889 — two fixtures, folios 1 and 2, first ARK in the file.
 const ARK = "ark:/12148/bpt6k2839841"
 const PROJECT = "fake-project"
-const INGESTED = "fake-version"
+const signal = () => new AbortController().signal
 
-test("getEntryContent text carries `## Folio N` headings and splitEntryFolios recovers each fixture folio", async () => {
+const FIGARO = RAG_FIXTURES.filter((f) => f.ark === ARK)
+
+/** The worker's format, written out literally: heading, page, separator. */
+const FIGARO_BODY =
+  `## Folio 1\n\n${FIGARO[0].snippet}` + "\n\n" + `## Folio 2\n\n${FIGARO[1].snippet}`
+
+async function figaroEntryId(): Promise<number> {
   const hit = await FakeRagRunner.keywordSearch({
     projectId: PROJECT,
-    ingestedVersionId: INGESTED,
     query: "inauguration figaro",
     limit: 5,
+    signal: signal(),
   })
   const entry = hit.hits.find((h) => h.ark === ARK)
   assert.ok(entry, "the Figaro fixture is a keyword hit")
+  return entry.entryId
+}
 
+test("the fake body is the worker's literal format, and splits back into the fixture pages", async () => {
+  assert.deepEqual(FIGARO.map((f) => f.folio), [1, 2])
   const content = await FakeRagRunner.getEntryContent({
     projectId: PROJECT,
-    entryId: entry.entryId,
+    entryId: await figaroEntryId(),
     charOffset: 0,
     charLimit: 0,
+    signal: signal(),
   })
-  assert.match(content.text, /^## Folio 1\n\n/)
-
-  const folios = splitEntryFolios(content.text)
-  const expected = RAG_FIXTURES.filter((f) => f.ark === ARK)
-  assert.deepEqual([...folios.keys()], expected.map((f) => f.folio))
-  for (const f of expected) {
-    assert.notEqual(f.folio, null, "the Figaro fixtures all carry a folio")
-    if (f.folio === null) continue
-    assert.equal(folios.get(f.folio), f.snippet)
-  }
+  assert.equal(content.text, FIGARO_BODY)
+  assert.equal(content.totalLength, codePointLength(FIGARO_BODY))
+  assert.deepEqual([...splitEntryFolios(content.text).entries()], FIGARO.map((f) => [f.folio, f.snippet]))
 })
 
-test("query passages carry a charRange that slices the folio-headed body to the snippet", async () => {
+test("query passages have the real passage shape and code-point ranges that slice the body to the page", async () => {
   const res = await FakeRagRunner.query({
     projectId: PROJECT,
-    ingestedVersionId: INGESTED,
     query: "inauguration de l'Exposition Universelle",
     k: 20,
+    signal: signal(),
   })
   const figaro = res.passages.filter((p) => p.ark === ARK)
   assert.ok(figaro.length >= 1, "at least one Figaro passage matches")
-  const body = (
-    await FakeRagRunner.getEntryContent({
-      projectId: PROJECT,
-      entryId: figaro[0].entryId ?? -1,
-      charOffset: 0,
-      charLimit: 0,
-    })
-  ).text
   for (const p of figaro) {
+    assert.deepEqual(Object.keys(p).sort(), ["ark", "charRange", "entryId", "folio", "score", "snippet"])
     assert.ok(p.charRange, "fake passages always know their offsets")
-    assert.equal(body.slice(p.charRange[0], p.charRange[1]), p.snippet)
+    assert.equal(sliceCodePoints(FIGARO_BODY, p.charRange[0], p.charRange[1]), p.snippet)
   }
 })
 
+test("getEntryContent slices like mcp-datacluster: paginated by code point, with next_offset", async () => {
+  const entryId = await figaroEntryId()
+  const page = await FakeRagRunner.getEntryContent({ projectId: PROJECT, entryId, charOffset: 4, charLimit: 6, signal: signal() })
+  assert.equal(page.text, sliceCodePoints(FIGARO_BODY, 4, 10))
+  assert.equal(page.hasMore, true)
+  assert.equal(page.nextOffset, 10)
+  const rest = await FakeRagRunner.getEntryContent({ projectId: PROJECT, entryId, charOffset: 10, charLimit: 0, signal: signal() })
+  assert.equal(rest.text, sliceCodePoints(FIGARO_BODY, 10))
+  assert.equal(rest.hasMore, false)
+})
+
+test("an unknown entry id is a not-found error, as on the wire", async () => {
+  await assert.rejects(
+    FakeRagRunner.getEntryContent({ projectId: PROJECT, entryId: 99_999, charOffset: 0, charLimit: 0, signal: signal() }),
+    DataclusterMcpNotFoundError,
+  )
+})
+
+test("an aborted signal stops the fake as it stops the real client", async () => {
+  const controller = new AbortController()
+  controller.abort()
+  await assert.rejects(
+    FakeRagRunner.query({ projectId: PROJECT, query: "figaro", signal: controller.signal }),
+    (err: unknown) => err instanceof Error && err.name === "AbortError",
+  )
+})
+
 test("getDocumentFolios resolves an ARK to its folio map, and reports an unknown ARK", async () => {
-  const found = await FakeRagRunner.getDocumentFolios({
-    projectId: PROJECT,
-    ark: ARK,
-    signal: new AbortController().signal,
-  })
+  const found = await FakeRagRunner.getDocumentFolios({ projectId: PROJECT, ark: ARK, signal: signal() })
   assert.equal(found.status, "found")
   if (found.status !== "found") return
   assert.deepEqual([...found.folios.keys()], [1, 2])
-  assert.match(found.folios.get(2) ?? "", /fête du travail et de la paix/)
+  const folio2 = found.folios.get(2)
+  assert.ok(folio2 !== undefined, "folio 2 is present")
+  assert.match(folio2, /fête du travail et de la paix/)
 
   const missing = await FakeRagRunner.getDocumentFolios({
     projectId: PROJECT,
     ark: "ark:/12148/bpt6k0000000",
-    signal: new AbortController().signal,
+    signal: signal(),
   })
   assert.deepEqual(missing, { status: "entry_not_found" })
 })

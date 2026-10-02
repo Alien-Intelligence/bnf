@@ -10,19 +10,29 @@ import "server-only"
 // Passages with a raw score of 0 are excluded from results (nothing matched).
 // Remaining passages are sorted descending by score, then sliced to k.
 //
-// Parity with the real data-cluster MCP: this fake also serves keyword search
-// (entry-level), full-text retrieval and whole-document folio text. Since
-// fixtures have no entry ids, a stable synthetic id is derived from each unique
-// ARK (1-based, in first-seen order) and shared across all operations.
-//
-// Each ARK's fixtures are assembled ONCE into a document body in the exact
-// format worker-v2 stores (`## Folio <n>\n\n<text>` blocks joined by `\n\n`,
-// see lib/cluster/folio-text.ts), and every fixture's charRange is computed
-// from that body — so `getEntryContent` slices, `getDocumentFolios` splits and
-// `query` offsets all agree with each other, as they do on the real cluster.
+// Parity with the real data-cluster MCP — what the fake writes and returns
+// goes through the same code as the real path:
+//   - each ARK's fixtures (one whole page each) are written ONCE into a body in
+//     the worker's exact format by `assembleEntryText` (folio-text.ts), which
+//     also yields each page's code-point `char_start` / `char_end`;
+//   - passages are shaped by `chunkToPassage` from chunks built like the
+//     worker's (trimmed page text, ark / folio / offsets / entry_id metadata);
+//   - entry slices are cut like mcp-datacluster's get_entry_content (by code
+//     point, per mode) and mapped by `toEntryContent`;
+//   - the ARK lookup goes through `pickLiveEntryId`, the split through
+//     `splitEntryFolios`;
+//   - an unknown entry id is a DataclusterMcpNotFoundError, as on the wire.
+// Since fixtures have no entry ids, a stable synthetic id is derived from each
+// unique ARK (1-based, in first-seen order) and shared across all operations.
 
-import { RAG_DEFAULT_K, RAG_GET_TEXT_DEFAULT_CHAR_LIMIT } from "@/lib/constants"
-import { splitEntryFolios } from "./folio-text"
+import {
+  FAKE_RAG_MODEL_VERSION,
+  RAG_DEFAULT_K,
+} from "@/lib/constants"
+import { DataclusterMcpNotFoundError } from "./datacluster-mcp-client"
+import type { DataclusterChunk, DataclusterEntryContent } from "./datacluster-mcp-client"
+import { assembleEntryText, codePointLength, sliceCodePoints, splitEntryFolios } from "./folio-text"
+import { chunkToPassage, pickLiveEntryId, toEntryContent } from "./rag-wire"
 import type {
   DocumentFoliosRequest,
   DocumentFoliosResult,
@@ -43,70 +53,78 @@ const ARK_ORDER: string[] = [...new Set(RAG_FIXTURES.map((f) => f.ark))]
 const ARK_TO_ENTRY_ID = new Map(ARK_ORDER.map((ark, i) => [ark, i + 1]))
 const ENTRY_ID_TO_ARK = new Map(ARK_ORDER.map((ark, i) => [i + 1, ark]))
 
+/** The synthetic entry id of a fixture ARK. Every caller holds a fixture's ARK. */
 function entryIdForArk(ark: string): number {
-  return ARK_TO_ENTRY_ID.get(ark) ?? 0
+  const id = ARK_TO_ENTRY_ID.get(ark)
+  if (id === undefined) throw new Error(`fake cluster: ${ark} is not a fixture ARK`)
+  return id
 }
 
 // --- Fake document bodies, worker-v2 format --------------------------------
 
-/** Mirror of worker-v2 assembleMarkdown's heading and separator. */
-function folioHeading(folio: number): string {
-  return `## Folio ${folio}\n\n`
-}
-const FOLIO_BLOCK_SEPARATOR = "\n\n"
-/** Snippets of one folio are separate paragraphs of that page. */
-const SNIPPET_SEPARATOR = "\n\n"
-
-/** Fixtures for one ARK, by folio then by fixture order (sort is stable). */
+/** Fixtures for one ARK, in folio order (the worker writes pages by `ordre`). */
 function fixturesForArk(ark: string): RagFixture[] {
-  return RAG_FIXTURES.filter((f) => f.ark === ark).sort((a, b) => {
-    const fa = a.folio ?? Number.POSITIVE_INFINITY
-    const fb = b.folio ?? Number.POSITIVE_INFINITY
-    return fa - fb
-  })
+  return RAG_FIXTURES.filter((f) => f.ark === ark).sort((a, b) => a.folio - b.folio)
 }
 
-/**
- * Assemble one ARK's fixtures into a folio-headed body and record where each
- * snippet landed. A fixture with no folio (an image-only document) has no
- * page block in worker-v2 either; it gets no body and no range.
- */
-function assembleEntryBody(ark: string): { body: string; ranges: Map<RagFixture, [number, number]> } {
-  const ranges = new Map<RagFixture, [number, number]>()
-  const blocks: string[] = []
-  let offset = 0
-  let currentFolio: number | null = null
-  let block = ""
+type EntryBody = { text: string; ranges: Map<RagFixture, [number, number]> }
 
-  const flush = () => {
-    if (currentFolio === null) return
-    blocks.push(block)
-    offset += block.length + FOLIO_BLOCK_SEPARATOR.length
-  }
-
-  for (const f of fixturesForArk(ark)) {
-    if (f.folio === null) continue
-    if (f.folio !== currentFolio) {
-      flush()
-      currentFolio = f.folio
-      block = folioHeading(f.folio)
-    } else {
-      block += SNIPPET_SEPARATOR
-    }
-    const start = offset + block.length
-    block += f.snippet
-    ranges.set(f, [start, start + f.snippet.length])
-  }
-  flush()
-
-  return { body: blocks.join(FOLIO_BLOCK_SEPARATOR), ranges }
+function assembleEntryBody(ark: string): EntryBody {
+  const pages = fixturesForArk(ark)
+  const { text, ranges } = assembleEntryText(pages.map((f) => ({ folio: f.folio, text: f.snippet })))
+  return { text, ranges: new Map(pages.map((f, i) => [f, ranges[i]])) }
 }
 
 const ENTRY_BODIES = new Map(ARK_ORDER.map((ark) => [ark, assembleEntryBody(ark)]))
 
-/** A fixture's charRange inside its ARK's body; null for folio-less fixtures. */
-function charRangeOf(f: RagFixture): [number, number] | null {
-  return ENTRY_BODIES.get(f.ark)?.ranges.get(f) ?? null
+function bodyOf(ark: string): EntryBody {
+  const body = ENTRY_BODIES.get(ark)
+  if (body === undefined) throw new Error(`fake cluster: no body for ${ark}`)
+  return body
+}
+
+/** The chunk the worker would have indexed for this fixture's page. */
+function chunkOf(f: RagFixture, score: number): DataclusterChunk {
+  const range = bodyOf(f.ark).ranges.get(f)
+  if (range === undefined) throw new Error(`fake cluster: no range for ${f.ark} f${f.folio}`)
+  const entryId = entryIdForArk(f.ark)
+  return {
+    id: `fake-${entryId}-${f.folio}`,
+    score,
+    chunk_text: f.snippet.trim(),
+    metadata: { ark: f.ark, folio: f.folio, char_start: range[0], char_end: range[1], entry_id: entryId },
+  }
+}
+
+/**
+ * What mcp-datacluster's get_entry_content returns for this text and request,
+ * mode by mode (MCPs/mcp-datacluster/src/tools/get_entry_content.py), with
+ * Python's code-point slicing.
+ */
+function entryContentPayload(
+  text: string,
+  entryId: number,
+  charOffset: number,
+  charLimit: number,
+): DataclusterEntryContent {
+  const total = codePointLength(text)
+  if (charLimit > 0) {
+    const slice = sliceCodePoints(text, charOffset, charOffset + charLimit)
+    const end = charOffset + codePointLength(slice)
+    return {
+      entry_id: entryId,
+      text: slice,
+      char_offset: charOffset,
+      char_limit: charLimit,
+      total_length: total,
+      has_more: end < total,
+      next_offset: end < total ? end : null,
+    }
+  }
+  if (charOffset > 0) {
+    return { text: sliceCodePoints(text, charOffset), char_offset: charOffset, total_length: total, has_more: false }
+  }
+  return { text }
 }
 
 function scoreAgainstQuery(
@@ -141,8 +159,8 @@ function passesFilters(
   filters?: RagQueryRequest["filters"],
 ): boolean {
   if (!filters) return true
-  if (filters.yearFrom !== undefined && p.year !== undefined && p.year < filters.yearFrom) return false
-  if (filters.yearTo !== undefined && p.year !== undefined && p.year > filters.yearTo) return false
+  if (filters.yearFrom !== undefined && p.year < filters.yearFrom) return false
+  if (filters.yearTo !== undefined && p.year > filters.yearTo) return false
   // type / lang / source filters cannot be applied here — RagFixture does not
   // carry those fields.  They are checked server-side on the real cluster.
   return true
@@ -150,6 +168,7 @@ function passesFilters(
 
 export const FakeRagRunner = {
   async query(req: RagQueryRequest): Promise<RagQueryResponse> {
+    req.signal.throwIfAborted()
     const k = req.k ?? RAG_DEFAULT_K
 
     const scored = RAG_FIXTURES
@@ -161,25 +180,20 @@ export const FakeRagRunner = {
       .filter((x) => passesFilters(x.p, req.filters))
       .sort((a, b) => b.s - a.s)
 
-    const passages: RagPassage[] = scored.slice(0, k).map((x) => ({
-      ark: x.p.ark,
-      folio: x.p.folio,
-      snippet: x.p.snippet,
-      score: x.s,
-      charRange: charRangeOf(x.p),
-      entryId: entryIdForArk(x.p.ark),
-      title: x.p.title,
-      year: x.p.year,
-    }))
+    const passages = scored
+      .slice(0, k)
+      .map((x) => chunkToPassage(chunkOf(x.p, x.s)))
+      .filter((p): p is RagPassage => p !== null)
 
     return {
       passages,
       total: scored.length,
-      modelVersion: "fake-rag-v1",
+      modelVersion: FAKE_RAG_MODEL_VERSION,
     }
   },
 
   async keywordSearch(req: RagKeywordRequest): Promise<RagKeywordResponse> {
+    req.signal.throwIfAborted()
     const limit = req.limit ?? 20
 
     // Score per fixture, then collapse to the best-scoring chunk per ARK so the
@@ -202,11 +216,12 @@ export const FakeRagRunner = {
       .slice(0, limit)
       .map(([ark, v]) => {
         const first = fixturesForArk(ark)[0]
+        if (first === undefined) throw new Error(`fake cluster: no fixture for ${ark}`)
         return {
           ark,
           entryId: entryIdForArk(ark),
-          title: first?.title ?? null,
-          date: first?.year != null ? String(first.year) : null,
+          title: first.title,
+          date: String(first.year),
           score: v.score,
           snippets: v.snippets,
         }
@@ -215,36 +230,23 @@ export const FakeRagRunner = {
     return { hits, total: hits.length }
   },
 
-  async getEntryContent(
-    req: RagEntryContentRequest,
-  ): Promise<RagEntryContent> {
+  async getEntryContent(req: RagEntryContentRequest): Promise<RagEntryContent> {
+    req.signal.throwIfAborted()
     const ark = ENTRY_ID_TO_ARK.get(req.entryId)
-    const body = ark ? (ENTRY_BODIES.get(ark)?.body ?? "") : ""
-
-    const total = body.length
-    const offset = Math.min(Math.max(req.charOffset ?? 0, 0), total)
-    const limit = req.charLimit ?? RAG_GET_TEXT_DEFAULT_CHAR_LIMIT
-    const end = limit === 0 ? total : Math.min(offset + limit, total)
-    const text = body.slice(offset, end)
-
-    return {
-      entryId: req.entryId,
-      text,
-      charOffset: offset,
-      charLimit: limit,
-      totalLength: total,
-      hasMore: end < total,
-      nextOffset: end,
+    if (ark === undefined) {
+      throw new DataclusterMcpNotFoundError(`fake cluster: no entry ${req.entryId}`)
     }
+    const payload = entryContentPayload(bodyOf(ark).text, req.entryId, req.charOffset, req.charLimit)
+    return toEntryContent(payload, req)
   },
 
   async getDocumentFolios(req: DocumentFoliosRequest): Promise<DocumentFoliosResult> {
-    const entry = ENTRY_BODIES.get(req.ark)
-    if (!entry || entry.body.length === 0) return { status: "entry_not_found" }
-    return {
-      status: "found",
-      entryId: entryIdForArk(req.ark),
-      folios: splitEntryFolios(entry.body),
-    }
+    req.signal.throwIfAborted()
+    const hits = ARK_TO_ENTRY_ID.has(req.ark)
+      ? [{ entry_id: entryIdForArk(req.ark), metadata: { ark: req.ark } }]
+      : []
+    const entryId = pickLiveEntryId(hits, req.ark)
+    if (entryId === null) return { status: "entry_not_found" }
+    return { status: "found", entryId, folios: splitEntryFolios(bodyOf(req.ark).text) }
   },
 }

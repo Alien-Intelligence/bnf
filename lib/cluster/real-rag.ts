@@ -21,13 +21,11 @@ import { prisma } from "@/lib/db"
 import {
   DataclusterMcpClient,
   DataclusterMcpNotFoundError,
+  DataclusterMcpProtocolError,
 } from "./datacluster-mcp-client"
-import type {
-  DataclusterChunk,
-  DataclusterEntryContent,
-  DataclusterKeywordHit,
-} from "./datacluster-mcp-client"
-import { splitEntryFolios } from "./folio-text"
+import type { DataclusterKeywordHit } from "./datacluster-mcp-client"
+import { EntryFolioFormatError, splitEntryFolios } from "./folio-text"
+import { chunkToPassage, pickLiveEntryId, toEntryContent } from "./rag-wire"
 import type {
   DocumentFoliosRequest,
   DocumentFoliosResult,
@@ -97,75 +95,6 @@ async function resolveDatasetId(
 }
 
 /**
- * Map a cluster chunk to a RagPassage. Returns null when the chunk carries no
- * ARK — it cannot serve as a citation source, so it is dropped (never cited
- * without an ARK; never an invented one). Folio is preserved when present and
- * left null otherwise (single-image documents may have no folio). The char
- * range is set only when the chunk carries BOTH offsets (worker-v2 writes
- * them together); a chunk indexed before offsets existed reports `null`, not
- * a `[0, 0]` that would read as "the start of the document". Exported for
- * testing.
- */
-export function chunkToPassage(chunk: DataclusterChunk): RagPassage | null {
-  const { ark, folio, char_start, char_end, entry_id } = chunk.metadata
-  if (typeof ark !== "string" || ark.length === 0) return null
-
-  return {
-    ark,
-    folio: typeof folio === "number" ? folio : null,
-    snippet: chunk.chunk_text,
-    score: chunk.score,
-    charRange:
-      typeof char_start === "number" && typeof char_end === "number"
-        ? [char_start, char_end]
-        : null,
-    entryId: typeof entry_id === "number" ? entry_id : null,
-  }
-}
-
-/**
- * Normalise the three response modes of `datacluster_get_entry_content` into
- * the app's `RagEntryContent` (see `DataclusterEntryContent` for the shapes).
- * This is not a fallback for missing data: in full mode the text IS the rest
- * of the document from offset 0, so its length is the total, nothing follows,
- * and the next offset is its end — the documented semantics of that mode.
- * `charOffset` / `charLimit` are echoed from the request when the wire omits
- * them (full mode omits both; offset-only mode omits the limit). Exported for
- * testing.
- */
-export function toEntryContent(
-  data: DataclusterEntryContent,
-  req: { entryId: number; charOffset: number; charLimit: number },
-): RagEntryContent {
-  const charOffset = data.char_offset ?? req.charOffset
-  const end = charOffset + data.text.length
-  return {
-    entryId: data.entry_id ?? req.entryId,
-    text: data.text,
-    charOffset,
-    charLimit: data.char_limit ?? req.charLimit,
-    totalLength: data.total_length ?? end,
-    hasMore: data.has_more ?? false,
-    nextOffset: data.next_offset ?? end,
-  }
-}
-
-/**
- * The live entry among the hits an ARK lookup returned: the highest id. A
- * re-ingest deletes the stale entry and then creates the new one
- * (worker-v2 LiveClusterSink.upsert), so when a tombstone lags the newest id
- * is the one the index serves (D13). `null` when nothing matched. Exported
- * for testing.
- */
-export function pickLiveEntryId(hits: ReadonlyArray<{ entry_id: number }>): number | null {
-  let best: number | null = null
-  for (const h of hits) {
-    if (best === null || h.entry_id > best) best = h.entry_id
-  }
-  return best
-}
-
-/**
  * Translate the app's facet filters to keyword_search `metadata_filters`
  * (exact match on the dataset schema fields docType / lang / source).
  */
@@ -197,7 +126,7 @@ function keywordHitToRag(hit: DataclusterKeywordHit): RagKeywordHit | null {
 
 export const RealRagRunner = {
   async query(req: RagQueryRequest): Promise<RagQueryResponse> {
-    const client = new DataclusterMcpClient()
+    const client = new DataclusterMcpClient({ signal: req.signal })
     const datasetId = await resolveDatasetId(req.projectId, client)
 
     // NB: `req.filters` (type/lang/source/year) are NOT pushed down — the
@@ -222,7 +151,7 @@ export const RealRagRunner = {
   },
 
   async keywordSearch(req: RagKeywordRequest): Promise<RagKeywordResponse> {
-    const client = new DataclusterMcpClient()
+    const client = new DataclusterMcpClient({ signal: req.signal })
     const datasetId = await resolveDatasetId(req.projectId, client)
 
     const data = await client.keywordSearch({
@@ -243,20 +172,15 @@ export const RealRagRunner = {
     // NB: get_entry_content is keyed by entry_id only (no dataset scope on the
     // wire). The agent only ever receives entry ids from this project's
     // dataset-scoped searches, so it cannot reach another project's entries.
-    //
-    // The MCP's own defaults for an omitted offset / limit are 0 and 0 (the
-    // whole document); resolving them here is what lets `toEntryContent` echo
-    // the request faithfully when the wire omits the fields.
-    const charOffset = req.charOffset ?? 0
-    const charLimit = req.charLimit ?? 0
-    const client = new DataclusterMcpClient()
+    // Offset and limit are explicit on the request: the tool handler owns the
+    // default, never the MCP (whose omitted limit means the whole document).
+    const client = new DataclusterMcpClient({ signal: req.signal })
     const data = await client.getEntryContent({
       entryId: req.entryId,
-      charOffset,
-      charLimit,
+      charOffset: req.charOffset,
+      charLimit: req.charLimit,
     })
-
-    return toEntryContent(data, { entryId: req.entryId, charOffset, charLimit })
+    return toEntryContent(data, req)
   },
 
   /**
@@ -275,10 +199,20 @@ export const RealRagRunner = {
       metadataFilters: { ark: req.ark },
       limit: ARK_LOOKUP_LIMIT,
     })
-    const entryId = pickLiveEntryId(lookup.results)
+    const entryId = pickLiveEntryId(lookup.results, req.ark)
     if (entryId === null) return { status: "entry_not_found" }
 
     const content = await client.getEntryContent({ entryId, charOffset: 0, charLimit: 0 })
-    return { status: "found", entryId, folios: splitEntryFolios(content.text) }
+    try {
+      return { status: "found", entryId, folios: splitEntryFolios(content.text) }
+    } catch (err) {
+      if (err instanceof EntryFolioFormatError) {
+        throw new DataclusterMcpProtocolError(
+          `entry ${entryId} (${req.ark}) is not in the worker's folio format: ${err.message}`,
+          err,
+        )
+      }
+      throw err
+    }
   },
 }

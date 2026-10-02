@@ -8,6 +8,16 @@ import "server-only"
 //
 // All application code that needs RAG results imports ClusterRagClient from
 // this module — never FakeRagRunner / RealRagRunner directly.
+//
+// Corpus versions: the cluster index has NO notion of a corpus version. Chunks
+// and entries carry no version field, and no MCP tool filters by one, so every
+// read sees the project dataset's current entries — including entries an
+// in-flight ingest has already written. The agent tools gate on the project
+// HAVING a committed ingested version (ingestion-guard.ts); they cannot scope a
+// read to it, and these requests do not pretend to.
+//
+// Every request carries the caller's AbortSignal (the turn's `ctx.signal`), and
+// every offset and length is in Unicode code points (folio-text.ts).
 
 import type { DocumentFolios } from "./folio-text"
 
@@ -30,8 +40,8 @@ export interface RagPassage {
   /** Cosine similarity score in [0, 1]. */
   score: number
   /**
-   * Character-offset range of the snippet within the entry's processed text
-   * (start inclusive, end exclusive). Feed these to `rag_get_text` to pull the
+   * Code-point range of the snippet within the entry's processed text (start
+   * inclusive, end exclusive). Feed these to `rag_get_text` to pull the
    * surrounding context selectively.
    *
    * `null` when the chunk was indexed before worker-v2 wrote offsets
@@ -45,17 +55,11 @@ export interface RagPassage {
    * The handle for `rag_get_text` — chain search → full text with it.
    */
   entryId: number | null
-  /** Human-readable document title (optional, denormalised for display). */
-  title?: string
-  /** Publication year (optional, denormalised for filtering). */
-  year?: number
 }
 
 export interface RagQueryRequest {
-  /** Project identifier — scopes the search to the project's vector store. */
+  /** The CORPUS project id — scopes the search to its dataset. */
   projectId: string
-  /** Version snapshot the cluster should query against. */
-  ingestedVersionId: string
   /** Free-text query issued by the research agent. */
   query: string
   /** Maximum number of passages to return (default: 12). */
@@ -68,6 +72,8 @@ export interface RagQueryRequest {
     yearFrom?: number
     yearTo?: number
   }
+  /** Bounds every cluster await (the turn's signal). */
+  signal: AbortSignal
 }
 
 export interface RagQueryResponse {
@@ -81,8 +87,8 @@ export interface RagQueryResponse {
 // --- Keyword search (entry-level, faceted) ---------------------------------
 
 export interface RagKeywordRequest {
+  /** The CORPUS project id — scopes the search to its dataset. */
   projectId: string
-  ingestedVersionId: string
   /** Free-text query — typo-tolerant. May be empty when filtering only. */
   query: string
   /** Maximum number of entry hits to return (default: 20). */
@@ -95,6 +101,8 @@ export interface RagKeywordRequest {
     lang?: string
     source?: string
   }
+  /** Bounds every cluster await (the turn's signal). */
+  signal: AbortSignal
 }
 
 export interface RagKeywordHit {
@@ -123,10 +131,15 @@ export interface RagEntryContentRequest {
   projectId: string
   /** Cluster entry id, obtained from a search result. */
   entryId: number
-  /** Start offset into the processed text (default: 0). */
-  charOffset?: number
-  /** Characters to return; 0 = the rest of the document (default: 4000). */
-  charLimit?: number
+  /** Start offset into the processed text, in code points. */
+  charOffset: number
+  /**
+   * Code points to return; 0 = the rest of the document. Always explicit: the
+   * default is applied once, by the rag_get_text tool handler.
+   */
+  charLimit: number
+  /** Bounds every cluster await (the turn's signal). */
+  signal: AbortSignal
 }
 
 export interface RagEntryContent {
@@ -201,8 +214,11 @@ export const ClusterRagClient = {
   /**
    * The whole processed text of a cited document, split per folio — what the
    * quote check compares a note's quotations against. One ARK → entry lookup
-   * plus one full-content fetch; errors propagate as the cluster client's
-   * typed `DataclusterMcp*Error`s (or an abort), and the caller decides.
+   * plus one full-content fetch. Failures propagate as the cluster client's
+   * typed `DataclusterMcp*Error`s — a malformed lookup or text that is not in
+   * the worker's folio format is a `DataclusterMcpProtocolError` — or as the
+   * request signal's abort; the caller decides. (A failure to resolve the
+   * project's dataset id through the database propagates as that error.)
    */
   async getDocumentFolios(req: DocumentFoliosRequest): Promise<DocumentFoliosResult> {
     if (clusterMode() === "real") {

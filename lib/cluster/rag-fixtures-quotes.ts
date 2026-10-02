@@ -53,7 +53,6 @@ export const QUOTE_FIXTURES: RagFixture[] = [
       "Interrogé sur les lieux, le maire de Boulogne-sur-Mer a déclaré : « La ville ne laissera pas " +
       "disparaître son casino, qui fait vivre des centaines de familles. Nous attendrons cependant les " +
       "conclusions de l'enquête avant de prendre la moindre décision. »",
-    score: 0.0,
     title: POPULAIRE_TITLE,
     year: 1937,
     topics: ["incendie", "casino", "boulogne", "maire de boulogne"],
@@ -78,7 +77,6 @@ export const QUOTE_FIXTURES: RagFixture[] = [
       "détruits. Seule l'aile des bains de mer a été épargnée.\n\n" +
       "L'enquête a établi que l'imprudence n'y est pour rien : un court-circuit dans la chaufferie " +
       "a provoqué le sinistre. Le commissaire central a fait poser les scellés sur le tableau électrique.",
-    score: 0.0,
     title: POPULAIRE_TITLE,
     year: 1937,
     topics: ["incendie", "casino", "boulogne", "court-circuit", "sapeurs"],
@@ -97,7 +95,6 @@ export const QUOTE_FIXTURES: RagFixture[] = [
       "LA VIE SYNDICALE\n\n" +
       "Les dockers du port ont tenu leur assemblée générale dimanche. Ils demandent l'application " +
       "intégrale des accords de juin et la révision des barèmes de manutention.",
-    score: 0.0,
     title: POPULAIRE_TITLE,
     year: 1937,
     topics: ["casino", "boulogne", "maire de boulogne", "conseil municipal"],
@@ -116,7 +113,6 @@ export const QUOTE_FIXTURES: RagFixture[] = [
       "aperçu, d:t-on, jusqu'à\nBr.ghton. Les pomp:ers de la cap.tale ont lutté tou.e\nla nu:t contre " +
       "un bras.er que le vent ne cessa\nd'att:ser. On ne compte pas de v.ctimes, ma:s le\nmonument, " +
       "témo:n de la grande fête de l'ind.strie\nde 1851, ne sera pas rebât:.",
-    score: 0.0,
     title: LOW_OCR_TITLE,
     year: 1937,
     topics: ["incendie", "crystal", "palace", "palais de cristal", "londres"],
@@ -133,7 +129,6 @@ export const QUOTE_FIXTURES: RagFixture[] = [
       "matin, par le téléphone de la ligne forestière.\n\n" +
       "Les sapeurs-pompiers de Toulon et une compagnie d'infanterie coloniale ont tenu la ligne de crête " +
       "pendant deux jours. Les habitants des hameaux ont été évacués vers la côte.",
-    score: 0.0,
     title: FORET_TITLE,
     year: 1937,
     topics: ["incendie", "forêt", "maures", "sapeurs", "maison forestière"],
@@ -156,7 +151,6 @@ export const QUOTE_FIXTURES: RagFixture[] = [
       "Art. 5. — Pendant la période dangereuse, fixée chaque année par arrêté préfectoral, il est interdit " +
       "à toute personne autre que les propriétaires et leurs ayants droit de porter ou d'allumer du feu à " +
       "l'intérieur et à moins de deux cents mètres des bois et forêts.",
-    score: 0.0,
     title: EAUX_FORETS_TITLE,
     year: 1937,
     topics: ["forêt", "incendie", "eaux et forêts", "cantonnements", "sapeurs"],

@@ -31,6 +31,7 @@ import {
   MCP_CLIENT_VERSION,
   MCP_PROTOCOL_VERSION,
 } from "@/lib/constants"
+import { z } from "zod"
 import { requireClusterEnv } from "@/lib/env"
 import { withTimeout } from "@/lib/mcp/abort"
 import { withRetry } from "@/lib/mcp/retry"
@@ -79,13 +80,27 @@ export class DataclusterMcpToolError extends DataclusterMcpError {
   }
 }
 
-/** Auth, not-found, and tool-level errors are terminal; everything else
- *  (429/5xx/transport) retries. */
+/**
+ * The cluster answered, but not with what its contract promises: a payload
+ * missing a field its mode requires, an ARK lookup returning another ARK,
+ * entry text that is not in the worker's folio format. Terminal: the same
+ * request returns the same bytes, so retrying is futile.
+ */
+export class DataclusterMcpProtocolError extends DataclusterMcpError {
+  constructor(m: string, cause?: unknown) {
+    super(m, cause)
+    this.name = "DataclusterMcpProtocolError"
+  }
+}
+
+/** Auth, not-found, tool-level and protocol errors are terminal; everything
+ *  else (429/5xx/transport) retries. */
 function isTerminal(err: unknown): boolean {
   return (
     err instanceof DataclusterMcpAuthError ||
     err instanceof DataclusterMcpNotFoundError ||
-    err instanceof DataclusterMcpToolError
+    err instanceof DataclusterMcpToolError ||
+    err instanceof DataclusterMcpProtocolError
   )
 }
 
@@ -191,29 +206,35 @@ export interface KeywordSearchInput {
 
 /**
  * Slice of an entry's processed text from `datacluster_get_entry_content`.
+ * Every offset and length is in Unicode code points (the MCP slices a Python
+ * `str`; see lib/cluster/folio-text.ts).
  *
  * Only `text` is always present. In paginated mode (`char_limit > 0`) the MCP
  * adds every pagination field, with `next_offset` null on the last page. In
  * offset-only mode (`char_offset > 0`, `char_limit` 0) it adds `char_offset`,
  * `total_length` and `has_more` but no `char_limit` / `next_offset`. In full
- * mode (both 0) it returns the raw stored payload: `text` alone. See
- * MCPs/mcp-datacluster/src/tools/get_entry_content.py. `toEntryContent` in
- * real-rag.ts normalises the three shapes.
+ * mode (both 0) it returns the raw stored payload: `text`, plus whatever else
+ * the storage layer kept. See MCPs/mcp-datacluster/src/tools/get_entry_content.py.
+ * `toEntryContent` (rag-wire.ts) checks that each mode carries its fields.
  */
-export interface DataclusterEntryContent {
-  entry_id?: number
-  text: string
-  char_offset?: number
-  char_limit?: number
-  total_length?: number
-  has_more?: boolean
-  next_offset?: number | null
-}
+export const dataclusterEntryContentSchema = z
+  .object({
+    entry_id: z.number().int().positive().optional(),
+    text: z.string(),
+    char_offset: z.number().int().nonnegative().optional(),
+    char_limit: z.number().int().nonnegative().optional(),
+    total_length: z.number().int().nonnegative().optional(),
+    has_more: z.boolean().optional(),
+    next_offset: z.number().int().nonnegative().nullable().optional(),
+  })
+  .loose()
+export type DataclusterEntryContent = z.infer<typeof dataclusterEntryContentSchema>
 
+/** Offset and limit are explicit: the caller owns the default, not the MCP. */
 export interface GetEntryContentInput {
   entryId: number
-  charOffset?: number
-  charLimit?: number
+  charOffset: number
+  charLimit: number
 }
 
 // ---------------------------------------------------------------------------
@@ -342,21 +363,25 @@ export class DataclusterMcpClient {
   async getEntryContent(
     input: GetEntryContentInput,
   ): Promise<DataclusterEntryContent> {
-    const args: Record<string, unknown> = { entry_id: input.entryId }
-    if (input.charOffset !== undefined) args.char_offset = input.charOffset
-    if (input.charLimit !== undefined) args.char_limit = input.charLimit
-
-    const envelope = await this.callTool<DataclusterEnvelope<DataclusterEntryContent>>(
+    const args = {
+      entry_id: input.entryId,
+      char_offset: input.charOffset,
+      char_limit: input.charLimit,
+    }
+    const envelope = await this.callTool<DataclusterEnvelope<unknown>>(
       "datacluster_get_entry_content",
       args,
     )
-    const data = this.unwrap(envelope, "datacluster_get_entry_content")
-    if (typeof data.text !== "string") {
-      throw new DataclusterMcpError(
-        "datacluster_get_entry_content returned no text",
+    const parsed = dataclusterEntryContentSchema.safeParse(
+      this.unwrap(envelope, "datacluster_get_entry_content"),
+    )
+    if (!parsed.success) {
+      throw new DataclusterMcpProtocolError(
+        `datacluster_get_entry_content returned a malformed payload: ${parsed.error.message}`,
+        parsed.error,
       )
     }
-    return data
+    return parsed.data
   }
 
   // -------------------------------------------------------------------------

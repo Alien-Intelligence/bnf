@@ -26,7 +26,6 @@ import { OCR_CORRECTION_MARKING_MODE, QUOTE_WARNING_REASON } from "@/models/note
 import type { QuoteWarningReason } from "@/models/notes/schema"
 
 const PROJECT = "fake-project"
-const INGESTED = "fake-version"
 const QUOTE_ARKS = new Set(QUOTE_FIXTURES.map((f) => f.ark))
 const SEED_FIXTURES = RAG_FIXTURES.filter((f) => !QUOTE_ARKS.has(f.ark))
 
@@ -38,7 +37,7 @@ test("no 1889 seed topic, used as a query, surfaces a quote fixture", async () =
     ...new Set(SEED_FIXTURES.flatMap((f) => f.topics)),
   ]
   for (const query of queries) {
-    const res = await FakeRagRunner.query({ projectId: PROJECT, ingestedVersionId: INGESTED, query, k: 50 })
+    const res = await FakeRagRunner.query({ projectId: PROJECT, query, k: 50, signal: new AbortController().signal })
     const leaked = res.passages.filter((p) => QUOTE_ARKS.has(p.ark))
     assert.deepEqual(leaked.map((p) => p.ark), [], `query « ${query} » surfaced a quote fixture`)
   }
@@ -53,7 +52,7 @@ test("the harness requests reach their fixture documents", async () => {
     ["Revue des eaux et forêts organisation de la lutte contre les incendies", QUOTE_ARK_EAUX_FORETS],
   ]
   for (const [query, ark] of cases) {
-    const res = await FakeRagRunner.query({ projectId: PROJECT, ingestedVersionId: INGESTED, query, k: 12 })
+    const res = await FakeRagRunner.query({ projectId: PROJECT, query, k: 12, signal: new AbortController().signal })
     assert.ok(res.passages.some((p) => p.ark === ark), `« ${query} » does not reach ${ark}`)
   }
 })
