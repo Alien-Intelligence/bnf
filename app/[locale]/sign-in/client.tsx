@@ -30,6 +30,7 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { LayoutAuthShell } from "@/components/layouts/auth/shell"
+import { Separator } from "@/components/ui/separator"
 import { AUTH_MESSAGE_TONE, AlertAuthMessage } from "@/components/alerts/auth/message"
 
 interface SignInClientProps {
@@ -145,9 +146,9 @@ export function SignInClient({
                 {ssoLoading ? t("submitting") : t("ssoButton")}
               </Button>
               <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                <span className="h-px flex-1 bg-border" />
+                <Separator className="flex-1" />
                 <span>{t("or")}</span>
-                <span className="h-px flex-1 bg-border" />
+                <Separator className="flex-1" />
               </div>
             </div>
           )}
