@@ -32,10 +32,13 @@
  *
  * See playbook/ingestion-jobs.md §"The cluster ingest script contract".
  */
-import { badRequest, ok, notFound, unauthorized } from "@/lib/api-response"
+import { badRequest, ok, unauthorized } from "@/lib/api-response"
 import { IngestQueries } from "@/models/ingest/queries"
 import { IngestService } from "@/models/ingest/service"
-import { clusterProgressEventSchema } from "@/models/ingest/types"
+import {
+  clusterProgressEventSchema,
+  type ProgressCallbackAck,
+} from "@/models/ingest/types"
 import { verifyCallback } from "@/lib/cluster/callback-auth"
 import { kickOcrSync } from "@/lib/documents/ocr-sync"
 
@@ -45,8 +48,11 @@ export async function POST(
 ): Promise<Response> {
   const { job_id } = await ctx.params
 
+  // An unknown job answers exactly like a bad signature (401): a 404 here,
+  // before any signature check, would let an unauthenticated caller probe
+  // which job ids exist.
   const job = await IngestQueries.get(job_id)
-  if (!job) return notFound()
+  if (!job) return unauthorized("invalid callback signature")
 
   // A job without a callbackSecret was never submitted through IngestService.submit
   // (or was corrupted). Reject rather than silently accept.
@@ -83,5 +89,5 @@ export async function POST(
   // have re-OCR'd). ARKs that failed have no artifact and come back
   // `unavailable`, which is harmless. Runs after the response (after()).
   if (event.data.stage === "done") kickOcrSync(job.addedArks)
-  return ok({ accepted: true })
+  return ok<ProgressCallbackAck>({ accepted: true })
 }

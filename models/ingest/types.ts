@@ -207,3 +207,6 @@ export const clusterProgressEventSchema = z.discriminatedUnion("stage", [
     partialStats: z.record(z.string(), z.unknown()).optional(),
   }),
 ]) satisfies z.ZodType<ClusterProgressEvent>
+
+/** POST /api/internal/ingest/[job_id]/progress — the event was applied. */
+export type ProgressCallbackAck = { accepted: true }
