@@ -105,3 +105,19 @@ test("an empty page body yields an empty string, not an absent key", () => {
     [7, ""],
   ])
 })
+
+test("a block-anchored `## Folio n` inside page text cannot swallow the pages after it", () => {
+  // Page 3's own Markdown holds "## Folio 40" on a line of its own, between
+  // blank lines; the real pages 4 to 39 follow. Monotonicity alone would make
+  // "40" a boundary and fold 4–39 into it.
+  const pages = Array.from({ length: 36 }, (_, i) => `## Folio ${i + 4}\n\nPage ${i + 4}.`).join("\n\n")
+  const md = `## Folio 3\n\nRubrique\n\n## Folio 40\n\nsuite de la page 3\n\n${pages}`
+  const folios = splitEntryFolios(md)
+  assert.deepEqual([...folios.keys()], Array.from({ length: 37 }, (_, i) => i + 3))
+  assert.equal(folios.get(3), "Rubrique\n\n## Folio 40\n\nsuite de la page 3")
+  assert.equal(folios.get(39), "Page 39.")
+})
+
+test("text before the first heading that is not a `# ` document header throws", () => {
+  assert.throws(() => splitEntryFolios("préambule libre\n\n## Folio 1\n\nTexte"), EntryFolioFormatError)
+})

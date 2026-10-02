@@ -117,29 +117,67 @@ export function assembleEntryText(pages: readonly FolioPage[]): {
  */
 export const ENTRY_FOLIO_HEADING_RE = /(?:^|(?<=\n\n))## Folio (\d+)\n\n/g
 
+/** The header the pre-worker-v2 pipeline put before the first folio: `# <title>` … */
+const LEGACY_HEADER_PREFIX = "# "
+
+type Heading = { folio: number; start: number; bodyStart: number }
+
+/**
+ * The longest strictly increasing (by folio) chain of candidate headings, in
+ * document order. The worker writes one heading per page, in `ordre` order,
+ * but folio numbers have gaps (dropped pages), so a page whose own text holds
+ * a block-anchored `## Folio n` cannot be told apart by monotonicity alone:
+ * `3, 40, 4, 5, …, 39` must keep 3–39 and fold "40" into page 3. The longest
+ * chain does exactly that. On a tie the chain ending on the smaller folio
+ * wins (patience order), which favours real pages over an out-of-sequence
+ * number.
+ */
+function longestIncreasingHeadings(candidates: readonly Heading[]): Heading[] {
+  const tails: number[] = [] // tails[k] = index of the smallest-folio end of a chain of length k+1
+  const previous = new Array<number>(candidates.length).fill(-1)
+  for (const [i, c] of candidates.entries()) {
+    let lo = 0
+    let hi = tails.length
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (candidates[tails[mid]].folio < c.folio) lo = mid + 1
+      else hi = mid
+    }
+    if (lo > 0) previous[i] = tails[lo - 1]
+    tails[lo] = i
+  }
+  const chain: Heading[] = []
+  for (let i = tails.length > 0 ? tails[tails.length - 1] : -1; i !== -1; i = previous[i]) chain.push(candidates[i])
+  return chain.reverse()
+}
+
 /**
  * Split processed entry text into folio → page text.
  *
- * Headings must be strictly increasing: a document's pages are stored in
- * `ordre` order, so a `## Folio n` whose n does not exceed the previous
- * heading's cannot be a boundary the worker wrote — it is page text and stays
- * inside the current folio.
+ * Boundaries are the worker's headings: block-anchored `## Folio n` lines
+ * (ENTRY_FOLIO_HEADING_RE) forming the longest strictly increasing chain
+ * (see longestIncreasingHeadings); any other heading-shaped line is page text
+ * and stays inside its folio.
  *
- * Text before the first heading — the title-and-metadata header that entries
- * from the pre-worker-v2 pipeline open with — belongs to no folio and is
- * dropped. Throws EntryFolioFormatError on text that carries no heading at
- * all: that is not an entry the worker wrote, and an empty map would let a
- * caller silently check quotes against nothing (CLAUDE_ERROR_PATTERNS §9).
+ * Text before the first heading must be the legacy document header (entries
+ * from the pre-worker-v2 pipeline open with `# <title>` and a metadata block):
+ * it belongs to no folio and is dropped. Anything else before the first
+ * heading, or text with no heading at all, throws EntryFolioFormatError: that
+ * is not an entry the worker wrote, and an empty or shifted map would let a
+ * caller check quotes against the wrong text (CLAUDE_ERROR_PATTERNS §9).
  */
 export function splitEntryFolios(text: string): DocumentFolios {
-  const headings: Array<{ folio: number; start: number; bodyStart: number }> = []
-  let previousFolio = -Infinity
+  const candidates: Heading[] = []
   for (const m of text.matchAll(ENTRY_FOLIO_HEADING_RE)) {
-    const folio = Number(m[1])
-    if (folio <= previousFolio) continue
-    headings.push({ folio, start: m.index, bodyStart: m.index + m[0].length })
-    previousFolio = folio
+    candidates.push({ folio: Number(m[1]), start: m.index, bodyStart: m.index + m[0].length })
   }
+  // Worker-written text opens with its first page's heading: a heading at
+  // offset 0 anchors the chain, and only later, higher headings can follow it.
+  const anchor = candidates[0]
+  const headings =
+    anchor !== undefined && anchor.start === 0
+      ? [anchor, ...longestIncreasingHeadings(candidates.filter((c) => c.folio > anchor.folio))]
+      : longestIncreasingHeadings(candidates)
 
   const first = headings[0]
   if (first === undefined) {
@@ -148,9 +186,12 @@ export function splitEntryFolios(text: string): DocumentFolios {
         "by worker-v2 (see assembleMarkdown)",
     )
   }
-  // Text before the first heading is a document header (entries written by the
-  // pre-worker-v2 pipeline open with `# <title>` and a metadata block). It is
-  // no page's text, so it belongs to no folio and is not returned.
+  if (first.start > 0 && !text.startsWith(LEGACY_HEADER_PREFIX)) {
+    throw new EntryFolioFormatError(
+      `${first.start} characters before the first \`## Folio <n>\` heading that are not a ` +
+        `\`${LEGACY_HEADER_PREFIX}<title>\` document header`,
+    )
+  }
 
   const folios = new Map<number, string>()
   for (const [i, h] of headings.entries()) {
