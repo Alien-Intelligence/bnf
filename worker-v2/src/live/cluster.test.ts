@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 
 import { bnfDatasetSlug } from "./vendor/dataset.js";
 import type { DocMeta, PreparedPage } from "../domain/types.js";
-import { assembleMarkdown, buildIndexChunks, codePointLength } from "./cluster.js";
+import { assembleMarkdown, buildIndexChunks, codePointLength, parseEntryListPage } from "./cluster.js";
 
 const meta: DocMeta = {
   title: "Plan de Paris",
@@ -42,20 +42,21 @@ test("buildIndexChunks aligns embeddings by position and carries ark + folio", (
     [0.1, 0.2],
     [0.3, 0.4],
   ];
-  const chunks = buildIndexChunks("ark:/12148/btv1b8600001", meta, pages, embeddings);
-  assert.equal(chunks.length, 2);
+  const [first, second, ...rest] = buildIndexChunks("ark:/12148/btv1b8600001", meta, pages, embeddings);
+  assert.ok(first && second, "one chunk per page");
+  assert.equal(rest.length, 0);
 
-  assert.equal(chunks[0]!.chunk_text, "Texte folio 5");
-  assert.equal(chunks[0]!.chunk_index, 0);
-  assert.deepEqual(chunks[0]!.embedding, [0.1, 0.2]);
-  assert.equal(chunks[0]!.metadata.ark, "ark:/12148/btv1b8600001");
-  assert.equal(chunks[0]!.metadata.ark_slug, "btv1b8600001");
-  assert.equal(chunks[0]!.metadata.folio, 5);
-  assert.equal(chunks[0]!.metadata.doc_type, "carte");
+  assert.equal(first.chunk_text, "Texte folio 5");
+  assert.equal(first.chunk_index, 0);
+  assert.deepEqual(first.embedding, [0.1, 0.2]);
+  assert.equal(first.metadata.ark, "ark:/12148/btv1b8600001");
+  assert.equal(first.metadata.ark_slug, "btv1b8600001");
+  assert.equal(first.metadata.folio, 5);
+  assert.equal(first.metadata.doc_type, "carte");
 
   // Second page → second embedding → folio 9.
-  assert.deepEqual(chunks[1]!.embedding, [0.3, 0.4]);
-  assert.equal(chunks[1]!.metadata.folio, 9);
+  assert.deepEqual(second.embedding, [0.3, 0.4]);
+  assert.equal(second.metadata.folio, 9);
 });
 
 // --- CONTRACT (keep identical to lib/cluster/folio-text.test.ts) ----------
@@ -112,4 +113,20 @@ test("buildIndexChunks refuses a page/embedding count mismatch", () => {
     () => buildIndexChunks("ark:/12148/btv1b8600001", meta, CONTRACT_PAGES, [[0.1]]),
     /4 pages but 1 embeddings/,
   );
+});
+
+test("codePointLength counts a surrogate pair once and a lone surrogate once (as Python)", () => {
+  assert.equal(codePointLength("a😀b"), 3);
+  assert.equal(codePointLength("\ud83d"), 1);
+  assert.equal(codePointLength("\udc00x"), 2);
+});
+
+test("parseEntryListPage requires the entries and total_pages the cluster always sends", () => {
+  assert.deepEqual(parseEntryListPage({ entries: [{ id: 3, slug: "x" }], total_pages: 2 }), {
+    entries: [{ id: 3, slug: "x" }],
+    totalPages: 2,
+  });
+  assert.throws(() => parseEntryListPage({ entries: [{ id: 3 }] }), /total_pages/);
+  assert.throws(() => parseEntryListPage({ total_pages: 1 }), /entries/);
+  assert.throws(() => parseEntryListPage({ entries: [{ id: "3" }], total_pages: 1 }), /entries/);
 });

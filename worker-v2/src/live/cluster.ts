@@ -42,6 +42,20 @@ import { arkSlug } from "../domain/keys.js";
 import type { DocMeta, PreparedPage } from "../domain/types.js";
 import type { ClusterSink } from "../ports.js";
 
+/** The dataset type of a BnF corpus dataset. */
+const DATASET_TYPE_TEXT = "text";
+/** Where every entry this sink writes comes from. */
+const ENTRY_SOURCE_GALLICA = "gallica";
+/** The cluster's vector collection for page chunks. */
+const CHUNK_COLLECTION = "entry_chunks";
+/** Code points of the markdown kept as the entry's description. */
+const ENTRY_DESCRIPTION_CHARS = 200;
+/** Characters of an unexpected response quoted in an error. */
+const ERROR_EXCERPT_CHARS = 200;
+/** Entry-list paging used to find an entry by slug. */
+const ENTRY_LIST_PAGE_SIZE = 100;
+const ENTRY_LIST_MAX_PAGES = 50;
+
 interface DatasetView {
   id: number;
   name?: string;
@@ -53,14 +67,9 @@ interface EntryView {
   slug?: string;
 }
 
-interface CreateEntryResponse {
-  entry?: EntryView;
-  id?: number;
-}
-
 /**
  * Metadata written on every page chunk. The app reads it back through the
- * data-cluster MCP (`lib/cluster/real-rag.ts` chunkToPassage).
+ * data-cluster MCP (`lib/cluster/rag-wire.ts` chunkToPassage).
  *
  * `char_start` / `char_end` are the page text's range inside the entry's
  * processed markdown, in UNICODE CODE POINTS: the consumer slices a Python
@@ -107,12 +116,22 @@ export function codePointLength(s: string): number {
   let n = 0;
   for (let i = 0; i < s.length; i++, n++) {
     const unit = s.charCodeAt(i);
-    if (unit >= 0xd800 && unit <= 0xdbff && i + 1 < s.length) {
+    if (unit >= HIGH_SURROGATE_MIN && unit <= HIGH_SURROGATE_MAX && i + 1 < s.length) {
       const nextUnit = s.charCodeAt(i + 1);
-      if (nextUnit >= 0xdc00 && nextUnit <= 0xdfff) i++;
+      if (nextUnit >= LOW_SURROGATE_MIN && nextUnit <= LOW_SURROGATE_MAX) i++;
     }
   }
   return n;
+}
+
+const HIGH_SURROGATE_MIN = 0xd800;
+const HIGH_SURROGATE_MAX = 0xdbff;
+const LOW_SURROGATE_MIN = 0xdc00;
+const LOW_SURROGATE_MAX = 0xdfff;
+
+/** The first `n` code points of `s` — never half a surrogate pair. */
+function headCodePoints(s: string, n: number): string {
+  return Array.from(s).slice(0, n).join("");
 }
 
 /**
@@ -133,8 +152,8 @@ export function assembleMarkdown(pages: PreparedPage[]): string {
 
 /**
  * Build the per-page index chunks (one chunk per page). Pure — exported for
- * testing. Aligns each page with its embedding by position; the caller
- * guarantees `pages.length === embeddings.length`.
+ * testing. Aligns each page with its embedding by position, and throws when
+ * `pages.length !== embeddings.length` (a misalignment would corrupt citations).
  *
  * `char_start` / `char_end` are the page body's offsets inside
  * `assembleMarkdown(pages)` in Unicode code points, computed with the same
@@ -198,7 +217,7 @@ export class LiveClusterSink implements ClusterSink {
       name: `BnF ${input.projectId}`,
       slug,
       description: `BnF corpus dataset for project ${input.projectId}`,
-      dataset_type: "text",
+      dataset_type: DATASET_TYPE_TEXT,
       schema_definition: bnfDatasetSchema(input.projectId),
     });
     return { datasetId: created.id };
@@ -233,7 +252,7 @@ export class LiveClusterSink implements ClusterSink {
       // batch-sync 422s); the full title is preserved in metadata below.
       name: ark,
       slug,
-      description: markdown.slice(0, 200),
+      description: headCodePoints(markdown, ENTRY_DESCRIPTION_CHARS),
       metadata: {
         ark,
         arkSlug: slug,
@@ -243,7 +262,7 @@ export class LiveClusterSink implements ClusterSink {
         docType: meta.docType,
         subtype: meta.subtype,
         lang: meta.lang,
-        source: "gallica",
+        source: ENTRY_SOURCE_GALLICA,
         pageCount: meta.pageCount,
         ocrAvailable: meta.ocrAvailable,
       },
@@ -255,7 +274,7 @@ export class LiveClusterSink implements ClusterSink {
     });
     await this.http.postJson(`/api/v1/entries/${entry.id}/chunks`, {
       chunks: buildIndexChunks(ark, meta, pages, embeddings),
-      collection_name: "entry_chunks",
+      collection_name: CHUNK_COLLECTION,
     });
 
     return { entryId: entry.id };
@@ -268,22 +287,25 @@ export class LiveClusterSink implements ClusterSink {
    * pages). Returns null when not found.
    */
   private async findEntryBySlug(datasetId: number, slug: string): Promise<EntryView | null> {
-    const PAGE_SIZE = 100;
-    const MAX_PAGES = 50;
-    for (let page = 1; page <= MAX_PAGES; page++) {
-      const res = await this.http.getJson<{
-        entries?: EntryView[];
-        total_pages?: number;
-      }>(`/api/v1/entries?dataset_id=${datasetId}&page=${page}&page_size=${PAGE_SIZE}`);
-      const hit = (res.entries ?? []).find((e) => e.slug === slug);
+    for (let page = 1; page <= ENTRY_LIST_MAX_PAGES; page++) {
+      const res = parseEntryListPage(
+        await this.http.getJson<unknown>(
+          `/api/v1/entries?dataset_id=${datasetId}&page=${page}&limit=${ENTRY_LIST_PAGE_SIZE}`,
+        ),
+      );
+      const hit = res.entries.find((e) => e.slug === slug);
       if (hit) return hit;
-      const totalPages = res.total_pages ?? 1;
-      if (page >= totalPages) return null;
+      if (page >= res.totalPages) return null;
     }
-    return null;
+    // Not "not found": the slug may sit past the pages walked. Answering null
+    // here would make upsert create a SECOND entry for the ARK.
+    throw new Error(
+      `findEntryBySlug: gave up after ${ENTRY_LIST_MAX_PAGES} pages of ${ENTRY_LIST_PAGE_SIZE} entries ` +
+        `in dataset ${datasetId} without reaching the end; refusing to guess that ${slug} is absent`,
+    );
   }
 
-  /** Create an entry, tolerating both `{ entry: {...} }` and bare `{...}` shapes. */
+  /** Create an entry, accepting both `{ entry: {...} }` and bare `{...}` shapes. */
   private async createEntry(input: {
     dataset_id: number;
     name: string;
@@ -291,23 +313,11 @@ export class LiveClusterSink implements ClusterSink {
     description?: string;
     metadata?: Record<string, unknown>;
   }): Promise<EntryView> {
-    const res = await this.http.postJson<CreateEntryResponse | EntryView>(
-      "/api/v1/entries",
-      input,
-    );
-    if (res && typeof res === "object" && "entry" in res && res.entry) {
-      return res.entry;
-    }
-    if (
-      res &&
-      typeof res === "object" &&
-      "id" in res &&
-      typeof (res as EntryView).id === "number"
-    ) {
-      return res as EntryView;
-    }
+    const res = await this.http.postJson<unknown>("/api/v1/entries", input);
+    const entry = isRecord(res) && "entry" in res ? res.entry : res;
+    if (isEntryView(entry)) return entry;
     throw new Error(
-      `createEntry: unexpected response shape: ${JSON.stringify(res).slice(0, 200)}`,
+      `createEntry: unexpected response shape: ${JSON.stringify(res).slice(0, ERROR_EXCERPT_CHARS)}`,
     );
   }
 
@@ -333,4 +343,36 @@ export class LiveClusterSink implements ClusterSink {
     };
     await this.http.postForm(`/api/v1/entries/${entryId}/upload`, formFactory);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Response parsing (the cluster's JSON is checked, never cast)
+// ---------------------------------------------------------------------------
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isEntryView(value: unknown): value is EntryView {
+  return (
+    isRecord(value) &&
+    typeof value.id === "number" &&
+    Number.isSafeInteger(value.id) &&
+    value.id > 0 &&
+    (value.slug === undefined || typeof value.slug === "string")
+  );
+}
+
+/** One page of `GET /api/v1/entries`: its entries and the page count, both required. */
+export function parseEntryListPage(value: unknown): { entries: EntryView[]; totalPages: number } {
+  if (!isRecord(value) || !Array.isArray(value.entries) || !value.entries.every(isEntryView)) {
+    throw new Error(
+      `entry list: expected { entries: [{ id, slug }] }, got ${JSON.stringify(value).slice(0, ERROR_EXCERPT_CHARS)}`,
+    );
+  }
+  const totalPages = value.total_pages;
+  if (typeof totalPages !== "number" || !Number.isSafeInteger(totalPages) || totalPages < 0) {
+    throw new Error(`entry list: missing or invalid total_pages ${JSON.stringify(totalPages)}`);
+  }
+  return { entries: value.entries, totalPages };
 }
