@@ -29,9 +29,8 @@
  * characters stay, so an OCR `ma:son` remains one token and is compared as is.
  */
 
-import { CITATION_REGEX, IMAGE_CITATION_REGEX, NOTELINK_REGEX } from "./syntax"
-
-export type QuoteForm = "guillemets" | "curly" | "blockquote"
+import { QUOTE_FORM, type QuoteCitation, type QuoteForm } from "@/models/notes/schema"
+import { CITATION_REGEX, IMAGE_CITATION_REGEX, NOTELINK_REGEX, parseCitations } from "./syntax"
 
 export type QuoteToken =
   /** `bracketed` = written as `[mot]`, the correction mark of bracketed mode. */
@@ -47,7 +46,7 @@ export type ExtractedQuote = {
   form: QuoteForm
   /** Offset of the opening mark (or of the blockquote) in the body. */
   index: number
-  citation: { ark: string; folio: number } | null
+  citation: QuoteCitation | null
   /** The text split on elision markers; a segment always has ≥ 1 token. */
   segments: QuoteSegment[]
   /** Number of elision markers, standard or not. */
@@ -157,7 +156,15 @@ function maskCode(md: string): string {
 // ---------------------------------------------------------------------------
 
 /** `quoteEnd` is where the `>` lines stop; `end` may extend over the attribution line. */
-type Block = { kind: "paragraph" | "blockquote"; start: number; end: number; quoteEnd: number }
+/** The two kinds of Markdown block the extractor distinguishes. */
+const BLOCK_KIND = { PARAGRAPH: "paragraph", BLOCKQUOTE: "blockquote" } as const
+type BlockKind = (typeof BLOCK_KIND)[keyof typeof BLOCK_KIND]
+
+type Block = { kind: BlockKind; start: number; end: number; quoteEnd: number }
+
+function isBlockquote(b: Block | null): b is Block {
+  return b !== null && b.kind === BLOCK_KIND.BLOCKQUOTE
+}
 
 const BLOCKQUOTE_LINE = /^ {0,3}>/
 const LIST_ITEM_LINE = /^ {0,3}(?:[-*+]|\d+[.)])\s/
@@ -169,7 +176,7 @@ function isBlank(line: string): boolean {
 
 /** Does this line hold a citation and no quote opening at all? */
 function isAttributionLine(line: string): boolean {
-  return !/[«“]/.test(line) && new RegExp(CITATION_REGEX.source).test(line)
+  return !/[«“]/.test(line) && parseCitations(line).length > 0
 }
 
 /**
@@ -197,7 +204,7 @@ function splitBlocks(md: string): Block[] {
     offset = end + 1
 
     if (isBlank(line)) {
-      if (current?.kind === "blockquote") {
+      if (isBlockquote(current)) {
         pendingAttribution = true
         continue
       }
@@ -206,7 +213,7 @@ function splitBlocks(md: string): Block[] {
     }
 
     const quoted = BLOCKQUOTE_LINE.test(line)
-    if (current?.kind === "blockquote") {
+    if (isBlockquote(current)) {
       if (quoted && !pendingAttribution) {
         current.end = end
         current.quoteEnd = end
@@ -222,7 +229,7 @@ function splitBlocks(md: string): Block[] {
 
     if (quoted) {
       close()
-      current = { kind: "blockquote", start, end, quoteEnd: end }
+      current = { kind: BLOCK_KIND.BLOCKQUOTE, start, end, quoteEnd: end }
       continue
     }
     if (current && !LIST_ITEM_LINE.test(line)) {
@@ -231,7 +238,7 @@ function splitBlocks(md: string): Block[] {
       continue
     }
     close()
-    current = { kind: "paragraph", start, end, quoteEnd: end }
+    current = { kind: BLOCK_KIND.PARAGRAPH, start, end, quoteEnd: end }
   }
   close()
   return blocks
@@ -243,47 +250,66 @@ function splitBlocks(md: string): Block[] {
 
 type Span = { form: QuoteForm; open: number; close: number; innerStart: number; innerEnd: number }
 
-/** Top-level « » and “ ” spans of a block (absolute offsets). */
-function findSpans(text: string, base: number): Span[] {
-  const spans: Span[] = []
-  let depth = 0
-  let open = -1
-  let curlyOpen = -1
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i]
-    if (ch === "«") {
-      if (depth === 0 && curlyOpen === -1) open = i
-      depth++
-    } else if (ch === "»") {
-      if (depth === 0) continue
-      depth--
-      if (depth === 0 && open !== -1) {
-        spans.push({ form: "guillemets", open: base + open, close: base + i, innerStart: base + open + 1, innerEnd: base + i })
-        open = -1
-      }
-    } else if (ch === "“") {
-      if (depth === 0 && curlyOpen === -1) curlyOpen = i
-    } else if (ch === "”") {
-      if (depth === 0 && curlyOpen !== -1) {
-        spans.push({ form: "curly", open: base + curlyOpen, close: base + i, innerStart: base + curlyOpen + 1, innerEnd: base + i })
-        curlyOpen = -1
+/**
+ * Top-level « » and “ ” spans of a block (absolute offsets), and the offsets
+ * of opening marks that are never closed.
+ *
+ * Recovery is per quote: an unclosed « (or “) would otherwise swallow every
+ * later quote of the block as its content. The scan records it as unbalanced
+ * and restarts just after it, so the quotes that follow are still found — and
+ * the caller reports the unclosed mark instead of silently checking nothing.
+ */
+function scanSpans(text: string, base: number): { spans: Span[]; unbalanced: number[] } {
+  const unbalanced: number[] = []
+  let spans: Span[] = []
+  let from = 0
+  for (;;) {
+    spans = spans.filter((sp) => sp.open < base + from)
+    let depth = 0
+    let open = -1
+    let curlyOpen = -1
+    for (let i = from; i < text.length; i++) {
+      const ch = text[i]
+      if (ch === "«") {
+        if (depth === 0 && curlyOpen === -1) open = i
+        depth++
+      } else if (ch === "»") {
+        if (depth === 0) continue
+        depth--
+        if (depth === 0 && open !== -1) {
+          spans.push({ form: QUOTE_FORM.GUILLEMETS, open: base + open, close: base + i, innerStart: base + open + 1, innerEnd: base + i })
+          open = -1
+        }
+      } else if (ch === "“") {
+        if (depth === 0 && curlyOpen === -1) curlyOpen = i
+      } else if (ch === "”") {
+        if (depth === 0 && curlyOpen !== -1) {
+          spans.push({ form: QUOTE_FORM.CURLY, open: base + curlyOpen, close: base + i, innerStart: base + curlyOpen + 1, innerEnd: base + i })
+          curlyOpen = -1
+        }
       }
     }
+    // The earliest still-open mark is the one that swallowed the rest.
+    const stuck = [open, curlyOpen].filter((o) => o !== -1)
+    if (stuck.length === 0) return { spans, unbalanced }
+    const at = Math.min(...stuck)
+    unbalanced.push(base + at)
+    from = at + 1
   }
-  return spans
 }
 
 type Cite = { ark: string; folio: number; index: number; end: number }
 
 function citationsIn(text: string, base: number): Cite[] {
-  const out: Cite[] = []
-  for (const m of text.matchAll(CITATION_REGEX)) {
-    out.push({ ark: m[1], folio: Number(m[3]), index: base + m.index, end: base + m.index + m[0].length })
-  }
-  return out
+  return parseCitations(text).map((c) => ({
+    ark: c.ark,
+    folio: c.folio,
+    index: base + c.index,
+    end: base + c.index + c.length,
+  }))
 }
 
-function attribute(span: Span, spans: Span[], cites: Cite[]): ExtractedQuote["citation"] {
+function attribute(span: Span, spans: Span[], cites: Cite[]): QuoteCitation | null {
   const others = spans.filter((s) => s !== span)
   const opensBetween = (a: number, b: number) => others.some((s) => s.open > a && s.open < b)
 
@@ -342,10 +368,11 @@ export function extractQuotes(md: string): ExtractedQuote[] {
 
   for (const block of splitBlocks(masked)) {
     const text = masked.slice(block.start, block.end)
-    const spans = findSpans(text, block.start)
+    const { spans } = scanSpans(text, block.start)
     const cites = citationsIn(text, block.start)
+    const inBlockquote = block.kind === BLOCK_KIND.BLOCKQUOTE
 
-    if (spans.length === 0 && block.kind === "blockquote") {
+    if (spans.length === 0 && inBlockquote) {
       // Tokens come from the code-masked text; `raw` is the body verbatim, so
       // the prior-body rule and the excerpt see what the agent actually wrote.
       // The attribution line is part of the block, not of the quotation.
@@ -355,7 +382,7 @@ export function extractQuotes(md: string): ExtractedQuote[] {
       const cite = cites[0]
       out.push({
         raw: stripBlockquotePrefix(md.slice(block.start, block.quoteEnd)).trim(),
-        form: "blockquote",
+        form: QUOTE_FORM.BLOCKQUOTE,
         index: block.start,
         citation: cite ? { ark: cite.ark, folio: cite.folio } : null,
         ...parts,
@@ -364,7 +391,7 @@ export function extractQuotes(md: string): ExtractedQuote[] {
     }
 
     for (const span of spans) {
-      const unprefix = (s: string) => (block.kind === "blockquote" ? stripBlockquotePrefix(s) : s)
+      const unprefix = (s: string) => (inBlockquote ? stripBlockquotePrefix(s) : s)
       const parts = segment(stripReferences(unprefix(masked.slice(span.innerStart, span.innerEnd))))
       if (parts.segments.length === 0) continue
       out.push({
@@ -378,4 +405,30 @@ export function extractQuotes(md: string): ExtractedQuote[] {
   }
 
   return out.sort((a, b) => a.index - b.index)
+}
+
+/** An opening « or “ that is never closed in its block. */
+export type UnbalancedQuoteMark = {
+  /** Offset of the mark in the body. */
+  index: number
+  /** The text right after the mark, as written (for the warning excerpt). */
+  excerpt: string
+}
+
+/**
+ * Every opening quote mark of the body that is never closed in its block, in
+ * source order. extractQuotes recovers past them; the quote check reports
+ * them, because the text that follows one cannot be delimited and so cannot
+ * be checked.
+ */
+export function findUnbalancedQuoteMarks(md: string, excerptChars: number): UnbalancedQuoteMark[] {
+  const masked = maskCode(md)
+  const out: UnbalancedQuoteMark[] = []
+  for (const block of splitBlocks(masked)) {
+    const { unbalanced } = scanSpans(masked.slice(block.start, block.end), block.start)
+    for (const index of unbalanced) {
+      out.push({ index, excerpt: md.slice(index + 1, Math.min(block.end, index + 1 + excerptChars)).trim() })
+    }
+  }
+  return out
 }

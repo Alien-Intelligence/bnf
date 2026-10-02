@@ -4,7 +4,8 @@
 // and tokens for the matcher.
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { extractQuotes, isSameQuote, normalizeToken } from "./quotes"
+import { QUOTE_FORM } from "@/models/notes/schema"
+import { extractQuotes, findUnbalancedQuoteMarks, isSameQuote, normalizeToken } from "./quotes"
 import type { ExtractedQuote } from "./quotes"
 
 const ARK = "ark:/12148/bpt6k822781z"
@@ -18,7 +19,7 @@ test("nested guillemets: the outer span is one quote and the inner pair is conte
   const md = `Il rapporte : « le maire déclare « c'est fini » et s'en va » ${CITE(2)}.`
   const quotes = extractQuotes(md)
   assert.equal(quotes.length, 1)
-  assert.equal(quotes[0].form, "guillemets")
+  assert.equal(quotes[0].form, QUOTE_FORM.GUILLEMETS)
   assert.equal(quotes[0].raw, "le maire déclare « c'est fini » et s'en va")
   assert.deepEqual(quotes[0].citation, { ark: ARK, folio: 2 })
   assert.equal(quotes[0].index, md.indexOf("«"))
@@ -30,8 +31,8 @@ test("curly quotes are a quote form; a curly pair inside guillemets is content",
   assert.deepEqual(
     quotes.map((q) => [q.form, q.raw]),
     [
-      ["curly", "the fire spread to the kitchens"],
-      ["guillemets", "on dit “fini” à tous"],
+      [QUOTE_FORM.CURLY, "the fire spread to the kitchens"],
+      [QUOTE_FORM.GUILLEMETS, "on dit “fini” à tous"],
     ],
   )
 })
@@ -49,7 +50,7 @@ test("a blockquote without guillemets is one quote, attributed to the citation o
   ].join("\n")
   const quotes = extractQuotes(md)
   assert.equal(quotes.length, 1)
-  assert.equal(quotes[0].form, "blockquote")
+  assert.equal(quotes[0].form, QUOTE_FORM.BLOCKQUOTE)
   assert.equal(quotes[0].raw, "Les premiers témoins accusent l'imprudence\ndu personnel des cuisines.")
   assert.deepEqual(quotes[0].citation, { ark: ARK, folio: 2 })
 })
@@ -58,7 +59,7 @@ test("a blockquote with inner guillemets yields only the guillemet spans", () =>
   const md = `> Le journal écrit : « un court-circuit a provoqué le sinistre » et commente longuement. ${CITE(2)}`
   const quotes = extractQuotes(md)
   assert.equal(quotes.length, 1)
-  assert.equal(quotes[0].form, "guillemets")
+  assert.equal(quotes[0].form, QUOTE_FORM.GUILLEMETS)
   assert.equal(quotes[0].raw, "un court-circuit a provoqué le sinistre")
   assert.deepEqual(quotes[0].citation, { ark: ARK, folio: 2 })
 })
@@ -163,4 +164,27 @@ test("isSameQuote: a guillemet span that wraps inside a blockquote matches its r
   const [b] = extractQuotes(`${body}\n\nUn ajout.`)
   assert.equal(a.raw, "un court-circuit a\nprovoqué le sinistre")
   assert.equal(isSameQuote(a, b), true)
+})
+
+test("an unclosed « does not hide the quotes after it in the block, and is reported", () => {
+  const md = `Il écrit « une phrase jamais refermée, puis « un court-circuit a provoqué le sinistre » ${CITE(2)}.`
+  assert.deepEqual(extractQuotes(md).map((q) => q.raw), ["un court-circuit a provoqué le sinistre"])
+  const unbalanced = findUnbalancedQuoteMarks(md, 40)
+  assert.deepEqual(unbalanced.map((u) => u.index), [md.indexOf("«")])
+  assert.match(unbalanced[0].excerpt, /^une phrase jamais refermée/)
+})
+
+test("an unclosed “ does not hide a later « » quote, and is reported", () => {
+  const md = `He wrote “the fire spread and « un court-circuit a provoqué le sinistre » ${CITE(2)}.`
+  assert.deepEqual(extractQuotes(md).map((q) => q.form), [QUOTE_FORM.GUILLEMETS])
+  assert.deepEqual(findUnbalancedQuoteMarks(md, 40).map((u) => u.index), [md.indexOf("“")])
+})
+
+test("balanced marks report nothing", () => {
+  assert.deepEqual(findUnbalancedQuoteMarks(`« a » “b” « c « d » e »`, 40), [])
+})
+
+test("a citation with folio 0 is not a citation: the quote stays uncited", () => {
+  const md = `« un court-circuit a provoqué le sinistre » [[${ARK}|Le Populaire|0]]`
+  assert.equal(extractQuotes(md)[0].citation, null)
 })

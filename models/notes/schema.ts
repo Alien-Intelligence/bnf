@@ -13,9 +13,21 @@ export type NoteVersionListItem = Pick<NoteVersion, "id" | "seq" | "createdAt">
 
 // ---------------------------------------------------------------------------
 // Quote integrity (feedback-2026-09-29 #7 / #8). The agent's note writes run a
-// quote check; these are the domain values of its result. Wire names are
-// snake_case because they travel in the tool result the model reads.
+// quote check; these are the domain values and the wire shape of its result,
+// which the note tools return and tool_call.output persists. Wire names are
+// snake_case because they travel in the tool result the model reads. The
+// agent-facing French guidance per reason is server-only prose and lives with
+// the prompts (lib/agent/prompts/quote-warnings.ts), not in this client-shared
+// file.
 // ---------------------------------------------------------------------------
+
+/** How a quotation is marked in a note body (plan D8). */
+export const QUOTE_FORM = {
+  GUILLEMETS: "guillemets",
+  CURLY: "curly",
+  BLOCKQUOTE: "blockquote",
+} as const
+export type QuoteForm = (typeof QUOTE_FORM)[keyof typeof QUOTE_FORM]
 
 /** Why a quoted span is reported as unfaithful to the folio it cites. */
 export const QUOTE_WARNING_REASON = {
@@ -29,6 +41,8 @@ export const QUOTE_WARNING_REASON = {
   NONSTANDARD_ELISION_MARKER: "nonstandard_elision_marker",
   UNMARKED_CORRECTION: "unmarked_correction",
   CORRECTION_ON_LOW_OCR: "correction_on_low_ocr",
+  /** An opening « or “ that is never closed: what follows cannot be delimited. */
+  UNBALANCED_QUOTE_MARK: "unbalanced_quote_mark",
   UNVERIFIABLE: "unverifiable",
 } as const
 export type QuoteWarningReason =
@@ -40,10 +54,25 @@ export const QUOTE_UNVERIFIABLE_CAUSE = {
   FOLIO_ABSENT: "folio_absent",
   LOOKUP_FAILED: "lookup_failed",
   BUDGET_EXCEEDED: "budget_exceeded",
+  /** The turn was cancelled while the check was running. */
+  CANCELLED: "cancelled",
   TOO_MANY_SOURCES: "too_many_sources",
 } as const
 export type QuoteUnverifiableCause =
   (typeof QUOTE_UNVERIFIABLE_CAUSE)[keyof typeof QUOTE_UNVERIFIABLE_CAUSE]
+
+/**
+ * Outcome of one quote check. `partial` when any quote is `unverifiable` or a
+ * rule could not be evaluated at all (`unevaluated_rules`); `failed` when the
+ * check itself broke after the write (the note tools set it).
+ */
+export const QUOTE_CHECK_STATUS = {
+  COMPLETE: "complete",
+  PARTIAL: "partial",
+  FAILED: "failed",
+} as const
+export type QuoteCheckStatus =
+  (typeof QUOTE_CHECK_STATUS)[keyof typeof QUOTE_CHECK_STATUS]
 
 /**
  * How a corrected OCR word is marked inside a quote. `bracketed_word` writes
@@ -58,34 +87,32 @@ export const OCR_CORRECTION_MARKING_MODE = {
 export type OcrCorrectionMarking =
   (typeof OCR_CORRECTION_MARKING_MODE)[keyof typeof OCR_CORRECTION_MARKING_MODE]
 
-/** Agent-facing French guidance per reason (rendered into `detail`). */
-export const QUOTE_WARNING_DETAIL: Record<QuoteWarningReason, string> = {
-  [QUOTE_WARNING_REASON.UNCITED]:
-    "Citation sans référence : ajoute juste après le `[[ark|label|folio]]` du passage " +
-    "d'où elle vient, ou retire les guillemets et paraphrase.",
-  [QUOTE_WARNING_REASON.NOT_IN_CITED_FOLIO]:
-    "Ce texte ne figure pas sur le folio cité. Recopie le texte exact du passage, ou " +
-    "paraphrase sans guillemets.",
-  [QUOTE_WARNING_REASON.FOUND_ON_OTHER_FOLIO]:
-    "Ce texte figure sur un autre folio que celui cité : corrige le folio de la référence.",
-  [QUOTE_WARNING_REASON.ELISION_ACROSS_FOLIOS]:
-    "Le `[…]` relie des extraits de folios différents : fais-en des citations distinctes, " +
-    "chacune avec sa référence.",
-  [QUOTE_WARNING_REASON.ELISION_TOO_FAR]:
-    "Le `[…]` saute plus que quelques mots d'une même phrase ou de deux phrases voisines : " +
-    "scinde en citations distinctes reliées par tes propres mots.",
-  [QUOTE_WARNING_REASON.ELISION_OUT_OF_ORDER]:
-    "Les extraits reliés par `[…]` ne sont pas dans l'ordre du document : scinde la citation.",
-  [QUOTE_WARNING_REASON.TOO_MANY_ELISIONS]:
-    "Plus de deux `[…]` dans une même citation : scinde-la ou paraphrase.",
-  [QUOTE_WARNING_REASON.NONSTANDARD_ELISION_MARKER]:
-    "Signale une coupure par `[…]`, jamais par `(…)`.",
-  [QUOTE_WARNING_REASON.UNMARKED_CORRECTION]:
-    "Un mot diffère de l'OCR sans être signalé : mets le mot corrigé entre crochets, ou " +
-    "recopie l'OCR tel quel.",
-  [QUOTE_WARNING_REASON.CORRECTION_ON_LOW_OCR]:
-    "Ce folio est mal reconnu : ne corrige rien, recopie l'OCR tel quel ou écris `[illisible]`.",
-  [QUOTE_WARNING_REASON.UNVERIFIABLE]:
-    "Contrôle impossible (cause indiquée) : relis le passage avec `rag_get_text` avant de " +
-    "conserver cette citation.",
+/** The `[[ark|label|folio]]` a quote is attributed to. */
+export type QuoteCitation = { ark: string; folio: number }
+
+/** One unfaithful (or unverifiable) quote, as the note tools report it. */
+export type QuoteWarning = {
+  /** The first QUOTE_WARNING_EXCERPT_CHARS characters of the quote, as written. */
+  quote: string
+  citation: QuoteCitation | null
+  reason: QuoteWarningReason
+  /** Only for `unverifiable`. */
+  cause?: QuoteUnverifiableCause
+  found_on_folio?: number
+  /** What the agent should do (server-rendered French guidance). */
+  detail: string
+}
+
+/** The result of checking the quotes of one note write. */
+export type QuoteCheckResult = {
+  status: QuoteCheckStatus
+  /** Quotes in scope (long enough, not already in the prior body). */
+  checked: number
+  warnings: QuoteWarning[]
+  /**
+   * Rules that could not be applied to ANY checked quote — today
+   * `correction_on_low_ocr` until Track B's per-folio quality index is wired.
+   * Non-empty forces `status: partial`.
+   */
+  unevaluated_rules: QuoteWarningReason[]
 }

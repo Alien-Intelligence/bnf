@@ -8,7 +8,12 @@ import assert from "node:assert/strict"
 import { extractQuotes } from "./quotes"
 import { tokenizeFolios, verifyQuote } from "./quote-match"
 import type { QuoteVerdict } from "./quote-match"
-import { OCR_CORRECTION_MARKING_MODE, QUOTE_WARNING_REASON } from "@/models/notes/schema"
+import {
+  OCR_CORRECTION_MARKING_MODE,
+  QUOTE_WARNING_REASON,
+  type OcrCorrectionMarking,
+  type QuoteWarningReason,
+} from "@/models/notes/schema"
 
 const ARK = "ark:/12148/bpt6k822781z"
 const CITE = (folio: number) => `[[${ARK}|Le Populaire, 1937|${folio}]]`
@@ -34,9 +39,9 @@ type Row = {
   label: string
   md: string
   cited: number
-  marking?: "bracketed_word" | "silent"
+  marking?: OcrCorrectionMarking
   low?: number[]
-  expect: "ok" | Array<(typeof QUOTE_WARNING_REASON)[keyof typeof QUOTE_WARNING_REASON]>
+  expect: "ok" | QuoteWarningReason[]
   foundOnFolio?: number
   fuzzy?: number
 }
@@ -66,7 +71,7 @@ const ROWS: Row[] = [
     label: "silent mode accepts the unbracketed fix",
     md: `« la maison forestière avait brûlé depuis l'aube » ${CITE(1)}`,
     cited: 1,
-    marking: "silent",
+    marking: OCR_CORRECTION_MARKING_MODE.SILENT,
     expect: "ok",
     fuzzy: 1,
   },

@@ -20,7 +20,8 @@
 import { prisma } from "@/lib/db"
 import { corpusProjectId } from "@/lib/authz/corpus-source"
 import { checkNoteQuotes } from "@/lib/citations/quote-check"
-import type { QuoteWarning } from "@/lib/citations/quote-check"
+import { QUOTE_CHECK_BUDGET_MS } from "@/lib/constants"
+import type { QuoteWarning } from "@/models/notes/schema"
 
 const EXCERPTS_PER_REASON = 5
 const USAGE = "usage: npm run audit:quotes -- <projectId> | --all"
@@ -72,6 +73,9 @@ async function main(): Promise<void> {
         bodyMd: note.body_md,
         priorBodyMd: null,
         signal: new AbortController().signal,
+        // No per-folio quality index in this build: reported as unevaluated.
+        lowOcrFolios: null,
+        budgetMs: QUOTE_CHECK_BUDGET_MS,
       })
       quotesChecked += res.checked
       if (res.status !== "complete") notesPartial++

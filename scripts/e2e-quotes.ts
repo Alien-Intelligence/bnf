@@ -36,7 +36,8 @@ import { z } from "zod"
 import { prisma } from "@/lib/db"
 import type { AppLocale } from "@/i18n/routing"
 import { checkNoteQuotes } from "@/lib/citations/quote-check"
-import type { QuoteWarning } from "@/lib/citations/quote-check"
+import { QUOTE_CHECK_BUDGET_MS } from "@/lib/constants"
+import type { QuoteWarning } from "@/models/notes/schema"
 import {
   FORBIDDEN_COMPLETIONS,
   QUOTE_FIXTURE_DOCUMENTS,
@@ -179,6 +180,7 @@ async function judge(projectId: string, bodyMd: string, priorBodyMd: string | nu
     priorBodyMd,
     signal: new AbortController().signal,
     lowOcrFolios: fixtureLowFolios,
+    budgetMs: QUOTE_CHECK_BUDGET_MS,
   })
   return res.warnings
 }

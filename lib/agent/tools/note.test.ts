@@ -10,7 +10,8 @@ import { test, before, after, describe } from "node:test"
 import assert from "node:assert/strict"
 import { randomUUID } from "node:crypto"
 import { prisma } from "@/lib/db"
-import { noteCreateTool, noteUpdateTool, noteAppendTool } from "./note"
+import { handleNoteAppend, handleNoteCreate, handleNoteUpdate } from "./note"
+import type { NoteWriteOutcome, NoteWriteResult } from "./note"
 import { NOTE_NOT_INGESTED_ERROR } from "./ingestion-guard"
 import type { TurnScopedCtx } from "./registry-factory"
 import {
@@ -24,7 +25,13 @@ import { SESSION_SCOPE } from "@/models/sessions/schema"
 import { ClusterRagClient } from "@/lib/cluster/rag"
 import { seedCorpusDocuments } from "@/lib/testing/seed-corpus"
 import { markHeadIngested } from "@/lib/testing/mark-ingested"
-import { QUOTE_WARNING_REASON } from "@/models/notes/schema"
+import {
+  QUOTE_CHECK_STATUS,
+  QUOTE_WARNING_REASON,
+  type QuoteCheckResult,
+  type QuoteCitation,
+  type QuoteWarningReason,
+} from "@/models/notes/schema"
 import { ProjectService } from "@/models/projects/service"
 
 let userId: string
@@ -61,15 +68,24 @@ after(async () => {
   await deleteTestUser(userId)
 })
 
+/** The note was written: narrow the outcome, failing the test on a refusal. */
+function written(outcome: NoteWriteOutcome): NoteWriteResult {
+  assert.ok(!("error" in outcome), `the write was refused: ${JSON.stringify(outcome)}`)
+  return outcome
+}
+
+/** The write was refused: return its error. */
+function refusal(outcome: NoteWriteOutcome): string {
+  assert.ok("error" in outcome, `the write was not refused: ${JSON.stringify(outcome)}`)
+  return outcome.error
+}
+
 // --- Nothing ingested → every write tool refuses --------------------------
 
 test("note_create is refused when ingestedVersionId is null", async () => {
   const before = await prisma.note.count({ where: { projectId } })
-  const result = (await noteCreateTool.handler(
-    { title: "Note prématurée", body_md: "Ceci ne doit pas être écrit." },
-    ctxFor(),
-  )) as Record<string, unknown>
-  assert.equal(result["error"], NOTE_NOT_INGESTED_ERROR)
+  const outcome = await handleNoteCreate({ title: "Note prématurée", body_md: "Ceci ne doit pas être écrit." }, ctxFor())
+  assert.equal(refusal(outcome), NOTE_NOT_INGESTED_ERROR)
   assert.equal(await prisma.note.count({ where: { projectId } }), before, "no note row created")
 })
 
@@ -77,19 +93,13 @@ test("note_update is refused when ingestedVersionId is null (guard before lookup
   // A random UUID is fine: the guard fires before NoteService.update runs, so
   // the note need not exist. If the guard were removed, this would 500 on a
   // missing note instead — still a refusal, but not the structural one we want.
-  const result = (await noteUpdateTool.handler(
-    { id: randomUUID(), title: "x", body_md: "y" },
-    ctxFor(),
-  )) as Record<string, unknown>
-  assert.equal(result["error"], NOTE_NOT_INGESTED_ERROR)
+  const outcome = await handleNoteUpdate({ id: randomUUID(), title: "x", body_md: "y" }, ctxFor())
+  assert.equal(refusal(outcome), NOTE_NOT_INGESTED_ERROR)
 })
 
 test("note_append is refused when ingestedVersionId is null (guard before lookup)", async () => {
-  const result = (await noteAppendTool.handler(
-    { id: randomUUID(), body_md: "z" },
-    ctxFor(),
-  )) as Record<string, unknown>
-  assert.equal(result["error"], NOTE_NOT_INGESTED_ERROR)
+  const outcome = await handleNoteAppend({ id: randomUUID(), body_md: "z" }, ctxFor())
+  assert.equal(refusal(outcome), NOTE_NOT_INGESTED_ERROR)
 })
 
 // --- After a committed ingest → note_create succeeds -----------------------
@@ -108,13 +118,10 @@ test("note_create succeeds once the project has an ingested version", async () =
   })
 
   const before = await prisma.note.count({ where: { projectId } })
-  const result = (await noteCreateTool.handler(
-    { title: "Note fondée sur le corpus", body_md: "## Résumé\n\nUn contenu valide." },
-    ctxFor(),
-  )) as Record<string, unknown>
-
-  assert.equal(result["error"], undefined, "no guard error after ingestion")
-  assert.ok(typeof result["note_id"] === "string", "returns a note_id")
+  const result = written(
+    await handleNoteCreate({ title: "Note fondée sur le corpus", body_md: "## Résumé\n\nUn contenu valide." }, ctxFor()),
+  )
+  assert.equal(typeof result.note_id, "string", "returns a note_id")
   assert.equal(
     await prisma.note.count({ where: { projectId } }),
     before + 1,
@@ -129,7 +136,10 @@ test("note_create succeeds once the project has an ingested version", async () =
 // in the same folio-headed format worker-v2 writes. Le Figaro, 6 mai 1889:
 // folio 1 ends « … se pressait aux abords du Champ de Mars. », folio 2 holds
 // « C'est la fête du travail et de la paix … ».
-
+//
+// The note tools pass no per-folio quality lookup in this build (Track B), so
+// every check that had a quote in scope is `partial`, naming the rule it could
+// not evaluate.
 
 const FIGARO = "ark:/12148/bpt6k2839841"
 const FIGARO_CITE = (folio: number) => `[[${FIGARO}|Le Figaro, 6 mai 1889|${folio}]]`
@@ -138,12 +148,17 @@ const STITCHED =
   `C'est la fête du travail et de la paix » ${FIGARO_CITE(1)}`
 const EXACT = `« une foule considérable se pressait aux abords du Champ de Mars » ${FIGARO_CITE(1)}`
 
-type Warning = { reason: string; citation: { ark: string; folio: number } | null }
-function warningsOf(result: Record<string, unknown>): Warning[] {
-  return (result["quote_warnings"] as Warning[] | undefined) ?? []
+/** What a check with `checked` quotes in scope reports in this build. */
+function checkedWithoutQuality(checked: number): NoteWriteResult["quote_check"] {
+  return {
+    status: QUOTE_CHECK_STATUS.PARTIAL,
+    checked,
+    unevaluated_rules: [QUOTE_WARNING_REASON.CORRECTION_ON_LOW_OCR],
+  }
 }
-function checkOf(result: Record<string, unknown>): { status: string; checked: number } | undefined {
-  return result["quote_check"] as { status: string; checked: number } | undefined
+
+function reasonsAndCitations(result: NoteWriteResult): Array<[QuoteWarningReason, QuoteCitation | null]> {
+  return (result.quote_warnings ?? []).map((w) => [w.reason, w.citation])
 }
 
 // A suite of its own: its `before` runs when the suite starts, AFTER the
@@ -162,58 +177,46 @@ describe("quote guard", () => {
   })
 
   test("note_create with a quote stitched across two folios returns quote_warnings[elision_across_folios]", async () => {
-    const result = (await noteCreateTool.handler(
-      { title: "Inauguration", body_md: `## Foule\n\n${STITCHED}` },
-      ctxFor(),
-    )) as Record<string, unknown>
-    assert.ok(typeof result["note_id"] === "string", "the note is written regardless")
-    assert.deepEqual(checkOf(result), { status: "complete", checked: 1 })
-    assert.deepEqual(
-      warningsOf(result).map((w) => [w.reason, w.citation]),
-      [[QUOTE_WARNING_REASON.ELISION_ACROSS_FOLIOS, { ark: FIGARO, folio: 1 }]],
-    )
+    const result = written(await handleNoteCreate({ title: "Inauguration", body_md: `## Foule\n\n${STITCHED}` }, ctxFor()))
+    assert.deepEqual(result.quote_check, checkedWithoutQuality(1))
+    assert.deepEqual(reasonsAndCitations(result), [
+      [QUOTE_WARNING_REASON.ELISION_ACROSS_FOLIOS, { ark: FIGARO, folio: 1 }],
+    ])
   })
 
   test("an exact quote yields no warning and quote_check.checked === 1", async () => {
-    const result = (await noteCreateTool.handler(
-      { title: "Foule", body_md: `## Foule\n\n${EXACT}` },
-      ctxFor(),
-    )) as Record<string, unknown>
-    assert.deepEqual(checkOf(result), { status: "complete", checked: 1 })
-    assert.equal(result["quote_warnings"], undefined)
+    const result = written(await handleNoteCreate({ title: "Foule", body_md: `## Foule\n\n${EXACT}` }, ctxFor()))
+    assert.deepEqual(result.quote_check, checkedWithoutQuality(1))
+    assert.equal(result.quote_warnings, undefined)
   })
 
   test("a body with no checkable quote carries no quote_check at all", async () => {
-    const result = (await noteCreateTool.handler(
-      { title: "Sans citation", body_md: `## Résumé\n\nLe journal « Le Figaro » décrit la foule. ${FIGARO_CITE(1)}` },
-      ctxFor(),
-    )) as Record<string, unknown>
-    assert.equal(checkOf(result), undefined)
-    assert.equal(result["quote_warnings"], undefined)
+    const result = written(
+      await handleNoteCreate(
+        { title: "Sans citation", body_md: `## Résumé\n\nLe journal « Le Figaro » décrit la foule. ${FIGARO_CITE(1)}` },
+        ctxFor(),
+      ),
+    )
+    assert.equal(result.quote_check, undefined)
+    assert.equal(result.quote_warnings, undefined)
   })
 
   test("note_update re-sending an unchanged pre-existing bad quote yields no warning (prior-body rule)", async () => {
-    const created = (await noteCreateTool.handler(
-      { title: "À corriger", body_md: `## Foule\n\n${STITCHED}` },
-      ctxFor(),
-    )) as Record<string, unknown>
-    const noteId = created["note_id"] as string
-    assert.equal(warningsOf(created).length, 1, "the create reported the stitch")
+    const created = written(await handleNoteCreate({ title: "À corriger", body_md: `## Foule\n\n${STITCHED}` }, ctxFor()))
+    assert.equal(created.quote_warnings?.length, 1, "the create reported the stitch")
 
-    const updated = (await noteUpdateTool.handler(
-      { id: noteId, body_md: `## Foule (relue)\n\n${STITCHED}\n\nUn commentaire ajouté.` },
-      ctxFor(),
-    )) as Record<string, unknown>
-    assert.equal(updated["error"], undefined)
-    assert.equal(checkOf(updated), undefined, "nothing new to check")
-    assert.equal(updated["quote_warnings"], undefined)
+    const updated = written(
+      await handleNoteUpdate(
+        { id: created.note_id, body_md: `## Foule (relue)\n\n${STITCHED}\n\nUn commentaire ajouté.` },
+        ctxFor(),
+      ),
+    )
+    assert.equal(updated.quote_check, undefined, "nothing new to check")
+    assert.equal(updated.quote_warnings, undefined)
 
-    const appended = (await noteAppendTool.handler(
-      { id: noteId, body_md: `## Suite\n\n${EXACT}` },
-      ctxFor(),
-    )) as Record<string, unknown>
-    assert.deepEqual(checkOf(appended), { status: "complete", checked: 1 })
-    assert.equal(appended["quote_warnings"], undefined)
+    const appended = written(await handleNoteAppend({ id: created.note_id, body_md: `## Suite\n\n${EXACT}` }, ctxFor()))
+    assert.deepEqual(appended.quote_check, checkedWithoutQuality(1))
+    assert.equal(appended.quote_warnings, undefined)
   })
 
   test("a thrown checker still returns note_id, with quote_check.status === 'failed'", async () => {
@@ -221,18 +224,16 @@ describe("quote guard", () => {
     ClusterRagClient.getDocumentFolios = async () => {
       throw new TypeError("unexpected")
     }
-    let result: Record<string, unknown>
+    let outcome: NoteWriteOutcome
     try {
-      result = (await noteCreateTool.handler(
-        { title: "Checker en panne", body_md: `## Foule\n\n${EXACT}` },
-        ctxFor(),
-      )) as Record<string, unknown>
+      outcome = await handleNoteCreate({ title: "Checker en panne", body_md: `## Foule\n\n${EXACT}` }, ctxFor())
     } finally {
       ClusterRagClient.getDocumentFolios = original
     }
-    assert.ok(typeof result["note_id"] === "string")
-    assert.deepEqual(checkOf(result), { status: "failed", checked: 0 })
-    assert.equal(result["quote_warnings"], undefined)
+    const result = written(outcome)
+    const failed: Pick<QuoteCheckResult, "status" | "checked"> = { status: QUOTE_CHECK_STATUS.FAILED, checked: 0 }
+    assert.deepEqual(result.quote_check, failed)
+    assert.equal(result.quote_warnings, undefined)
   })
 
   test("a derived-workspace context checks against corpusProjectId, not projectId", async () => {
@@ -248,12 +249,13 @@ describe("quote guard", () => {
       return original(req)
     }
     try {
-      const result = (await noteCreateTool.handler(
-        { title: "Note dérivée", body_md: `## Foule\n\n${EXACT}` },
-        { ...ctxFor(), projectId: derived.id, corpusProjectId: projectId },
-      )) as Record<string, unknown>
-      assert.ok(typeof result["note_id"] === "string")
-      assert.deepEqual(checkOf(result), { status: "complete", checked: 1 })
+      const result = written(
+        await handleNoteCreate(
+          { title: "Note dérivée", body_md: `## Foule\n\n${EXACT}` },
+          { ...ctxFor(), projectId: derived.id, corpusProjectId: projectId },
+        ),
+      )
+      assert.deepEqual(result.quote_check, checkedWithoutQuality(1))
     } finally {
       ClusterRagClient.getDocumentFolios = original
       await cleanupProject(derived.id)

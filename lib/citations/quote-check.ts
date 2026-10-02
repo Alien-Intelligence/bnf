@@ -7,69 +7,55 @@
  *
  * Bounds (CLAUDE_ERROR_PATTERNS §14): at most QUOTE_CHECK_MAX_SOURCES distinct
  * ARKs per write, QUOTE_CHECK_CONCURRENCY fetches in flight, and one overall
- * QUOTE_CHECK_BUDGET_MS budget composed into the caller's signal. Every await
- * on the cluster is raced against that signal, so a callee that ignores it
- * cannot hold the write hostage.
+ * budget (`budgetMs`, QUOTE_CHECK_BUDGET_MS in production). The budget is a
+ * signal composed into the caller's for every await on the cluster, AND a
+ * deadline checked between documents and between quotes for the synchronous
+ * tokenize / align work; whatever is left when it passes is `unverifiable /
+ * budget_exceeded`.
  *
- * Errors: an expected cluster failure (`DataclusterMcpError`) or the budget
- * running out makes THAT ARK's quotes `unverifiable` with a cause, plus a
- * `console.warn`. Anything else is unexpected and propagates — the tool layer
- * turns it into `quote_check.status: "failed"` after the write (plan D5).
+ * Errors, classified by which signal fired, never by an error's name:
+ *   - the caller's signal (the turn was cancelled) → that ARK's quotes are
+ *     `unverifiable / cancelled`;
+ *   - the budget → `unverifiable / budget_exceeded`;
+ *   - neither, but a typed cluster error (`DataclusterMcpError`) →
+ *     `unverifiable / lookup_failed`, plus a `console.warn`;
+ *   - anything else (a bug, a database failure in the quality lookup, an
+ *     abort neither signal caused) is unexpected: it aborts the sibling
+ *     fetches and propagates — the tool layer turns it into
+ *     `quote_check.status: "failed"` after the write (plan D5).
+ *
+ * Honesty about what was checked: until Track B's per-folio quality index is
+ * passed as `lowOcrFolios`, `correction_on_low_ocr` cannot be evaluated. The
+ * result then lists it in `unevaluated_rules` and is `partial`, never
+ * `complete`.
  */
 import "server-only"
 
-import {
-  OCR_CORRECTION_MARKING,
-  QUOTE_CHECK_BUDGET_MS,
-  QUOTE_CHECK_CONCURRENCY,
-  QUOTE_CHECK_MAX_SOURCES,
-  QUOTE_MIN_CHECKED_WORDS,
-  QUOTE_WARNING_EXCERPT_CHARS,
-} from "@/lib/constants"
+import { QUOTE_CHECK_CONCURRENCY, QUOTE_CHECK_MAX_SOURCES, QUOTE_MIN_CHECKED_WORDS, QUOTE_WARNING_EXCERPT_CHARS, OCR_CORRECTION_MARKING } from "@/lib/constants"
+import { QUOTE_WARNING_DETAIL } from "@/lib/agent/prompts/quote-warnings"
 import { DataclusterMcpError } from "@/lib/cluster/datacluster-mcp-client"
 import { ClusterRagClient } from "@/lib/cluster/rag"
 import type { DocumentFolios } from "@/lib/cluster/folio-text"
 import {
+  QUOTE_CHECK_STATUS,
   QUOTE_UNVERIFIABLE_CAUSE,
-  QUOTE_WARNING_DETAIL,
   QUOTE_WARNING_REASON,
+  type QuoteCheckResult,
+  type QuoteCitation,
   type QuoteUnverifiableCause,
+  type QuoteWarning,
   type QuoteWarningReason,
 } from "@/models/notes/schema"
-import { extractQuotes, isSameQuote } from "./quotes"
+import { extractQuotes, findUnbalancedQuoteMarks, isSameQuote } from "./quotes"
 import type { ExtractedQuote } from "./quotes"
 import { tokenizeFolios, verifyQuote } from "./quote-match"
-import type { SourceToken } from "./quote-match"
-
-export type QuoteWarning = {
-  /** First QUOTE_WARNING_EXCERPT_CHARS characters of the quote, as written. */
-  quote: string
-  citation: { ark: string; folio: number } | null
-  reason: QuoteWarningReason
-  /** Only for `unverifiable`. */
-  cause?: QuoteUnverifiableCause
-  found_on_folio?: number
-  /** QUOTE_WARNING_DETAIL[reason] — what the agent should do. */
-  detail: string
-}
-
-export type QuoteCheckResult = {
-  /** `partial` when any quote is `unverifiable`; `failed` is set by the tool layer. */
-  status: "complete" | "partial" | "failed"
-  /** Quotes that were in scope (long enough, not already in the prior body). */
-  checked: number
-  warnings: QuoteWarning[]
-}
 
 /**
  * Per-folio OCR quality: which of the cited folios of a document are poorly
  * recognised (plan D9). The implementation is the per-(ark, folio) quality
  * index Track B builds for its note banner (`loadFolioIndex` in
  * lib/agent/tools/rag-ocr.ts, over `DocumentQueries.ocrForRefs`); this module
- * does not build a second one. That index does not exist on this branch yet,
- * so the note tools do not pass a lookup and `correction_on_low_ocr` cannot
- * fire in production until it is wired at the rebase onto Track B. A DB
- * failure inside the lookup is not a cluster error: it propagates.
+ * does not build a second one. A database failure inside it propagates.
  */
 export type LowOcrFoliosLookup = (args: {
   corpusProjectId: string
@@ -84,18 +70,19 @@ export type CheckNoteQuotesArgs = {
   /** Quotes already here with the same text, marks and citation are skipped — they were not written this turn. */
   priorBodyMd: string | null
   signal: AbortSignal
-  lowOcrFolios?: LowOcrFoliosLookup
+  /**
+   * The per-folio quality lookup, or `null` when none exists in this build:
+   * an explicit decision, reported as `unevaluated_rules`, never a silent
+   * empty set.
+   */
+  lowOcrFolios: LowOcrFoliosLookup | null
+  /** Wall-clock ceiling of the whole check (QUOTE_CHECK_BUDGET_MS in production). */
+  budgetMs: number
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-const NO_LOW_FOLIOS: ReadonlySet<number> = new Set()
-
-function isAbort(err: unknown): boolean {
-  return err instanceof Error && (err.name === "AbortError" || err.name === "TimeoutError")
-}
 
 /** Resolve with `p`, or reject with the signal's reason the moment it aborts. */
 function raced<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -131,13 +118,14 @@ async function mapConcurrent<T, R>(items: readonly T[], limit: number, fn: (item
 }
 
 function warning(
-  q: ExtractedQuote,
+  quote: string,
+  citation: QuoteCitation | null,
   reason: QuoteWarningReason,
   extra: { cause?: QuoteUnverifiableCause; found_on_folio?: number } = {},
 ): QuoteWarning {
   return {
-    quote: q.raw.slice(0, QUOTE_WARNING_EXCERPT_CHARS),
-    citation: q.citation,
+    quote: quote.slice(0, QUOTE_WARNING_EXCERPT_CHARS),
+    citation,
     reason,
     ...extra,
     detail: QUOTE_WARNING_DETAIL[reason],
@@ -145,51 +133,62 @@ function warning(
 }
 
 function unverifiable(q: ExtractedQuote, cause: QuoteUnverifiableCause): QuoteWarning {
-  return warning(q, QUOTE_WARNING_REASON.UNVERIFIABLE, { cause })
+  return warning(q.raw, q.citation, QUOTE_WARNING_REASON.UNVERIFIABLE, { cause })
 }
 
 type FetchOutcome =
-  | { kind: "found"; folios: DocumentFolios; doc: SourceToken[]; low: ReadonlySet<number> }
+  | { kind: "found"; folios: DocumentFolios; low: ReadonlySet<number> | null }
   | { kind: "unverifiable"; cause: QuoteUnverifiableCause }
 
-/** Why the check stopped waiting: its own budget, or the turn being cancelled. */
-function abortCause(callerSignal: AbortSignal): string {
-  return callerSignal.aborted ? "the turn was cancelled" : `the ${QUOTE_CHECK_BUDGET_MS} ms budget ran out`
+/** The signals one check runs under, so a failure can be traced to its cause. */
+type CheckSignals = {
+  /** The caller's: the turn. */
+  caller: AbortSignal
+  /** The check's own budget. */
+  budget: AbortSignal
+  /** Aborted when one fetch fails unexpectedly, to stop its siblings. */
+  siblings: AbortController
+  /** All three composed: what every await is bound to. */
+  any: AbortSignal
 }
 
 /**
- * Fetch one cited document and the quality of its cited folios. Both awaits
- * share one classification: an abort (budget or turn) or an expected cluster
- * failure makes THIS ARK unverifiable; anything else — a bug, a DB failure in
- * the quality lookup — propagates.
+ * Fetch one cited document and the quality of its cited folios, and classify
+ * any failure by which signal fired (see the module header).
  */
 async function fetchDocument(
   args: CheckNoteQuotesArgs,
   ark: string,
   citedFolios: ReadonlySet<number>,
-  signal: AbortSignal,
+  signals: CheckSignals,
 ): Promise<FetchOutcome> {
   try {
     const result = await raced(
-      ClusterRagClient.getDocumentFolios({ projectId: args.corpusProjectId, ark, signal }),
-      signal,
+      ClusterRagClient.getDocumentFolios({ projectId: args.corpusProjectId, ark, signal: signals.any }),
+      signals.any,
     )
     if (result.status === "entry_not_found") {
       return { kind: "unverifiable", cause: QUOTE_UNVERIFIABLE_CAUSE.ENTRY_NOT_FOUND }
     }
     const low = args.lowOcrFolios
-      ? await raced(args.lowOcrFolios({ corpusProjectId: args.corpusProjectId, ark, folios: citedFolios }), signal)
-      : NO_LOW_FOLIOS
-    return { kind: "found", folios: result.folios, doc: tokenizeFolios(result.folios), low }
+      ? await raced(args.lowOcrFolios({ corpusProjectId: args.corpusProjectId, ark, folios: citedFolios }), signals.any)
+      : null
+    return { kind: "found", folios: result.folios, low }
   } catch (err) {
-    if (isAbort(err)) {
-      console.warn(`[quote check] ${ark}: unverifiable, ${abortCause(args.signal)} before the text arrived`)
+    if (signals.caller.aborted) {
+      console.warn(`[quote check] ${ark}: unverifiable, the turn was cancelled`)
+      return { kind: "unverifiable", cause: QUOTE_UNVERIFIABLE_CAUSE.CANCELLED }
+    }
+    if (signals.budget.aborted) {
+      console.warn(`[quote check] ${ark}: unverifiable, the ${args.budgetMs} ms budget ran out`)
       return { kind: "unverifiable", cause: QUOTE_UNVERIFIABLE_CAUSE.BUDGET_EXCEEDED }
     }
+    if (signals.siblings.signal.aborted) throw err
     if (err instanceof DataclusterMcpError) {
       console.warn(`[quote check] ${ark}: unverifiable, lookup failed — ${err.message}`)
       return { kind: "unverifiable", cause: QUOTE_UNVERIFIABLE_CAUSE.LOOKUP_FAILED }
     }
+    signals.siblings.abort(err)
     throw err
   }
 }
@@ -204,65 +203,107 @@ async function fetchDocument(
  * propagate.
  */
 export async function checkNoteQuotes(args: CheckNoteQuotesArgs): Promise<QuoteCheckResult> {
+  const deadline = Date.now() + args.budgetMs
   const prior = args.priorBodyMd === null ? [] : extractQuotes(args.priorBodyMd)
   const quotes = extractQuotes(args.bodyMd).filter(
     (q) => q.words >= QUOTE_MIN_CHECKED_WORDS && !prior.some((p) => isSameQuote(p, q)),
   )
   const warnings: Array<{ index: number; w: QuoteWarning }> = []
-  const push = (q: ExtractedQuote, w: QuoteWarning) => warnings.push({ index: q.index, w })
+  const push = (index: number, w: QuoteWarning) => warnings.push({ index, w })
 
-  const byArk = new Map<string, ExtractedQuote[]>()
+  // An opening mark never closed: the text after it cannot be delimited.
+  const priorUnbalanced =
+    args.priorBodyMd === null
+      ? new Set<string>()
+      : new Set(findUnbalancedQuoteMarks(args.priorBodyMd, QUOTE_WARNING_EXCERPT_CHARS).map((u) => u.excerpt))
+  for (const u of findUnbalancedQuoteMarks(args.bodyMd, QUOTE_WARNING_EXCERPT_CHARS)) {
+    if (priorUnbalanced.has(u.excerpt)) continue
+    push(u.index, warning(u.excerpt, null, QUOTE_WARNING_REASON.UNBALANCED_QUOTE_MARK))
+  }
+
+  const byArk = new Map<string, Array<{ q: ExtractedQuote; citation: QuoteCitation }>>()
   for (const q of quotes) {
-    if (!q.citation) {
-      push(q, warning(q, QUOTE_WARNING_REASON.UNCITED))
+    if (q.citation === null) {
+      push(q.index, warning(q.raw, null, QUOTE_WARNING_REASON.UNCITED))
       continue
     }
     const list = byArk.get(q.citation.ark)
-    if (list) list.push(q)
-    else byArk.set(q.citation.ark, [q])
+    if (list) list.push({ q, citation: q.citation })
+    else byArk.set(q.citation.ark, [{ q, citation: q.citation }])
   }
 
-  const arks = [...byArk.keys()]
-  for (const ark of arks.slice(QUOTE_CHECK_MAX_SOURCES)) {
-    for (const q of byArk.get(ark) ?? []) push(q, unverifiable(q, QUOTE_UNVERIFIABLE_CAUSE.TOO_MANY_SOURCES))
+  const groups = [...byArk.entries()]
+  for (const [, list] of groups.slice(QUOTE_CHECK_MAX_SOURCES)) {
+    for (const { q } of list) push(q.index, unverifiable(q, QUOTE_UNVERIFIABLE_CAUSE.TOO_MANY_SOURCES))
   }
 
-  const fetched = arks.slice(0, QUOTE_CHECK_MAX_SOURCES)
+  const fetched = groups.slice(0, QUOTE_CHECK_MAX_SOURCES)
   if (fetched.length > 0) {
-    const signal = AbortSignal.any([args.signal, AbortSignal.timeout(QUOTE_CHECK_BUDGET_MS)])
-    const outcomes = await mapConcurrent(fetched, QUOTE_CHECK_CONCURRENCY, (ark) => {
-      const cited = new Set((byArk.get(ark) ?? []).flatMap((q) => (q.citation ? [q.citation.folio] : [])))
-      return fetchDocument(args, ark, cited, signal)
-    })
+    const budget = AbortSignal.timeout(args.budgetMs)
+    const siblings = new AbortController()
+    const signals: CheckSignals = {
+      caller: args.signal,
+      budget,
+      siblings,
+      any: AbortSignal.any([args.signal, budget, siblings.signal]),
+    }
+    const outcomes = await mapConcurrent(fetched, QUOTE_CHECK_CONCURRENCY, ([ark, list]) =>
+      fetchDocument(args, ark, new Set(list.map((x) => x.citation.folio)), signals),
+    )
 
-    for (const [i, ark] of fetched.entries()) {
+    // The synchronous work is bounded by the same budget, as a deadline.
+    const outOfTime = (): QuoteUnverifiableCause | null =>
+      args.signal.aborted
+        ? QUOTE_UNVERIFIABLE_CAUSE.CANCELLED
+        : Date.now() >= deadline
+          ? QUOTE_UNVERIFIABLE_CAUSE.BUDGET_EXCEEDED
+          : null
+
+    for (const [i, [, list]] of fetched.entries()) {
       const outcome = outcomes[i]
-      for (const q of byArk.get(ark) ?? []) {
-        if (!q.citation) continue
-        if (outcome.kind === "unverifiable") {
-          push(q, unverifiable(q, outcome.cause))
+      if (outcome.kind === "unverifiable") {
+        for (const { q } of list) push(q.index, unverifiable(q, outcome.cause))
+        continue
+      }
+      const stopped = outOfTime()
+      if (stopped !== null) {
+        for (const { q } of list) push(q.index, unverifiable(q, stopped))
+        continue
+      }
+      const doc = tokenizeFolios(outcome.folios)
+      for (const { q, citation } of list) {
+        const late = outOfTime()
+        if (late !== null) {
+          push(q.index, unverifiable(q, late))
           continue
         }
-        if (!outcome.folios.has(q.citation.folio)) {
-          push(q, unverifiable(q, QUOTE_UNVERIFIABLE_CAUSE.FOLIO_ABSENT))
+        if (!outcome.folios.has(citation.folio)) {
+          push(q.index, unverifiable(q, QUOTE_UNVERIFIABLE_CAUSE.FOLIO_ABSENT))
           continue
         }
-        for (const v of verifyQuote(q, outcome.doc, {
-          citedFolio: q.citation.folio,
+        for (const v of verifyQuote(q, doc, {
+          citedFolio: citation.folio,
           marking: OCR_CORRECTION_MARKING,
           lowOcrFolios: outcome.low,
         })) {
           if (v.ok) continue
-          push(q, warning(q, v.reason, v.foundOnFolio === undefined ? {} : { found_on_folio: v.foundOnFolio }))
+          push(
+            q.index,
+            warning(q.raw, citation, v.reason, v.foundOnFolio === undefined ? {} : { found_on_folio: v.foundOnFolio }),
+          )
         }
       }
     }
   }
 
+  const unevaluated: QuoteWarningReason[] =
+    args.lowOcrFolios === null && quotes.length > 0 ? [QUOTE_WARNING_REASON.CORRECTION_ON_LOW_OCR] : []
   const ordered = warnings.sort((a, b) => a.index - b.index).map((x) => x.w)
+  const partial = unevaluated.length > 0 || ordered.some((w) => w.reason === QUOTE_WARNING_REASON.UNVERIFIABLE)
   return {
-    status: ordered.some((w) => w.reason === QUOTE_WARNING_REASON.UNVERIFIABLE) ? "partial" : "complete",
+    status: partial ? QUOTE_CHECK_STATUS.PARTIAL : QUOTE_CHECK_STATUS.COMPLETE,
     checked: quotes.length,
     warnings: ordered,
+    unevaluated_rules: unevaluated,
   }
 }

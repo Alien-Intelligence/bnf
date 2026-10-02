@@ -57,7 +57,12 @@ export type QuoteVerdict =
 export type VerifyOptions = {
   citedFolio: number
   marking: OcrCorrectionMarking
-  lowOcrFolios: ReadonlySet<number>
+  /**
+   * The document's badly recognised folios, or `null` when no quality data
+   * exists: `correction_on_low_ocr` is then not applied, and the caller must
+   * report it as unevaluated (quote-check.ts).
+   */
+  lowOcrFolios: ReadonlySet<number> | null
 }
 
 // ---------------------------------------------------------------------------
@@ -337,7 +342,7 @@ export function verifyQuote(q: ExtractedQuote, doc: SourceToken[], opts: VerifyO
       if (t.fuzzy && !t.bracketed && opts.marking === OCR_CORRECTION_MARKING_MODE.BRACKETED_WORD) {
         flag(QUOTE_WARNING_REASON.UNMARKED_CORRECTION)
       }
-      if ((t.fuzzy || t.bracketed) && opts.lowOcrFolios.has(t.folio)) {
+      if ((t.fuzzy || t.bracketed) && opts.lowOcrFolios !== null && opts.lowOcrFolios.has(t.folio)) {
         flag(QUOTE_WARNING_REASON.CORRECTION_ON_LOW_OCR)
       }
     }

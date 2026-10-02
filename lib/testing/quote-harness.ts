@@ -18,7 +18,7 @@
 //   S1 (C3) the chat tells the user the source is poorly recognised
 //   S2 (C1) the final note has ≥ 2 distinct cited quotes
 import { extractQuotes } from "@/lib/citations/quotes"
-import type { QuoteWarning } from "@/lib/citations/quote-check"
+import type { QuoteWarning } from "@/models/notes/schema"
 import { QUOTE_MIN_CHECKED_WORDS } from "@/lib/constants"
 import { QUOTE_WARNING_REASON } from "@/models/notes/schema"
 import type { QuoteWarningReason } from "@/models/notes/schema"

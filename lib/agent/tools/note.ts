@@ -27,7 +27,15 @@ import { z } from "zod"
 import { defineTool } from "@alien/chat-sdk/claude"
 import { NoteService } from "@/models/notes/service"
 import { NoteQueries } from "@/models/notes/queries"
-import { checkNoteQuotes, type QuoteCheckResult, type QuoteWarning } from "@/lib/citations/quote-check"
+import { checkNoteQuotes } from "@/lib/citations/quote-check"
+import { QUOTE_CHECK_BUDGET_MS } from "@/lib/constants"
+import {
+  QUOTE_CHECK_STATUS,
+  type QuoteCheckResult,
+  type QuoteCheckStatus,
+  type QuoteWarning,
+  type QuoteWarningReason,
+} from "@/models/notes/schema"
 import type { TurnScopedCtx } from "./registry-factory"
 import { AGENT_TOOLS } from "./constants"
 import { NOTE_NOT_INGESTED_ERROR, resolveIngestedCorpus } from "./ingestion-guard"
@@ -48,17 +56,26 @@ export const NOTE_NOT_FOUND_ERROR = "note_not_found"
  * the agent must be told, or it will believe it cited a source it actually
  * invented (playbook/citations.md) or quoted text the document never says.
  *
- * `quote_check` appears whenever a quote was in scope or the check itself
- * broke; `quote_warnings` only when there is something to fix.
+ * `quote_check` appears whenever a quote was in scope, a warning was raised,
+ * or the check itself broke; it names the rules it could not evaluate
+ * (`unevaluated_rules`) so `partial` is never mistaken for a clean pass.
+ * `quote_warnings` appears only when there is something to fix.
  */
-type NoteWriteResult = {
+export type NoteWriteResult = {
   note_id: string
   title: string
   citation_count: number
   invalid_citation?: { arks: string[]; message: string }
-  quote_check?: Pick<QuoteCheckResult, "status" | "checked">
+  quote_check?: {
+    status: QuoteCheckStatus
+    checked: number
+    unevaluated_rules?: QuoteWarningReason[]
+  }
   quote_warnings?: QuoteWarning[]
 }
+
+/** What a note write tool returns: the written note, or a structured refusal. */
+export type NoteWriteOutcome = NoteWriteResult | { error: string }
 
 function noteResult(
   note: { id: string; title: string; citationCount: number },
@@ -79,8 +96,16 @@ function noteResult(
         "rag_query ou retire la citation.",
     }
   }
-  if (quoteCheck && (quoteCheck.checked > 0 || quoteCheck.status === "failed")) {
+  if (
+    quoteCheck &&
+    (quoteCheck.checked > 0 ||
+      quoteCheck.warnings.length > 0 ||
+      quoteCheck.status === QUOTE_CHECK_STATUS.FAILED)
+  ) {
     base.quote_check = { status: quoteCheck.status, checked: quoteCheck.checked }
+    if (quoteCheck.unevaluated_rules.length > 0) {
+      base.quote_check.unevaluated_rules = quoteCheck.unevaluated_rules
+    }
     if (quoteCheck.warnings.length > 0) base.quote_warnings = quoteCheck.warnings
   }
   return base
@@ -105,10 +130,14 @@ async function runQuoteCheck(
       bodyMd,
       priorBodyMd,
       signal: ctx.signal,
+      // Track B's per-folio quality index is not in this build: the check
+      // reports `correction_on_low_ocr` as unevaluated rather than pretending.
+      lowOcrFolios: null,
+      budgetMs: QUOTE_CHECK_BUDGET_MS,
     })
   } catch (err) {
     console.error("[note quote check]", err)
-    return { status: "failed", checked: 0, warnings: [] }
+    return { status: QUOTE_CHECK_STATUS.FAILED, checked: 0, warnings: [], unevaluated_rules: [] }
   }
 }
 
@@ -156,13 +185,50 @@ export const noteGetTool = defineTool<
 // note_create
 // ---------------------------------------------------------------------------
 
-export const noteCreateTool = defineTool<
-  z.ZodObject<{
-    title: z.ZodString
-    body_md: z.ZodString
-  }>,
-  TurnScopedCtx
->({
+const noteCreateInputSchema = z.object({
+  title: z
+    .string()
+    .trim()
+    .min(1)
+    .max(200)
+    .describe("A clear, specific note title (max 200 chars)."),
+  body_md: z
+    .string()
+    .min(1)
+    .max(200_000)
+    .describe(
+      "The note body in Markdown. Use [[ark|label|folio]] for inline citations, " +
+        "![[ark|caption|folio]] to embed a folio image, and [[note:<id>|<label>]] to link " +
+        "another note.",
+    ),
+})
+export type NoteCreateInput = z.infer<typeof noteCreateInputSchema>
+
+export async function handleNoteCreate(input: NoteCreateInput, ctx: TurnScopedCtx): Promise<NoteWriteOutcome> {
+  // Structural guard: a note must rest on the ingested corpus, never on
+  // general knowledge before any retrieval exists (design item 4).
+  const corpus = await resolveIngestedCorpus(ctx, NOTE_NOT_INGESTED_ERROR)
+  if ("error" in corpus) return { error: corpus.error }
+
+  // The note is the project's own; its citations belong to the corpus it
+  // reads, which is the source's when this is a derived workspace.
+  const { note, rejected } = await NoteService.create({
+    projectId: ctx.projectId,
+    corpusProjectId: ctx.corpusProjectId,
+    appSessionId: ctx.appSessionId,
+    title: input.title,
+    bodyMd: input.body_md,
+  })
+
+  ctx.emit?.({
+    type: "note_event",
+    data: { kind: "created", noteId: note.id, title: note.title },
+  })
+
+  return noteResult(note, rejected, await runQuoteCheck(ctx, input.body_md, null))
+}
+
+export const noteCreateTool = defineTool<typeof noteCreateInputSchema, TurnScopedCtx>({
   name: AGENT_TOOLS.noteCreate,
   description:
     "Create a new Markdown research note. " +
@@ -174,60 +240,65 @@ export const noteCreateTool = defineTool<
     "Link to another note with [[note:<note_id>|<label>]] (ids from note_list/note_get) — " +
     "the pill opens that note. " +
     "Call note_list first to avoid near-duplicates.",
-  inputSchema: z.object({
-    title: z
-      .string()
-      .trim()
-      .min(1)
-      .max(200)
-      .describe("A clear, specific note title (max 200 chars)."),
-    body_md: z
-      .string()
-      .min(1)
-      .max(200_000)
-      .describe(
-        "The note body in Markdown. Use [[ark|label|folio]] for inline citations, " +
-          "![[ark|caption|folio]] to embed a folio image, and [[note:<id>|<label>]] to link " +
-          "another note.",
-      ),
-  }),
-  handler: async (input, ctx) => {
-    // Structural guard: a note must rest on the ingested corpus, never on
-    // general knowledge before any retrieval exists (design item 4).
-    const corpus = await resolveIngestedCorpus(ctx, NOTE_NOT_INGESTED_ERROR)
-    if ("error" in corpus) return { error: corpus.error }
-
-    // The note is the project's own; its citations belong to the corpus it
-    // reads, which is the source's when this is a derived workspace.
-    const { note, rejected } = await NoteService.create({
-      projectId: ctx.projectId,
-      corpusProjectId: ctx.corpusProjectId,
-      appSessionId: ctx.appSessionId,
-      title: input.title,
-      bodyMd: input.body_md,
-    })
-
-    ctx.emit?.({
-      type: "note_event",
-      data: { kind: "created", noteId: note.id, title: note.title },
-    })
-
-    return noteResult(note, rejected, await runQuoteCheck(ctx, input.body_md, null))
-  },
+  inputSchema: noteCreateInputSchema,
+  handler: handleNoteCreate,
 })
 
 // ---------------------------------------------------------------------------
 // note_update
 // ---------------------------------------------------------------------------
 
-export const noteUpdateTool = defineTool<
-  z.ZodObject<{
-    id: z.ZodString
-    title: z.ZodOptional<z.ZodString>
-    body_md: z.ZodOptional<z.ZodString>
-  }>,
-  TurnScopedCtx
->({
+const noteUpdateInputSchema = z.object({
+  id: z.string().uuid().describe("The note's UUID."),
+  title: z
+    .string()
+    .trim()
+    .min(1)
+    .max(200)
+    .optional()
+    .describe("New title, if changing it."),
+  body_md: z
+    .string()
+    .max(200_000)
+    .optional()
+    .describe(
+      "New body in Markdown, if replacing it. Use [[ark|label|folio]] citations and " +
+        "![[ark|caption|folio]] image embeds.",
+    ),
+})
+export type NoteUpdateInput = z.infer<typeof noteUpdateInputSchema>
+
+export async function handleNoteUpdate(input: NoteUpdateInput, ctx: TurnScopedCtx): Promise<NoteWriteOutcome> {
+  const corpus = await resolveIngestedCorpus(ctx, NOTE_NOT_INGESTED_ERROR)
+  if ("error" in corpus) return { error: corpus.error }
+
+  // Scope before mutating. `input.id` came from the model and names any note
+  // in the database, not necessarily one this project owns.
+  const target = await NoteQueries.getForProject(input.id, ctx.projectId)
+  if (!target) return { error: NOTE_NOT_FOUND_ERROR }
+
+  const written = await NoteService.update(input.id, ctx.corpusProjectId, {
+    title: input.title,
+    bodyMd: input.body_md,
+  })
+  // Deleted between the scope check and the write — rare, but the honest
+  // answer is the same one the scope check gives.
+  if (!written) return { error: NOTE_NOT_FOUND_ERROR }
+
+  ctx.emit?.({
+    type: "note_event",
+    data: { kind: "updated", noteId: written.note.id, title: written.note.title },
+  })
+
+  // Only quotes absent verbatim from the prior body were written this turn.
+  const quoteCheck =
+    input.body_md === undefined
+      ? undefined
+      : await runQuoteCheck(ctx, input.body_md, target.body_md)
+  return noteResult(written.note, written.rejected, quoteCheck)
+}
+
+export const noteUpdateTool = defineTool<typeof noteUpdateInputSchema, TurnScopedCtx>({
   name: AGENT_TOOLS.noteUpdate,
   description:
     "Update an existing note's title and/or body. " +
@@ -236,66 +307,57 @@ export const noteUpdateTool = defineTool<
     "Use this to extend a note with new findings rather than creating a near-duplicate. " +
     "Body supports [[ark|label|folio]] citations, ![[ark|caption|folio]] image embeds, and " +
     "[[note:<id>|<label>]] links to other notes.",
-  inputSchema: z.object({
-    id: z.string().uuid().describe("The note's UUID."),
-    title: z
-      .string()
-      .trim()
-      .min(1)
-      .max(200)
-      .optional()
-      .describe("New title, if changing it."),
-    body_md: z
-      .string()
-      .max(200_000)
-      .optional()
-      .describe(
-        "New body in Markdown, if replacing it. Use [[ark|label|folio]] citations and " +
-          "![[ark|caption|folio]] image embeds.",
-      ),
-  }),
-  handler: async (input, ctx) => {
-    const corpus = await resolveIngestedCorpus(ctx, NOTE_NOT_INGESTED_ERROR)
-    if ("error" in corpus) return { error: corpus.error }
-
-    // Scope before mutating. `input.id` came from the model and names any note
-    // in the database, not necessarily one this project owns.
-    const target = await NoteQueries.getForProject(input.id, ctx.projectId)
-    if (!target) return { error: NOTE_NOT_FOUND_ERROR }
-
-    const written = await NoteService.update(input.id, ctx.corpusProjectId, {
-      title: input.title,
-      bodyMd: input.body_md,
-    })
-    // Deleted between the scope check and the write — rare, but the honest
-    // answer is the same one the scope check gives.
-    if (!written) return { error: NOTE_NOT_FOUND_ERROR }
-
-    ctx.emit?.({
-      type: "note_event",
-      data: { kind: "updated", noteId: written.note.id, title: written.note.title },
-    })
-
-    // Only quotes absent verbatim from the prior body were written this turn.
-    const quoteCheck =
-      input.body_md === undefined
-        ? undefined
-        : await runQuoteCheck(ctx, input.body_md, target.body_md)
-    return noteResult(written.note, written.rejected, quoteCheck)
-  },
+  inputSchema: noteUpdateInputSchema,
+  handler: handleNoteUpdate,
 })
 
 // ---------------------------------------------------------------------------
 // note_append
 // ---------------------------------------------------------------------------
 
-export const noteAppendTool = defineTool<
-  z.ZodObject<{
-    id: z.ZodString
-    body_md: z.ZodString
-  }>,
-  TurnScopedCtx
->({
+const noteAppendInputSchema = z.object({
+  id: z.string().uuid().describe("The note's UUID."),
+  body_md: z
+    .string()
+    .trim()
+    .min(1)
+    .max(200_000)
+    .describe(
+      "Markdown to append at the end of the note. Include your own ## / ### headings; " +
+        "it is added after a blank line. Use [[ark|label|folio]] citations, " +
+        "![[ark|caption|folio]] image embeds, and [[note:<id>|<label>]] note links.",
+    ),
+})
+export type NoteAppendInput = z.infer<typeof noteAppendInputSchema>
+
+export async function handleNoteAppend(input: NoteAppendInput, ctx: TurnScopedCtx): Promise<NoteWriteOutcome> {
+  const corpus = await resolveIngestedCorpus(ctx, NOTE_NOT_INGESTED_ERROR)
+  if ("error" in corpus) return { error: corpus.error }
+
+  // Scope before mutating — see note_update.
+  const target = await NoteQueries.getForProject(input.id, ctx.projectId)
+  if (!target) return { error: NOTE_NOT_FOUND_ERROR }
+
+  const written = await NoteService.append(input.id, ctx.corpusProjectId, {
+    bodyMd: input.body_md,
+  })
+  if (!written) return { error: NOTE_NOT_FOUND_ERROR }
+
+  ctx.emit?.({
+    type: "note_event",
+    data: { kind: "updated", noteId: written.note.id, title: written.note.title },
+  })
+
+  // The appended text is what was written this turn; the prior body is the
+  // note as it stood, so a quote the agent repeats from it is not re-checked.
+  return noteResult(
+    written.note,
+    written.rejected,
+    await runQuoteCheck(ctx, input.body_md, target.body_md),
+  )
+}
+
+export const noteAppendTool = defineTool<typeof noteAppendInputSchema, TurnScopedCtx>({
   name: AGENT_TOOLS.noteAppend,
   description:
     "Append Markdown to the END of an existing note WITHOUT resending the whole body. " +
@@ -306,45 +368,8 @@ export const noteAppendTool = defineTool<
     "Use [[<ark>|<short label>|<folio>]] citations, ![[<ark>|<caption>|<folio>]] image embeds, " +
     "and [[note:<id>|<label>]] links to other notes. " +
     "Use note_update only for surgical edits to existing text (fixing or removing).",
-  inputSchema: z.object({
-    id: z.string().uuid().describe("The note's UUID."),
-    body_md: z
-      .string()
-      .trim()
-      .min(1)
-      .max(200_000)
-      .describe(
-        "Markdown to append at the end of the note. Include your own ## / ### headings; " +
-          "it is added after a blank line. Use [[ark|label|folio]] citations, " +
-          "![[ark|caption|folio]] image embeds, and [[note:<id>|<label>]] note links.",
-      ),
-  }),
-  handler: async (input, ctx) => {
-    const corpus = await resolveIngestedCorpus(ctx, NOTE_NOT_INGESTED_ERROR)
-    if ("error" in corpus) return { error: corpus.error }
-
-    // Scope before mutating — see note_update.
-    const target = await NoteQueries.getForProject(input.id, ctx.projectId)
-    if (!target) return { error: NOTE_NOT_FOUND_ERROR }
-
-    const written = await NoteService.append(input.id, ctx.corpusProjectId, {
-      bodyMd: input.body_md,
-    })
-    if (!written) return { error: NOTE_NOT_FOUND_ERROR }
-
-    ctx.emit?.({
-      type: "note_event",
-      data: { kind: "updated", noteId: written.note.id, title: written.note.title },
-    })
-
-    // The appended text is what was written this turn; the prior body is the
-    // note as it stood, so a quote the agent repeats from it is not re-checked.
-    return noteResult(
-      written.note,
-      written.rejected,
-      await runQuoteCheck(ctx, input.body_md, target.body_md),
-    )
-  },
+  inputSchema: noteAppendInputSchema,
+  handler: handleNoteAppend,
 })
 
 // Convenience array for the registry builder.

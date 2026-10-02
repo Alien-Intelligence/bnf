@@ -4,8 +4,9 @@
 // without a note is never a vacuous pass.
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import type { QuoteWarning } from "@/lib/citations/quote-check"
-import { QUOTE_WARNING_DETAIL, QUOTE_WARNING_REASON } from "@/models/notes/schema"
+import type { QuoteWarning } from "@/models/notes/schema"
+import { QUOTE_WARNING_DETAIL } from "@/lib/agent/prompts/quote-warnings"
+import { QUOTE_WARNING_REASON } from "@/models/notes/schema"
 import type { QuoteWarningReason } from "@/models/notes/schema"
 import { casePasses, citedQuoteCount, forbiddenCompletionsIn, hardViolations, runVerdict } from "./quote-harness"
 import type { CheckedBody, RunEvidence } from "./quote-harness"
