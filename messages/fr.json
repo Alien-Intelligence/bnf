@@ -190,7 +190,9 @@
     "admin": "Administration",
     "projectMeta": "{count} · {subtitle}",
     "projectsError": "Impossible de charger vos projets.",
-    "projectsEmpty": "Aucun projet dans votre liste."
+    "projectsEmpty": "Aucun projet dans votre liste.",
+    "version": "Version {version}",
+    "versionWithSha": "Version {version} · {sha}"
   },
   "health": {
     "aria": "État des services",

@@ -190,7 +190,9 @@
     "admin": "Administration",
     "projectMeta": "{count} · {subtitle}",
     "projectsError": "Could not load your projects.",
-    "projectsEmpty": "No projects in your list."
+    "projectsEmpty": "No projects in your list.",
+    "version": "Version {version}",
+    "versionWithSha": "Version {version} · {sha}"
   },
   "health": {
     "aria": "Service health",

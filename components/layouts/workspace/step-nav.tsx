@@ -16,11 +16,13 @@ import { cn } from "@/lib/utils"
 interface LayoutWorkspaceStepNavProps {
   projectId: string
   /**
-   * The steps this user actually has on this project. A read-only member and a
-   * derived workspace both get Rechercher alone: showing a step that answers
-   * 404 is worse than not showing it. Defaults to the full progression.
+   * The steps this user actually has on this project (workspaceStepsFor, via
+   * the server's header model). A read-only member and a derived workspace
+   * both get Rechercher alone: showing a step that answers 404 is worse than
+   * not showing it. Required: which steps exist is a permission decision, never
+   * a default.
    */
-  steps?: readonly WorkspaceStep[]
+  steps: readonly WorkspaceStep[]
 }
 
 const STEP_HREF: Record<WorkspaceStep, (projectId: string) => string> = {
@@ -29,21 +31,26 @@ const STEP_HREF: Record<WorkspaceStep, (projectId: string) => string> = {
   rechercher: ROUTES.rechercher,
 }
 
-function activeStepFromPathname(pathname: string): WorkspaceStep {
-  // Carnet is a sub-view of Rechercher; match it to the rechercher step.
-  if (pathname.includes("/rechercher")) return "rechercher"
-  if (pathname.includes("/ingerer")) return "ingerer"
-  return "constituer"
+/**
+ * The step whose route the (locale-less) pathname is on, or null when it is on
+ * none of them. Carnet lives under Rechercher's route, so it lights Rechercher.
+ */
+function activeStepFromPathname(pathname: string, projectId: string): WorkspaceStep | null {
+  const step = WORKSPACE_STEPS.find((s) => {
+    const href = STEP_HREF[s](projectId)
+    return pathname === href || pathname.startsWith(`${href}/`)
+  })
+  return step ?? null
 }
 
 export function LayoutWorkspaceStepNav({
   projectId,
-  steps = WORKSPACE_STEPS,
+  steps,
 }: LayoutWorkspaceStepNavProps) {
   const t = useTranslations("nav")
   const pathname = usePathname()
-  const activeStep = activeStepFromPathname(pathname)
-  const activeIndex = steps.indexOf(activeStep)
+  const activeStep = activeStepFromPathname(pathname, projectId)
+  const activeIndex = activeStep === null ? -1 : steps.indexOf(activeStep)
 
   // A single-step progression is not a progression — the numbered dots would
   // read as "step 1 of 1" and say nothing.

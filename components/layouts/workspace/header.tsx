@@ -64,6 +64,7 @@ function initials(user: HeaderUser): string {
  *  git short SHA when available. Both inlined at build (next.config.ts). Helps
  *  pin down which build is running when debugging. */
 function AppVersion() {
+  const t = useTranslations("nav")
   const version = process.env.NEXT_PUBLIC_APP_VERSION
   if (!version) return null
   const sha = process.env.NEXT_PUBLIC_GIT_SHA
@@ -71,7 +72,7 @@ function AppVersion() {
   return (
     <span
       className="hidden font-mono text-[10px] text-muted-foreground/60 select-none sm:inline"
-      title={sha ? `Version ${version} · ${sha}` : `Version ${version}`}
+      title={sha ? t("versionWithSha", { version, sha }) : t("version", { version })}
     >
       {label}
     </span>
