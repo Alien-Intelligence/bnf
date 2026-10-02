@@ -27,6 +27,7 @@ import { z } from "zod"
 import { defineTool } from "@alien/chat-sdk/claude"
 import { NoteService } from "@/models/notes/service"
 import { NoteQueries } from "@/models/notes/queries"
+import { checkNoteQuotes, type QuoteCheckResult, type QuoteWarning } from "@/lib/citations/quote-check"
 import type { TurnScopedCtx } from "./registry-factory"
 import { AGENT_TOOLS } from "./constants"
 import { NOTE_NOT_INGESTED_ERROR, resolveIngestedCorpus } from "./ingestion-guard"
@@ -42,29 +43,72 @@ export const NOTE_NOT_FOUND_ERROR = "note_not_found"
 
 /**
  * The tool result for a write, naming any citation the corpus could not vouch
- * for. A rejected ARK is not a failure — the note was written, and its body
- * still contains the text — but the agent must be told, or it will believe it
- * cited a source it actually invented (playbook/citations.md).
+ * for and any quotation the cited folio does not bear out. Neither is a
+ * failure — the note was written, and its body still contains the text — but
+ * the agent must be told, or it will believe it cited a source it actually
+ * invented (playbook/citations.md) or quoted text the document never says.
+ *
+ * `quote_check` appears whenever a quote was in scope or the check itself
+ * broke; `quote_warnings` only when there is something to fix.
  */
+type NoteWriteResult = {
+  note_id: string
+  title: string
+  citation_count: number
+  invalid_citation?: { arks: string[]; message: string }
+  quote_check?: Pick<QuoteCheckResult, "status" | "checked">
+  quote_warnings?: QuoteWarning[]
+}
+
 function noteResult(
   note: { id: string; title: string; citationCount: number },
   rejected: string[],
-) {
-  const base = {
+  quoteCheck?: QuoteCheckResult,
+): NoteWriteResult {
+  const base: NoteWriteResult = {
     note_id: note.id,
     title: note.title,
     citation_count: note.citationCount,
   }
-  if (rejected.length === 0) return base
-  return {
-    ...base,
-    invalid_citation: {
+  if (rejected.length > 0) {
+    base.invalid_citation = {
       arks: rejected,
       message:
         "Ces ARK ne figurent dans aucune version du corpus : la citation a été " +
         "conservée dans le texte mais n'a pas été indexée. Vérifie l'ARK avec " +
         "rag_query ou retire la citation.",
-    },
+    }
+  }
+  if (quoteCheck && (quoteCheck.checked > 0 || quoteCheck.status === "failed")) {
+    base.quote_check = { status: quoteCheck.status, checked: quoteCheck.checked }
+    if (quoteCheck.warnings.length > 0) base.quote_warnings = quoteCheck.warnings
+  }
+  return base
+}
+
+/**
+ * The quote check runs AFTER the write, against the corpus the note's
+ * citations point into. It must not decide whether the note exists: an
+ * unexpected failure here is logged and reported as `status: "failed"` rather
+ * than thrown, because a throw after a successful write would make the agent
+ * retry the create and duplicate the note (plan D5; CLAUDE_ERROR_PATTERNS §15).
+ * Expected cluster failures are already coerced per ARK inside the checker.
+ */
+async function runQuoteCheck(
+  ctx: TurnScopedCtx,
+  bodyMd: string,
+  priorBodyMd: string | null,
+): Promise<QuoteCheckResult> {
+  try {
+    return await checkNoteQuotes({
+      corpusProjectId: ctx.corpusProjectId,
+      bodyMd,
+      priorBodyMd,
+      signal: ctx.signal,
+    })
+  } catch (err) {
+    console.error("[note quote check]", err)
+    return { status: "failed", checked: 0, warnings: [] }
   }
 }
 
@@ -168,7 +212,7 @@ export const noteCreateTool = defineTool<
       data: { kind: "created", noteId: note.id, title: note.title },
     })
 
-    return noteResult(note, rejected)
+    return noteResult(note, rejected, await runQuoteCheck(ctx, input.body_md, null))
   },
 })
 
@@ -232,7 +276,12 @@ export const noteUpdateTool = defineTool<
       data: { kind: "updated", noteId: written.note.id, title: written.note.title },
     })
 
-    return noteResult(written.note, written.rejected)
+    // Only quotes absent verbatim from the prior body were written this turn.
+    const quoteCheck =
+      input.body_md === undefined
+        ? undefined
+        : await runQuoteCheck(ctx, input.body_md, target.body_md)
+    return noteResult(written.note, written.rejected, quoteCheck)
   },
 })
 
@@ -288,7 +337,13 @@ export const noteAppendTool = defineTool<
       data: { kind: "updated", noteId: written.note.id, title: written.note.title },
     })
 
-    return noteResult(written.note, written.rejected)
+    // The appended text is what was written this turn; the prior body is the
+    // note as it stood, so a quote the agent repeats from it is not re-checked.
+    return noteResult(
+      written.note,
+      written.rejected,
+      await runQuoteCheck(ctx, input.body_md, target.body_md),
+    )
   },
 })
 
