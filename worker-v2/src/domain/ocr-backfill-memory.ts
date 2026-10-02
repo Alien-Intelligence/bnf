@@ -1,11 +1,16 @@
 /**
  * In-memory OcrBackfillStore for unit tests. Single-threaded JS makes `request`
- * trivially atomic. The clock is injectable so the retry-age rule can be tested
- * without waiting.
+ * trivially atomic. The clock is injectable so the backoff and staleness rules
+ * can be tested without waiting. Applies the same planRequest as the pg store
+ * and is held to the same contract test (ocr-backfill.test.ts).
  */
 import {
+  OCR_BACKFILL_EXPIRED,
   OCR_BACKFILL_STATE,
+  planRequest,
+  validateOcrBackfillPolicy,
   type OcrBackfillCounts,
+  type OcrBackfillPolicy,
   type OcrBackfillRequest,
   type OcrBackfillRow,
   type OcrBackfillStore,
@@ -19,50 +24,65 @@ export class MemoryOcrBackfillStore implements OcrBackfillStore {
     this.now = opts.now ?? Date.now;
   }
 
-  async request(ark: string, retryFailedOlderThanMs: number): Promise<OcrBackfillRequest> {
-    const now = this.now();
-    const row = this.rows.get(ark);
-    if (!row) {
-      this.rows.set(ark, {
-        ark,
-        state: OCR_BACKFILL_STATE.QUEUED,
-        error: null,
-        attempts: 0,
-        requestedAt: new Date(now),
-        updatedAt: new Date(now),
-      });
-      return { kind: "enqueue" };
+  async request(ark: string, policy: OcrBackfillPolicy): Promise<OcrBackfillRequest> {
+    validateOcrBackfillPolicy(policy);
+    const now = new Date(this.now());
+    const row = this.rows.get(ark) ?? null;
+    const plan = planRequest(row, policy, now.getTime());
+    switch (plan.action) {
+      case "insert":
+        this.rows.set(ark, {
+          ark,
+          state: OCR_BACKFILL_STATE.QUEUED,
+          error: null,
+          permanent: false,
+          attempts: 0,
+          requestedAt: now,
+          updatedAt: now,
+        });
+        return { kind: "enqueue" };
+      case "reopen":
+        Object.assign(this.require(ark), {
+          state: OCR_BACKFILL_STATE.QUEUED,
+          error: null,
+          permanent: false,
+          attempts: plan.attempts,
+          requestedAt: now,
+          updatedAt: now,
+        });
+        return { kind: "enqueue" };
+      case "expire":
+        Object.assign(this.require(ark), {
+          state: OCR_BACKFILL_STATE.FAILED,
+          error: OCR_BACKFILL_EXPIRED,
+          permanent: true,
+          attempts: plan.attempts,
+          updatedAt: now,
+        });
+        return { kind: "failed", reason: OCR_BACKFILL_EXPIRED, permanent: true };
+      case "report":
+        return plan.result;
     }
-    const reopen =
-      row.state === OCR_BACKFILL_STATE.DONE ||
-      (row.state === OCR_BACKFILL_STATE.FAILED &&
-        row.updatedAt.getTime() < now - retryFailedOlderThanMs);
-    if (reopen) {
-      row.state = OCR_BACKFILL_STATE.QUEUED;
-      row.error = null;
-      row.requestedAt = new Date(now);
-      row.updatedAt = new Date(now);
-      return { kind: "enqueue" };
-    }
-    if (row.state === OCR_BACKFILL_STATE.FAILED) {
-      return { kind: "failed", reason: row.error ?? "unknown" };
-    }
-    return { kind: "queued" };
   }
 
   async markDone(ark: string): Promise<void> {
-    const row = this.require(ark);
-    row.state = OCR_BACKFILL_STATE.DONE;
-    row.error = null;
-    row.updatedAt = new Date(this.now());
+    Object.assign(this.require(ark), {
+      state: OCR_BACKFILL_STATE.DONE,
+      error: null,
+      permanent: false,
+      updatedAt: new Date(this.now()),
+    });
   }
 
-  async markFailed(ark: string, reason: string): Promise<void> {
+  async markFailed(ark: string, reason: string, opts: { permanent: boolean }): Promise<void> {
     const row = this.require(ark);
-    row.state = OCR_BACKFILL_STATE.FAILED;
-    row.error = reason;
-    row.attempts += 1;
-    row.updatedAt = new Date(this.now());
+    Object.assign(row, {
+      state: OCR_BACKFILL_STATE.FAILED,
+      error: reason,
+      permanent: opts.permanent,
+      attempts: row.attempts + 1,
+      updatedAt: new Date(this.now()),
+    });
   }
 
   async get(ark: string): Promise<OcrBackfillRow | null> {

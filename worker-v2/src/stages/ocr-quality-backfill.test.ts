@@ -57,7 +57,7 @@ async function setup(spec: FakeDocSpec): Promise<Harness> {
     acquires: () => acquired,
     seed: async () => {
       // The sync endpoint records the row before sending (one row per ARK).
-      await store.request(ARK, 0);
+      await store.request(ARK, { retryFailedAfterMs: 1, maxAttempts: 5, queuedStaleAfterMs: 1 });
       await q.send(Q.ocrQualityBackfill, { ark: ARK });
     },
   };

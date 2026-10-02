@@ -25,7 +25,11 @@ import { buildProgress } from "./observability.js";
 import type { BlobStore, QueueClient } from "./core/types.js";
 import type { Logger } from "./core/types.js";
 import type { DocStateStore } from "./domain/doc-state.js";
-import type { OcrBackfillStore } from "./domain/ocr-backfill.js";
+import {
+  OCR_BACKFILL_MAX_ATTEMPTS,
+  OCR_BACKFILL_QUEUED_STALE_MS,
+  type OcrBackfillStore,
+} from "./domain/ocr-backfill.js";
 import type { RunStore } from "./domain/run.js";
 import type { CompletionMonitor } from "./live/completion-monitor.js";
 import { createRunAndSeed, parseIngestRequest } from "./live/ingress.js";
@@ -204,7 +208,11 @@ async function handleOcrSync(
       queue: deps.queue,
       log: deps.log,
       backfillEnabled: deps.ocrBackfillEnabled,
-      retryFailedAfterMs: deps.ocrBackfillRetryFailedAfterMs,
+      policy: {
+        retryFailedAfterMs: deps.ocrBackfillRetryFailedAfterMs,
+        maxAttempts: OCR_BACKFILL_MAX_ATTEMPTS,
+        queuedStaleAfterMs: OCR_BACKFILL_QUEUED_STALE_MS,
+      },
     },
     parsed.value.arks,
   );

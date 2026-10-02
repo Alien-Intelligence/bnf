@@ -18,7 +18,7 @@ import { Semaphore } from "../core/semaphore.js";
 import { PermanentBnfError } from "../bnf/errors.js";
 import { ensureCanonicalArk } from "../bnf/parse.js";
 import { keys } from "../domain/keys.js";
-import type { OcrBackfillStore } from "../domain/ocr-backfill.js";
+import type { OcrBackfillPolicy, OcrBackfillStore } from "../domain/ocr-backfill.js";
 import { Q } from "../domain/queues.js";
 import type { DocOcrQuality } from "../domain/types.js";
 import type { OcrBackfillItem } from "../stages/ocr-quality-backfill.js";
@@ -40,8 +40,8 @@ export interface OcrSyncDeps {
   queue: QueueClient;
   log: Logger;
   backfillEnabled: boolean;
-  /** A failed row older than this is re-queued on request (OCR_BACKFILL_RETRY_FAILED_AFTER_MS). */
-  retryFailedAfterMs: number;
+  /** The retry / staleness policy the store applies (domain/ocr-backfill.ts). */
+  policy: OcrBackfillPolicy;
 }
 
 export interface OcrSyncResponse {
@@ -109,7 +109,7 @@ export async function syncOcrQuality(deps: OcrSyncDeps, arks: string[]): Promise
       response.unavailable.push({ ark, reason: OCR_SYNC_UNAVAILABLE_BACKFILL_DISABLED });
       continue;
     }
-    const decision = await deps.backfill.request(ark, deps.retryFailedAfterMs);
+    const decision = await deps.backfill.request(ark, deps.policy);
     switch (decision.kind) {
       case "enqueue": {
         const item: OcrBackfillItem = { ark };

@@ -104,20 +104,38 @@ CREATE TABLE IF NOT EXISTS sandbox_ingest_v2.document_folio_v2 (
 );
 
 -- One row per ARK whose OCR-quality artifact (keys.ocrQuality) the app asked
--- for through POST /ocr-quality/sync and S3 lacked. It is the dedupe for that
--- endpoint (one queued build per ARK, however many sweeps ask) and the progress
--- source for `npm run status`. state: queued | done | failed. A failed row is
--- re-queued by the next request once it is older than
--- OCR_BACKFILL_RETRY_FAILED_AFTER_MS; a done row is re-queued only if its
--- artifact has since vanished (the artifact, not the row, is the truth).
--- See stages/ocr-quality-backfill.ts and live/ocr-quality-sync.ts.
+-- for through POST /ocr-quality/sync while S3 had no valid one. It is the dedupe
+-- for that endpoint (at most one queued build per ARK, however many sweeps ask),
+-- the retry ledger (attempts, permanent) and the progress source for
+-- `npm run status`. state: queued | done | failed (CHECK below). The endpoint
+-- only asks when the artifact is missing or invalid, so a done row it reaches
+-- lost its artifact and is re-queued; a transient failure is retried with
+-- exponential backoff up to OCR_BACKFILL_MAX_ATTEMPTS; a permanent one never;
+-- a queued row that never reported back is re-queued once stale. See
+-- domain/ocr-backfill.ts (planRequest), stages/ocr-quality-backfill.ts and
+-- live/ocr-quality-sync.ts.
 CREATE TABLE IF NOT EXISTS sandbox_ingest_v2.ocr_quality_backfill (
   ark          text PRIMARY KEY,
   state        text NOT NULL,
   error        text,
+  permanent    boolean NOT NULL DEFAULT false,
   attempts     integer NOT NULL DEFAULT 0,
   requested_at timestamptz NOT NULL DEFAULT now(),
   updated_at   timestamptz NOT NULL DEFAULT now()
 );
+-- Tables created by an earlier build of this branch lack the column / CHECK.
+ALTER TABLE sandbox_ingest_v2.ocr_quality_backfill
+  ADD COLUMN IF NOT EXISTS permanent boolean NOT NULL DEFAULT false;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'ocr_quality_backfill_state_check'
+  ) THEN
+    ALTER TABLE sandbox_ingest_v2.ocr_quality_backfill
+      ADD CONSTRAINT ocr_quality_backfill_state_check
+      CHECK (state IN ('queued', 'done', 'failed'));
+  END IF;
+END
+$$;
 CREATE INDEX IF NOT EXISTS ocr_quality_backfill_state_idx
   ON sandbox_ingest_v2.ocr_quality_backfill (state);

@@ -70,7 +70,7 @@ export class OcrQualityBackfillStage extends PipelineStage<OcrBackfillItem, neve
 
   /** The base's safety net: a throw that escaped process() on the last attempt. */
   protected override async onExhausted(item: OcrBackfillItem, reason: string): Promise<void> {
-    await this.store.markFailed(item.ark, `build_failed: ${reason}`);
+    await this.store.markFailed(item.ark, `build_failed: ${reason}`, { permanent: false });
   }
 
   async process(item: OcrBackfillItem, ctx: StageContext): Promise<StageOutcome<never>> {
@@ -139,7 +139,7 @@ export class OcrQualityBackfillStage extends PipelineStage<OcrBackfillItem, neve
   }
 
   private async terminal(ark: string, reason: string): Promise<StageOutcome<never>> {
-    await this.store.markFailed(ark, reason);
+    await this.store.markFailed(ark, reason, { permanent: true });
     return { kind: "fail", reason, terminal: true };
   }
 }

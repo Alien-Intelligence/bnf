@@ -237,11 +237,15 @@ test("POST /ocr-quality/sync: a recently failed row is unavailable with its reas
   let clock = 1_000_000;
   const { base, deps, ocrBackfill, close } = await bootServer({ now: () => clock });
   try {
-    await ocrBackfill.request(ARK_B, RETRY_FAILED_AFTER_MS);
-    await ocrBackfill.markFailed(ARK_B, "no_pages_artifact");
+    await ocrBackfill.request(ARK_B, {
+      retryFailedAfterMs: RETRY_FAILED_AFTER_MS,
+      maxAttempts: 5,
+      queuedStaleAfterMs: 6 * 60 * 60 * 1_000,
+    });
+    await ocrBackfill.markFailed(ARK_B, "build_failed: 503", { permanent: false });
 
     const fresh = (await (await sync(base, { arks: [ARK_B] })).json()) as SyncResponse;
-    assert.deepEqual(fresh.unavailable, [{ ark: ARK_B, reason: "no_pages_artifact" }]);
+    assert.deepEqual(fresh.unavailable, [{ ark: ARK_B, reason: "build_failed: 503" }]);
     assert.deepEqual(fresh.building, []);
     assert.equal((await deps.queue.counts(Q.ocrQualityBackfill)).queued, 0, "a fresh failure is not re-driven");
 
