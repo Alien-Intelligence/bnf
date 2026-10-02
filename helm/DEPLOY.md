@@ -337,10 +337,21 @@ backfilled automatically — no manual step:
   `POST /ocr-quality/sync`. Each missing artifact is queued once on the worker's
   `ocr-quality-backfill` stage, which answers `building` until it is done.
 - **How to watch it:**
-  - app logs: `[ocr-sync] cycle: available=…, building=…, unavailable=…, pending-left=…`
+  - app logs: `[ocr-sync] cycle: available=…, building=…, unavailable=…, rejected=…, pending-left=…`
     (`pending-left` reaching 0 and staying there means converged);
   - worker pod: `npm run status` prints `ocrBackfill: {queued, done, failed}`;
   - Postgres: `SELECT status, reason, count(*) FROM document_ocr GROUP BY 1, 2;`
+- **App-side sync state (persisted, nothing in memory):** a row is asked again
+  at `next_check_at` (building: next sweep; unavailable: 24 h). A re-ingest
+  commit sets `resync_requested_at` in its own transaction, so a re-OCR'd
+  document is re-pulled even after a restart. If the worker's answer for an ARK
+  breaks the contract (a 400, an invalid body), the app isolates that ARK by
+  splitting the batch, backs it off (3 min doubling, capped at 24 h) and, after
+  5 consecutive failures, marks it `quarantined` with `reason =
+  sync_rejected: …`; a quarantined ARK is only asked again after a re-ingest.
+  An unreachable worker (timeout, 5xx, 404 from an old worker) stops the cycle
+  and penalises nothing. To list problems:
+  `SELECT ark, status, reason, sync_attempts FROM document_ocr WHERE status IN ('quarantined', 'unavailable') ORDER BY checked_at DESC;`
 - **BnF cost:** one Presentation-API (ALTO) call per indexed **text** folio,
   once — the `alto` cache holds extracted text, not XML, so the word confidences
   must be re-fetched. Vision and Mistral documents cost nothing. The calls go
