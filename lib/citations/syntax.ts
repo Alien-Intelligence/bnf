@@ -99,6 +99,9 @@ export function unescapeCitationText(s: string): string {
 function parseWith(md: string, regex: RegExp): ParsedCitation[] {
   const out: ParsedCitation[] = []
   for (const m of md.matchAll(regex)) {
+    // A folio is a IIIF vue index, ≥ 1 (playbook/citations.md: the parser is
+    // strict on the folio). `[[ark|label|0]]` is not a citation.
+    if (Number(m[3]) < 1) continue
     out.push({
       ark: m[1],
       label: unescapeCitationText(m[2]),
