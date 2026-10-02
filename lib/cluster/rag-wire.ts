@@ -31,12 +31,24 @@ export function chunkToPassage(chunk: DataclusterChunk): RagPassage | null {
 
   return {
     ark,
-    folio: typeof folio === "number" ? folio : null,
+    folio: positiveOrNull(ark, "folio", folio),
     snippet: chunk.chunk_text,
     score: chunk.score,
     charRange: toCharRange(ark, char_start, char_end),
-    entryId: typeof entry_id === "number" ? entry_id : null,
+    entryId: positiveOrNull(ark, "entry_id", entry_id),
   }
+}
+
+/**
+ * A folio (IIIF vue, ≥ 1) or an entry id (≥ 1): absent → null; present but
+ * not a positive safe integer → protocol error, never passed on to the agent.
+ */
+function positiveOrNull(ark: string, field: string, value: unknown): number | null {
+  if (value === undefined) return null
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
+    throw new DataclusterMcpProtocolError(`chunk of ${ark} carries an invalid ${field}: ${JSON.stringify(value)}`)
+  }
+  return value
 }
 
 function toCharRange(ark: string, start: unknown, end: unknown): [number, number] | null {
@@ -88,6 +100,18 @@ export function toEntryContent(
     ) {
       throw incomplete(req, "paginated", missing(["char_offset", "char_limit", "total_length", "has_more", "next_offset"]))
     }
+    // The MCP echoes the request and derives the rest from the slice
+    // (get_entry_content.py): end = offset + len(text); next_offset = end
+    // while end < total, else null; has_more = end < total.
+    const end = char_offset + codePointLength(data.text)
+    if (
+      char_offset !== req.charOffset ||
+      char_limit !== req.charLimit ||
+      has_more !== (next_offset !== null) ||
+      (next_offset !== null && next_offset !== end)
+    ) {
+      throw inconsistent(req, data)
+    }
     return {
       entryId: req.entryId,
       text: data.text,
@@ -104,6 +128,8 @@ export function toEntryContent(
     if (char_offset === undefined || total_length === undefined || has_more === undefined) {
       throw incomplete(req, "offset-only", missing(["char_offset", "total_length", "has_more"]))
     }
+    // Offset-only mode returns everything from the offset: nothing follows.
+    if (char_offset !== req.charOffset || has_more) throw inconsistent(req, data)
     return {
       entryId: req.entryId,
       text: data.text,
@@ -125,6 +151,14 @@ export function toEntryContent(
     hasMore: false,
     nextOffset: total,
   }
+}
+
+function inconsistent(req: { entryId: number }, data: DataclusterEntryContent): DataclusterMcpProtocolError {
+  const { text, ...fields } = data
+  return new DataclusterMcpProtocolError(
+    `datacluster_get_entry_content (entry ${req.entryId}) returned inconsistent pagination ` +
+      `${JSON.stringify(fields)} for ${codePointLength(text)} characters of text`,
+  )
 }
 
 function incomplete(

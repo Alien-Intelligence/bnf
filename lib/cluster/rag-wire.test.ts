@@ -147,3 +147,32 @@ test("liveEntryIds refuses an incomplete lookup (total beyond the hits) or one w
   assert.throws(() => liveEntryIds([hit], 6, ARK), /matched 6 entries but returned 1/)
   assert.throws(() => liveEntryIds([hit], undefined, ARK), /no pagination.total/)
 })
+
+test("toEntryContent: a paginated reply that contradicts itself or the request is a protocol error", () => {
+  const req = { entryId: 7, charOffset: 0, charLimit: 4 }
+  const page = { entry_id: 7, text: "abcd", char_offset: 0, char_limit: 4, total_length: 9, has_more: true, next_offset: 4 }
+  assert.equal(toEntryContent(page, req).nextOffset, 4, "a consistent page passes")
+  for (const bad of [
+    { ...page, next_offset: 5 },
+    { ...page, has_more: false },
+    { ...page, has_more: true, next_offset: null },
+    { ...page, char_offset: 2 },
+    { ...page, char_limit: 8 },
+  ]) {
+    assert.throws(() => toEntryContent(bad, req), /inconsistent pagination/, JSON.stringify(bad))
+  }
+})
+
+test("toEntryContent: an offset-only reply must echo the offset and have nothing more", () => {
+  const req = { entryId: 7, charOffset: 2, charLimit: 0 }
+  assert.throws(() => toEntryContent({ text: "cdef", char_offset: 3, total_length: 6, has_more: false }, req), /inconsistent/)
+  assert.throws(() => toEntryContent({ text: "cdef", char_offset: 2, total_length: 6, has_more: true }, req), /inconsistent/)
+})
+
+test("chunkToPassage refuses a folio or entry id that is not a positive integer", () => {
+  const chunk = (folio: number, entry_id: number) => ({ id: "c", score: 1, chunk_text: "x", metadata: { ark: ARK, folio, entry_id } })
+  assert.throws(() => chunkToPassage(chunk(0, 4)), /invalid folio/)
+  assert.throws(() => chunkToPassage(chunk(-2, 4)), /invalid folio/)
+  assert.throws(() => chunkToPassage(chunk(3, 0)), /invalid entry_id/)
+  assert.equal(chunkToPassage(chunk(3, 4))?.folio, 3)
+})
