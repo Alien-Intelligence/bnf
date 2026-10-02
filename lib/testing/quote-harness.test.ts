@@ -14,6 +14,7 @@ import {
   citedQuoteCount,
   forbiddenCompletionsIn,
   hardViolations,
+  NO_EVIDENCE,
   runVerdict,
 } from "./quote-harness"
 import type { CheckedBody, RunEvidence } from "./quote-harness"
@@ -114,4 +115,10 @@ test("no runs is no evidence: casePasses([]) and atLeastTwoThirds(0, 0) fail", (
   assert.equal(atLeastTwoThirds(0, 0), false)
   assert.equal(atLeastTwoThirds(2, 3), true)
   assert.equal(atLeastTwoThirds(1, 3), false)
+})
+
+test("a run that claims a note but carries no body to judge is not a pass", () => {
+  const empty: RunEvidence = { noteWritten: true, firstWrites: [], finalNotes: [] }
+  assert.deepEqual(casePasses([empty, empty, empty], OPTS), { finalOk: false, firstWriteOk: false, firstWritePassing: 0 })
+  assert.deepEqual(casePasses([NO_EVIDENCE], OPTS), { finalOk: false, firstWriteOk: false, firstWritePassing: 0 })
 })

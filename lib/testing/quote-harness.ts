@@ -123,6 +123,9 @@ export type RunEvidence = {
   finalNotes: readonly CheckedBody[]
 }
 
+/** A run that produced nothing to judge (it crashed, or wrote no note). */
+export const NO_EVIDENCE: RunEvidence = { noteWritten: false, firstWrites: [], finalNotes: [] }
+
 /** Which criteria a run breaks, on its first writes and on its final notes. */
 export function runVerdict(
   run: RunEvidence,
@@ -145,18 +148,23 @@ export function atLeastTwoThirds(passing: number, total: number): boolean {
  * The plan's pass rule for one case over its runs: H1–H6 hold on final notes
  * in EVERY run, and H1, H2, H6 hold on first writes in at least
  * ceil(2/3 × runs). A run that wrote no note is evidence of nothing, so it
- * counts as a failing run on both sides rather than a vacuous pass; a case
- * with no runs at all fails both.
+ * counts as a failing run on both sides rather than a vacuous pass, and so
+ * does a run with `noteWritten` but no first-write or final body to judge; a
+ * case with no runs at all fails both.
  */
 export function casePasses(
   runs: readonly RunEvidence[],
   opts: { lowFolios: readonly LowFolio[]; forbidden: readonly string[] },
 ): { finalOk: boolean; firstWriteOk: boolean; firstWritePassing: number } {
   const verdicts = runs.map((r) => ({ r, v: runVerdict(r, opts) }))
-  // `every` is true on an empty list: a case with no runs proved nothing.
-  const finalOk = verdicts.length > 0 && verdicts.every(({ r, v }) => r.noteWritten && v.final.size === 0)
+  // `every` is true on an empty list: a case with no runs proved nothing, and
+  // a run that claims a note but carries no body to judge proved nothing either.
+  const finalOk =
+    verdicts.length > 0 &&
+    verdicts.every(({ r, v }) => r.noteWritten && r.finalNotes.length > 0 && v.final.size === 0)
   const firstWritePassing = verdicts.filter(
-    ({ r, v }) => r.noteWritten && FIRST_WRITE_CRITERIA.every((c) => !v.firstWrite.has(c)),
+    ({ r, v }) =>
+      r.noteWritten && r.firstWrites.length > 0 && FIRST_WRITE_CRITERIA.every((c) => !v.firstWrite.has(c)),
   ).length
   return { finalOk, firstWriteOk: atLeastTwoThirds(firstWritePassing, runs.length), firstWritePassing }
 }

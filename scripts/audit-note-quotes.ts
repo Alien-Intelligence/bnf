@@ -23,7 +23,7 @@
  *   npm run audit:quotes -- --all
  */
 import { prisma } from "@/lib/db"
-import { corpusProjectId } from "@/lib/authz/corpus-source"
+import { canReachCorpus, corpusProjectId } from "@/lib/authz/corpus-source"
 import { checkNoteQuotes } from "@/lib/citations/quote-check"
 import { QUOTE_CHECK_BUDGET_MS } from "@/lib/constants"
 import { QUOTE_WARNING_REASON, type QuoteWarning, type QuoteWarningReason } from "@/models/notes/schema"
@@ -62,6 +62,7 @@ async function main(): Promise<void> {
   const unevaluated = new Set<QuoteWarningReason>()
   const counts = new Map<string, number>()
   const excerpts = new Map<string, string[]>()
+  let projectsRevoked = 0
 
   for (const project of projects) {
     const notes = await prisma.note.findMany({
@@ -70,6 +71,14 @@ async function main(): Promise<void> {
       orderBy: { createdAt: "asc" },
     })
     if (notes.length === 0) continue
+    if (!canReachCorpus(project)) {
+      // A derived workspace whose grant was revoked may not read the source
+      // corpus (sharing.md): its notes are not audited, and nothing is read
+      // or cached on the source project on its behalf.
+      projectsRevoked++
+      console.log(`\n${project.name} (${project.id}) — ${notes.length} note(s) SKIPPED: corpus grant revoked`)
+      continue
+    }
     console.log(`\n${project.name} (${project.id}) — ${notes.length} note(s)`)
 
     for (const note of notes) {
@@ -102,7 +111,9 @@ async function main(): Promise<void> {
   }
 
   console.log(`\n${"=".repeat(72)}\nQUOTE AUDIT`)
-  console.log(`projects: ${projects.length}  notes: ${notesSeen}  quotes checked: ${quotesChecked}`)
+  console.log(
+    `projects: ${projects.length} (${projectsRevoked} skipped, grant revoked)  notes: ${notesSeen}  quotes checked: ${quotesChecked}`,
+  )
   console.log(`notes with an unverifiable quote: ${notesWithUnverifiable}`)
   if (unevaluated.size > 0) {
     console.log(`rules NOT evaluated (no data in this build): ${[...unevaluated].join(", ")}`)

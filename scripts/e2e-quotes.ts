@@ -32,7 +32,7 @@
  *   E2E_QUOTES_CASES        comma-separated subset, e.g. "C1,C3" (default: all)
  *   E2E_QUOTES_CONCURRENCY  runs in flight (default 1)
  *   E2E_QUOTES_OUT          write the full evidence as JSON to this path
- *   E2E_CLEANUP=1           delete the throwaway projects (one per run) afterwards
+ *   E2E_CLEANUP=1           delete the throwaway projects (one per run) afterwards, even after a failure
  */
 import { randomUUID } from "node:crypto"
 import { writeFile } from "node:fs/promises"
@@ -42,13 +42,14 @@ import type { AppLocale } from "@/i18n/routing"
 import { checkNoteQuotes } from "@/lib/citations/quote-check"
 import { FAKE_RAG_MODEL_VERSION, QUOTE_CHECK_BUDGET_MS } from "@/lib/constants"
 import { TOOL_CALL_STATUS } from "@/models/messages/schema"
-import { QUOTE_CHECK_STATUS, type QuoteWarning } from "@/models/notes/schema"
+import { QUOTE_CHECK_STATUS, QUOTE_WARNING_REASON, type QuoteWarning } from "@/models/notes/schema"
+import { noteAppendInputSchema, noteCreateInputSchema, noteUpdateInputSchema } from "@/lib/agent/tools/note"
+import { CLUSTER_MODE } from "@/lib/cluster/mode"
 import {
   FORBIDDEN_COMPLETIONS,
   QUOTE_FIXTURE_DOCUMENTS,
   QUOTE_FIXTURE_OCR,
 } from "@/lib/cluster/rag-fixtures-quotes"
-import { cleanupProject } from "@/lib/testing/project-cleanup"
 import { markHeadIngested } from "@/lib/testing/mark-ingested"
 import {
   LOW_OCR_TOLD_TO_USER,
@@ -56,6 +57,7 @@ import {
   casePasses,
   citedQuoteCount,
   hardViolations,
+  NO_EVIDENCE,
   runVerdict,
   type CheckedBody,
   type LowFolio,
@@ -68,7 +70,6 @@ import { ProjectService } from "@/models/projects/service"
 import { SESSION_SCOPE, SESSION_STATUS } from "@/models/sessions/schema"
 import {
   BASE_URL,
-  CLEANUP,
   MODEL,
   type CallRow,
   type ChatMessage,
@@ -82,6 +83,8 @@ import {
   signInCookie,
   toolCalls,
   trace,
+  runE2e,
+  trackProject,
 } from "./e2e/harness"
 
 const EMAIL = "e2e-quotes@alien.club"
@@ -193,16 +196,16 @@ async function judge(projectId: string, bodyMd: string, priorBodyMd: string | nu
 // Reading what the agent wrote
 // ---------------------------------------------------------------------------
 
-/** Each write tool's input, as its own schema in lib/agent/tools/note.ts declares it. */
-const writeInputSchemas = {
-  [AGENT_TOOLS.noteCreate]: z.object({ title: z.string(), body_md: z.string() }),
-  [AGENT_TOOLS.noteUpdate]: z.object({ id: z.string(), title: z.string().optional(), body_md: z.string().optional() }),
-  [AGENT_TOOLS.noteAppend]: z.object({ id: z.string(), body_md: z.string() }),
-} as const
-
-/** The fields of a note write's result the harness reads (lib/agent/tools/note.ts NoteWriteResult). */
+/**
+ * The fields of a written note's result the harness reads
+ * (NoteToolResult, models/notes/schema.ts). A refusal is persisted as a
+ * failed call (status error) and skipped before this; an "ok" write that does
+ * not match is shape drift and stops the run rather than vanishing from it.
+ */
 const writeOutputSchema = z.object({
   note_id: z.string(),
+  title: z.string(),
+  citation_count: z.number().int().nonnegative(),
   quote_check: z
     .object({
       status: z.enum([QUOTE_CHECK_STATUS.COMPLETE, QUOTE_CHECK_STATUS.PARTIAL, QUOTE_CHECK_STATUS.FAILED]),
@@ -210,7 +213,16 @@ const writeOutputSchema = z.object({
     })
     .loose()
     .optional(),
-  quote_warnings: z.array(z.object({ reason: z.string() }).loose()).optional(),
+  quote_warnings: z
+    .array(
+      z
+        .object({
+          reason: z.enum(Object.values(QUOTE_WARNING_REASON)),
+          detail: z.string(),
+        })
+        .loose(),
+    )
+    .optional(),
 })
 
 /**
@@ -247,8 +259,9 @@ function replayWrites(calls: CallRow[], bodies: Map<string, string>): WriteRecor
       continue
     }
     const result = writeOutputSchema.safeParse(outputData(c))
-    // A refusal ({ error }) is a successful tool call that wrote nothing.
-    if (!result.success) continue
+    if (!result.success) {
+      throw new Error(`${c.tool} succeeded with an unexpected result shape: ${result.error.message}`)
+    }
     const meta = {
       tool: c.tool,
       noteId: result.data.note_id,
@@ -256,17 +269,17 @@ function replayWrites(calls: CallRow[], bodies: Map<string, string>): WriteRecor
       serverCheckFailed: result.data.quote_check?.status === QUOTE_CHECK_STATUS.FAILED,
     }
     if (c.tool === AGENT_TOOLS.noteCreate) {
-      const input = writeInputSchemas[AGENT_TOOLS.noteCreate].parse(c.input)
+      const input = noteCreateInputSchema.parse(c.input)
       bodies.set(meta.noteId, input.body_md)
       out.push({ ...meta, checkedText: input.body_md, prior: null })
     } else if (c.tool === AGENT_TOOLS.noteUpdate) {
-      const input = writeInputSchemas[AGENT_TOOLS.noteUpdate].parse(c.input)
+      const input = noteUpdateInputSchema.parse(c.input)
       if (input.body_md === undefined) continue // a title-only update writes no quote
       const prior = priorBody(bodies, meta.noteId, c.tool)
       bodies.set(meta.noteId, input.body_md)
       out.push({ ...meta, checkedText: input.body_md, prior })
     } else {
-      const input = writeInputSchemas[AGENT_TOOLS.noteAppend].parse(c.input)
+      const input = noteAppendInputSchema.parse(c.input)
       const prior = priorBody(bodies, meta.noteId, c.tool)
       const base = prior.replace(/\s+$/, "")
       const addition = input.body_md.trim()
@@ -310,7 +323,7 @@ async function createRunProject(ownerId: string, label: string): Promise<string>
     subtitle: "quote-integrity harness (feedback 2026-09-29 #7, #8)",
     ownerId,
   })
-  createdProjects.push(project.id)
+  trackProject(project.id)
   await seedCorpusDocuments(
     project.id,
     QUOTE_FIXTURE_DOCUMENTS.map((d) => ({
@@ -325,9 +338,6 @@ async function createRunProject(ownerId: string, label: string): Promise<string>
   await markHeadIngested(project.id)
   return project.id
 }
-
-/** Every project this process created, for the cleanup in `main`'s finally. */
-const createdProjects: string[] = []
 
 /** The rag_query calls of a turn, each checked to come from the fake cluster. */
 function fakeRagQueriesIn(calls: CallRow[]): number {
@@ -490,40 +500,53 @@ function reportRun(r: RunReport): void {
   if (r.turnErrors.length > 0) console.log(`      turn errors: ${r.turnErrors.join("; ").slice(0, 200)}`)
 }
 
-function score(reports: readonly RunReport[], cases: readonly QuoteCase[]): void {
+/** A run that threw before it could be scored: it still counts as an attempt. */
+type CrashedRun = { caseId: string; run: number; reason: string }
+
+/**
+ * Score every ATTEMPT: a crashed run is a failing run in every per-case
+ * denominator (NO_EVIDENCE), never one that silently drops out of it.
+ */
+function score(reports: readonly RunReport[], crashed: readonly CrashedRun[], cases: readonly QuoteCase[]): void {
   section("RUNS")
   for (const r of reports) reportRun(r)
+  for (const c of crashed) console.log(`  ${c.caseId} run ${c.run}  CRASHED: ${c.reason.slice(0, 200)}`)
 
   section("CRITERIA")
   for (const c of cases) {
     const runs = reports.filter((r) => r.caseId === c.id)
-    const verdict = casePasses(
-      runs.map((r) => r.evidence),
-      CRITERIA_OPTS,
-    )
+    const lost = crashed.filter((x) => x.caseId === c.id)
+    const verdict = casePasses([...runs.map((r) => r.evidence), ...lost.map(() => NO_EVIDENCE)], CRITERIA_OPTS)
     check(
-      `${c.id} (${c.scenario}) H1–H6 on final notes, ${runs.length}/${REPEAT} runs`,
+      `${c.id} (${c.scenario}) H1–H6 on final notes, every one of ${REPEAT} runs`,
       verdict.finalOk,
-      runs.map((r) => `run ${r.run}: ${list(runVerdict(r.evidence, CRITERIA_OPTS).final)}`).join(" | ") || "no run",
+      [
+        ...runs.map((r) => `run ${r.run}: ${list(runVerdict(r.evidence, CRITERIA_OPTS).final)}`),
+        ...lost.map((x) => `run ${x.run}: crashed`),
+      ].join(" | "),
     )
     check(
-      `${c.id} (${c.scenario}) H1, H2, H6 on first writes, ≥ 2/3 runs`,
+      `${c.id} (${c.scenario}) H1, H2, H6 on first writes, ≥ 2/3 of ${REPEAT} runs`,
       verdict.firstWriteOk,
-      `${verdict.firstWritePassing}/${runs.length} runs passing`,
+      `${verdict.firstWritePassing}/${REPEAT} runs passing`,
     )
   }
 
-  const c3 = reports.filter((r) => r.caseId === "C3")
-  if (c3.length > 0) {
-    const told = c3.filter((r) => LOW_OCR_TOLD_TO_USER.test(r.assistantText)).length
-    check("S1 C3 tells the user the source is poorly recognised, ≥ 2/3 runs", atLeastTwoThirds(told, c3.length), `${told}/${c3.length}`)
+  const attemptsOf = (caseId: string) => cases.some((c) => c.id === caseId)
+  if (attemptsOf("C3")) {
+    const told = reports.filter((r) => r.caseId === "C3" && LOW_OCR_TOLD_TO_USER.test(r.assistantText)).length
+    check("S1 C3 tells the user the source is poorly recognised, ≥ 2/3 runs", atLeastTwoThirds(told, REPEAT), `${told}/${REPEAT}`)
   }
-  const c1 = reports.filter((r) => r.caseId === "C1")
-  if (c1.length > 0) {
-    const split = c1.filter((r) => r.finalNotes.some((n) => citedQuoteCount(n.body) >= 2)).length
-    check("S2 C1 final note has ≥ 2 distinct cited quotes, ≥ 2/3 runs", atLeastTwoThirds(split, c1.length), `${split}/${c1.length}`)
+  if (attemptsOf("C1")) {
+    const split = reports.filter((r) => r.caseId === "C1" && r.finalNotes.some((n) => citedQuoteCount(n.body) >= 2)).length
+    check("S2 C1 final note has ≥ 2 distinct cited quotes, ≥ 2/3 runs", atLeastTwoThirds(split, REPEAT), `${split}/${REPEAT}`)
   }
 
+  check(
+    "X0 every run completed",
+    crashed.length === 0,
+    crashed.map((x) => `${x.caseId}#${x.run}: ${x.reason.slice(0, 160)}`).join(" | ") || "all runs completed",
+  )
   const withErrors = reports.filter((r) => r.turnErrors.length > 0)
   check(
     "X1 no turn ended on an error frame",
@@ -534,13 +557,14 @@ function score(reports: readonly RunReport[], cases: readonly QuoteCase[]): void
   check("X2 the server's quote check never broke (quote_check.status failed)", failedChecks === 0, `${failedChecks} failed check(s)`)
 
   section("BASELINE SIGNAL (information)")
+  const attempts = reports.length + crashed.length
   const h1h2FirstWrite = reports.filter((r) => {
     const v = runVerdict(r.evidence, CRITERIA_OPTS).firstWrite
     return v.has("H1") || v.has("H2")
   })
   const warned = reports.reduce((n, r) => n + r.guard.warned, 0)
   const rewritten = reports.reduce((n, r) => n + r.guard.rewritten, 0)
-  console.log(`  first-write H1/H2 failures: ${h1h2FirstWrite.length}/${reports.length} runs`)
+  console.log(`  first-write H1/H2 failures: ${h1h2FirstWrite.length}/${attempts} runs (${crashed.length} crashed)`)
   console.log(`    ${h1h2FirstWrite.map((r) => `${r.caseId}#${r.run}`).join(", ") || "none"}`)
   console.log(`  writes that drew quote_warnings from the server's guard: ${warned}; then rewritten: ${rewritten}`)
   console.log(`  runs whose own turn wrote no note: ${reports.filter((r) => !r.evidence.noteWritten).length}`)
@@ -553,7 +577,7 @@ function score(reports: readonly RunReport[], cases: readonly QuoteCase[]): void
 async function main(): Promise<void> {
   // The judgement reads the fixture folios through the same facade the guard
   // uses, so THIS process must be on the fake cluster whatever .env.local says.
-  process.env.CLUSTER_MODE = "fake"
+  process.env.CLUSTER_MODE = CLUSTER_MODE.FAKE
   await requireServer()
 
   section("SETUP")
@@ -565,35 +589,34 @@ async function main(): Promise<void> {
 
   const jobs = cases.flatMap((c) => Array.from({ length: REPEAT }, (_, i) => ({ c, run: i + 1 })))
   const reports: RunReport[] = []
+  const crashed: CrashedRun[] = []
   try {
+    // Every job settles (finishes or is cancelled by runTurn) before this
+    // returns, so the cleanup in runE2e never runs under a live turn.
     const settled = await pool(jobs, CONCURRENCY, async ({ c, run }) => {
       const r = await runCase(user.id, cookie, c, run)
       console.log(`  done ${c.id} run ${run} (project ${r.projectId}, session ${r.sessionId})`)
       return r
     })
-    const failures: string[] = []
     for (const [i, s] of settled.entries()) {
       if (s.status === "fulfilled") reports.push(s.value)
-      else failures.push(`${jobs[i].c.id}#${jobs[i].run}: ${s.reason instanceof Error ? s.reason.message : String(s.reason)}`)
+      else {
+        crashed.push({
+          caseId: jobs[i].c.id,
+          run: jobs[i].run,
+          reason: s.reason instanceof Error ? s.reason.message : String(s.reason),
+        })
+      }
     }
-    score(reports, cases)
-    check("X0 every run completed", failures.length === 0, failures.join(" | ") || "all runs completed")
+    score(reports, crashed, cases)
   } finally {
-    // Evidence and cleanup happen whatever failed: a paid run's evidence is
-    // never lost to an exception, and no throwaway project is left behind.
+    // A paid run's evidence is written whatever failed above.
     if (OUT) {
-      await writeFile(OUT, JSON.stringify({ model: MODEL, repeat: REPEAT, reports }, null, 2))
+      await writeFile(OUT, JSON.stringify({ model: MODEL, repeat: REPEAT, reports, crashed }, null, 2))
       console.log(`  evidence written to ${OUT}`)
     }
-    if (CLEANUP) for (const id of createdProjects) await cleanupProject(id)
   }
-  printVerdict({ model: MODEL, runs: String(reports.length) })
+  printVerdict({ model: MODEL, runs: `${reports.length} scored, ${crashed.length} crashed` })
 }
 
-main()
-  .then(() => prisma.$disconnect())
-  .catch(async (err: unknown) => {
-    console.error(err)
-    await prisma.$disconnect()
-    process.exit(1)
-  })
+runE2e(main)

@@ -178,7 +178,7 @@ export const noteGetTool = defineTool<
 // note_create
 // ---------------------------------------------------------------------------
 
-const noteCreateInputSchema = z.object({
+export const noteCreateInputSchema = z.object({
   title: z
     .string()
     .trim()
@@ -246,7 +246,7 @@ export const noteCreateTool = defineTool<typeof noteCreateInputSchema, TurnScope
 // note_update
 // ---------------------------------------------------------------------------
 
-const noteUpdateInputSchema = z.object({
+export const noteUpdateInputSchema = z.object({
   id: z.string().uuid().describe("The note's UUID."),
   title: z
     .string()
@@ -318,7 +318,7 @@ export const noteUpdateTool = defineTool<typeof noteUpdateInputSchema, TurnScope
 // note_append
 // ---------------------------------------------------------------------------
 
-const noteAppendInputSchema = z.object({
+export const noteAppendInputSchema = z.object({
   id: z.string().uuid().describe("The note's UUID."),
   body_md: z
     .string()
