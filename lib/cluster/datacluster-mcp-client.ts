@@ -93,13 +93,33 @@ export class DataclusterMcpProtocolError extends DataclusterMcpError {
   }
 }
 
-/** Auth, not-found, tool-level and protocol errors are terminal; everything
- *  else (429/5xx/transport) retries. */
+/**
+ * The request itself is wrong — HTTP 400 that is not a stale session, or a
+ * JSON-RPC "method not found" / "invalid params". Terminal: resending the same
+ * request gets the same answer.
+ */
+export class DataclusterMcpRequestError extends DataclusterMcpError {
+  constructor(m: string) {
+    super(m)
+    this.name = "DataclusterMcpRequestError"
+  }
+}
+
+/** JSON-RPC error codes that describe the request, not a transient fault. */
+const JSON_RPC_METHOD_NOT_FOUND = -32601
+const JSON_RPC_INVALID_PARAMS = -32602
+
+/** An HTTP 400 body that says the MCP session is missing or expired. */
+const STALE_SESSION_BODY = /session/i
+
+/** Auth, not-found, tool-level, request and protocol errors are terminal;
+ *  everything else (429/5xx/transport/stale session) retries. */
 function isTerminal(err: unknown): boolean {
   return (
     err instanceof DataclusterMcpAuthError ||
     err instanceof DataclusterMcpNotFoundError ||
     err instanceof DataclusterMcpToolError ||
+    err instanceof DataclusterMcpRequestError ||
     err instanceof DataclusterMcpProtocolError
   )
 }
@@ -276,16 +296,17 @@ const jsonRpcResultSchema = z
 export class DataclusterMcpClient {
   private readonly baseUrl: string
   private readonly token: string
-  private readonly signal: AbortSignal | undefined
+  private readonly signal: AbortSignal
 
   /** Shared `initialize` handshake; reset to null on a session error to re-init. */
   private sessionPromise: Promise<string> | null = null
 
-  constructor(opts?: { signal?: AbortSignal }) {
+  /** `signal` is required: every call this client makes is bound to its caller's lifetime. */
+  constructor(opts: { signal: AbortSignal }) {
     const env = requireClusterEnv()
     this.baseUrl = env.DATACLUSTER_MCP_URL
     this.token = env.CLUSTER_BEARER_TOKEN
-    this.signal = opts?.signal
+    this.signal = opts.signal
   }
 
   // -------------------------------------------------------------------------
@@ -488,19 +509,18 @@ export class DataclusterMcpClient {
           )
         }
         if (res.status === 400) {
-          // Most often a stale/expired session. Drop the cached session so the
-          // retry re-initializes, then throw a retryable error.
-          this.sessionPromise = null
           const body = await this.failureBody(res, `data-cluster MCP HTTP 400 calling ${name}`)
-          throw new DataclusterMcpError(
-            `data-cluster MCP HTTP 400 calling ${name}: ${body}`,
-          )
+          if (STALE_SESSION_BODY.test(body)) {
+            // A stale/expired session: drop it so the retry re-initializes.
+            this.sessionPromise = null
+            throw new DataclusterMcpError(`data-cluster MCP session rejected calling ${name}: ${body}`)
+          }
+          throw new DataclusterMcpRequestError(`data-cluster MCP HTTP 400 calling ${name}: ${body}`)
         }
         if (!res.ok) {
-          // 429 / 5xx / other — retryable.
-          throw new DataclusterMcpError(
-            `data-cluster MCP HTTP ${res.status} calling ${name}`,
-          )
+          // 429 / 5xx / other — retryable, with the body for the diagnosis.
+          const body = await this.failureBody(res, `data-cluster MCP HTTP ${res.status} calling ${name}`)
+          throw new DataclusterMcpError(`data-cluster MCP HTTP ${res.status} calling ${name}: ${body}`)
         }
 
         const ct = res.headers.get("content-type")
@@ -511,9 +531,12 @@ export class DataclusterMcpClient {
         const json = parseJson(raw, `JSON-RPC envelope for ${name}`)
         const rpcError = jsonRpcErrorSchema.safeParse(json)
         if (rpcError.success) {
-          throw new DataclusterMcpError(
-            `data-cluster MCP JSON-RPC error for ${name}: ${rpcError.data.error.message}`,
-          )
+          const { code, message } = rpcError.data.error
+          const text = `data-cluster MCP JSON-RPC error ${code} for ${name}: ${message}`
+          if (code === JSON_RPC_METHOD_NOT_FOUND || code === JSON_RPC_INVALID_PARAMS) {
+            throw new DataclusterMcpRequestError(text)
+          }
+          throw new DataclusterMcpError(text)
         }
         const parsed = jsonRpcResultSchema.safeParse(json)
         if (!parsed.success) {

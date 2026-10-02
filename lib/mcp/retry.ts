@@ -66,8 +66,8 @@ function defaultIsTerminal(err: unknown): boolean {
  * Terminal errors (no retry) are decided by `opts.isTerminal`; the default
  * treats BnfMcpAuthError (401/403) and BnfMcpNotFoundError (404) as terminal.
  *
- * BnfMcpRateLimitError honours `retryAfterMs` when present, otherwise falls
- * back to the computed exponential delay.
+ * BnfMcpRateLimitError honours `retryAfterMs` when present (capped at
+ * `capMs`), otherwise falls back to the computed exponential delay.
  *
  * Delay formula: min(baseMs * 2^attempt + jitter(±20%), capMs)
  * where `attempt` is 0-indexed (so first retry uses baseMs * 2^0 = baseMs).
@@ -81,6 +81,10 @@ export async function withRetry<T>(
   const maxAttempts = opts.attempts ?? BNF_MCP_RETRY_ATTEMPTS
   const baseMs = opts.baseMs ?? BNF_MCP_RETRY_BASE_MS
   const capMs = opts.capMs ?? BNF_MCP_RETRY_CAP_MS
+  if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1) {
+    // 0 attempts would "fail" without ever calling fn, throwing `undefined`.
+    throw new RangeError(`withRetry: attempts must be a positive integer, got ${maxAttempts}`)
+  }
   const isTerminal = opts.isTerminal ?? defaultIsTerminal
 
   let lastError: unknown
@@ -103,7 +107,9 @@ export async function withRetry<T>(
       // Compute delay: honour Retry-After header for rate-limit errors.
       let waitMs: number
       if (err instanceof BnfMcpRateLimitError && err.retryAfterMs !== undefined) {
-        waitMs = err.retryAfterMs
+        // Honour the server's Retry-After, but never past the cap: a huge or
+        // hostile value must not park the caller for minutes.
+        waitMs = Math.min(err.retryAfterMs, capMs)
       } else {
         const exponential = baseMs * Math.pow(2, attempt)
         waitMs = applyJitter(Math.min(exponential, capMs))
@@ -141,6 +147,10 @@ export async function withConcurrency<I, T>(
   worker: (input: I) => Promise<T>,
   concurrency: number,
 ): Promise<Settled<T>[]> {
+  if (!Number.isSafeInteger(concurrency) || concurrency < 1) {
+    // 0 slots would return a sparse array of never-run inputs.
+    throw new RangeError(`withConcurrency: concurrency must be a positive integer, got ${concurrency}`)
+  }
   const results: Settled<T>[] = new Array(inputs.length)
   let nextIndex = 0
 

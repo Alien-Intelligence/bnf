@@ -6,7 +6,7 @@ import "server-only"
 import { test, before, after } from "node:test"
 import assert from "node:assert/strict"
 import { z } from "zod"
-import { DataclusterMcpClient, DataclusterMcpProtocolError } from "./datacluster-mcp-client"
+import { DataclusterMcpClient, DataclusterMcpProtocolError, DataclusterMcpRequestError } from "./datacluster-mcp-client"
 
 /** The part of a JSON-RPC request the stub routes on. */
 const rpcRequestSchema = z.object({ method: z.string() })
@@ -53,7 +53,7 @@ test("a failed handshake is dropped, so the retry opens a new session instead of
     }
     return toolResult({ success: true, data: { datasets: [{ id: 3, name: "n", slug: "bnf-x", entry_count: 1 }] } })
   }
-  const datasets = await new DataclusterMcpClient().listDatasets(10, 0)
+  const datasets = await new DataclusterMcpClient({ signal: new AbortController().signal }).listDatasets(10, 0)
   assert.deepEqual(datasets.map((d) => d.id), [3])
   assert.equal(initializeCalls, 2)
 })
@@ -61,12 +61,12 @@ test("a failed handshake is dropped, so the retry opens a new session instead of
 test("a payload that breaks its schema is a protocol error, not a cast", async () => {
   handler = (body) =>
     body.method === "initialize" ? session() : toolResult({ success: true, data: { datasets: [{ id: "three" }] } })
-  await assert.rejects(new DataclusterMcpClient().listDatasets(10, 0), DataclusterMcpProtocolError)
+  await assert.rejects(new DataclusterMcpClient({ signal: new AbortController().signal }).listDatasets(10, 0), DataclusterMcpProtocolError)
 })
 
 test("a logical failure without an error message says so instead of 'unknown error'", async () => {
   handler = (body) => (body.method === "initialize" ? session() : toolResult({ success: false }))
-  await assert.rejects(new DataclusterMcpClient().listDatasets(10, 0), /failed without an error message/)
+  await assert.rejects(new DataclusterMcpClient({ signal: new AbortController().signal }).listDatasets(10, 0), /failed without an error message/)
 })
 
 test("a response with no content-type is a protocol error", async () => {
@@ -76,7 +76,43 @@ test("a response with no content-type is a protocol error", async () => {
       ? session()
       : new Response(new TextEncoder().encode(JSON.stringify({ jsonrpc: "2.0" })), { status: 200 })
   await assert.rejects(
-    new DataclusterMcpClient().listDatasets(10, 0),
+    new DataclusterMcpClient({ signal: new AbortController().signal }).listDatasets(10, 0),
     (err: unknown) => err instanceof DataclusterMcpProtocolError && /no content-type/.test(err.message),
+  )
+})
+
+test("an HTTP 400 that is not a stale session is a terminal request error (no retry)", async () => {
+  let toolCalls = 0
+  handler = (body) => {
+    if (body.method === "initialize") return session()
+    toolCalls++
+    return new Response("invalid dataset_ids", { status: 400 })
+  }
+  await assert.rejects(
+    new DataclusterMcpClient({ signal: new AbortController().signal }).listDatasets(10, 0),
+    (err: unknown) => err instanceof DataclusterMcpRequestError && /invalid dataset_ids/.test(err.message),
+  )
+  assert.equal(toolCalls, 1)
+})
+
+test("JSON-RPC invalid params is a terminal request error", async () => {
+  handler = (body) =>
+    body.method === "initialize"
+      ? session()
+      : new Response(JSON.stringify({ jsonrpc: "2.0", id: "1", error: { code: -32602, message: "bad limit" } }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        })
+  await assert.rejects(
+    new DataclusterMcpClient({ signal: new AbortController().signal }).listDatasets(10, 0),
+    DataclusterMcpRequestError,
+  )
+})
+
+test("a 5xx keeps its body in the error message", async () => {
+  handler = (body) => (body.method === "initialize" ? session() : new Response("qdrant unavailable", { status: 503 }))
+  await assert.rejects(
+    new DataclusterMcpClient({ signal: new AbortController().signal }).listDatasets(10, 0),
+    /HTTP 503 calling datacluster_list_datasets: qdrant unavailable/,
   )
 })
