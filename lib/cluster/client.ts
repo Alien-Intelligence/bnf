@@ -5,7 +5,8 @@ import "server-only"
 // Environment:
 //   WORKER_RUNNER_URL          — base URL of the cluster worker HTTP API
 //                                (e.g. http://localhost:7777). REQUIRED in real mode.
-//   WORKER_RUNNER_TIMEOUT_MS   — per-request timeout in ms (default 30000).
+//   WORKER_RUNNER_TIMEOUT_MS   — per-request timeout in ms (default 30000 when
+//                                unset; a set but invalid value throws).
 //
 // On any non-2xx response or transport error, throws an Error with enough
 // context for IngestService.submit to mark the parent job failed.
@@ -23,12 +24,25 @@ function workerUrl(): string {
   return url.replace(/\/+$/, "")
 }
 
-function timeoutMs(): number {
-  const raw = process.env.WORKER_RUNNER_TIMEOUT_MS
-  if (!raw) return DEFAULT_TIMEOUT_MS
+/**
+ * WORKER_RUNNER_TIMEOUT_MS → ms. Unset or blank is the documented default; a
+ * value that is set but is not a positive integer throws (found bug B6): a typo
+ * such as "30s" used to fall back to the default in silence. Exported for the
+ * tests (lib/cluster/client.test.ts).
+ */
+export function parseWorkerTimeoutMs(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === "") return DEFAULT_TIMEOUT_MS
   const n = Number(raw)
-  if (!Number.isFinite(n) || n <= 0) return DEFAULT_TIMEOUT_MS
+  if (!Number.isSafeInteger(n) || n <= 0) {
+    throw new Error(
+      `WORKER_RUNNER_TIMEOUT_MS must be a positive integer number of milliseconds, got "${raw}"`,
+    )
+  }
   return n
+}
+
+function timeoutMs(): number {
+  return parseWorkerTimeoutMs(process.env.WORKER_RUNNER_TIMEOUT_MS)
 }
 
 async function postJson(path: string, body: unknown): Promise<Response> {
