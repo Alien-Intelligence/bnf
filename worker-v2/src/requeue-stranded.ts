@@ -22,7 +22,7 @@
  */
 import { Pool } from "pg";
 
-import { loadConfig } from "./config.js";
+import { loadConfig, pgPoolConfig } from "./config.js";
 import { PgBossQueue } from "./core/queue-pgboss.js";
 import { S3BlobStore } from "./core/blob.js";
 import { createLogger } from "./core/logger.js";
@@ -41,9 +41,9 @@ async function main(): Promise<void> {
 
   const cfg = loadConfig();
   const log = createLogger({ worker: "requeue-stranded" });
-  const queue = new PgBossQueue(cfg.databaseUrl);
+  const queue = new PgBossQueue(pgPoolConfig(cfg.databaseUrl));
   await queue.start();
-  const pool = new Pool({ connectionString: cfg.databaseUrl, statement_timeout: 30_000 });
+  const pool = new Pool(pgPoolConfig(cfg.databaseUrl));
   const docState = new PgDocState(pool);
   const runStore = new PgRunStore(pool);
   const blob = new S3BlobStore({ ...cfg.s3, prefix: cfg.s3Prefix });

@@ -525,7 +525,8 @@ export function parseAlto(xml: string): AltoParse {
     throw altoParseFailure("body parsed but has no <alto> root element");
   }
   const root = elementOrEmpty(parsed.alto, "<alto>");
-  const layout = root.Layout === undefined ? {} : elementOrEmpty(root.Layout, "<Layout>");
+  if (root.Layout === undefined) throw altoParseFailure("<alto> has no <Layout>");
+  const layout = elementOrEmpty(root.Layout, "<Layout>");
   const pages = Array.isArray(layout.Page) ? (layout.Page as unknown[]) : [];
 
   const lines: string[] = [];
@@ -558,10 +559,17 @@ function isRecord(v: unknown): v is Record<string, unknown> {
  * is not ALTO — throw rather than read it as an empty page.
  */
 function elementOrEmpty(v: unknown, what: string): Record<string, unknown> {
-  if (isRecord(v)) return v;
+  if (isRecord(v)) {
+    // Mixed content: text next to the child elements would be dropped.
+    if (TEXT_NODE in v) throw altoParseFailure(`${what} mixes text with ALTO elements`);
+    return v;
+  }
   if (v === "") return {};
   throw altoParseFailure(`${what} carries text, not ALTO elements`);
 }
+
+/** fast-xml-parser's key for an element's text content (its default textNodeName). */
+const TEXT_NODE = "#text";
 
 /** The children of one ALTO element kind (the parser's isArray makes each a list); none → []. */
 function childList(v: unknown): unknown[] {
@@ -597,7 +605,10 @@ function collectLines(node: Record<string, unknown>, out: string[], stats: AltoS
       const line = elementOrEmpty(rawLine, "<TextLine>");
       const words: string[] = [];
       for (const s of childList(line.String)) {
-        if (!isRecord(s)) continue; // <String/> carries no word
+        if (s === "") continue; // <String/> carries no word
+        // A word is its CONTENT attribute; text content instead of (or next
+        // to) it is not an ALTO word and would be silently dropped.
+        if (!isRecord(s) || TEXT_NODE in s) throw altoParseFailure("<String> carries text content, not CONTENT");
         const content = s["@_CONTENT"];
         if (typeof content !== "string" || content.length === 0) continue;
         words.push(content);

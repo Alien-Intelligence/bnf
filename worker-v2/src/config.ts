@@ -4,9 +4,20 @@
  * empty defaults — platform CLAUDE_ERROR_PATTERNS §10). The downstream live
  * clients (vision/mistral/embed/cluster) read their OWN secrets from env, mirroring
  * V1's names, so they are not duplicated here.
+ *
+ * Env readers that remain OUTSIDE this family (not routed through it; listed so
+ * the claim above stays true):
+ *   - bnf/client.ts `optionalIntEnv` (BNF_META_TIMEOUT_MS, BNF_PAGE_TIMEOUT_MS)
+ *     — a Track D shared file kept to its listed hunks;
+ *   - bnf/broker-client.ts and live/vendor/broker-client.ts `brokerUrl()` read
+ *     BNF_BROKER_URL per call — which loadConfigFrom now REQUIRES at boot;
+ *   - live/vendor/{env,fetch-gate,rate-limiter,vision,gallica-relay}.ts — V1
+ *     code vendored verbatim (its own floors and silent defaults, e.g.
+ *     BNF_FETCH_CONCURRENCY parsed a second time in fetch-gate.ts);
+ *   - live/cluster-http.ts and live/ocr.ts — the downstream clients' secrets.
  */
 // ---------------------------------------------------------------------------
-// The ONE family of env readers. Every knob goes through one of them: unset or
+// The ONE family of env readers for every knob in WorkerConfig: unset or
 // blank means the documented default, anything set must be well-formed — a
 // typo, a zero, a negative or a fraction THROWS at startup instead of being
 // floored, ignored or silently disabling a gate (F23, CLAUDE_ERROR_PATTERNS
@@ -14,6 +25,11 @@
 // ---------------------------------------------------------------------------
 
 type Env = NodeJS.ProcessEnv;
+
+/** An integer knob is written in plain decimal digits — nothing else. */
+const DIGITS_ONLY = /^[0-9]+$/;
+/** A ratio knob is a plain decimal (no exponent, sign or hex). */
+const PLAIN_DECIMAL = /^[0-9]+(\.[0-9]+)?$/;
 
 function isBlank(v: string | undefined): v is undefined {
   return v == null || v.trim() === "";
@@ -46,7 +62,9 @@ function positiveIntFrom(
   if (isBlank(v)) return fallback;
   const min = bounds.min ?? 1;
   const max = bounds.max ?? Number.MAX_SAFE_INTEGER;
-  const n = Number(v.trim());
+  const text = v.trim();
+  // Digits only: Number() would also read "0x10", "1e1", "+5" or "6e4".
+  const n = DIGITS_ONLY.test(text) ? Number(text) : Number.NaN;
   if (!Number.isSafeInteger(n) || n < min || n > max) {
     const range = bounds.max === undefined ? `an integer ≥ ${min}` : `an integer in [${min}, ${max}]`;
     throw new Error(`${name} must be ${range}, got ${JSON.stringify(v)}`);
@@ -74,7 +92,8 @@ function boolFrom(env: Env, name: string, fallback: boolean): boolean {
 function ratioFrom(env: Env, name: string, fallback: number): number {
   const v = env[name];
   if (isBlank(v)) return fallback;
-  const n = Number(v.trim());
+  const text = v.trim();
+  const n = PLAIN_DECIMAL.test(text) ? Number(text) : Number.NaN;
   if (!Number.isFinite(n) || n <= 0 || n > 1) {
     throw new Error(`${name} must be a number in (0, 1], got ${JSON.stringify(v)}`);
   }
@@ -83,6 +102,13 @@ function ratioFrom(env: Env, name: string, fallback: number): number {
 
 export interface WorkerConfig {
   databaseUrl: string;
+  /**
+   * BNF_BROKER_URL — the egress chokepoint every BnF call goes through
+   * (bnf/broker-client.ts reads it per call). REQUIRED at boot: unset, every
+   * BnF call would fail as a per-ARK PERMANENT error ("config") and a
+   * deployment mistake would permanently fail the backfill.
+   */
+  bnfBrokerUrl: string;
   /** Port the app↔worker HTTP ingress listens on (the app's WORKER_RUNNER_URL). */
   httpPort: number;
   s3: { bucket: string; endpoint: string; region: string; accessKeyId: string; secretAccessKey: string };
@@ -272,11 +298,41 @@ export function loadOcrBackfillConfig(env: NodeJS.ProcessEnv): OcrBackfillConfig
 /** The highest TCP port. */
 const MAX_PORT = 65_535;
 
+/**
+ * The documented default of every knob (RUN.md, helm values) — named here once,
+ * so loadConfigFrom below states only which env var feeds which field. The
+ * reasons for each value are on the WorkerConfig field it fills.
+ */
+export const CONFIG_DEFAULTS = {
+  httpPort: 7777,
+  s3Prefix: "v2/",
+  mistralEnabled: false,
+  maxPages: 300,
+  maxCanvases: 300,
+  fetchRatePerMin: 300,
+  fetchConcurrency: 32,
+  manifestRatePerMin: 42,
+  visionImageSize: "pct:33",
+  mistralImageSize: "max",
+  describeConcurrency: 16,
+  describeCallConcurrency: 64,
+  metadataConcurrency: 16,
+  registerConcurrency: 24,
+  embedConcurrency: 8,
+  ocrSubmitConcurrency: 12,
+  ocrPollConcurrency: 16,
+  failRatio: 0.25,
+  reconcilerIntervalMs: 60_000,
+  reconcilerMaxRequeues: 3,
+  reconcilerMaxCallbackFailures: 120,
+} as const;
+
 /** The whole worker config from `env`, validated. Pure, so it is unit-tested. */
 export function loadConfigFrom(env: Env): WorkerConfig {
   return {
     databaseUrl: requiredFrom(env, "DATABASE_URL"),
-    httpPort: positiveIntFrom(env, "WORKER_HTTP_PORT", 7777, { max: MAX_PORT }),
+    bnfBrokerUrl: requiredFrom(env, "BNF_BROKER_URL"),
+    httpPort: positiveIntFrom(env, "WORKER_HTTP_PORT", CONFIG_DEFAULTS.httpPort, { max: MAX_PORT }),
     s3: {
       bucket: requiredFrom(env, "SCW_S3_BUCKET"),
       endpoint: requiredFrom(env, "SCW_S3_ENDPOINT_URL"),
@@ -284,29 +340,29 @@ export function loadConfigFrom(env: Env): WorkerConfig {
       accessKeyId: requiredFrom(env, "SCW_S3_ACCESS_KEY"),
       secretAccessKey: requiredFrom(env, "SCW_S3_SECRET_KEY"),
     },
-    s3Prefix: stringFrom(env, "V2_S3_PREFIX", "v2/"),
-    mistralEnabled: boolFrom(env, "MISTRAL_OCR_ENABLED", false),
-    maxPages: positiveIntFrom(env, "MAX_OCR_PAGES", 300),
-    maxCanvases: positiveIntFrom(env, "MISTRAL_OCR_MAX_PAGES", 300),
-    fetchRatePerMin: positiveIntFrom(env, "BNF_GLOBAL_RPM", 300),
-    fetchConcurrency: positiveIntFrom(env, "BNF_FETCH_CONCURRENCY", 32),
-    manifestRatePerMin: positiveIntFrom(env, "BNF_MANIFEST_RPM", 42),
-    visionImageSize: stringFrom(env, "VISION_IMAGE_SIZE", "pct:33"),
-    mistralImageSize: stringFrom(env, "MISTRAL_IMAGE_SIZE", "max"),
-    describeConcurrency: positiveIntFrom(env, "DESCRIBE_CONCURRENCY", 16),
+    s3Prefix: stringFrom(env, "V2_S3_PREFIX", CONFIG_DEFAULTS.s3Prefix),
+    mistralEnabled: boolFrom(env, "MISTRAL_OCR_ENABLED", CONFIG_DEFAULTS.mistralEnabled),
+    maxPages: positiveIntFrom(env, "MAX_OCR_PAGES", CONFIG_DEFAULTS.maxPages),
+    maxCanvases: positiveIntFrom(env, "MISTRAL_OCR_MAX_PAGES", CONFIG_DEFAULTS.maxCanvases),
+    fetchRatePerMin: positiveIntFrom(env, "BNF_GLOBAL_RPM", CONFIG_DEFAULTS.fetchRatePerMin),
+    fetchConcurrency: positiveIntFrom(env, "BNF_FETCH_CONCURRENCY", CONFIG_DEFAULTS.fetchConcurrency),
+    manifestRatePerMin: positiveIntFrom(env, "BNF_MANIFEST_RPM", CONFIG_DEFAULTS.manifestRatePerMin),
+    visionImageSize: stringFrom(env, "VISION_IMAGE_SIZE", CONFIG_DEFAULTS.visionImageSize),
+    mistralImageSize: stringFrom(env, "MISTRAL_IMAGE_SIZE", CONFIG_DEFAULTS.mistralImageSize),
+    describeConcurrency: positiveIntFrom(env, "DESCRIBE_CONCURRENCY", CONFIG_DEFAULTS.describeConcurrency),
     // 64: the vision lane is the bottleneck and the paid OpenRouter key has no
     // per-key RPM cap — push concurrency hard and let the in-call 429/timeout
     // backoff (vision.ts) ride the provider's capacity edge. See hardening-pass-2.
-    describeCallConcurrency: positiveIntFrom(env, "DESCRIBE_CALL_CONCURRENCY", 64),
-    metadataConcurrency: positiveIntFrom(env, "METADATA_CONCURRENCY", 16),
-    registerConcurrency: positiveIntFrom(env, "REGISTER_CONCURRENCY", 24),
-    embedConcurrency: positiveIntFrom(env, "EMBED_CONCURRENCY", 8),
-    ocrSubmitConcurrency: positiveIntFrom(env, "OCR_SUBMIT_CONCURRENCY", 12),
-    ocrPollConcurrency: positiveIntFrom(env, "OCR_POLL_CONCURRENCY", 16),
-    failRatio: ratioFrom(env, "DOC_FAIL_RATIO", 0.25),
-    reconcilerIntervalMs: positiveIntFrom(env, "RECONCILER_INTERVAL_MS", 60_000),
-    reconcilerMaxRequeues: positiveIntFrom(env, "RECONCILER_MAX_REQUEUES", 3),
-    reconcilerMaxCallbackFailures: positiveIntFrom(env, "RECONCILER_MAX_CALLBACK_FAILURES", 120),
+    describeCallConcurrency: positiveIntFrom(env, "DESCRIBE_CALL_CONCURRENCY", CONFIG_DEFAULTS.describeCallConcurrency),
+    metadataConcurrency: positiveIntFrom(env, "METADATA_CONCURRENCY", CONFIG_DEFAULTS.metadataConcurrency),
+    registerConcurrency: positiveIntFrom(env, "REGISTER_CONCURRENCY", CONFIG_DEFAULTS.registerConcurrency),
+    embedConcurrency: positiveIntFrom(env, "EMBED_CONCURRENCY", CONFIG_DEFAULTS.embedConcurrency),
+    ocrSubmitConcurrency: positiveIntFrom(env, "OCR_SUBMIT_CONCURRENCY", CONFIG_DEFAULTS.ocrSubmitConcurrency),
+    ocrPollConcurrency: positiveIntFrom(env, "OCR_POLL_CONCURRENCY", CONFIG_DEFAULTS.ocrPollConcurrency),
+    failRatio: ratioFrom(env, "DOC_FAIL_RATIO", CONFIG_DEFAULTS.failRatio),
+    reconcilerIntervalMs: positiveIntFrom(env, "RECONCILER_INTERVAL_MS", CONFIG_DEFAULTS.reconcilerIntervalMs),
+    reconcilerMaxRequeues: positiveIntFrom(env, "RECONCILER_MAX_REQUEUES", CONFIG_DEFAULTS.reconcilerMaxRequeues),
+    reconcilerMaxCallbackFailures: positiveIntFrom(env, "RECONCILER_MAX_CALLBACK_FAILURES", CONFIG_DEFAULTS.reconcilerMaxCallbackFailures),
     ocrBackfill: loadOcrBackfillConfig(env),
   };
 }

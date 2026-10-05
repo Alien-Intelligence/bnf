@@ -10,7 +10,7 @@
  *  - `counts()` reads the `pgboss.job` table by state for the progress read-model.
  */
 import PgBoss from "pg-boss";
-import { Pool } from "pg";
+import { Pool, type PoolConfig } from "pg";
 
 import type { QueueClient, QueueCounts, QueueMessage } from "./types.js";
 
@@ -47,11 +47,24 @@ export class PgBossQueue implements QueueClient {
   /** Handlers currently running across ALL queues — what stop() drains on. */
   private inFlight = 0;
 
-  constructor(private readonly connectionString: string) {}
+  /** pg-boss's own pool — built from the caller's config, so it carries both timeouts. */
+  private bossPool: Pool | null = null;
+
+  /**
+   * `poolConfig` (config.ts pgPoolConfig) is used for BOTH pools — pg-boss's
+   * (through its `db` adapter: its own options cannot carry
+   * connectionTimeoutMillis) and the read-model one — so neither a job send
+   * nor a count can wait forever for a client or a statement.
+   */
+  constructor(private readonly poolConfig: PoolConfig) {}
 
   async start(): Promise<void> {
     if (this.boss) return;
-    const boss = new PgBoss({ connectionString: this.connectionString });
+    const bossPool = new Pool(this.poolConfig);
+    this.bossPool = bossPool;
+    const boss = new PgBoss({
+      db: { executeSql: (text: string, values: unknown[]) => bossPool.query(text, values) },
+    });
     boss.on("error", (err: Error) => console.error("[pg-boss] error:", err.message));
     await boss.start();
     this.boss = boss;
@@ -61,7 +74,7 @@ export class PgBossQueue implements QueueClient {
     // of those callers is now the reconciliation sweep (CLAUDE_ERROR_PATTERNS
     // §14 — every external await bounded). 30s is ~100× the measured cost of
     // these queries, so it only ever fires on something genuinely stuck.
-    this.pool = new Pool({ connectionString: this.connectionString, statement_timeout: 30_000 });
+    this.pool = new Pool(this.poolConfig);
   }
 
   private b(): PgBoss {
@@ -330,7 +343,9 @@ export class PgBossQueue implements QueueClient {
       ?.stop({ graceful: true, timeout: Math.max(1_000, deadline - Date.now()) })
       .catch(() => undefined);
     await this.pool?.end().catch(() => undefined);
+    await this.bossPool?.end().catch(() => undefined);
     this.boss = null;
     this.pool = null;
+    this.bossPool = null;
   }
 }

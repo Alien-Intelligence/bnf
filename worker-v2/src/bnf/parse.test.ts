@@ -130,15 +130,9 @@ test("parseAlto: mean is rounded to 4 decimals", () => {
   assert.equal(parseAlto(xml).meanWordConfidence, 0.6667);
 });
 
-test("parseAlto: structurally empty ALTO (no Layout / no words) → empty text, wordCount 0, null mean", () => {
-  const noLayout = `<?xml version="1.0"?><alto><Description/></alto>`;
-  assert.deepEqual(parseAlto(noLayout), {
-    text: "",
-    wordCount: 0,
-    scoredWordCount: 0,
-    meanWordConfidence: null,
-    invalidWcCount: 0,
-  });
+test("parseAlto: an empty Layout structure (no words) → empty text, wordCount 0, null mean", () => {
+  // An <alto> with no <Layout> at all is a parse failure (pass 3) — see the
+  // structure-failure tests below.
   const emptyPrintSpace = `<?xml version="1.0"?><alto><Layout><Page><PrintSpace></PrintSpace></Page></Layout></alto>`;
   assert.deepEqual(parseAlto(emptyPrintSpace), {
     text: "",
@@ -460,4 +454,19 @@ test("parseAlto: a lone ComposedBlock inside a TextBlock is walked", () => {
   );
   assert.equal(parsed.text, "imbriqué");
   assert.equal(parsed.meanWordConfidence, 0.8);
+});
+
+test("parseAlto: <String> text content, mixed content and a missing <Layout> are parse failures", () => {
+  for (const xml of [
+    `<alto><Layout><Page><PrintSpace><TextBlock><TextLine><String>hello</String></TextLine></TextBlock></PrintSpace></Page></Layout></alto>`,
+    `<alto><Layout><Page><PrintSpace><TextBlock><TextLine><String CONTENT="a">b</String></TextLine></TextBlock></PrintSpace></Page></Layout></alto>`,
+    `<alto><Layout><Page><PrintSpace>stray<TextBlock><TextLine><String CONTENT="a"/></TextLine></TextBlock></PrintSpace></Page></Layout></alto>`,
+    `<alto><Description/></alto>`,
+  ]) {
+    assert.throws(
+      () => parseAlto(xml),
+      (e: unknown) => e instanceof TransientBnfError && e.cause === "alto_parse_failed",
+      xml,
+    );
+  }
 });

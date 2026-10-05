@@ -58,6 +58,7 @@ test("malformed values throw", () => {
 /** The minimal env loadConfigFrom accepts: the required vars only. */
 const REQUIRED_ENV = {
   DATABASE_URL: "postgresql://localhost/x",
+  BNF_BROKER_URL: "http://localhost:8792",
   SCW_S3_BUCKET: "b",
   SCW_S3_ENDPOINT_URL: "https://s3",
   SCW_S3_REGION: "fr-par",
@@ -109,4 +110,20 @@ test("pgPoolConfig: both timeouts on every pool", () => {
     statement_timeout: PG_STATEMENT_TIMEOUT_MS,
     connectionTimeoutMillis: PG_CONNECTION_TIMEOUT_MS,
   });
+});
+
+test("integers are plain digits: hex, binary, exponent and sign forms throw", () => {
+  for (const bad of ["0x10", "0b11", "1e1", "+5", "6e4", "1_000"]) {
+    assert.throws(() => loadConfigFrom({ ...REQUIRED_ENV, BNF_FETCH_CONCURRENCY: bad }), /BNF_FETCH_CONCURRENCY/, bad);
+  }
+  assert.throws(
+    () => loadOcrBackfillConfig({ OCR_BACKFILL_RETRY_FAILED_AFTER_MS: "6e4" }),
+    /OCR_BACKFILL_RETRY_FAILED_AFTER_MS/,
+  );
+  assert.throws(() => loadConfigFrom({ ...REQUIRED_ENV, DOC_FAIL_RATIO: "2.5e-1" }), /DOC_FAIL_RATIO/);
+});
+
+test("BNF_BROKER_URL is required at boot — never a per-ARK permanent failure later", () => {
+  const { BNF_BROKER_URL: _broker, ...noBroker } = REQUIRED_ENV;
+  assert.throws(() => loadConfigFrom(noBroker), /BNF_BROKER_URL/);
 });

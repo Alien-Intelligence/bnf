@@ -20,6 +20,7 @@ import { PgDocState } from "./domain/doc-state-pg.js";
 import {
   OCR_BACKFILL_MAX_ATTEMPTS,
   OCR_BACKFILL_STARTED_STALE_MS,
+  OCR_BACKFILL_UNSENT_STALE_MS,
   OCR_BACKFILL_UNSTARTED_STALE_MS,
   validateOcrBackfillPolicy,
   type OcrBackfillWiring,
@@ -41,7 +42,7 @@ async function main(): Promise<void> {
   const cfg = loadConfig();
   const log = createLogger({ worker: "bnf-ingest-v2" });
 
-  const queue = new PgBossQueue(cfg.databaseUrl);
+  const queue = new PgBossQueue(pgPoolConfig(cfg.databaseUrl));
   await queue.start();
 
   // Both pg timeouts (pgPoolConfig): a stuck query or an exhausted pool must not
@@ -61,6 +62,7 @@ async function main(): Promise<void> {
       maxAttempts: OCR_BACKFILL_MAX_ATTEMPTS,
       startedStaleAfterMs: OCR_BACKFILL_STARTED_STALE_MS,
       unstartedStaleAfterMs: OCR_BACKFILL_UNSTARTED_STALE_MS,
+      unsentStaleAfterMs: OCR_BACKFILL_UNSENT_STALE_MS,
     }),
   };
 
@@ -161,13 +163,17 @@ async function main(): Promise<void> {
     // into a pipeline that is draining would leave fresh jobs behind with nobody
     // consuming them (and could race pg-boss's shutdown mid-send).
     reconciler.stop();
-    fetchRate.stop();
-    manifestRate.stop();
     await new Promise<void>((r) => server.close(() => r()));
     // pipeline.stop() → PgBossQueue.stop(), which drains in-flight handlers within
     // an explicit 110s budget (F12) — inside the pod's 120s grace period, and
-    // immediate when nothing is in flight.
-    await pipeline.stop().catch(() => {});
+    // immediate when nothing is in flight. The gates stop AFTER the drain: a
+    // handler still running then gets RateGateStoppedError at its next gate,
+    // and the stage base hands that delivery back (never a doc failure).
+    await pipeline.stop().catch((err: unknown) =>
+      log.error("pipeline_stop_failed", { error: err instanceof Error ? err.message : String(err) }),
+    );
+    fetchRate.stop();
+    manifestRate.stop();
     await pool.end().catch(() => {});
     process.exit(0);
   };

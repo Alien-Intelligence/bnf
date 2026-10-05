@@ -17,7 +17,7 @@ import { buildProgress } from "./observability.js";
 async function main(): Promise<void> {
   const projectId = process.argv[2];
   const cfg = loadConfig();
-  const queue = new PgBossQueue(cfg.databaseUrl);
+  const queue = new PgBossQueue(pgPoolConfig(cfg.databaseUrl));
   await queue.start();
   const pool = new Pool(pgPoolConfig(cfg.databaseUrl));
   const docState = new PgDocState(pool);

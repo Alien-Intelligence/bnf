@@ -259,3 +259,20 @@ test("docInfoFromManifest: an out-of-range Taux OCR keeps the label (text lane) 
   assert.equal(info.ocrAvailable, true);
   assert.equal(info.ocrRate, null);
 });
+
+test("fetchAltoFolio: an error page is classified by its STATUS whatever its charset", async () => {
+  await assert.rejects(
+    () => fetchAltoVia(503, "busy", "text/html; charset=x-bogus-9"),
+    (err: unknown) => err instanceof TransientBnfError,
+  );
+  await assert.rejects(
+    () => fetchAltoVia(429, "slow down", "text/html; charset=x-bogus-9"),
+    (err: unknown) => err instanceof TransientBnfError && err.is429,
+  );
+});
+
+test("fetchAltoFolio: a QUOTED declared charset (RFC 9110) is honoured", async () => {
+  const latin1 = Buffer.from(ALTO_OK.replace("vélo", "THÉÂTRE"), "latin1");
+  const folio = await fetchAltoVia(200, latin1, 'application/xml; charset="iso-8859-1"');
+  assert.equal(folio.text, "Le THÉÂTRE");
+});

@@ -12,7 +12,7 @@
 import { randomUUID } from "node:crypto";
 import { Pool } from "pg";
 
-import { loadConfig } from "./config.js";
+import { loadConfig, pgPoolConfig } from "./config.js";
 import { PgBossQueue } from "./core/queue-pgboss.js";
 import { PgDocState } from "./domain/doc-state-pg.js";
 import { Q } from "./domain/queues.js";
@@ -26,9 +26,9 @@ async function main(): Promise<void> {
   }
 
   const cfg = loadConfig();
-  const queue = new PgBossQueue(cfg.databaseUrl);
+  const queue = new PgBossQueue(pgPoolConfig(cfg.databaseUrl));
   await queue.start();
-  const pool = new Pool({ connectionString: cfg.databaseUrl });
+  const pool = new Pool(pgPoolConfig(cfg.databaseUrl));
   const docState = new PgDocState(pool);
   await docState.migrate();
 

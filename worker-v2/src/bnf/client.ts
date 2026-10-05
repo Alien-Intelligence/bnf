@@ -144,7 +144,7 @@ async function brokerFetch(
 function decodeBnfBytes(bytes: Buffer, contentType?: string): string {
   let charset: string | undefined;
   const ctMatch = contentType?.match(/charset=([^;]+)/i);
-  if (ctMatch) charset = ctMatch[1]!.trim().toLowerCase();
+  if (ctMatch) charset = ctMatch[1]!.trim().replace(/^"(.*)"$/, "$1").toLowerCase(); // RFC 9110 allows a quoted value
   if (!charset) {
     // Sniff the XML prolog from the ASCII-safe head (the declaration is itself
     // ASCII regardless of the document body's encoding).
@@ -163,6 +163,16 @@ function decodeBnfBytes(bytes: Buffer, contentType?: string): string {
     // in the indexed text. Permanent — the stage records it with ARK/folio.
     throw new PermanentBnfError("unknown_charset", { hint: `charset "${charset}"` });
   }
+}
+
+/**
+ * The body text for `status`: a non-2xx body is decoded as UTF-8 for
+ * classification context only, so a 429/5xx page is classified by its STATUS
+ * (transient) whatever charset it declares; only a 2xx body goes through the
+ * strict declared-charset decode.
+ */
+function decodeForStatus(status: number, bytes: Buffer, contentType?: string): string {
+  return status >= 200 && status < 300 ? decodeBnfBytes(bytes, contentType) : bytes.toString("utf8");
 }
 
 /**
@@ -320,7 +330,7 @@ export class LiveBnfClient implements BnfClient {
       "application/xml, text/xml, */*",
       DEFAULT_TIMEOUT_MS,
     );
-    const body = decodeBnfBytes(bytes, contentType);
+    const body = decodeForStatus(status, bytes, contentType);
     const err = classifyStatus(status, body, url);
     if (err) throw err;
 
@@ -416,7 +426,7 @@ export class LiveBnfClient implements BnfClient {
       "application/json, application/ld+json",
       PAGE_TIMEOUT_MS,
     );
-    const body = decodeBnfBytes(bytes, contentType);
+    const body = decodeForStatus(status, bytes, contentType);
     const err = classifyStatus(status, body, url);
     if (err) throw err;
 
@@ -450,7 +460,7 @@ export class LiveBnfClient implements BnfClient {
       PAGE_TIMEOUT_MS,
     );
     if (status === 404) return emptyAltoFolio();
-    const body = decodeBnfBytes(bytes, contentType);
+    const body = decodeForStatus(status, bytes, contentType);
     const err = classifyStatus(status, body, url);
     if (err) throw err;
     if (!body || body.trim().length === 0) throw new TransientBnfError("alto_empty_body", { hint: url });
@@ -475,7 +485,7 @@ export class LiveBnfClient implements BnfClient {
     );
     if (status < 200 || status >= 300) {
       // Decode the (small) error body for classification context only.
-      const body = decodeBnfBytes(bytes, contentType);
+      const body = decodeForStatus(status, bytes, contentType);
       const err = classifyStatus(status, body, url);
       if (err) throw err;
     }

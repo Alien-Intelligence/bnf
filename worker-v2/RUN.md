@@ -29,7 +29,7 @@ Env (required vars throw at startup — see `src/config.ts` + the live clients):
 DATABASE_URL=postgresql://…              # pg-boss buckets + sandbox_ingest_v2 doc state
 SCW_S3_BUCKET= SCW_S3_ENDPOINT_URL= SCW_S3_REGION= SCW_S3_ACCESS_KEY= SCW_S3_SECRET_KEY=
 V2_S3_PREFIX=v2/                         # isolates V2 artifacts from V1 in the shared bucket
-BNF_BROKER_URL=…                         # the egress chokepoint (owns OAuth + the rate caps)
+BNF_BROKER_URL=…                         # REQUIRED at boot: the egress chokepoint (owns OAuth + the rate caps)
 BNF_GLOBAL_RPM=300                       # fetch rate gate (→ 1000 only if the per-IP raise lands)
 BNF_FETCH_CONCURRENCY=12
 BNF_MANIFEST_RPM=42
@@ -92,7 +92,8 @@ The worker's HTTP ingress (`POST /ingest`, `POST /ingest/:id/cancel`,
 cluster network (any pod that can reach `:7777` can open or cancel a run, or ask
 for OCR-quality artifacts). `/ocr-quality/sync` can at most enqueue rate-gated,
 idempotent artifact builds, one row per ARK, with bounded retries (plan D17); its
-body is capped at 16 KiB and the request at 20 s. The broker it talks to has the same
+body is capped at 16 KiB, the whole request (body read included) at 20 s — under the
+app's 30 s `WORKER_RUNNER_TIMEOUT_MS` — and at most 2 requests are served at once. The broker it talks to has the same
 posture (see `../broker/README.md`). The one thing that IS authenticated is
 the terminal callback the worker POSTs back to the app: it's HMAC-signed
 (`x-callback-signature`, per-run secret) and the app verifies it byte-for-byte.
