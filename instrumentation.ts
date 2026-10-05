@@ -23,26 +23,26 @@ export async function register() {
   // Vocabulary passes (Track E): Document.lang into canonicalLang's form, and
   // buffer rows written before the v2 buffer (raw dc:type labels, MARC
   // language codes, no record kind) into the canonical vocabulary. Both are
-  // idempotent (a finished run costs one cheap query) and bounded; they run at
-  // boot and then on a schedule, so a run that stopped at its ceiling or
-  // failed resumes instead of waiting for the next restart. An overlap guard
-  // keeps one run at a time. Fire-and-forget — must not block serving.
+  // idempotent (a finished run costs one cheap query) and bounded (their own
+  // time ceilings, and the pool's statement/connection timeouts on every
+  // query); they run at boot and then on a schedule, so a run that stopped at
+  // its ceiling or failed resumes instead of waiting for the next restart.
+  // The two passes are INDEPENDENT: each has its own overlap guard and its own
+  // failure, so one failing never skips the other. Fire-and-forget — must not
+  // block serving.
   const { reclassifyBufferItems } = await import("@/lib/buffer/reclassify")
   const { canonicalizeDocumentLangs } = await import("@/lib/documents/canonical-lang")
-  let vocabularyPassRunning = false
-  const runVocabularyPasses = async (): Promise<void> => {
-    if (vocabularyPassRunning) return
-    vocabularyPassRunning = true
-    try {
-      await canonicalizeDocumentLangs()
-      await reclassifyBufferItems()
-    } finally {
-      vocabularyPassRunning = false
+  const { guardedPass } = await import("@/lib/background/guarded-pass")
+  const langPass = guardedPass("document-lang", canonicalizeDocumentLangs)
+  const reclassifyPass = guardedPass("buffer-reclassify", reclassifyBufferItems)
+  const runVocabularyPasses = (when: "boot" | "periodic"): void => {
+    for (const pass of [langPass, reclassifyPass]) {
+      void pass().catch((err: unknown) => {
+        console.error(`[instrumentation] ${when} ${pass.label} pass failed:`, err)
+      })
     }
   }
-  void runVocabularyPasses().catch((err) => {
-    console.error("[instrumentation] boot vocabulary passes failed:", err)
-  })
+  runVocabularyPasses("boot")
 
   const {
     RESOLVE_SWEEP_INTERVAL_MS,
@@ -51,11 +51,7 @@ export async function register() {
     BUFFER_RECLASSIFY_SWEEP_INTERVAL_MS,
   } = await import("@/lib/constants")
 
-  setInterval(() => {
-    void runVocabularyPasses().catch((err) => {
-      console.error("[instrumentation] periodic vocabulary passes failed:", err)
-    })
-  }, BUFFER_RECLASSIFY_SWEEP_INTERVAL_MS).unref()
+  setInterval(() => runVocabularyPasses("periodic"), BUFFER_RECLASSIFY_SWEEP_INTERVAL_MS).unref()
 
   // Background enrichment of bare buffer rows (buffer_add stages ARKs only):
   // a boot resume for rows a restart left pending, then a periodic sweep —
