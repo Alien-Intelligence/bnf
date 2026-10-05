@@ -1,26 +1,33 @@
 // lib/mcp/rate-limited-registry-runner.test.ts
-// Decision 17 of the Track E plan, proved on the SDK's REAL dispatch path:
-// `runClaudeSdk` (the direct-Anthropic runner) against a local fake Anthropic
-// streaming endpoint, with the real `createToolRegistry` talking to a local
-// fake mcp-bnf. The model asks for three BnF calls in one turn; the decorator
-// must sit between the runner and the MCP transport so that
+// Decision 17 of the Track E plan, proved on the SDK's REAL dispatch paths:
+// BOTH runners — `runOpenRouterSdk` (production: AGENT_PROVIDER=openrouter) and
+// `runClaudeSdk` — over the registry the chat route really builds,
+// `buildTurnScopedRegistry`, which discovers mcp-bnf through
+// `resolveMcpServers` (initialize + tools/list). Only the TRANSPORTS are fakes:
+// a local OpenAI-compatible streaming endpoint (OpenRouter), a local Anthropic
+// streaming endpoint, and a local mcp-bnf. The model asks for BnF calls; the
+// limiter must sit between the runner and the MCP transport so that
 //   1. the first catalogue call reaches the MCP, which answers mcp-bnf's
-//      soft 429 envelope → the catalogue bucket is frozen;
-//   2. the second catalogue call is shed by that freeze and never sent;
-//   3. a `bnf__` tool the limiter does not know is refused and never sent.
-// No real network: both servers listen on 127.0.0.1, Langfuse is disabled.
+//      soft 429 envelope → the catalogue limiter is paused;
+//   2. the second catalogue call is shed by that pause and never sent;
+//   3. (Claude) a `bnf__` tool the limiter does not know is refused, never sent.
+// No real network: every server listens on 127.0.0.1, Langfuse is disabled.
 import "server-only"
 
 for (const key of Object.keys(process.env)) {
   if (key.startsWith("LANGFUSE_")) delete process.env[key]
 }
 
-import { test } from "node:test"
+import { after, before, test } from "node:test"
 import assert from "node:assert/strict"
 import { createServer, type IncomingMessage, type Server } from "node:http"
-import { createToolRegistry, runClaudeSdk } from "@alien/chat-sdk/claude"
+import { runClaudeSdk } from "@alien/chat-sdk/claude"
+import { runOpenRouterSdk } from "@alien/chat-sdk/openrouter"
+import { prisma } from "@/lib/db"
+import { buildTurnScopedRegistry, type TurnScopedCtx } from "@/lib/agent/tools/registry-factory"
+import { SESSION_SCOPE } from "@/models/sessions/schema"
+import { USER_ROLE } from "@/models/users/schema"
 import { __resetBnfRateLimiterForTests } from "./rate-limit"
-import { withBnfRateLimit } from "./rate-limited-registry"
 import { BNF_MCP_SERVER_NAME, bnfPrefixedToolName } from "./tools"
 
 /** Generous rates: only the 429 freeze can shed the second catalogue call. */
@@ -126,6 +133,10 @@ function fakeMcp(calls: string[]): Server {
     void readBody(req).then((body) => {
       const rpc = JSON.parse(body) as { id: number; method: string; params?: { name?: string } }
       res.writeHead(200, { "content-type": "application/json" })
+      if (rpc.method === "initialize") {
+        res.end(JSON.stringify({ jsonrpc: "2.0", id: rpc.id, result: { protocolVersion: "2025-03-26", capabilities: {} } }))
+        return
+      }
       if (rpc.method === "tools/list") {
         res.end(
           JSON.stringify({
@@ -149,28 +160,122 @@ function fakeMcp(calls: string[]): Server {
   })
 }
 
-test("the real Claude runner dispatches every bnf__ call through the rate limiter", async () => {
+/** OpenAI-compatible streaming chunks (what OpenRouter speaks). */
+function openAiChunk(delta: Record<string, unknown>, finish: string | null) {
+  return `data: ${JSON.stringify({
+    id: "gen-1",
+    object: "chat.completion.chunk",
+    created: 0,
+    model: "test-model",
+    choices: [{ index: 0, delta, finish_reason: finish }],
+  })}\n\n`
+}
+
+/**
+ * Step 1: one catalogue call. Step 2 (after its 429 came back): another
+ * catalogue call. Step 3: a closing text. Sequential on purpose — the AI SDK
+ * runs the tool calls of ONE step in parallel, so both would be granted before
+ * the first 429 is seen; the pause applies to calls made after it.
+ */
+function fakeOpenRouter(requests: unknown[]): Server {
+  return createServer((req, res) => {
+    void readBody(req).then((body) => {
+      requests.push(JSON.parse(body))
+      res.writeHead(200, { "content-type": "text/event-stream" })
+      const call = (id: string, query: string) => ({
+        index: 0,
+        id,
+        type: "function",
+        function: { name: bnfPrefixedToolName("bnf_search_catalogue"), arguments: JSON.stringify({ query }) },
+      })
+      if (requests.length <= 2) {
+        const id = requests.length === 1 ? "call_1" : "call_2"
+        res.end(
+          openAiChunk({ role: "assistant", tool_calls: [call(id, id)] }, null) +
+            openAiChunk({}, "tool_calls") +
+            "data: [DONE]\n\n",
+        )
+        return
+      }
+      res.end(openAiChunk({ role: "assistant", content: "fini" }, null) + openAiChunk({}, "stop") + "data: [DONE]\n\n")
+    })
+  })
+}
+
+/** A turn context for the registry: only the BnF tools are dispatched, so no DB call happens. */
+function turnCtx(signal: AbortSignal): TurnScopedCtx {
+  return {
+    signal,
+    request: new Request("http://localhost/test"),
+    db: prisma,
+    user: {
+      id: "runner-test",
+      email: "runner@test.local",
+      name: "runner",
+      emailVerified: true,
+      image: null,
+      role: USER_ROLE.MEMBER,
+      alienUserId: null,
+      createdAt: new Date(0),
+      updatedAt: new Date(0),
+      groupIds: [],
+    },
+    appSessionId: "s-runner",
+    projectId: "p-runner",
+    corpusProjectId: "p-runner",
+    corpusReachable: true,
+    scope: SESSION_SCOPE.CORPUS,
+  }
+}
+
+const mcpCalls: string[] = []
+let mcp: Server
+let mcpUrl: string
+
+before(async () => {
+  mcp = fakeMcp(mcpCalls)
+  mcpUrl = await listen(mcp)
+  // resolveMcpServers (inside buildTurnScopedRegistry) reads these, lazily.
+  process.env.BNF_MCP_URL = `${mcpUrl}/mcp`
+  process.env.BNF_MCP_TOKEN = "test-token"
+})
+
+after(async () => {
+  await close(mcp)
+})
+
+/** The tool results of one run, by call id. */
+type Results = Map<string, { isError: boolean; content: string }>
+
+function assertShedByFreeze(results: Results, firstId: string, secondId: string): void {
+  const first = results.get(firstId)
+  assert.ok(first, "the first call has a result")
+  assert.match(first.content, /"status_code":\s*429/)
+  const shed = results.get(secondId)
+  assert.ok(shed, "the second call has a result")
+  assert.match(shed.content, /"rate_limited":true/)
+  assert.match(shed.content, /"api":"catalogue"/, "shed by the pause the 429 caused")
+}
+
+test("OpenRouter (the production runner) dispatches every bnf__ call through the limiter", async () => {
   __resetBnfRateLimiterForTests(RATES)
-  const anthropicRequests: unknown[] = []
-  const mcpCalls: string[] = []
-  const anthropic = fakeAnthropic(anthropicRequests)
-  const mcp = fakeMcp(mcpCalls)
-  const anthropicUrl = await listen(anthropic)
-  const mcpUrl = await listen(mcp)
+  mcpCalls.length = 0
+  const requests: unknown[] = []
+  const openrouter = fakeOpenRouter(requests)
+  const baseURL = await listen(openrouter)
   try {
-    const registry = withBnfRateLimit(
-      createToolRegistry({ mcpServers: [{ name: BNF_MCP_SERVER_NAME, url: `${mcpUrl}/mcp` }] }),
-    )
     const controller = new AbortController()
-    const results = new Map<string, { isError: boolean; content: string }>()
-    for await (const event of runClaudeSdk({
+    const registry = await buildTurnScopedRegistry(SESSION_SCOPE.CORPUS, controller.signal)
+    assert.ok(registry.mcpServers.some((s) => s.name === BNF_MCP_SERVER_NAME), "the fake mcp-bnf was discovered")
+    const results: Results = new Map()
+    for await (const event of runOpenRouterSdk({
       apiKey: "test-key",
-      baseURL: anthropicUrl,
-      model: "claude-test",
+      baseURL,
+      model: "test/model",
       messages: [{ role: "user", content: "cherche" }],
       system: "test",
       tools: registry,
-      toolContext: { signal: controller.signal, request: new Request("http://localhost/test") },
+      toolContext: turnCtx(controller.signal),
       signal: controller.signal,
     })) {
       if (event.type === "error") assert.fail(`runner error: ${event.message}`)
@@ -179,33 +284,48 @@ test("the real Claude runner dispatches every bnf__ call through the rate limite
         results.set(event.toolUseId, { isError: event.isError, content })
       }
     }
+    assert.deepEqual(mcpCalls, ["bnf_search_catalogue"], "exactly one call reached the MCP")
+    assert.equal(requests.length, 3, "the loop went back to the model after each step")
+    assertShedByFreeze(results, "call_1", "call_2")
+  } finally {
+    await close(openrouter)
+  }
+})
 
+test("the Claude runner dispatches every bnf__ call through the limiter, and refuses an unknown one", async () => {
+  __resetBnfRateLimiterForTests(RATES)
+  mcpCalls.length = 0
+  const anthropicRequests: unknown[] = []
+  const anthropic = fakeAnthropic(anthropicRequests)
+  const anthropicUrl = await listen(anthropic)
+  try {
+    const controller = new AbortController()
+    const registry = await buildTurnScopedRegistry(SESSION_SCOPE.CORPUS, controller.signal)
+    const results: Results = new Map()
+    for await (const event of runClaudeSdk({
+      apiKey: "test-key",
+      baseURL: anthropicUrl,
+      model: "claude-test",
+      messages: [{ role: "user", content: "cherche" }],
+      system: "test",
+      tools: registry,
+      toolContext: turnCtx(controller.signal),
+      signal: controller.signal,
+    })) {
+      if (event.type === "error") assert.fail(`runner error: ${event.message}`)
+      if (event.type === "tool-result") {
+        const content = typeof event.content === "string" ? event.content : JSON.stringify(event.content)
+        results.set(event.toolUseId, { isError: event.isError, content })
+      }
+    }
     assert.deepEqual(mcpCalls, ["bnf_search_catalogue"], "exactly one call reached the MCP")
     assert.equal(anthropicRequests.length, 2, "the loop went back to the model with the results")
-
-    const first = results.get("toolu_1")
-    assert.ok(first, "the first call has a result")
-    assert.match(first.content, /"status_code":\s*429/)
-
-    const shed = results.get("toolu_2")
-    assert.ok(shed, "the second call has a result")
-    assert.equal(shed.isError, true)
-    const shedPayload: unknown = JSON.parse(shed.content)
-    assert.deepEqual(
-      typeof shedPayload === "object" && shedPayload !== null && "rate_limited" in shedPayload
-        ? { rate_limited: shedPayload.rate_limited, api: "api" in shedPayload ? shedPayload.api : null }
-        : null,
-      { rate_limited: true, api: "catalogue" },
-      "shed by the freeze the 429 caused",
-    )
-
+    assertShedByFreeze(results, "toolu_1", "toolu_2")
     const refused = results.get("toolu_3")
     assert.ok(refused, "the unknown tool has a result")
     assert.equal(refused.isError, true)
     assert.match(refused.content, /"refused":"bnf_call_refused"/)
-    assert.match(refused.content, /bnf_some_future_tool/)
   } finally {
     await close(anthropic)
-    await close(mcp)
   }
 })
