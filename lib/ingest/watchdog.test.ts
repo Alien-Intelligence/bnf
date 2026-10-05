@@ -2,14 +2,18 @@
 // Pure rule-set tests for decideWatchdogAction (audit finding F18) — a fake
 // clock and hand-built job/progress fixtures, no database, no worker HTTP.
 // The interval shell (startIngestWatchdog) is I/O-only and exercised manually
-// (see the plan's "run-local" validation gate), not here.
+// (see the plan's "run-local" validation gate), not here; one job's
+// reconciliation across ticks is, with the worker poll and the write stubbed.
 import "server-only"
 
 import { test } from "node:test"
 import assert from "node:assert/strict"
 
+import { ClusterRunner } from "@/lib/cluster/runner"
+import { IngestService } from "@/models/ingest/service"
 import {
   decideWatchdogAction,
+  reconcileWatchdogJob,
   WATCHDOG_QUEUED_STALE_MS,
   WATCHDOG_RUNNING_STALE_MS,
   type WatchdogJobInput,
@@ -158,4 +162,33 @@ test("a single null tick starts the clock; a later non-null tick resets it befor
   const t3 = decideWatchdogAction(runningJob(), null, minutesAgo(20), t2.nullSince)
   assert.deepEqual(t3.action, { kind: "none" })
   assert.equal(t3.nullSince?.getTime(), minutesAgo(20).getTime())
+})
+
+test("a FAILED write that throws keeps the staleness clock: the next tick fails the job at once", async () => {
+  const job = runningJob({ id: "job-write-fails" })
+  const original = { progress: ClusterRunner.progress, failStuckJob: IngestService.failStuckJob }
+  const failCalls: Date[] = []
+  let writeFails = true
+  ClusterRunner.progress = async () => null // the worker is gone
+  IngestService.failStuckJob = async (_id, _status, _reason, at) => {
+    failCalls.push(at)
+    if (writeFails) throw new Error("database unavailable")
+  }
+  try {
+    // Tick 1: the worker stops answering — the clock starts.
+    await reconcileWatchdogJob(job, minutesAgo(40))
+    assert.equal(failCalls.length, 0)
+    // Tick 2: 31 min later the job is given up on, but the write fails.
+    await assert.rejects(reconcileWatchdogJob(job, minutesAgo(9)), /database unavailable/)
+    // Tick 3: one minute later the clock still says 32 min: failed again at once.
+    writeFails = false
+    await reconcileWatchdogJob(job, minutesAgo(8))
+    assert.deepEqual(failCalls, [minutesAgo(9), minutesAgo(8)])
+    // Tick 4: written — the clock is cleared, nothing left to track.
+    await reconcileWatchdogJob(job, minutesAgo(7))
+    assert.equal(failCalls.length, 2, "a fresh clock started; no immediate re-fail")
+  } finally {
+    ClusterRunner.progress = original.progress
+    IngestService.failStuckJob = original.failStuckJob
+  }
 })

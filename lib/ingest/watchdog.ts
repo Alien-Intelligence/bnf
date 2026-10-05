@@ -188,7 +188,7 @@ async function runWatchdogTick(): Promise<void> {
   const failures: unknown[] = []
   for (const job of candidates) {
     try {
-      await applyToJob(job, now)
+      await reconcileWatchdogJob(job, now)
     } catch (err) {
       failures.push(err)
     }
@@ -198,7 +198,12 @@ async function runWatchdogTick(): Promise<void> {
   }
 }
 
-async function applyToJob(job: WatchdogJobInput, now: Date): Promise<void> {
+/**
+ * Reconcile one candidate job at `now`: poll, decide, apply. Exported for the
+ * tests of its state handling (the staleness clock across ticks and failed
+ * writes); the interval tick is its only production caller.
+ */
+export async function reconcileWatchdogJob(job: WatchdogJobInput, now: Date): Promise<void> {
   const clusterProgress =
     job.status === INGEST_STATUS.RUNNING && job.clusterJobId
       ? await ClusterRunner.progress(job.clusterJobId)
@@ -212,6 +217,17 @@ async function applyToJob(job: WatchdogJobInput, now: Date): Promise<void> {
     nullSince,
   )
 
+  if (action.kind === "fail") {
+    // The staleness clock is kept until the FAILED write has succeeded: if
+    // the write throws, the next tick must still see how long the worker has
+    // been gone and fail the job again at once — not start a fresh 30 min.
+    // A failed write leaves the job non-terminal: it is raised, not dropped,
+    // and the next tick finds the job again and retries.
+    await IngestService.failStuckJob(job.id, job.status, action.reason, now)
+    nullSinceByJob.delete(job.id)
+    return
+  }
+
   if (nextNullSince) nullSinceByJob.set(job.id, nextNullSince)
   else nullSinceByJob.delete(job.id)
 
@@ -222,11 +238,6 @@ async function applyToJob(job: WatchdogJobInput, now: Date): Promise<void> {
       // A failed write is raised to the tick, which reports it after
       // reconciling the other jobs; the next tick writes it again.
       await IngestService.mirrorWatchdogProgress(job.id, action.progress, action.stats)
-      return
-    case "fail":
-      // A failed write leaves the job non-terminal: it is raised, not dropped,
-      // and the next tick finds the job again and retries.
-      await IngestService.failStuckJob(job.id, job.status, action.reason, now)
       return
   }
 }
