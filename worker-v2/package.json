@@ -6,6 +6,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test \"src/**/*.test.ts\"",
+    "test:pg": "WORKER_TEST_REQUIRE_PG=1 node --import tsx --test src/domain/ocr-backfill.test.ts",
     "test:one": "node --import tsx --test",
     "start": "node --import tsx src/main.ts",
     "seed": "node --import tsx src/seed.ts",

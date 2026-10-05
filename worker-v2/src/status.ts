@@ -8,7 +8,7 @@
  */
 import { Pool } from "pg";
 
-import { loadConfig, PG_STATEMENT_TIMEOUT_MS } from "./config.js";
+import { loadConfig, pgPoolConfig } from "./config.js";
 import { PgBossQueue } from "./core/queue-pgboss.js";
 import { PgDocState } from "./domain/doc-state-pg.js";
 import { PgOcrBackfillStore } from "./domain/ocr-backfill-pg.js";
@@ -19,7 +19,7 @@ async function main(): Promise<void> {
   const cfg = loadConfig();
   const queue = new PgBossQueue(cfg.databaseUrl);
   await queue.start();
-  const pool = new Pool({ connectionString: cfg.databaseUrl, statement_timeout: PG_STATEMENT_TIMEOUT_MS });
+  const pool = new Pool(pgPoolConfig(cfg.databaseUrl));
   const docState = new PgDocState(pool);
 
   const report = await buildProgress(docState, queue, {

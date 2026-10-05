@@ -8,6 +8,10 @@ This doc covers running it locally and the three acceptance gates from the goal.
 
 ```bash
 npm test          # 100+ unit tests + a full fake-mode integration run
+# The Postgres contract suite of the OCR backfill store (skipped by `npm test`
+# without a database). Point it at a Postgres YOU own — it applies schema.sql
+# (idempotent) and only touches rows under a unique test ARK prefix:
+WORKER_TEST_DATABASE_URL=postgresql://… npm run test:pg   # fails, never skips, without the URL
 npm run typecheck # tsc --noEmit, 0 errors
 ```
 
@@ -32,16 +36,20 @@ BNF_MANIFEST_RPM=42
 MISTRAL_OCR_ENABLED=true                 # + MISTRAL_API_KEY … (mistral lane)
 # vision: SCW_API_KEY/SCW_GENAI_BASE_URL/HOLO_MODEL + GOOGLE_AI_API_KEY  (see src/live/*)
 # embed:  RunPod creds;  cluster: CLUSTER_* (mirrors V1 env.ts names)
-# OCR-quality backfill (optional; validated at startup — a malformed value throws):
-OCR_BACKFILL_ENABLED=true                # false: no backfill stage, /ocr-quality/sync queues nothing
+# OCR-quality backfill (validated at startup — a malformed value throws).
+# LOCAL: keep it off — each backfilled text doc spends shared BnF quota.
+OCR_BACKFILL_ENABLED=false               # code default true (prod); false: no stage, sync queues nothing
 OCR_BACKFILL_CONCURRENCY=2               # in-flight backfill docs (positive integer; plan D6 default)
-OCR_BACKFILL_RETRY_FAILED_AFTER_MS=86400000  # base retry backoff, doubles per attempt (5 max)
+OCR_BACKFILL_RETRY_FAILED_AFTER_MS=86400000  # base retry backoff in ms (≥ 60000), doubles per attempt (5 max)
 ```
 
+Every numeric knob above is a strict integer (≥ 1; a port ≤ 65535): a zero, a
+negative, a fraction or a typo throws at startup instead of being floored.
+
 Each backfilled TEXT document costs one BnF ALTO call per indexed folio, once,
-through the same fetch gate as live ingests — locally, set
-`OCR_BACKFILL_ENABLED=false` unless you mean to spend that quota (see
-`helm/DEPLOY.md`, "OCR quality backfill").
+through the same fetch gate as live ingests — the block above therefore sets
+`OCR_BACKFILL_ENABLED=false`; turn it on only when you mean to spend that quota
+(see `helm/DEPLOY.md`, "OCR quality backfill").
 
 ```bash
 npm start                                # boots the worker (all stages long-poll forever)
