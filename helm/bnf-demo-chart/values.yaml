@@ -4,11 +4,14 @@ namespace: bnf
 # App (Next.js) — the Constituer / Ingérer / Rechercher workspace.
 # ===========================================================================
 # ONE replica by design. The app-side BnF MCP rate limiter (config.bnfMcpRate,
-# lib/mcp/rate-limit.ts) keeps its token buckets in process memory, so they are
-# exact only for a single pod. configmap.yaml divides every bnfMcpRate*Rpm by
-# this count (integer div; a share below 1/min fails the render), so raising it
-# keeps the FLEET under the BnF quota by construction — at the price of each pod
-# getting a smaller share.
+# lib/mcp/rate-limit.ts) holds what holds, per pod: in ANY 60 s sliding window
+# the weighted requests one pod sends to one BnF API stay at or below that pod's
+# share of its bnfMcpRate value (and all APIs together at or below its share of
+# globalRpm). It keeps that ledger in process memory, so it is exact only for a
+# single pod. configmap.yaml divides every bnfMcpRate*Rpm by this count
+# (integer div; a share below 1/min fails the render), so with N pods the fleet
+# sum of shares stays at or below the configured value — at the price of each
+# pod getting a smaller share.
 # Past 2–3 replicas, move the limiter to a shared store (Postgres/Redis)
 # instead of shrinking the per-pod share further.
 replicaCount: 1
@@ -87,7 +90,7 @@ config:
     iiifRpm: 285        # Gallica-IIIF (legacy): 300/min
     issuesRpm: 47       # date-périodique: 50/min
     grapheRpm: 47       # data.bnf.fr SPARQL (graphe): 50/min
-    maxWaitMs: 15000    # bounded wait before a call is shed with « quota saturé »
+    maxWaitMs: 15000    # bounded wait before a call is shed with « quota saturé »; 1..60000 (checked at render and at boot)
 
   # Data-cluster MCP — research RAG (Rechercher), required when clusterMode=real.
   # The research agent's rag_query tool queries this over dataset `bnf-<projectId>`.

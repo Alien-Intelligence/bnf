@@ -54,15 +54,15 @@ function isUpstreamRateLimited(result: ToolDispatchResult): boolean {
 }
 
 /**
- * Wrap a registry so every `bnf__<tool>` dispatch first takes its tokens from
- * the process-wide BnF buckets. A refused call never reaches the registry and
+ * Wrap a registry so every `bnf__<tool>` dispatch first takes its grant from
+ * the process-wide BnF limiters. A refused call never reaches the registry and
  * returns `{ isError: true, content: <structured refusal> }` — never a throw
  * (CLAUDE_ERROR_PATTERNS §15):
  *   - an unknown `bnf__` tool (not in BNF_MCP_TOOLS) is refused outright — it
- *     has no API bucket, so it cannot be metered;
+ *     has no API limiter, so it cannot be metered;
  *   - an input the limiter cannot weigh (a non-integer `max_pages`) is refused;
- *   - a call that cannot get its tokens before its deadline is shed.
- * When BnF answers 429 anyway, the API's bucket is frozen for every agent.
+ *   - a call that cannot be granted before its deadline is shed.
+ * When BnF answers 429 anyway, the API's limiter is paused for every agent.
  * Custom app tools pass straight through: the ones that call BnF themselves
  * (`corpus_search`) acquire inside `callBnfTool`.
  *
@@ -121,6 +121,11 @@ export function withBnfRateLimit<TCtx extends ToolContext>(
         const refusal =
           grant.kind === "invalid_input" ? bnfCallRefusedResult(grant.error) : quotaSaturatedResult(grant)
         return { isError: true, content: JSON.stringify(refusal) }
+      }
+      if (ctx.signal.aborted) {
+        // Cancelled as the grant landed: the call is not sent, so its capacity goes back.
+        grant.release()
+        return { isError: true, content: `Tool "${toolName}" aborted before it was sent` }
       }
       const result = await registry.dispatch(toolName, input, ctx, toolUseId)
       if (isUpstreamRateLimited(result)) reportBnfUpstreamRateLimit(raw, undefined)

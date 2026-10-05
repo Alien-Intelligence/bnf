@@ -128,6 +128,15 @@ async function failureBody(res: Response): Promise<string> {
   }
 }
 
+/** Parse JSON, or throw the contract's BnfMcpError (never a raw SyntaxError). */
+function parseJson(text: string, what: string): unknown {
+  try {
+    return JSON.parse(text)
+  } catch (err) {
+    throw new BnfMcpError(`${what} is not JSON: ${text.slice(0, 120)}`, err)
+  }
+}
+
 /**
  * Call one BnF MCP tool and return its parsed JSON payload.
  *
@@ -149,7 +158,7 @@ export async function callBnfTool<T>(
   signal?: AbortSignal,
 ): Promise<T> {
   // Enforcement point (a) of the app-side BnF rate limiter (lib/mcp/rate-limit.ts):
-  // take this call's tokens BEFORE anything leaves the process. A shed call is a
+  // take this call's grant BEFORE anything leaves the process. A shed call is a
   // typed, non-retryable-right-now failure the caller coerces into a structured
   // tool result; it never reached BnF. An abort during the wait rejects exactly
   // like an aborted fetch would.
@@ -159,6 +168,11 @@ export async function callBnfTool<T>(
       throw new BnfMcpQueryRefusedError(`MCP ${toolName}: ${grant.error}`, [grant.error])
     }
     throw new BnfMcpQuotaSaturatedError(grant.api, grant.waitedMs)
+  }
+  if (signal?.aborted) {
+    // Cancelled as the grant landed: nothing is sent, so its capacity goes back.
+    grant.release()
+    throw signal.reason
   }
 
   const res = await fetch(url, {
@@ -206,9 +220,9 @@ export async function callBnfTool<T>(
     const body = await res.text()
     const dataLine = body.split("\n").find((line) => line.startsWith("data: "))
     if (!dataLine) throw new BnfMcpError("MCP tools/call: SSE response had no data line")
-    envelope = JSON.parse(dataLine.slice(6)) as JsonRpcOk<McpToolCallResult> | JsonRpcErr
+    envelope = parseJson(dataLine.slice(6), `MCP ${toolName} SSE frame`) as JsonRpcOk<McpToolCallResult> | JsonRpcErr
   } else {
-    envelope = (await res.json()) as JsonRpcOk<McpToolCallResult> | JsonRpcErr
+    envelope = parseJson(await res.text(), `MCP ${toolName} response`) as JsonRpcOk<McpToolCallResult> | JsonRpcErr
   }
 
   if ("error" in envelope) {
@@ -226,7 +240,7 @@ export async function callBnfTool<T>(
     throw new BnfMcpError(`MCP ${toolName}: no text content in result`)
   }
 
-  const payload: unknown = JSON.parse(textBlock.text)
+  const payload = parseJson(textBlock.text, `MCP ${toolName} result`)
 
   // Surface the soft failure as the tool failure it is. Without this the caller
   // reaches for `data.records` on a payload that has no `data`, and the agent is
@@ -234,8 +248,8 @@ export async function callBnfTool<T>(
   // the upstream status.
   if (isFailureEnvelope(payload)) {
     const failure = softFailureError(payload, toolName)
-    // BnF's quota is already blown even though our buckets granted the call:
-    // freeze the API's bucket so no other agent re-sends into it.
+    // BnF's quota is already blown even though our limiters granted the call:
+    // pause the API's limiter so no other agent re-sends into it.
     if (failure instanceof BnfMcpRateLimitError) reportBnfUpstreamRateLimit(toolName, undefined)
     throw failure
   }

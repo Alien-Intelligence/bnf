@@ -25,38 +25,41 @@ const MCP_PREFIX_SEP = "__" as const
  * (lib/mcp/rate-limit.ts BNF_MCP_TOOL_API); a tool added here without a bucket
  * is a compile error there.
  */
-export const BNF_MCP_TOOLS = [
+export const BNF_MCP_TOOL = {
   // search/
-  "bnf_search_catalogue",
-  "bnf_get_catalogue_record",
-  "bnf_search_gallica",
-  "bnf_get_search_facets",
+  SEARCH_CATALOGUE: "bnf_search_catalogue",
+  GET_CATALOGUE_RECORD: "bnf_get_catalogue_record",
+  SEARCH_GALLICA: "bnf_search_gallica",
+  GET_SEARCH_FACETS: "bnf_get_search_facets",
   // iiif/
-  "bnf_get_manifest",
-  "bnf_get_image_info",
-  "bnf_get_image_url",
-  "bnf_get_page_ocr_boxes",
+  GET_MANIFEST: "bnf_get_manifest",
+  GET_IMAGE_INFO: "bnf_get_image_info",
+  GET_IMAGE_URL: "bnf_get_image_url",
+  GET_PAGE_OCR_BOXES: "bnf_get_page_ocr_boxes",
   // document/
-  "bnf_get_document_info",
-  "bnf_get_document_pages",
-  "bnf_get_document_toc",
-  "bnf_get_page_text",
-  "bnf_get_periodical_issues",
+  GET_DOCUMENT_INFO: "bnf_get_document_info",
+  GET_DOCUMENT_PAGES: "bnf_get_document_pages",
+  GET_DOCUMENT_TOC: "bnf_get_document_toc",
+  GET_PAGE_TEXT: "bnf_get_page_text",
+  GET_PERIODICAL_ISSUES: "bnf_get_periodical_issues",
   // composite/
-  "bnf_get_document_text",
+  GET_DOCUMENT_TEXT: "bnf_get_document_text",
   // semantic/
-  "bnf_sparql_query",
-  "bnf_find_person",
-  "bnf_find_work",
-  "bnf_resolve_entity",
-] as const
+  SPARQL_QUERY: "bnf_sparql_query",
+  FIND_PERSON: "bnf_find_person",
+  FIND_WORK: "bnf_find_work",
+  RESOLVE_ENTITY: "bnf_resolve_entity",
+} as const
 
-export type BnfMcpToolName = (typeof BNF_MCP_TOOLS)[number]
+/** Every mcp-bnf tool name, as a tuple. */
+export const BNF_MCP_TOOLS = Object.values(BNF_MCP_TOOL)
+
+export type BnfMcpToolName = (typeof BNF_MCP_TOOL)[keyof typeof BNF_MCP_TOOL]
 
 /** BnF MCP search tools, keyed by the `corpus_search` source they serve. */
 export const BNF_SEARCH_TOOL = {
-  gallica: "bnf_search_gallica",
-  catalogue: "bnf_search_catalogue",
+  gallica: BNF_MCP_TOOL.SEARCH_GALLICA,
+  catalogue: BNF_MCP_TOOL.SEARCH_CATALOGUE,
 } as const satisfies Record<string, BnfMcpToolName>
 
 export type BnfSearchSource = keyof typeof BNF_SEARCH_TOOL
@@ -72,15 +75,15 @@ export function bnfPrefixedToolName<T extends BnfMcpToolName>(tool: T): BnfPrefi
 
 /**
  * The raw mcp-bnf tool name behind an agent-facing `bnf__<tool>` name, or null
- * when the name does not carry the BnF server prefix (a custom app tool,
- * another server's tool, or a bare prefix). Deliberately does NOT check the
- * tool against BNF_MCP_TOOLS: an unknown `bnf__` tool is still BnF egress, and
- * the rate-limited registry REFUSES it (isBnfMcpToolName in rate-limit.ts)
- * rather than letting it through unmetered.
+ * when the name does not carry the BnF server prefix (a custom app tool or
+ * another server's tool). A name WITH the prefix is BnF egress whatever
+ * follows it — a bare `bnf__` yields "" — and it is NOT checked against
+ * BNF_MCP_TOOLS here: the rate-limited registry refuses every name the
+ * limiter does not know (isBnfMcpToolName in rate-limit.ts), the empty one
+ * included, so nothing reaches mcp-bnf unmetered.
  */
 export function bnfToolFromPrefixed(prefixed: string): string | null {
   const prefix = BNF_MCP_SERVER_NAME + MCP_PREFIX_SEP
   if (!prefixed.startsWith(prefix)) return null
-  const tool = prefixed.slice(prefix.length)
-  return tool.length > 0 ? tool : null
+  return prefixed.slice(prefix.length)
 }

@@ -4,7 +4,7 @@
 // On main every call reached BnF — 2 548 catalogue calls in 2.5 h against a
 // 100/min quota, 346 × 429 and 252 × 500 on connector 46. Both enforcement
 // points (the registry decorator for SDK-dispatched raw tools and callBnfTool
-// for app-made calls) share one process-wide set of buckets, so the forwarded
+// for app-made calls) share one process-wide set of limiters, so the forwarded
 // rate can never exceed the configured catalogue rate whatever the fan-out.
 import "server-only"
 
@@ -14,7 +14,7 @@ import type { ToolContext, ToolRegistry } from "@alien/chat-sdk/claude"
 import { callBnfTool } from "./call"
 import { BnfMcpQuotaSaturatedError } from "./errors"
 import { withBnfRateLimit } from "./rate-limited-registry"
-import { __resetBnfRateLimiterForTests, bucketBurst } from "./rate-limit"
+import { __resetBnfRateLimiterForTests } from "./rate-limit"
 
 const PROD_RATES = {
   globalRpm: 475,
@@ -66,17 +66,28 @@ function ctx(): ToolContext {
   return { signal: new AbortController().signal, request: new Request("http://localhost/test") }
 }
 
-/** Max number of timestamps falling in any 60 s window. */
-function peakPerMinute(times: number[]): number {
-  const sorted = [...times].sort((a, b) => a - b)
+/** The interface key's catalogue quota (CATALOGUESERVICE-CONS: 50/min). */
+const CATALOGUE_QUOTA = 50
+/** The share of a quota the limiter may use (helm values: quotas × 0.95). */
+const QUOTA_SHARE = 0.95
+/** Gallica-IIIF quota (300/min). */
+const IIIF_QUOTA = 300
+
+/** Max total weight falling in any 60 s sliding window. */
+function peakPerMinute(events: Array<{ at: number; weight: number }>): number {
+  const sorted = [...events].sort((a, b) => a.at - b.at)
   let peak = 0
+  let sum = 0
   let lo = 0
   for (let hi = 0; hi < sorted.length; hi++) {
-    while (sorted[hi] - sorted[lo] >= 60_000) lo++
-    peak = Math.max(peak, hi - lo + 1)
+    sum += sorted[hi].weight
+    while (sorted[hi].at - sorted[lo].at >= 60_000) sum -= sorted[lo++].weight
+    peak = Math.max(peak, sum)
   }
   return peak
 }
+
+const unit = (times: number[]) => times.map((at) => ({ at, weight: 1 }))
 
 test("8 agents flooding the catalogue cannot exceed 47/min across both enforcement points", async () => {
   const clock = { t: 0 }
@@ -88,7 +99,6 @@ test("8 agents flooding the catalogue cannot exceed 47/min across both enforceme
       clock.t += ms
     },
   })
-  const burst = bucketBurst(PROD_RATES.catalogueRpm)
 
   const forwarded: number[] = []
   const limited = withBnfRateLimit(stubRegistry(forwarded, now))
@@ -98,55 +108,100 @@ test("8 agents flooding the catalogue cannot exceed 47/min across both enforceme
   let refused = 0
   let attempts = 0
   try {
-    const loop = async () => {
-      let iteration = 0
-      while (clock.t < SIMULATED_MS) {
-        iteration += 1
-        attempts += 1
-        if (iteration % 3 === 0) {
-          // The app-made path: corpus_search → callBnfTool.
-          try {
-            await callBnfTool("http://mcp.test/mcp", "token", "bnf_search_catalogue", {
-              response_format: "json",
-              query: "coiffure",
-            })
-          } catch (err) {
-            if (!(err instanceof BnfMcpQuotaSaturatedError)) throw err
-            refused += 1
-          }
-        } else {
-          // The SDK-dispatched raw tool: the model calling bnf__bnf_search_catalogue.
-          const result = await limited.dispatch(
-            "bnf__bnf_search_catalogue",
-            { query: "coiffure" },
-            ctx(),
-            `tu_${iteration}`,
-          )
-          if (result.isError) {
-            const parsed = JSON.parse(result.content) as { rate_limited?: boolean }
-            assert.equal(parsed.rate_limited, true, "the only error the stub can produce is a refusal")
-            refused += 1
-          }
+    // Round-robin: each agent's call is awaited to completion before the
+    // next, so the fake clock only moves inside the limiter's own wait (or by
+    // the think time between rounds) and every recorded send time IS its grant
+    // time — the sliding-window measure below is exact, not skewed by another
+    // agent advancing the shared clock mid-dispatch.
+    const call = async (iteration: number) => {
+      attempts += 1
+      if (iteration % 3 === 0) {
+        // The app-made path: corpus_search → callBnfTool.
+        try {
+          await callBnfTool("http://mcp.test/mcp", "token", "bnf_search_catalogue", {
+            response_format: "json",
+            query: "coiffure",
+          })
+        } catch (err) {
+          if (!(err instanceof BnfMcpQuotaSaturatedError)) throw err
+          refused += 1
         }
-        clock.t += THINK_MS
+        return
+      }
+      // The SDK-dispatched raw tool: the model calling bnf__bnf_search_catalogue.
+      const result = await limited.dispatch("bnf__bnf_search_catalogue", { query: "coiffure" }, ctx(), `tu_${iteration}`)
+      if (result.isError) {
+        assert.match(result.content, /"rate_limited":true/, "the only error the stub can produce is a refusal")
+        refused += 1
       }
     }
-    await Promise.all(Array.from({ length: AGENTS }, () => loop()))
+    let iteration = 0
+    while (clock.t < SIMULATED_MS) {
+      for (let agent = 0; agent < AGENTS; agent++) await call(++iteration)
+      clock.t += THINK_MS
+    }
   } finally {
     globalThis.fetch = realFetch
   }
 
-  const expected = (SIMULATED_MS / 60_000) * PROD_RATES.catalogueRpm + burst
-  assert.ok(attempts > expected * 2, `the flood was real: ${attempts} attempts for ${expected} tokens`)
+  const expected = (SIMULATED_MS / 60_000) * PROD_RATES.catalogueRpm
+  assert.ok(attempts > expected * 2, `the flood was real: ${attempts} attempts for ${expected} grants`)
   assert.ok(refused > 0, "saturation produced structured refusals")
+  const peak = peakPerMinute(unit(forwarded))
   assert.ok(
-    peakPerMinute(forwarded) <= PROD_RATES.catalogueRpm + burst,
-    `peak ${peakPerMinute(forwarded)}/min ≤ ${PROD_RATES.catalogueRpm + burst}`,
+    peak <= CATALOGUE_QUOTA * QUOTA_SHARE,
+    `sliding-window peak ${peak}/min ≤ quota × 0.95 = ${CATALOGUE_QUOTA * QUOTA_SHARE}`,
   )
+  const span = Math.max(...forwarded)
+  const windows = Math.floor(span / 60_000) + 1
   assert.ok(
-    Math.abs(forwarded.length - expected) <= 1,
-    `forwarded ${forwarded.length} ≈ ${expected} (5 min × 47 + burst)`,
+    forwarded.length <= windows * PROD_RATES.catalogueRpm,
+    `forwarded ${forwarded.length} ≤ ${windows} windows × ${PROD_RATES.catalogueRpm}`,
   )
+  assert.ok(forwarded.length >= expected - PROD_RATES.catalogueRpm, "the limiter still lets the quota through")
+})
+
+test("heavy full-text reads on IIIF stay under quota × 0.95 by WEIGHT in every 60 s window", async () => {
+  const clock = { t: 0 }
+  const now = () => clock.t
+  __resetBnfRateLimiterForTests({
+    ...PROD_RATES,
+    now,
+    sleep: async (ms) => {
+      clock.t += ms
+    },
+  })
+  const sent: Array<{ at: number; weight: number }> = []
+  const weights = new Map<string, number>()
+  const limited = withBnfRateLimit({
+    customTools: [],
+    mcpServers: [],
+    resolve: async () => [],
+    dispatch: async (_name, _input, _ctx, toolUseId) => {
+      sent.push({ at: now(), weight: weights.get(toolUseId ?? "") ?? 0 })
+      return { content: JSON.stringify({ success: true }), isError: false }
+    },
+  })
+  let i = 0
+  while (clock.t < SIMULATED_MS) {
+    for (let agent = 0; agent < AGENTS; agent++) {
+      i += 1
+      const id = `a${agent}_${i}`
+      // Alternate a 202-request full-text read (200 pages) with single page reads.
+      const heavy = i % 2 === 0
+      weights.set(id, heavy ? 202 : 1)
+      await limited.dispatch(
+        heavy ? "bnf__bnf_get_document_text" : "bnf__bnf_get_page_text",
+        heavy ? { ark: "x", max_pages: 200 } : { ark: "x" },
+        ctx(),
+        id,
+      )
+    }
+    clock.t += THINK_MS
+  }
+  const peak = peakPerMinute(sent)
+  assert.ok(sent.some((e) => e.weight === 202), "heavy calls were granted at all")
+  assert.ok(peak <= IIIF_QUOTA * QUOTA_SHARE, `weighted IIIF peak ${peak}/min ≤ ${IIIF_QUOTA * QUOTA_SHARE}`)
 })
 
 test("positive control: without the decorator the stub sees every call (the incident)", async () => {
@@ -165,7 +220,7 @@ test("positive control: without the decorator the stub sees every call (the inci
   await Promise.all(Array.from({ length: AGENTS }, () => loop()))
   assert.equal(forwarded.length, attempts)
   assert.ok(
-    peakPerMinute(forwarded) > PROD_RATES.catalogueRpm + bucketBurst(PROD_RATES.catalogueRpm),
+    peakPerMinute(unit(forwarded)) > CATALOGUE_QUOTA,
     "unthrottled, the per-minute peak blows through the quota",
   )
 })

@@ -53,6 +53,15 @@ test("an unmapped bnf__ tool is refused with a model-readable result and never s
   assert.deepEqual(inner.forwarded, [])
 })
 
+test("a bare bnf__ (no tool name) is refused like any unknown tool, never sent", async () => {
+  __resetBnfRateLimiterForTests(RATES)
+  const inner = stubRegistry({ isError: false, content: "{}" })
+  const result = await withBnfRateLimit(inner).dispatch("bnf__", {}, ctx())
+  assert.equal(result.isError, true)
+  assert.match(result.content, /"refused":"bnf_call_refused"/)
+  assert.deepEqual(inner.forwarded, [])
+})
+
 test("a non-integer max_pages is refused and never sent", async () => {
   __resetBnfRateLimiterForTests(RATES)
   const inner = stubRegistry({ isError: false, content: "{}" })

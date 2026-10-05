@@ -168,11 +168,16 @@ mcp-bnf has **no** limiter, and neither does the platform proxy behind it: on
 2026-09-30 one corpus session fanned out to 7 sub-agents and made 2 548
 catalogue searches in 2.5 h, blowing the 100/min quota (346 × 429, 252 × 500).
 The app therefore rate-limits **every** BnF MCP call it dispatches, in
-`lib/mcp/rate-limit.ts`: one process-wide set of token buckets (global + one
-per BnF API: catalogue, Gallica SRU, Gallica-IIIF, date-périodique, graphe),
-set from the required `BNF_MCP_RATE_*` env (helm `config.bnfMcpRate`, the
-interface-key quotas × 0.95, divided by `replicaCount`). Two enforcement
-points share those buckets:
+`lib/mcp/rate-limit.ts`: one process-wide set of sliding-window limiters
+(global + one per BnF API: catalogue, Gallica SRU, Gallica-IIIF,
+date-périodique, graphe), set from the required `BNF_MCP_RATE_*` env (helm
+`config.bnfMcpRate`, the interface-key quotas × 0.95, divided by
+`replicaCount`). **The guarantee:** in ANY 60 s sliding window, the weighted
+requests a replica sends to one BnF API never exceed that API's limit, and all
+of them together never exceed the global limit — a call is granted only when
+the trailing window's grants plus its own weight fit; there is no burst on top
+and no overdraft, and a call heavier than the whole limit is refused. Two
+enforcement points share those limiters:
 
 - **(a) app-made calls** — `callBnfTool` acquires before `fetch`
   (`corpus_search` and its zero-result probe).
@@ -183,17 +188,18 @@ points share those buckets:
   `spawn_research` child. `onToolStart` cannot do this: it is sync-only and
   cannot veto.
 
-Every call takes the global bucket, then its API bucket, against ONE deadline
-computed when it is enqueued. The rules:
+Every call takes the global limiter, then its API limiter, against ONE
+deadline computed when it is enqueued. The rules:
 
-- **Shed, never thrown.** A call that cannot get its tokens within
+- **Shed, never thrown.** A call that cannot be granted within
   `BNF_MCP_RATE_MAX_WAIT_MS` is shed with a structured `{ success: false,
   rate_limited: true, api, error: « Quota BnF saturé … » }` tool result — never
-  a throw out of the loop, never a call that reaches BnF. The global tokens a
-  call took are **refunded** when its API bucket sheds it (or its turn aborts),
-  so refused catalogue retries cannot starve IIIF/Gallica/graphe.
+  a throw out of the loop, never a call that reaches BnF. Every grant a call
+  took is **released** when the call is not sent — its API limiter shed it, its
+  turn aborted while it waited or as the grant landed — so refused catalogue
+  retries cannot starve IIIF/Gallica/graphe.
 - **Unknown tools are refused.** A `bnf__<tool>` absent from `BNF_MCP_TOOLS`
-  has no API bucket, so the decorator refuses it (`{ success: false, refused:
+  (a bare `bnf__` included) has no API limiter, so the decorator refuses it (`{ success: false, refused:
   "bnf_call_refused", error }`) and never sends it. A new mcp-bnf tool ships
   only once it is mapped in `BNF_MCP_TOOL_API`.
 - **Weights are upstream requests.** `bnfMcpCallWeight`: a full-text read
@@ -201,10 +207,10 @@ computed when it is enqueued. The rules:
   per page, default 10, max 200); `bnf_find_person` 3, `bnf_find_work` 2,
   everything else 1. A `max_pages` that is not an integer is refused — mcp-bnf
   would coerce `"150"` to 150 pages.
-- **A BnF 429 freezes the bucket.** When BnF answers 429 anyway — HTTP 429 on
+- **A BnF 429 pauses the API.** When BnF answers 429 anyway — HTTP 429 on
   `callBnfTool`, the SDK's `HTTP 429` transport error, or mcp-bnf's soft
   envelope `{ success: false, status_code: 429 }` in the tool result — the
-  API's bucket is frozen for `Retry-After` when sent, otherwise until the next
+  API's limiter is paused for `Retry-After` when sent, otherwise until the next
   clock-minute boundary, capped at 5 minutes (`BNF_RATE_LIMIT_FREEZE_MAX_MS`).
 - **Cancellation is honoured while queued.** A caller whose turn aborts leaves
   the FIFO queue at once, not when its turn comes.
@@ -213,9 +219,10 @@ computed when it is enqueued. The rules:
 **Rule: every `createToolRegistry(...)` built in app code MUST be wrapped with
 `withBnfRateLimit`.** The two call sites today are
 `lib/agent/tools/registry-factory.ts` and `lib/agent/tools/spawn.ts`. The
-wrap is pinned on the SDK's real dispatch path by
-`lib/mcp/rate-limited-registry-runner.test.ts` (`runClaudeSdk` against a local
-fake Anthropic endpoint and a fake mcp-bnf).
+wrap is pinned on the SDK's real dispatch paths by
+`lib/mcp/rate-limited-registry-runner.test.ts`: `runOpenRouterSdk` (production)
+and `runClaudeSdk`, over `buildTurnScopedRegistry`, against local fake model
+endpoints and a fake mcp-bnf.
 
 **Config is validated at boot.** When `BNF_MCP_URL` is set, `lib/env.ts`
 parses the seven `BNF_MCP_RATE_*` values on import (`instrumentation.ts`
@@ -229,7 +236,7 @@ Not covered, on purpose: MCP `tools/list` discovery (never reaches BnF);
 other mcp-bnf clients sharing the platform connectors (none in prod besides
 this app); the upstream HTTP requests a tool makes internally beyond the
 weights above — mcp-bnf's 1 h SRU cache keeps real upstream traffic at or
-below the counted traffic. The buckets are per replica; the chart divides the
+below the counted traffic. The limiters are per replica; the chart divides the
 rates by `replicaCount` so a scale-out stays under quota by construction (see
 `values.yaml`).
 
