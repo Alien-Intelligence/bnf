@@ -193,7 +193,7 @@ logs before declaring success — never report "deployed" on unverified pods.
   `BETTER_AUTH_SECRET`, and `JOB_CALLBACK_SECRET`.
 - **Broker is hard-pinned to ONE replica** (`replicas: 1` + `strategy: Recreate`
   in `broker-deployment.yaml`, intentionally NOT in values). Its rate buckets +
-  OAuth token are in-memory per pod, and the 12/min manifest cap is per egress
+  OAuth token are in-memory per pod, and the manifest cap is per egress
   IP — a 2nd replica silently multiplies the caps → 429 storms. Never scale it;
   if HA is ever needed, move the buckets to shared state (Redis) first.
 - **Broker cutover.** `BNF_BROKER_URL` is wired into both the app and worker

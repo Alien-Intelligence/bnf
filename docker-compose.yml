@@ -56,8 +56,8 @@ services:
   # app↔worker HTTP ingress on 7777 (POST /ingest, GET /progress/:runId, cancel,
   # health). REPLACES V1 (./worker) — clean break, no dual-worker. Scale with
   # `docker compose up --scale ingest-worker=N`; pg-boss row-locks prevent double
-  # processing. NOTE: the BnF 300/min credential is the shared ceiling, so scale
-  # buys resilience, not throughput.
+  # processing. NOTE: the broker's BnF quotas (one key, see broker/README.md) are
+  # the shared ceiling, so scale buys resilience, not throughput.
   ingest-worker:
     build:
       context: ./worker-v2

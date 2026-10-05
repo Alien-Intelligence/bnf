@@ -4,7 +4,7 @@
 // The raw worker queue read-model, rendered as the operator/debug view tucked
 // under the panel's in-progress "Détails" accordion (CardIngestPanel). It
 // preserves the live staged-bucket telemetry the de-geekified headline hides:
-// the BnF fetch bottleneck (the binding 300/min constraint), the named stage
+// the BnF fetch bottleneck (the binding BnF quota), the named stage
 // groups, and the run totals that ALWAYS reconcile (the anti-V1 rule —
 // failed/skipped are never hidden). No Card chrome, no cancel, no progress bar —
 // the parent panel owns all of those; this is the detail only.
