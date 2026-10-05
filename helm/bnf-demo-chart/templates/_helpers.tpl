@@ -75,32 +75,49 @@ and the worker point BNF_BROKER_URL here so the shared rate caps are honoured.
 {{- end }}
 
 {{/*
+A numeric chart value: a YAML number, or a string holding one (`--set-string`,
+a quoted "60000"), returned as text for float64/int64. Anything else fails the
+render, naming the value and what it must be.
+Usage: {{ include "bnf-demo.numberValue" (dict "value" $v "name" "replicaCount" "what" "a whole number >= 1") }}
+*/}}
+{{- define "bnf-demo.numberValue" -}}
+{{- $v := .value -}}
+{{- if or (kindIs "int" $v) (kindIs "int64" $v) (kindIs "float64" $v) -}}
+{{- $v -}}
+{{- else if and (kindIs "string" $v) (regexMatch "^-?[0-9]+(\\.[0-9]+)?$" (trim $v)) -}}
+{{- trim $v -}}
+{{- else -}}
+{{- fail (printf "%s must be %s (got %q)" .name .what (toString $v)) -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 One replica's share of a BnF MCP per-minute rate (config.bnfMcpRate.<key>),
-for the app-side limiter (lib/mcp/rate-limit.ts). The buckets live in process
+for the app-side limiter (lib/mcp/rate-limit.ts). The limiters live in process
 memory, so each replica gets rate / replicaCount and the fleet stays under the
-BnF quota by construction. The value is REQUIRED (the app has no code default)
-and a share below 1/min FAILS the render: flooring it up to 1 would put the
-fleet over the quota, which is the 2026-09-30 incident.
+BnF quota. The value is REQUIRED (the app has no code default). Each failure
+names its own cause: a rate that is not a whole number >= 1, a replica count
+that is not a whole number >= 1, and — only for valid values — a share below
+1/min (flooring it up to 1 would put the fleet over the quota, which is the
+2026-09-30 incident).
 Usage: {{ include "bnf-demo.bnfRateShare" (dict "root" . "key" "catalogueRpm") }}
 */}}
 {{- define "bnf-demo.bnfRateShare" -}}
-{{- $rate := required (printf "config.bnfMcpRate.%s is required" .key) (index .root.Values.config.bnfMcpRate .key) -}}
-{{- if not (or (kindIs "int" $rate) (kindIs "int64" $rate) (kindIs "float64" $rate)) -}}
-{{- fail (printf "config.bnfMcpRate.%s must be a number of requests per minute (got %q)" .key (toString $rate)) -}}
+{{- $name := printf "config.bnfMcpRate.%s" .key -}}
+{{- $what := "a whole number of requests per minute >= 1" -}}
+{{- $raw := required (printf "%s is required" $name) (index .root.Values.config.bnfMcpRate .key) -}}
+{{- $rate := float64 (include "bnf-demo.numberValue" (dict "value" $raw "name" $name "what" $what)) -}}
+{{- if or (lt $rate 1.0) (ne $rate (floor $rate)) -}}
+{{- fail (printf "%s must be %s (got %v)" $name $what $rate) -}}
 {{- end -}}
-{{- if ne (float64 $rate) (floor (float64 $rate)) -}}
-{{- fail (printf "config.bnfMcpRate.%s must be a whole number of requests per minute (got %v)" .key $rate) -}}
-{{- end -}}
-{{- $replicas := required "replicaCount is required" .root.Values.replicaCount -}}
-{{- if not (or (kindIs "int" $replicas) (kindIs "int64" $replicas) (kindIs "float64" $replicas)) -}}
-{{- fail (printf "replicaCount must be a number (got %q)" (toString $replicas)) -}}
-{{- end -}}
-{{- if or (lt (float64 $replicas) 1.0) (ne (float64 $replicas) (floor (float64 $replicas))) -}}
+{{- $replicasRaw := required "replicaCount is required" .root.Values.replicaCount -}}
+{{- $replicas := float64 (include "bnf-demo.numberValue" (dict "value" $replicasRaw "name" "replicaCount" "what" "a whole number >= 1")) -}}
+{{- if or (lt $replicas 1.0) (ne $replicas (floor $replicas)) -}}
 {{- fail (printf "replicaCount must be a whole number >= 1 (got %v)" $replicas) -}}
 {{- end -}}
 {{- $share := div (int64 $rate) (int64 $replicas) -}}
 {{- if lt (int64 $share) 1 -}}
-{{- fail (printf "config.bnfMcpRate.%s=%v split over %v replicas is below 1/min — lower replicaCount or move the limiter to a shared store" .key $rate $replicas) -}}
+{{- fail (printf "%s=%v split over %v replicas is below 1/min — lower replicaCount or move the limiter to a shared store" $name $rate $replicas) -}}
 {{- end -}}
 {{- $share -}}
 {{- end -}}
@@ -108,15 +125,15 @@ Usage: {{ include "bnf-demo.bnfRateShare" (dict "root" . "key" "catalogueRpm") }
 {{/*
 config.bnfMcpRate.maxWaitMs, checked at render time against the app's boot
 rule (lib/env.ts: an integer in 1..BNF_MCP_RATE_MAX_WAIT_MS_CEILING = 60000),
-so a bad value fails `helm template` instead of crash-looping the pod.
+so a bad value fails `helm template` instead of crash-looping the pod. A
+numeric string ("60000") is a number.
 */}}
 {{- define "bnf-demo.bnfMaxWaitMs" -}}
-{{- $wait := required "config.bnfMcpRate.maxWaitMs is required" .Values.config.bnfMcpRate.maxWaitMs -}}
-{{- if not (or (kindIs "int" $wait) (kindIs "int64" $wait) (kindIs "float64" $wait)) -}}
-{{- fail (printf "config.bnfMcpRate.maxWaitMs must be a number of milliseconds (got %q)" (toString $wait)) -}}
-{{- end -}}
-{{- if or (lt (float64 $wait) 1.0) (gt (float64 $wait) 60000.0) (ne (float64 $wait) (floor (float64 $wait))) -}}
-{{- fail (printf "config.bnfMcpRate.maxWaitMs must be a whole number of milliseconds in 1..60000 (got %v)" $wait) -}}
+{{- $what := "a whole number of milliseconds in 1..60000" -}}
+{{- $raw := required "config.bnfMcpRate.maxWaitMs is required" .Values.config.bnfMcpRate.maxWaitMs -}}
+{{- $wait := float64 (include "bnf-demo.numberValue" (dict "value" $raw "name" "config.bnfMcpRate.maxWaitMs" "what" $what)) -}}
+{{- if or (lt $wait 1.0) (gt $wait 60000.0) (ne $wait (floor $wait)) -}}
+{{- fail (printf "config.bnfMcpRate.maxWaitMs must be %s (got %v)" $what $wait) -}}
 {{- end -}}
 {{- int64 $wait -}}
 {{- end -}}
