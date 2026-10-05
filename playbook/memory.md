@@ -80,7 +80,7 @@ turn. Each prompt carries BOTH scopes:
 
 The rendered prompt is cached on `AppSession`, and **every memory change
 invalidates the cached prompt of every session of the project, both scopes,
-in the same transaction as the change** (`PromptBuilder.invalidateProject(projectId, tx)`).
+in the same transaction as the change** (`SessionQueries.invalidatePrompts({ projectId }, tx)`).
 The cache write is a compare-and-set on `promptEpoch`, so a prompt rendered
 from memory that changed mid-render is never cached. A prompt-text change
 reaches existing sessions through `PROMPT_REVISION` (see
@@ -110,9 +110,10 @@ static async write(args: {
   origin?: MemoryOrigin | null   // absent → MEMORY_ORIGIN.DEDUIT (or the merged item's)
 }): Promise<MemoryItem> {
   return prisma.$transaction(async (tx) => {
-    // near-duplicate in the same (scope, section)? → update it; else create
+    await MemoryQueries.lockScope(tx, args.projectId, args.scope)  // one writer per (project, scope)
+    // near-duplicate in the same (scope, section)? → update it; else create at the next position
     // …
-    await PromptBuilder.invalidateProject(args.projectId, tx)
+    await SessionQueries.invalidatePrompts({ projectId: args.projectId }, tx)
     return item
   })
 }
@@ -123,12 +124,17 @@ Rules:
   (its text replaced), not pile up: equal after normalisation (trim,
   lowercase, collapsed whitespace), or fewer than
   `MEMORY_NEAR_DUP_MAX_EDIT_DISTANCE` (`lib/constants.ts`) Levenshtein edits
-  apart. The dialog's `createUserItem` goes through the same `write`.
+  apart. The dialog's `createUserItem` goes through the same `write`. The
+  write holds a per-(project, scope) advisory lock (`MemoryQueries.lockScope`,
+  `pg_advisory_xact_lock`) for its transaction, so two concurrent writes (a
+  parent agent and its sub-agents) can neither both miss the duplicate nor
+  take the same position.
 - **Every mutation invalidates, atomically** ✅. `write`, `createUserItem`,
   `update`, `reorder` and `forget` each run the change and
-  `invalidateProject` in one `$transaction`. `forget` returns `false` — and
-  invalidates nothing — when no item matches (id, project, scope); the route
-  answers 404.
+  `SessionQueries.invalidatePrompts` in one `$transaction`. `forget` returns
+  `false`, and `update` / `reorder` return `null` — invalidating nothing —
+  when no item matches (id, project, scope), including one deleted
+  concurrently; the route answers 404, never a 500.
 - **Scopes and origins are the constants** ✅. `MemoryScope`/`MemoryOrigin`
   everywhere, and the zod schemas `memoryScopeSchema`/`memoryOriginSchema`
   (`models/memory/types.ts`) for every route and tool input — an invented
@@ -189,23 +195,26 @@ The `memory_write` tool handler emits (contract: `lib/agent/stream-events.ts`):
 There is no agent forget tool, so no `forget` event; the dialog refetches
 after its own DELETE.
 
-The client reducer:
-- Pushes a chat inline event ("Mémoire mise à jour · Contraintes & filtres").
-- Calls `queryClient.invalidateQueries({ queryKey: memoryKeys.scope(projectId, scope) })`
-  so the dialog re-renders if open.
+On the client:
+- The chat renders an inline event row ("Mémoire mise à jour · Contraintes &
+  filtres") — `components/layouts/corpus/chat.tsx`.
+- The page client invalidates the memory query of its scope
+  (`qc.invalidateQueries({ queryKey: memoryKeys.all(projectId, SESSION_SCOPE.CORPUS) })`,
+  `hooks/api/memory.ts`), so the sidebar box and the dialog re-render if open.
 
-## Onboarding "seen" state — also persisted memory, but separate model
+## Onboarding Intro Seen State — also persisted, but a separate model
 
 The per-user "has seen the X intro" flag is **not** a `memory_item`. It is
-its own tiny model `user_intro_seen` on the user, not on the project. It is
+its own tiny model `UserOnboardingSeen` (table `user_onboarding_seen`,
+`models/onboarding/`) on the user, not on the project. It is
 the answer to "should we auto-open the corpus intro on this visit?" and has
 nothing to do with the corpus content.
 
 ```ts
-// models/users/schema.ts
-export const INTRO_KEY = { CORPUS: "corpus_intro", RESEARCH: "research_intro" } as const
+// models/onboarding/schema.ts
+export const ONBOARDING_INTRO = { CORPUS: "corpus", RESEARCH: "research" } as const
 
-// model UserIntroSeen { userId, key, seenAt }
+// prisma: model UserOnboardingSeen { userId, intro, seenAt }  @@id([userId, intro])
 ```
 
 A separate tiny table is right because:
@@ -222,9 +231,8 @@ A separate tiny table is right because:
 // ❌ Putting the conversation transcript into memory
 await MemoryService.write({ scope: "research", section: "Historique", text: lastUserMessage })
 
-// ❌ Reading memory through the tool on every turn
-const t = await tools.dispatch("memory_read", { scope: "corpus" })   // every turn
-// → it is in the system prompt; use the tool only for explicit refresh
+// ❌ Calling memory_read on every turn
+// → memory is in the system prompt; the agent calls memory_read only for an explicit refresh
 
 // ❌ Mutating memory without invalidating the cached prompts in the same transaction
 await prisma.memoryItem.update({ where: { id }, data: { text } })
@@ -240,7 +248,7 @@ if (count > 50) await prisma.memoryItem.deleteMany({ where: ..., orderBy: { crea
 
 // ❌ Storing the intro-seen flag as a MemoryItem
 await MemoryService.write({ scope: "corpus", section: "Système", text: "intro vue" })
-// → use the user_intro_seen model
+// → use the UserOnboardingSeen model (models/onboarding/)
 ```
 
 ## Relation to other rules
