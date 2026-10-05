@@ -32,7 +32,7 @@
  * idempotent counter). The resolved metadata JSON is persisted to S3 for reuse.
  */
 import { PipelineStage, type StageDeps } from "../core/stage.js";
-import { acquireWithin } from "../core/rate.js";
+import { acquireWithin, RateGateStoppedError } from "../core/rate.js";
 import type { RateGate, StageContext, StageOutcome } from "../core/types.js";
 import { classifyLane } from "../bnf/classify.js";
 import { docInfoFromManifest } from "../bnf/client.js";
@@ -146,6 +146,8 @@ export class MetadataStage extends PipelineStage<DocRef, never> {
       info = cached ?? (await this.resolveDocInfo(doc.ark, ctx));
       if (!cached) await this.blob.putJson(keys.metadata(doc.ark), info);
     } catch (e) {
+      // A stopped gate (shutdown) is handed back by the stage base — never a doc failure.
+      if (e instanceof RateGateStoppedError) throw e;
       if (e instanceof PermanentBnfError) {
         const reason =
           e.cause === METADATA_SKIP_REASON.NOT_DIGITIZED
@@ -251,7 +253,7 @@ export class MetadataStage extends PipelineStage<DocRef, never> {
       });
     }
     try {
-      const manifest = await this.resolveManifest(canonicalArk);
+      const manifest = await this.resolveManifest(canonicalArk, ctx.signal);
       // The ONE Taux OCR lookup of this manifest: logged here if unusable,
       // then handed to docInfoFromManifest — never parsed twice.
       const tauxOcr = tauxOcrOf(manifest.metadata);
@@ -276,14 +278,14 @@ export class MetadataStage extends PipelineStage<DocRef, never> {
    * finds it already there. This is the F1/F2 fix made concrete: one fetch per
    * ARK, gated once, no matter how many stages end up wanting the manifest.
    */
-  private async resolveManifest(canonicalArk: string): Promise<Manifest> {
+  private async resolveManifest(canonicalArk: string, signal: AbortSignal): Promise<Manifest> {
     const cached = await this.blob.getJson<unknown>(keys.manifest(canonicalArk));
     if (cached !== null) {
       if (isCachedManifest(cached)) return cached;
       // Corrupt: repaired below from BnF (and overwritten), like a corrupt doc-info.
       this.log.warn("manifest_cache_corrupt", { ark: canonicalArk, key: keys.manifest(canonicalArk) });
     }
-    if (this.manifestRate) await acquireWithin(this.manifestRate, this.rateWaitMs);
+    if (this.manifestRate) await acquireWithin(this.manifestRate, this.rateWaitMs, signal);
     const manifest = await this.bnf.getManifest(canonicalArk, this.maxCanvases);
     await this.blob.putJson(keys.manifest(canonicalArk), manifest);
     return manifest;

@@ -144,6 +144,13 @@ export interface StageContext {
   readonly messageId: string;
   /** 1 on first delivery; the base passes the current attempt for backoff/decisions. */
   readonly attempt: number;
+  /**
+   * Aborts when the delivery reaches its ceiling (the stage's expireInSeconds)
+   * with a DeliveryExpiredError. pg-boss's own expiry only rewrites the job
+   * row; this is what actually stops the work — every gate wait, loop and
+   * long step of process() honours it.
+   */
+  readonly signal: AbortSignal;
 }
 
 /** A rate gate (token bucket). The framework's only pacing primitive. */

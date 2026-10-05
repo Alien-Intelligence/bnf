@@ -12,7 +12,7 @@
  * manifest fails the doc terminally (no retry) — V1's manifest-500 fix made cheap.
  */
 import { PipelineStage, type StageDeps } from "../core/stage.js";
-import { acquireWithin } from "../core/rate.js";
+import { acquireWithin, RateGateStoppedError } from "../core/rate.js";
 import { isCachedManifest } from "../bnf/doc-info.js";
 import type { StageContext, StageOutcome } from "../core/types.js";
 import { PermanentBnfError } from "../bnf/errors.js";
@@ -80,11 +80,13 @@ export class ManifestStage extends PipelineStage<ManifestReq, never> {
       } else {
         // Cache miss — the only path that actually spends BnF quota, so the
         // only path that pays a gate token (see the constructor note).
-        if (this.manifestRate) await acquireWithin(this.manifestRate, this.rateWaitMs);
+        if (this.manifestRate) await acquireWithin(this.manifestRate, this.rateWaitMs, ctx.signal);
         manifest = await this.bnf.getManifest(req.ark, this.maxCanvases);
         await this.blob.putJson(keys.manifest(req.ark), manifest);
       }
     } catch (e) {
+      // A stopped gate (shutdown) is handed back by the stage base — never a doc failure.
+      if (e instanceof RateGateStoppedError) throw e;
       if (e instanceof PermanentBnfError) {
         await this.docState.setStatus(req.docJobId, "failed", {
           error: `manifest_unavailable: ${e.cause}`,

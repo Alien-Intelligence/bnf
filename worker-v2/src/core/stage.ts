@@ -24,7 +24,49 @@ import type {
   StageContext,
   StageOutcome,
 } from "./types.js";
-import { acquireWithin } from "./rate.js";
+import { acquireWithin, RateGateStoppedError } from "./rate.js";
+
+/** A delivery ran past its stage's ceiling (expireInSeconds): its work is aborted. */
+export class DeliveryExpiredError extends Error {
+  constructor(
+    readonly stage: string,
+    readonly ceilingSeconds: number,
+  ) {
+    super(`${stage}: delivery passed its ${ceilingSeconds}s ceiling`);
+    this.name = "DeliveryExpiredError";
+  }
+}
+
+/**
+ * `work`, or `signal`'s reason as soon as it aborts. The abandoned work is
+ * expected to stop at its next check of the same signal; a failure it still
+ * reports afterwards is logged, never unhandled.
+ */
+function untilAborted<T>(work: Promise<T>, signal: AbortSignal, log: Logger): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      reject(signal.reason);
+      work.catch((e: unknown) => {
+        if (e !== signal.reason) log.warn("abandoned_work_failed", { error: errMsg(e) });
+      });
+    };
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener("abort", onAbort, { once: true });
+    work.then(
+      (v) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(v);
+      },
+      (e: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(e);
+      },
+    );
+  });
+}
 
 /**
  * The generic per-delivery ceiling every stage inherits unless it declares its own
@@ -171,11 +213,38 @@ export abstract class PipelineStage<In, Out> {
    * transport by throwing out of dispatch) still triggers it exactly once.
    */
   private async handle(msg: QueueMessage<In>): Promise<void> {
+    // The delivery's REAL ceiling: pg-boss expiring the job only rewrites its
+    // row, so the handler is raced against expireInSeconds here and the signal
+    // is handed to process(), whose gate waits and loops stop on it.
+    const ceiling = new AbortController();
+    const ceilingTimer = setTimeout(
+      () => ceiling.abort(new DeliveryExpiredError(this.name, this.expireInSeconds)),
+      this.expireInSeconds * 1000,
+    );
+    try {
+      await this.deliver(msg, ceiling.signal);
+    } finally {
+      clearTimeout(ceilingTimer);
+    }
+  }
+
+  /**
+   * A delivery whose rate gate was stopped (shutdown outlived the drain) is
+   * HANDED BACK: a fresh copy is queued and this delivery completes — it never
+   * counts as an attempt and never fails a document.
+   */
+  private async handBack(msg: QueueMessage<In>): Promise<void> {
+    await this.queue.send(this.inputQueue, msg.payload);
+    this.log.warn("delivery_handed_back", { msg: msg.id, attempt: msg.attempts });
+  }
+
+  private async deliver(msg: QueueMessage<In>, signal: AbortSignal): Promise<void> {
     const ctx: StageContext = {
       blob: this.blob,
       log: this.log.child({ msg: msg.id, attempt: msg.attempts }),
       messageId: msg.id,
       attempt: msg.attempts,
+      signal,
     };
     // The FINAL allowed delivery: no redelivery follows, so anything left
     // non-terminal here stays non-terminal forever unless the net runs.
@@ -202,12 +271,13 @@ export abstract class PipelineStage<In, Out> {
         }
       }
 
-      if (this.rate) await acquireWithin(this.rate, this.rateWaitMs);
+      if (this.rate) await acquireWithin(this.rate, this.rateWaitMs, signal);
 
       let outcome: StageOutcome<Out>;
       try {
-        outcome = await this.process(msg.payload, ctx);
+        outcome = await untilAborted(this.process(msg.payload, ctx), signal, ctx.log);
       } catch (e) {
+        if (e instanceof RateGateStoppedError) throw e; // handed back below
         outcome = { kind: "fail", reason: describeError(e) };
       }
 
@@ -224,9 +294,14 @@ export abstract class PipelineStage<In, Out> {
       }
       await this.dispatch(outcome, msg.payload, false);
     } catch (e) {
-      // Anything that escaped the inner catch: an S3 read/write, a rate gate
-      // shutdown, the dispatch send — or dispatch's own re-throw of a
-      // non-terminal fail (whose net already fired, hence the once-guard).
+      // A stopped gate (shutdown) is not this item's failure: hand it back.
+      if (e instanceof RateGateStoppedError) {
+        await this.handBack(msg);
+        return;
+      }
+      // Anything else that escaped the inner catch: an S3 read/write, the
+      // dispatch send — or dispatch's own re-throw of a non-terminal fail
+      // (whose net already fired, hence the once-guard).
       await net(describeError(e));
       throw e;
     }

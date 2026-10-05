@@ -28,13 +28,15 @@ export class RateGateTimeoutError extends Error {
 /**
  * Acquire one token from `gate`, or reject with RateGateTimeoutError after
  * `ms` — THE bounded wait every gated caller uses (CLAUDE_ERROR_PATTERNS §14).
- * The abandoned waiter gives up its place and consumes no token.
+ * `signal` (a delivery's ceiling, StageContext.signal) aborts the wait too,
+ * with its own reason. The abandoned waiter gives up its place and consumes no
+ * token.
  */
-export async function acquireWithin(gate: RateGate, ms: number): Promise<void> {
+export async function acquireWithin(gate: RateGate, ms: number, signal?: AbortSignal): Promise<void> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new RateGateTimeoutError(ms)), ms);
   try {
-    await gate.acquire(controller.signal);
+    await gate.acquire(signal ? AbortSignal.any([controller.signal, signal]) : controller.signal);
   } finally {
     clearTimeout(timer);
   }
