@@ -20,32 +20,48 @@ export async function register() {
     console.error("[instrumentation] boot resolver resume failed:", err)
   })
 
-  // Periodic resolve sweep. `corpus_add` kicks a drain and the boot resume above
-  // runs once, but a transient BnF outage (e.g. a 429 burst on catalogue.bnf.fr)
-  // strands rows in `pending` with no further trigger — they would otherwise
-  // never recover without a new add or a restart. This sweep re-drains any
-  // project with pending stubs so resolution self-heals. Unlike the turn reaper
-  // (which must NOT run periodically — live streaming turns are legitimate),
-  // pending stubs are never "in flight", so a periodic sweep is safe.
-  // Rewrite buffer rows written before the v2 buffer (raw dc:type labels, MARC
-  // language codes, no record kind) into the canonical vocabulary, once. The
-  // version gate makes every later boot a no-op (`updated=0`), so this never
-  // runs periodically. Fire-and-forget — must not block serving.
+  // Vocabulary passes (Track E): Document.lang into canonicalLang's form, and
+  // buffer rows written before the v2 buffer (raw dc:type labels, MARC
+  // language codes, no record kind) into the canonical vocabulary. Both are
+  // idempotent (a finished run costs one cheap query) and bounded; they run at
+  // boot and then on a schedule, so a run that stopped at its ceiling or
+  // failed resumes instead of waiting for the next restart. An overlap guard
+  // keeps one run at a time. Fire-and-forget — must not block serving.
   const { reclassifyBufferItems } = await import("@/lib/buffer/reclassify")
-  void reclassifyBufferItems().catch((err) => {
-    console.error("[instrumentation] buffer reclassify failed:", err)
+  const { canonicalizeDocumentLangs } = await import("@/lib/documents/canonical-lang")
+  let vocabularyPassRunning = false
+  const runVocabularyPasses = async (): Promise<void> => {
+    if (vocabularyPassRunning) return
+    vocabularyPassRunning = true
+    try {
+      await canonicalizeDocumentLangs()
+      await reclassifyBufferItems()
+    } finally {
+      vocabularyPassRunning = false
+    }
+  }
+  void runVocabularyPasses().catch((err) => {
+    console.error("[instrumentation] boot vocabulary passes failed:", err)
   })
 
   const {
     RESOLVE_SWEEP_INTERVAL_MS,
     CANONICALIZE_SWEEP_INTERVAL_MS,
     BUFFER_ENRICH_SWEEP_INTERVAL_MS,
+    BUFFER_RECLASSIFY_SWEEP_INTERVAL_MS,
   } = await import("@/lib/constants")
+
+  setInterval(() => {
+    void runVocabularyPasses().catch((err) => {
+      console.error("[instrumentation] periodic vocabulary passes failed:", err)
+    })
+  }, BUFFER_RECLASSIFY_SWEEP_INTERVAL_MS).unref()
 
   // Background enrichment of bare buffer rows (buffer_add stages ARKs only):
   // a boot resume for rows a restart left pending, then a periodic sweep —
-  // the resolver's pattern. Each pass is bounded and each failure counts an
-  // attempt, so a genuinely unknown ARK still terminates. Fire-and-forget.
+  // the resolver's pattern. Each drain has a wall-clock ceiling under the
+  // sweep interval, each failure counts an attempt and backs off, and the
+  // sweep skips a tick while the previous one still runs. Fire-and-forget.
   const { resumePendingBufferEnrich } = await import("@/lib/buffer/enricher")
   void resumePendingBufferEnrich().catch((err) => {
     console.error("[instrumentation] boot buffer-enrich resume failed:", err)
@@ -54,7 +70,15 @@ export async function register() {
     void resumePendingBufferEnrich().catch((err) => {
       console.error("[instrumentation] periodic buffer-enrich sweep failed:", err)
     })
-  }, BUFFER_ENRICH_SWEEP_INTERVAL_MS)
+  }, BUFFER_ENRICH_SWEEP_INTERVAL_MS).unref()
+
+  // Periodic resolve sweep. `corpus_add` kicks a drain and the boot resume above
+  // runs once, but a transient BnF outage (e.g. a 429 burst on catalogue.bnf.fr)
+  // strands rows in `pending` with no further trigger — they would otherwise
+  // never recover without a new add or a restart. This sweep re-drains any
+  // project with pending stubs so resolution self-heals. Unlike the turn reaper
+  // (which must NOT run periodically — live streaming turns are legitimate),
+  // pending stubs are never "in flight", so a periodic sweep is safe.
   setInterval(() => {
     void resumePendingResolves().catch((err) => {
       console.error("[instrumentation] periodic resolver sweep failed:", err)

@@ -15,14 +15,23 @@
 //      discriminator), the catalogue SRU for `cb…`. Never the MCP (new app
 //      egress belongs on the broker — playbook/mcp-client.md) and never the
 //      manifest (its bucket is the ingestion bottleneck).
-//   3. A failure increments enrichAttempts; the row is failed at the ceiling,
-//      or at once when the BnF does not know the ARK.
+//   3. A failure increments enrichAttempts and sets a doubling backoff
+//      (enrichNextAttemptAt); the row is failed at the ceiling, or at once when
+//      the BnF does not know the ARK. A failure of a whole batch (the client
+//      threw) is persisted on each of its rows the same way.
+//
+// Classification: the same rules as a search hit (bufferMetadataFromDocument →
+// bufferDocTypeFromRecord), so one ARK gets one docType and record kind
+// whichever path wrote it; an unrecognised type label is logged.
 //
 // Execution: kicked via `after()` by buffer_add, resumed at boot and by a
-// periodic sweep from instrumentation.ts. Never inline in a tool call. Every
-// BnF call is bounded by the client's per-attempt timeouts (§14); a pass is
-// bounded by BUFFER_ENRICH_BATCH_SIZE × BUFFER_ENRICH_DRAIN_MAX_BATCHES rows and
-// has no in-loop sleep — a transient failure is retried by the next pass.
+// periodic sweep from instrumentation.ts. Never inline in a tool call. Bounds
+// (§14): every BnF call carries the drain's signal, which aborts at
+// BUFFER_ENRICH_DRAIN_MAX_MS; a pass takes at most
+// BUFFER_ENRICH_BATCH_SIZE × BUFFER_ENRICH_DRAIN_MAX_BATCHES rows; rows are
+// written with a guarded update, so a row cleared mid-drain is skipped, not
+// fatal. There is no in-loop sleep — a transient failure waits out its backoff
+// and is retried by a later pass.
 import "server-only"
 
 import { after } from "next/server"
@@ -31,17 +40,19 @@ import {
   BUFFER_CLASSIFIER_VERSION,
   BUFFER_ENRICH_BATCH_SIZE,
   BUFFER_ENRICH_DRAIN_MAX_BATCHES,
+  BUFFER_ENRICH_DRAIN_MAX_MS,
   BUFFER_ENRICH_MAX_ATTEMPTS,
+  BUFFER_ENRICH_RETRY_BASE_MS,
 } from "@/lib/constants"
-import { prisma } from "@/lib/db"
 import { BnfDirectClient } from "@/lib/bnf/direct"
 import type { BnfMcpResolveError, BnfMcpResolveResult } from "@/lib/bnf/types"
 import { BnfMcpNotFoundError } from "@/lib/mcp/errors"
 import { normalizeMany } from "@/lib/mcp/normalize"
 import type { Prisma } from "@/lib/generated/prisma/client"
-import { BUFFER_ENRICH_STATUS, BUFFER_STATUS } from "@/models/buffer/schema"
-import { DOCUMENT_RESOLVE_STATUS } from "@/models/documents/schema"
-import { bufferMetadataFromDocument, stringField, type ResolvedDocumentFields } from "./classify"
+import { BufferQueries } from "@/models/buffer/queries"
+import { BUFFER_ENRICH_STATUS } from "@/models/buffer/schema"
+import { DocumentQueries } from "@/models/documents/queries"
+import { bufferMetadataFromDocument, type ResolvedDocumentFields } from "./classify"
 
 /** The one method the drain needs — BnfDirectClient in production, a counting
  *  fake in tests. */
@@ -49,8 +60,22 @@ export interface BufferEnrichClient {
   resolveArksForStaging(arks: string[]): Promise<Array<BnfMcpResolveResult | BnfMcpResolveError>>
 }
 
+/** Builds the drain's client, bound to the drain's abort signal. */
+export type BufferEnrichClientFactory = (signal: AbortSignal) => BufferEnrichClient
+
+/** Test seams; production uses the real clock and the drain ceiling. */
+export type BufferEnrichDeps = {
+  client: BufferEnrichClientFactory
+  now?: () => Date
+  maxDrainMs?: number
+}
+
 function log(msg: string): void {
   console.log(`[buffer-enrich] ${msg}`)
+}
+
+function logUnknownDocType(label: string): void {
+  console.warn(`[vocab] unknown dc:type "${label}" (buffer enrichment) → other`)
 }
 
 /** At most one drain per project at a time; a kick during a drain sets
@@ -67,29 +92,47 @@ function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-/** The buffer columns a resolved record fills — the Document copy and the BnF
- *  path write the same shape, in the current classification. */
-function resolvedData(doc: ResolvedDocumentFields): Prisma.BufferItemUpdateInput {
+/** The backoff after the `attempts`-th failure: base × 2^(attempts − 1). */
+function retryAt(now: Date, attempts: number): Date {
+  return new Date(now.getTime() + BUFFER_ENRICH_RETRY_BASE_MS * 2 ** Math.max(0, attempts - 1))
+}
+
+/** The columns a resolved record fills, in the current classification. */
+function resolvedData(doc: ResolvedDocumentFields): Prisma.BufferItemUpdateManyMutationInput {
   return {
-    ...bufferMetadataFromDocument(doc),
-    docTypeRaw: stringField(doc.rawMetadata, "doc_type"),
-    gallicaUrl: stringField(doc.rawMetadata, "gallica_url"),
-    catalogueUrl: stringField(doc.rawMetadata, "catalogue_url"),
+    ...bufferMetadataFromDocument(doc, logUnknownDocType),
     classifierVersion: BUFFER_CLASSIFIER_VERSION,
     enrichStatus: BUFFER_ENRICH_STATUS.RESOLVED,
     enrichError: null,
+    enrichNextAttemptAt: null,
   }
 }
 
+/** The columns of a failed attempt: counted, explained, backed off — or failed for good. */
+function failedAttemptData(
+  attempts: number,
+  reason: string,
+  terminal: boolean,
+  now: Date,
+): Prisma.BufferItemUpdateManyMutationInput {
+  return {
+    enrichAttempts: attempts,
+    enrichError: reason,
+    ...(terminal
+      ? { enrichStatus: BUFFER_ENRICH_STATUS.FAILED, enrichNextAttemptAt: null }
+      : { enrichNextAttemptAt: retryAt(now, attempts) }),
+  }
+}
+
+type DrainTally = { fromDocuments: number; fromBnf: number; failed: number; retry: number; skipped: number }
+
 /**
- * Enrich every pending candidate row of a project. Re-entrant-safe: concurrent
- * calls coalesce into one active drain that re-checks before exiting. `deps`
- * has no default — production passes the broker-routed BnfDirectClient.
+ * Enrich every ready candidate row of a project. Re-entrant-safe: concurrent
+ * calls coalesce into one active drain that re-checks before exiting, within
+ * one wall-clock ceiling for the whole drain. `deps` has no default client —
+ * production passes the broker-routed BnfDirectClient.
  */
-export async function enrichPendingForProject(
-  projectId: string,
-  deps: { client: BufferEnrichClient },
-): Promise<void> {
+export async function enrichPendingForProject(projectId: string, deps: BufferEnrichDeps): Promise<void> {
   const existing = active.get(projectId)
   if (existing) {
     existing.rerun = true
@@ -97,64 +140,80 @@ export async function enrichPendingForProject(
   }
   const state = { rerun: false }
   active.set(projectId, state)
+  const deadline = new AbortController()
+  const timer = setTimeout(() => deadline.abort(), deps.maxDrainMs ?? BUFFER_ENRICH_DRAIN_MAX_MS)
   try {
+    const client = deps.client(deadline.signal)
     do {
       state.rerun = false
-      await drainOnce(projectId, deps.client)
-    } while (state.rerun)
+      await drainOnce(projectId, client, deadline.signal, deps.now ?? (() => new Date()))
+    } while (state.rerun && !deadline.signal.aborted)
+    if (deadline.signal.aborted) log(`project ${projectId}: drain stopped at its time ceiling — the next sweep resumes`)
   } finally {
+    clearTimeout(timer)
     active.delete(projectId)
   }
 }
 
-/** One bounded pass over the project's pending candidates. */
-async function drainOnce(projectId: string, client: BufferEnrichClient): Promise<void> {
-  const pending = await prisma.bufferItem.findMany({
-    where: {
-      projectId,
-      status: BUFFER_STATUS.CANDIDATE,
-      enrichStatus: BUFFER_ENRICH_STATUS.PENDING,
-      enrichAttempts: { lt: BUFFER_ENRICH_MAX_ATTEMPTS },
-    },
-    select: { ark: true, enrichAttempts: true },
-    orderBy: [{ enrichAttempts: "asc" }, { createdAt: "asc" }],
-    take: BUFFER_ENRICH_BATCH_SIZE * BUFFER_ENRICH_DRAIN_MAX_BATCHES,
-  })
+/** One bounded pass over the project's ready candidates. */
+async function drainOnce(
+  projectId: string,
+  client: BufferEnrichClient,
+  signal: AbortSignal,
+  now: () => Date,
+): Promise<void> {
+  const pending = await BufferQueries.enrichBatch(
+    projectId,
+    now(),
+    BUFFER_ENRICH_MAX_ATTEMPTS,
+    BUFFER_ENRICH_BATCH_SIZE * BUFFER_ENRICH_DRAIN_MAX_BATCHES,
+  )
   if (pending.length === 0) return
 
   log(`project ${projectId}: enriching ${pending.length} bare candidate(s)`)
   const attemptsByArk = new Map(pending.map((p) => [p.ark, p.enrichAttempts]))
-  let fromDocuments = 0
-  let fromBnf = 0
-  let failed = 0
-  let retry = 0
+  const tally: DrainTally = { fromDocuments: 0, fromBnf: 0, failed: 0, retry: 0, skipped: 0 }
 
-  const write = (ark: string, data: Prisma.BufferItemUpdateInput) =>
-    prisma.bufferItem.update({ where: { projectId_ark: { projectId, ark } }, data })
+  const write = async (ark: string, data: Prisma.BufferItemUpdateManyMutationInput) => {
+    if (!(await BufferQueries.writeEnrichment(projectId, ark, data))) tally.skipped += 1
+  }
+  const fail = async (ark: string, reason: string, notFound: boolean) => {
+    const before = attemptsByArk.get(ark)
+    if (before === undefined) {
+      // The client answered for an ARK this pass never asked about: a client
+      // bug, never a reason to reset that row's attempt count.
+      throw new Error(`enrichment answered for an ARK it was not asked: ${ark}`)
+    }
+    const attempts = before + 1
+    const terminal = notFound || attempts >= BUFFER_ENRICH_MAX_ATTEMPTS
+    if (terminal) tally.failed += 1
+    else tally.retry += 1
+    await write(ark, failedAttemptData(attempts, reason, terminal, now()))
+  }
 
   for (const batch of chunk(pending.map((p) => p.ark), BUFFER_ENRICH_BATCH_SIZE)) {
+    if (signal.aborted) break
+
     // 1. Same-project resolved Documents: free.
-    const docs = await prisma.document.findMany({
-      where: { projectId, ark: { in: batch }, resolveStatus: DOCUMENT_RESOLVE_STATUS.RESOLVED },
-      select: {
-        ark: true,
-        title: true,
-        author: true,
-        year: true,
-        dateLabel: true,
-        docType: true,
-        lang: true,
-        rawMetadata: true,
-      },
-    })
+    const docs = await DocumentQueries.resolvedAmong(new Map([[projectId, batch]]))
     const fromDoc = new Set(docs.map((d) => d.ark))
     for (const d of docs) await write(d.ark, resolvedData(d))
-    fromDocuments += docs.length
+    tally.fromDocuments += docs.length
 
     // 2. The rest through the broker.
     const rest = batch.filter((ark) => !fromDoc.has(ark))
     if (rest.length === 0) continue
-    const results = await client.resolveArksForStaging(rest)
+    let results: Array<BnfMcpResolveResult | BnfMcpResolveError>
+    try {
+      results = await client.resolveArksForStaging(rest)
+    } catch (err) {
+      // The whole batch failed (broker down, the drain's ceiling): every row
+      // counts the attempt and backs off — never an uncounted, endless retry.
+      const reason = signal.aborted ? "délai de la passe dépassé" : describeError(err)
+      console.error(`[buffer-enrich] project ${projectId}: batch of ${rest.length} failed:`, err)
+      for (const ark of rest) await fail(ark, reason, false)
+      continue
+    }
     const normalised = normalizeMany(results.filter((r) => r.ok).map((r) => r.document))
     const byArk = new Map(normalised.map((n) => [n.ark, n]))
 
@@ -174,63 +233,61 @@ async function drainOnce(projectId: string, client: BufferEnrichClient): Promise
             rawMetadata: doc.rawMetadata,
           }),
         )
-        fromBnf += 1
+        tally.fromBnf += 1
         continue
       }
       // The call failed, or it succeeded with an unusable record (no title).
       const reason = r.ok ? "métadonnées incomplètes (titre manquant)" : describeError(r.error)
-      const attempts = (attemptsByArk.get(r.ark) ?? 0) + 1
-      const terminal = (!r.ok && r.error instanceof BnfMcpNotFoundError) || attempts >= BUFFER_ENRICH_MAX_ATTEMPTS
-      if (terminal) failed += 1
-      else retry += 1
-      await write(r.ark, {
-        enrichAttempts: attempts,
-        enrichError: reason,
-        ...(terminal ? { enrichStatus: BUFFER_ENRICH_STATUS.FAILED } : {}),
-      })
+      await fail(r.ark, reason, !r.ok && r.error instanceof BnfMcpNotFoundError)
     }
   }
 
   log(
-    `project ${projectId}: drain done — from-documents=${fromDocuments}, from-bnf=${fromBnf}, ` +
-      `failed=${failed}, still-pending=${retry}`,
+    `project ${projectId}: drain done — from-documents=${tally.fromDocuments}, from-bnf=${tally.fromBnf}, ` +
+      `failed=${tally.failed}, still-pending=${tally.retry}, gone-meanwhile=${tally.skipped}`,
   )
 }
+
+/** The production client: the broker-routed BnF client, bound to the drain. */
+const directClient: BufferEnrichClientFactory = (signal) => new BnfDirectClient({ signal })
 
 /**
  * Schedule a drain after the current response is flushed. Called from the
  * buffer_add tool (inside the request scope); the drain outlives the request
- * and its BnF calls are individually bounded.
+ * and is bounded by its own ceiling.
  */
 export function kickBufferEnrich(projectId: string): void {
   after(async () => {
-    await enrichPendingForProject(projectId, { client: new BnfDirectClient() }).catch((err: unknown) => {
+    await enrichPendingForProject(projectId, { client: directClient }).catch((err: unknown) => {
       console.error(`[buffer-enrich] drain failed for project ${projectId}:`, err)
     })
   })
 }
 
+/** True while a sweep runs: the periodic timer never starts a second one. */
+let sweeping = false
+
 /**
- * Boot resume and periodic sweep: drain every project that still has pending
- * candidates under the attempt ceiling. Fire-and-forget from
- * instrumentation.ts — never blocks serving.
+ * Boot resume and periodic sweep: drain every project that has rows ready to
+ * enrich. Fire-and-forget from instrumentation.ts — never blocks serving. A
+ * call while a sweep is still running returns at once (overlap guard).
  */
 export async function resumePendingBufferEnrich(): Promise<void> {
-  const projects = await prisma.bufferItem.findMany({
-    where: {
-      status: BUFFER_STATUS.CANDIDATE,
-      enrichStatus: BUFFER_ENRICH_STATUS.PENDING,
-      enrichAttempts: { lt: BUFFER_ENRICH_MAX_ATTEMPTS },
-    },
-    distinct: ["projectId"],
-    select: { projectId: true },
-  })
-  if (projects.length === 0) return
-  log(`resume — ${projects.length} project(s) with pending candidates`)
-  const client = new BnfDirectClient()
-  for (const { projectId } of projects) {
-    await enrichPendingForProject(projectId, { client }).catch((err: unknown) => {
-      console.error(`[buffer-enrich] resume drain failed for project ${projectId}:`, err)
-    })
+  if (sweeping) {
+    log("sweep skipped — the previous one is still running")
+    return
+  }
+  sweeping = true
+  try {
+    const projects = await BufferQueries.projectsReadyToEnrich(new Date(), BUFFER_ENRICH_MAX_ATTEMPTS)
+    if (projects.length === 0) return
+    log(`resume — ${projects.length} project(s) with pending candidates`)
+    for (const projectId of projects) {
+      await enrichPendingForProject(projectId, { client: directClient }).catch((err: unknown) => {
+        console.error(`[buffer-enrich] resume drain failed for project ${projectId}:`, err)
+      })
+    }
+  } finally {
+    sweeping = false
   }
 }

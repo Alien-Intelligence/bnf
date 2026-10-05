@@ -223,6 +223,12 @@ export const BUFFER_CLASSIFIER_VERSION = 1
 /** Rows per reclassifier batch (one transaction each); ~87 batches for the
  *  86 765 prod rows at the first boot, then the version gate makes it a no-op. */
 export const BUFFER_RECLASSIFY_BATCH_SIZE = 1_000
+/** Wall-clock ceiling of one reclassifier run; an unfinished run resumes on
+ *  the next sweep (BUFFER_RECLASSIFY_SWEEP_INTERVAL_MS). */
+export const BUFFER_RECLASSIFY_MAX_MS = 5 * 60_000
+/** How often the reclassifier is retried while rows remain below the version
+ *  (a finished run costs one empty query). */
+export const BUFFER_RECLASSIFY_SWEEP_INTERVAL_MS = 15 * 60_000
 
 // Background enrichment of BARE buffer rows (buffer_add stages ARKs only) —
 // lib/buffer/enricher.ts. Cost: a same-project Document is copied for free;
@@ -240,6 +246,12 @@ export const BUFFER_ENRICH_DRAIN_MAX_BATCHES = 20
 /** Attempts per row before it is marked failed (a BnF "unknown ARK" is failed
  *  at once). Transient failures are retried by the next pass, never in-loop. */
 export const BUFFER_ENRICH_MAX_ATTEMPTS = 3
+/** Backoff before a failed row is retried: this, doubled per attempt (1, 2,
+ *  4 min) — a broker 429/503 burst is not burned through in seconds. */
+export const BUFFER_ENRICH_RETRY_BASE_MS = 60_000
+/** Wall-clock ceiling of one drain (all its passes): under the 3-minute sweep
+ *  interval, so a slow drain ends before the next sweep would start another. */
+export const BUFFER_ENRICH_DRAIN_MAX_MS = 150_000
 
 /**
  * The seq assigned to the first (empty) CorpusVersion created by

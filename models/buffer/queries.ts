@@ -13,6 +13,33 @@ import type { BufferCrossFacets, BufferFacetDimension, BufferFacets, BufferRow, 
  *  definition every "unresolved" count uses. */
 const PENDING_ENRICH: Prisma.BufferItemWhereInput = { enrichStatus: BUFFER_ENRICH_STATUS.PENDING }
 
+/** A pending candidate the enrichment drain may take now: under the attempt
+ *  ceiling, and past its backoff. */
+function readyToEnrich(now: Date, maxAttempts: number): Prisma.BufferItemWhereInput {
+  return {
+    status: BUFFER_STATUS.CANDIDATE,
+    ...PENDING_ENRICH,
+    enrichAttempts: { lt: maxAttempts },
+    OR: [{ enrichNextAttemptAt: null }, { enrichNextAttemptAt: { lte: now } }],
+  }
+}
+
+/** The columns the reclassifier reads off a row below the classifier version. */
+const legacyRowSelect = {
+  id: true,
+  projectId: true,
+  ark: true,
+  title: true,
+  docType: true,
+  lang: true,
+  originTool: true,
+  originQuery: true,
+  source: true,
+  status: true,
+} satisfies Prisma.BufferItemSelect
+
+export type LegacyBufferItem = Prisma.BufferItemGetPayload<{ select: typeof legacyRowSelect }>
+
 /** Fields projected for the buffer panel + buffer_list tool. */
 const bufferRowSelect = {
   id: true,
@@ -64,6 +91,76 @@ export class BufferQueries {
     return prisma.bufferItem.count({
       where: { ...BufferQueries.candidateScope(projectId), ark: { in: arks }, ...PENDING_ENRICH },
     })
+  }
+
+  /** One drain batch of a project: ready rows, fewest attempts first. */
+  static async enrichBatch(
+    projectId: string,
+    now: Date,
+    maxAttempts: number,
+    take: number,
+  ): Promise<Array<{ ark: string; enrichAttempts: number }>> {
+    return prisma.bufferItem.findMany({
+      where: { projectId, ...readyToEnrich(now, maxAttempts) },
+      select: { ark: true, enrichAttempts: true },
+      orderBy: [{ enrichAttempts: "asc" }, { createdAt: "asc" }],
+      take,
+    })
+  }
+
+  /** The projects with at least one row the drain may take now. */
+  static async projectsReadyToEnrich(now: Date, maxAttempts: number): Promise<string[]> {
+    const rows = await prisma.bufferItem.findMany({
+      where: readyToEnrich(now, maxAttempts),
+      distinct: ["projectId"],
+      select: { projectId: true },
+    })
+    return rows.map((r) => r.projectId)
+  }
+
+  /**
+   * Write one row's enrichment outcome, guarded: only while it is still a
+   * pending candidate. Returns false when it no longer is — buffer_clear or a
+   * discard removed it mid-drain — so the drain moves on instead of aborting
+   * on a missing row.
+   */
+  static async writeEnrichment(
+    projectId: string,
+    ark: string,
+    data: Prisma.BufferItemUpdateManyMutationInput,
+  ): Promise<boolean> {
+    const { count } = await prisma.bufferItem.updateMany({
+      where: { projectId, ark, status: BUFFER_STATUS.CANDIDATE, ...PENDING_ENRICH },
+      data,
+    })
+    return count === 1
+  }
+
+  /** The next rows below `version`, in id order after `cursor`. */
+  static async legacyBatch(version: number, cursor: string | null, take: number): Promise<LegacyBufferItem[]> {
+    return prisma.bufferItem.findMany({
+      where: { classifierVersion: { lt: version }, ...(cursor !== null ? { id: { gt: cursor } } : {}) },
+      orderBy: { id: "asc" },
+      take,
+      select: legacyRowSelect,
+    })
+  }
+
+  /**
+   * Apply one batch of reclassifications in one transaction, each guarded on
+   * the version: a row a live search re-stamped between the read and the
+   * write is left as the search wrote it. Returns how many rows changed.
+   */
+  static async applyReclassification(
+    version: number,
+    updates: ReadonlyArray<{ id: string; data: Prisma.BufferItemUpdateManyMutationInput }>,
+  ): Promise<number> {
+    const results = await prisma.$transaction(
+      updates.map((u) =>
+        prisma.bufferItem.updateMany({ where: { id: u.id, classifierVersion: { lt: version } }, data: u.data }),
+      ),
+    )
+    return results.reduce((n, r) => n + r.count, 0)
   }
 
   /** Count of rows matching `where`. */

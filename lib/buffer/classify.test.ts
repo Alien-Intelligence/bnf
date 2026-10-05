@@ -53,32 +53,79 @@ test("classifyLegacyRow only trusts the CQL of a corpus_search row", () => {
   assert.equal(unknown.unknownLabel, "Zorglub")
 })
 
-test("bufferMetadataFromDocument copies the resolved document and its raw publisher/subjects", () => {
-  const meta = bufferMetadataFromDocument({
-    ark: "ark:/12148/btv1b1",
-    title: "Vue du village suisse",
-    author: "Anonyme",
-    year: 1896,
-    dateLabel: "1896",
-    docType: "image",
-    lang: "fre",
-    rawMetadata: { publisher: " Neurdein ", subject: ["Expositions -- Genève", "", "Chalets"] },
-  })
+test("bufferMetadataFromDocument copies the resolved document, its raw label, links and year range", () => {
+  const unknown: string[] = []
+  const meta = bufferMetadataFromDocument(
+    {
+      ark: "ark:/12148/btv1b1",
+      title: "Vue du village suisse",
+      author: "Anonyme",
+      year: 1896,
+      dateLabel: "1896",
+      docType: "image",
+      lang: "fre",
+      rawMetadata: {
+        doc_type: "image fixe",
+        publisher: " Neurdein ",
+        subject: ["Expositions -- Genève", "", "Chalets"],
+        gallica_url: "https://gallica.bnf.fr/ark:/12148/btv1b1",
+      },
+    },
+    (label) => unknown.push(label),
+  )
   assert.deepEqual(meta, {
     title: "Vue du village suisse",
     creator: "Anonyme",
     year: 1896,
+    yearEnd: null,
     dateLabel: "1896",
     docType: "image",
+    docTypeRaw: "image fixe",
     lang: "fr",
     publisher: "Neurdein",
     subjects: "Expositions -- Genève ; Chalets",
+    gallicaUrl: "https://gallica.bnf.fr/ark:/12148/btv1b1",
+    catalogueUrl: null,
     arkKind: "image",
   })
-  const bare = bufferMetadataFromDocument({
-    ark: "ark:/12148/cb1", title: null, author: null, year: null, dateLabel: null, docType: null, lang: null, rawMetadata: null,
-  })
+  assert.deepEqual(unknown, [])
+})
+
+test("the record's type follows the search-hit rules: typedoc, then label, never a guessed book", () => {
+  const unknown: string[] = []
+  const base = { ark: "ark:/12148/cb1", title: "Le Temps", author: null, year: 1861, lang: null }
+  const typeless = bufferMetadataFromDocument(
+    { ...base, dateLabel: "1861-1946", docType: "book", rawMetadata: { title: "Le Temps" } },
+    (l) => unknown.push(l),
+  )
+  assert.equal(typeless.docType, null, "a record with no type is unknown, not the normaliser's `book` guess")
+  assert.equal(typeless.yearEnd, 1946, "a range label sets yearEnd")
+  assert.equal(typeless.arkKind, "catalogue_notice")
+  const odd = bufferMetadataFromDocument(
+    { ...base, dateLabel: null, docType: "other", rawMetadata: { doc_type: "Zorglub" } },
+    (l) => unknown.push(l),
+  )
+  assert.equal(odd.docType, "other")
+  assert.deepEqual(unknown, ["Zorglub"], "an unknown label is reported")
+  const issue = bufferMetadataFromDocument(
+    { ...base, ark: "ark:/12148/bpt6k1", dateLabel: null, docType: "book", rawMetadata: { gallica_typedoc: "periodiques:fascicules", doc_type: "texte" } },
+    (l) => unknown.push(l),
+  )
+  assert.equal(issue.docType, "press", "the typedoc wins")
+  assert.equal(issue.arkKind, "periodical_issue")
+  const bare = bufferMetadataFromDocument(
+    { ...base, title: null, dateLabel: null, docType: "press", rawMetadata: null },
+    (l) => unknown.push(l),
+  )
+  assert.equal(bare.docType, "press", "no preserved payload: the Document's canonical type stands")
   assert.equal(bare.publisher, null)
-  assert.equal(bare.subjects, null)
-  assert.equal(bare.arkKind, "catalogue_notice")
+})
+
+test("searchDocTypeFromCql reads only an unambiguous dc.type clause", () => {
+  assert.equal(searchDocTypeFromCql('dc.type all "fascicule" and gallica all "incendie"'), "fascicule")
+  assert.equal(searchDocTypeFromCql('not dc.type all "fascicule"'), null, "a negation says what hits are NOT")
+  assert.equal(searchDocTypeFromCql('gallica all "x" not dc.type all "fascicule"'), null)
+  assert.equal(searchDocTypeFromCql('dc.type all "fascicule" or dc.type all "monographie"'), null, "two types")
+  assert.equal(searchDocTypeFromCql('dc.type all "fascicule" or title all "Temps"'), null, "an or widens the set")
+  assert.equal(searchDocTypeFromCql(null), null)
 })

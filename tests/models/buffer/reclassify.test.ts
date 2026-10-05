@@ -86,7 +86,12 @@ before(async () => {
       lang: "fr",
       source: "gallica",
       resolveStatus: "resolved",
-      rawMetadata: { publisher: "Imprimerie du Petit Journal" },
+      rawMetadata: {
+        publisher: "Imprimerie du Petit Journal",
+        gallica_typedoc: "periodiques:fascicules",
+        doc_type: "texte",
+        gallica_url: "https://gallica.bnf.fr/ark:/12148/bpt6k-petit-journal",
+      },
     },
   })
 
@@ -120,6 +125,7 @@ async function row(ark: string) {
 
 test("reclassifyBufferItems rewrites legacy rows into the canonical vocabulary, then is a no-op", async () => {
   const first = await reclassifyBufferItems()
+  assert.equal(first.complete, true)
   assert.ok(first.updated >= 8, `at least the 8 seeded rows were updated (got ${first.updated})`)
 
   // The search's doc_type filter (in the stored CQL) wins over the hit label.
@@ -151,6 +157,8 @@ test("reclassifyBufferItems rewrites legacy rows into the canonical vocabulary, 
   assert.equal(copied.docType, "press")
   assert.equal(copied.lang, "fr")
   assert.equal(copied.publisher, "Imprimerie du Petit Journal")
+  assert.equal(copied.docTypeRaw, "texte", "the raw label is copied, not lost")
+  assert.equal(copied.gallicaUrl, "https://gallica.bnf.fr/ark:/12148/bpt6k-petit-journal")
   assert.equal(copied.arkKind, ARK_KIND.PERIODICAL_ISSUE)
   assert.equal(copied.enrichStatus, BUFFER_ENRICH_STATUS.RESOLVED)
 
@@ -183,4 +191,13 @@ test("reclassifyBufferItems rewrites legacy rows into the canonical vocabulary, 
   assert.equal(second.updated, 0, "idempotent: the version gate makes a second pass a no-op")
   const again = await row(ARKS.pressIssue)
   assert.equal(again.docTypeRaw, "Texte", "a second pass never moves the canonical code into docTypeRaw")
+})
+
+test("a run stops at its time ceiling, reports it, and a later run finishes the job", async () => {
+  await legacyRow("ark:/12148/bpt6k9590001", { title: "Tardif", docType: "Texte" })
+  const stopped = await reclassifyBufferItems({ maxMs: 0 })
+  assert.deepEqual(stopped, { updated: 0, complete: false })
+  const resumed = await reclassifyBufferItems()
+  assert.equal(resumed.complete, true)
+  assert.ok(resumed.updated >= 1)
 })

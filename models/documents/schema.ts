@@ -188,6 +188,14 @@ export const LANG: Record<string, VocabEntry> = {
 // prefix. Only sources observed in real MCP output are listed here.
 // ---------------------------------------------------------------------------
 
+/** The source codes code refers to by name (sourceFromArk, lib/mcp/vocab.ts). */
+export const DOCUMENT_SOURCE = {
+  GALLICA: "gallica",
+  CATALOGUE: "catalogue",
+  DATABNF: "databnf",
+  OTHER: "other",
+} as const
+
 export const SOURCE: Record<string, VocabEntry> = {
   gallica: { label: "gallica", color: "bg-dataset-3/15 text-dataset-3" },
   catalogue: { label: "catalogue", color: "bg-dataset-2/15 text-dataset-2" },

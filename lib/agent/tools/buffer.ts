@@ -50,6 +50,7 @@ import {
   BUFFER_SUBJECTS_SEPARATOR,
   canonicalBufferDocType,
   gallicaSearchDocType,
+  yearEndFromLabel,
   type GallicaSearchDocType,
 } from "@/lib/buffer/classify"
 import { classifyArkKind } from "@/lib/documents/ark-kind"
@@ -548,10 +549,7 @@ function toYear(date: string | null): number | undefined {
 
 /** The last year of a range label ("1861-1946" → 1946), when it is after `year`. */
 function toYearEnd(date: string | null, year: number | undefined): number | undefined {
-  const m = /(\d{4})\D+(\d{4})/.exec(date ?? "")
-  if (m === null || year === undefined) return undefined
-  const end = Number(m[2])
-  return end > year ? end : undefined
+  return yearEndFromLabel(date, year) ?? undefined
 }
 
 /** The `cb…/date` form: a Gallica PERIODICAL collection entry, not a document.

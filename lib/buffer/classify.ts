@@ -7,8 +7,16 @@
 // so a row means the same thing whichever path wrote it.
 //
 // Pure: no I/O, no server-only, so every rule is unit-testable.
-import { GALLICA_FILTER_DOC_TYPE, GALLICA_SEARCHABLE_DOC_TYPE, canonicalDocTypeFromLabel, canonicalLang } from "@/lib/mcp/vocab"
+import {
+  GALLICA_FILTER_DOC_TYPE,
+  GALLICA_SEARCHABLE_DOC_TYPE,
+  canonicalDocTypeFromLabel,
+  canonicalLang,
+  mapGallicaTypedoc,
+} from "@/lib/mcp/vocab"
+import { AGENT_TOOLS } from "@/lib/agent/tools/constants"
 import { classifyArkKind, type ArkKind } from "@/lib/documents/ark-kind"
+import { DOCUMENT_SOURCE } from "@/models/documents/schema"
 
 export type GallicaSearchDocType = (typeof GALLICA_SEARCHABLE_DOC_TYPE)[number]
 
@@ -18,22 +26,32 @@ function isSearchableDocType(value: string): value is GallicaSearchDocType {
   return SEARCHABLE.has(value)
 }
 
-/** The `dc.type` clause mcp-bnf writes for a Gallica `doc_type` filter
- *  (search_gallica.py: `dc.type all "<v>"`); `any`/`adj` for hand-written CQL. */
-const DC_TYPE_CLAUSE = /\bdc\.type\s+(?:all|any|adj)\s+"([^"]+)"/i
+/** Every `dc.type` clause of a CQL (search_gallica.py writes `dc.type all
+ *  "<v>"`; `any`/`adj` appear in hand-written CQL), with what precedes it. */
+const DC_TYPE_CLAUSES = /(\bnot\s+)?\bdc\.type\s+(?:all|any|adj)\s+"([^"]+)"/gi
+/** A boolean `or` anywhere in the query. */
+const CQL_OR = /\bor\b/i
 
 /**
  * The Gallica `doc_type` filter a search was run with, recovered from its CQL,
- * or null when the CQL carries no (searchable) `dc.type` clause. This is how a
- * row staged before the v2 buffer recovers the search's type — 0.18.1 stored
- * the executed CQL in `originQuery` — and how a raw-CQL search is classified
- * like a structured one.
+ * or null when it cannot be read with certainty. This is how a row staged
+ * before the v2 buffer recovers the search's type — 0.18.1 stored the executed
+ * CQL in `originQuery` — and how a raw-CQL search is classified like a
+ * structured one.
+ *
+ * Only an unambiguous query counts: exactly one `dc.type` clause, not negated,
+ * and no `or` in the query. `not dc.type all "fascicule"` says what the hits
+ * are NOT; `dc.type all "a" or …` does not hold for every hit. Those are
+ * ambiguous, so the type is left to each hit's own label (stored as fact by
+ * the reclassifier and the search path, a guess here would be false data).
  */
 export function searchDocTypeFromCql(cql: string | null | undefined): GallicaSearchDocType | null {
   if (typeof cql !== "string") return null
-  const match = DC_TYPE_CLAUSE.exec(cql)
-  if (match === null) return null
-  const value = match[1].trim().toLowerCase()
+  const clauses = [...cql.matchAll(DC_TYPE_CLAUSES)]
+  if (clauses.length !== 1 || CQL_OR.test(cql)) return null
+  const [clause] = clauses
+  if (clause[1] !== undefined) return null
+  const value = clause[2].trim().toLowerCase()
   return isSearchableDocType(value) ? value : null
 }
 
@@ -87,8 +105,8 @@ export type BufferClassification = {
 }
 
 /** The search tool whose `originQuery` is an executed CQL (others hold ARKs or nothing). */
-const SEARCH_ORIGIN_TOOL = "corpus_search"
-const SEARCH_SOURCES = new Set(["gallica", "catalogue"])
+const SEARCH_ORIGIN_TOOL = AGENT_TOOLS.corpusSearch
+const SEARCH_SOURCES = new Set<string>([DOCUMENT_SOURCE.GALLICA, DOCUMENT_SOURCE.CATALOGUE])
 
 /**
  * Classification version 0 → 1 for one legacy row. The raw label moves to
@@ -126,16 +144,23 @@ export type ResolvedDocumentFields = {
   rawMetadata: unknown
 }
 
-/** The buffer columns a resolved Document fills on a bare row. */
+/** The buffer columns a resolved record fills on a bare row. */
 export type BufferMetadataFromDocument = {
   title: string | null
   creator: string | null
   year: number | null
+  /** Last year of a range label ("1861-1946"); null for a single date. */
+  yearEnd: number | null
   dateLabel: string | null
+  /** Canonical, through the same rules as a search hit (bufferDocTypeFromRecord). */
   docType: string | null
+  /** The record's own type label, verbatim. */
+  docTypeRaw: string | null
   lang: string | null
   publisher: string | null
   subjects: string | null
+  gallicaUrl: string | null
+  catalogueUrl: string | null
   arkKind: ArkKind
 }
 
@@ -145,8 +170,8 @@ export const BUFFER_SUBJECTS_SEPARATOR = " ; "
 /** A non-empty trimmed string field of an untyped payload (a resolved
  *  record's preserved raw metadata), or null. */
 export function stringField(payload: unknown, key: string): string | null {
-  if (typeof payload !== "object" || payload === null) return null
-  const value = (payload as Record<string, unknown>)[key]
+  if (typeof payload !== "object" || payload === null || !(key in payload)) return null
+  const value: unknown = Reflect.get(payload, key)
   if (typeof value !== "string") return null
   const trimmed = value.trim()
   return trimmed === "" ? null : trimmed
@@ -154,29 +179,69 @@ export function stringField(payload: unknown, key: string): string | null {
 
 /** A string-array field of an untyped payload, joined, or null. */
 function joinedListField(payload: unknown, key: string): string | null {
-  if (typeof payload !== "object" || payload === null) return null
-  const value = (payload as Record<string, unknown>)[key]
+  if (typeof payload !== "object" || payload === null || !(key in payload)) return null
+  const value: unknown = Reflect.get(payload, key)
   if (!Array.isArray(value)) return null
   const items = value.filter((v): v is string => typeof v === "string" && v.trim() !== "").map((v) => v.trim())
   return items.length > 0 ? items.join(BUFFER_SUBJECTS_SEPARATOR) : null
 }
 
+/** The last year of a range label ("1861-1946" → 1946), when it is after `year`. */
+export function yearEndFromLabel(label: string | null | undefined, year: number | null | undefined): number | null {
+  const m = /(\d{4})\D+(\d{4})/.exec(label ?? "")
+  if (m === null || year === null || year === undefined) return null
+  const end = Number(m[2])
+  return end > year ? end : null
+}
+
+/** Called with a type label no rule recognised (the caller logs it). */
+export type UnknownDocTypeHook = (rawLabel: string) => void
+
 /**
- * Metadata for a bare buffer row from the project's resolved Document of the
- * same ARK — zero BnF cost. Document already holds the normalised vocabulary
- * (normalizeMany), so docType is canonical; the publisher and subjects come
- * from the preserved raw payload (BnfMcpDocumentDetail.publisher / .subject).
+ * The canonical docType of a resolved record, by the rules a search hit gets
+ * (Decision 2): the Gallica typedoc when the record has one (the OAI record's
+ * press discriminator), else the folded dc:type label through
+ * canonicalBufferDocType — an unrecognised label maps to `other` and is
+ * reported to `onUnknown` — else null. Never a guessed `book`: a record with
+ * no type is unknown, the same ARK classifies the same whichever path wrote it.
  */
-export function bufferMetadataFromDocument(doc: ResolvedDocumentFields): BufferMetadataFromDocument {
+export function bufferDocTypeFromRecord(rawMetadata: unknown, onUnknown: UnknownDocTypeHook): string | null {
+  const typedoc = mapGallicaTypedoc(stringField(rawMetadata, "gallica_typedoc"))
+  if (typedoc !== null) return typedoc
+  const label = stringField(rawMetadata, "doc_type")
+  if (label === null) return null
+  const canonical = canonicalBufferDocType(label, null)
+  if (!canonical.known) onUnknown(label)
+  return canonical.code
+}
+
+/**
+ * Metadata for a bare buffer row from a resolved record of the same ARK — the
+ * project's resolved Document (zero BnF cost) or the broker's record. The type
+ * goes through bufferDocTypeFromRecord; the publisher, subjects, raw label and
+ * links come from the preserved raw payload.
+ */
+export function bufferMetadataFromDocument(
+  doc: ResolvedDocumentFields,
+  onUnknown: UnknownDocTypeHook,
+): BufferMetadataFromDocument {
+  // No preserved payload at all (a Document written by a path that kept
+  // none): its docType is already canonical — the payload is what would let us
+  // do better, not a reason to drop the type.
+  const docType = doc.rawMetadata === null ? doc.docType : bufferDocTypeFromRecord(doc.rawMetadata, onUnknown)
   return {
     title: doc.title,
     creator: doc.author,
     year: doc.year,
+    yearEnd: yearEndFromLabel(doc.dateLabel, doc.year),
     dateLabel: doc.dateLabel,
-    docType: doc.docType,
+    docType,
+    docTypeRaw: stringField(doc.rawMetadata, "doc_type"),
     lang: canonicalLang(doc.lang),
     publisher: stringField(doc.rawMetadata, "publisher"),
     subjects: joinedListField(doc.rawMetadata, "subject"),
-    arkKind: classifyArkKind({ ark: doc.ark, collectionEntry: false, docType: doc.docType }),
+    gallicaUrl: stringField(doc.rawMetadata, "gallica_url"),
+    catalogueUrl: stringField(doc.rawMetadata, "catalogue_url"),
+    arkKind: classifyArkKind({ ark: doc.ark, collectionEntry: false, docType }),
   }
 }

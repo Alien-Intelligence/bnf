@@ -726,6 +726,7 @@ model BufferItem {
   enrichStatus      String?  @map("enrich_status") // null | pending | resolved | failed (BUFFER_ENRICH_STATUS)
   enrichAttempts    Int      @default(0) @map("enrich_attempts")
   enrichError       String?  @map("enrich_error")
+  enrichNextAttemptAt DateTime? @map("enrich_next_attempt_at") // backoff: a failed row is not retried before this instant
   classifierVersion Int      @default(0) @map("classifier_version")
   // Provenance + lifecycle.
   originTool       String  @map("origin_tool") // which tool produced it, e.g. "corpus_search"
