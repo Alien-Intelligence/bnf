@@ -5,11 +5,12 @@
  * and is held to the same contract test (ocr-backfill.test.ts).
  */
 import {
-  OCR_BACKFILL_EXPIRED,
+  OCR_BACKFILL_MARK,
   OCR_BACKFILL_STATE,
   planRequest,
   validateOcrBackfillPolicy,
   type OcrBackfillCounts,
+  type OcrBackfillMark,
   type OcrBackfillPolicy,
   type OcrBackfillRequest,
   type OcrBackfillRow,
@@ -24,8 +25,9 @@ export class MemoryOcrBackfillStore implements OcrBackfillStore {
     this.now = opts.now ?? Date.now;
   }
 
-  async request(ark: string, policy: OcrBackfillPolicy): Promise<OcrBackfillRequest> {
+  async request(ark: string, policy: OcrBackfillPolicy, signal: AbortSignal): Promise<OcrBackfillRequest> {
     validateOcrBackfillPolicy(policy);
+    signal.throwIfAborted();
     const now = new Date(this.now());
     const row = this.rows.get(ark) ?? null;
     const plan = planRequest(row, policy, now.getTime());
@@ -38,6 +40,7 @@ export class MemoryOcrBackfillStore implements OcrBackfillStore {
           permanent: false,
           attempts: 0,
           requestedAt: now,
+          startedAt: null,
           updatedAt: now,
         });
         return { kind: "enqueue" };
@@ -48,25 +51,31 @@ export class MemoryOcrBackfillStore implements OcrBackfillStore {
           permanent: false,
           attempts: plan.attempts,
           requestedAt: now,
+          startedAt: null,
           updatedAt: now,
         });
         return { kind: "enqueue" };
       case "expire":
         Object.assign(this.require(ark), {
           state: OCR_BACKFILL_STATE.FAILED,
-          error: OCR_BACKFILL_EXPIRED,
+          error: plan.reason,
           permanent: true,
           attempts: plan.attempts,
           updatedAt: now,
         });
-        return { kind: "failed", reason: OCR_BACKFILL_EXPIRED, permanent: true };
+        return { kind: "failed", reason: plan.reason, permanent: true };
       case "report":
         return plan.result;
     }
   }
 
-  async markDone(ark: string): Promise<void> {
-    Object.assign(this.require(ark), {
+  async markStarted(ark: string): Promise<OcrBackfillMark> {
+    const now = new Date(this.now());
+    return this.markQueued(ark, { startedAt: now, updatedAt: now });
+  }
+
+  async markDone(ark: string): Promise<OcrBackfillMark> {
+    return this.markQueued(ark, {
       state: OCR_BACKFILL_STATE.DONE,
       error: null,
       permanent: false,
@@ -74,9 +83,9 @@ export class MemoryOcrBackfillStore implements OcrBackfillStore {
     });
   }
 
-  async markFailed(ark: string, reason: string, opts: { permanent: boolean }): Promise<void> {
+  async markFailed(ark: string, reason: string, opts: { permanent: boolean }): Promise<OcrBackfillMark> {
     const row = this.require(ark);
-    Object.assign(row, {
+    return this.markQueued(ark, {
       state: OCR_BACKFILL_STATE.FAILED,
       error: reason,
       permanent: opts.permanent,
@@ -94,6 +103,14 @@ export class MemoryOcrBackfillStore implements OcrBackfillStore {
     const out: OcrBackfillCounts = { queued: 0, done: 0, failed: 0 };
     for (const row of this.rows.values()) out[row.state] += 1;
     return out;
+  }
+
+  /** Apply `change` to a QUEUED row only — the same guard as the pg store's `AND state = 'queued'`. */
+  private markQueued(ark: string, change: Partial<OcrBackfillRow>): OcrBackfillMark {
+    const row = this.require(ark);
+    if (row.state !== OCR_BACKFILL_STATE.QUEUED) return OCR_BACKFILL_MARK.NOT_QUEUED;
+    Object.assign(row, change);
+    return OCR_BACKFILL_MARK.APPLIED;
   }
 
   private require(ark: string): OcrBackfillRow {

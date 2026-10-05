@@ -10,7 +10,7 @@
  */
 import { Pool } from "pg";
 
-import { loadConfig, PG_STATEMENT_TIMEOUT_MS } from "./config.js";
+import { loadConfig, pgPoolConfig } from "./config.js";
 import { buildPipeline } from "./build.js";
 import { PgBossQueue } from "./core/queue-pgboss.js";
 import { S3BlobStore } from "./core/blob.js";
@@ -19,12 +19,13 @@ import { createLogger } from "./core/logger.js";
 import { PgDocState } from "./domain/doc-state-pg.js";
 import {
   OCR_BACKFILL_MAX_ATTEMPTS,
-  OCR_BACKFILL_QUEUED_STALE_MS,
+  OCR_BACKFILL_STARTED_STALE_MS,
+  OCR_BACKFILL_UNSTARTED_STALE_MS,
   validateOcrBackfillPolicy,
   type OcrBackfillWiring,
 } from "./domain/ocr-backfill.js";
 import { PgOcrBackfillStore } from "./domain/ocr-backfill-pg.js";
-import { OCR_SYNC_DEADLINE_MS } from "./live/ocr-quality-sync.js";
+import { OCR_SYNC_BODY_READ_MS, OCR_SYNC_DEADLINE_MS } from "./live/ocr-quality-sync.js";
 import { PgRunStore } from "./domain/run-store-pg.js";
 import { LiveBnfClient } from "./bnf/client.js";
 import { LiveDescriber } from "./live/describer.js";
@@ -43,9 +44,9 @@ async function main(): Promise<void> {
   const queue = new PgBossQueue(cfg.databaseUrl);
   await queue.start();
 
-  // statement_timeout: see PG_STATEMENT_TIMEOUT_MS — a stuck query must not park
-  // a stage handler until pg-boss expires the job, nor the reconciliation sweep.
-  const pool = new Pool({ connectionString: cfg.databaseUrl, statement_timeout: PG_STATEMENT_TIMEOUT_MS });
+  // Both pg timeouts (pgPoolConfig): a stuck query or an exhausted pool must not
+  // park a stage handler until pg-boss expires the job, nor the sweep/endpoint.
+  const pool = new Pool(pgPoolConfig(cfg.databaseUrl));
   const docState = new PgDocState(pool);
   await docState.migrate();
   const runStore = new PgRunStore(pool);
@@ -58,7 +59,8 @@ async function main(): Promise<void> {
     policy: validateOcrBackfillPolicy({
       retryFailedAfterMs: cfg.ocrBackfill.retryFailedAfterMs,
       maxAttempts: OCR_BACKFILL_MAX_ATTEMPTS,
-      queuedStaleAfterMs: OCR_BACKFILL_QUEUED_STALE_MS,
+      startedStaleAfterMs: OCR_BACKFILL_STARTED_STALE_MS,
+      unstartedStaleAfterMs: OCR_BACKFILL_UNSTARTED_STALE_MS,
     }),
   };
 
@@ -134,6 +136,7 @@ async function main(): Promise<void> {
       blob,
       ocrBackfill,
       ocrSyncDeadlineMs: OCR_SYNC_DEADLINE_MS,
+      ocrSyncBodyReadMs: OCR_SYNC_BODY_READ_MS,
     },
     cfg.httpPort,
   );

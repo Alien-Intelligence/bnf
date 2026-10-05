@@ -3,10 +3,11 @@
  * store and the Postgres store, so the two cannot drift (the review found the
  * pg store a silent no-op where the fake threw, and counts() that disagreed).
  *
- * The pg variant runs against a real database: set WORKER_TEST_DATABASE_URL to
- * the worker's Postgres (it applies schema.sql, which is idempotent, and only
- * touches rows it creates under a unique ARK prefix, deleted afterwards).
- * Without it the pg suite is reported as SKIPPED, never silently passed.
+ * The pg variant runs against a real database: `npm run test:pg` with
+ * WORKER_TEST_DATABASE_URL set to a Postgres you own (RUN.md — it applies
+ * schema.sql, which is idempotent, and only touches rows it creates under a
+ * unique ARK prefix, deleted afterwards). Without it the pg suite is reported
+ * as SKIPPED, never silently passed.
  */
 import { after, describe, test } from "node:test";
 import assert from "node:assert/strict";
@@ -16,8 +17,10 @@ import { Pool } from "pg";
 import { MemoryOcrBackfillStore } from "./ocr-backfill-memory.js";
 import { OCR_BACKFILL_TABLE, PgOcrBackfillStore } from "./ocr-backfill-pg.js";
 import { PgDocState } from "./doc-state-pg.js";
+import { pgPoolConfig } from "../config.js";
 import {
-  OCR_BACKFILL_EXPIRED,
+  OCR_BACKFILL_MARK,
+  OCR_BACKFILL_REASON,
   retryBackoffMs,
   validateOcrBackfillPolicy,
   type OcrBackfillPolicy,
@@ -27,8 +30,12 @@ import {
 const POLICY: OcrBackfillPolicy = {
   retryFailedAfterMs: 60_000,
   maxAttempts: 3,
-  queuedStaleAfterMs: 600_000,
+  startedStaleAfterMs: 600_000,
+  unstartedStaleAfterMs: 6_000_000,
 };
+
+/** A signal that never aborts — the cases that are not about cancellation. */
+const LIVE = new AbortController().signal;
 
 interface Fixture {
   store: OcrBackfillStore;
@@ -43,57 +50,72 @@ function contract(name: string, make: () => Promise<Fixture>, opts: { skip?: str
     test("first request enqueues; a second one finds it queued", async () => {
       const f = await make();
       const ark = f.ark();
-      assert.deepEqual(await f.store.request(ark, POLICY), { kind: "enqueue" });
-      assert.deepEqual(await f.store.request(ark, POLICY), { kind: "queued" });
+      assert.deepEqual(await f.store.request(ark, POLICY, LIVE), { kind: "enqueue" });
+      assert.deepEqual(await f.store.request(ark, POLICY, LIVE), { kind: "queued" });
       assert.equal((await f.store.get(ark))?.attempts, 0);
     });
 
-    test("a done row reaching request lost its artifact: re-opened with attempts reset", async () => {
+    test("a done row reaching request lost its artifact: re-opened, the loss counted as an attempt", async () => {
       const f = await make();
       const ark = f.ark();
-      await f.store.request(ark, POLICY);
-      await f.store.markFailed(ark, "boom", { permanent: false });
-      f.advance(retryBackoffMs(POLICY, 1));
-      await f.store.request(ark, POLICY);
+      await f.store.request(ark, POLICY, LIVE);
       await f.store.markDone(ark);
-      assert.deepEqual(await f.store.request(ark, POLICY), { kind: "enqueue" });
+      assert.deepEqual(await f.store.request(ark, POLICY, LIVE), { kind: "enqueue" });
       const row = await f.store.get(ark);
       assert.equal(row?.state, "queued");
-      assert.equal(row?.attempts, 0);
+      assert.equal(row?.attempts, 1);
+      assert.equal(row?.startedAt, null, "a re-opened build has not started");
+    });
+
+    test("an artifact lost maxAttempts times ends as artifact_lost, never loops", async () => {
+      const f = await make();
+      const ark = f.ark();
+      await f.store.request(ark, POLICY, LIVE);
+      for (let i = 1; i < POLICY.maxAttempts; i++) {
+        await f.store.markDone(ark);
+        assert.deepEqual(await f.store.request(ark, POLICY, LIVE), { kind: "enqueue" });
+      }
+      await f.store.markDone(ark);
+      assert.deepEqual(await f.store.request(ark, POLICY, LIVE), {
+        kind: "failed",
+        reason: OCR_BACKFILL_REASON.ARTIFACT_LOST,
+        permanent: true,
+      });
+      assert.equal((await f.store.get(ark))?.attempts, POLICY.maxAttempts);
     });
 
     test("a transient failure is retried after an exponential backoff, keeping its attempt count", async () => {
       const f = await make();
       const ark = f.ark();
-      await f.store.request(ark, POLICY);
+      await f.store.request(ark, POLICY, LIVE);
       await f.store.markFailed(ark, "build_failed: 503", { permanent: false });
-      assert.deepEqual(await f.store.request(ark, POLICY), {
+      assert.deepEqual(await f.store.request(ark, POLICY, LIVE), {
         kind: "failed",
         reason: "build_failed: 503",
         permanent: false,
       });
       f.advance(retryBackoffMs(POLICY, 1));
-      assert.deepEqual(await f.store.request(ark, POLICY), { kind: "enqueue" });
+      assert.deepEqual(await f.store.request(ark, POLICY, LIVE), { kind: "enqueue" });
       assert.equal((await f.store.get(ark))?.attempts, 1);
 
       await f.store.markFailed(ark, "build_failed: 503", { permanent: false });
       f.advance(retryBackoffMs(POLICY, 1));
-      assert.equal((await f.store.request(ark, POLICY)).kind, "failed", "the second backoff is twice as long");
+      assert.equal((await f.store.request(ark, POLICY, LIVE)).kind, "failed", "the second backoff is twice as long");
       f.advance(retryBackoffMs(POLICY, 2) - retryBackoffMs(POLICY, 1));
-      assert.deepEqual(await f.store.request(ark, POLICY), { kind: "enqueue" });
+      assert.deepEqual(await f.store.request(ark, POLICY, LIVE), { kind: "enqueue" });
     });
 
     test("a transient failure is final once maxAttempts is reached", async () => {
       const f = await make();
       const ark = f.ark();
-      await f.store.request(ark, POLICY);
+      await f.store.request(ark, POLICY, LIVE);
       for (let attempt = 1; attempt <= POLICY.maxAttempts; attempt++) {
         await f.store.markFailed(ark, "build_failed: 503", { permanent: false });
         f.advance(retryBackoffMs(POLICY, attempt));
-        if (attempt < POLICY.maxAttempts) await f.store.request(ark, POLICY);
+        if (attempt < POLICY.maxAttempts) await f.store.request(ark, POLICY, LIVE);
       }
       f.advance(retryBackoffMs(POLICY, 10));
-      assert.deepEqual(await f.store.request(ark, POLICY), {
+      assert.deepEqual(await f.store.request(ark, POLICY, LIVE), {
         kind: "failed",
         reason: "build_failed: 503",
         permanent: true,
@@ -103,32 +125,99 @@ function contract(name: string, make: () => Promise<Fixture>, opts: { skip?: str
     test("a permanent failure is never re-opened", async () => {
       const f = await make();
       const ark = f.ark();
-      await f.store.request(ark, POLICY);
+      await f.store.request(ark, POLICY, LIVE);
       await f.store.markFailed(ark, "no_metadata", { permanent: true });
       f.advance(retryBackoffMs(POLICY, 10));
-      assert.deepEqual(await f.store.request(ark, POLICY), {
+      assert.deepEqual(await f.store.request(ark, POLICY, LIVE), {
         kind: "failed",
         reason: "no_metadata",
         permanent: true,
       });
     });
 
-    test("a stale queued row (expired build) is re-queued with the attempt counted, then expires for good", async () => {
+    test("a STARTED queued row goes stale from its delivery start, then expires for good", async () => {
       const f = await make();
       const ark = f.ark();
-      await f.store.request(ark, POLICY);
-      f.advance(POLICY.queuedStaleAfterMs);
-      assert.deepEqual(await f.store.request(ark, POLICY), { kind: "enqueue" });
+      await f.store.request(ark, POLICY, LIVE);
+      // Long in the backlog: not stale while no delivery started.
+      f.advance(POLICY.startedStaleAfterMs * 3);
+      assert.deepEqual(await f.store.request(ark, POLICY, LIVE), { kind: "queued" });
+      assert.equal(await f.store.markStarted(ark), OCR_BACKFILL_MARK.APPLIED);
+      f.advance(POLICY.startedStaleAfterMs - 1);
+      assert.deepEqual(await f.store.request(ark, POLICY, LIVE), { kind: "queued" }, "a live build");
+      f.advance(1);
+      assert.deepEqual(await f.store.request(ark, POLICY, LIVE), { kind: "enqueue" });
       assert.equal((await f.store.get(ark))?.attempts, 1);
-      f.advance(POLICY.queuedStaleAfterMs);
-      assert.deepEqual(await f.store.request(ark, POLICY), { kind: "enqueue" });
-      f.advance(POLICY.queuedStaleAfterMs);
-      assert.deepEqual(await f.store.request(ark, POLICY), {
+      await f.store.markStarted(ark);
+      f.advance(POLICY.startedStaleAfterMs);
+      assert.deepEqual(await f.store.request(ark, POLICY, LIVE), { kind: "enqueue" });
+      await f.store.markStarted(ark);
+      f.advance(POLICY.startedStaleAfterMs);
+      assert.deepEqual(await f.store.request(ark, POLICY, LIVE), {
         kind: "failed",
-        reason: OCR_BACKFILL_EXPIRED,
+        reason: OCR_BACKFILL_REASON.EXPIRED,
         permanent: true,
       });
       assert.equal((await f.store.get(ark))?.state, "failed");
+    });
+
+    test("a redelivery restarts the staleness clock", async () => {
+      const f = await make();
+      const ark = f.ark();
+      await f.store.request(ark, POLICY, LIVE);
+      await f.store.markStarted(ark);
+      f.advance(POLICY.startedStaleAfterMs - 1);
+      await f.store.markStarted(ark); // the queue's retry delivered it again
+      f.advance(POLICY.startedStaleAfterMs - 1);
+      assert.deepEqual(await f.store.request(ark, POLICY, LIVE), { kind: "queued" });
+    });
+
+    test("a never-started queued row is stale only past the queue's own retention", async () => {
+      const f = await make();
+      const ark = f.ark();
+      await f.store.request(ark, POLICY, LIVE);
+      f.advance(POLICY.unstartedStaleAfterMs - 1);
+      assert.deepEqual(await f.store.request(ark, POLICY, LIVE), { kind: "queued" });
+      f.advance(1);
+      assert.deepEqual(await f.store.request(ark, POLICY, LIVE), { kind: "enqueue" });
+      assert.equal((await f.store.get(ark))?.attempts, 1);
+    });
+
+    test("terminal rows stay terminal: a late mark changes nothing and says not_queued", async () => {
+      const f = await make();
+      const done = f.ark();
+      await f.store.request(done, POLICY, LIVE);
+      assert.equal(await f.store.markDone(done), OCR_BACKFILL_MARK.APPLIED);
+      assert.equal(await f.store.markFailed(done, "late", { permanent: true }), OCR_BACKFILL_MARK.NOT_QUEUED);
+      assert.equal(await f.store.markStarted(done), OCR_BACKFILL_MARK.NOT_QUEUED);
+      const doneRow = await f.store.get(done);
+      assert.equal(doneRow?.state, "done");
+      assert.equal(doneRow?.attempts, 0);
+
+      const failed = f.ark();
+      await f.store.request(failed, POLICY, LIVE);
+      await f.store.markFailed(failed, "no_metadata", { permanent: true });
+      assert.equal(await f.store.markDone(failed), OCR_BACKFILL_MARK.NOT_QUEUED);
+      assert.equal(await f.store.markFailed(failed, "again", { permanent: false }), OCR_BACKFILL_MARK.NOT_QUEUED);
+      const failedRow = await f.store.get(failed);
+      assert.deepEqual([failedRow?.state, failedRow?.error, failedRow?.attempts], ["failed", "no_metadata", 1]);
+    });
+
+    test("concurrent requests for one ARK: exactly one wins the build", async () => {
+      const f = await make();
+      const ark = f.ark();
+      const results = await Promise.all(Array.from({ length: 6 }, () => f.store.request(ark, POLICY, LIVE)));
+      assert.equal(results.filter((r) => r.kind === "enqueue").length, 1);
+      assert.equal(results.filter((r) => r.kind === "queued").length, 5);
+    });
+
+    test("an aborted signal stops request before any row is written", async () => {
+      const f = await make();
+      const ark = f.ark();
+      const controller = new AbortController();
+      controller.abort(new Error("deadline"));
+      await assert.rejects(() => f.store.request(ark, POLICY, controller.signal), /deadline/);
+      assert.equal(await f.store.get(ark), null);
     });
 
     test("markDone / markFailed on an ARK with no row throw", async () => {
@@ -136,13 +225,14 @@ function contract(name: string, make: () => Promise<Fixture>, opts: { skip?: str
       const ark = f.ark();
       await assert.rejects(() => f.store.markDone(ark), /no row/);
       await assert.rejects(() => f.store.markFailed(ark, "x", { permanent: false }), /no row/);
+      await assert.rejects(() => f.store.markStarted(ark), /no row/);
     });
 
     test("counts() reports each state", async () => {
       const f = await make();
       const before = await f.store.counts();
       const [a, b, c] = [f.ark(), f.ark(), f.ark()];
-      for (const ark of [a, b, c]) await f.store.request(ark, POLICY);
+      for (const ark of [a, b, c]) await f.store.request(ark, POLICY, LIVE);
       await f.store.markDone(b);
       await f.store.markFailed(c, "x", { permanent: true });
       const after = await f.store.counts();
@@ -155,7 +245,7 @@ function contract(name: string, make: () => Promise<Fixture>, opts: { skip?: str
     test("an invalid policy is refused", async () => {
       const f = await make();
       for (const bad of [0, -1, 1.5]) {
-        await assert.rejects(() => f.store.request(f.ark(), { ...POLICY, retryFailedAfterMs: bad }), /positive integer/);
+        await assert.rejects(() => f.store.request(f.ark(), { ...POLICY, retryFailedAfterMs: bad }, LIVE), /positive integer/);
       }
     });
   });
@@ -177,7 +267,12 @@ contract("memory", async () => {
 });
 
 const PG_URL = process.env.WORKER_TEST_DATABASE_URL;
-const pool = PG_URL ? new Pool({ connectionString: PG_URL, statement_timeout: 10_000 }) : null;
+// `npm run test:pg` sets WORKER_TEST_REQUIRE_PG: there, a missing URL is an
+// error, never a vacuous pass of a skipped suite.
+if (process.env.WORKER_TEST_REQUIRE_PG === "1" && !PG_URL) {
+  throw new Error("npm run test:pg needs WORKER_TEST_DATABASE_URL (RUN.md)");
+}
+const pool = PG_URL ? new Pool(pgPoolConfig(PG_URL)) : null;
 let migrated = false;
 
 contract(
@@ -205,6 +300,20 @@ if (pool) {
     await assert.rejects(
       () => pool.query(`INSERT INTO ${OCR_BACKFILL_TABLE} (ark, state) VALUES ($1, 'bogus')`, [freshArk()]),
       /ocr_quality_backfill_state_check/,
+    );
+  });
+
+  test("postgres: a failed row without a reason, and negative attempts, are refused", async () => {
+    await assert.rejects(
+      () => pool.query(`INSERT INTO ${OCR_BACKFILL_TABLE} (ark, state) VALUES ($1, 'failed')`, [freshArk()]),
+      /ocr_quality_backfill_failed_reason_check/,
+    );
+    await assert.rejects(
+      () =>
+        pool.query(`INSERT INTO ${OCR_BACKFILL_TABLE} (ark, state, attempts) VALUES ($1, 'queued', -1)`, [
+          freshArk(),
+        ]),
+      /ocr_quality_backfill_attempts_check/,
     );
   });
 

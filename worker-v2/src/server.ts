@@ -30,10 +30,11 @@ import type { RunStore } from "./domain/run.js";
 import type { CompletionMonitor } from "./live/completion-monitor.js";
 import { createRunAndSeed, parseIngestRequest } from "./live/ingress.js";
 import {
-  OCR_SYNC_BODY_READ_MS,
   OCR_SYNC_MAX_BODY_BYTES,
+  OCR_SYNC_MAX_IN_FLIGHT,
   parseOcrSyncRequest,
   syncOcrQuality,
+  type OcrSyncResponse,
 } from "./live/ocr-quality-sync.js";
 
 export interface ServerDeps {
@@ -56,6 +57,8 @@ export interface ServerDeps {
   ocrBackfill: OcrBackfillWiring;
   /** Wall-clock ceiling of one /ocr-quality/sync request (OCR_SYNC_DEADLINE_MS). */
   ocrSyncDeadlineMs: number;
+  /** Time allowed to receive a /ocr-quality/sync body (OCR_SYNC_BODY_READ_MS). */
+  ocrSyncBodyReadMs: number;
 }
 
 /** The /ingest body cap: a full corpus delta (thousands of ARKs with metadata). */
@@ -148,9 +151,15 @@ function sendJson(
   res.end(payload);
 }
 
+/** Per-server mutable state: the /ocr-quality/sync requests in flight. */
+interface ServerState {
+  syncInFlight: number;
+}
+
 export function createServer(deps: ServerDeps): Server {
+  const state: ServerState = { syncInFlight: 0 };
   return createHttpServer((req, res) => {
-    void handle(deps, req, res).catch((err) => {
+    void handle(deps, state, req, res).catch((err) => {
       deps.log.error("http_handler_crash", {
         method: req.method,
         url: req.url,
@@ -163,6 +172,7 @@ export function createServer(deps: ServerDeps): Server {
 
 async function handle(
   deps: ServerDeps,
+  state: ServerState,
   req: import("node:http").IncomingMessage,
   res: import("node:http").ServerResponse,
 ): Promise<void> {
@@ -181,7 +191,7 @@ async function handle(
   }
 
   if (method === "POST" && path === "/ocr-quality/sync") {
-    await handleOcrSync(deps, req, res);
+    await handleOcrSync(deps, state, req, res);
     return;
   }
 
@@ -244,12 +254,35 @@ async function handleIngest(
 
 async function handleOcrSync(
   deps: ServerDeps,
+  state: ServerState,
+  req: import("node:http").IncomingMessage,
+  res: import("node:http").ServerResponse,
+): Promise<void> {
+  // Cap the requests in flight BEFORE reading anything: a burst is refused at
+  // once (the app retries next sweep) instead of stacking work on the pool.
+  if (state.syncInFlight >= OCR_SYNC_MAX_IN_FLIGHT) {
+    deps.log.warn("ocr_quality_sync_busy", { inFlight: state.syncInFlight });
+    res.setHeader("connection", "close");
+    sendJson(res, 503, { error: `${state.syncInFlight} sync requests already in flight` });
+    res.once("finish", () => req.destroy());
+    return;
+  }
+  state.syncInFlight += 1;
+  try {
+    await serveOcrSync(deps, req, res);
+  } finally {
+    state.syncInFlight -= 1;
+  }
+}
+
+async function serveOcrSync(
+  deps: ServerDeps,
   req: import("node:http").IncomingMessage,
   res: import("node:http").ServerResponse,
 ): Promise<void> {
   const body = await readJsonBody(deps, "/ocr-quality/sync", req, res, {
     maxBytes: OCR_SYNC_MAX_BODY_BYTES,
-    timeoutMs: OCR_SYNC_BODY_READ_MS,
+    timeoutMs: deps.ocrSyncBodyReadMs,
   });
   if (body === null) return;
   const parsed = parseOcrSyncRequest(body.value);
@@ -259,22 +292,22 @@ async function handleOcrSync(
     return;
   }
   const { arks } = parsed.value;
-  const work = syncOcrQuality(
-    { blob: deps.blob, queue: deps.queue, log: deps.log, backfill: deps.ocrBackfill },
-    arks,
-  );
-  const outcome = await withDeadline(work, deps.ocrSyncDeadlineMs);
-  if (outcome.kind === "deadline") {
-    // The work keeps running to completion (each step is bounded on its own) —
-    // its result is just not awaited. The app retries the batch next sweep.
-    work.catch((e: unknown) =>
-      deps.log.error("ocr_quality_sync_late_failure", { error: e instanceof Error ? e.message : String(e) }),
+  // The deadline CANCELS: the signal stops every ARK at its next step (no new
+  // S3 read or store transaction); a won claim still gets its send or release.
+  const deadline = AbortSignal.timeout(deps.ocrSyncDeadlineMs);
+  let response: OcrSyncResponse;
+  try {
+    response = await syncOcrQuality(
+      { blob: deps.blob, queue: deps.queue, log: deps.log, backfill: deps.ocrBackfill },
+      arks,
+      deadline,
     );
+  } catch (e) {
+    if (!deadline.aborted) throw e;
     deps.log.warn("ocr_quality_sync_deadline", { asked: arks.length, deadlineMs: deps.ocrSyncDeadlineMs });
     sendJson(res, 503, { error: `sync did not finish within ${deps.ocrSyncDeadlineMs}ms` });
     return;
   }
-  const response = outcome.value;
   deps.log.info("ocr_quality_sync", {
     asked: arks.length,
     documents: response.documents.length,
@@ -282,22 +315,6 @@ async function handleOcrSync(
     unavailable: response.unavailable.length,
   });
   sendJson(res, 200, response);
-}
-
-/** Race `work` against a timer; the timer is always cleared. */
-async function withDeadline<T>(
-  work: Promise<T>,
-  ms: number,
-): Promise<{ kind: "done"; value: T } | { kind: "deadline" }> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<{ kind: "deadline" }>((resolve) => {
-    timer = setTimeout(() => resolve({ kind: "deadline" }), ms);
-  });
-  try {
-    return await Promise.race([work.then((value) => ({ kind: "done" as const, value })), deadline]);
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 async function handleProgress(

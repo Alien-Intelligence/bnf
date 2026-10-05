@@ -137,5 +137,29 @@ BEGIN
   END IF;
 END
 $$;
+-- The delivery start the staleness rule measures from (domain/ocr-backfill.ts).
+ALTER TABLE sandbox_ingest_v2.ocr_quality_backfill
+  ADD COLUMN IF NOT EXISTS started_at timestamptz;
+-- The row invariants the store relies on, enforced by the database too: a
+-- failed row carries its reason (the app is answered with it), and attempts
+-- never go negative.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'ocr_quality_backfill_failed_reason_check'
+  ) THEN
+    ALTER TABLE sandbox_ingest_v2.ocr_quality_backfill
+      ADD CONSTRAINT ocr_quality_backfill_failed_reason_check
+      CHECK (state <> 'failed' OR error IS NOT NULL);
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'ocr_quality_backfill_attempts_check'
+  ) THEN
+    ALTER TABLE sandbox_ingest_v2.ocr_quality_backfill
+      ADD CONSTRAINT ocr_quality_backfill_attempts_check
+      CHECK (attempts >= 0);
+  END IF;
+END
+$$;
 CREATE INDEX IF NOT EXISTS ocr_quality_backfill_state_idx
   ON sandbox_ingest_v2.ocr_quality_backfill (state);

@@ -19,6 +19,18 @@ import type { DocOcrQuality, PreparedPage } from "../domain/types.js";
 import type { AltoFolioQuality, BnfDocInfo } from "../bnf/types.js";
 import { FakeBnfClient, type FakeDocSpec } from "../testing/fakes.js";
 import { OcrQualityBackfillStage } from "./ocr-quality-backfill.js";
+import { isDocOcrQuality } from "./ocr-quality.js";
+import { OCR_BACKFILL_REASON, type OcrBackfillPolicy } from "../domain/ocr-backfill.js";
+
+/** A policy whose rules never interfere with a single delivery. */
+const POLICY_FAST: OcrBackfillPolicy = {
+  retryFailedAfterMs: 1,
+  maxAttempts: 5,
+  startedStaleAfterMs: 1,
+  unstartedStaleAfterMs: 1,
+};
+/** A signal that never aborts. */
+const LIVE = new AbortController().signal;
 
 const ARK = "ark:/12148/bpt6k4625753w";
 
@@ -63,7 +75,7 @@ async function setup(
     lines,
     seed: async () => {
       // The sync endpoint records the row before sending (one row per ARK).
-      await store.request(ARK, { retryFailedAfterMs: 1, maxAttempts: 5, queuedStaleAfterMs: 1 });
+      await store.request(ARK, POLICY_FAST, LIVE);
       await q.send(Q.ocrQualityBackfill, { ark: ARK });
     },
   };
@@ -302,10 +314,10 @@ test("a rate-gate wait past its deadline is transient: retried, then failed retr
   let waits = 0;
   const neverGrants: RateGate = {
     ratePerMin: 1,
-    acquire: (signal?: AbortSignal) =>
+    acquire: (signal: AbortSignal) =>
       new Promise<void>((_resolve, reject) => {
         waits += 1;
-        signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
       }),
   };
   const h = await setup(textSpec(), { rate: neverGrants, rateWaitMs: 5 });
@@ -317,7 +329,7 @@ test("a rate-gate wait past its deadline is transient: retried, then failed retr
   assert.equal(h.bnf.calls.alto, 0, "no BnF call without a token");
   const row = await h.store.get(ARK);
   assert.equal(row?.state, "failed");
-  assert.match(row?.error ?? "", /rate_gate_timeout/);
+  assert.match(row?.error ?? "", /^build_failed: no rate-gate token within 5ms$/);
   assert.equal(row?.permanent, false);
   assert.equal(waits, 4, "one bounded wait per delivery: retried to exhaustion");
   assert.equal((await h.q.counts(Q.ocrQualityBackfill)).completed, 1, "the last attempt records the failure");
@@ -344,3 +356,69 @@ test("an unclassified error (S3 down) is retried, logged, and ends retryable", a
   assert.equal(h.bnf.calls.alto, 2, "the sidecars written on the first delivery are reused");
 });
 
+
+// ---------------------------------------------------------------------------
+// Pass-2: delivery start, terminal rows, artifact contract
+// ---------------------------------------------------------------------------
+
+test("a delivery stamps the row's startedAt (the staleness clock) and the built artifact passes isDocOcrQuality", async () => {
+  const h = await setup(textSpec());
+  await primeTextDoc(h.blob, [1, 2]);
+  await h.seed();
+  await h.q.idle();
+  const row = await h.store.get(ARK);
+  assert.ok(row?.startedAt instanceof Date, "the delivery start was recorded");
+  assert.equal(isDocOcrQuality(await h.blob.getJson<unknown>(keys.ocrQuality(ARK)), ARK), true);
+});
+
+test("a stray delivery for a row no longer queued builds nothing and flips nothing", async () => {
+  const h = await setup(textSpec());
+  await primeTextDoc(h.blob, [1, 2]);
+  await h.store.request(ARK, POLICY_FAST, LIVE);
+  await h.store.markFailed(ARK, OCR_BACKFILL_REASON.NO_METADATA, { permanent: true });
+  await h.q.send(Q.ocrQualityBackfill, { ark: ARK });
+  await h.q.idle();
+  assert.equal(h.bnf.calls.alto, 0);
+  const row = await h.store.get(ARK);
+  assert.deepEqual([row?.state, row?.error], ["failed", OCR_BACKFILL_REASON.NO_METADATA]);
+  assert.ok(h.lines.some((l) => l.event === "ocr_backfill_not_queued"));
+});
+
+test("a pages blob repeating a folio is corrupt (as strict as the artifact contract) → permanent", async () => {
+  const h = await setup(textSpec());
+  await primeTextDoc(h.blob, [1, 2]);
+  await h.blob.putJson(keys.pages(ARK), [
+    { ordre: 1, text: "a" },
+    { ordre: 1, text: "b" },
+  ]);
+  await h.seed();
+  await h.q.idle();
+  const row = await h.store.get(ARK);
+  assert.deepEqual([row?.state, row?.error, row?.permanent], [
+    "failed",
+    OCR_BACKFILL_REASON.CORRUPT_PAGES_ARTIFACT,
+    true,
+  ]);
+  assert.equal(h.bnf.calls.alto, 0);
+});
+
+test("an OcrQualityArtifactError during the build is a PERMANENT build failure naming its code", async () => {
+  // The meta blob is there for the stage's own read, then gone when the
+  // artifact builder reads it again: the builder raises NO_METADATA.
+  class VanishingMeta extends MemoryBlobStore {
+    private reads = 0;
+    override async getJson<T>(key: string): Promise<T | null> {
+      if (key === keys.metadata(ARK) && ++this.reads > 1) return null;
+      return super.getJson<T>(key);
+    }
+  }
+  const h = await setup(textSpec(), { blob: new VanishingMeta() });
+  await primeTextDoc(h.blob, [1, 2]);
+  await h.seed();
+  await h.q.idle();
+  const row = await h.store.get(ARK);
+  assert.equal(row?.state, "failed");
+  assert.equal(row?.permanent, true);
+  assert.match(row?.error ?? "", /^build_failed: ocr_quality_no_metadata/);
+  assert.equal(await h.blob.getJson<unknown>(keys.ocrQuality(ARK)), null, "no artifact written");
+});

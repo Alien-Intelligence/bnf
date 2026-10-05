@@ -8,14 +8,18 @@
  *     OCR_BACKFILL_MAX_ATTEMPTS, a PERMANENT failure (no metadata, no pages,
  *     unclassifiable, a permanent BnF error) is never retried, and a `queued`
  *     row whose build never reported back (pg-boss expired the delivery, which
- *     runs no handler) is re-queued once it is stale — so no ARK stays
- *     `building` forever;
+ *     runs no handler) is re-queued once it is stale — measured from the latest
+ *     delivery START, so a long backlog is never mistaken for an expiry — and no
+ *     ARK stays `building` forever;
+ *   - terminal rows stay terminal: a late or stray delivery marks nothing
+ *     (every mark is guarded on `state = 'queued'`, OCR_BACKFILL_MARK);
  *   - progress: `counts()` is what `npm run status` prints.
  *
  * The ARTIFACT is the truth about completion, not the row. `request` is called
  * ONLY when the artifact is missing or invalid (live/ocr-quality-sync.ts checks
  * it — the one place that does); a `done` row reaching `request` therefore lost
- * its artifact and is re-opened.
+ * its artifact and is re-opened — counted as an attempt, so a build whose output
+ * keeps vanishing ends as `artifact_lost` instead of looping.
  *
  * Two implementations behind one interface (memory for tests, pg for prod), the
  * same split as doc-state and run-store. Both apply the SAME pure decision
@@ -43,26 +47,67 @@ export function parseOcrBackfillState(v: unknown, ark: string): OcrBackfillState
   return v;
 }
 
-/** Builds attempted per ARK before its failure is final (failures + expiries). */
+/** Builds attempted per ARK before its failure is final (failures + expiries + lost artifacts). */
 export const OCR_BACKFILL_MAX_ATTEMPTS = 5;
 
 /**
- * A `queued` row older than this has no live build: the backfill stage's
- * delivery ceiling is 1 h (expireInSeconds) and its transport retries add a few
- * minutes, so 6 h only ever matches a build that was expired or lost.
+ * Wall-clock ceiling of ONE backfill delivery (the stage's expireInSeconds):
+ * a 300-folio worst case, each folio waiting its turn on the shared fetch gate
+ * behind live ingests, plus one ALTO fetch (≤ 135 s) each.
  */
-export const OCR_BACKFILL_QUEUED_STALE_MS = 6 * 60 * 60 * 1_000;
+export const OCR_BACKFILL_DELIVERY_CEILING_S = 3600;
 
-/** Failure reason recorded when a queued build never reported back. */
-export const OCR_BACKFILL_EXPIRED = "build_expired";
+/**
+ * A STARTED queued row (the stage stamped `startedAt` when it picked the
+ * delivery up) older than this has no live build: one delivery lasts at most
+ * OCR_BACKFILL_DELIVERY_CEILING_S, and a redelivery stamps `startedAt` again —
+ * so the 30-minute margin only ever covers the queue's retry delay and clock
+ * skew, never a build still running.
+ */
+export const OCR_BACKFILL_STARTED_STALE_MS = OCR_BACKFILL_DELIVERY_CEILING_S * 1_000 + 30 * 60 * 1_000;
+
+/**
+ * A queued row NO delivery has started is waiting its turn in the backlog —
+ * legitimately, however long the backlog. It is only stale once pg-boss itself
+ * would have dropped the job unstarted: its default retention (keep_until =
+ * created + 14 days, pg-boss 10).
+ */
+export const OCR_BACKFILL_UNSTARTED_STALE_MS = 14 * 24 * 60 * 60 * 1_000;
+
+/**
+ * The failure reasons the store and the backfill stage record — the `reason`
+ * the app receives for an `unavailable` ARK. A detailed reason is
+ * `<reason>: <detail>` (withDetail).
+ */
+export const OCR_BACKFILL_REASON = {
+  /** A queued build never reported back, OCR_BACKFILL_MAX_ATTEMPTS times. */
+  EXPIRED: "build_expired",
+  /** A built artifact went missing or corrupt OCR_BACKFILL_MAX_ATTEMPTS times. */
+  ARTIFACT_LOST: "artifact_lost",
+  NO_METADATA: "no_metadata",
+  CORRUPT_METADATA: "corrupt_metadata",
+  NO_PAGES_ARTIFACT: "no_pages_artifact",
+  CORRUPT_PAGES_ARTIFACT: "corrupt_pages_artifact",
+  UNCLASSIFIABLE: "unclassifiable",
+  BUILD_FAILED: "build_failed",
+  ENQUEUE_FAILED: "enqueue_failed",
+} as const;
+export type OcrBackfillReason = (typeof OCR_BACKFILL_REASON)[keyof typeof OCR_BACKFILL_REASON];
+
+/** `<reason>: <detail>` — a recorded reason carrying what went wrong. */
+export function withDetail(reason: OcrBackfillReason, detail: string): string {
+  return `${reason}: ${detail}`;
+}
 
 export interface OcrBackfillPolicy {
   /** Base backoff before a transient failure is retried; doubles per attempt. */
   retryFailedAfterMs: number;
-  /** Total build attempts (failures + expiries) before a failure is final. */
+  /** Total build attempts (failures + expiries + lost artifacts) before a failure is final. */
   maxAttempts: number;
-  /** Age after which a queued row is treated as an expired build. */
-  queuedStaleAfterMs: number;
+  /** Age (since the last delivery started) after which a started queued row is an expired build. */
+  startedStaleAfterMs: number;
+  /** Age (since it was queued) after which a never-started queued row is a lost job. */
+  unstartedStaleAfterMs: number;
 }
 
 /** A policy with non-positive or fractional values is a configuration error. */
@@ -82,9 +127,11 @@ export interface OcrBackfillRow {
   error: string | null;
   /** True when the last failure can never succeed on a retry. */
   permanent: boolean;
-  /** Builds that failed or expired so far. */
+  /** Builds that failed, expired or lost their artifact so far. */
   attempts: number;
   requestedAt: Date;
+  /** When the current build's latest delivery started; null until one does. */
+  startedAt: Date | null;
   updatedAt: Date;
 }
 
@@ -106,21 +153,44 @@ export type OcrBackfillRequest =
 export type OcrBackfillPlan =
   | { action: "insert" }
   | { action: "reopen"; attempts: number }
-  | { action: "expire"; attempts: number }
+  | { action: "expire"; attempts: number; reason: OcrBackfillReason }
   | { action: "report"; result: OcrBackfillRequest };
+
+/**
+ * What a mark (start, done, failed) did: `applied` to a queued row, or
+ * `not_queued` — the row already left `queued` (a late or stray delivery, a
+ * second delivery of a finished build), and a terminal row is never flipped.
+ */
+export const OCR_BACKFILL_MARK = { APPLIED: "applied", NOT_QUEUED: "not_queued" } as const;
+export type OcrBackfillMark = (typeof OCR_BACKFILL_MARK)[keyof typeof OCR_BACKFILL_MARK];
 
 /** Backoff before retrying after `attempts` failures: base × 2^(attempts−1). */
 export function retryBackoffMs(policy: OcrBackfillPolicy, attempts: number): number {
   return policy.retryFailedAfterMs * 2 ** Math.max(0, attempts - 1);
 }
 
+/** Whether a queued row has no live build any more (see the two stale constants). */
+function isStale(row: OcrBackfillRow, policy: OcrBackfillPolicy, now: number): boolean {
+  if (row.startedAt !== null) return now - row.startedAt.getTime() >= policy.startedStaleAfterMs;
+  return now - row.requestedAt.getTime() >= policy.unstartedStaleAfterMs;
+}
+
+/** Count one more attempt: re-open while attempts remain, else record `reason` for good. */
+function retryOrExpire(row: OcrBackfillRow, policy: OcrBackfillPolicy, reason: OcrBackfillReason): OcrBackfillPlan {
+  const attempts = row.attempts + 1;
+  return attempts >= policy.maxAttempts ? { action: "expire", attempts, reason } : { action: "reopen", attempts };
+}
+
 /**
  * The ONE decision `request` makes, applied identically by both stores:
  *   - no row → insert a queued row (enqueue);
- *   - done → its artifact is gone (the caller checked) → re-open, attempts reset;
- *   - queued, fresh → already queued;
- *   - queued, stale → the build expired: count the attempt; re-open while
- *     attempts remain, else record a permanent `build_expired` failure;
+ *   - done → its artifact is gone or corrupt (the caller checked): count the
+ *     attempt and re-open, or after maxAttempts record `artifact_lost` for good
+ *     — a build whose output keeps vanishing must not loop forever;
+ *   - queued, live → already queued;
+ *   - queued, stale (isStale: measured from the latest delivery START, or from
+ *     the enqueue only while no delivery has started) → the build expired:
+ *     count the attempt; re-open, or after maxAttempts `build_expired`;
  *   - failed, permanent or out of attempts → report the reason, forever;
  *   - failed, transient, past its backoff → re-open (same attempt count);
  *   - failed, transient, inside its backoff → report the reason.
@@ -133,16 +203,10 @@ export function planRequest(
   if (row === null) return { action: "insert" };
   switch (row.state) {
     case OCR_BACKFILL_STATE.DONE:
-      return { action: "reopen", attempts: 0 };
-    case OCR_BACKFILL_STATE.QUEUED: {
-      if (now - row.requestedAt.getTime() < policy.queuedStaleAfterMs) {
-        return { action: "report", result: { kind: "queued" } };
-      }
-      const attempts = row.attempts + 1;
-      return attempts >= policy.maxAttempts
-        ? { action: "expire", attempts }
-        : { action: "reopen", attempts };
-    }
+      return retryOrExpire(row, policy, OCR_BACKFILL_REASON.ARTIFACT_LOST);
+    case OCR_BACKFILL_STATE.QUEUED:
+      if (!isStale(row, policy, now)) return { action: "report", result: { kind: "queued" } };
+      return retryOrExpire(row, policy, OCR_BACKFILL_REASON.EXPIRED);
     case OCR_BACKFILL_STATE.FAILED: {
       const reason = requireReason(row);
       const final = row.permanent || row.attempts >= policy.maxAttempts;
@@ -154,8 +218,8 @@ export function planRequest(
   }
 }
 
-/** A failed row always carries its reason; one without is a corrupt row. */
-function requireReason(row: OcrBackfillRow): string {
+/** A failed row always carries its reason; one without is a corrupt row (the DB CHECK refuses it too). */
+export function requireReason(row: Pick<OcrBackfillRow, "ark" | "error">): string {
   if (row.error === null) {
     throw new Error(`ocr_quality_backfill row ${row.ark}: failed without a reason`);
   }
@@ -171,17 +235,21 @@ export interface OcrBackfillCounts {
 export interface OcrBackfillStore {
   /**
    * Atomically decide and apply what a request for `ark` does (planRequest).
-   * Call ONLY when the artifact is missing or invalid.
+   * Call ONLY when the artifact is missing or invalid. `signal` aborts before
+   * the transaction starts and between its steps (each statement is bounded by
+   * the pool's statement_timeout).
    */
-  request(ark: string, policy: OcrBackfillPolicy): Promise<OcrBackfillRequest>;
+  request(ark: string, policy: OcrBackfillPolicy, signal: AbortSignal): Promise<OcrBackfillRequest>;
+  /** A delivery of the build started: stamps `startedAt`. Throws when no row exists. */
+  markStarted(ark: string): Promise<OcrBackfillMark>;
   /** The build succeeded. Throws when no row exists for `ark`. */
-  markDone(ark: string): Promise<void>;
+  markDone(ark: string): Promise<OcrBackfillMark>;
   /**
    * The build failed: stores `reason` and whether it is permanent, increments
    * `attempts`. Also releases an `enqueue` claim whose queue send failed.
    * Throws when no row exists for `ark`.
    */
-  markFailed(ark: string, reason: string, opts: { permanent: boolean }): Promise<void>;
+  markFailed(ark: string, reason: string, opts: { permanent: boolean }): Promise<OcrBackfillMark>;
   get(ark: string): Promise<OcrBackfillRow | null>;
   counts(): Promise<OcrBackfillCounts>;
 }

@@ -6,6 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
+import { request as httpRequest } from "node:http";
 
 import { MemoryQueue } from "./core/queue-memory.js";
 import { MemoryBlobStore } from "./core/blob.js";
@@ -24,7 +25,7 @@ import { startServer, type ServerDeps } from "./server.js";
 const POLICY: OcrBackfillPolicy = {
   retryFailedAfterMs: 60_000,
   maxAttempts: 5,
-  queuedStaleAfterMs: 6 * 60 * 60 * 1_000,
+  startedStaleAfterMs: 90 * 60 * 1_000, unstartedStaleAfterMs: 14 * 24 * 60 * 60 * 1_000,
 };
 
 async function bootServer(
@@ -34,6 +35,7 @@ async function bootServer(
     queue?: MemoryQueue;
     store?: OcrBackfillStore;
     syncDeadlineMs?: number;
+    bodyReadMs?: number;
   } = {},
 ): Promise<{
   base: string;
@@ -66,6 +68,7 @@ async function bootServer(
       concurrency: 1,
     },
     ocrSyncDeadlineMs: opts.syncDeadlineMs ?? 10_000,
+    ocrSyncBodyReadMs: opts.bodyReadMs ?? 10_000,
   };
   const server = await startServer(deps, 0);
   const { port } = server.address() as AddressInfo;
@@ -258,7 +261,7 @@ test("POST /ocr-quality/sync: a recently failed row is unavailable with its reas
   let clock = 1_000_000;
   const { base, deps, ocrBackfill, close } = await bootServer({ now: () => clock });
   try {
-    await ocrBackfill.request(ARK_B, POLICY);
+    await ocrBackfill.request(ARK_B, POLICY, new AbortController().signal);
     await ocrBackfill.markFailed(ARK_B, "build_failed: 503", { permanent: false });
 
     const fresh = (await (await sync(base, { arks: [ARK_B] })).json()) as SyncResponse;
@@ -296,7 +299,7 @@ test("POST /ocr-quality/sync: bad bodies → 400 (not JSON, no arks, unknown key
       ` ${ARK_A} `,
       "ark:/12148/",
       `${ARK_A}/f3`,
-      "ark:/99999/bpt6k1",
+      "ark:/12148/bpt6k-1",
       42,
     ]) {
       assert.equal((await sync(base, { arks: [bad] })).status, 400, `rejected verbatim, never rewritten: ${String(bad)}`);
@@ -390,7 +393,7 @@ test("POST /ocr-quality/sync: a failed queue send releases the claim — retryab
 test("POST /ocr-quality/sync: a done row whose artifact vanished is re-queued", async () => {
   const { base, deps, ocrBackfill, close } = await bootServer();
   try {
-    await ocrBackfill.request(ARK_B, POLICY);
+    await ocrBackfill.request(ARK_B, POLICY, new AbortController().signal);
     await ocrBackfill.markDone(ARK_B);
     const body = (await (await sync(base, { arks: [ARK_B] })).json()) as SyncResponse;
     assert.deepEqual(body.building, [ARK_B]);
@@ -402,9 +405,9 @@ test("POST /ocr-quality/sync: a done row whose artifact vanished is re-queued", 
 
 test("POST /ocr-quality/sync: past its deadline the request answers 503 (the app retries), logged", async () => {
   const slow: OcrBackfillStore = new (class extends MemoryOcrBackfillStore {
-    override async request(ark: string, policy: OcrBackfillPolicy) {
+    override async request(ark: string, policy: OcrBackfillPolicy, signal: AbortSignal) {
       await new Promise((r) => setTimeout(r, 200));
-      return super.request(ark, policy);
+      return super.request(ark, policy, signal);
     }
   })();
   const { base, lines, close } = await bootServer({ store: slow, syncDeadlineMs: 20 });
@@ -422,7 +425,7 @@ test("POST /ocr-quality/sync with the backfill disabled: missing → backfill_di
   const { base, deps, blob, close } = await bootServer({ ocrBackfillEnabled: false, store });
   try {
     await blob.putJson(keys.ocrQuality(ARK_A), artifactFor(ARK_A));
-    await store.request(ARK_C, POLICY);
+    await store.request(ARK_C, POLICY, new AbortController().signal);
     await store.markFailed(ARK_C, "no_pages_artifact", { permanent: true });
     await blob.putJson(keys.ocrQuality(ARK_D), { v: 1 });
 
@@ -466,3 +469,68 @@ test("POST /ingest: an oversize body → 413 and a body that is not JSON → 400
   }
 });
 
+
+test("POST /ocr-quality/sync: an ARK of another NAAN is answered like any other (the app's arkSchema)", async () => {
+  const { base, close } = await bootServer();
+  try {
+    const other = "ark:/99999/bpt6k1";
+    const res = await sync(base, { arks: [other] });
+    assert.equal(res.status, 200);
+    assert.deepEqual(((await res.json()) as SyncResponse).building, [other]);
+  } finally {
+    await close();
+  }
+});
+
+/** A store whose request takes `ms` before deciding — a slow database. */
+function slowStore(ms: number): MemoryOcrBackfillStore {
+  return new (class extends MemoryOcrBackfillStore {
+    override async request(ark: string, policy: OcrBackfillPolicy, signal: AbortSignal) {
+      await new Promise((r) => setTimeout(r, ms));
+      return super.request(ark, policy, signal);
+    }
+  })();
+}
+
+test("POST /ocr-quality/sync: past the in-flight cap a request is refused 503 at once, logged", async () => {
+  const { base, lines, close } = await bootServer({ store: slowStore(150) });
+  try {
+    const statuses = await Promise.all(
+      [ARK_A, ARK_B, ARK_C].map(async (ark) => (await sync(base, { arks: [ark] })).status),
+    );
+    assert.deepEqual([...statuses].sort(), [200, 200, 503]);
+    assert.ok(lines.some((l) => l.event === "ocr_quality_sync_busy"));
+  } finally {
+    await close();
+  }
+});
+
+test("POST /ocr-quality/sync: the deadline cancels — the abandoned work queues nothing afterwards", async () => {
+  const { base, deps, close } = await bootServer({ store: slowStore(100), syncDeadlineMs: 20 });
+  try {
+    assert.equal((await sync(base, { arks: [ARK_B] })).status, 503);
+    await new Promise((r) => setTimeout(r, 200)); // the slow step ends after the deadline
+    assert.equal((await deps.queue.counts(Q.ocrQualityBackfill)).queued, 0);
+  } finally {
+    await close();
+  }
+});
+
+test("POST /ocr-quality/sync: a body not received in time → 408, logged", async () => {
+  const { base, lines, close } = await bootServer({ bodyReadMs: 30 });
+  try {
+    const { port, hostname } = new URL(base);
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = httpRequest(
+        { host: hostname, port, path: "/ocr-quality/sync", method: "POST", headers: { "content-length": "100" } },
+        (res) => resolve(res.statusCode ?? 0),
+      );
+      req.on("error", reject);
+      req.write('{"arks":'); // never finished
+    });
+    assert.equal(status, 408);
+    assert.ok(lines.some((l) => l.event === "http_body_rejected" && l.reason === "timeout"));
+  } finally {
+    await close();
+  }
+});

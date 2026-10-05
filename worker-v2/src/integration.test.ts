@@ -61,7 +61,7 @@ function harness(
     store: new MemoryOcrBackfillStore(),
     enabled: true,
     concurrency: 1,
-    policy: { retryFailedAfterMs: 60_000, maxAttempts: 5, queuedStaleAfterMs: 6 * 60 * 60 * 1_000 },
+    policy: { retryFailedAfterMs: 60_000, maxAttempts: 5, startedStaleAfterMs: 90 * 60 * 1_000, unstartedStaleAfterMs: 14 * 24 * 60 * 60 * 1_000 },
   };
   // The backfill stage requires the shared fetch gate; an always-open one here.
   const fetchGate: RateGate = { ratePerMin: 1_000_000, acquire: async () => {} };
@@ -303,13 +303,13 @@ test("backfill round trip: a pre-release doc (no artifact, no sidecars) is synce
   const { logger } = createMemoryLogger();
   const deps = { blob: h.blob, queue: h.queue, log: logger, backfill: h.backfill };
 
-  const first = await syncOcrQuality(deps, [ark]);
+  const first = await syncOcrQuality(deps, [ark], new AbortController().signal);
   assert.deepEqual(first, { documents: [], building: [ark], unavailable: [] });
   await h.queue.idle();
 
   assert.equal(h.bnf.calls.alto - altoCallsBefore, 2, "one ALTO call per prepared page, through the stage");
   assert.equal((await h.backfill.store.get(ark))?.state, "done");
-  const second = await syncOcrQuality(deps, [ark]);
+  const second = await syncOcrQuality(deps, [ark], new AbortController().signal);
   assert.deepEqual(second.building, []);
   assert.deepEqual(second.documents[0]?.folios.map((f) => [f.ordre, f.ocrQuality]), [[1, 0.5], [2, 1]]);
 });

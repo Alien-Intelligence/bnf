@@ -61,7 +61,7 @@ function buildHarness(specs: FakeDocSpec[]) {
       store: new MemoryOcrBackfillStore(),
       enabled: false,
       concurrency: 1,
-      policy: { retryFailedAfterMs: 60_000, maxAttempts: 5, queuedStaleAfterMs: 6 * 60 * 60 * 1_000 },
+      policy: { retryFailedAfterMs: 60_000, maxAttempts: 5, startedStaleAfterMs: 90 * 60 * 1_000, unstartedStaleAfterMs: 14 * 24 * 60 * 60 * 1_000 },
     },
     onOutcome: (e) => completion.noteOutcome({ kind: e.kind, payload: e.payload }),
     config: { mistralEnabled: true, maxPages: 200 },

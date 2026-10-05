@@ -44,6 +44,8 @@ export const OCR_QUALITY_FAILURE = {
   CORRUPT_METADATA: "ocr_quality_corrupt_metadata",
   MISSING_SIDECAR: "ocr_quality_missing_sidecar",
   CORRUPT_SIDECAR: "ocr_quality_corrupt_sidecar",
+  /** The built artifact fails its own contract (isDocOcrQuality) — e.g. duplicate folios. */
+  INVALID_ARTIFACT: "ocr_quality_invalid_artifact",
 } as const;
 export type OcrQualityFailure = (typeof OCR_QUALITY_FAILURE)[keyof typeof OCR_QUALITY_FAILURE];
 
@@ -58,27 +60,35 @@ export class OcrQualityArtifactError extends Error {
   }
 }
 
-/** Structural check on a cached pages blob (keys.pages) — a JSON store is not a typed store. */
-export function isPreparedPages(v: unknown): v is PreparedPage[] {
-  return (
-    Array.isArray(v) &&
-    v.every(
-      (p) =>
-        p !== null &&
-        typeof p === "object" &&
-        typeof (p as PreparedPage).ordre === "number" &&
-        typeof (p as PreparedPage).text === "string",
-    )
-  );
-}
-
 function isRecord(v: unknown): v is Record<string, unknown> {
   return v !== null && typeof v === "object" && !Array.isArray(v);
 }
 
+/** A folio number as the artifact contract accepts it: a positive safe integer. */
+function isFolioNumber(v: unknown): v is number {
+  return typeof v === "number" && Number.isSafeInteger(v) && v >= 1;
+}
+
+/**
+ * Check on a cached pages blob (keys.pages) — a JSON store is not a typed
+ * store. As strict as the artifact contract the pages feed (isDocOcrQuality):
+ * every `ordre` a positive integer, none repeated, every `text` a string — so a
+ * corrupt blob is refused here, not turned into an artifact the sync rejects.
+ */
+export function isPreparedPages(v: unknown): v is PreparedPage[] {
+  if (!Array.isArray(v)) return false;
+  const seen = new Set<number>();
+  for (const p of v) {
+    if (!isRecord(p) || !isFolioNumber(p.ordre) || typeof p.text !== "string") return false;
+    if (seen.has(p.ordre)) return false;
+    seen.add(p.ordre);
+  }
+  return true;
+}
+
 function isFolioOcrQuality(v: unknown, source: OcrSource): v is FolioOcrQuality {
   if (!isRecord(v)) return false;
-  if (typeof v.ordre !== "number" || !Number.isSafeInteger(v.ordre) || v.ordre < 1) return false;
+  if (!isFolioNumber(v.ordre)) return false;
   if (v.ocrSource !== source) return false;
   if (source !== OCR_SOURCE.ALTO) return v.ocrQuality === null && v.wordCount === null;
   const quality = v.ocrQuality;
@@ -166,6 +176,14 @@ export async function writeOcrQualityArtifact(
     folios,
     builtAt: new Date().toISOString(),
   };
+  // The artifact the sync will read must pass the sync's own check: never
+  // write (and mark done) an artifact /ocr-quality/sync would refuse.
+  if (!isDocOcrQuality(artifact, doc.ark)) {
+    throw new OcrQualityArtifactError(
+      OCR_QUALITY_FAILURE.INVALID_ARTIFACT,
+      `${doc.ark}: the built artifact fails isDocOcrQuality (folios ${folios.map((f) => f.ordre).join(",")})`,
+    );
+  }
   await blob.putJson(keys.ocrQuality(doc.ark), artifact);
   return artifact;
 }
