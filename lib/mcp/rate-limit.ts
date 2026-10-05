@@ -14,7 +14,7 @@
 // window, the upstream requests this process SENDS to one BnF API — weighted by
 // `bnfMcpCallWeight` — never exceed that API's configured limit, and all of
 // them together never exceed the global limit. Each limiter's ledger counts a
-// call from its grant until 60 s after its SEND: while a granted call still
+// call from its grant until 60 s after it is STAMPED sent: while a granted call still
 // waits (on its API limiter after the global grant) it is a RESERVATION that
 // counts in every window and never ages; when it is sent it is stamped with the
 // send time and leaves the ledger 60 s later. A call is granted only when the
@@ -44,7 +44,24 @@
 // Every call reserves on the GLOBAL limiter first, then on its API limiter,
 // against ONE deadline computed when the call is enqueued
 // (BNF_MCP_RATE_MAX_WAIT_MS); both are stamped as sent when `acquireBnfMcp`
-// returns, and both callers send (or release on abort) synchronously after. A
+// returns. WHERE THE STAMP SITS relative to the real HTTP send, per caller:
+//   (a) callBnfTool: the abort check and `fetch(...)` follow the stamp in the
+//       same synchronous run — the request leaves at the stamp.
+//   (b) withBnfRateLimit: the decorator warms the SDK registry's MCP catalogue
+//       (`registry.resolve`, memoised per registry) BEFORE acquiring, so the
+//       inner dispatch's `ensureMcpCatalog` is a cache hit and `callMcpServerTool`
+//       → `fetch` follows the stamp within microtasks. If the warm-up itself
+//       failed (catalogue unavailable), the inner dispatch retries the
+//       discovery: the send can then lag the stamp by at most one discovery
+//       RPC, which the SDK bounds by the server's `timeoutMs`
+//       (BNF_MCP_TIMEOUT_MS). A lag only makes the ledger count the call
+//       EARLIER than its send, so the window it occupies starts before the
+//       real one — the bound below holds on the stamped times and the real
+//       sends trail them by at most that lag.
+// Each limiter refuses a deadline already in the past before any grant, and a
+// reservation that is neither sent nor released within its TTL
+// (BNF_MCP_RATE_MAX_WAIT_MS + BNF_MCP_TIMEOUT_MS) is dropped and logged, so a
+// lost reservation can never hold capacity for ever. A
 // call that cannot be granted before the deadline is SHED: it never reaches
 // BnF, every grant it took is released (a refused catalogue retry must not
 // starve the other APIs, and a cancelled caller frees what it held even when
@@ -82,7 +99,7 @@
 // sleep so tests never wait on real time.
 import "server-only"
 
-import { BUFFER_SEARCH_MAX_PAGE_SIZE_BY_SOURCE } from "@/lib/constants"
+import { BNF_MCP_TIMEOUT_MS, BUFFER_SEARCH_MAX_PAGE_SIZE_BY_SOURCE } from "@/lib/constants"
 import { requireBnfRateEnv } from "@/lib/env"
 import { toolRefusal, type ToolRefusal } from "@/lib/agent/tools/failure"
 import { BNF_MCP_TOOL, type BnfMcpToolName } from "./tools"
@@ -214,6 +231,10 @@ export const BNF_RATE_LIMIT_FREEZE_MAX_MS = 5 * 60_000
  *  and the acquire loop would spin without progress. */
 const MIN_WAIT_MS = 1
 
+/** How long an unsent reservation may hold capacity by default (tests); the
+ *  process-wide limiters use BNF_MCP_RATE_MAX_WAIT_MS + BNF_MCP_TIMEOUT_MS. */
+const DEFAULT_RESERVATION_TTL_MS = 2 * BNF_RATE_WINDOW_MS
+
 /** How often a caller blocked only by RESERVATIONS (calls granted, not yet
  *  sent — they cannot be waited out by the clock) re-checks the ledger. */
 const RESERVATION_POLL_MS = 25
@@ -255,7 +276,7 @@ export class RateWaitTimeoutError extends Error {
 export type RateGrantTicket = { readonly weight: number; readonly sentAt: number | null }
 
 /** The limiter's own mutable view of a ticket. */
-type LedgerTicket = { weight: number; sentAt: number | null }
+type LedgerTicket = { weight: number; sentAt: number | null; reservedAt: number }
 
 export interface SlidingWindowLimiterOptions {
   /** Upstream requests allowed in any window of `windowMs`. */
@@ -266,6 +287,10 @@ export interface SlidingWindowLimiterOptions {
   now?: () => number
   /** Injectable sleep; receives the abort signal so a cancelled turn stops waiting. */
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>
+  /** An unsent reservation older than this is released and logged. */
+  reservationTtlMs?: number
+  /** Name in the release log. */
+  label?: string
 }
 
 /**
@@ -292,6 +317,8 @@ export class SlidingWindowLimiter {
   private chain: Promise<void> = Promise.resolve()
   private readonly now: () => number
   private readonly sleepFn: (ms: number, signal?: AbortSignal) => Promise<void>
+  private readonly reservationTtlMs: number
+  private readonly label: string
 
   constructor(opts: SlidingWindowLimiterOptions) {
     if (!Number.isInteger(opts.limit) || opts.limit < 1) {
@@ -305,6 +332,12 @@ export class SlidingWindowLimiter {
     this.windowMs = windowMs
     this.now = opts.now ?? (() => performance.now())
     this.sleepFn = opts.sleep ?? realSleep
+    const ttl = opts.reservationTtlMs ?? DEFAULT_RESERVATION_TTL_MS
+    if (!Number.isFinite(ttl) || ttl <= 0) {
+      throw new Error(`SlidingWindowLimiter: reservationTtlMs must be > 0, got ${ttl}`)
+    }
+    this.reservationTtlMs = ttl
+    this.label = opts.label ?? "limiter"
   }
 
   /**
@@ -415,6 +448,17 @@ export class SlidingWindowLimiter {
   }
 
   private evict(now: number): void {
+    for (const t of this.reserved) {
+      if (now - t.reservedAt >= this.reservationTtlMs) {
+        // A reservation nobody sent nor released (a caller bug): it would hold
+        // capacity for ever. Released, and said loudly.
+        this.reserved.delete(t)
+        console.error(
+          `[bnf-rate] ${this.label}: reservation of weight ${t.weight} neither sent nor released ` +
+            `within ${this.reservationTtlMs}ms — released`,
+        )
+      }
+    }
     const horizon = now - this.windowMs
     const first = this.sent[0]
     if (first !== undefined && first.sentAt !== null && first.sentAt <= horizon) {
@@ -446,11 +490,14 @@ export class SlidingWindowLimiter {
     for (;;) {
       if (signal?.aborted) throw signal.reason
       const now = this.now()
+      // An expired deadline is refused BEFORE any grant: a caller whose budget
+      // is spent never takes capacity.
+      if (now > deadline) throw new RateWaitTimeoutError(0)
       this.evict(now)
       const fits = this.fitsAt(now, weight)
       const at = fits === null ? null : Math.max(this.frozenUntil, fits)
       if (at !== null && at <= now) {
-        const ticket: LedgerTicket = { weight, sentAt: sentAtGrant ? now : null }
+        const ticket: LedgerTicket = { weight, sentAt: sentAtGrant ? now : null, reservedAt: now }
         if (sentAtGrant) this.sent.push(ticket)
         else this.reserved.add(ticket)
         return ticket
@@ -494,14 +541,18 @@ class BnfRateLimiter {
   readonly wallClock: () => number
 
   constructor(config: BnfRateLimiterConfig) {
-    const limiter = (limit: number) => new SlidingWindowLimiter({ limit, now: config.now, sleep: config.sleep })
-    this.global = limiter(config.globalRpm)
+    // An unsent reservation can legitimately live as long as the wait budget
+    // plus one MCP call; past that it is a lost reservation and is released.
+    const reservationTtlMs = config.maxWaitMs + BNF_MCP_TIMEOUT_MS
+    const limiter = (label: BnfRateBucketName, limit: number) =>
+      new SlidingWindowLimiter({ limit, now: config.now, sleep: config.sleep, reservationTtlMs, label })
+    this.global = limiter(GLOBAL_LIMIT, config.globalRpm)
     this.byApi = {
-      [BNF_API.CATALOGUE]: limiter(config.catalogueRpm),
-      [BNF_API.GALLICA_SRU]: limiter(config.gallicaSruRpm),
-      [BNF_API.IIIF]: limiter(config.iiifRpm),
-      [BNF_API.ISSUES]: limiter(config.issuesRpm),
-      [BNF_API.GRAPHE]: limiter(config.grapheRpm),
+      [BNF_API.CATALOGUE]: limiter(BNF_API.CATALOGUE, config.catalogueRpm),
+      [BNF_API.GALLICA_SRU]: limiter(BNF_API.GALLICA_SRU, config.gallicaSruRpm),
+      [BNF_API.IIIF]: limiter(BNF_API.IIIF, config.iiifRpm),
+      [BNF_API.ISSUES]: limiter(BNF_API.ISSUES, config.issuesRpm),
+      [BNF_API.GRAPHE]: limiter(BNF_API.GRAPHE, config.grapheRpm),
     }
     this.rpm = {
       [GLOBAL_LIMIT]: config.globalRpm,

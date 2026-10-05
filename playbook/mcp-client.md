@@ -195,9 +195,15 @@ share those limiters:
   cannot veto.
 
 Every call reserves on the global limiter, then on its API limiter, against
-ONE finite deadline computed when it is enqueued; `acquireBnfMcp` stamps both
-as sent when it returns, and both enforcement points send synchronously after
-it (or release the grant if the turn was cancelled meanwhile). The rules:
+ONE finite deadline computed when it is enqueued (a deadline already past is
+refused before any grant); `acquireBnfMcp` stamps both as sent when it
+returns. `callBnfTool` fetches in the same synchronous run; the registry
+decorator warms the SDK registry's MCP catalogue before acquiring, so the
+inner `callMcpServerTool` → `fetch` follows the stamp within microtasks (only
+a failed warm-up can add one bounded discovery RPC in between — see "WHERE
+THE STAMP SITS" in rate-limit.ts). A cancelled turn releases the grant. A
+reservation that is neither sent nor released within `maxWaitMs` +
+`BNF_MCP_TIMEOUT_MS` is released and logged. The rules:
 
 - **Shed, never thrown.** A call that cannot be granted within
   `BNF_MCP_RATE_MAX_WAIT_MS` is shed with a structured `{ success: false,

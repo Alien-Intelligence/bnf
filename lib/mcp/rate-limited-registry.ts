@@ -103,8 +103,13 @@ export function withBnfRateLimit<TCtx extends ToolContext>(
           ),
         }
       }
+      // Warm the inner registry's MCP catalogue BEFORE the grant (memoised per
+      // registry; normally already warm from the runner's own resolve), so the
+      // inner dispatch goes straight to the HTTP call after the grant is
+      // stamped sent — see "WHERE THE STAMP SITS" in rate-limit.ts.
       let grant
       try {
+        await registry.resolve(ctx.signal)
         grant = await acquireBnfMcp(raw, input, ctx.signal)
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)

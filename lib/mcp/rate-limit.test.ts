@@ -420,7 +420,7 @@ test("acquire refuses a deadline that is not a finite instant (it would wait wit
 
 test("a reservation counts until it is SENT, then ages from its send", async () => {
   const { clock, now, sleep } = fakeClock()
-  const lim = new SlidingWindowLimiter({ limit: 1, now, sleep })
+  const lim = new SlidingWindowLimiter({ limit: 1, now, sleep, reservationTtlMs: 10 * WINDOW })
   const held = await lim.reserve(1, now() + FAR)
   clock.t += 2 * WINDOW // a reservation never ages
   await assert.rejects(within(lim.acquire(1, now() + 100)), RateWaitTimeoutError)
@@ -517,4 +517,71 @@ test("the GLOBAL window counts a call from its send: a long API wait cannot age 
     const inWindow = sorted.filter((t) => t >= sorted[i] && t < sorted[i] + WINDOW).length
     assert.ok(inWindow <= 2, `window from ${sorted[i]} ms holds ${inWindow} sends > global 2 (${sorted.join(",")})`)
   }
+})
+
+// --- pass 4: expired deadline, stamp at the send, reservation TTL ----------
+
+test("a deadline already in the past is refused BEFORE any grant", async () => {
+  const { clock, now, sleep } = fakeClock()
+  const lim = new SlidingWindowLimiter({ limit: 5, now, sleep })
+  clock.t = 1_000
+  await assert.rejects(within(lim.acquire(1, 999)), RateWaitTimeoutError)
+  await assert.rejects(within(lim.acquire(1, -1)), RateWaitTimeoutError)
+  await assert.rejects(within(lim.reserve(1, 0)), RateWaitTimeoutError)
+  assert.equal(lim.inWindow(), 0, "nothing was granted")
+  await within(lim.acquire(1, 1_000)) // a deadline of exactly now still grants
+  assert.equal(lim.inWindow(), 1)
+})
+
+test("an unsent reservation is released after its TTL (and logged), never held for ever", async () => {
+  const { clock, now, sleep } = fakeClock()
+  const lim = new SlidingWindowLimiter({ limit: 1, now, sleep, reservationTtlMs: 5_000, label: "test" })
+  await lim.reserve(1, now() + FAR) // lost: never sent, never released
+  const errors: unknown[] = []
+  const original = console.error
+  console.error = (...args: unknown[]) => void errors.push(args)
+  try {
+    await within(lim.acquire(1, now() + FAR))
+  } finally {
+    console.error = original
+  }
+  assert.ok(clock.t >= 5_000 && clock.t < WINDOW, `granted once the TTL passed (t=${clock.t})`)
+  assert.equal(errors.length, 1, "the released reservation is logged")
+})
+
+test("the registry stamps a call sent AFTER the MCP catalogue is warm, not before a cold discovery", async () => {
+  const { withBnfRateLimit } = await import("./rate-limited-registry")
+  const { clock, now, sleep } = fakeClock()
+  __resetBnfRateLimiterForTests({ ...PROD_RATES, now, sleep })
+  // A cold catalogue costs 5 s of discovery, whoever triggers it first (the
+  // SDK's ensureMcpCatalog is memoised per registry).
+  let warm = false
+  const discover = () => {
+    if (!warm) {
+      clock.t += 5_000
+      warm = true
+    }
+  }
+  let sentAt = -1
+  const registry = withBnfRateLimit({
+    customTools: [],
+    mcpServers: [],
+    resolve: async () => {
+      discover()
+      return []
+    },
+    async dispatch() {
+      discover()
+      sentAt = clock.t
+      return { isError: false, content: "{}" }
+    },
+  })
+  const ctx = { signal: new AbortController().signal, request: new Request("http://localhost/test") }
+  await registry.dispatch("bnf__bnf_search_catalogue", {}, ctx, "tu_1")
+  assert.equal(sentAt, 5_000)
+  // Just before a window has passed since the SEND, the call still counts —
+  // it would have aged out if it had been stamped before the discovery.
+  clock.t = sentAt + WINDOW - 1
+  assert.equal(__bnfRateUsageForTests(BNF_API.CATALOGUE), 1)
+  assert.equal(__bnfRateUsageForTests(GLOBAL_LIMIT), 1)
 })
