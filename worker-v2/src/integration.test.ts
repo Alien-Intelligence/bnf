@@ -61,7 +61,7 @@ function harness(
     store: new MemoryOcrBackfillStore(),
     enabled: true,
     concurrency: 1,
-    policy: { retryFailedAfterMs: 60_000, maxAttempts: 5, startedStaleAfterMs: 90 * 60 * 1_000, unstartedStaleAfterMs: 14 * 24 * 60 * 60 * 1_000 },
+    policy: { retryFailedAfterMs: 60_000, maxAttempts: 5, startedStaleAfterMs: 90 * 60 * 1_000, unstartedStaleAfterMs: 14 * 24 * 60 * 60 * 1_000, unsentStaleAfterMs: 10 * 60 * 1_000 },
   };
   // The backfill stage requires the shared fetch gate; an always-open one here.
   const fetchGate: RateGate = { ratePerMin: 1_000_000, acquire: async () => {} };

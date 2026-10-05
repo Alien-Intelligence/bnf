@@ -3,6 +3,7 @@
  * memory stores/queue. Covers the app contract: POST /ingest → { clusterJobId } +
  * a seeded run; GET /progress/:runId read-model + 404; /health; cancel; bad body.
  */
+import { claimOf } from "./testing/backfill-claims.js";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
@@ -26,6 +27,7 @@ const POLICY: OcrBackfillPolicy = {
   retryFailedAfterMs: 60_000,
   maxAttempts: 5,
   startedStaleAfterMs: 90 * 60 * 1_000, unstartedStaleAfterMs: 14 * 24 * 60 * 60 * 1_000,
+  unsentStaleAfterMs: 10 * 60 * 1_000,
 };
 
 async function bootServer(
@@ -262,7 +264,7 @@ test("POST /ocr-quality/sync: a recently failed row is unavailable with its reas
   const { base, deps, ocrBackfill, close } = await bootServer({ now: () => clock });
   try {
     await ocrBackfill.request(ARK_B, POLICY, new AbortController().signal);
-    await ocrBackfill.markFailed(ARK_B, "build_failed: 503", { permanent: false });
+    await ocrBackfill.markFailed(await claimOf(ocrBackfill, ARK_B), "build_failed: 503", { permanent: false });
 
     const fresh = (await (await sync(base, { arks: [ARK_B] })).json()) as SyncResponse;
     assert.deepEqual(fresh.unavailable, [{ ark: ARK_B, reason: "build_failed: 503" }]);
@@ -394,7 +396,7 @@ test("POST /ocr-quality/sync: a done row whose artifact vanished is re-queued", 
   const { base, deps, ocrBackfill, close } = await bootServer();
   try {
     await ocrBackfill.request(ARK_B, POLICY, new AbortController().signal);
-    await ocrBackfill.markDone(ARK_B);
+    await ocrBackfill.markDone(await claimOf(ocrBackfill, ARK_B));
     const body = (await (await sync(base, { arks: [ARK_B] })).json()) as SyncResponse;
     assert.deepEqual(body.building, [ARK_B]);
     assert.equal((await deps.queue.counts(Q.ocrQualityBackfill)).queued, 1);
@@ -426,7 +428,7 @@ test("POST /ocr-quality/sync with the backfill disabled: missing → backfill_di
   try {
     await blob.putJson(keys.ocrQuality(ARK_A), artifactFor(ARK_A));
     await store.request(ARK_C, POLICY, new AbortController().signal);
-    await store.markFailed(ARK_C, "no_pages_artifact", { permanent: true });
+    await store.markFailed(await claimOf(store, ARK_C), "no_pages_artifact", { permanent: true });
     await blob.putJson(keys.ocrQuality(ARK_D), { v: 1 });
 
     const body = (await (await sync(base, { arks: [ARK_A, ARK_B, ARK_C, ARK_D] })).json()) as SyncResponse;
@@ -530,6 +532,36 @@ test("POST /ocr-quality/sync: a body not received in time → 408, logged", asyn
     });
     assert.equal(status, 408);
     assert.ok(lines.some((l) => l.event === "http_body_rejected" && l.reason === "timeout"));
+  } finally {
+    await close();
+  }
+});
+
+test("POST /ocr-quality/sync: a broken body stream is refused as stream_error (400), logged", async () => {
+  const { base, lines, close } = await bootServer();
+  try {
+    const { port, hostname } = new URL(base);
+    await new Promise<void>((resolve) => {
+      const req = httpRequest({
+        host: hostname,
+        port,
+        path: "/ocr-quality/sync",
+        method: "POST",
+        headers: { "content-length": "100" },
+      });
+      req.on("error", () => resolve()); // our side of the socket is destroyed on purpose
+      req.write('{"arks":');
+      setTimeout(() => {
+        req.destroy();
+        resolve();
+      }, 20);
+    });
+    for (let i = 0; i < 100 && !lines.some((l) => l.event === "http_body_rejected"); i++) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    const line = lines.find((l) => l.event === "http_body_rejected");
+    assert.ok(line, "the refusal is logged");
+    assert.equal(line.reason, "stream_error");
   } finally {
     await close();
   }

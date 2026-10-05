@@ -9,6 +9,7 @@
  * unique ARK prefix, deleted afterwards). Without it the pg suite is reported
  * as SKIPPED, never silently passed.
  */
+import { claimOf } from "../testing/backfill-claims.js";
 import { after, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
@@ -32,6 +33,7 @@ const POLICY: OcrBackfillPolicy = {
   maxAttempts: 3,
   startedStaleAfterMs: 600_000,
   unstartedStaleAfterMs: 6_000_000,
+  unsentStaleAfterMs: 300_000,
 };
 
 /** A signal that never aborts — the cases that are not about cancellation. */
@@ -50,7 +52,7 @@ function contract(name: string, make: () => Promise<Fixture>, opts: { skip?: str
     test("first request enqueues; a second one finds it queued", async () => {
       const f = await make();
       const ark = f.ark();
-      assert.deepEqual(await f.store.request(ark, POLICY, LIVE), { kind: "enqueue" });
+      assert.equal((await f.store.request(ark, POLICY, LIVE)).kind, "enqueue");
       assert.deepEqual(await f.store.request(ark, POLICY, LIVE), { kind: "queued" });
       assert.equal((await f.store.get(ark))?.attempts, 0);
     });
@@ -59,8 +61,8 @@ function contract(name: string, make: () => Promise<Fixture>, opts: { skip?: str
       const f = await make();
       const ark = f.ark();
       await f.store.request(ark, POLICY, LIVE);
-      await f.store.markDone(ark);
-      assert.deepEqual(await f.store.request(ark, POLICY, LIVE), { kind: "enqueue" });
+      await f.store.markDone(await claimOf(f.store, ark));
+      assert.equal((await f.store.request(ark, POLICY, LIVE)).kind, "enqueue");
       const row = await f.store.get(ark);
       assert.equal(row?.state, "queued");
       assert.equal(row?.attempts, 1);
@@ -72,10 +74,10 @@ function contract(name: string, make: () => Promise<Fixture>, opts: { skip?: str
       const ark = f.ark();
       await f.store.request(ark, POLICY, LIVE);
       for (let i = 1; i < POLICY.maxAttempts; i++) {
-        await f.store.markDone(ark);
-        assert.deepEqual(await f.store.request(ark, POLICY, LIVE), { kind: "enqueue" });
+        await f.store.markDone(await claimOf(f.store, ark));
+        assert.equal((await f.store.request(ark, POLICY, LIVE)).kind, "enqueue");
       }
-      await f.store.markDone(ark);
+      await f.store.markDone(await claimOf(f.store, ark));
       assert.deepEqual(await f.store.request(ark, POLICY, LIVE), {
         kind: "failed",
         reason: OCR_BACKFILL_REASON.ARTIFACT_LOST,
@@ -88,21 +90,21 @@ function contract(name: string, make: () => Promise<Fixture>, opts: { skip?: str
       const f = await make();
       const ark = f.ark();
       await f.store.request(ark, POLICY, LIVE);
-      await f.store.markFailed(ark, "build_failed: 503", { permanent: false });
+      await f.store.markFailed(await claimOf(f.store, ark), "build_failed: 503", { permanent: false });
       assert.deepEqual(await f.store.request(ark, POLICY, LIVE), {
         kind: "failed",
         reason: "build_failed: 503",
         permanent: false,
       });
       f.advance(retryBackoffMs(POLICY, 1));
-      assert.deepEqual(await f.store.request(ark, POLICY, LIVE), { kind: "enqueue" });
+      assert.equal((await f.store.request(ark, POLICY, LIVE)).kind, "enqueue");
       assert.equal((await f.store.get(ark))?.attempts, 1);
 
-      await f.store.markFailed(ark, "build_failed: 503", { permanent: false });
+      await f.store.markFailed(await claimOf(f.store, ark), "build_failed: 503", { permanent: false });
       f.advance(retryBackoffMs(POLICY, 1));
       assert.equal((await f.store.request(ark, POLICY, LIVE)).kind, "failed", "the second backoff is twice as long");
       f.advance(retryBackoffMs(POLICY, 2) - retryBackoffMs(POLICY, 1));
-      assert.deepEqual(await f.store.request(ark, POLICY, LIVE), { kind: "enqueue" });
+      assert.equal((await f.store.request(ark, POLICY, LIVE)).kind, "enqueue");
     });
 
     test("a transient failure is final once maxAttempts is reached", async () => {
@@ -110,7 +112,7 @@ function contract(name: string, make: () => Promise<Fixture>, opts: { skip?: str
       const ark = f.ark();
       await f.store.request(ark, POLICY, LIVE);
       for (let attempt = 1; attempt <= POLICY.maxAttempts; attempt++) {
-        await f.store.markFailed(ark, "build_failed: 503", { permanent: false });
+        await f.store.markFailed(await claimOf(f.store, ark), "build_failed: 503", { permanent: false });
         f.advance(retryBackoffMs(POLICY, attempt));
         if (attempt < POLICY.maxAttempts) await f.store.request(ark, POLICY, LIVE);
       }
@@ -126,7 +128,7 @@ function contract(name: string, make: () => Promise<Fixture>, opts: { skip?: str
       const f = await make();
       const ark = f.ark();
       await f.store.request(ark, POLICY, LIVE);
-      await f.store.markFailed(ark, "no_metadata", { permanent: true });
+      await f.store.markFailed(await claimOf(f.store, ark), "no_metadata", { permanent: true });
       f.advance(retryBackoffMs(POLICY, 10));
       assert.deepEqual(await f.store.request(ark, POLICY, LIVE), {
         kind: "failed",
@@ -139,19 +141,20 @@ function contract(name: string, make: () => Promise<Fixture>, opts: { skip?: str
       const f = await make();
       const ark = f.ark();
       await f.store.request(ark, POLICY, LIVE);
+      await f.store.markSent(await claimOf(f.store, ark));
       // Long in the backlog: not stale while no delivery started.
       f.advance(POLICY.startedStaleAfterMs * 3);
       assert.deepEqual(await f.store.request(ark, POLICY, LIVE), { kind: "queued" });
-      assert.equal(await f.store.markStarted(ark), OCR_BACKFILL_MARK.APPLIED);
+      assert.equal(await f.store.markStarted(await claimOf(f.store, ark)), OCR_BACKFILL_MARK.APPLIED);
       f.advance(POLICY.startedStaleAfterMs - 1);
       assert.deepEqual(await f.store.request(ark, POLICY, LIVE), { kind: "queued" }, "a live build");
       f.advance(1);
-      assert.deepEqual(await f.store.request(ark, POLICY, LIVE), { kind: "enqueue" });
+      assert.equal((await f.store.request(ark, POLICY, LIVE)).kind, "enqueue");
       assert.equal((await f.store.get(ark))?.attempts, 1);
-      await f.store.markStarted(ark);
+      await f.store.markStarted(await claimOf(f.store, ark));
       f.advance(POLICY.startedStaleAfterMs);
-      assert.deepEqual(await f.store.request(ark, POLICY, LIVE), { kind: "enqueue" });
-      await f.store.markStarted(ark);
+      assert.equal((await f.store.request(ark, POLICY, LIVE)).kind, "enqueue");
+      await f.store.markStarted(await claimOf(f.store, ark));
       f.advance(POLICY.startedStaleAfterMs);
       assert.deepEqual(await f.store.request(ark, POLICY, LIVE), {
         kind: "failed",
@@ -165,21 +168,22 @@ function contract(name: string, make: () => Promise<Fixture>, opts: { skip?: str
       const f = await make();
       const ark = f.ark();
       await f.store.request(ark, POLICY, LIVE);
-      await f.store.markStarted(ark);
+      await f.store.markStarted(await claimOf(f.store, ark));
       f.advance(POLICY.startedStaleAfterMs - 1);
-      await f.store.markStarted(ark); // the queue's retry delivered it again
+      await f.store.markStarted(await claimOf(f.store, ark)); // the queue's retry delivered it again
       f.advance(POLICY.startedStaleAfterMs - 1);
       assert.deepEqual(await f.store.request(ark, POLICY, LIVE), { kind: "queued" });
     });
 
-    test("a never-started queued row is stale only past the queue's own retention", async () => {
+    test("a sent but never-started queued row is stale only past the queue's own retention", async () => {
       const f = await make();
       const ark = f.ark();
       await f.store.request(ark, POLICY, LIVE);
+      await f.store.markSent(await claimOf(f.store, ark));
       f.advance(POLICY.unstartedStaleAfterMs - 1);
       assert.deepEqual(await f.store.request(ark, POLICY, LIVE), { kind: "queued" });
       f.advance(1);
-      assert.deepEqual(await f.store.request(ark, POLICY, LIVE), { kind: "enqueue" });
+      assert.equal((await f.store.request(ark, POLICY, LIVE)).kind, "enqueue");
       assert.equal((await f.store.get(ark))?.attempts, 1);
     });
 
@@ -187,18 +191,18 @@ function contract(name: string, make: () => Promise<Fixture>, opts: { skip?: str
       const f = await make();
       const done = f.ark();
       await f.store.request(done, POLICY, LIVE);
-      assert.equal(await f.store.markDone(done), OCR_BACKFILL_MARK.APPLIED);
-      assert.equal(await f.store.markFailed(done, "late", { permanent: true }), OCR_BACKFILL_MARK.NOT_QUEUED);
-      assert.equal(await f.store.markStarted(done), OCR_BACKFILL_MARK.NOT_QUEUED);
+      assert.equal(await f.store.markDone(await claimOf(f.store, done)), OCR_BACKFILL_MARK.APPLIED);
+      assert.equal(await f.store.markFailed(await claimOf(f.store, done), "late", { permanent: true }), OCR_BACKFILL_MARK.NOT_QUEUED);
+      assert.equal(await f.store.markStarted(await claimOf(f.store, done)), OCR_BACKFILL_MARK.NOT_QUEUED);
       const doneRow = await f.store.get(done);
       assert.equal(doneRow?.state, "done");
       assert.equal(doneRow?.attempts, 0);
 
       const failed = f.ark();
       await f.store.request(failed, POLICY, LIVE);
-      await f.store.markFailed(failed, "no_metadata", { permanent: true });
-      assert.equal(await f.store.markDone(failed), OCR_BACKFILL_MARK.NOT_QUEUED);
-      assert.equal(await f.store.markFailed(failed, "again", { permanent: false }), OCR_BACKFILL_MARK.NOT_QUEUED);
+      await f.store.markFailed(await claimOf(f.store, failed), "no_metadata", { permanent: true });
+      assert.equal(await f.store.markDone(await claimOf(f.store, failed)), OCR_BACKFILL_MARK.NOT_QUEUED);
+      assert.equal(await f.store.markFailed(await claimOf(f.store, failed), "again", { permanent: false }), OCR_BACKFILL_MARK.NOT_QUEUED);
       const failedRow = await f.store.get(failed);
       assert.deepEqual([failedRow?.state, failedRow?.error, failedRow?.attempts], ["failed", "no_metadata", 1]);
     });
@@ -223,9 +227,55 @@ function contract(name: string, make: () => Promise<Fixture>, opts: { skip?: str
     test("markDone / markFailed on an ARK with no row throw", async () => {
       const f = await make();
       const ark = f.ark();
-      await assert.rejects(() => f.store.markDone(ark), /no row/);
-      await assert.rejects(() => f.store.markFailed(ark, "x", { permanent: false }), /no row/);
-      await assert.rejects(() => f.store.markStarted(ark), /no row/);
+      const none = { ark, generation: 1 };
+      await assert.rejects(() => f.store.markDone(none), /no row/);
+      await assert.rejects(() => f.store.markFailed(none, "x", { permanent: false }), /no row/);
+      await assert.rejects(() => f.store.markStarted(none), /no row/);
+      await assert.rejects(() => f.store.markSent(none), /no row/);
+    });
+
+    test("a superseded delivery can never mark the row its re-open created", async () => {
+      const f = await make();
+      const ark = f.ark();
+      const first = await f.store.request(ark, POLICY, LIVE);
+      assert.equal(first.kind, "enqueue");
+      const a = { ark, generation: first.kind === "enqueue" ? first.generation : -1 };
+      await f.store.markSent(a);
+      await f.store.markStarted(a);
+      f.advance(POLICY.startedStaleAfterMs); // A looks expired: the row is re-opened
+      const second = await f.store.request(ark, POLICY, LIVE);
+      assert.equal(second.kind, "enqueue");
+      const b = { ark, generation: second.kind === "enqueue" ? second.generation : -1 };
+      assert.notEqual(a.generation, b.generation);
+      // The late delivery A marks nothing…
+      assert.equal(await f.store.markFailed(a, "late", { permanent: true }), OCR_BACKFILL_MARK.NOT_QUEUED);
+      assert.equal(await f.store.markDone(a), OCR_BACKFILL_MARK.NOT_QUEUED);
+      assert.equal(await f.store.markStarted(a), OCR_BACKFILL_MARK.NOT_QUEUED);
+      // …and B builds and finishes.
+      assert.equal(await f.store.markStarted(b), OCR_BACKFILL_MARK.APPLIED);
+      assert.equal(await f.store.markDone(b), OCR_BACKFILL_MARK.APPLIED);
+      assert.equal((await f.store.get(ark))?.state, "done");
+    });
+
+    test("a claim whose send was never confirmed is re-opened within minutes, not after the backlog rule", async () => {
+      const f = await make();
+      const ark = f.ark();
+      await f.store.request(ark, POLICY, LIVE); // send and release both failed: no markSent, no markFailed
+      f.advance(POLICY.unsentStaleAfterMs - 1);
+      assert.deepEqual(await f.store.request(ark, POLICY, LIVE), { kind: "queued" });
+      f.advance(1);
+      const reopened = await f.store.request(ark, POLICY, LIVE);
+      assert.equal(reopened.kind, "enqueue");
+      assert.equal((await f.store.get(ark))?.attempts, 1);
+    });
+
+    test("a confirmed send waits by the backlog rule", async () => {
+      const f = await make();
+      const ark = f.ark();
+      await f.store.request(ark, POLICY, LIVE);
+      assert.equal(await f.store.markSent(await claimOf(f.store, ark)), OCR_BACKFILL_MARK.APPLIED);
+      f.advance(POLICY.unsentStaleAfterMs * 2);
+      assert.deepEqual(await f.store.request(ark, POLICY, LIVE), { kind: "queued" });
     });
 
     test("counts() reports each state", async () => {
@@ -233,8 +283,8 @@ function contract(name: string, make: () => Promise<Fixture>, opts: { skip?: str
       const before = await f.store.counts();
       const [a, b, c] = [f.ark(), f.ark(), f.ark()];
       for (const ark of [a, b, c]) await f.store.request(ark, POLICY, LIVE);
-      await f.store.markDone(b);
-      await f.store.markFailed(c, "x", { permanent: true });
+      await f.store.markDone(await claimOf(f.store, b));
+      await f.store.markFailed(await claimOf(f.store, c), "x", { permanent: true });
       const after = await f.store.counts();
       assert.deepEqual(
         { queued: after.queued - before.queued, done: after.done - before.done, failed: after.failed - before.failed },

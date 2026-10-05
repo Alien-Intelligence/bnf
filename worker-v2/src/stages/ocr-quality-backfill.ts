@@ -33,8 +33,8 @@
  *     TransientBnfError, a rate-gate wait past its deadline (RateGateTimeoutError);
  *   - unclassified (an S3 or DB blip): retried like a transient, logged as such.
  */
-import { PipelineStage, type StageDeps } from "../core/stage.js";
-import { acquireWithin, RateGateTimeoutError } from "../core/rate.js";
+import { DeliveryExpiredError, PipelineStage, type StageDeps } from "../core/stage.js";
+import { acquireWithin, RateGateStoppedError, RateGateTimeoutError } from "../core/rate.js";
 import type { RateGate, StageContext, StageOutcome } from "../core/types.js";
 import { classifyLane } from "../bnf/classify.js";
 import { CorruptDocInfoError, inspectCachedDocInfo } from "../bnf/doc-info.js";
@@ -46,6 +46,7 @@ import {
   OCR_BACKFILL_MARK,
   OCR_BACKFILL_REASON,
   withDetail,
+  type OcrBackfillClaim,
   type OcrBackfillMark,
   type OcrBackfillStore,
 } from "../domain/ocr-backfill.js";
@@ -58,8 +59,14 @@ import {
   writeOcrQualityArtifact,
 } from "./ocr-quality.js";
 
-export interface OcrBackfillItem {
-  ark: string;
+/** The backfill message: the claim the sync won (OcrBackfillClaim). */
+export type OcrBackfillItem = OcrBackfillClaim;
+
+/** A queued payload as the claim it must be — anything else is a stray message. */
+function isClaim(v: unknown): v is OcrBackfillClaim {
+  if (v === null || typeof v !== "object") return false;
+  const c = v as Record<string, unknown>;
+  return typeof c.ark === "string" && typeof c.generation === "number" && Number.isSafeInteger(c.generation);
 }
 
 /**
@@ -78,6 +85,17 @@ export interface OcrQualityBackfillOpts {
 
 function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
+}
+
+/** A permanent BnF failure on ONE folio: recorded with that folio, never just "the doc". */
+class FolioPermanentError extends Error {
+  constructor(
+    readonly folio: number,
+    override readonly cause: PermanentBnfError,
+  ) {
+    super(`f${folio}: ${cause.message}`);
+    this.name = "FolioPermanentError";
+  }
 }
 
 export class OcrQualityBackfillStage extends PipelineStage<OcrBackfillItem, never> {
@@ -111,31 +129,40 @@ export class OcrQualityBackfillStage extends PipelineStage<OcrBackfillItem, neve
 
   /** The base's safety net: a throw that escaped process() on the last attempt. */
   protected override async onExhausted(item: OcrBackfillItem, reason: string): Promise<void> {
-    await this.store.markFailed(item.ark, withDetail(OCR_BACKFILL_REASON.BUILD_FAILED, reason), {
+    if (!isClaim(item)) return;
+    await this.store.markFailed(item, withDetail(OCR_BACKFILL_REASON.BUILD_FAILED, reason), {
       permanent: false,
     });
   }
 
   async process(item: OcrBackfillItem, ctx: StageContext): Promise<StageOutcome<never>> {
-    const { ark } = item;
+    // A payload without a claim generation (a stray or pre-claim message) can
+    // mark no row: nothing to build.
+    if (!isClaim(item)) {
+      ctx.log.warn("ocr_backfill_bad_payload", { payload: JSON.stringify(item) });
+      return { kind: "fail", reason: "ocr_backfill_bad_payload", terminal: true };
+    }
+    const claim: OcrBackfillClaim = { ark: item.ark, generation: item.generation };
+    const { ark } = claim;
 
     // 0. This delivery starts the build: the staleness clock runs from here.
-    //    A row that already left `queued` has no build to run.
-    if ((await this.store.markStarted(ark)) === OCR_BACKFILL_MARK.NOT_QUEUED) {
-      ctx.log.warn("ocr_backfill_not_queued", { ark, attempt: ctx.attempt });
+    //    A row that already left this claim (terminal, or re-opened under a
+    //    newer generation) has no build to run.
+    if ((await this.store.markStarted(claim)) === OCR_BACKFILL_MARK.NOT_QUEUED) {
+      ctx.log.warn("ocr_backfill_not_queued", { ark, generation: claim.generation, attempt: ctx.attempt });
       return { kind: "done" };
     }
 
     // 1. Already built (a redelivery, or a live ingest beat us to it). Only a
     //    VALID artifact counts: a corrupt one is rebuilt and overwritten.
     if (await this.hasValidArtifact(ark, ctx)) {
-      this.noteMark(ark, await this.store.markDone(ark), ctx);
+      this.noteMark(ark, await this.store.markDone(claim), ctx);
       return { kind: "done" };
     }
 
     // 2. The per-ARK meta blob is where ocrRate and the lane come from.
     const rawMeta = await this.blob.getJson<unknown>(keys.metadata(ark));
-    if (rawMeta === null) return this.permanent(ark, OCR_BACKFILL_REASON.NO_METADATA, ctx);
+    if (rawMeta === null) return this.permanent(claim, OCR_BACKFILL_REASON.NO_METADATA, ctx);
     let info: BnfDocInfo;
     try {
       const cached = inspectCachedDocInfo(rawMeta);
@@ -145,36 +172,53 @@ export class OcrQualityBackfillStage extends PipelineStage<OcrBackfillItem, neve
       }
     } catch (e) {
       if (!(e instanceof CorruptDocInfoError)) throw e;
-      return this.permanent(ark, withDetail(OCR_BACKFILL_REASON.CORRUPT_METADATA, e.message), ctx);
+      return this.permanent(claim, withDetail(OCR_BACKFILL_REASON.CORRUPT_METADATA, e.message), ctx);
     }
 
     // 3. The prepared pages are the set the artifact must cover.
     const pages = await this.blob.getJson<unknown>(keys.pages(ark));
-    if (pages === null) return this.permanent(ark, OCR_BACKFILL_REASON.NO_PAGES_ARTIFACT, ctx);
-    if (!isPreparedPages(pages)) return this.permanent(ark, OCR_BACKFILL_REASON.CORRUPT_PAGES_ARTIFACT, ctx);
-    if (pages.length === 0) return this.permanent(ark, OCR_BACKFILL_REASON.NO_PAGES_ARTIFACT, ctx);
+    if (pages === null) return this.permanent(claim, OCR_BACKFILL_REASON.NO_PAGES_ARTIFACT, ctx);
+    if (!isPreparedPages(pages)) return this.permanent(claim, OCR_BACKFILL_REASON.CORRUPT_PAGES_ARTIFACT, ctx);
+    if (pages.length === 0) return this.permanent(claim, OCR_BACKFILL_REASON.NO_PAGES_ARTIFACT, ctx);
 
     // 4. The lane that produced an INDEXED doc is deterministic from its info:
     //    a sans_texte doc that has pages was transcribed by paid OCR.
     const decision = classifyLane(info, { mistralEnabled: true });
-    if (decision.kind === "skip") return this.permanent(ark, OCR_BACKFILL_REASON.UNCLASSIFIABLE, ctx);
+    if (decision.kind === "skip") return this.permanent(claim, OCR_BACKFILL_REASON.UNCLASSIFIABLE, ctx);
 
     try {
       if (decision.lane === "text") {
-        const beforeFetch = (): Promise<void> => acquireWithin(this.fetchRate, this.fetchTokenWaitMs);
+        // The delivery's ceiling (ctx.signal) stops the walk: between folios
+        // and during every gate wait. A fetch already sent finishes within its
+        // own timeout; sidecars written so far are kept for the redelivery.
+        const beforeFetch = (): Promise<void> =>
+          acquireWithin(this.fetchRate, this.fetchTokenWaitMs, ctx.signal);
         for (const page of pages) {
-          await ensureAltoFolio(
-            { bnf: this.bnf, blob: this.blob, log: ctx.log, beforeFetch },
-            ark,
-            page.ordre,
-          );
+          ctx.signal.throwIfAborted();
+          try {
+            await ensureAltoFolio(
+              { bnf: this.bnf, blob: this.blob, log: ctx.log, beforeFetch },
+              ark,
+              page.ordre,
+            );
+          } catch (e) {
+            if (e instanceof PermanentBnfError) throw new FolioPermanentError(page.ordre, e);
+            throw e;
+          }
         }
       }
       await writeOcrQualityArtifact(this.blob, { ark, lane: decision.lane, pages });
     } catch (e) {
+      // A stopped gate (shutdown) is handed back by the stage base; a passed
+      // ceiling is the base's to report — neither is this build's failure.
+      if (e instanceof RateGateStoppedError || e instanceof DeliveryExpiredError) throw e;
+      if (e instanceof FolioPermanentError) {
+        ctx.log.warn("ocr_backfill_permanent", { ark, folio: e.folio, error: errMsg(e.cause) });
+        return this.permanent(claim, withDetail(OCR_BACKFILL_REASON.BUILD_FAILED, e.message), ctx);
+      }
       if (e instanceof PermanentBnfError || e instanceof OcrQualityArtifactError) {
         ctx.log.warn("ocr_backfill_permanent", { ark, error: errMsg(e) });
-        return this.permanent(ark, withDetail(OCR_BACKFILL_REASON.BUILD_FAILED, errMsg(e)), ctx);
+        return this.permanent(claim, withDetail(OCR_BACKFILL_REASON.BUILD_FAILED, errMsg(e)), ctx);
       }
       if (!(e instanceof TransientBnfError || e instanceof RateGateTimeoutError)) {
         ctx.log.warn("ocr_backfill_unclassified_error", { ark, attempt: ctx.attempt, error: errMsg(e) });
@@ -185,13 +229,13 @@ export class OcrQualityBackfillStage extends PipelineStage<OcrBackfillItem, neve
       if (ctx.attempt >= this.retry.attempts) {
         ctx.log.warn("ocr_backfill_exhausted", { ark, attempt: ctx.attempt, error: errMsg(e) });
         const reason = withDetail(OCR_BACKFILL_REASON.BUILD_FAILED, errMsg(e));
-        this.noteMark(ark, await this.store.markFailed(ark, reason, { permanent: false }), ctx);
+        this.noteMark(ark, await this.store.markFailed(claim, reason, { permanent: false }), ctx);
         return { kind: "fail", reason, terminal: true };
       }
       throw e;
     }
 
-    this.noteMark(ark, await this.store.markDone(ark), ctx);
+    this.noteMark(ark, await this.store.markDone(claim), ctx);
     ctx.log.info("ocr_quality_backfilled", { ark, lane: decision.lane, folios: pages.length });
     return { kind: "done" };
   }
@@ -211,8 +255,12 @@ export class OcrQualityBackfillStage extends PipelineStage<OcrBackfillItem, neve
   }
 
   /** A failure no retry can fix: recorded permanent, the message completes. */
-  private async permanent(ark: string, reason: string, ctx: StageContext): Promise<StageOutcome<never>> {
-    this.noteMark(ark, await this.store.markFailed(ark, reason, { permanent: true }), ctx);
+  private async permanent(
+    claim: OcrBackfillClaim,
+    reason: string,
+    ctx: StageContext,
+  ): Promise<StageOutcome<never>> {
+    this.noteMark(claim.ark, await this.store.markFailed(claim, reason, { permanent: true }), ctx);
     return { kind: "fail", reason, terminal: true };
   }
 

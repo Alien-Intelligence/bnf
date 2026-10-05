@@ -18,6 +18,7 @@ const POLICY: OcrBackfillPolicy = {
   maxAttempts: 5,
   startedStaleAfterMs: 90 * 60 * 1_000,
   unstartedStaleAfterMs: 14 * 24 * 60 * 60 * 1_000,
+  unsentStaleAfterMs: 10 * 60 * 1_000,
 };
 const LIVE = new AbortController().signal;
 

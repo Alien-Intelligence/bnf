@@ -33,7 +33,7 @@ import {
   OCR_SYNC_MAX_BODY_BYTES,
   OCR_SYNC_MAX_IN_FLIGHT,
   parseOcrSyncRequest,
-  syncOcrQuality,
+  runOcrSync,
   type OcrSyncResponse,
 } from "./live/ocr-quality-sync.js";
 
@@ -280,9 +280,12 @@ async function serveOcrSync(
   req: import("node:http").IncomingMessage,
   res: import("node:http").ServerResponse,
 ): Promise<void> {
+  // ONE deadline for the whole request, body read included, so the worst case
+  // stays OCR_SYNC_DEADLINE_MS — below the app's WORKER_RUNNER_TIMEOUT_MS.
+  const startedAt = Date.now();
   const body = await readJsonBody(deps, "/ocr-quality/sync", req, res, {
     maxBytes: OCR_SYNC_MAX_BODY_BYTES,
-    timeoutMs: deps.ocrSyncBodyReadMs,
+    timeoutMs: Math.min(deps.ocrSyncBodyReadMs, deps.ocrSyncDeadlineMs),
   });
   if (body === null) return;
   const parsed = parseOcrSyncRequest(body.value);
@@ -294,18 +297,21 @@ async function serveOcrSync(
   const { arks } = parsed.value;
   // The deadline CANCELS: the signal stops every ARK at its next step (no new
   // S3 read or store transaction); a won claim still gets its send or release.
-  const deadline = AbortSignal.timeout(deps.ocrSyncDeadlineMs);
+  const deadline = AbortSignal.timeout(Math.max(0, deps.ocrSyncDeadlineMs - (Date.now() - startedAt)));
+  const run = runOcrSync(
+    { blob: deps.blob, queue: deps.queue, log: deps.log, backfill: deps.ocrBackfill },
+    arks,
+    deadline,
+  );
   let response: OcrSyncResponse;
   try {
-    response = await syncOcrQuality(
-      { blob: deps.blob, queue: deps.queue, log: deps.log, backfill: deps.ocrBackfill },
-      arks,
-      deadline,
-    );
+    response = await run.answer;
   } catch (e) {
     if (!deadline.aborted) throw e;
     deps.log.warn("ocr_quality_sync_deadline", { asked: arks.length, deadlineMs: deps.ocrSyncDeadlineMs });
     sendJson(res, 503, { error: `sync did not finish within ${deps.ocrSyncDeadlineMs}ms` });
+    // Keep the in-flight slot until the abandoned per-ARK work has stopped.
+    await run.settled;
     return;
   }
   deps.log.info("ocr_quality_sync", {

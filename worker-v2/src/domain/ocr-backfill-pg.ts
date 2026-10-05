@@ -21,6 +21,7 @@ import {
   parseOcrBackfillState,
   planRequest,
   validateOcrBackfillPolicy,
+  type OcrBackfillClaim,
   type OcrBackfillCounts,
   type OcrBackfillMark,
   type OcrBackfillPolicy,
@@ -38,7 +39,9 @@ interface Row {
   permanent: boolean;
   attempts: number;
   requested_at: Date;
+  sent_at: Date | null;
   started_at: Date | null;
+  generation: number;
   updated_at: Date;
 }
 
@@ -50,7 +53,9 @@ function toRow(r: Row): OcrBackfillRow {
     permanent: r.permanent,
     attempts: Number(r.attempts),
     requestedAt: r.requested_at,
+    sentAt: r.sent_at,
     startedAt: r.started_at,
+    generation: Number(r.generation),
     updatedAt: r.updated_at,
   };
 }
@@ -106,11 +111,11 @@ export class PgOcrBackfillStore implements OcrBackfillStore {
     now: Date,
   ): Promise<OcrBackfillRequest> {
     const inserted = await client.query(
-      `INSERT INTO ${OCR_BACKFILL_TABLE} (ark, state, requested_at, updated_at)
-       VALUES ($1, $2, $3, $3) ON CONFLICT (ark) DO NOTHING`,
+      `INSERT INTO ${OCR_BACKFILL_TABLE} (ark, state, requested_at, updated_at, generation)
+       VALUES ($1, $2, $3, $3, 1) ON CONFLICT (ark) DO NOTHING`,
       [ark, OCR_BACKFILL_STATE.QUEUED, now],
     );
-    if (inserted.rowCount === 1) return { kind: "enqueue" };
+    if (inserted.rowCount === 1) return { kind: "enqueue", generation: 1 };
 
     const { rows } = await client.query<Row>(
       `SELECT * FROM ${OCR_BACKFILL_TABLE} WHERE ark = $1 FOR UPDATE`,
@@ -124,16 +129,19 @@ export class PgOcrBackfillStore implements OcrBackfillStore {
     switch (plan.action) {
       case "insert":
         throw new Error(`ocr-backfill: planRequest asked to insert an existing row for ${ark}`);
-      case "reopen":
+      case "reopen": {
+        const generation = Number(existing.generation) + 1;
         await this.updateOne(
           client,
           `UPDATE ${OCR_BACKFILL_TABLE}
              SET state = $2, error = NULL, permanent = false, attempts = $3,
-                 requested_at = $4, started_at = NULL, updated_at = $4
+                 requested_at = $4, sent_at = NULL, started_at = NULL, updated_at = $4,
+                 generation = $5
            WHERE ark = $1`,
-          [ark, OCR_BACKFILL_STATE.QUEUED, plan.attempts, now],
+          [ark, OCR_BACKFILL_STATE.QUEUED, plan.attempts, now, generation],
         );
-        return { kind: "enqueue" };
+        return { kind: "enqueue", generation };
+      }
       case "expire":
         await this.updateOne(
           client,
@@ -148,32 +156,30 @@ export class PgOcrBackfillStore implements OcrBackfillStore {
     }
   }
 
-  async markStarted(ark: string): Promise<OcrBackfillMark> {
-    const now = new Date(this.now());
-    return this.markQueued(
-      ark,
-      `UPDATE ${OCR_BACKFILL_TABLE} SET started_at = $2, updated_at = $2 WHERE ark = $1 AND state = $3`,
-      [ark, now, OCR_BACKFILL_STATE.QUEUED],
-    );
+  async markSent(claim: OcrBackfillClaim): Promise<OcrBackfillMark> {
+    return this.markClaim(claim, "sent_at = $3, updated_at = $3", [new Date(this.now())]);
   }
 
-  async markDone(ark: string): Promise<OcrBackfillMark> {
-    return this.markQueued(
-      ark,
-      `UPDATE ${OCR_BACKFILL_TABLE}
-         SET state = $2, error = NULL, permanent = false, updated_at = $3
-       WHERE ark = $1 AND state = $4`,
-      [ark, OCR_BACKFILL_STATE.DONE, new Date(this.now()), OCR_BACKFILL_STATE.QUEUED],
-    );
+  async markStarted(claim: OcrBackfillClaim): Promise<OcrBackfillMark> {
+    return this.markClaim(claim, "started_at = $3, updated_at = $3", [new Date(this.now())]);
   }
 
-  async markFailed(ark: string, reason: string, opts: { permanent: boolean }): Promise<OcrBackfillMark> {
-    return this.markQueued(
-      ark,
-      `UPDATE ${OCR_BACKFILL_TABLE}
-         SET state = $2, error = $3, permanent = $4, attempts = attempts + 1, updated_at = $5
-       WHERE ark = $1 AND state = $6`,
-      [ark, OCR_BACKFILL_STATE.FAILED, reason, opts.permanent, new Date(this.now()), OCR_BACKFILL_STATE.QUEUED],
+  async markDone(claim: OcrBackfillClaim): Promise<OcrBackfillMark> {
+    return this.markClaim(claim, "state = $3, error = NULL, permanent = false, updated_at = $4", [
+      OCR_BACKFILL_STATE.DONE,
+      new Date(this.now()),
+    ]);
+  }
+
+  async markFailed(
+    claim: OcrBackfillClaim,
+    reason: string,
+    opts: { permanent: boolean },
+  ): Promise<OcrBackfillMark> {
+    return this.markClaim(
+      claim,
+      "state = $3, error = $4, permanent = $5, attempts = attempts + 1, updated_at = $6",
+      [OCR_BACKFILL_STATE.FAILED, reason, opts.permanent, new Date(this.now())],
     );
   }
 
@@ -193,16 +199,21 @@ export class PgOcrBackfillStore implements OcrBackfillStore {
   }
 
   /**
-   * A mark guarded on `state = 'queued'`: one row updated → applied; none →
-   * the row left `queued` (not_queued), or there is no row at all (an error,
-   * as in the memory store).
+   * One UPDATE guarded on the claim — `state = 'queued' AND generation = $2`
+   * ($1 the ARK, $2 the generation, `set` numbering from $3): one row updated
+   * → applied; none → the row left the claim (not_queued), or there is no row
+   * at all (an error, as in the memory store).
    */
-  private async markQueued(ark: string, sql: string, params: unknown[]): Promise<OcrBackfillMark> {
-    const { rowCount } = await this.pool.query(sql, params);
+  private async markClaim(claim: OcrBackfillClaim, set: string, values: unknown[]): Promise<OcrBackfillMark> {
+    const queuedParam = `$${values.length + 3}`;
+    const { rowCount } = await this.pool.query(
+      `UPDATE ${OCR_BACKFILL_TABLE} SET ${set} WHERE ark = $1 AND generation = $2 AND state = ${queuedParam}`,
+      [claim.ark, claim.generation, ...values, OCR_BACKFILL_STATE.QUEUED],
+    );
     if (rowCount === 1) return OCR_BACKFILL_MARK.APPLIED;
-    if (rowCount !== 0) throw new Error(`ocr-backfill: ${ark} matched ${String(rowCount)} rows`);
-    const row = await this.get(ark);
-    if (row === null) throw new Error(`ocr-backfill: no row for ${ark}`);
+    if (rowCount !== 0) throw new Error(`ocr-backfill: ${claim.ark} matched ${String(rowCount)} rows`);
+    const row = await this.get(claim.ark);
+    if (row === null) throw new Error(`ocr-backfill: no row for ${claim.ark}`);
     return OCR_BACKFILL_MARK.NOT_QUEUED;
   }
 

@@ -5,6 +5,7 @@
  * need none. Idempotent: the artifact's presence means done; each sidecar's
  * presence means that folio is done, so a redelivery resumes.
  */
+import { claimOf } from "../testing/backfill-claims.js";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
@@ -28,6 +29,7 @@ const POLICY_FAST: OcrBackfillPolicy = {
   maxAttempts: 5,
   startedStaleAfterMs: 1,
   unstartedStaleAfterMs: 1,
+  unsentStaleAfterMs: 1,
 };
 /** A signal that never aborts. */
 const LIVE = new AbortController().signal;
@@ -76,7 +78,7 @@ async function setup(
     seed: async () => {
       // The sync endpoint records the row before sending (one row per ARK).
       await store.request(ARK, POLICY_FAST, LIVE);
-      await q.send(Q.ocrQualityBackfill, { ark: ARK });
+      await q.send(Q.ocrQualityBackfill, await claimOf(store, ARK));
     },
   };
 }
@@ -146,7 +148,7 @@ test("second delivery → zero BnF calls, zero rate tokens (artifact present = d
   await h.q.idle();
   assert.equal(h.bnf.calls.alto, 2);
 
-  await h.q.send(Q.ocrQualityBackfill, { ark: ARK });
+  await h.q.send(Q.ocrQualityBackfill, await claimOf(h.store, ARK));
   await h.q.idle();
 
   assert.equal(h.bnf.calls.alto, 2, "no new BnF call");
@@ -274,8 +276,10 @@ test("permanent BnF error on a folio → row failed immediately, no retry", asyn
   assert.equal(h.bnf.calls.alto, 2, "f1 ok, f2 permanent — not retried");
   const row = await h.store.get(ARK);
   assert.equal(row?.state, "failed");
-  assert.match(row?.error ?? "", /^build_failed: /);
+  assert.match(row?.error ?? "", /^build_failed: f2: /, "the stored reason names the folio");
   assert.equal(row?.permanent, true);
+  const logged = h.lines.find((l) => l.event === "ocr_backfill_permanent");
+  assert.equal(logged?.folio, 2, "the log line names the folio");
   const counts = await h.q.counts(Q.ocrQualityBackfill);
   assert.equal(counts.completed, 1);
 });
@@ -375,8 +379,8 @@ test("a stray delivery for a row no longer queued builds nothing and flips nothi
   const h = await setup(textSpec());
   await primeTextDoc(h.blob, [1, 2]);
   await h.store.request(ARK, POLICY_FAST, LIVE);
-  await h.store.markFailed(ARK, OCR_BACKFILL_REASON.NO_METADATA, { permanent: true });
-  await h.q.send(Q.ocrQualityBackfill, { ark: ARK });
+  await h.store.markFailed(await claimOf(h.store, ARK), OCR_BACKFILL_REASON.NO_METADATA, { permanent: true });
+  await h.q.send(Q.ocrQualityBackfill, await claimOf(h.store, ARK));
   await h.q.idle();
   assert.equal(h.bnf.calls.alto, 0);
   const row = await h.store.get(ARK);

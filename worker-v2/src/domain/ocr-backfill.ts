@@ -11,8 +11,10 @@
  *     runs no handler) is re-queued once it is stale — measured from the latest
  *     delivery START, so a long backlog is never mistaken for an expiry — and no
  *     ARK stays `building` forever;
- *   - terminal rows stay terminal: a late or stray delivery marks nothing
- *     (every mark is guarded on `state = 'queued'`, OCR_BACKFILL_MARK);
+ *   - terminal rows stay terminal and claims are exclusive: every mark is
+ *     guarded on `state = 'queued'` AND the claim's `generation` (bumped by
+ *     every insert/re-open and carried by the queued message), so a late,
+ *     stray or superseded delivery marks nothing (OCR_BACKFILL_MARK);
  *   - progress: `counts()` is what `npm run status` prints.
  *
  * The ARTIFACT is the truth about completion, not the row. `request` is called
@@ -67,6 +69,15 @@ export const OCR_BACKFILL_DELIVERY_CEILING_S = 3600;
 export const OCR_BACKFILL_STARTED_STALE_MS = OCR_BACKFILL_DELIVERY_CEILING_S * 1_000 + 30 * 60 * 1_000;
 
 /**
+ * A queued claim whose queue send was never confirmed (`sentAt` null: the send
+ * failed AND its release failed, or the worker died in between) has no job to
+ * wait for — it is re-opened after this, in minutes, not after the backlog
+ * rule below. A send that did succeed but was not recorded is harmless: the
+ * re-open bumps the generation, so the older message is superseded.
+ */
+export const OCR_BACKFILL_UNSENT_STALE_MS = 10 * 60 * 1_000;
+
+/**
  * A queued row NO delivery has started is waiting its turn in the backlog —
  * legitimately, however long the backlog. It is only stale once pg-boss itself
  * would have dropped the job unstarted: its default retention (keep_until =
@@ -106,8 +117,10 @@ export interface OcrBackfillPolicy {
   maxAttempts: number;
   /** Age (since the last delivery started) after which a started queued row is an expired build. */
   startedStaleAfterMs: number;
-  /** Age (since it was queued) after which a never-started queued row is a lost job. */
+  /** Age (since it was queued) after which a sent but never-started row is a lost job. */
   unstartedStaleAfterMs: number;
+  /** Age (since it was claimed) after which a claim whose send was never confirmed is re-opened. */
+  unsentStaleAfterMs: number;
 }
 
 /** A policy with non-positive or fractional values is a configuration error. */
@@ -130,8 +143,12 @@ export interface OcrBackfillRow {
   /** Builds that failed, expired or lost their artifact so far. */
   attempts: number;
   requestedAt: Date;
+  /** When the current claim's queue send was confirmed; null until it is. */
+  sentAt: Date | null;
   /** When the current build's latest delivery started; null until one does. */
   startedAt: Date | null;
+  /** The current claim: bumped by every insert and re-open, carried by its queued message. */
+  generation: number;
   updatedAt: Date;
 }
 
@@ -145,7 +162,7 @@ export interface OcrBackfillRow {
  *     be) — report the reason to the app and do not send.
  */
 export type OcrBackfillRequest =
-  | { kind: "enqueue" }
+  | { kind: "enqueue"; generation: number }
   | { kind: "queued" }
   | { kind: "failed"; reason: string; permanent: boolean };
 
@@ -162,6 +179,12 @@ export type OcrBackfillPlan =
  * second delivery of a finished build), and a terminal row is never flipped.
  */
 export const OCR_BACKFILL_MARK = { APPLIED: "applied", NOT_QUEUED: "not_queued" } as const;
+
+/** A queued claim, as its message carries it: the ARK and the claim's generation. */
+export interface OcrBackfillClaim {
+  ark: string;
+  generation: number;
+}
 export type OcrBackfillMark = (typeof OCR_BACKFILL_MARK)[keyof typeof OCR_BACKFILL_MARK];
 
 /** Backoff before retrying after `attempts` failures: base × 2^(attempts−1). */
@@ -172,7 +195,8 @@ export function retryBackoffMs(policy: OcrBackfillPolicy, attempts: number): num
 /** Whether a queued row has no live build any more (see the two stale constants). */
 function isStale(row: OcrBackfillRow, policy: OcrBackfillPolicy, now: number): boolean {
   if (row.startedAt !== null) return now - row.startedAt.getTime() >= policy.startedStaleAfterMs;
-  return now - row.requestedAt.getTime() >= policy.unstartedStaleAfterMs;
+  if (row.sentAt !== null) return now - row.requestedAt.getTime() >= policy.unstartedStaleAfterMs;
+  return now - row.requestedAt.getTime() >= policy.unsentStaleAfterMs;
 }
 
 /** Count one more attempt: re-open while attempts remain, else record `reason` for good. */
@@ -240,16 +264,22 @@ export interface OcrBackfillStore {
    * the pool's statement_timeout).
    */
   request(ark: string, policy: OcrBackfillPolicy, signal: AbortSignal): Promise<OcrBackfillRequest>;
-  /** A delivery of the build started: stamps `startedAt`. Throws when no row exists. */
-  markStarted(ark: string): Promise<OcrBackfillMark>;
-  /** The build succeeded. Throws when no row exists for `ark`. */
-  markDone(ark: string): Promise<OcrBackfillMark>;
+  /**
+   * Every mark below applies only to the row of `claim` — queued AND of the
+   * same generation — and answers `not_queued` otherwise (a late, stray or
+   * superseded delivery). Each throws when no row exists for the ARK.
+   */
+  /** The claim's queue send succeeded: stamps `sentAt`. */
+  markSent(claim: OcrBackfillClaim): Promise<OcrBackfillMark>;
+  /** A delivery of the claim's build started: stamps `startedAt`. */
+  markStarted(claim: OcrBackfillClaim): Promise<OcrBackfillMark>;
+  /** The build succeeded. */
+  markDone(claim: OcrBackfillClaim): Promise<OcrBackfillMark>;
   /**
    * The build failed: stores `reason` and whether it is permanent, increments
    * `attempts`. Also releases an `enqueue` claim whose queue send failed.
-   * Throws when no row exists for `ark`.
    */
-  markFailed(ark: string, reason: string, opts: { permanent: boolean }): Promise<OcrBackfillMark>;
+  markFailed(claim: OcrBackfillClaim, reason: string, opts: { permanent: boolean }): Promise<OcrBackfillMark>;
   get(ark: string): Promise<OcrBackfillRow | null>;
   counts(): Promise<OcrBackfillCounts>;
 }

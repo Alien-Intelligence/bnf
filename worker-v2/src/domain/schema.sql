@@ -137,9 +137,15 @@ BEGIN
   END IF;
 END
 $$;
--- The delivery start the staleness rule measures from (domain/ocr-backfill.ts).
+-- The delivery start the staleness rule measures from (domain/ocr-backfill.ts),
+-- the confirmed queue send of the current claim, and the claim's generation
+-- (bumped by every insert/re-open; every mark is guarded on it).
 ALTER TABLE sandbox_ingest_v2.ocr_quality_backfill
   ADD COLUMN IF NOT EXISTS started_at timestamptz;
+ALTER TABLE sandbox_ingest_v2.ocr_quality_backfill
+  ADD COLUMN IF NOT EXISTS sent_at timestamptz;
+ALTER TABLE sandbox_ingest_v2.ocr_quality_backfill
+  ADD COLUMN IF NOT EXISTS generation integer NOT NULL DEFAULT 0;
 -- The row invariants the store relies on, enforced by the database too: a
 -- failed row carries its reason (the app is answered with it), and attempts
 -- never go negative.

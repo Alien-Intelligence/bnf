@@ -55,12 +55,14 @@ export const OCR_SYNC_ARK_PATTERN = /^ark:\/\d+\/[A-Za-z0-9]+$/;
 /** Body cap: 100 ARKs of ≤ ~40 bytes plus the envelope fits in a few KiB. */
 export const OCR_SYNC_MAX_BODY_BYTES = 16 * 1024;
 
-/** Time allowed to receive the body. */
+/** Time allowed to receive the body — part of, never added to, OCR_SYNC_DEADLINE_MS. */
 export const OCR_SYNC_BODY_READ_MS = 10_000;
 
 /**
- * Wall-clock ceiling of one sync request — below the app's 30 s
- * WORKER_RUNNER_TIMEOUT_MS, so the worker answers 503 before the app gives up.
+ * Wall-clock ceiling of one sync request, body read INCLUDED — below the
+ * app's 30 s WORKER_RUNNER_TIMEOUT_MS, so the worker answers before the app
+ * gives up. The answer goes out at the deadline; the request's in-flight slot
+ * is held until its abandoned per-ARK steps have stopped.
  */
 export const OCR_SYNC_DEADLINE_MS = 20_000;
 
@@ -176,12 +178,24 @@ async function answerFor(deps: OcrSyncDeps, ark: string, signal: AbortSignal): P
   const decision = await store.request(ark, policy, signal);
   switch (decision.kind) {
     case "enqueue": {
-      // The claim is won: send it, or release it — whatever the signal says.
-      const item: OcrBackfillItem = { ark };
+      // The claim is won: send it (carrying its generation), or release it —
+      // whatever the signal says. A confirmed send is recorded (markSent); if
+      // that record fails, the unsent-claim rule re-opens it in minutes and
+      // the generation bump supersedes the message already sent.
+      const claim: OcrBackfillItem = { ark, generation: decision.generation };
       try {
-        await deps.queue.send(Q.ocrQualityBackfill, item);
+        await deps.queue.send(Q.ocrQualityBackfill, claim);
       } catch (e) {
-        return releaseClaim(deps, ark, e);
+        return releaseClaim(deps, claim, e);
+      }
+      try {
+        await store.markSent(claim);
+      } catch (e) {
+        deps.log.error("ocr_quality_mark_sent_failed", {
+          ark,
+          generation: claim.generation,
+          error: e instanceof Error ? e.message : String(e),
+        });
       }
       return { kind: "building" };
     }
@@ -197,16 +211,18 @@ async function answerFor(deps: OcrSyncDeps, ark: string, signal: AbortSignal): P
  * queued row nobody will build would read `building` until it went stale.
  * The SEND error is the answer; if the release fails too (the shared DB is
  * down), that is logged next to it, never put in its place — the row then
- * stays queued and the staleness rule recovers it.
+ * stays queued with no confirmed send, and the unsent-claim rule
+ * (OCR_BACKFILL_UNSENT_STALE_MS) re-opens it within minutes.
  */
-async function releaseClaim(deps: OcrSyncDeps, ark: string, sendError: unknown): Promise<Answer> {
+async function releaseClaim(deps: OcrSyncDeps, claim: OcrBackfillItem, sendError: unknown): Promise<Answer> {
+  const { ark } = claim;
   const reason = withDetail(
     OCR_BACKFILL_REASON.ENQUEUE_FAILED,
     sendError instanceof Error ? sendError.message : String(sendError),
   );
   deps.log.error("ocr_quality_enqueue_failed", { ark, error: reason });
   try {
-    await deps.backfill.store.markFailed(ark, reason, { permanent: false });
+    await deps.backfill.store.markFailed(claim, reason, { permanent: false });
   } catch (releaseError) {
     deps.log.error("ocr_quality_enqueue_release_failed", {
       ark,
@@ -244,26 +260,48 @@ async function untilAborted<T>(deps: OcrSyncDeps, work: Promise<T>, signal: Abor
   }
 }
 
+/** A sync in progress: its answer, and when every per-ARK step has stopped. */
+export interface OcrSyncRun {
+  /** Rejects with the abort reason as soon as `signal` aborts. */
+  answer: Promise<OcrSyncResponse>;
+  /**
+   * Resolves once no per-ARK work runs any more (each aborted ARK stops at its
+   * next step). The server keeps the request's in-flight slot until then, so
+   * OCR_SYNC_MAX_IN_FLIGHT bounds WORK, not only answered requests.
+   */
+  settled: Promise<void>;
+}
+
 /**
  * Answer every ARK. `signal` is the request's deadline: once aborted, no ARK
- * starts a new step and the call rejects with the abort reason.
+ * starts a new step and `answer` rejects with the abort reason.
  */
+export function runOcrSync(deps: OcrSyncDeps, arks: string[], signal: AbortSignal): OcrSyncRun {
+  if (signal.aborted) {
+    return { answer: Promise.reject(signal.reason), settled: Promise.resolve() };
+  }
+  const work = new Semaphore(OCR_SYNC_WORK_CONCURRENCY);
+  const perArk = arks.map((ark) => work.run(() => answerFor(deps, ark, signal)));
+  const settled = Promise.allSettled(perArk).then(() => undefined);
+  const answer = untilAborted(deps, Promise.all(perArk), signal).then((answers) => {
+    const response: OcrSyncResponse = { documents: [], building: [], unavailable: [] };
+    answers.forEach((ans, i) => {
+      const ark = arks[i];
+      if (ark === undefined) throw new Error(`syncOcrQuality: no ARK at index ${i}`);
+      if (ans.kind === "document") response.documents.push(ans.doc);
+      else if (ans.kind === "building") response.building.push(ark);
+      else response.unavailable.push({ ark, reason: ans.reason });
+    });
+    return response;
+  });
+  return { answer, settled };
+}
+
+/** runOcrSync's answer alone — for callers that do not hold a slot. */
 export async function syncOcrQuality(
   deps: OcrSyncDeps,
   arks: string[],
   signal: AbortSignal,
 ): Promise<OcrSyncResponse> {
-  signal.throwIfAborted();
-  const work = new Semaphore(OCR_SYNC_WORK_CONCURRENCY);
-  const all = Promise.all(arks.map((ark) => work.run(() => answerFor(deps, ark, signal))));
-  const answers = await untilAborted(deps, all, signal);
-  const response: OcrSyncResponse = { documents: [], building: [], unavailable: [] };
-  answers.forEach((answer, i) => {
-    const ark = arks[i];
-    if (ark === undefined) throw new Error(`syncOcrQuality: no ARK at index ${i}`);
-    if (answer.kind === "document") response.documents.push(answer.doc);
-    else if (answer.kind === "building") response.building.push(ark);
-    else response.unavailable.push({ ark, reason: answer.reason });
-  });
-  return response;
+  return runOcrSync(deps, arks, signal).answer;
 }
