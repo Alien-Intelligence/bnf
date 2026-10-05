@@ -53,6 +53,11 @@ export class Pipeline {
     this.log.info("pipeline_seeded", { count: docs.length });
   }
 
+  /** Shutdown phase 1 — see QueueClient.drain. */
+  async drain(budgetMs: number): Promise<number> {
+    return this.queue.drain(budgetMs);
+  }
+
   async stop(): Promise<void> {
     await this.queue.stop();
     this.started = false;

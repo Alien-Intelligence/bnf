@@ -25,6 +25,8 @@ export class MemoryQueue implements QueueClient {
   private readonly workers = new Map<string, Worker>();
   private seq = 0;
   private readonly idleResolvers: Array<() => void> = [];
+  /** Set by drain()/stop(): nothing new is delivered (sends still enqueue). */
+  private draining = false;
 
   private q(name: string): MemMsg[] {
     let arr = this.queues.get(name);
@@ -63,6 +65,7 @@ export class MemoryQueue implements QueueClient {
   }
 
   private pump(queue: string): void {
+    if (this.draining) return;
     const w = this.workers.get(queue);
     const arr = this.queues.get(queue);
     if (!w || !arr) return;
@@ -177,7 +180,24 @@ export class MemoryQueue implements QueueClient {
     return live;
   }
 
+  /** Phase 1: deliver nothing new; wait for the handlers in flight. `send` keeps working. */
+  async drain(budgetMs: number): Promise<number> {
+    this.draining = true;
+    const deadline = Date.now() + budgetMs;
+    while (this.activeHandlers() > 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    return this.activeHandlers();
+  }
+
   async stop(): Promise<void> {
+    this.draining = true;
     this.workers.clear();
+  }
+
+  private activeHandlers(): number {
+    let n = 0;
+    for (const w of this.workers.values()) n += w.active;
+    return n;
   }
 }

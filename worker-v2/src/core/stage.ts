@@ -229,9 +229,10 @@ export abstract class PipelineStage<In, Out> {
   }
 
   /**
-   * A delivery whose rate gate was stopped (shutdown outlived the drain) is
-   * HANDED BACK: a fresh copy is queued and this delivery completes — it never
-   * counts as an attempt and never fails a document.
+   * A delivery whose rate gate was stopped (shutdown step 3, src/shutdown.ts:
+   * the gates stop after the drain, while the transport is still alive) is
+   * HANDED BACK: a fresh copy is queued through `send` and this delivery
+   * completes — it never counts as an attempt and never fails a document.
    */
   private async handBack(msg: QueueMessage<In>): Promise<void> {
     await this.queue.send(this.inputQueue, msg.payload);

@@ -10,7 +10,8 @@
  */
 import { Pool } from "pg";
 
-import { loadConfig, pgPoolConfig } from "./config.js";
+import { loadBrokerUrl, loadConfig, pgPoolConfig } from "./config.js";
+import { configureBrokerUrl } from "./bnf/broker-client.js";
 import { buildPipeline } from "./build.js";
 import { PgBossQueue } from "./core/queue-pgboss.js";
 import { S3BlobStore } from "./core/blob.js";
@@ -37,9 +38,12 @@ import { TerminalEmitter } from "./live/progress-callback.js";
 import { CompletionMonitor } from "./live/completion-monitor.js";
 import { Reconciler } from "./live/reconciler.js";
 import { startServer } from "./server.js";
+import { SHUTDOWN_BUDGETS, shutdownWorker } from "./shutdown.js";
 
 async function main(): Promise<void> {
   const cfg = loadConfig();
+  // The worker runtime — and only it — needs the broker: validated here, once.
+  configureBrokerUrl(loadBrokerUrl(process.env));
   const log = createLogger({ worker: "bnf-ingest-v2" });
 
   const queue = new PgBossQueue(pgPoolConfig(cfg.databaseUrl));
@@ -159,22 +163,23 @@ async function main(): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     log.info("worker_v2_shutdown", { sig });
-    // Order matters: stop the sweep FIRST. It re-enqueues work, and re-enqueueing
-    // into a pipeline that is draining would leave fresh jobs behind with nobody
-    // consuming them (and could race pg-boss's shutdown mid-send).
-    reconciler.stop();
-    await new Promise<void>((r) => server.close(() => r()));
-    // pipeline.stop() → PgBossQueue.stop(), which drains in-flight handlers within
-    // an explicit 110s budget (F12) — inside the pod's 120s grace period, and
-    // immediate when nothing is in flight. The gates stop AFTER the drain: a
-    // handler still running then gets RateGateStoppedError at its next gate,
-    // and the stage base hands that delivery back (never a doc failure).
-    await pipeline.stop().catch((err: unknown) =>
-      log.error("pipeline_stop_failed", { error: err instanceof Error ? err.message : String(err) }),
+    // The order is shutdownWorker's (src/shutdown.ts): intake, drain with the
+    // transport alive, gates (hand-backs through a working send), transport.
+    await shutdownWorker(
+      {
+        log,
+        stopIntake: async () => {
+          reconciler.stop();
+          await new Promise<void>((r) => server.close(() => r()));
+        },
+        pipeline,
+        gates: [fetchRate, manifestRate],
+        closePools: () => pool.end(),
+      },
+      SHUTDOWN_BUDGETS,
+    ).catch((err: unknown) =>
+      log.error("shutdown_failed", { error: err instanceof Error ? err.message : String(err) }),
     );
-    fetchRate.stop();
-    manifestRate.stop();
-    await pool.end().catch(() => {});
     process.exit(0);
   };
   process.on("SIGINT", () => void shutdown("SIGINT"));

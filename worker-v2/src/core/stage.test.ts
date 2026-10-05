@@ -144,6 +144,9 @@ class SpyQueue implements QueueClient {
   async liveDocJobIds(): Promise<ReadonlySet<string>> {
     return new Set<string>();
   }
+  async drain(): Promise<number> {
+    return 0;
+  }
   async stop(): Promise<void> {}
 }
 

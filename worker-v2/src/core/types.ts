@@ -127,6 +127,17 @@ export interface QueueClient {
     queues: readonly string[],
     docJobIds: readonly string[],
   ): Promise<ReadonlySet<string>>;
+  /**
+   * Shutdown phase 1: stop taking new deliveries and wait up to `budgetMs` for
+   * the in-flight handlers. The transport STAYS USABLE — `send` still works —
+   * so a handler that hands its delivery back during shutdown can. Returns how
+   * many handlers are still in flight. Callable more than once.
+   */
+  drain(budgetMs: number): Promise<number>;
+  /**
+   * Shutdown phase 2: close the transport. A handler still running after it
+   * can no longer complete or fail its delivery: its job is left to expire.
+   */
   stop(): Promise<void>;
 }
 

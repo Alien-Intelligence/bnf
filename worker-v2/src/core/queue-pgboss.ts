@@ -83,6 +83,28 @@ export class PgBossQueue implements QueueClient {
   }
 
   /**
+   * Complete or fail a delivery. After stop() (pg-boss closed) there is
+   * nothing to talk to: the job is deliberately left `active` and expires —
+   * logged, never a throw out of a finished handler.
+   */
+  private async settle(
+    queue: string,
+    jobId: string,
+    outcome: { kind: "complete" } | { kind: "fail"; error: string },
+  ): Promise<void> {
+    const boss = this.boss;
+    if (boss === null) {
+      console.error(
+        `[pg-boss] ${queue}/${jobId} finished after stop(): left active, pg-boss expires it`,
+      );
+      return;
+    }
+    const call =
+      outcome.kind === "complete" ? boss.complete(queue, jobId) : boss.fail(queue, jobId, { error: outcome.error });
+    await call.catch((e: unknown) => console.error(`[pg-boss] ${outcome.kind}() failed:`, e));
+  }
+
+  /**
    * Create the queue if absent, then UPDATE its policy if it already existed.
    *
    * The update is not redundant: `create_queue` is `ON CONFLICT DO NOTHING`, so on
@@ -202,14 +224,10 @@ export class PgBossQueue implements QueueClient {
         const attempts = (job.retryCount ?? 0) + 1;
         try {
           await handler({ id: job.id, payload: job.data, attempts });
-          await this.b()
-            .complete(queue, job.id)
-            .catch((e) => console.error("[pg-boss] complete() failed:", e));
+          await this.settle(queue, job.id, { kind: "complete" });
         } catch (err) {
           const error = err instanceof Error ? err.message : String(err);
-          await this.b()
-            .fail(queue, job.id, { error })
-            .catch((e) => console.error("[pg-boss] fail() failed:", e));
+          await this.settle(queue, job.id, { kind: "fail", error });
         } finally {
           inFlight--;
           this.inFlight--;
@@ -311,37 +329,40 @@ export class PgBossQueue implements QueueClient {
   }
 
   /**
-   * Stop fetching, drain what is already running, then shut pg-boss down.
+   * Shutdown phase 1 (QueueClient.drain): stop fetching and wait for the
+   * in-flight handlers, up to `budgetMs`, with pg-boss ALIVE — so a handler
+   * can still complete, fail, or hand its delivery back (`send`).
    *
    * The drain has to be OURS (F12): pg-boss's graceful stop waits on the work-in-
-   * progress of its own `work()` workers, and we consume via `fetch()` — so
-   * `boss.stop()` sees zero WIP, returns instantly, closes its pool, and every
-   * still-running handler's `complete()`/`fail()` then fails. With a 135s BnF fetch
-   * inside a 120s terminationGracePeriodSeconds that meant a deploy routinely
-   * killed in-flight deliveries mid-call. Now we wait for the real in-flight count,
-   * bounded by ONE budget shared with pg-boss's own wait (CLAUDE_ERROR_PATTERNS
-   * §14 — the wait is bounded, and it exits the instant nothing is in flight).
+   * progress of its own `work()` workers, and we consume via `fetch()`.
    */
-  async stop(): Promise<void> {
+  async drain(budgetMs: number): Promise<number> {
     this.stopped = true;
     for (const t of this.workTimers) clearInterval(t);
     this.workTimers.length = 0;
-
-    const deadline = Date.now() + GRACEFUL_STOP_TIMEOUT_MS;
+    const deadline = Date.now() + budgetMs;
     while (this.inFlight > 0 && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 200));
     }
+    return this.inFlight;
+  }
+
+  /**
+   * Shutdown phase 2: drain anything left (if drain() was not called), then
+   * shut pg-boss down and end both pools. A handler still running after this
+   * leaves its job `active` for pg-boss to expire (settle()).
+   */
+  async stop(): Promise<void> {
+    if (!this.stopped) await this.drain(GRACEFUL_STOP_TIMEOUT_MS);
     if (this.inFlight > 0) {
       console.error(
-        `[pg-boss] graceful stop budget exhausted with ${this.inFlight} handler(s) in flight` +
-          " — their jobs stay `active` until pg-boss expires them (the reconciliation" +
-          " sweep re-drives the affected docs on the next boot)",
+        `[pg-boss] stopping with ${this.inFlight} handler(s) still in flight` +
+          " — their jobs stay `active` until pg-boss expires them",
       );
     }
-
     await this.boss
-      ?.stop({ graceful: true, timeout: Math.max(1_000, deadline - Date.now()) })
-      .catch(() => undefined);
+      ?.stop({ graceful: true, timeout: 1_000 })
+      .catch((e: unknown) => console.error("[pg-boss] stop() failed:", e));
     await this.pool?.end().catch(() => undefined);
     await this.bossPool?.end().catch(() => undefined);
     this.boss = null;
