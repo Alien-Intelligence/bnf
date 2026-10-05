@@ -355,10 +355,14 @@ backfilled automatically — no manual step:
   sync_rejected: …`; a quarantined ARK is only asked again after a re-ingest.
   If the whole exchange is broken (an incompatible worker version, a 401/413),
   no ARK is blamed: the sync pauses (backing off from 3 min to 1 h) and
-  resumes by itself when the worker answers again. An unreachable worker
-  (timeout, 5xx, 404 from an old worker) stops the cycle and records a
-  backoff on the batch's ARKs (`reason = sync_worker_unavailable: …`) without
-  counting an attempt. To list problems:
+  resumes by itself when the worker answers again (a worker whose answers all
+  fail the same field, or that answers nothing it was asked, counts as such a
+  break). An unreachable worker (timeout, 5xx, 404 from an old worker) stops
+  the cycle: existing rows back off 30 min with their status untouched, a
+  never-asked document stays pending (shown "not yet"), and nothing counts as
+  an attempt. A batch that fails an outage twice in a row is split, so one
+  document that makes the worker fail cannot hold back the others. Corpora are
+  drained in turn, resync requests first. To list problems:
   `SELECT ark, status, reason, sync_attempts FROM document_ocr WHERE status IN ('quarantined', 'unavailable') ORDER BY checked_at DESC;`
 - **BnF cost:** one Presentation-API (ALTO) call per indexed **text** folio,
   once — the `alto` cache holds extracted text, not XML, so the word confidences
