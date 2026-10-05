@@ -25,6 +25,11 @@ export interface AltoFolioDeps {
    * stage acquires its rate-gate token here, so cache hits stay free.
    */
   beforeFetch?: () => Promise<void>;
+  /**
+   * The caller's delivery ceiling: after it aborts, nothing of this call is
+   * written — no text, no sidecar (the fetch's late answer is discarded).
+   */
+  signal?: AbortSignal;
 }
 
 export interface EnsuredAltoFolio {
@@ -80,7 +85,8 @@ export async function ensureAltoFolio(
   }
 
   if (deps.beforeFetch) await deps.beforeFetch();
-  const folio = await deps.bnf.fetchAltoFolio(ark, ordre);
+  const folio = await deps.bnf.fetchAltoFolio(ark, ordre, deps.signal);
+  deps.signal?.throwIfAborted();
   if (folio.invalidWcCount > 0) {
     deps.log.warn("alto_invalid_wc", { ark, ordre, count: folio.invalidWcCount });
   }
@@ -88,6 +94,7 @@ export async function ensureAltoFolio(
   // entry, which the next run treats as a miss (D15) — never a sidecar that
   // describes text that was never written.
   await deps.blob.putBytes(textKey, Buffer.from(folio.text, "utf8"), "text/plain; charset=utf-8");
+  deps.signal?.throwIfAborted();
   await deps.blob.putJson(qualityKey, folio.quality);
   return { text: folio.text, quality: folio.quality, fetched: true };
 }

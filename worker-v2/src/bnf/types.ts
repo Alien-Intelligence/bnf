@@ -112,8 +112,11 @@ export interface BnfClient {
    * Fetch + parse ONE folio's ALTO: text + word-confidence quality. 404 → the
    * empty folio (`text:""`, `empty:true`, `quality.wordCount:0`), not an error.
    * A truncated or non-ALTO body throws Transient("alto_parse_failed").
+   * `signal` (a delivery's ceiling): an aborted signal stops the call before
+   * the request and discards an answer that arrives after the abort — the
+   * request itself still ends within its own timeout.
    */
-  fetchAltoFolio(ark: string, ordre: number): Promise<AltoFolio>;
+  fetchAltoFolio(ark: string, ordre: number, signal?: AbortSignal): Promise<AltoFolio>;
   /** Fetch ONE folio's IIIF image bytes (JPEG). */
   fetchImageFolio(ark: string, ordre: number, size?: string): Promise<Buffer>;
 }

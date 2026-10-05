@@ -7,7 +7,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { isAltoFolioQuality } from "./alto-folio.js";
+import { MemoryBlobStore } from "../core/blob.js";
+import { createMemoryLogger } from "../core/logger.js";
+import { keys } from "../domain/keys.js";
+import { FakeBnfClient } from "../testing/fakes.js";
+import { ensureAltoFolio, isAltoFolioQuality } from "./alto-folio.js";
 
 const OK = { v: 1, wordCount: 10, scoredWordCount: 8, meanWc: 0.66 };
 
@@ -38,4 +42,36 @@ test("anything else is not a sidecar", () => {
   assert.equal(isAltoFolioQuality(null), false);
   assert.equal(isAltoFolioQuality({ ...OK, v: 2 }), false);
   assert.equal(isAltoFolioQuality([OK]), false);
+});
+
+test("ensureAltoFolio: an answer arriving after the ceiling is discarded — no text, no sidecar written", async () => {
+  const ark = "ark:/12148/bpt6k4625753w";
+  const blob = new MemoryBlobStore();
+  const { logger } = createMemoryLogger();
+  const ceiling = new AbortController();
+  // A BnF client whose fetch completes only after the delivery's ceiling.
+  class LateAnswer extends FakeBnfClient {
+    override async fetchAltoFolio(a: string, o: number) {
+      const folio = await super.fetchAltoFolio(a, o);
+      ceiling.abort(new Error("ceiling"));
+      return folio;
+    }
+  }
+  const slow = new LateAnswer().add({ ark, ocrAvailable: true, docType: "texte", pageCount: 1 });
+  await assert.rejects(
+    ensureAltoFolio({ bnf: slow, blob, log: logger, signal: ceiling.signal }, ark, 1),
+    /ceiling/,
+  );
+  assert.equal(await blob.getBytes(keys.alto(ark, 1)), null, "no text written");
+  assert.equal(await blob.getJson(keys.altoQuality(ark, 1)), null, "no sidecar written");
+});
+
+test("ensureAltoFolio: an already-aborted signal makes no BnF call", async () => {
+  const ark = "ark:/12148/bpt6k4625753w";
+  const fake = new FakeBnfClient().add({ ark, ocrAvailable: true, docType: "texte", pageCount: 1 });
+  const { logger } = createMemoryLogger();
+  await assert.rejects(
+    ensureAltoFolio({ bnf: fake, blob: new MemoryBlobStore(), log: logger, signal: AbortSignal.abort() }, ark, 1),
+  );
+  assert.equal(fake.calls.alto, 0);
 });

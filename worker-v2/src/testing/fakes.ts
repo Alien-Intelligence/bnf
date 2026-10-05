@@ -168,7 +168,8 @@ export class FakeBnfClient implements BnfClient {
     return { title: s.title ?? `Doc ${ark}`, metadata, totalPages: canvasCount, canvases };
   }
 
-  async fetchAltoFolio(ark: string, ordre: number): Promise<AltoFolio> {
+  async fetchAltoFolio(ark: string, ordre: number, signal?: AbortSignal): Promise<AltoFolio> {
+    signal?.throwIfAborted();
     this.calls.alto++;
     const s = this.spec(ark);
     this.faults.hit(`folio:${ark}:${ordre}`, s.folioFaults?.[ordre]);

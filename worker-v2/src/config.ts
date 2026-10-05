@@ -9,8 +9,9 @@
  * the claim above stays true):
  *   - bnf/client.ts `optionalIntEnv` (BNF_META_TIMEOUT_MS, BNF_PAGE_TIMEOUT_MS)
  *     — a Track D shared file kept to its listed hunks;
- *   - bnf/broker-client.ts and live/vendor/broker-client.ts `brokerUrl()` read
- *     BNF_BROKER_URL per call — which loadConfigFrom now REQUIRES at boot;
+ *   - live/vendor/broker-client.ts `brokerUrl()` reads BNF_BROKER_URL per call
+ *     (vendored V1, the vision path); bnf/broker-client.ts takes it ONCE from
+ *     loadBrokerUrl at boot (main.ts);
  *   - live/vendor/{env,fetch-gate,rate-limiter,vision,gallica-relay}.ts — V1
  *     code vendored verbatim (its own floors and silent defaults, e.g.
  *     BNF_FETCH_CONCURRENCY parsed a second time in fetch-gate.ts);
@@ -102,13 +103,6 @@ function ratioFrom(env: Env, name: string, fallback: number): number {
 
 export interface WorkerConfig {
   databaseUrl: string;
-  /**
-   * BNF_BROKER_URL — the egress chokepoint every BnF call goes through
-   * (bnf/broker-client.ts reads it per call). REQUIRED at boot: unset, every
-   * BnF call would fail as a per-ARK PERMANENT error ("config") and a
-   * deployment mistake would permanently fail the backfill.
-   */
-  bnfBrokerUrl: string;
   /** Port the app↔worker HTTP ingress listens on (the app's WORKER_RUNNER_URL). */
   httpPort: number;
   s3: { bucket: string; endpoint: string; region: string; accessKeyId: string; secretAccessKey: string };
@@ -295,6 +289,28 @@ export function loadOcrBackfillConfig(env: NodeJS.ProcessEnv): OcrBackfillConfig
   };
 }
 
+/**
+ * BNF_BROKER_URL — the egress chokepoint every BnF call goes through. Required
+ * by the worker RUNTIME only (main.ts hands it to bnf/broker-client.ts once,
+ * at boot): unset or malformed, every BnF call would fail as a per-ARK
+ * PERMANENT error and a deployment mistake would permanently fail the
+ * backfill. The read-only scripts (status, seed, requeue-stranded) make no
+ * BnF call and do not need it. An http(s) URL; a trailing slash is dropped.
+ */
+export function loadBrokerUrl(env: Env): string {
+  const raw = requiredFrom(env, "BNF_BROKER_URL");
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error(`BNF_BROKER_URL must be an http(s) URL, got ${JSON.stringify(raw)}`);
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error(`BNF_BROKER_URL must be an http(s) URL, got ${JSON.stringify(raw)}`);
+  }
+  return raw.replace(/\/+$/, "");
+}
+
 /** The highest TCP port. */
 const MAX_PORT = 65_535;
 
@@ -331,7 +347,6 @@ export const CONFIG_DEFAULTS = {
 export function loadConfigFrom(env: Env): WorkerConfig {
   return {
     databaseUrl: requiredFrom(env, "DATABASE_URL"),
-    bnfBrokerUrl: requiredFrom(env, "BNF_BROKER_URL"),
     httpPort: positiveIntFrom(env, "WORKER_HTTP_PORT", CONFIG_DEFAULTS.httpPort, { max: MAX_PORT }),
     s3: {
       bucket: requiredFrom(env, "SCW_S3_BUCKET"),

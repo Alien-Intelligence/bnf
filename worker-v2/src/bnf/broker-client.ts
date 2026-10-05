@@ -17,10 +17,21 @@
  */
 import { request } from "undici";
 
-/** The configured broker base URL, or undefined when not deployed. */
+/**
+ * The broker base URL, set ONCE at boot from the validated config
+ * (config.ts loadBrokerUrl, called by main.ts) — never read from the
+ * environment per call.
+ */
+let configuredBrokerUrl: string | undefined;
+
+/** Set the broker URL (main.ts at boot; tests pointing at a stub broker). */
+export function configureBrokerUrl(url: string): void {
+  configuredBrokerUrl = url;
+}
+
+/** The configured broker base URL, or undefined before configureBrokerUrl. */
 export function brokerUrl(): string | undefined {
-  const v = process.env.BNF_BROKER_URL;
-  return v && v.trim() !== "" ? v.trim().replace(/\/$/, "") : undefined;
+  return configuredBrokerUrl;
 }
 
 export interface BrokerResult {

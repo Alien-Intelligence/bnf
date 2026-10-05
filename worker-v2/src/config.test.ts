@@ -11,6 +11,7 @@ import {
   DEFAULT_OCR_BACKFILL_CONCURRENCY,
   DEFAULT_OCR_BACKFILL_ENABLED,
   DEFAULT_OCR_BACKFILL_RETRY_FAILED_AFTER_MS,
+  loadBrokerUrl,
   loadConfigFrom,
   loadOcrBackfillConfig,
   MIN_OCR_BACKFILL_RETRY_FAILED_AFTER_MS,
@@ -58,7 +59,6 @@ test("malformed values throw", () => {
 /** The minimal env loadConfigFrom accepts: the required vars only. */
 const REQUIRED_ENV = {
   DATABASE_URL: "postgresql://localhost/x",
-  BNF_BROKER_URL: "http://localhost:8792",
   SCW_S3_BUCKET: "b",
   SCW_S3_ENDPOINT_URL: "https://s3",
   SCW_S3_REGION: "fr-par",
@@ -123,7 +123,14 @@ test("integers are plain digits: hex, binary, exponent and sign forms throw", ()
   assert.throws(() => loadConfigFrom({ ...REQUIRED_ENV, DOC_FAIL_RATIO: "2.5e-1" }), /DOC_FAIL_RATIO/);
 });
 
-test("BNF_BROKER_URL is required at boot — never a per-ARK permanent failure later", () => {
-  const { BNF_BROKER_URL: _broker, ...noBroker } = REQUIRED_ENV;
-  assert.throws(() => loadConfigFrom(noBroker), /BNF_BROKER_URL/);
+test("loadConfigFrom does not need BNF_BROKER_URL (status/seed/requeue make no BnF call)", () => {
+  assert.doesNotThrow(() => loadConfigFrom(REQUIRED_ENV));
+});
+
+test("loadBrokerUrl: required by the worker runtime, an http(s) URL, trailing slash dropped", () => {
+  assert.throws(() => loadBrokerUrl({}), /BNF_BROKER_URL/);
+  for (const bad of ["not a url", "ftp://broker:8792", "localhost:8792"]) {
+    assert.throws(() => loadBrokerUrl({ BNF_BROKER_URL: bad }), /BNF_BROKER_URL/, bad);
+  }
+  assert.equal(loadBrokerUrl({ BNF_BROKER_URL: "http://broker:8792/" }), "http://broker:8792");
 });

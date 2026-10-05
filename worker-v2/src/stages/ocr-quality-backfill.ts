@@ -62,12 +62,22 @@ import {
 /** The backfill message: the claim the sync won (OcrBackfillClaim). */
 export type OcrBackfillItem = OcrBackfillClaim;
 
-/** A queued payload as the claim it must be — anything else is a stray message. */
-function isClaim(v: unknown): v is OcrBackfillClaim {
-  if (v === null || typeof v !== "object") return false;
-  const c = v as Record<string, unknown>;
-  return typeof c.ark === "string" && typeof c.generation === "number" && Number.isSafeInteger(c.generation);
+/**
+ * A queued payload as the claim it carries, or null for a stray message. A
+ * message queued BEFORE claims existed carries only `{ark}`: it is generation
+ * 0 — the column default every pre-deploy row got — so it still builds the
+ * pre-deploy row it was sent for, at no attempt cost.
+ */
+export function toClaim(v: unknown): OcrBackfillClaim | null {
+  if (v === null || typeof v !== "object" || !("ark" in v) || typeof v.ark !== "string") return null;
+  if (!("generation" in v) || v.generation === undefined) return { ark: v.ark, generation: PRE_CLAIM_GENERATION };
+  const { generation } = v;
+  if (typeof generation !== "number" || !Number.isSafeInteger(generation) || generation < 0) return null;
+  return { ark: v.ark, generation };
 }
+
+/** The generation of a row created before claims existed (schema.sql column default). */
+export const PRE_CLAIM_GENERATION = 0;
 
 /**
  * Longest wait for one fetch-gate token. The gate is shared FIFO with live
@@ -75,6 +85,14 @@ function isClaim(v: unknown): v is OcrBackfillClaim {
  * saturated — give the delivery back (transient) rather than hold it.
  */
 export const OCR_BACKFILL_RATE_WAIT_MS = 120_000;
+
+/**
+ * Base delay before a backfill redelivery: above the worst-case ALTO fetch
+ * still in flight from the delivery it replaces — the client's 135 s page
+ * timeout (BNF_PAGE_TIMEOUT_MS default) plus the broker client's one 1 s
+ * reconnect, with margin.
+ */
+export const OCR_BACKFILL_RETRY_DELAY_MS = 150_000;
 
 export interface OcrQualityBackfillOpts {
   /** In-flight docs. Each text doc walks its pages sequentially behind the fetch gate. */
@@ -106,9 +124,11 @@ export class OcrQualityBackfillStage extends PipelineStage<OcrBackfillItem, neve
   // expired delivery loses nothing — the store re-queues the stale row and the
   // redelivery resumes from the last sidecar.
   override readonly expireInSeconds = OCR_BACKFILL_DELIVERY_CEILING_S;
-  // 30s base delay: a transient here is almost always a BnF clock-minute
-  // window closing (the same reason MetadataStage uses it).
-  override readonly queueRetryDelayMs = 30_000;
+  // At least the worst-case in-flight ALTO fetch (OCR_BACKFILL_RETRY_DELAY_MS):
+  // a redelivery of the SAME claim (generation) can never overlap a fetch the
+  // expired delivery still has in flight, even though a sent fetch is not
+  // aborted — it finishes within its timeout and its answer is discarded.
+  override readonly queueRetryDelayMs = OCR_BACKFILL_RETRY_DELAY_MS;
   /** OCR_BACKFILL_RATE_WAIT_MS — below the base's half-ceiling on purpose (see its doc). */
   private readonly fetchTokenWaitMs: number;
 
@@ -129,20 +149,21 @@ export class OcrQualityBackfillStage extends PipelineStage<OcrBackfillItem, neve
 
   /** The base's safety net: a throw that escaped process() on the last attempt. */
   protected override async onExhausted(item: OcrBackfillItem, reason: string): Promise<void> {
-    if (!isClaim(item)) return;
-    await this.store.markFailed(item, withDetail(OCR_BACKFILL_REASON.BUILD_FAILED, reason), {
+    const claim = toClaim(item);
+    if (claim === null) return;
+    await this.store.markFailed(claim, withDetail(OCR_BACKFILL_REASON.BUILD_FAILED, reason), {
       permanent: false,
     });
   }
 
   async process(item: OcrBackfillItem, ctx: StageContext): Promise<StageOutcome<never>> {
-    // A payload without a claim generation (a stray or pre-claim message) can
-    // mark no row: nothing to build.
-    if (!isClaim(item)) {
+    // A payload that names no claim (not even a pre-claim `{ark}`) can mark no
+    // row: nothing to build.
+    const claim = toClaim(item);
+    if (claim === null) {
       ctx.log.warn("ocr_backfill_bad_payload", { payload: JSON.stringify(item) });
       return { kind: "fail", reason: "ocr_backfill_bad_payload", terminal: true };
     }
-    const claim: OcrBackfillClaim = { ark: item.ark, generation: item.generation };
     const { ark } = claim;
 
     // 0. This delivery starts the build: the staleness clock runs from here.
@@ -197,7 +218,7 @@ export class OcrQualityBackfillStage extends PipelineStage<OcrBackfillItem, neve
           ctx.signal.throwIfAborted();
           try {
             await ensureAltoFolio(
-              { bnf: this.bnf, blob: this.blob, log: ctx.log, beforeFetch },
+              { bnf: this.bnf, blob: this.blob, log: ctx.log, beforeFetch, signal: ctx.signal },
               ark,
               page.ordre,
             );
@@ -207,7 +228,10 @@ export class OcrQualityBackfillStage extends PipelineStage<OcrBackfillItem, neve
           }
         }
       }
+      // Past the ceiling, the abandoned walk writes nothing more.
+      ctx.signal.throwIfAborted();
       await writeOcrQualityArtifact(this.blob, { ark, lane: decision.lane, pages });
+      ctx.signal.throwIfAborted();
     } catch (e) {
       // A stopped gate (shutdown) is handed back by the stage base; a passed
       // ceiling is the base's to report — neither is this build's failure.

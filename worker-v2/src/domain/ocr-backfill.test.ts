@@ -353,6 +353,17 @@ if (pool) {
     );
   });
 
+  test("postgres: a row created before claims existed is generation 0, and a pre-claim message (generation 0) marks it", async () => {
+    const ark = freshArk();
+    // As the pre-deploy rows were written: no generation column value.
+    await pool.query(`INSERT INTO ${OCR_BACKFILL_TABLE} (ark, state) VALUES ($1, 'queued')`, [ark]);
+    const store = new PgOcrBackfillStore(pool);
+    assert.equal((await store.get(ark))?.generation, 0);
+    assert.equal(await store.markStarted({ ark, generation: 0 }), OCR_BACKFILL_MARK.APPLIED);
+    assert.equal(await store.markDone({ ark, generation: 0 }), OCR_BACKFILL_MARK.APPLIED);
+    assert.equal((await store.get(ark))?.attempts, 0, "no attempt cost");
+  });
+
   test("postgres: a failed row without a reason, and negative attempts, are refused", async () => {
     await assert.rejects(
       () => pool.query(`INSERT INTO ${OCR_BACKFILL_TABLE} (ark, state) VALUES ($1, 'failed')`, [freshArk()]),

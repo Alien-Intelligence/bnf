@@ -19,7 +19,7 @@ import { Q } from "../domain/queues.js";
 import type { DocOcrQuality, PreparedPage } from "../domain/types.js";
 import type { AltoFolioQuality, BnfDocInfo } from "../bnf/types.js";
 import { FakeBnfClient, type FakeDocSpec } from "../testing/fakes.js";
-import { OcrQualityBackfillStage } from "./ocr-quality-backfill.js";
+import { OcrQualityBackfillStage, PRE_CLAIM_GENERATION, toClaim } from "./ocr-quality-backfill.js";
 import { isDocOcrQuality } from "./ocr-quality.js";
 import { OCR_BACKFILL_REASON, type OcrBackfillPolicy } from "../domain/ocr-backfill.js";
 
@@ -425,4 +425,12 @@ test("an OcrQualityArtifactError during the build is a PERMANENT build failure n
   assert.equal(row?.permanent, true);
   assert.match(row?.error ?? "", /^build_failed: ocr_quality_no_metadata/);
   assert.equal(await h.blob.getJson<unknown>(keys.ocrQuality(ARK)), null, "no artifact written");
+});
+
+test("toClaim: a pre-claim message {ark} is generation 0; a malformed one is no claim", () => {
+  assert.deepEqual(toClaim({ ark: ARK }), { ark: ARK, generation: PRE_CLAIM_GENERATION });
+  assert.deepEqual(toClaim({ ark: ARK, generation: 3 }), { ark: ARK, generation: 3 });
+  for (const bad of [null, {}, { ark: 1 }, { ark: ARK, generation: -1 }, { ark: ARK, generation: 1.5 }, { ark: ARK, generation: "2" }]) {
+    assert.equal(toClaim(bad), null, JSON.stringify(bad));
+  }
 });

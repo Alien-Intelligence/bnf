@@ -449,16 +449,18 @@ export class LiveBnfClient implements BnfClient {
    * no OCR (blank page, plate) — that is NOT an error: return {text:"",
    * empty:true}. Any other non-2xx is classified and thrown for the stage.
    */
-  async fetchAltoFolio(ark: string, ordre: number): Promise<AltoFolio> {
+  async fetchAltoFolio(ark: string, ordre: number, signal?: AbortSignal): Promise<AltoFolio> {
     const canonicalArk = ensureCanonicalArk(ark);
     const slug = arkToSlug(canonicalArk);
     const url = `${OPENAPI}/iiif/presentation/v3/ark:/12148/${slug}/f${ordre}/alto.xml`;
 
+    signal?.throwIfAborted();
     const { status, bytes, contentType } = await brokerFetch(
       url,
       "application/xml, text/xml, */*",
       PAGE_TIMEOUT_MS,
     );
+    signal?.throwIfAborted(); // an answer arriving after the caller's ceiling is discarded
     if (status === 404) return emptyAltoFolio();
     const body = decodeForStatus(status, bytes, contentType);
     const err = classifyStatus(status, body, url);

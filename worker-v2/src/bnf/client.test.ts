@@ -37,6 +37,7 @@ process.env.BNF_PAGE_TIMEOUT_MS = LONG_BUDGET_MS;
 
 const { LiveBnfClient, docInfoFromManifest } = await import("./client.js");
 const { tauxOcrOf } = await import("./parse.js");
+const { configureBrokerUrl } = await import("./broker-client.js");
 
 /** A fake broker (POST /fetch) that waits `delayMs` then returns an empty JSON
  *  body — good enough for getManifest's parser (parseV3Manifest tolerates a
@@ -65,7 +66,7 @@ function startFakeBroker(delayMs: number): Promise<{ url: string; close: () => P
 
 test("getManifest survives a delay that would trip the SHORT (OAI) budget — it runs on PAGE_TIMEOUT_MS", async () => {
   const broker = await startFakeBroker(FAKE_BROKER_DELAY_MS);
-  process.env.BNF_BROKER_URL = broker.url;
+  configureBrokerUrl(broker.url);
   try {
     const client = new LiveBnfClient();
     const manifest = await client.getManifest("ark:/12148/timeouttest", 5);
@@ -81,7 +82,7 @@ test("getManifest survives a delay that would trip the SHORT (OAI) budget — it
 
 test("getDocumentInfoViaOai keeps the SHORT budget — the F4 fix is scoped to the manifest path only", async () => {
   const broker = await startFakeBroker(FAKE_BROKER_DELAY_MS);
-  process.env.BNF_BROKER_URL = broker.url;
+  configureBrokerUrl(broker.url);
   try {
     const client = new LiveBnfClient();
     await assert.rejects(
@@ -165,7 +166,7 @@ function startStaticBroker(
 
 async function fetchAltoVia(status: number, body: string | Buffer, contentType?: string) {
   const broker = await startStaticBroker(status, body, contentType);
-  process.env.BNF_BROKER_URL = broker.url;
+  configureBrokerUrl(broker.url);
   try {
     return await new LiveBnfClient().fetchAltoFolio(ARK, 1);
   } finally {
