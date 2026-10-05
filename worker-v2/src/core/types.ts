@@ -79,13 +79,26 @@ export interface SendOpts {
   startAfterMs?: number;
   /**
    * Deliveries of this item an earlier copy already spent (a hand-back,
-   * core/stage.ts). The copy's deliveries report `attempts` counting them, and
-   * its retry budget is reduced by them, so an item never gets more deliveries
-   * than its stage's policy allows — however many restarts hand it back — and
-   * the final one is still recognised as final (`onExhausted`). A
-   * non-negative integer; the queue must have a `work()` policy registered.
+   * core/stage.ts). The copy's retry budget is reduced by them and its
+   * deliveries report `attempts` counting them, so an item never gets more
+   * deliveries than its stage's policy allows — however many restarts hand it
+   * back — and the final one is still recognised as final (`onExhausted`).
+   * Carried by the transport's own job fields (pg-boss: the job's
+   * `retry_limit`), never by the payload. A non-negative integer.
    */
   attemptsSpent?: number;
+}
+
+/**
+ * A queue's delivery policy — what a consuming stage declares for its input
+ * queue (core/stage.ts). Every job sent to the queue carries it, including
+ * jobs sent before the consumer's `work()` runs.
+ */
+export interface QueuePolicyOpts {
+  retryLimit?: number;
+  retryDelayMs?: number;
+  retryBackoff?: boolean;
+  expireInSeconds?: number;
 }
 
 /** Queue transport. One queue == one bucket == one stage's input. */
@@ -94,6 +107,12 @@ export interface QueueClient {
   send<T>(queue: string, payload: T, opts?: SendOpts): Promise<void>;
   /** Enqueue many (batch fan-out). */
   sendMany<T>(queue: string, payloads: readonly T[]): Promise<void>;
+  /**
+   * Register `queue`'s delivery policy (no I/O). The pipeline declares every
+   * stage's input queue before ANY stage starts, so a producer that sends to
+   * a queue before its consumer's `work()` still sends with the policy.
+   */
+  declare(queue: string, policy: QueuePolicyOpts): void;
   /**
    * Subscribe a handler; `concurrency` items processed in parallel. A handler
    * that throws is redelivered up to `retryLimit` times (at-least-once), then the
@@ -105,13 +124,7 @@ export interface QueueClient {
   work<T>(
     queue: string,
     handler: (msg: QueueMessage<T>) => Promise<void>,
-    opts: {
-      concurrency: number;
-      retryLimit?: number;
-      retryDelayMs?: number;
-      retryBackoff?: boolean;
-      expireInSeconds?: number;
-    },
+    opts: QueuePolicyOpts & { concurrency: number },
   ): Promise<void>;
   /** Count items by state for the progress read-model (GLOBAL — all runs). */
   counts(queue: string): Promise<QueueCounts>;

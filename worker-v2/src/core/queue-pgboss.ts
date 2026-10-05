@@ -12,8 +12,8 @@
 import PgBoss from "pg-boss";
 import { Pool, type PoolConfig } from "pg";
 
-import { takeAttemptsSpent, withAttemptsSpent } from "./queue-attempts.js";
-import type { QueueClient, QueueCounts, QueueMessage, SendOpts } from "./types.js";
+import { assertAttemptsSpent, spentFromRetryLimit } from "./queue-attempts.js";
+import type { QueueClient, QueueCounts, QueueMessage, QueuePolicyOpts, SendOpts } from "./types.js";
 
 interface QueuePolicy {
   retryLimit: number;
@@ -35,6 +35,31 @@ interface QueuePolicy {
  * leaves ~10s for the rest of shutdown inside the pod's grace window.
  */
 const GRACEFUL_STOP_TIMEOUT_MS = 110_000;
+
+/** The policy a caller declares, with the transport's chosen defaults filled in. */
+function toPolicy(opts: QueuePolicyOpts): QueuePolicy {
+  return {
+    retryLimit: opts.retryLimit ?? 3,
+    retryDelaySec: Math.max(1, Math.round((opts.retryDelayMs ?? 5_000) / 1000)),
+    retryBackoff: opts.retryBackoff ?? true,
+    // 600s, not pg-boss's silent 15-min default: a caller that doesn't declare
+    // a ceiling still gets a chosen one (see PipelineStage.expireInSeconds).
+    expireInSeconds: opts.expireInSeconds ?? 600,
+  };
+}
+
+/** Postgres codes of a create that lost a race to another creator — the queue exists. */
+const ALREADY_EXISTS_CODES = new Set(["23505", "42P07"]);
+
+function isAlreadyExists(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "code" in err &&
+    typeof err.code === "string" &&
+    ALREADY_EXISTS_CODES.has(err.code)
+  );
+}
 
 export class PgBossQueue implements QueueClient {
   private boss: PgBoss | null = null;
@@ -123,74 +148,78 @@ export class PgBossQueue implements QueueClient {
    * starts first) creates the row without a policy, and the later `work()`
    * must still write it — `applied` tracks which policy the row has.
    */
-  private async ensureQueue(name: string, policy?: QueuePolicy): Promise<void> {
-    if (policy) this.policies.set(name, policy);
+  private async ensureQueue(name: string): Promise<QueuePolicy> {
     const p = this.policies.get(name);
-    if (this.created.has(name) && (p === undefined || this.applied.get(name) === p)) return;
-    const queueOpts = p
-      ? {
-          name,
-          retryLimit: p.retryLimit,
-          retryDelay: p.retryDelaySec,
-          retryBackoff: p.retryBackoff,
-          expireInSeconds: p.expireInSeconds,
-        }
-      : { name };
+    if (!p) {
+      // A job sent with pg-boss's defaults would carry the silent 15-min
+      // expiry and retry_limit 2 (pass-6 item 9): every queue is declared by
+      // its consuming stage (Pipeline.start) before anything is sent.
+      throw new Error(`PgBossQueue: queue ${name} has no declared policy (declare() it before sending or working)`);
+    }
+    if (this.created.has(name) && this.applied.get(name) === p) return p;
+    const queueOpts = {
+      name,
+      retryLimit: p.retryLimit,
+      retryDelay: p.retryDelaySec,
+      retryBackoff: p.retryBackoff,
+      expireInSeconds: p.expireInSeconds,
+    };
     if (!this.created.has(name)) {
+      // create_queue is ON CONFLICT DO NOTHING; only a create that loses a
+      // race to another creator can still say "exists". Anything else throws.
       await this.b()
         .createQueue(name, queueOpts)
-        .catch(() => undefined); // idempotent
+        .catch((e: unknown) => {
+          if (!isAlreadyExists(e)) throw e;
+        });
+      this.created.add(name);
     }
-    if (p) {
-      await this.b()
-        .updateQueue(name, queueOpts)
-        .catch((e) => console.error(`[pg-boss] updateQueue(${name}) failed:`, e));
-      this.applied.set(name, p);
-    }
-    this.created.add(name);
+    // A failed policy write throws: the queue is not recorded as applied, so
+    // the next send or work() writes it again.
+    await this.b().updateQueue(name, queueOpts);
+    this.applied.set(name, p);
+    return p;
+  }
+
+  declare(queue: string, policy: QueuePolicyOpts): void {
+    const next = toPolicy(policy);
+    const current = this.policies.get(queue);
+    const same =
+      current !== undefined &&
+      current.retryLimit === next.retryLimit &&
+      current.retryDelaySec === next.retryDelaySec &&
+      current.retryBackoff === next.retryBackoff &&
+      current.expireInSeconds === next.expireInSeconds;
+    if (!same) this.policies.set(queue, next);
+  }
+
+  /** The job-level options every job of `queue` carries (they override the queue row). */
+  private jobOpts(p: QueuePolicy, spent: number): Record<string, unknown> {
+    return {
+      // A hand-back's copy: only what is left of the budget (the attempts
+      // are recovered from it, runJob).
+      retryLimit: Math.max(0, p.retryLimit - spent),
+      retryDelay: p.retryDelaySec,
+      retryBackoff: p.retryBackoff,
+      expireInSeconds: p.expireInSeconds,
+    };
   }
 
   async send<T>(queue: string, payload: T, opts?: SendOpts): Promise<void> {
-    await this.ensureQueue(queue);
-    const p = this.policies.get(queue);
     const spent = opts?.attemptsSpent ?? 0;
-    // Job-level options override the queue row, so a job inserted before/while
-    // the queue policy is being applied still carries the right ceiling.
-    const sendOpts: Record<string, unknown> = p
-      ? {
-          retryLimit: p.retryLimit,
-          retryDelay: p.retryDelaySec,
-          retryBackoff: p.retryBackoff,
-          expireInSeconds: p.expireInSeconds,
-        }
-      : {};
+    assertAttemptsSpent(spent);
+    const p = await this.ensureQueue(queue);
+    const sendOpts = this.jobOpts(p, spent);
     // Defer delivery (e.g. the OCR poll re-enqueue) — pg-boss takes whole seconds.
     if (opts?.startAfterMs && opts.startAfterMs > 0) {
       sendOpts.startAfter = Math.max(1, Math.round(opts.startAfterMs / 1000));
     }
-    if (spent === 0) {
-      await this.b().send(queue, payload as object, sendOpts);
-      return;
-    }
-    // A hand-back's copy: what is left of the budget, and the count it rides on.
-    if (!p) {
-      throw new Error(`PgBossQueue.send(${queue}): attemptsSpent needs the queue's work() policy`);
-    }
-    sendOpts.retryLimit = Math.max(0, p.retryLimit - spent);
-    await this.b().send(queue, withAttemptsSpent(payload, spent), sendOpts);
+    await this.b().send(queue, payload as object, sendOpts);
   }
 
   async sendMany<T>(queue: string, payloads: readonly T[]): Promise<void> {
-    await this.ensureQueue(queue);
-    const p = this.policies.get(queue);
-    const opts = p
-      ? {
-          retryLimit: p.retryLimit,
-          retryDelay: p.retryDelaySec,
-          retryBackoff: p.retryBackoff,
-          expireInSeconds: p.expireInSeconds,
-        }
-      : {};
+    const p = await this.ensureQueue(queue);
+    const opts = this.jobOpts(p, 0);
     await this.b().insert(
       payloads.map((data) => ({ name: queue, data: data as object, ...opts })),
     );
@@ -217,22 +246,10 @@ export class PgBossQueue implements QueueClient {
   async work<T>(
     queue: string,
     handler: (msg: QueueMessage<T>) => Promise<void>,
-    opts: {
-      concurrency: number;
-      retryLimit?: number;
-      retryDelayMs?: number;
-      retryBackoff?: boolean;
-      expireInSeconds?: number;
-    },
+    opts: QueuePolicyOpts & { concurrency: number },
   ): Promise<void> {
-    await this.ensureQueue(queue, {
-      retryLimit: opts.retryLimit ?? 3,
-      retryDelaySec: Math.max(1, Math.round((opts.retryDelayMs ?? 5_000) / 1000)),
-      retryBackoff: opts.retryBackoff ?? true,
-      // 600s, not pg-boss's silent 15-min default: a caller that doesn't declare
-      // a ceiling still gets a chosen one (see PipelineStage.expireInSeconds).
-      expireInSeconds: opts.expireInSeconds ?? 600,
-    });
+    this.declare(queue, opts);
+    const policy = await this.ensureQueue(queue);
 
     const cap = Math.max(1, Math.floor(opts.concurrency));
     let inFlight = 0; // this queue's slots (the pump's own accounting)
@@ -243,8 +260,9 @@ export class PgBossQueue implements QueueClient {
       this.inFlight++; // process-wide, so stop() can drain across all queues
       void (async () => {
         try {
-          // A hand-back's copy counts the deliveries its predecessor spent.
-          const spent = takeAttemptsSpent(job.data);
+          // A hand-back's copy was sent with a reduced retry_limit: the
+          // deliveries its predecessors spent are the difference.
+          const spent = spentFromRetryLimit(policy.retryLimit, job.retryLimit);
           const attempts = spent + (job.retryCount ?? 0) + 1;
           await handler({ id: job.id, payload: job.data, attempts });
           await this.settle(queue, job.id, { kind: "complete" });

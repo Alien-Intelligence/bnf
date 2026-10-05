@@ -125,6 +125,11 @@ interface SpyWorkOpts {
 
 class SpyQueue implements QueueClient {
   readonly workCalls: Array<{ queue: string; opts: SpyWorkOpts }> = [];
+  readonly declareCalls: Array<{ queue: string; opts: SpyWorkOpts }> = [];
+
+  declare(queue: string, opts: SpyWorkOpts): void {
+    this.declareCalls.push({ queue, opts });
+  }
 
   async send(): Promise<void> {}
   async sendMany(): Promise<void> {}

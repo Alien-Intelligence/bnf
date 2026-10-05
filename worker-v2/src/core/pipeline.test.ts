@@ -24,7 +24,7 @@ import { MemoryQueue } from "./queue-memory.js";
 import { PipelineStage, type StageDeps } from "./stage.js";
 import { Q } from "../domain/queues.js";
 import type { DocRef, FolioItem } from "../domain/types.js";
-import type { StageContext, StageOutcome } from "./types.js";
+import type { QueueMessage, QueuePolicyOpts, StageContext, StageOutcome } from "./types.js";
 
 /**
  * HEAD stage: consumes the seeded DocRef off Q.metadata, records its ark, and
@@ -184,4 +184,34 @@ test("stop() stops the queue — workers cleared, a later send is not processed"
 
   const stoppedLog = d.lines.find((l) => l.event === "pipeline_stopped");
   assert.ok(stoppedLog, "pipeline_stopped was logged");
+});
+
+/** Records the order of declare / work calls — the property item 9 needs. */
+class OrderQueue extends MemoryQueue {
+  readonly calls: string[] = [];
+  override declare(queue: string, policy: QueuePolicyOpts): void {
+    this.calls.push(`declare ${queue}`);
+    super.declare(queue, policy);
+  }
+  override async work<T>(
+    queue: string,
+    handler: (msg: QueueMessage<T>) => Promise<void>,
+    opts: QueuePolicyOpts & { concurrency: number },
+  ): Promise<void> {
+    this.calls.push(`work ${queue}`);
+    return super.work(queue, handler, opts);
+  }
+}
+
+test("start() declares EVERY stage's input-queue policy before any stage starts working", async () => {
+  const { logger } = createMemoryLogger();
+  const queue = new OrderQueue();
+  const base = { queue, blob: new MemoryBlobStore(), log: logger };
+  await new Pipeline(queue, [new HeadStage(base), new TailStage(base)], logger).start();
+  assert.deepEqual(queue.calls, [
+    `declare ${Q.metadata}`,
+    `declare ${Q.fetch}`,
+    `work ${Q.metadata}`,
+    `work ${Q.fetch}`,
+  ]);
 });

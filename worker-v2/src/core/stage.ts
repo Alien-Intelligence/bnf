@@ -23,6 +23,7 @@ import type {
   RetryPolicy,
   StageContext,
   StageOutcome,
+  QueuePolicyOpts,
 } from "./types.js";
 import { acquireWithin, RateGateStoppedError } from "./rate.js";
 
@@ -180,15 +181,25 @@ export abstract class PipelineStage<In, Out> {
    */
   protected async onExhausted(_payload: In, _reason: string): Promise<void> {}
 
+  /** The delivery policy of this stage's input queue (retry budget, pacing, ceiling). */
+  private queuePolicy(): QueuePolicyOpts {
+    return {
+      retryLimit: Math.max(0, this.retry.attempts - 1),
+      expireInSeconds: this.expireInSeconds,
+      ...(this.queueRetryDelayMs !== undefined ? { retryDelayMs: this.queueRetryDelayMs } : {}),
+    };
+  }
+
+  /** Register the input queue's policy (Pipeline.start, before any stage starts). */
+  declareQueue(): void {
+    this.queue.declare(this.inputQueue, this.queuePolicy());
+  }
+
   async start(): Promise<void> {
     this.log = this.log.child({ stage: this.name });
     await this.queue.work<In>(this.inputQueue, (m) => this.handle(m), {
       concurrency: this.concurrency,
-      retryLimit: Math.max(0, this.retry.attempts - 1),
-      expireInSeconds: this.expireInSeconds,
-      ...(this.queueRetryDelayMs !== undefined
-        ? { retryDelayMs: this.queueRetryDelayMs }
-        : {}),
+      ...this.queuePolicy(),
     });
     this.log.info("stage_started", {
       queue: this.inputQueue,

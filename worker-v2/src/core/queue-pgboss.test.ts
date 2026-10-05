@@ -1,15 +1,17 @@
 /**
  * PgBossQueue against a real pg-boss (`npm run test:pg`, WORKER_TEST_DATABASE_URL
- * — RUN.md). Two properties a MemoryQueue cannot prove:
+ * — RUN.md). What a MemoryQueue cannot prove:
  *
- *  - a queue first touched by a `send` (a producer that starts before the
- *    consuming stage) still gets the policy its `work()` declares written to
- *    its row (pass-5 item 11: ensureQueue returned early once the row existed);
+ *  - a job sent BEFORE its consumer's `work()` (a producer stage starts
+ *    first) carries the declared policy on the JOB row and the queue row —
+ *    never pg-boss's retry_limit 2 / 15-min expiry (pass-6 item 9); a send
+ *    to an undeclared queue throws (pass-6 items 7-9);
  *  - a delivery handed back at shutdown keeps its attempt history across a
- *    RESTART (a new PgBossQueue on the same database): the copy is delivered
- *    as the attempt it was, its retry budget is what was left, and
- *    `onExhausted` fires after the real number of attempts (pass-5 item 10:
- *    the copy used to start again at retry_count 0).
+ *    RESTART (a new PgBossQueue on the same database): the copy is sent with
+ *    the budget that was left, delivered as the attempt it was, and
+ *    `onExhausted` fires after the real number of attempts (pass-5 item 10);
+ *  - the attempt comes from the job row alone: a payload that happens to
+ *    carry any field is delivered as is, attempt 1 (pass-6 item 6).
  *
  * Each case uses its own queue name and deletes the queue afterwards.
  * Without the URL the suite is reported SKIPPED, never silently passed.
@@ -23,7 +25,6 @@ import { pgPoolConfig } from "../config.js";
 import { shutdownWorker } from "../shutdown.js";
 import { MemoryBlobStore } from "./blob.js";
 import { createMemoryLogger } from "./logger.js";
-import { ATTEMPTS_SPENT_KEY } from "./queue-attempts.js";
 import { PgBossQueue } from "./queue-pgboss.js";
 import { RateLimiter } from "./rate.js";
 import { PipelineStage, type StageDeps } from "./stage.js";
@@ -47,7 +48,8 @@ after(async () => {
   for (const name of queues) {
     // pg-boss's delete_queue drops the partition only once it holds no job.
     await pool.query("DELETE FROM pgboss.job WHERE name = $1", [name]);
-    await pool.query("SELECT pgboss.delete_queue($1)", [name]);
+    // A queue a case never created (the undeclared send) has no row to drop.
+    await pool.query("SELECT pgboss.delete_queue(name) FROM pgboss.queue WHERE name = $1", [name]);
   }
   await pool.end();
 });
@@ -85,19 +87,69 @@ class FlakyStage extends PipelineStage<{ ark: string }, never> {
 }
 
 describe("PgBossQueue on a real pg-boss", { skip: pool ? undefined : "WORKER_TEST_DATABASE_URL is not set" }, () => {
-  test("item 11: a send BEFORE work() still gets the work() policy written to the queue row", async () => {
+  test("items 9/11: a job sent BEFORE work() carries the declared policy on its JOB row and the queue row", async () => {
     if (!pool || !PG_URL) throw new Error("unreachable: skipped without a database");
     const queue = new PgBossQueue(pgPoolConfig(PG_URL));
     await queue.start();
     try {
       const name = freshQueue("policy");
-      await queue.send(name, { ark: "ark:/12148/p" }); // the row is created policy-less
-      await queue.work(name, async () => {}, { concurrency: 1, retryLimit: 5, expireInSeconds: 77 });
+      queue.declare(name, { retryLimit: 5, expireInSeconds: 77, retryDelayMs: 3_000 });
+      await queue.send(name, { ark: "ark:/12148/p" }); // no consumer yet
+      await queue.sendMany(name, [{ ark: "ark:/12148/q" }]);
+      const jobs = await pool.query<{ retry_limit: number; expire_s: number; retry_delay: number }>(
+        "SELECT retry_limit, extract(epoch FROM expire_in)::int AS expire_s, retry_delay FROM pgboss.job WHERE name = $1",
+        [name],
+      );
+      assert.deepEqual(jobs.rows, [
+        { retry_limit: 5, expire_s: 77, retry_delay: 3 },
+        { retry_limit: 5, expire_s: 77, retry_delay: 3 },
+      ]);
+      await queue.work(name, async () => {}, { concurrency: 1, retryLimit: 5, expireInSeconds: 77, retryDelayMs: 3_000 });
       const { rows } = await pool.query<{ retry_limit: number; expire_seconds: number }>(
         "SELECT retry_limit, expire_seconds FROM pgboss.queue WHERE name = $1",
         [name],
       );
       assert.deepEqual(rows, [{ retry_limit: 5, expire_seconds: 77 }]);
+    } finally {
+      await queue.stop();
+    }
+  });
+
+  test("items 7-9: a send to a queue nobody declared throws instead of using pg-boss's defaults", async () => {
+    if (!PG_URL) throw new Error("unreachable: skipped without a database");
+    const queue = new PgBossQueue(pgPoolConfig(PG_URL));
+    await queue.start();
+    try {
+      await assert.rejects(queue.send(freshQueue("undeclared"), { ark: "x" }), /no declared policy/);
+    } finally {
+      await queue.stop();
+    }
+  });
+
+  test("item 6: the attempt comes from the job row — payload fields named like anything are inert", async () => {
+    if (!pool || !PG_URL) throw new Error("unreachable: skipped without a database");
+    const queue = new PgBossQueue(pgPoolConfig(PG_URL));
+    await queue.start();
+    try {
+      const name = freshQueue("inert");
+      const seen: Array<{ attempts: number; payload: unknown }> = [];
+      await queue.work<Record<string, unknown>>(
+        name,
+        async (msg) => {
+          seen.push({ attempts: msg.attempts, payload: msg.payload });
+        },
+        { concurrency: 2, retryLimit: 2 },
+      );
+      await queue.send(name, { ark: "a", __attemptsSpent: 5 });
+      await queue.send(name, { ark: "b", __attemptsSpent: "x" });
+      await until("both delivered", async () => seen.length === 2);
+      assert.deepEqual(
+        [...seen].sort((x, y) => JSON.stringify(x.payload).localeCompare(JSON.stringify(y.payload))),
+        [
+          { attempts: 1, payload: { ark: "a", __attemptsSpent: 5 } },
+          { attempts: 1, payload: { ark: "b", __attemptsSpent: "x" } },
+        ],
+      );
     } finally {
       await queue.stop();
     }
@@ -135,13 +187,13 @@ describe("PgBossQueue on a real pg-boss", { skip: pool ? undefined : "WORKER_TES
     );
     assert.ok(lines.some((l) => l.event === "delivery_handed_back"));
 
-    const { rows: copies } = await pool.query<{ retry_limit: number; retry_count: number; data: Record<string, unknown> }>(
-      "SELECT retry_limit, retry_count, data FROM pgboss.job WHERE name = $1 AND state = 'created'",
+    const { rows: copies } = await pool.query<{ retry_limit: number; data: Record<string, unknown> }>(
+      "SELECT retry_limit, data FROM pgboss.job WHERE name = $1 AND state = 'created'",
       [name],
     );
     assert.equal(copies.length, 1, "one copy waits for the next process");
-    assert.equal(copies[0]?.retry_limit, 1, "3 attempts allowed, 1 spent, this copy's first delivery is attempt 2 → 1 retry left");
-    assert.equal(copies[0]?.data[ATTEMPTS_SPENT_KEY], 1);
+    assert.equal(copies[0]?.retry_limit, 1, "3 attempts allowed, 1 spent → the copy keeps 1 retry");
+    assert.deepEqual(copies[0]?.data, { ark: "ark:/12148/h" }, "the payload is untouched");
 
     // --- process 2 (the restart): attempts 2 and 3, then exhausted.
     const second = new PgBossQueue(pgPoolConfig(PG_URL));

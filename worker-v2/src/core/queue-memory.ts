@@ -7,7 +7,7 @@
  * the copy's deliveries count the spent ones and its retry budget shrinks.
  */
 import { assertAttemptsSpent } from "./queue-attempts.js";
-import type { QueueClient, QueueCounts, QueueMessage, SendOpts } from "./types.js";
+import type { QueueClient, QueueCounts, QueueMessage, QueuePolicyOpts, SendOpts } from "./types.js";
 
 interface MemMsg {
   id: string;
@@ -40,6 +40,13 @@ export class MemoryQueue implements QueueClient {
     }
     return arr;
   }
+
+  /**
+   * The in-memory queue applies a policy when `work()` registers the handler
+   * and holds sent messages until then, so a declared policy needs no early
+   * write here (pg-boss stamps it on each job, queue-pgboss.ts).
+   */
+  declare(_queue: string, _policy: QueuePolicyOpts): void {}
 
   async send<T>(queue: string, payload: T, opts?: SendOpts): Promise<void> {
     // startAfterMs is a prod (pg-boss) concern; the test queue delivers immediately.
