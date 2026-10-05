@@ -129,3 +129,32 @@ test("searchDocTypeFromCql reads only an unambiguous dc.type clause", () => {
   assert.equal(searchDocTypeFromCql('dc.type all "fascicule" or title all "Temps"'), null, "an or widens the set")
   assert.equal(searchDocTypeFromCql(null), null)
 })
+
+test("searchDocTypeFromCql: a parenthesised negation is still a negation", () => {
+  assert.equal(searchDocTypeFromCql('not (dc.type all "fascicule")'), null)
+  assert.equal(searchDocTypeFromCql('NOT(dc.type all "fascicule")'), null)
+  assert.equal(searchDocTypeFromCql('gallica all "x" not (dc.type all "fascicule" and gallica all "y")'), null)
+})
+
+test("searchDocTypeFromCql counts every dc.type relation, so two types are never one", () => {
+  assert.equal(searchDocTypeFromCql('dc.type exact "fascicule" and dc.type all "monographie"'), null)
+  assert.equal(searchDocTypeFromCql('dc.type = fascicule and dc.type all "monographie"'), null)
+  assert.equal(searchDocTypeFromCql('dc.type == "fascicule" and dc.type any "carte"'), null)
+  assert.equal(searchDocTypeFromCql('dc.type all "fascicule monographie"'), null, "two values in one clause")
+})
+
+test("searchDocTypeFromCql reads every relation of a single clause, quoted or bare", () => {
+  assert.equal(searchDocTypeFromCql('dc.type exact "fascicule"'), "fascicule")
+  assert.equal(searchDocTypeFromCql("dc.type = fascicule and gallica all \"x\""), "fascicule")
+  assert.equal(searchDocTypeFromCql('dc.type == "carte"'), "carte")
+})
+
+test("searchDocTypeFromCql ignores operator words inside quoted terms", () => {
+  assert.equal(searchDocTypeFromCql('gallica all "l\'or du Rhin" and dc.type all "partition"'), "partition")
+  assert.equal(searchDocTypeFromCql('dc.title all "not here" and dc.type all "fascicule"'), "fascicule")
+  // prox only narrows (a restricted and): the executed CQL of a phrase search.
+  assert.equal(
+    searchDocTypeFromCql('text all "sentiment" prox/unit=word/distance=3 "amoureux" and dc.type all "monographie"'),
+    "monographie",
+  )
+})

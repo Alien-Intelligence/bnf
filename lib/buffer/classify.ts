@@ -27,11 +27,18 @@ function isSearchableDocType(value: string): value is GallicaSearchDocType {
   return SEARCHABLE.has(value)
 }
 
-/** Every `dc.type` clause of a CQL (search_gallica.py writes `dc.type all
- *  "<v>"`; `any`/`adj` appear in hand-written CQL), with what precedes it. */
-const DC_TYPE_CLAUSES = /(\bnot\s+)?\bdc\.type\s+(?:all|any|adj)\s+"([^"]+)"/gi
-/** A boolean `or` anywhere in the query. */
-const CQL_OR = /\bor\b/i
+/** Every mention of the dc.type index, whatever its relation. */
+const DC_TYPE_MENTION = /\bdc\.type\b/gi
+/** The one clause form read: `dc.type <relation> <one value>`, quoted or
+ *  bare, for every relation that ties each hit to that value (search_gallica.py
+ *  writes `all`; hand-written CQL uses any/adj/exact/=/==). */
+const DC_TYPE_CLAUSE = /\bdc\.type\s*(?:all|any|adj|exact|==|=)\s*(?:"\s*([^"\s]+)\s*"|([^\s()"]+))/i
+/** An operator that can widen (`or`) or invert (`not`) the hit set. `and` and
+ *  `prox` (a restricted `and`, which executed Gallica CQL uses for phrase
+ *  proximity) only narrow it, so the type still holds for every hit. */
+const CQL_WIDENING_OR_NEGATING = /\b(?:or|not)\b/i
+/** Quoted terms, blanked before operators are looked for ("l'or", "not" in a title). */
+const CQL_QUOTED = /"[^"]*"/g
 
 /**
  * The Gallica `doc_type` filter a search was run with, recovered from its CQL,
@@ -40,19 +47,23 @@ const CQL_OR = /\bor\b/i
  * CQL in `originQuery` — and how a raw-CQL search is classified like a
  * structured one.
  *
- * Only an unambiguous query counts: exactly one `dc.type` clause, not negated,
- * and no `or` in the query. `not dc.type all "fascicule"` says what the hits
- * are NOT; `dc.type all "a" or …` does not hold for every hit. Those are
- * ambiguous, so the type is left to each hit's own label (stored as fact by
- * the reclassifier and the search path, a guess here would be false data).
+ * Only an unambiguous query counts: exactly one mention of `dc.type` (any
+ * relation counts toward that one), in the plain `dc.type <relation> <value>`
+ * form, with a single-word value, and no `or` or `not` anywhere outside
+ * quoted terms. A negation — `not dc.type …`, `not (dc.type …)`,
+ * `x not (y and dc.type …)` — says what the hits are NOT; an `or` means the
+ * type does not hold for every hit. In doubt the answer is null, and
+ * the type is left to each hit's own label (stored as fact by the reclassifier
+ * and the search path; a guess here would be false data).
  */
 export function searchDocTypeFromCql(cql: string | null | undefined): GallicaSearchDocType | null {
   if (typeof cql !== "string") return null
-  const clauses = [...cql.matchAll(DC_TYPE_CLAUSES)]
-  if (clauses.length !== 1 || CQL_OR.test(cql)) return null
-  const [clause] = clauses
-  if (clause[1] !== undefined) return null
-  const value = clause[2].trim().toLowerCase()
+  const unquoted = cql.replace(CQL_QUOTED, '""')
+  if (CQL_WIDENING_OR_NEGATING.test(unquoted)) return null
+  if ((unquoted.match(DC_TYPE_MENTION) ?? []).length !== 1) return null
+  const clause = DC_TYPE_CLAUSE.exec(cql)
+  if (clause === null) return null
+  const value = (clause[1] ?? clause[2]).trim().toLowerCase()
   return isSearchableDocType(value) ? value : null
 }
 
