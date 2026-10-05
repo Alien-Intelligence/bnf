@@ -22,28 +22,37 @@
 //      early request); each ARK's persisted `outage_count` goes up and a
 //      never-asked ARK gets its `pending` row. An ARK whose count reached 2
 //      (its batch failed twice) is asked ALONE, at most
-//      OCR_SYNC_ISOLATION_BUDGET requests per drain (control included), while
-//      that corpus asks no batch. An ARK asked alone that fails on the
-//      transport earns an outage STRIKE only with a CONTROL: another request
-//      of the same drain was answered (when none was yet, the drain asks one
-//      `available` ARK to find out). Without a control it only backs off. At
-//      OCR_SYNC_MAX_ATTEMPTS strikes it is quarantined (`worker_fails_alone`;
-//      a re-ingest's resync re-opens it). A drain stops asking ARKs alone after
-//      two transport failures in a row with no answer in between, so a worker
-//      outage costs at most two of those requests per drain and blames nobody.
+//      OCR_SYNC_ISOLATION_BUDGET requests per drain (controls included); the
+//      rest of its corpus goes on in batches without it. An ARK asked alone
+//      earns an outage STRIKE only inside a BRACKET of evidence, in one drain:
+//      an answer → it fails → two `available` CONTROLS answered back to back →
+//      it fails again (a flapping worker cannot answer two requests in a row
+//      on a period-2 pattern, nor after it died). Anything less only backs it
+//      off. Controls rotate among the OCR_SYNC_CONTROL_POOL most recent
+//      `available` ARKs with no outage on record; a control that fails is an
+//      ordinary lone failure of that ARK and ends the isolation for the drain.
+//      At OCR_SYNC_MAX_ATTEMPTS strikes the ARK is quarantined
+//      (`worker_fails_alone`) — a long backoff (24 h doubling to 7 days),
+//      healed by any answer, re-opened at once by a re-ingest's resync. A
+//      worker outage costs one control per drain and blames nobody.
 //   B. Contract, decided per document by the artifact's own `v` (see
 //      lib/cluster/ocr-quality.ts): another `v` → `incompatible` (a deploy
 //      mismatch: nobody blamed, asked again in 24 h, logged at error level
-//      once per drain with both versions); the expected `v` failing its schema
-//      → that ARK alone is rejected (backoff, then quarantine `sync_rejected`
-//      after OCR_SYNC_MAX_ATTEMPTS) and the sync goes on. A 400 naming an ARK,
+//      once per drain with both versions; the deploy that fixes it re-asks them
+//      at boot); the expected `v` failing its schema → that ARK alone is
+//      rejected (backoff, then the long quarantine backoff `sync_rejected`
+//      from OCR_SYNC_MAX_ATTEMPTS) and the sync goes on. An `available` row
+//      keeps its folios through `building` / `unavailable` answers (a worker
+//      rebuilding after a bump) until a new `available` or `incompatible` one. A 400 naming an ARK,
 //      or ARKs left out of an otherwise answered batch, are rejected the same
 //      way and the rest asked again. Only an exchange-level break (401/403/413,
 //      an envelope that does not parse, an answer to nothing asked) pauses the
 //      WHOLE sync (syncBackoffMs); the first answer resumes it.
-//   C. Every write of a failure carries `askedAt`: an answer recorded after the
-//      question supersedes it (nothing written), and a resync requested after
-//      it keeps the ARK due whatever the failure says.
+//   C. Every write of a failure carries `askedAt` and is a compare-and-set on
+//      the row as read, stamping `checked_at` past `askedAt`: evidence recorded
+//      after the question supersedes it, two drainers (replicas, a rolling
+//      update) record one failure once, and a resync requested after it keeps
+//      the ARK due whatever the failure says.
 //   D. One AbortController per drain, fired at OCR_SYNC_DRAIN_DEADLINE_MS,
 //      cancels the in-flight request and stops the writes between ARKs; no
 //      request starts unless its worst-case cost still fits; every read is
@@ -68,6 +77,7 @@ import {
   OCR_DB_TIMEOUT_MS,
   OCR_SYNC_BATCH_SIZE,
   OCR_SYNC_BATCH_WRITE_MARGIN_MS,
+  OCR_SYNC_CONTROL_POOL,
   OCR_SYNC_DRAIN_DEADLINE_MS,
   OCR_SYNC_ISOLATION_BUDGET,
   OCR_SYNC_MAX_ATTEMPTS,
@@ -109,22 +119,24 @@ export type OcrSyncPorts = {
     now: Date,
     signal: AbortSignal,
   ): Promise<Array<{ ark: string; outageCount: number }>>
-  /** An `available` ARK outside `exclude` to ask as the control, or null when there is none. */
-  controlArk(exclude: string[], signal: AbortSignal): Promise<string | null>
+  /** Up to `limit` `available` ARKs outside `exclude` to rotate as controls (most recent first). */
+  controlArks(exclude: string[], limit: number, signal: AbortSignal): Promise<string[]>
   syncBatch(arks: string[], signal: AbortSignal): Promise<OcrSyncBatchResult>
-  /** `askedAt`: when the rejected question was asked (see DocumentService.recordOcrRejection). */
-  recordRejection(ark: string, message: string, now: Date, askedAt: Date, signal: AbortSignal): Promise<void>
+  /** `askedAt`: when the rejected question was asked; resolves false when nothing was written. */
+  recordRejection(ark: string, message: string, now: Date, askedAt: Date, signal: AbortSignal): Promise<boolean>
   recordBatchOutage(arks: string[], askedAt: Date, signal: AbortSignal): Promise<void>
   recordAloneFailure(
     ark: string,
     message: string,
-    opts: { askedAt: Date; now: Date; controlled: boolean },
+    opts: { askedAt: Date; now: Date; bracketed: boolean },
     signal: AbortSignal,
   ): Promise<{ outcome: OcrAloneOutcome; strikes: number }>
   /** Worst-case cost of one request (request timeout + write margin). */
   batchCostMs(): number
   now(): number
   log(message: string): void
+  /** Evidence about one ARK that is not (yet) a fault: strikes, lone failures, lost writes. */
+  warn(message: string, err: unknown): void
   error(message: string, err: unknown): void
 }
 
@@ -136,6 +148,8 @@ export type OcrSyncLimits = {
   isolationBudget: number
   /** Strikes (and rejections) at which an ARK is quarantined — for the log lines. */
   maxAttempts: number
+  /** How many recent `available` ARKs the control rotates among. */
+  controlPool: number
 }
 
 export type OcrSyncTally = {
@@ -183,7 +197,7 @@ type Drain = {
   tally: OcrSyncTally
   batches: number
   isolation: number
-  /** A request of this drain was answered: the worker is up. */
+  /** A request of this drain was answered (the drain did not end on a down worker). */
   controlled: boolean
   /** Requests that failed on the transport / that were made. */
   failures: number
@@ -201,10 +215,14 @@ export function createOcrSyncDrainer(ports: OcrSyncPorts, limits: OcrSyncLimits)
    * per corpus and one reshuffled rotation.
    *   paced  — per corpus, consecutive batch transport failures and when its
    *            next turn may come; pruned to the corpora that have work due;
-   *   cursor — the last corpus each tier served.
+   *   cursor — the last corpus each tier served, and the control rotation.
    */
   const paced = new Map<string, { failures: number; until: number }>()
-  const cursor: { resync: string | null; rest: string | null } = { resync: null, rest: null }
+  const cursor: { resync: string | null; rest: string | null; control: number } = {
+    resync: null,
+    rest: null,
+    control: 0,
+  }
 
   /** Every request must still fit the drain's deadline. */
   function assertFits(d: Drain): void {
@@ -221,9 +239,12 @@ export function createOcrSyncDrainer(ports: OcrSyncPorts, limits: OcrSyncLimits)
   }
 
   async function reject(ark: string, message: string, askedAt: Date, d: Drain): Promise<void> {
-    ports.error(`${ark}: the worker's answer for it is rejected`, message)
-    await ports.recordRejection(ark, message, new Date(ports.now()), askedAt, d.signal)
-    d.tally.rejected += 1
+    if (await ports.recordRejection(ark, message, new Date(ports.now()), askedAt, d.signal)) {
+      ports.error(`${ark}: the worker's answer for it is rejected`, message)
+      d.tally.rejected += 1
+      return
+    }
+    ports.warn(`${ark}: rejection not recorded — newer evidence, or another drainer recorded it first`, message)
   }
 
   /**
@@ -277,52 +298,107 @@ export function createOcrSyncDrainer(ports: OcrSyncPorts, limits: OcrSyncLimits)
 
   /**
    * The ARKs to ask alone, in the order collected, within the isolation
-   * budget. A transport failure with no control yet asks the control first;
-   * two transport failures in a row with no answer between them end the
-   * isolation for this drain (the worker is down, not the ARK).
+   * budget. A strike needs a BRACKET, all in this drain and in this order:
+   *   an answer (a control, or the previous ARK asked alone)
+   *   → X fails → a control answered → a second control answered → X fails.
+   * Two controls in the middle, back to back, because a worker that answers
+   * every other request (or dies after one) would otherwise frame X: a
+   * period-2 failure pattern cannot answer two consecutive requests. A
+   * failure without a full bracket only backs X off. A control that fails is
+   * recorded as an ordinary lone failure of that ARK and ends the isolation
+   * for this drain (the worker is not proven up). With no control to ask
+   * (nothing `available` yet), ARKs are still asked alone — their answers
+   * serve the corpus and become the openers — but two transport failures in a
+   * row end the isolation.
    */
   async function isolate(alone: string[], d: Drain): Promise<void> {
+    let controls: string[] | null = null
+    let lastAnswered = false
     let failuresInARow = 0
+    /** Ask the next control: "answered", "failed" (the worker is not proven up), or "none". */
+    const control = async (): Promise<"answered" | "failed" | "none"> => {
+      if (d.isolation <= 0) return "none"
+      if (controls === null) controls = await ports.controlArks(alone, limits.controlPool, d.signal)
+      const pick = controls[cursor.control % Math.max(1, controls.length)]
+      if (pick === undefined) return "none"
+      cursor.control += 1
+      d.isolation -= 1
+      const result = await ask([pick], d)
+      if (result.kind === "answered") return "answered"
+      controls = controls.filter((c) => c !== pick)
+      await lone(pick, result, false, d)
+      return "failed"
+    }
     for (const ark of alone) {
       if (d.isolation <= 0) return
       if (failuresInARow >= 2) {
         ports.log(`stopped asking ARKs alone this drain: ${failuresInARow} transport failures in a row`)
         return
       }
+      if (!lastAnswered) {
+        const opener = await control()
+        if (opener === "failed") return
+        if (opener === "answered") failuresInARow = 0
+        if (d.isolation <= 0) return
+      }
       d.isolation -= 1
-      const result = await ask([ark], d)
-      if (result.kind === "answered") {
+      const first = await ask([ark], d)
+      if (first.kind === "answered") {
+        lastAnswered = true
         failuresInARow = 0
         continue
       }
+      lastAnswered = false
       failuresInARow += 1
-      if (!d.controlled && d.isolation > 0) {
-        const control = await ports.controlArk(alone, d.signal)
-        if (control !== null) {
-          d.isolation -= 1
-          const controlResult = await ask([control], d)
-          if (controlResult.kind === "answered") failuresInARow = 0
-          else failuresInARow += 1
-        }
+      // The middle of the bracket: two answered controls back to back.
+      const middle = d.isolation >= 3 ? await control() : "none"
+      const middle2 = middle === "answered" ? await control() : middle
+      if (middle2 !== "answered") {
+        await lone(ark, first, false, d)
+        if (middle === "failed" || middle2 === "failed") return
+        continue
       }
-      const { outcome, strikes } = await ports.recordAloneFailure(
-        ark,
-        result.err.message,
-        { askedAt: result.askedAt, now: new Date(ports.now()), controlled: d.controlled },
-        d.signal,
-      )
-      if (outcome === OCR_ALONE_OUTCOME.STRUCK || outcome === OCR_ALONE_OUTCOME.QUARANTINED) {
-        d.tally.struck += 1
-        const verdict =
-          outcome === OCR_ALONE_OUTCOME.QUARANTINED ? "quarantined (worker_fails_alone)" : "backing off"
-        ports.error(
-          `${ark}: outage strike ${strikes}/${limits.maxAttempts}, ${verdict} — it failed alone on the transport while the worker answered another request of this drain`,
-          result.err,
-        )
-      } else {
-        ports.error(`${ark}, asked alone, unanswered (${outcome}: no answer from the worker this drain)`, result.err)
+      failuresInARow = 0
+      d.isolation -= 1
+      const second = await ask([ark], d)
+      if (second.kind === "answered") {
+        lastAnswered = true
+        continue
       }
+      await lone(ark, second, true, d)
     }
+  }
+
+  /** Record a transport failure of `ark` asked alone; `bracketed` = it earns a strike. */
+  async function lone(
+    ark: string,
+    failure: { askedAt: Date; err: OcrSyncUnavailableError },
+    bracketed: boolean,
+    d: Drain,
+  ): Promise<void> {
+    const { outcome, strikes } = await ports.recordAloneFailure(
+      ark,
+      failure.err.message,
+      { askedAt: failure.askedAt, now: new Date(ports.now()), bracketed },
+      d.signal,
+    )
+    if (outcome === OCR_ALONE_OUTCOME.STRUCK || outcome === OCR_ALONE_OUTCOME.QUARANTINED) {
+      d.tally.struck += 1
+      const verdict =
+        outcome === OCR_ALONE_OUTCOME.QUARANTINED
+          ? "quarantined (worker_fails_alone, rechecked in 24 h)"
+          : "backing off"
+      ports.warn(
+        `${ark}: outage strike ${strikes}/${limits.maxAttempts}, ${verdict} — it failed alone twice, each time right after answered controls`,
+        failure.err,
+      )
+      return
+    }
+    if (outcome === OCR_ALONE_OUTCOME.STALE) {
+      ports.warn(`${ark}: lone failure not recorded — newer evidence, or another drainer recorded it first`, failure.err)
+      return
+    }
+    ports.warn(`${ark}, asked alone, unanswered (no bracket of answered controls: no strike)`, failure.err)
   }
 
   /**
@@ -356,14 +432,12 @@ export function createOcrSyncDrainer(ports: OcrSyncPorts, limits: OcrSyncLimits)
     d: Drain,
   ): Promise<"again" | "done"> {
     const due = await ports.pendingArks(corpusProjectId, limits.batchSize, new Date(ports.now()), d.signal)
+    // ARKs whose batch failed twice are asked alone (later this drain); the
+    // rest of the corpus is still asked as a batch — without them, so a
+    // poison never rides in a batch again.
     const lone = due.filter((a) => a.outageCount >= OCR_SYNC_ALONE_FROM).map((a) => a.ark)
-    if (lone.length > 0) {
-      // Its batch failed twice: this corpus asks no batch until these are
-      // answered, struck or backed off (a batch would carry the poison again).
-      for (const ark of lone) if (!alone.includes(ark)) alone.push(ark)
-      return "done"
-    }
-    const arks = due.map((a) => a.ark)
+    for (const ark of lone) if (!alone.includes(ark)) alone.push(ark)
+    const arks = due.filter((a) => a.outageCount < OCR_SYNC_ALONE_FROM).map((a) => a.ark)
     if (arks.length === 0) return "done"
     d.batches += 1
     const result = await ask(arks, d)
@@ -508,6 +582,7 @@ export const OCR_SYNC_LIMITS: OcrSyncLimits = {
   maxBatches: OCR_SYNC_MAX_BATCHES_PER_CYCLE,
   isolationBudget: OCR_SYNC_ISOLATION_BUDGET,
   maxAttempts: OCR_SYNC_MAX_ATTEMPTS,
+  controlPool: OCR_SYNC_CONTROL_POOL,
 }
 
 function boundedRead<T>(label: string, work: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -523,7 +598,8 @@ const realPorts: OcrSyncPorts = {
       DocumentQueries.pendingOcrArks({ corpusProjectId, limit, now }),
       signal,
     ),
-  controlArk: (exclude, signal) => boundedRead("control ARK", DocumentQueries.ocrControlArk(exclude), signal),
+  controlArks: (exclude, limit, signal) =>
+    boundedRead("control ARKs", DocumentQueries.ocrControlArks(exclude, limit), signal),
   syncBatch: (arks, signal) => DocumentService.syncOcrBatch(arks, signal),
   recordRejection: (ark, message, now, askedAt, signal) =>
     DocumentService.recordOcrRejection(ark, message, now, askedAt, signal),
@@ -533,6 +609,7 @@ const realPorts: OcrSyncPorts = {
   batchCostMs: () => DocumentService.ocrSyncRequestTimeoutMs() + OCR_SYNC_BATCH_WRITE_MARGIN_MS,
   now: () => Date.now(),
   log: (message) => console.log(`[ocr-sync] ${message}`),
+  warn: (message, err) => console.warn(`[ocr-sync] ${message}:`, err),
   error: (message, err) => console.error(`[ocr-sync] ${message}:`, err),
 }
 
@@ -580,8 +657,25 @@ function syncEnabled(): boolean {
   return clusterMode() === CLUSTER_MODE.REAL
 }
 
+/**
+ * At boot, before the first drain: `incompatible` rows recorded against
+ * another artifact version than this app reads are due at once — this deploy
+ * may be the one that fixes the skew (DocumentService.reopenIncompatibleOcr).
+ */
+async function reopenIncompatible(signal: AbortSignal): Promise<void> {
+  const reopened = await withDeadline(DocumentService.reopenIncompatibleOcr(new Date()), {
+    label: "[ocr-sync] reopen incompatible",
+    ms: OCR_DB_TIMEOUT_MS,
+    signal,
+  })
+  if (reopened > 0) {
+    realPorts.log(`${reopened} incompatible row(s) recorded against another artifact version are due again`)
+  }
+}
+
 async function runDrain(trigger: string): Promise<void> {
   const life = lifecycle()
+  if (trigger === "boot") await reopenIncompatible(life.controller.signal)
   const report = await life.drain(life.controller.signal)
   if (report.stop === OCR_SYNC_STOP.COALESCED) return
   const { tally } = report

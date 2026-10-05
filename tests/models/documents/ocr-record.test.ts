@@ -28,6 +28,7 @@ import {
   OCR_SYNC_BACKOFF_BASE_MS,
   OCR_SYNC_INCOMPATIBLE_RECHECK_MS,
   OCR_SYNC_MAX_ATTEMPTS,
+  OCR_SYNC_QUARANTINE_RECHECK_BASE_MS,
 } from "@/lib/constants"
 import { prisma } from "@/lib/db"
 import {
@@ -204,31 +205,43 @@ test("recordOcrSync: a re-OCR replaces the folios wholesale; a replay is idempot
   )
 })
 
-test("recordOcrSync: unavailable records the reason and keeps existing folios", async () => {
+test("FAIL 4 recordOcrSync: an `unavailable` answer (artifact_corrupt while the worker rebuilds) leaves an available row available", async () => {
   await DocumentService.recordOcrSync(
-    plan({ unavailable: [{ ark: ARK_A, reason: "no_pages_artifact" }] }), ALIVE)
+    plan({ unavailable: [{ ark: ARK_A, reason: "artifact_corrupt" }] }), ALIVE)
   const a = await DocumentQueries.ocrForArk(projectId, ARK_A)
-  assert.equal(a?.status, OCR_SYNC_STATUS.UNAVAILABLE)
-  assert.equal(a?.reason, "no_pages_artifact")
+  assert.equal(a?.status, OCR_SYNC_STATUS.AVAILABLE)
+  assert.equal(a?.reason, null)
   assert.equal(a?.folios.length, 1)
 })
 
-test("recordOcrRejection: backs off, then quarantines after OCR_SYNC_MAX_ATTEMPTS", async () => {
+test("recordOcrSync: unavailable records the reason on a row that was not available", async () => {
   await prisma.documentOcr.deleteMany({ where: { ark: ARK_B } })
+  await DocumentService.recordOcrSync(plan({ unavailable: [{ ark: ARK_B, reason: "no_pages_artifact" }] }), ALIVE)
+  const b = await DocumentQueries.ocrForArk(projectId, ARK_B)
+  assert.equal(b?.status, OCR_SYNC_STATUS.UNAVAILABLE)
+  assert.equal(b?.reason, "no_pages_artifact")
+})
+
+test("recordOcrRejection: backs off, then quarantines on the long backoff after OCR_SYNC_MAX_ATTEMPTS", async () => {
+  await prisma.documentOcr.deleteMany({ where: { ark: ARK_B } })
+  const base = Date.now()
   for (let i = 1; i < OCR_SYNC_MAX_ATTEMPTS; i += 1) {
-    await DocumentService.recordOcrRejection(ARK_B, "worker refused", new Date(), new Date(), ALIVE)
+    const askedAt = new Date(base + i * 10)
+    await DocumentService.recordOcrRejection(ARK_B, "worker refused", askedAt, askedAt, ALIVE)
     const row = await prisma.documentOcr.findUniqueOrThrow({ where: { ark: ARK_B } })
     assert.equal(row.syncAttempts, i)
     assert.equal(row.status, OCR_SYNC_STATUS.UNAVAILABLE)
     assert.ok(row.nextCheckAt !== null && row.nextCheckAt > new Date(), "backs off into the future")
     assert.ok(!(await pendingAt(new Date())).includes(ARK_B), "not offered while backing off")
   }
-  await DocumentService.recordOcrRejection(ARK_B, "worker refused", new Date(), new Date(), ALIVE)
+  const lastAsked = new Date(base + OCR_SYNC_MAX_ATTEMPTS * 10)
+  await DocumentService.recordOcrRejection(ARK_B, "worker refused", lastAsked, lastAsked, ALIVE)
   const row = await prisma.documentOcr.findUniqueOrThrow({ where: { ark: ARK_B } })
   assert.equal(row.status, OCR_SYNC_STATUS.QUARANTINED)
-  assert.equal(row.nextCheckAt, null)
+  assert.equal(row.nextCheckAt?.getTime(), lastAsked.getTime() + OCR_SYNC_QUARANTINE_RECHECK_BASE_MS)
   assert.ok(row.reason !== null && /^sync_rejected: worker refused/.test(row.reason))
-  assert.ok(!(await pendingAt(LATER())).includes(ARK_B), "a quarantined ARK is never offered again")
+  assert.ok(!(await pendingAt(at(lastAsked, 23 * 60))).includes(ARK_B), "not offered within the day")
+  assert.ok((await pendingAt(LATER())).includes(ARK_B), "but asked again: quarantine is never terminal")
 
   await DocumentService.ocrResyncOp([ARK_B], new Date())
   const resynced = await prisma.documentOcr.findUniqueOrThrow({ where: { ark: ARK_B } })
@@ -247,7 +260,8 @@ test("recordOcrRejection: an available row keeps its status and folios while bac
         },
       ],
     }), ALIVE)
-  await DocumentService.recordOcrRejection(ARK_A, "bad answer", new Date(), new Date(), ALIVE)
+  const askedAt = new Date(Date.now() + 1_000)
+  await DocumentService.recordOcrRejection(ARK_A, "bad answer", askedAt, askedAt, ALIVE)
   const a = await DocumentQueries.ocrForArk(projectId, ARK_A)
   assert.equal(a?.status, OCR_SYNC_STATUS.AVAILABLE)
   assert.equal(a?.reason, null)
@@ -417,7 +431,8 @@ test("A recordOcrAloneFailure without a control: backs off by the outage count, 
   await DocumentService.recordOcrBatchOutage([ARK_A], askedAt, ALIVE)
   const now = new Date()
   for (let i = 0; i < OCR_SYNC_MAX_ATTEMPTS + 2; i++) {
-    const r = await DocumentService.recordOcrAloneFailure(ARK_A, "502", { askedAt, now, controlled: false }, ALIVE)
+    const asked = at(askedAt, i)
+    const r = await DocumentService.recordOcrAloneFailure(ARK_A, "502", { askedAt: asked, now: asked, bracketed: false }, ALIVE)
     assert.deepEqual(r, { outcome: OCR_ALONE_OUTCOME.BACKOFF, strikes: 0 })
   }
   const row = await rowOf(ARK_A)
@@ -432,7 +447,7 @@ test("A recordOcrAloneFailure with a control: strikes, then quarantines `worker_
   await DocumentService.recordOcrBatchOutage([ARK_A], base, ALIVE)
   for (let i = 1; i <= OCR_SYNC_MAX_ATTEMPTS; i++) {
     const askedAt = at(base, i * 60)
-    const r = await DocumentService.recordOcrAloneFailure(ARK_A, "worker 502 on it", { askedAt, now: askedAt, controlled: true }, ALIVE)
+    const r = await DocumentService.recordOcrAloneFailure(ARK_A, "worker 502 on it", { askedAt, now: askedAt, bracketed: true }, ALIVE)
     const row = await rowOf(ARK_A)
     assert.equal(r.strikes, i)
     assert.equal(row.outageStrikes, i)
@@ -444,10 +459,10 @@ test("A recordOcrAloneFailure with a control: strikes, then quarantines `worker_
       assert.equal(r.outcome, OCR_ALONE_OUTCOME.QUARANTINED)
       assert.equal(row.status, OCR_SYNC_STATUS.QUARANTINED)
       assert.match(row.reason ?? "", /^worker_fails_alone: worker 502 on it/)
-      assert.equal(row.nextCheckAt, null)
+      assert.equal(row.nextCheckAt?.getTime(), askedAt.getTime() + OCR_SYNC_QUARANTINE_RECHECK_BASE_MS)
     }
   }
-  assert.ok(!(await pendingAt(LATER())).includes(ARK_A))
+  assert.ok((await pendingAt(LATER())).includes(ARK_A), "a quarantine is a long backoff, never terminal")
   await DocumentService.ocrResyncOp([ARK_A], new Date())
   const reopened = await rowOf(ARK_A)
   assert.deepEqual([reopened.outageStrikes, reopened.outageCount], [0, 0], "a resync gives a fresh budget")
@@ -459,7 +474,7 @@ test("C recordOcrAloneFailure: an `available` row is NEVER quarantined by strike
   await availableRow(ARK_A, base)
   for (let i = 1; i <= OCR_SYNC_MAX_ATTEMPTS + 2; i++) {
     const askedAt = at(base, i)
-    await DocumentService.recordOcrAloneFailure(ARK_A, "502", { askedAt, now: askedAt, controlled: true }, ALIVE)
+    await DocumentService.recordOcrAloneFailure(ARK_A, "502", { askedAt, now: askedAt, bracketed: true }, ALIVE)
   }
   const row = await rowOf(ARK_A)
   assert.equal(row.status, OCR_SYNC_STATUS.AVAILABLE)
@@ -474,7 +489,7 @@ test("C recordOcrAloneFailure: a resync requested in flight survives the quarant
   await prisma.documentOcr.update({ where: { ark: ARK_A }, data: { outageStrikes: OCR_SYNC_MAX_ATTEMPTS - 1 } })
   await DocumentService.ocrResyncOp([ARK_A], new Date()) // after askedAt: in flight
   await prisma.documentOcr.update({ where: { ark: ARK_A }, data: { outageStrikes: OCR_SYNC_MAX_ATTEMPTS - 1 } })
-  const r = await DocumentService.recordOcrAloneFailure(ARK_A, "502", { askedAt, now: new Date(), controlled: true }, ALIVE)
+  const r = await DocumentService.recordOcrAloneFailure(ARK_A, "502", { askedAt, now: new Date(), bracketed: true }, ALIVE)
   assert.equal(r.outcome, OCR_ALONE_OUTCOME.QUARANTINED)
   const row = await rowOf(ARK_A)
   assert.ok(row.resyncRequestedAt !== null, "the request is kept")
@@ -486,7 +501,7 @@ test("C recordOcrAloneFailure: an answer recorded after the question supersedes 
   const askedAt = new Date(Date.now() - MINUTE)
   await availableRow(ARK_A, new Date())
   const before = await rowOf(ARK_A)
-  const r = await DocumentService.recordOcrAloneFailure(ARK_A, "502", { askedAt, now: new Date(), controlled: true }, ALIVE)
+  const r = await DocumentService.recordOcrAloneFailure(ARK_A, "502", { askedAt, now: new Date(), bracketed: true }, ALIVE)
   assert.equal(r.outcome, OCR_ALONE_OUTCOME.STALE)
   assert.deepEqual(await rowOf(ARK_A), before)
 })
@@ -532,13 +547,82 @@ test("B recordOcrSync: an incompatible artifact marks a never-synced ARK `incomp
   assert.equal(row.nextCheckAt?.getTime(), checkedAt.getTime() + OCR_SYNC_INCOMPATIBLE_RECHECK_MS)
 })
 
-test("B recordOcrSync: an incompatible artifact leaves an available row available, folios kept", async () => {
-  await availableRow(ARK_A, new Date(Date.now() - MINUTE))
-  await DocumentService.recordOcrSync(plan({ incompatible: [{ ark: ARK_A, v: 2 }] }), ALIVE)
-  const view = await DocumentQueries.ocrForArk(projectId, ARK_A)
-  assert.equal(view?.status, OCR_SYNC_STATUS.AVAILABLE)
-  assert.equal(view?.reason, null)
+test("FAIL 4 K1 worker-first rollout: an available row answered `building` stays available; a v2 artifact then makes it incompatible", async () => {
+  const synced = new Date(Date.now() - 10 * MINUTE)
+  await availableRow(ARK_A, synced)
+  // The v2 worker reads its stored v1 artifact as corrupt and rebuilds it: `building`.
+  await DocumentService.recordOcrSync(plan({ checkedAt: at(synced, 1), building: [ARK_A] }), ALIVE)
+  let view = await DocumentQueries.ocrForArk(projectId, ARK_A)
+  assert.equal(view?.status, OCR_SYNC_STATUS.AVAILABLE, "its stored quality is still shown")
   assert.equal(view?.folios.length, 1)
+  // Rebuilt: a v2 artifact, which this (v1) app cannot read.
+  await DocumentService.recordOcrSync(plan({ checkedAt: at(synced, 4), incompatible: [{ ark: ARK_A, v: 2 }] }), ALIVE)
+  view = await DocumentQueries.ocrForArk(projectId, ARK_A)
+  assert.equal(view?.status, OCR_SYNC_STATUS.INCOMPATIBLE, "shown as waiting for a service update")
+  assert.equal((await rowOf(ARK_A)).expectedVersion, 1)
+})
+
+test("FAIL 4 reopenIncompatibleOcr: rows recorded against another app version are due at once, the current version's are not", async () => {
+  await reset(ARK_A)
+  await reset(ARK_B)
+  const later = LATER()
+  await prisma.documentOcr.createMany({
+    data: [
+      { ark: ARK_A, status: OCR_SYNC_STATUS.INCOMPATIBLE, checkedAt: new Date(0), nextCheckAt: later, expectedVersion: 0 },
+      { ark: ARK_B, status: OCR_SYNC_STATUS.INCOMPATIBLE, checkedAt: new Date(0), nextCheckAt: later, expectedVersion: 1 },
+    ],
+  })
+  const now = new Date()
+  assert.ok((await DocumentService.reopenIncompatibleOcr(now)) >= 1)
+  assert.equal((await rowOf(ARK_A)).nextCheckAt?.getTime(), now.getTime())
+  assert.equal((await rowOf(ARK_B)).nextCheckAt?.getTime(), later.getTime())
+})
+
+test("FAIL 2/3 CAS: three drainers recording the SAME bracketed failure concurrently strike exactly once", async () => {
+  await reset(ARK_A)
+  const base = new Date(Date.now() - 10 * MINUTE)
+  await DocumentService.recordOcrBatchOutage([ARK_A], base, ALIVE)
+  const askedAt = at(base, 1)
+  const results = await Promise.all(
+    [0, 1, 2].map(() =>
+      DocumentService.recordOcrAloneFailure(ARK_A, "502", { askedAt, now: askedAt, bracketed: true }, ALIVE),
+    ),
+  )
+  const struck = results.filter((r) => r.outcome === OCR_ALONE_OUTCOME.STRUCK).length
+  assert.equal(struck, 1, JSON.stringify(results))
+  assert.equal((await rowOf(ARK_A)).outageStrikes, 1)
+})
+
+test("FAIL 2/3 CAS: three drainers recording the SAME rejection concurrently count it once", async () => {
+  await reset(ARK_A)
+  const askedAt = new Date(Date.now() - MINUTE)
+  await DocumentService.recordOcrBatchOutage([ARK_A], new Date(Date.now() - 2 * MINUTE), ALIVE)
+  const results = await Promise.all(
+    [0, 1, 2].map(() => DocumentService.recordOcrRejection(ARK_A, "duplicate folio", askedAt, askedAt, ALIVE)),
+  )
+  assert.equal(results.filter(Boolean).length, 1)
+  assert.equal((await rowOf(ARK_A)).syncAttempts, 1)
+})
+
+test("FAIL 2 quarantine heals: a quarantined ARK answered `available` is back to normal", async () => {
+  await reset(ARK_A)
+  await prisma.documentOcr.create({
+    data: {
+      ark: ARK_A,
+      status: OCR_SYNC_STATUS.QUARANTINED,
+      reason: "worker_fails_alone: 502",
+      checkedAt: new Date(0),
+      outageStrikes: OCR_SYNC_MAX_ATTEMPTS,
+      outageCount: 9,
+      nextCheckAt: new Date(0),
+    },
+  })
+  await availableRow(ARK_A, new Date())
+  const row = await rowOf(ARK_A)
+  assert.deepEqual(
+    [row.status, row.reason, row.outageStrikes, row.outageCount, row.nextCheckAt],
+    [OCR_SYNC_STATUS.AVAILABLE, null, 0, 0, null],
+  )
 })
 
 test("A recordOcrSync: any answer resets the outage count and strikes", async () => {
@@ -580,17 +664,19 @@ test("D ocrPendingByCorpus: a `building` row's resync request does not hold the 
   assert.equal(mine?.resync, 1)
 })
 
-test("ocrControlArk: an available ARK, never an excluded one", async () => {
+test("ocrControlArks: available ARKs without an outage on record, most recent first, never an excluded one", async () => {
   await availableRow(ARK_A, new Date(Date.now() + 365 * 24 * 60 * MINUTE)) // the most recent synced
-  assert.equal(await DocumentQueries.ocrControlArk([]), ARK_A)
-  assert.notEqual(await DocumentQueries.ocrControlArk([ARK_A]), ARK_A)
+  assert.equal((await DocumentQueries.ocrControlArks([], 3))[0], ARK_A)
+  assert.ok(!(await DocumentQueries.ocrControlArks([ARK_A], 3)).includes(ARK_A))
+  await prisma.documentOcr.update({ where: { ark: ARK_A }, data: { outageCount: 1 } })
+  assert.ok(!(await DocumentQueries.ocrControlArks([], 50)).includes(ARK_A), "a control that failed is not a control")
 })
 
 test("syncBackoffMs schedule is what a failure alone writes", async () => {
   await reset(ARK_A)
   const askedAt = new Date()
   await DocumentService.recordOcrBatchOutage([ARK_A], askedAt, ALIVE)
-  await DocumentService.recordOcrAloneFailure(ARK_A, "502", { askedAt, now: askedAt, controlled: false }, ALIVE)
+  await DocumentService.recordOcrAloneFailure(ARK_A, "502", { askedAt, now: askedAt, bracketed: false }, ALIVE)
   const row = await rowOf(ARK_A)
   assert.equal(row.nextCheckAt?.getTime(), askedAt.getTime() + 2 * OCR_SYNC_BACKOFF_BASE_MS, "outage count 2 → 6 min")
 })

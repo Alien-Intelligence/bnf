@@ -494,13 +494,17 @@ export type OcrSource = (typeof OCR_SOURCE)[keyof typeof OCR_SOURCE]
 
 /**
  * DocumentOcr.status (plan D18, plus the app-side quarantine):
- *   available   — the folios are stored;
- *   building    — the worker is building the artifact (backfill), recheck later;
- *   unavailable — the worker cannot build it, or the app could not sync it
- *                 (`reason` says which), recheck later;
- *   quarantined — the app's sync of this ARK broke the worker contract
- *                 OCR_SYNC_MAX_ATTEMPTS times in a row; no automatic recheck
- *                 until a re-ingest asks for a resync.
+ *   pending      — asked, never answered (a transport failure);
+ *   available    — the folios are stored; only a new `available` or an
+ *                  `incompatible` answer moves it;
+ *   building     — the worker is building the artifact (backfill), recheck later;
+ *   incompatible — the artifact is another version than the app reads (a
+ *                  deploy mismatch), recheck in 24 h or at the fixing deploy;
+ *   unavailable  — the worker cannot build it, or the app could not sync it
+ *                  (`reason` says which), recheck in 24 h;
+ *   quarantined  — OCR_SYNC_MAX_ATTEMPTS rejections or outage strikes in a
+ *                  row; a LONG backoff, never terminal (24 h doubling to 7
+ *                  days, at once on a re-ingest's resync), healed by any answer.
  */
 export const OCR_SYNC_STATUS = {
   /** Asked, never answered yet (a transport failure stored its backoff). */
@@ -520,8 +524,8 @@ export const OCR_SYNC_REASON = {
   REJECTED: "sync_rejected",
   /**
    * The worker fails on this ARK ALONE: asked by itself it failed on the
-   * transport OCR_SYNC_MAX_ATTEMPTS times, each time while another request of
-   * the same drain succeeded.
+   * transport twice per drain, bracketed by answered controls, in
+   * OCR_SYNC_MAX_ATTEMPTS drains (lib/documents/ocr-sync.ts).
    */
   WORKER_FAILS_ALONE: "worker_fails_alone",
   /** The worker's artifact for this ARK is another version than the app reads. */

@@ -525,7 +525,7 @@
           "pending": "OCR quality: waiting for synchronisation",
           "building": "OCR quality: being computed",
           "unavailable": "OCR quality not available",
-          "quarantined": "OCR quality not available (synchronisation suspended)",
+          "quarantined": "OCR quality not available yet (synchronisation failing, retried daily)",
           "loadError": "Could not load the OCR quality.",
           "incompatible": "OCR quality: waiting for a service update"
         }
@@ -848,7 +848,7 @@
       "statusPending": "OCR quality: waiting for synchronisation",
       "statusBuilding": "OCR quality: being computed",
       "statusUnavailable": "OCR quality not available for this document",
-      "statusQuarantined": "OCR quality not available (synchronisation suspended)",
+      "statusQuarantined": "OCR quality not available yet (synchronisation failing, retried daily)",
       "corpusRevoked": "OCR quality not read: access to the shared corpus was revoked",
       "noRate": "No document OCR rate published by the BnF",
       "statusIncompatible": "OCR quality: waiting for a service update"

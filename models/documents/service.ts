@@ -20,6 +20,8 @@ import {
   OCR_SYNC_BUILDING_RECHECK_MS,
   OCR_SYNC_INCOMPATIBLE_RECHECK_MS,
   OCR_SYNC_MAX_ATTEMPTS,
+  OCR_SYNC_QUARANTINE_RECHECK_BASE_MS,
+  OCR_SYNC_QUARANTINE_RECHECK_MAX_MS,
   OCR_SYNC_REJECT_BACKOFF_BASE_MS,
   OCR_SYNC_REJECT_BACKOFF_MAX_MS,
   OCR_SYNC_UNAVAILABLE_RECHECK_MS,
@@ -109,13 +111,17 @@ export function syncBackoffMs(failures: number): number {
 
 /** What a transport failure of an ARK asked ALONE did to its row (DocumentService.recordOcrAloneFailure). */
 export const OCR_ALONE_OUTCOME = {
-  /** No control this drain: the ARK only backs off; nothing counts against it. */
+  /** Not bracketed by answered controls: the ARK only backs off; nothing counts against it. */
   BACKOFF: "backoff",
-  /** The worker was proven up this drain: one outage strike. */
+  /** Bracketed (lib/documents/ocr-sync.ts): one outage strike. */
   STRUCK: "struck",
-  /** The strike that reached OCR_SYNC_MAX_ATTEMPTS: quarantined (worker_fails_alone). */
+  /** The strike that reached OCR_SYNC_MAX_ATTEMPTS: quarantined (worker_fails_alone, long backoff). */
   QUARANTINED: "quarantined",
-  /** A newer answer was recorded while the question was in flight: nothing written. */
+  /**
+   * Nothing written: newer evidence was recorded while the question was in
+   * flight, or another drainer recorded this failure first (the
+   * compare-and-set lost).
+   */
   STALE: "stale",
 } as const
 export type OcrAloneOutcome = (typeof OCR_ALONE_OUTCOME)[keyof typeof OCR_ALONE_OUTCOME]
@@ -123,24 +129,36 @@ export type OcrAloneOutcome = (typeof OCR_ALONE_OUTCOME)[keyof typeof OCR_ALONE_
 /**
  * Pure: what one more failure that COUNTS against an ARK (a rejection of its
  * answer, or an outage strike) does to its bookkeeping. `priorAttempts`
- * consecutive such failures before this one. At OCR_SYNC_MAX_ATTEMPTS the ARK
- * is quarantined (no automatic recheck); before that it backs off
- * exponentially from the sweep interval, capped.
+ * consecutive such failures before this one. Before OCR_SYNC_MAX_ATTEMPTS the
+ * ARK backs off exponentially from the sweep interval, capped at 24 h; from
+ * it on the ARK is quarantined — a LONG backoff, never terminal: 24 h for the
+ * first quarantining failure, doubling per further one, capped at 7 days.
  */
 export function rejectionOutcome(
   priorAttempts: number,
   now: Date,
-): { attempts: number; quarantined: boolean; nextCheckAt: Date | null } {
+): { attempts: number; quarantined: boolean; nextCheckAt: Date } {
   if (!Number.isInteger(priorAttempts) || priorAttempts < 0) {
     throw new Error(`rejectionOutcome: priorAttempts must be a non-negative integer, got ${priorAttempts}`)
   }
   const attempts = priorAttempts + 1
-  if (attempts >= OCR_SYNC_MAX_ATTEMPTS) return { attempts, quarantined: true, nextCheckAt: null }
-  const delay = Math.min(
-    OCR_SYNC_REJECT_BACKOFF_BASE_MS * 2 ** (attempts - 1),
-    OCR_SYNC_REJECT_BACKOFF_MAX_MS,
-  )
-  return { attempts, quarantined: false, nextCheckAt: new Date(now.getTime() + delay) }
+  const quarantined = attempts >= OCR_SYNC_MAX_ATTEMPTS
+  const delay = quarantined
+    ? Math.min(
+        OCR_SYNC_QUARANTINE_RECHECK_BASE_MS * 2 ** (attempts - OCR_SYNC_MAX_ATTEMPTS),
+        OCR_SYNC_QUARANTINE_RECHECK_MAX_MS,
+      )
+    : Math.min(OCR_SYNC_REJECT_BACKOFF_BASE_MS * 2 ** (attempts - 1), OCR_SYNC_REJECT_BACKOFF_MAX_MS)
+  return { attempts, quarantined, nextCheckAt: new Date(now.getTime() + delay) }
+}
+
+/**
+ * The `checked_at` a failure write stamps: its own time, and always strictly
+ * after the question it records — so any other write for the same question
+ * (a second drainer) sees newer evidence and records nothing.
+ */
+export function failureStamp(now: Date, askedAt: Date): Date {
+  return new Date(Math.max(now.getTime(), askedAt.getTime() + 1))
 }
 
 /** The reason stored for an ARK whose sync broke the worker contract. */
@@ -290,18 +308,24 @@ export class DocumentService {
    * ARK's summary upsert, folio delete and folio insert commit together, so a
    * reader never sees a half-replaced document; a replayed answer rewrites the
    * same rows and a re-OCR'd document's folios are replaced wholesale.
-   * Building / unavailable / incompatible answers only re-status the summary
-   * row — the folios a previous artifact stored stay valid until a new
-   * artifact replaces them, and an `available` row answered `incompatible`
-   * stays available (its folios are still the last reading this app
-   * understands). Every answer resets the rejection count and the outage
-   * count and strikes; only an `available` answer satisfies a pending resync
-   * request, and one made AFTER the question stays due WHATEVER the answer:
+   *
+   * An `available` row is only ever moved by a NEW `available` answer or an
+   * `incompatible` one. A `building` or `unavailable` answer for it — what a
+   * worker deployed first answers while it rebuilds artifacts of the previous
+   * version (`artifact_corrupt`) — keeps its status, reason and folios and only
+   * schedules the recheck. An `incompatible` answer moves any row to
+   * `incompatible` (folios kept, not shown), stamped with the artifact version
+   * this app expects, so the deploy that fixes the skew re-asks it at boot
+   * (reopenIncompatibleOcr).
+   *
+   * Every answer resets the rejection count and the outage count and strikes;
+   * only an `available` answer satisfies a pending resync request, and one
+   * made AFTER the question stays due WHATEVER the answer:
    * keepDueIfResyncedInFlight, in the same transaction.
    */
   static async recordOcrSync(plan: OcrSyncWritePlan, signal: AbortSignal): Promise<void> {
     const { checkedAt } = plan
-    const answered = { checkedAt, syncAttempts: 0, outageCount: 0, outageStrikes: 0 }
+    const answered = { checkedAt, syncAttempts: 0, outageCount: 0, outageStrikes: 0, expectedVersion: null }
     for (const doc of plan.available) {
       // Cancellation point between per-ARK transactions (a drain's deadline).
       signal.throwIfAborted()
@@ -335,36 +359,80 @@ export class DocumentService {
     const buildingNext = new Date(checkedAt.getTime() + OCR_SYNC_BUILDING_RECHECK_MS)
     for (const ark of plan.building) {
       signal.throwIfAborted()
-      const summary = { ...answered, status: OCR_SYNC_STATUS.BUILDING, reason: null, nextCheckAt: buildingNext }
-      // A resync requested while this question was in flight stays due.
-      await prisma.$transaction([
-        prisma.documentOcr.upsert({ where: { ark }, create: { ark, ...summary }, update: summary }),
-        keepDueIfResyncedInFlight(ark, checkedAt),
-      ])
+      await DocumentService.recordStatusAnswer(
+        ark,
+        { ...answered, nextCheckAt: buildingNext },
+        { status: OCR_SYNC_STATUS.BUILDING, reason: null },
+      )
     }
     const unavailableNext = new Date(checkedAt.getTime() + OCR_SYNC_UNAVAILABLE_RECHECK_MS)
     for (const { ark, reason } of plan.unavailable) {
       signal.throwIfAborted()
-      const summary = { ...answered, status: OCR_SYNC_STATUS.UNAVAILABLE, reason, nextCheckAt: unavailableNext }
+      await DocumentService.recordStatusAnswer(
+        ark,
+        { ...answered, nextCheckAt: unavailableNext },
+        { status: OCR_SYNC_STATUS.UNAVAILABLE, reason },
+      )
+    }
+    const incompatibleNext = new Date(checkedAt.getTime() + OCR_SYNC_INCOMPATIBLE_RECHECK_MS)
+    for (const { ark, v } of plan.incompatible) {
+      signal.throwIfAborted()
+      const summary = {
+        ...answered,
+        status: OCR_SYNC_STATUS.INCOMPATIBLE,
+        reason: incompatibleReason(v),
+        nextCheckAt: incompatibleNext,
+        expectedVersion: OCR_QUALITY_ARTIFACT_VERSION,
+      }
       await prisma.$transaction([
         prisma.documentOcr.upsert({ where: { ark }, create: { ark, ...summary }, update: summary }),
         keepDueIfResyncedInFlight(ark, checkedAt),
       ])
     }
-    const incompatibleNext = new Date(checkedAt.getTime() + OCR_SYNC_INCOMPATIBLE_RECHECK_MS)
-    for (const { ark, v } of plan.incompatible) {
-      signal.throwIfAborted()
-      const recheck = { ...answered, nextCheckAt: incompatibleNext }
-      const summary = { ...recheck, status: OCR_SYNC_STATUS.INCOMPATIBLE, reason: incompatibleReason(v) }
-      await prisma.$transaction([
-        // An available row keeps its status, reason and folios…
-        prisma.documentOcr.updateMany({ where: { ark, status: OCR_SYNC_STATUS.AVAILABLE }, data: recheck }),
-        // …any other row (or none) becomes `incompatible`.
-        prisma.documentOcr.updateMany({ where: { ark, status: { not: OCR_SYNC_STATUS.AVAILABLE } }, data: summary }),
-        prisma.documentOcr.createMany({ data: [{ ark, ...summary }], skipDuplicates: true }),
-        keepDueIfResyncedInFlight(ark, checkedAt),
-      ])
-    }
+  }
+
+  /**
+   * A `building` / `unavailable` answer: written as is, except on an
+   * `available` row, which keeps its status, reason and folios (see
+   * recordOcrSync) and only takes the recheck time and the reset counters.
+   */
+  private static async recordStatusAnswer(
+    ark: string,
+    recheck: {
+      checkedAt: Date
+      syncAttempts: number
+      outageCount: number
+      outageStrikes: number
+      expectedVersion: null
+      nextCheckAt: Date
+    },
+    answer: { status: string; reason: string | null },
+  ): Promise<void> {
+    const summary = { ...recheck, ...answer }
+    const { checkedAt } = recheck
+    await prisma.$transaction([
+      prisma.documentOcr.updateMany({ where: { ark, status: OCR_SYNC_STATUS.AVAILABLE }, data: recheck }),
+      prisma.documentOcr.updateMany({ where: { ark, status: { not: OCR_SYNC_STATUS.AVAILABLE } }, data: summary }),
+      prisma.documentOcr.createMany({ data: [{ ark, ...summary }], skipDuplicates: true }),
+      keepDueIfResyncedInFlight(ark, checkedAt),
+    ])
+  }
+
+  /**
+   * At boot: every `incompatible` row recorded against another artifact
+   * version than the one this app reads is due at once — the deploy that
+   * fixes a skew re-asks them instead of waiting out the 24 h recheck.
+   * Returns how many were re-opened.
+   */
+  static async reopenIncompatibleOcr(now: Date): Promise<number> {
+    const res = await prisma.documentOcr.updateMany({
+      where: {
+        status: OCR_SYNC_STATUS.INCOMPATIBLE,
+        OR: [{ expectedVersion: null }, { expectedVersion: { not: OCR_QUALITY_ARTIFACT_VERSION } }],
+      },
+      data: { nextCheckAt: now },
+    })
+    return res.count
   }
 
   /**
@@ -372,18 +440,20 @@ export class DocumentService {
    * an artifact of the expected version that fails its schema, an ARK left
    * out of an otherwise answered batch. `askedAt` is when that question was
    * asked:
-   *   - a newer answer recorded since (`checkedAt` > `askedAt`) supersedes
+   *   - newer evidence recorded since (`checkedAt` > `askedAt`) supersedes
    *     the rejection: nothing is written (an `available` row is only ever
    *     quarantined by the rejection of an answer NEWER than its folios);
+   *   - the write is a compare-and-set on the row as read (`checked_at`,
+   *     `sync_attempts`), stamping `checked_at` past `askedAt`: two drainers
+   *     recording the same rejection count it once;
    *   - a resync requested since (`resyncRequestedAt` > `askedAt`) keeps the
-   *     ARK due whatever the rejection says — the re-ingest may have fixed it;
-   *   - otherwise the ARK backs off and, after OCR_SYNC_MAX_ATTEMPTS
-   *     consecutive rejections, is quarantined (`sync_rejected: …`): no
-   *     automatic recheck until a re-ingest requests a resync. A row that is
-   *     `available` keeps its folios; a never-answered ARK becomes
-   *     `unavailable` with the reason.
+   *     ARK due whatever the rejection says;
+   *   - otherwise the ARK backs off and, from OCR_SYNC_MAX_ATTEMPTS
+   *     consecutive rejections, is quarantined (`sync_rejected: …`) on the
+   *     long quarantine backoff (rejectionOutcome). A row that is `available`
+   *     keeps its folios; a never-answered ARK becomes `unavailable`.
    * A rejection is an answer (the worker was up): it resets the outage count
-   * and strikes. Read-modify-write in one transaction.
+   * and strikes. Returns whether it was recorded.
    */
   static async recordOcrRejection(
     ark: string,
@@ -391,59 +461,45 @@ export class DocumentService {
     now: Date,
     askedAt: Date,
     signal: AbortSignal,
-  ): Promise<void> {
+  ): Promise<boolean> {
     signal.throwIfAborted()
-    await prisma.$transaction(async (tx) => {
-      const row = await tx.documentOcr.findUnique({
-        where: { ark },
-        select: { status: true, checkedAt: true, syncAttempts: true, resyncRequestedAt: true },
-      })
-      if (row !== null && row.checkedAt > askedAt) return
-      const resyncInFlight =
-        row !== null && row.resyncRequestedAt !== null && row.resyncRequestedAt > askedAt
-      const outcome = rejectionOutcome(row === null ? 0 : row.syncAttempts, now)
-      const reason = syncRejectedReason(message)
-      const counters = { syncAttempts: outcome.attempts, outageCount: 0, outageStrikes: 0 }
-      if (outcome.quarantined) {
-        const quarantine = { ...counters, status: OCR_SYNC_STATUS.QUARANTINED, reason, checkedAt: now }
-        await tx.documentOcr.upsert({
-          where: { ark },
-          create: { ark, ...quarantine, nextCheckAt: null },
-          // Quarantine never erases a resync request.
-          update: { ...quarantine, nextCheckAt: resyncInFlight ? askedAt : null },
-        })
-        return
-      }
-      if (row === null) {
-        await tx.documentOcr.create({
-          data: {
+    const row = await prisma.documentOcr.findUnique({
+      where: { ark },
+      select: { status: true, checkedAt: true, syncAttempts: true, resyncRequestedAt: true },
+    })
+    if (row !== null && row.checkedAt > askedAt) return false
+    const resyncInFlight = row !== null && row.resyncRequestedAt !== null && row.resyncRequestedAt > askedAt
+    const outcome = rejectionOutcome(row === null ? 0 : row.syncAttempts, now)
+    const reason = syncRejectedReason(message)
+    const stamp = failureStamp(now, askedAt)
+    const nextCheckAt = resyncInFlight ? askedAt : outcome.nextCheckAt
+    const counters = { syncAttempts: outcome.attempts, outageCount: 0, outageStrikes: 0, checkedAt: stamp, nextCheckAt }
+    if (row === null) {
+      const created = await prisma.documentOcr.createMany({
+        data: [
+          {
             ark,
             ...counters,
-            status: OCR_SYNC_STATUS.UNAVAILABLE,
+            status: outcome.quarantined ? OCR_SYNC_STATUS.QUARANTINED : OCR_SYNC_STATUS.UNAVAILABLE,
             reason,
-            checkedAt: now,
-            nextCheckAt: outcome.nextCheckAt,
           },
-        })
-        return
-      }
-      await tx.documentOcr.update({
-        where: { ark },
-        data: {
-          ...counters,
-          // An available row keeps its status and folios; a pending one
-          // (asked, never answered) is now known to be refused.
-          ...(row.status === OCR_SYNC_STATUS.AVAILABLE
-            ? {}
-            : {
-                reason,
-                ...(row.status === OCR_SYNC_STATUS.PENDING ? { status: OCR_SYNC_STATUS.UNAVAILABLE } : {}),
-              }),
-          checkedAt: now,
-          nextCheckAt: resyncInFlight ? askedAt : outcome.nextCheckAt,
-        },
+        ],
+        skipDuplicates: true,
       })
+      return created.count === 1
+    }
+    const status = outcome.quarantined
+      ? OCR_SYNC_STATUS.QUARANTINED
+      : row.status === OCR_SYNC_STATUS.PENDING
+        ? OCR_SYNC_STATUS.UNAVAILABLE
+        : row.status
+    // An available row that is not (yet) quarantined keeps its reason.
+    const keepsReason = row.status === OCR_SYNC_STATUS.AVAILABLE && !outcome.quarantined
+    const written = await prisma.documentOcr.updateMany({
+      where: { ark, checkedAt: row.checkedAt, syncAttempts: row.syncAttempts },
+      data: { ...counters, status, ...(keepsReason ? {} : { reason }) },
     })
+    return written.count === 1
   }
 
   /**
@@ -484,79 +540,82 @@ export class DocumentService {
 
   /**
    * Record that ONE ARK, asked ALONE at `askedAt`, failed on the transport.
-   * `controlled`: another request of the same drain to the same worker was
-   * answered, so the worker was up — the failure is this ARK's.
-   *   - a newer answer recorded since (`checkedAt` > `askedAt`): nothing is
-   *     written (STALE);
-   *   - not controlled: the ARK only backs off (syncBackoffMs of its outage
+   * `bracketed`: it failed twice in this drain, each time right after an
+   * answered control (lib/documents/ocr-sync.ts) — the failure is this ARK's.
+   *   - newer evidence recorded since (`checkedAt` > `askedAt`), or another
+   *     drainer's write winning the compare-and-set on the row as read
+   *     (`checked_at`, `outage_count`, `outage_strikes`): nothing is written
+   *     (STALE), so concurrent drainers record one failure once;
+   *   - not bracketed: the ARK only backs off (syncBackoffMs of its outage
    *     count) — nothing counts against it (BACKOFF);
-   *   - controlled: one outage strike, backing off like a rejection
-   *     (STRUCK); at OCR_SYNC_MAX_ATTEMPTS strikes it is quarantined with
-   *     `worker_fails_alone: …` (QUARANTINED) — except an `available` row,
-   *     which is never quarantined by strikes (only a rejection of a NEW
-   *     answer can do that) and keeps backing off, capped.
-   * A resync requested since `askedAt` keeps the ARK due in every case.
+   *   - bracketed: one outage strike, backing off like a rejection
+   *     (STRUCK); from OCR_SYNC_MAX_ATTEMPTS strikes it is quarantined
+   *     `worker_fails_alone: …` on the long quarantine backoff (QUARANTINED)
+   *     — except an `available` row, which is never quarantined by strikes
+   *     and keeps backing off, capped.
+   * Every write stamps `checked_at` past `askedAt`. A resync requested since
+   * `askedAt` keeps the ARK due in every case.
    */
   static async recordOcrAloneFailure(
     ark: string,
     message: string,
-    opts: { askedAt: Date; now: Date; controlled: boolean },
+    opts: { askedAt: Date; now: Date; bracketed: boolean },
     signal: AbortSignal,
   ): Promise<{ outcome: OcrAloneOutcome; strikes: number }> {
     signal.throwIfAborted()
-    const { askedAt, now, controlled } = opts
-    return prisma.$transaction(async (tx) => {
-      await tx.documentOcr.createMany({
-        data: [{ ark, status: OCR_SYNC_STATUS.PENDING, checkedAt: askedAt, nextCheckAt: askedAt }],
-        skipDuplicates: true,
-      })
-      const row = await tx.documentOcr.findUniqueOrThrow({
-        where: { ark },
-        select: {
-          status: true,
-          checkedAt: true,
-          resyncRequestedAt: true,
-          outageCount: true,
-          outageStrikes: true,
-        },
-      })
-      if (row.checkedAt > askedAt) return { outcome: OCR_ALONE_OUTCOME.STALE, strikes: row.outageStrikes }
-      const resyncInFlight = row.resyncRequestedAt !== null && row.resyncRequestedAt > askedAt
-      const outageCount = row.outageCount + 1
-      if (!controlled) {
-        const nextCheckAt = new Date(now.getTime() + syncBackoffMs(outageCount))
-        await tx.documentOcr.update({
-          where: { ark },
-          data: { outageCount, nextCheckAt: resyncInFlight ? askedAt : nextCheckAt },
-        })
-        return { outcome: OCR_ALONE_OUTCOME.BACKOFF, strikes: row.outageStrikes }
-      }
-      const strike = rejectionOutcome(row.outageStrikes, now)
-      if (strike.quarantined && row.status !== OCR_SYNC_STATUS.AVAILABLE) {
-        await tx.documentOcr.update({
-          where: { ark },
-          data: {
-            outageCount,
-            outageStrikes: strike.attempts,
-            status: OCR_SYNC_STATUS.QUARANTINED,
-            reason: `${OCR_SYNC_REASON.WORKER_FAILS_ALONE}: ${message}`,
-            // Quarantine never erases a resync request.
-            nextCheckAt: resyncInFlight ? askedAt : null,
-          },
-        })
-        return { outcome: OCR_ALONE_OUTCOME.QUARANTINED, strikes: strike.attempts }
-      }
-      const backoff = strike.nextCheckAt ?? new Date(now.getTime() + OCR_SYNC_REJECT_BACKOFF_MAX_MS)
-      await tx.documentOcr.update({
-        where: { ark },
-        data: {
-          outageCount,
-          outageStrikes: strike.attempts,
-          nextCheckAt: resyncInFlight ? askedAt : backoff,
-        },
-      })
-      return { outcome: OCR_ALONE_OUTCOME.STRUCK, strikes: strike.attempts }
+    const { askedAt, now, bracketed } = opts
+    await prisma.documentOcr.createMany({
+      data: [{ ark, status: OCR_SYNC_STATUS.PENDING, checkedAt: askedAt, nextCheckAt: askedAt }],
+      skipDuplicates: true,
     })
+    const row = await prisma.documentOcr.findUniqueOrThrow({
+      where: { ark },
+      select: {
+        status: true,
+        checkedAt: true,
+        resyncRequestedAt: true,
+        outageCount: true,
+        outageStrikes: true,
+      },
+    })
+    const stale = { outcome: OCR_ALONE_OUTCOME.STALE, strikes: row.outageStrikes }
+    if (row.checkedAt > askedAt) return stale
+    const resyncInFlight = row.resyncRequestedAt !== null && row.resyncRequestedAt > askedAt
+    const outageCount = row.outageCount + 1
+    const asRead = {
+      ark,
+      checkedAt: row.checkedAt,
+      outageCount: row.outageCount,
+      outageStrikes: row.outageStrikes,
+    }
+    const checkedAt = failureStamp(now, askedAt)
+    const due = (at: Date): Date => (resyncInFlight ? askedAt : at)
+    if (!bracketed) {
+      const written = await prisma.documentOcr.updateMany({
+        where: asRead,
+        data: { outageCount, checkedAt, nextCheckAt: due(new Date(now.getTime() + syncBackoffMs(outageCount))) },
+      })
+      return written.count === 1 ? { outcome: OCR_ALONE_OUTCOME.BACKOFF, strikes: row.outageStrikes } : stale
+    }
+    const strike = rejectionOutcome(row.outageStrikes, now)
+    const quarantine = strike.quarantined && row.status !== OCR_SYNC_STATUS.AVAILABLE
+    const written = await prisma.documentOcr.updateMany({
+      where: asRead,
+      data: {
+        outageCount,
+        outageStrikes: strike.attempts,
+        checkedAt,
+        nextCheckAt: due(strike.nextCheckAt),
+        ...(quarantine
+          ? { status: OCR_SYNC_STATUS.QUARANTINED, reason: `${OCR_SYNC_REASON.WORKER_FAILS_ALONE}: ${message}` }
+          : {}),
+      },
+    })
+    if (written.count === 0) return stale
+    return {
+      outcome: quarantine ? OCR_ALONE_OUTCOME.QUARANTINED : OCR_ALONE_OUTCOME.STRUCK,
+      strikes: strike.attempts,
+    }
   }
 
   /**

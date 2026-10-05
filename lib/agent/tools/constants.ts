@@ -138,8 +138,9 @@ export const FOLIO_OCR_STATE_MEANING: Record<FolioOcrStateKind, string> = {
   [FOLIO_OCR_STATE.PENDING]:
     "qualité pas encore disponible : le document est en cours de synchronisation",
   [FOLIO_OCR_STATE.UNAVAILABLE]:
-    "qualité non obtenue pour ce document (la BnF ne la fournit pas, ou sa " +
-    "synchronisation échoue) : elle peut ne jamais l'être",
+    "qualité non obtenue pour ce document ; `status` dit pourquoi : " +
+    "`unavailable` — la BnF ne la fournit pas, elle peut ne jamais l'être ; " +
+    "`quarantined` — sa synchronisation échoue, elle est réessayée chaque jour puis chaque semaine",
   [FOLIO_OCR_STATE.NOT_RECORDED]:
     "aucune qualité pour ce folio, définitivement : le document est synchronisé " +
     "mais ce folio n'en fait pas partie des pages traitées",
@@ -157,10 +158,10 @@ export const DOCUMENT_OCR_STATUS_MEANING: Record<DocumentOcrStatus, string> = {
   [DOCUMENT_OCR_STATUS.INCOMPATIBLE]:
     "le service de qualité OCR et l'application ne sont pas à la même version : qualité pas encore disponible",
   [DOCUMENT_OCR_STATUS.UNAVAILABLE]:
-    "qualité non obtenue (la BnF ne la fournit pas, ou la synchronisation échoue) : " +
-    "elle peut ne jamais l'être",
+    "qualité non obtenue (la BnF ne la fournit pas) : elle peut ne jamais l'être",
   [DOCUMENT_OCR_STATUS.QUARANTINED]:
-    "synchronisation abandonnée après des échecs répétés : qualité inconnue",
+    "synchronisation en échec répété, réessayée chaque jour puis chaque semaine : " +
+    "qualité pas encore connue",
 }
 
 /** `a — meaning ; b — meaning`, the legend of a vocabulary for a description or a prompt. */

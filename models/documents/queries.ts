@@ -204,19 +204,22 @@ export class DocumentQueries {
   }
 
   /**
-   * An ARK the worker has answered `available` — the control the drainer
-   * asks to prove the worker up when an ARK asked alone failed on the
-   * transport (lib/documents/ocr-sync.ts). The most recently synced first (its
-   * artifact is the likeliest to be served from the worker's store); never
-   * one of `exclude`. A system read: the ARK is only re-asked, never shown.
+   * The ARKs the drainer may ask as CONTROLS to prove the worker up
+   * (lib/documents/ocr-sync.ts): up to `limit` answered `available`, with no
+   * outage on record (a control that failed is an ordinary ARK again, never
+   * re-used as a control while its outage stands), the most recently synced
+   * first (their artifacts are the likeliest to be served); never one of
+   * `exclude`. The drainer rotates among them. A system read: the ARKs are
+   * only re-asked, never shown.
    */
-  static async ocrControlArk(exclude: string[]): Promise<string | null> {
-    const row = await prisma.documentOcr.findFirst({
-      where: { status: OCR_SYNC_STATUS.AVAILABLE, ark: { notIn: exclude } },
+  static async ocrControlArks(exclude: string[], limit: number): Promise<string[]> {
+    const rows = await prisma.documentOcr.findMany({
+      where: { status: OCR_SYNC_STATUS.AVAILABLE, outageCount: 0, ark: { notIn: exclude } },
       orderBy: [{ syncedAt: { sort: "desc", nulls: "last" } }, { ark: "asc" }],
+      take: limit,
       select: { ark: true },
     })
-    return row === null ? null : row.ark
+    return rows.map((r) => r.ark)
   }
 
   /**

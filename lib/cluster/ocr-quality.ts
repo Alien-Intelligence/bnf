@@ -77,7 +77,7 @@ const workerFolioOcrSchema = z.discriminatedUnion("ocrSource", [
 export const OCR_QUALITY_ARTIFACT_VERSION = 1
 
 /** One per-ARK artifact (worker DocOcrQuality). */
-const workerDocOcrQualitySchema = z
+export const workerDocOcrQualitySchema = z
   .object({
     v: z.literal(OCR_QUALITY_ARTIFACT_VERSION),
     ark: arkSchema,

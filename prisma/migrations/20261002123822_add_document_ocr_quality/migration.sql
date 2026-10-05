@@ -11,6 +11,7 @@ CREATE TABLE "document_ocr" (
     "sync_attempts" INTEGER NOT NULL DEFAULT 0,
     "outage_count" INTEGER NOT NULL DEFAULT 0,
     "outage_strikes" INTEGER NOT NULL DEFAULT 0,
+    "expected_version" INTEGER,
 
     CONSTRAINT "document_ocr_pkey" PRIMARY KEY ("ark")
 );

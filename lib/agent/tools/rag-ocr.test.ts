@@ -330,14 +330,18 @@ test("every folio state and document status has its meaning in the legends", () 
   }
 })
 
-test("not_recorded is said to be permanent, and only pending/building are 'not yet'", () => {
+test("not_recorded is permanent, unavailable 'may never be', quarantined is retried (never terminal)", () => {
   assert.match(FOLIO_OCR_STATE_MEANING[FOLIO_OCR_STATE.NOT_RECORDED], /définitivement/)
   assert.doesNotMatch(FOLIO_OCR_STATE_MEANING[FOLIO_OCR_STATE.NOT_RECORDED], /pas encore/)
-  assert.doesNotMatch(FOLIO_OCR_STATE_MEANING[FOLIO_OCR_STATE.UNAVAILABLE], /pas encore/)
   assert.match(FOLIO_OCR_STATE_MEANING[FOLIO_OCR_STATE.PENDING], /pas encore/)
-  for (const status of [DOCUMENT_OCR_STATUS.UNAVAILABLE, DOCUMENT_OCR_STATUS.QUARANTINED]) {
-    assert.doesNotMatch(DOCUMENT_OCR_STATUS_MEANING[status], /pas encore/)
-  }
+  // Only `unavailable` (BnF does not provide it) may never be available…
+  assert.match(DOCUMENT_OCR_STATUS_MEANING[DOCUMENT_OCR_STATUS.UNAVAILABLE], /ne jamais/)
+  // …a quarantine is a long backoff (pass 6): retried, never "never".
+  assert.match(DOCUMENT_OCR_STATUS_MEANING[DOCUMENT_OCR_STATUS.QUARANTINED], /réessayée/)
+  assert.doesNotMatch(DOCUMENT_OCR_STATUS_MEANING[DOCUMENT_OCR_STATUS.QUARANTINED], /jamais/)
+  // The folio state carrying both says which is which.
+  assert.match(FOLIO_OCR_STATE_MEANING[FOLIO_OCR_STATE.UNAVAILABLE], /`unavailable` — .*ne jamais/)
+  assert.match(FOLIO_OCR_STATE_MEANING[FOLIO_OCR_STATE.UNAVAILABLE], /`quarantined` — .*réessayée/)
   // The unknown-citations notice explains each state a note can report.
   for (const kind of [FOLIO_OCR_STATE.PENDING, FOLIO_OCR_STATE.UNAVAILABLE, FOLIO_OCR_STATE.NOT_RECORDED]) {
     assert.ok(NOTE_OCR_UNKNOWN_NOTICE.includes(`\`${kind}\``), kind)

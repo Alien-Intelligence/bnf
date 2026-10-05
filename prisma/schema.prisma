@@ -349,14 +349,17 @@ model DocumentOcr {
   ocrRate           Float?    @map("ocr_rate")
   // Why the quality is not available (status unavailable / quarantined).
   reason            String?
-  // When the last ANSWER about this ARK was recorded (for a `pending` row: when
-  // it was first asked). Transport failures never move it, so "checkedAt >
-  // askedAt" means a newer answer superseded a question still in flight.
+  // When the last EVIDENCE about this ARK was recorded: an answer (its
+  // question's time), or a rejection / strike / lone failure (strictly after
+  // its question). "checkedAt > askedAt" means something newer was recorded
+  // while a question was in flight — the failure writes are compare-and-set on
+  // it, so two drainers never record one failure twice. For a `pending` row:
+  // when it was first asked.
   checkedAt         DateTime  @map("checked_at")
   // Last time the folios below were replaced from an artifact (status=available).
   syncedAt          DateTime? @map("synced_at")
-  // When the sweep asks again; null = not before a resync request
-  // (available, quarantined).
+  // When the sweep asks again; null = not before a resync request (an
+  // available row; a quarantined one has its long backoff here).
   nextCheckAt       DateTime? @map("next_check_at")
   // Set by a re-ingest commit: re-pull even though the row is available (the
   // document may have been re-OCR'd). Cleared by the next `available` answer.
@@ -370,11 +373,15 @@ model DocumentOcr {
   // asked alone (lib/documents/ocr-sync.ts). Reset by any answer and by a
   // resync request.
   outageCount       Int       @default(0) @map("outage_count")
-  // Outage strikes: times this ARK, asked ALONE, failed on the transport while
-  // another request of the same drain succeeded (the control that proves the
-  // worker was up). Quarantined (worker_fails_alone) at OCR_SYNC_MAX_ATTEMPTS.
+  // Outage strikes: drains in which this ARK, asked ALONE, failed twice, each
+  // time right after answered controls (lib/documents/ocr-sync.ts).
+  // Quarantined (worker_fails_alone, long backoff) at OCR_SYNC_MAX_ATTEMPTS.
   // Reset by any answer for the ARK and by a resync request.
   outageStrikes     Int       @default(0) @map("outage_strikes")
+  // For an `incompatible` row: the artifact version the app expected when it
+  // recorded it. At boot, rows recorded against another version than the
+  // running app's are due again at once (the deploy that fixes the skew).
+  expectedVersion   Int?      @map("expected_version")
   folios            DocumentFolio[]
 
   // Sweep lookup: rows due for a recheck.

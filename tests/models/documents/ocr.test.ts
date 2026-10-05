@@ -21,6 +21,8 @@ import {
   OCR_LOW_QUALITY_THRESHOLD,
   OCR_SYNC_BATCH_SIZE,
   OCR_SYNC_MAX_ATTEMPTS,
+  OCR_SYNC_QUARANTINE_RECHECK_BASE_MS,
+  OCR_SYNC_QUARANTINE_RECHECK_MAX_MS,
   OCR_SYNC_REJECT_BACKOFF_BASE_MS,
   OCR_SYNC_REJECT_BACKOFF_MAX_MS,
 } from "@/lib/constants"
@@ -477,13 +479,16 @@ test("rejectionOutcome: exponential backoff from the base, capped", () => {
   }
 })
 
-test("rejectionOutcome: quarantined at OCR_SYNC_MAX_ATTEMPTS, no next check", () => {
+test("rejectionOutcome: quarantine is a long backoff — 24 h at OCR_SYNC_MAX_ATTEMPTS, doubling, capped at 7 days", () => {
   const now = new Date("2026-10-02T09:00:00Z")
+  const at = (prior: number) => rejectionOutcome(prior, now).nextCheckAt.getTime() - now.getTime()
   assert.deepEqual(rejectionOutcome(OCR_SYNC_MAX_ATTEMPTS - 1, now), {
     attempts: OCR_SYNC_MAX_ATTEMPTS,
     quarantined: true,
-    nextCheckAt: null,
+    nextCheckAt: new Date(now.getTime() + OCR_SYNC_QUARANTINE_RECHECK_BASE_MS),
   })
+  assert.equal(at(OCR_SYNC_MAX_ATTEMPTS), 2 * OCR_SYNC_QUARANTINE_RECHECK_BASE_MS)
+  assert.equal(at(OCR_SYNC_MAX_ATTEMPTS + 10), OCR_SYNC_QUARANTINE_RECHECK_MAX_MS)
 })
 
 test("rejectionOutcome: a corrupt attempt count throws", () => {

@@ -447,10 +447,11 @@ export const OCR_SYNC_UNAVAILABLE_RECHECK_MS = 24 * 60 * 60 * 1_000
 
 /**
  * After this many consecutive rejections (a 400 naming the ARK, an artifact of
- * the expected version failing its schema) OR outage strikes (failed ALONE
- * while the worker answered other requests of the same drain), an ARK is
- * `quarantined`: no automatic recheck until a re-ingest requests a resync. One
- * poison ARK must never starve the sweep (CLAUDE_ERROR_PATTERNS §10).
+ * the expected version failing its schema) OR outage strikes (failed ALONE,
+ * twice, bracketed by answered controls — lib/documents/ocr-sync.ts), an ARK
+ * is `quarantined`: rechecked on the long quarantine backoff below, at once on
+ * a re-ingest's resync. One poison ARK must never starve the sweep
+ * (CLAUDE_ERROR_PATTERNS §10).
  */
 export const OCR_SYNC_MAX_ATTEMPTS = 5
 
@@ -459,6 +460,22 @@ export const OCR_SYNC_MAX_ATTEMPTS = 5
  * mismatch) is asked again after this long (24 h).
  */
 export const OCR_SYNC_INCOMPATIBLE_RECHECK_MS = 24 * 60 * 60 * 1_000
+
+/**
+ * Quarantine is a long backoff, never a terminal state: a `quarantined` ARK
+ * (worker_fails_alone or sync_rejected) is asked again after 24 h, doubling
+ * per further failure up to 7 days, and recovers fully on any answer — so a
+ * false quarantine heals itself.
+ */
+export const OCR_SYNC_QUARANTINE_RECHECK_BASE_MS = 24 * 60 * 60 * 1_000
+export const OCR_SYNC_QUARANTINE_RECHECK_MAX_MS = 7 * 24 * 60 * 60 * 1_000
+
+/**
+ * The control that proves the worker up (lib/documents/ocr-sync.ts) rotates
+ * among this many most recently synced `available` ARKs without an outage on
+ * record, so one bad control is never asked for ever.
+ */
+export const OCR_SYNC_CONTROL_POOL = 10
 
 /** Backoff of a contract-failing ARK: base × 2^(attempt − 1), capped. */
 export const OCR_SYNC_REJECT_BACKOFF_BASE_MS = OCR_SYNC_SWEEP_INTERVAL_MS
@@ -487,15 +504,14 @@ export const OCR_SYNC_BACKOFF_MAX_MS = 60 * 60 * 1_000
 
 /**
  * Requests one drain may spend asking ARKs ALONE (the ARKs of a batch that
- * failed on the transport twice) plus the control request that proves the
- * worker up (lib/documents/ocr-sync.ts). The ARKs of a 100-ARK batch are
- * gone through in 100 / 10 = 10 drains (30 min at the 3-min sweep; a control
- * is asked only in a drain where nothing was answered yet). Measured with a
- * poison at position 0 (tests/models/documents/ocr-sync-pg.test.ts): the 99
- * others served and the poison quarantined in 19 drains (57 min). A worker
- * outage costs at most 2 of these requests per drain, since a drain stops
- * asking ARKs alone after two transport failures in a row with no answer in
- * between.
+ * failed on the transport twice), the controls of their strike brackets
+ * included (lib/documents/ocr-sync.ts). While the worker answers them, a lone
+ * ARK costs one request (the previous answer opens its bracket), so a 100-ARK
+ * batch is gone through in about 10 drains; a strike costs 4 more (two
+ * controls, the second ask). Measured with a poison at position 0 of 100
+ * (tests/models/documents/ocr-sync-pg.test.ts): the 99 others served and the
+ * poison quarantined in 23 drains (69 min). A worker outage costs one failed
+ * control per drain.
  */
 export const OCR_SYNC_ISOLATION_BUDGET = 10
 
