@@ -822,4 +822,4 @@ export const MEMORY_NEAR_DUP_MAX_EDIT_DISTANCE = 4
  * where the seal is content-addressed from the rendered prompts, so a prompt
  * change cannot be recorded without a new revision.
  */
-export const PROMPT_REVISION = "2026-10-05.corpus-buffer-v2-not-rule.076905ddf460"
+export const PROMPT_REVISION = "2026-10-05.prompt-fingerprints-all-branches.679199805182"

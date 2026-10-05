@@ -5,8 +5,10 @@
 // (found bug B5).
 //
 // Every prompt branch is rendered from fixed fixtures — corpus and research,
-// fr and en, with an empty corpus, a corpus never ingested, a derived source
-// granted and revoked, empty memories, and a cross-scope memory past its cap —
+// fr and en, with an empty corpus, an unresolved corpus (no facet, no period),
+// a project without subtitle, a corpus never ingested, a derived source granted
+// and revoked, empty memories, a cross-scope memory past its cap — and
+// PromptBuilder.render itself over a fixed database fixture —
 // and the sha256 of each is recorded in FINGERPRINT_HISTORY under the revision
 // it ships at. The history is append-only and SEALED: each revision string ends
 // with the first SEAL_LENGTH hex digits of the sha256 of its own fingerprints.
@@ -17,13 +19,22 @@
 //     string, i.e. the bump that makes existing sessions re-render.
 import "server-only"
 
-import { test } from "node:test"
+import { after, before, test } from "node:test"
 import assert from "node:assert/strict"
 import { createHash } from "node:crypto"
 import { Prisma, type Project } from "@/lib/generated/prisma/client"
 import { CORPUS_SOURCE_STATE } from "@/lib/authz/corpus-source"
 import { MEMORY_CROSS_SCOPE_MAX_ITEMS, PROMPT_REVISION } from "@/lib/constants"
 import { MEMORY_ORIGIN, MEMORY_SCOPE } from "@/models/memory/schema"
+import { prisma } from "@/lib/db"
+import type { User } from "@/lib/generated/prisma/client"
+import { createTestSession, createTestUser, deleteTestUser } from "@/lib/testing/fixtures"
+import { markHeadIngested } from "@/lib/testing/mark-ingested"
+import { cleanupProject } from "@/lib/testing/project-cleanup"
+import { CorpusService } from "@/models/corpus/service"
+import { ProjectService } from "@/models/projects/service"
+import { SESSION_SCOPE } from "@/models/sessions/schema"
+import { PromptBuilder } from "./builder"
 import { renderCorpusPrompt } from "./corpus"
 import { renderResearchPrompt } from "./research"
 import type { MemorySnapshot } from "./shared"
@@ -92,6 +103,43 @@ const FINGERPRINT_HISTORY: ReadonlyArray<readonly [string, Readonly<Record<strin
       "research.over-cap.en": "36a417b18462867d9865a618324037ba876f36aed908f2df48ab3b0c0b3e2d86",
     },
   ],
+  [
+    "2026-10-05.prompt-fingerprints-all-branches.679199805182",
+    {
+      "corpus.base.fr": "ff9bffbb2c293ef11b5be2b681e13d3ca7e9767a03e7126dc4c11969f9ba0899",
+      "corpus.empty-corpus.fr": "ac70dbbe5127fd085748f059e6ebc459121d431fdb6cd82bc48a4edd63b47ee3",
+      "corpus.empty-memory.fr": "21f6348e0461b5a0b617bad8fe713ae8022c108c3e9323250b713fcf8b070f8a",
+      "corpus.over-cap.fr": "453960583adab1897ddd9e8617a0c5f6b06f2e8d3a0fa9b8312b97babdaa8f28",
+      "corpus.unresolved-corpus.fr": "d7c9192c67fa39bd339c84d6a5eb457290a7f06153a69aa86b7a2fd63df42cb4",
+      "corpus.no-subtitle.fr": "1dbf2bdaaeed564ef5f9fc34659c32a62569b302ac76623d7aeaa32ee2c580c2",
+      "research.base.fr": "6af47f43d2a47aa4a85f40955d6c41d2bc1af512f69963bef67c545131bfded9",
+      "research.not-ingested.fr": "71b428cfdd15f0b294335a9184eaacf400df432028f34d154ff17fb1a05337a9",
+      "research.derived-shared.fr": "f0f570eb233352fb5843b27063625cc4098e574f8a844cb81934c7b70d8d6c15",
+      "research.derived-shared-not-ingested.fr": "7be5c47149ef72bf9576442807e284c93abf25e2bdd3d30a3841795d98254556",
+      "research.derived-revoked.fr": "c4e9748416aadfd4d4df7244ac359e89e807a53d09069545c38ad7eda5262f99",
+      "research.empty-memory.fr": "305f835b109d95b3056743a6ea48cff93bc238120749eac7fb0ca2c1ad1297de",
+      "research.over-cap.fr": "dc688a5f04537189888b47f2dac5829b38c03053d55edd8c22544d5d93fa3197",
+      "research.no-subtitle.fr": "fa29140ea12de13a2aae0819783de8c7c57678b9916380d83afb158e74a0cbb0",
+      "corpus.base.en": "862c0c943dc7c18fb296404422751635875f104f2ff68545175857b7e3a1bf12",
+      "corpus.empty-corpus.en": "67261eca81ae00394bbeb0a8a53466df9f89799a202ea5e250de064e88d3395b",
+      "corpus.empty-memory.en": "e54a89dbc91471630f615050e72bdc5845ff97b137458c737bc286463dfeda3d",
+      "corpus.over-cap.en": "90281f50a601793276eadada4cdcf9e21de0d35fb22cb517b8a1713157c45f45",
+      "corpus.unresolved-corpus.en": "5ae8f14fadc65b1aa2c8fa6668b2605d9c6f2c2c3ee4bfeed010c5d2a0d4bdb9",
+      "corpus.no-subtitle.en": "220405dc6e599a9cd3a53058c371be44f94da8777f9ca9ba5d37cddf65e3aaf8",
+      "research.base.en": "76e50f22014ca5a8129edec5afb323b806769f10a98839520927bbcfc8c86cbc",
+      "research.not-ingested.en": "4263b8973e3e58ea657d13682b2e7c33efdf014bb92a7899b53df149ae733d9a",
+      "research.derived-shared.en": "20489e4c3b1c9c03d8fa4f93c32756acc10237d83335ea9c4a592a56e6c04f8b",
+      "research.derived-shared-not-ingested.en": "100952b20966a2e362ffdc48c3bbf4c9d34e7fca2559e63e8f9d5683e305b2d2",
+      "research.derived-revoked.en": "80ba029c2132e580551e7270bf2d89693c45fae80879668fa56e47702d2321bc",
+      "research.empty-memory.en": "8ad7f06070d6c46c8dcb78c2ef00f6c007e0005a9e0564f9259babbe72d18257",
+      "research.over-cap.en": "36a417b18462867d9865a618324037ba876f36aed908f2df48ab3b0c0b3e2d86",
+      "research.no-subtitle.en": "65501ea3bdfbac5338c1566e2bed64ee69984acf7c5b0b86d2baec56178291c3",
+      "builder.corpus.fr": "520c535a56b84af5c8aa1eedf0472f19df6c1d8f69208e4b5d09f89cf6d9e3a2",
+      "builder.research.fr": "0ced6140bdba122b6bc07c40b3e9a7ea6c73448976c55f2fbf5d7874c026b9ac",
+      "builder.corpus.en": "e1d7b8b924003860f48d43dd0fd5b71b2d4dbb20d846a3372ae378ad10acbc41",
+      "builder.research.en": "3fcb9de48cb054a153e8c02f2018d531a555f71ad69b84818f8b3e3c3ca83678",
+    },
+  ],
 ]
 const project: Project = {
   id: "fingerprint",
@@ -129,6 +177,8 @@ const OVER_CAP_MEMORY: MemorySnapshot = {
 }
 
 const CORPUS = { versionSeq: 3, total: 12, facets: { type: { press: 12 }, lang: { fr: 12 }, period: { "1930s": 12 } } }
+/** Members, but none resolved yet: no facet, no period. */
+const UNRESOLVED_CORPUS = { versionSeq: 1, total: 4, facets: { type: {}, lang: {}, period: {} } }
 const EMPTY_CORPUS = { versionSeq: 0, total: 0, facets: { type: {}, lang: {}, period: {} } }
 const INGESTED = { ingested: true, seq: 3, total: 12 } as const
 const NOT_INGESTED = { ingested: false } as const
@@ -137,8 +187,10 @@ const REVOKED_SOURCE = { name: "Corpus source", state: CORPUS_SOURCE_STATE.REVOK
 
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex")
 
-/** Every prompt branch, by a stable key. */
-function fingerprints(): Record<string, string> {
+const NO_SUBTITLE: Project = { ...project, subtitle: null }
+
+/** Every pure-render branch, by a stable key. */
+function pureFingerprints(): Record<string, string> {
   const out: Record<string, string> = {}
   for (const locale of ["fr", "en"] as const) {
     const own = memory("Presse française, 1937.")
@@ -154,6 +206,8 @@ function fingerprints(): Record<string, string> {
     corpus("empty-corpus", project, own, researchCross, EMPTY_CORPUS, locale)
     corpus("empty-memory", project, EMPTY_MEMORY, { scope: MEMORY_SCOPE.RESEARCH, snapshot: EMPTY_MEMORY }, CORPUS, locale)
     corpus("over-cap", project, own, { scope: MEMORY_SCOPE.RESEARCH, snapshot: OVER_CAP_MEMORY }, CORPUS, locale)
+    corpus("unresolved-corpus", project, own, researchCross, UNRESOLVED_CORPUS, locale)
+    corpus("no-subtitle", NO_SUBTITLE, own, researchCross, CORPUS, locale)
     research("base", project, own, corpusCross, INGESTED, locale)
     research("not-ingested", project, own, corpusCross, NOT_INGESTED, locale)
     research("derived-shared", project, own, corpusCross, INGESTED, locale, SHARED_SOURCE)
@@ -161,6 +215,58 @@ function fingerprints(): Record<string, string> {
     research("derived-revoked", project, own, corpusCross, NOT_INGESTED, locale, REVOKED_SOURCE)
     research("empty-memory", project, EMPTY_MEMORY, { scope: MEMORY_SCOPE.CORPUS, snapshot: EMPTY_MEMORY }, INGESTED, locale)
     research("over-cap", project, own, { scope: MEMORY_SCOPE.CORPUS, snapshot: OVER_CAP_MEMORY }, INGESTED, locale)
+    research("no-subtitle", NO_SUBTITLE, own, corpusCross, INGESTED, locale)
+  }
+  return out
+}
+
+// --- PromptBuilder.render, over a fixed database fixture --------------------
+// The assembly (which memory, which snapshot, which ingest status reach the
+// renderers) is prompt text too: a change there alters every cached prompt.
+
+let owner: User
+const builderSessions: Record<string, string> = {}
+const builderProjects: string[] = []
+
+before(async () => {
+  owner = await createTestUser()
+  const fixed = await ProjectService.create({
+    name: "Projet témoin (assemblage)",
+    subtitle: "Empreinte de PromptBuilder",
+    ownerId: owner.id,
+  })
+  builderProjects.push(fixed.id)
+  await prisma.document.createMany({
+    data: [
+      { ark: "ark:/12148/bpt6k9900001", title: "Numéro", docType: "press", lang: "fr", year: 1937 },
+      { ark: "ark:/12148/bpt6k9900002", title: "Livre", docType: "book", lang: "de", year: 1897 },
+    ].map((d) => ({ ...d, projectId: fixed.id, source: "gallica", resolveStatus: "resolved" })),
+  })
+  await CorpusService.addArks(fixed, owner, { arks: ["ark:/12148/bpt6k9900001", "ark:/12148/bpt6k9900002"], reason: "témoin" })
+  await markHeadIngested(fixed.id)
+  await prisma.memoryItem.createMany({
+    data: [
+      { projectId: fixed.id, scope: MEMORY_SCOPE.CORPUS, section: "Périmètre", text: "Presse et livres.", position: 0 },
+      { projectId: fixed.id, scope: MEMORY_SCOPE.RESEARCH, section: "Question", text: "La réception.", position: 0 },
+    ],
+  })
+  builderSessions.corpus = await createTestSession(fixed.id, SESSION_SCOPE.CORPUS)
+  builderSessions.research = await createTestSession(fixed.id, SESSION_SCOPE.RESEARCH)
+})
+
+after(async () => {
+  for (const id of builderProjects) await cleanupProject(id)
+  await deleteTestUser(owner.id)
+})
+
+/** Every branch: the pure renders plus PromptBuilder.render over the fixture. */
+async function fingerprints(): Promise<Record<string, string>> {
+  const out = pureFingerprints()
+  for (const locale of ["fr", "en"] as const) {
+    for (const [scope, id] of Object.entries(builderSessions)) {
+      const session = await prisma.appSession.findUniqueOrThrow({ where: { id } })
+      out[`builder.${scope}.${locale}`] = sha256(await PromptBuilder.renderForTests(session, locale))
+    }
   }
   return out
 }
@@ -183,8 +289,8 @@ test("every recorded revision is sealed by its own fingerprints (entries are nev
   assert.equal(new Set(revisions).size, revisions.length, "a revision is recorded twice")
 })
 
-test("PROMPT_REVISION is the latest recorded revision and matches the rendered prompts", () => {
-  const actual = fingerprints()
+test("PROMPT_REVISION is the latest recorded revision and matches the rendered prompts", async () => {
+  const actual = await fingerprints()
   const latest = FINGERPRINT_HISTORY.at(-1)
   const proposal = `${new Date().toISOString().slice(0, 10)}.<label>.${seal(actual)}`
   assert.ok(
@@ -202,9 +308,9 @@ test("PROMPT_REVISION is the latest recorded revision and matches the rendered p
   )
 })
 
-test("rendering is deterministic, and every branch renders a distinct prompt", () => {
-  const prints = fingerprints()
-  assert.deepEqual(prints, fingerprints())
+test("rendering is deterministic, and every branch renders a distinct prompt", async () => {
+  const prints = await fingerprints()
+  assert.deepEqual(prints, await fingerprints())
   const byHash = new Map<string, string>()
   for (const [key, hash] of Object.entries(prints)) {
     assert.ok(!byHash.has(hash), `${key} renders the same prompt as ${byHash.get(hash)} — a branch is not exercised`)
