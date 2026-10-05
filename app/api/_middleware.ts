@@ -18,7 +18,8 @@
  */
 import { auth } from "@/lib/auth"
 import { bouncer, type Bouncer, AuthorizationError } from "@/lib/bouncer"
-import { unauthorized, forbidden, notFound } from "@/lib/api-response"
+import { badRequest, unauthorized, forbidden, notFound } from "@/lib/api-response"
+import { FilterValueError } from "@/lib/filters"
 import { UserQueries } from "@/models/users/queries"
 import { GroupQueries } from "@/models/groups/queries"
 import type { PolicyUser } from "@/models/users/schema"
@@ -65,6 +66,9 @@ export function withAuth<C = unknown>(handler: AuthedHandler<C>) {
       return await handler(req, user, bouncer(user), ctx)
     } catch (e) {
       if (e instanceof AuthorizationError) return forbidden()
+      // A filter value the data refuses (a language the store does not hold):
+      // the caller's mistake, named — never a 500.
+      if (e instanceof FilterValueError) return badRequest(e.message)
       throw e
     }
   }

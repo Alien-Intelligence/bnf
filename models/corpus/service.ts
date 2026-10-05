@@ -30,72 +30,20 @@ import { CORPUS_SAMPLE_SIZE } from "@/lib/constants"
 import { DocumentQueries } from "@/models/documents/queries"
 import { CorpusQueries } from "./queries"
 import type {
+  CorpusAddResult,
+  CorpusPromoteResult,
   CorpusCrossFacets,
   CorpusFacetDimension,
   CorpusListPage,
+  CorpusMutationResult,
   CorpusSnapshot,
+  NonIngestableDocument,
   DocumentRow,
 } from "./schema"
 import type { CorpusFilterSet } from "./types"
-import { REMOVE_BY_FILTER_STATUS } from "@/lib/filters"
+import { REMOVE_BY_FILTER_STATUS, assertLangsHeld, filterLangs } from "@/lib/filters"
 import { advanceVersion } from "./versioning"
 import type { AddToCorpusInput, RemoveFromCorpusInput } from "./types"
-
-/** Return shape for mutating operations — snapshot + delta counters. */
-export type CorpusMutationResult = CorpusSnapshot & {
-  lastDeltaAdded: number
-  lastDeltaRemoved: number
-}
-
-/**
- * An ARK that was added to the corpus but has no digitized full text / IIIF
- * manifest (e.g. a catalogue notice). It is a valid corpus member, but it will
- * be skipped at ingestion time — the corpus can hold it, the RAG index cannot.
- * Derived from the ARK itself, so it is known instantly (no MCP round-trip).
- */
-export type NonIngestableDocument = {
-  ark: string
-  source: string
-}
-
-/**
- * Result of addArks(). Extends the mutation result with:
- *   - `pending`       — how many of the added ARKs are newly-created stubs whose
- *                       metadata is still resolving in the background.
- *   - `nonIngestable` — added ARKs without digitized full text (no RAG ingest
- *                       later). The real ingestion filter runs at ingest time;
- *                       this is an early heads-up derived from the ARK prefix.
- */
-export type CorpusAddResult = CorpusMutationResult & {
-  pending: number
-  nonIngestable: NonIngestableDocument[]
-  /** Number of ARKs supplied in the call (before dedup). */
-  requested: number
-  /** Supplied ARKs NOT newly added: already in the corpus or repeated in the
-   *  same call. `requested === lastDeltaAdded + duplicates`. The caller passes
-   *  every found ARK and lets the service dedup — it never pre-filters. */
-  duplicates: number
-}
-
-/**
- * Result of promoteNotice() — the on-demand cb→Gallica upgrade.
- *   - status "upgraded"      — the notice was replaced by its digitized doc;
- *                              `canonical` is the new member, a new version was
- *                              sealed, `pendingResolve` flags a fresh stub.
- *   - status "not_digitized" — confirmed no Gallica reproduction (notice kept).
- *   - status "api_error"     — BnF still flaky; try again later (notice kept).
- *   - status "not_catalogue" — the ARK is not a `cb…` notice (nothing to do).
- */
-export type CorpusPromoteResult =
-  | {
-      promoted: true
-      status: "upgraded"
-      canonical: string
-      versionSeq: number
-      total: number
-      pendingResolve: boolean
-    }
-  | { promoted: false; status: "not_digitized" | "api_error" | "not_catalogue" }
 
 /**
  * Result of removeByFilter().
@@ -137,12 +85,21 @@ export class CorpusService {
   // shared by every read, the removal and the dry run.
   // -------------------------------------------------------------------------
 
-  /** The version a ref names, its project's paid-OCR flag, and the predicates. */
+  /**
+   * The version a ref names, its project's paid-OCR flag, and the predicates —
+   * after checking the filter's languages against the ones the version holds
+   * (lib/filters.ts: language is the open dimension). Every read, the removal
+   * and the dry run go through it.
+   */
   private static async plan(projectId: string, ref: CorpusVersionRef, filters: CorpusFilterSet | undefined) {
     const [version, paidOcr] = await Promise.all([
       CorpusQueries.resolveVersion(projectId, ref),
       CorpusQueries.paidOcrEnabled(projectId),
     ])
+    const requested = filterLangs(filters)
+    if (requested.length > 0) {
+      assertLangsHeld(requested, await CorpusQueries.langsInVersion(version.id), "du corpus")
+    }
     return { version, paidOcr, where: buildCorpusWhere(version.id, paidOcr, filters) }
   }
 
@@ -227,10 +184,7 @@ export class CorpusService {
     filters: CorpusFilterSet | undefined,
   ): Promise<Record<string, number>> {
     if (filters?.not === undefined) return {}
-    const [version, paidOcr] = await Promise.all([
-      CorpusQueries.resolveVersion(projectId, ref),
-      CorpusQueries.paidOcrEnabled(projectId),
-    ])
+    const { version, paidOcr } = await CorpusService.plan(projectId, ref, filters)
     return (await CorpusService.notUnknownIn(version.id, paidOcr, filters)).notUnknown ?? {}
   }
 

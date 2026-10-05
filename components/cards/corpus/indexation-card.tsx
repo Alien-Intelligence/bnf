@@ -11,7 +11,7 @@
 // the ingest run shed them — until this card existed, nothing on screen said so,
 // and a librarian searching the corpus got silence with no explanation.
 //
-// Each bucket toggles CorpusFilters.outcome, exactly like the numérisation
+// Each bucket toggles CorpusFilterSet.outcome, exactly like the numérisation
 // buckets toggle .ingest. Data comes from CorpusSnapshot.indexation.
 
 import { useTranslations } from "next-intl"

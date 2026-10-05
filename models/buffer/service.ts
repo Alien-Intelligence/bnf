@@ -2,7 +2,9 @@ import "server-only"
 import type { Prisma, Project, User } from "@/lib/generated/prisma/client"
 import { prisma } from "@/lib/db"
 import { CorpusQueries } from "@/models/corpus/queries"
-import { CorpusService, type CorpusAddResult } from "@/models/corpus/service"
+import { CorpusService } from "@/models/corpus/service"
+import type { CorpusAddResult } from "@/models/corpus/schema"
+import type { BufferCommitCounts } from "./schema"
 import {
   BUFFER_ENRICH_STATUS,
   BUFFER_STATUS,
@@ -14,7 +16,7 @@ import {
 } from "./schema"
 import { BufferQueries } from "./queries"
 import type { BufferFilterFields, BufferFilterSet } from "./types"
-import { REMOVE_BY_FILTER_STATUS } from "@/lib/filters"
+import { REMOVE_BY_FILTER_STATUS, assertLangsHeld, filterLangs } from "@/lib/filters"
 import { arkSchema, type BufferCandidateInput } from "./types"
 import { BUFFER_CLASSIFIER_VERSION, BUFFER_SAMPLE_SIZE, CORPUS_REMOVE_PREVIEW_LIMIT } from "@/lib/constants"
 import { sourceFromArk } from "@/lib/mcp/vocab"
@@ -120,21 +122,7 @@ export type BufferRemoveByFilterResult =
  * Result of commit() — the candidate set moved into the versioned corpus.
  * `corpus` carries the underlying CorpusAddResult (version, total, pending…).
  */
-export type BufferCommitResult = {
-  /** Candidate ARKs submitted to the corpus. */
-  committed: number
-  /** Of those, catalogue notices (`cb…`) — queued for cb→Gallica
-   *  canonicalisation, so the caller knows whether to kick that drain. */
-  catalogueNotices: number
-  /** ARKs already present in the corpus (skipped by addArks dedupe). */
-  duplicates: number
-  /** Head members still waiting for cb→Gallica canonicalisation AFTER the
-   *  commit: while above zero, `corpus.total` will still change. */
-  canonicalizationPending: number
-  /** Committed candidates whose metadata was still being resolved. */
-  committedUnresolved: number
-  corpus: CorpusAddResult
-}
+export type BufferCommitResult = BufferCommitCounts & { corpus: CorpusAddResult }
 
 /** The columns registerCandidates reads back for an existing row. */
 const existingRowSelect = {
@@ -328,8 +316,11 @@ const NOT_PRESENCE: ReadonlyArray<{
   { dimension: "creator", used: (f) => !!f.creator?.length, present: { creator: { not: null } }, unknown: { creator: null } },
   { dimension: "subject", used: (f) => !!f.subject?.length, present: { subjects: { not: null } }, unknown: { subjects: null } },
   {
+    // With `undated: true` the year dimension is two-valued (range OR undated,
+    // exactly as in a positive filter): an undated candidate is then MATCHED,
+    // not unknown.
     dimension: "year",
-    used: (f) => f.yearFrom !== undefined || f.yearTo !== undefined,
+    used: (f) => (f.yearFrom !== undefined || f.yearTo !== undefined) && f.undated !== true,
     present: { year: { not: null } },
     unknown: { year: null },
   },
@@ -371,6 +362,17 @@ export class BufferService {
   }
 
   /**
+   * `where`, after checking the filter's languages against the ones the
+   * candidates hold (lib/filters.ts: language is the open dimension). Every
+   * public read and the removal go through it.
+   */
+  private static async scoped(projectId: string, filters: BufferFilterSet): Promise<Prisma.BufferItemWhereInput> {
+    const requested = filterLangs(filters)
+    if (requested.length > 0) assertLangsHeld(requested, await BufferQueries.langsHeld(projectId), "du tampon")
+    return BufferService.where(projectId, filters)
+  }
+
+  /**
    * For a filter set with `not`: per dimension the exclusion names, how many
    * candidates match the POSITIVE clauses but have no value in that column —
    * the rows a removal leaves in place. A dry run reports them so "remove
@@ -380,6 +382,7 @@ export class BufferService {
   static async notUnknownCounts(projectId: string, filters: BufferFilterSet): Promise<Record<string, number>> {
     const { not, ...positive } = filters
     if (not === undefined) return {}
+    await BufferService.scoped(projectId, filters)
     const base = BufferService.where(projectId, positive)
     const used = NOT_PRESENCE.filter((p) => p.used(not))
     const counts = await Promise.all(used.map((p) => BufferQueries.count({ AND: [base, p.unknown] })))
@@ -388,7 +391,7 @@ export class BufferService {
 
   /** Candidates matching the filters. */
   static async count(projectId: string, filters: BufferFilterSet = {}): Promise<number> {
-    return BufferQueries.count(BufferService.where(projectId, filters))
+    return BufferQueries.count(await BufferService.scoped(projectId, filters))
   }
 
   /** One page of candidates (newest first), plus the total match count. */
@@ -397,7 +400,7 @@ export class BufferService {
     filters: BufferFilterSet = {},
     limit: number = BUFFER_SAMPLE_SIZE,
   ): Promise<{ total: number; rows: BufferRow[] }> {
-    return BufferQueries.list(BufferService.where(projectId, filters), limit)
+    return BufferQueries.list(await BufferService.scoped(projectId, filters), limit)
   }
 
   /** total + facets + a bounded sample of the filtered candidates. */
@@ -406,7 +409,7 @@ export class BufferService {
     filters: BufferFilterSet = {},
     sampleSize: number = BUFFER_SAMPLE_SIZE,
   ): Promise<BufferSnapshot> {
-    return BufferQueries.snapshot(BufferService.where(projectId, filters), sampleSize)
+    return BufferQueries.snapshot(await BufferService.scoped(projectId, filters), sampleSize)
   }
 
   /** A crossed-facet table over two dimensions of the filtered candidates. */
@@ -415,12 +418,12 @@ export class BufferService {
     dims: [BufferFacetDimension, BufferFacetDimension],
     filters: BufferFilterSet = {},
   ): Promise<BufferCrossFacets> {
-    return BufferQueries.crossFacets(BufferService.where(projectId, filters), dims)
+    return BufferQueries.crossFacets(await BufferService.scoped(projectId, filters), dims)
   }
 
   /** The candidate ARKs a read of `filters` shows. */
   static async candidateArks(projectId: string, filters: BufferFilterSet = {}): Promise<string[]> {
-    return BufferQueries.arks(BufferService.where(projectId, filters))
+    return BufferQueries.arks(await BufferService.scoped(projectId, filters))
   }
   /**
    * Stage search hits, deduped by [projectId, ark]. The candidate set is
@@ -611,7 +614,7 @@ export class BufferService {
   ): Promise<BufferRemoveByFilterResult> {
     if (!BufferService.hasConstraint(input.filters)) return { status: REMOVE_BY_FILTER_STATUS.EMPTY_FILTER }
 
-    const arks = await BufferQueries.arks(BufferService.where(projectId, input.filters))
+    const arks = await BufferQueries.arks(await BufferService.scoped(projectId, input.filters))
 
     if (input.dryRun) {
       const notUnknown =

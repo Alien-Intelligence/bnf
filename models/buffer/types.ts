@@ -29,7 +29,7 @@ export const NOT_FILTER_RULE =
   "criterion used here is never matched by `not`: it is neither listed nor removed, and every " +
   "read and dry run reports how many such candidates were left out, per criterion, as `notUnknown`."
 
-export const bufferFilterFieldsSchema = z.object({
+export const bufferFilterFieldsSchema = z.strictObject({
   type: docTypeListSchema
     .optional()
     .describe(
@@ -66,7 +66,10 @@ export const bufferFilterFieldsSchema = z.object({
   undated: z
     .boolean()
     .optional()
-    .describe("With a year range: also match undated candidates. Alone: match only undated candidates."),
+    .describe(
+      "With a year range: also match undated candidates. Alone: match only undated candidates. " +
+        "Inside `not` it means the same: undated candidates are then MATCHED (excluded), not unknown.",
+    ),
   unresolved: z
     .boolean()
     .optional()
@@ -83,8 +86,10 @@ export const bufferFilterFieldsSchema = z.object({
     .describe("Free-text match over title, creator, snippet and subjects."),
 })
 
-export const bufferFilterSetSchema = bufferFilterFieldsSchema
-  .extend({ not: bufferFilterFieldsSchema.optional().describe(NOT_FILTER_RULE) })
+/** Strict at both levels: an unknown key (`langs`, `not.not`) is refused, never
+ *  dropped — a dropped constraint would widen a removal. */
+export const bufferFilterSetSchema = z
+  .strictObject({ ...bufferFilterFieldsSchema.shape, not: bufferFilterFieldsSchema.optional().describe(NOT_FILTER_RULE) })
   .describe("Metadata filters over the buffer candidates, to MATCH. Omit a field to leave it unconstrained.")
 
 /** One level of buffer filter criteria (OR within a dimension, AND across). */

@@ -401,6 +401,7 @@
       "unindexedSub": "{count, number} not indexed"
     },
     "filters": {
+      "urlRefused": "The filters in the address were ignored: {reason}",
       "title": "Filters and statistics",
       "byType": "By type",
       "byLang": "By language",

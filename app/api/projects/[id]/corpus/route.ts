@@ -78,7 +78,7 @@ export const GET = withAuth(async (req, user, bouncer, ctx: RouteCtx) => {
 
   const versionRef = parsed.version ?? "head"
 
-  const filters = parseCorpusFilters(req)
+  const filters = parseCorpusFilters(req, Object.keys(corpusQuerySchema.shape))
   if (filters instanceof Response) return filters
 
   const snapshot = await CorpusService.snapshot(

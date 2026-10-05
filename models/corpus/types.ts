@@ -20,7 +20,9 @@ import {
 // ---------------------------------------------------------------------------
 // Corpus filters — ONE definition for the agent tools AND the REST routes
 // (GET /corpus and /corpus/export decode their query string into this shape
-// with lib/corpus/filter-query.ts and validate it with this schema).
+// with lib/corpus/filter-query.ts and validate it with this schema), and the
+// Constituer page's state — the page reads its URL through the same codec and
+// schema, so there is no second, CSV-shaped client schema.
 //
 // Found bug: every description used to say "to KEEP", while
 // corpus_remove_by_filter removes what MATCHES — an agent in prod reasoned
@@ -28,7 +30,7 @@ import {
 // now says what it matches; the tools say what they do with the match.
 // ---------------------------------------------------------------------------
 
-export const corpusFilterFieldsSchema = z.object({
+export const corpusFilterFieldsSchema = z.strictObject({
   type: docTypeListSchema.optional().describe('Doc-type codes to match, e.g. ["book","press"].'),
   lang: langListSchema.optional().describe('Language codes to match (ISO 639, lowercase), e.g. ["fr","la","de"].'),
   source: sourceListSchema.optional().describe('Sources to match: "gallica" | "catalogue" | "databnf" | "other".'),
@@ -90,8 +92,11 @@ export const corpusFilterFieldsSchema = z.object({
     .describe("Free-text match over title, author, and excerpt."),
 })
 
-export const corpusFilterSetSchema = corpusFilterFieldsSchema
-  .extend({
+/** Strict at both levels: an unknown key (`langs`, `not.session`, `not.not`) is
+ *  refused, never dropped — a dropped constraint would widen a removal. */
+export const corpusFilterSetSchema = z
+  .strictObject({
+    ...corpusFilterFieldsSchema.shape,
     not: corpusFilterFieldsSchema
       .omit({ session: true })
       .optional()
@@ -118,126 +123,6 @@ export type CorpusNotFilterSet = NonNullable<CorpusFilterSet["not"]>
 /** The agent's filter schema: the same definition, minus the UI-only session facet. */
 export const corpusAgentFilterSetSchema = corpusFilterSetSchema.omit({ session: true })
 
-
-// ---------------------------------------------------------------------------
-// Client-side filter state
-// ---------------------------------------------------------------------------
-
-/**
- * CorpusFilters captures the active filter selections for the Constituer
- * comprehension panel. All fields are optional — missing means "no filter".
- * Multi-select fields (type, lang, source) are serialised as CSV strings in
- * URLSearchParams; use the helpers below to convert.
- */
-export const corpusFiltersSchema = z.object({
-  /** Comma-separated doc-type codes, e.g. "monographie,periodique" */
-  type: z.string().optional(),
-  /** Comma-separated BCP-47 language codes, e.g. "fr,la" */
-  lang: z.string().optional(),
-  /** Comma-separated source identifiers */
-  source: z.string().optional(),
-  /** Comma-separated AppSession ids — filter to docs a given session contributed */
-  session: z.string().optional(),
-  /**
-   * Comma-separated ingestion classes (numérisation buckets):
-   * "ocr" | "vision" | "sans_texte" | "non_numerise". A derived classification,
-   * not a stored column — see classifyIngestion() / the snapshot query.
-   */
-  ingest: z.string().optional(),
-  /**
-   * Comma-separated indexation outcomes:
-   * "indexed" | "failed" | "excluded" | "not_ingested". What BECAME of the
-   * document at ingestion — the outcome, not the pre-flight `ingest` class.
-   * Derived from indexedAt/indexError; see classifyOutcome().
-   */
-  outcome: z.string().optional(),
-  /** Decade start (inclusive), e.g. 1880 */
-  yearFrom: z.coerce.number().int().optional(),
-  /** Decade end (inclusive), e.g. 1889 */
-  yearTo: z.coerce.number().int().optional(),
-  /** "true"/"1" or "false"/"0" — `z.coerce.boolean()` read the STRING "false" as true. */
-  undated: z
-    .enum(["true", "false", "1", "0"])
-    .transform((v) => v === "true" || v === "1")
-    .optional(),
-  /** Free-text query; empty string is treated as absent */
-  q: z.string().trim().min(1).optional(),
-})
-
-export type CorpusFilters = z.infer<typeof corpusFiltersSchema>
-
-/**
- * Serialise a CorpusFilters object into URLSearchParams.
- * Multi-select fields are kept as a single CSV parameter.
- * Absent or undefined values are omitted.
- */
-export function corpusFiltersToParams(filters: CorpusFilters): URLSearchParams {
-  const p = new URLSearchParams()
-  if (filters.type) p.set("type", filters.type)
-  if (filters.lang) p.set("lang", filters.lang)
-  if (filters.source) p.set("source", filters.source)
-  if (filters.session) p.set("session", filters.session)
-  if (filters.ingest) p.set("ingest", filters.ingest)
-  if (filters.outcome) p.set("outcome", filters.outcome)
-  if (filters.yearFrom !== undefined) p.set("yearFrom", String(filters.yearFrom))
-  if (filters.yearTo !== undefined) p.set("yearTo", String(filters.yearTo))
-  if (filters.undated !== undefined) p.set("undated", String(filters.undated))
-  if (filters.q !== undefined && filters.q.trim().length > 0) p.set("q", filters.q.trim())
-  return p
-}
-
-/**
- * Deserialise URLSearchParams into a CorpusFilters object.
- * Missing parameters are absent on the returned object (not set to undefined).
- */
-export function corpusFiltersFromParams(params: URLSearchParams): CorpusFilters {
-  const raw: Record<string, string> = {}
-  for (const [k, v] of params.entries()) {
-    raw[k] = v
-  }
-  // Parse through the schema to coerce types and drop unknown keys.
-  return corpusFiltersSchema.parse(raw)
-}
-
-/**
- * Remove a single value from a CSV multi-select filter.
- * If removing the last value the key is omitted from the returned object.
- * Returns a new CorpusFilters — never mutates the input.
- */
-export function removeFromFilter(
-  filters: CorpusFilters,
-  key: "type" | "lang" | "source" | "session" | "ingest" | "outcome",
-  value: string,
-): CorpusFilters {
-  const current = filters[key]
-  if (!current) return filters
-  const remaining = current
-    .split(",")
-    .filter((v) => v !== value)
-    .join(",")
-  return { ...filters, [key]: remaining || undefined }
-}
-
-/** Return a CorpusFilters with no active selections. */
-export function emptyCorpusFilters(): CorpusFilters {
-  return {}
-}
-
-/** True when at least one filter value is set. */
-export function hasActiveFilters(filters: CorpusFilters): boolean {
-  return (
-    (!!filters.type && filters.type.length > 0) ||
-    (!!filters.lang && filters.lang.length > 0) ||
-    (!!filters.source && filters.source.length > 0) ||
-    (!!filters.session && filters.session.length > 0) ||
-    (!!filters.ingest && filters.ingest.length > 0) ||
-    (!!filters.outcome && filters.outcome.length > 0) ||
-    filters.yearFrom !== undefined ||
-    filters.yearTo !== undefined ||
-    filters.undated === true ||
-    (!!filters.q && filters.q.length > 0)
-  )
-}
 
 // ---------------------------------------------------------------------------
 // ARK validation

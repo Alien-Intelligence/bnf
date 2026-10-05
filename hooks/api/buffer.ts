@@ -8,9 +8,12 @@
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tanstack/react-query"
 import { apiFetch } from "@/lib/api-fetch"
 import { corpusKeys } from "./corpus"
-import type { BufferCommitResult } from "@/models/buffer/service"
-import { bufferFiltersToParams } from "@/lib/buffer/filter-query"
-import type { BufferSnapshot } from "@/models/buffer/schema"
+import { bufferFilterQuery } from "@/lib/buffer/filter-query"
+import type { BufferCommitCounts, BufferSnapshot } from "@/models/buffer/schema"
+import type { CorpusAddResult } from "@/models/corpus/schema"
+
+/** What POST /buffer/commit returns: the buffer counters and the corpus add result. */
+type BufferCommitResponse = BufferCommitCounts & { corpus: CorpusAddResult }
 import type { BufferCommitInput, BufferDiscardInput, BufferFilterSet } from "@/models/buffer/types"
 
 // ── Query keys ────────────────────────────────────────────────────────────────
@@ -32,7 +35,7 @@ export function useBuffer(
   return useQuery<BufferSnapshot>({
     queryKey: bufferKeys.snapshot(projectId, filters),
     queryFn: async () => {
-      const params = bufferFiltersToParams(filters)
+      const params = bufferFilterQuery.encode(filters)
       if (opts.limit !== undefined) params.set("limit", String(opts.limit))
       const qs = params.toString()
       const res = await apiFetch(`/api/projects/${projectId}/buffer${qs ? `?${qs}` : ""}`)
@@ -52,14 +55,14 @@ export function useBuffer(
 /** Commit the buffer's candidates into the corpus ("Ajouter au corpus"). */
 export function useCommitBuffer(projectId: string) {
   const qc = useQueryClient()
-  return useMutation<BufferCommitResult, Error, BufferCommitInput>({
+  return useMutation<BufferCommitResponse, Error, BufferCommitInput>({
     mutationFn: async (body) => {
       const res = await apiFetch(`/api/projects/${projectId}/buffer/commit`, {
         method: "POST",
         body: JSON.stringify(body),
       })
       if (!res.ok) throw new Error("Failed to commit buffer")
-      return res.json() as Promise<BufferCommitResult>
+      return res.json() as Promise<BufferCommitResponse>
     },
     // A commit empties the buffer AND grows the corpus — refresh both.
     onSuccess: () => {

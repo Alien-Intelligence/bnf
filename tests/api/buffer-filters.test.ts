@@ -1,17 +1,25 @@
 // tests/api/buffer-filters.test.ts
 // The buffer filters have ONE definition (bufferFilterSetSchema,
 // models/buffer/types.ts) shared by the agent tools and the REST route; the
-// route decodes its query string into that shape (bufferFilterInputFromParams)
-// and the client hook encodes it (bufferFiltersToParams). Found bugs this pins:
-// `z.coerce.boolean()` turned the string "false" into `true`, so
-// `?undated=false` returned the UNDATED candidates; and the REST schema, a
-// second copy, had drifted (no `not`, no `unresolved`).
+// route reads its query string with the shared codec (lib/filter-query.ts,
+// field list in lib/buffer/filter-query.ts) and the client hook encodes with
+// it. Found bugs this pins: `z.coerce.boolean()` turned the string "false"
+// into `true`; the REST schema, a second copy, had drifted; unknown keys were
+// silently dropped (widening a removal); `Number()` read `0x10` as 16.
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { bufferFilterInputFromParams, bufferFiltersToParams } from "@/lib/buffer/filter-query"
+import { bufferFilterQuery } from "@/lib/buffer/filter-query"
+import { parseFilterParams } from "@/lib/filter-query"
 import { bufferFilterSetSchema, type BufferFilterSet } from "@/models/buffer/types"
 
-const parseQs = (qs: string) => bufferFilterSetSchema.safeParse(bufferFilterInputFromParams(new URLSearchParams(qs)))
+const ROUTE_PARAMS = ["limit"]
+const read = (params: URLSearchParams) => parseFilterParams(bufferFilterQuery, bufferFilterSetSchema, params, ROUTE_PARAMS)
+const readQs = (qs: string) => read(new URLSearchParams(qs))
+const ok = (qs: string) => {
+  const r = readQs(qs)
+  if (!r.ok) throw new Error(`${qs} refused: ${r.error}`)
+  return r.filters
+}
 
 test("booleans: false/0 are false, true/1 are true, anything else is refused", () => {
   for (const [qs, expected] of [
@@ -20,12 +28,10 @@ test("booleans: false/0 are false, true/1 are true, anything else is refused", (
     ["undated=true", true],
     ["undated=1", true],
   ] as const) {
-    const parsed = parseQs(qs)
-    assert.ok(parsed.success, qs)
-    assert.equal(parsed.data.undated, expected, qs)
+    assert.equal(ok(qs)?.undated, expected, qs)
   }
-  assert.equal(parseQs("undated=yes").success, false)
-  assert.equal(parseQs("unresolved=maybe").success, false)
+  assert.equal(readQs("undated=yes").ok, false)
+  assert.equal(readQs("unresolved=maybe").ok, false)
 })
 
 test("coded lists accept repeats or commas; free-text lists are repeated and keep their commas", () => {
@@ -37,9 +43,9 @@ test("coded lists accept repeats or commas; free-text lists are repeated and kee
   params.append("creator", "Hugo, Victor")
   params.append("subject", "Incendies")
   params.append("not.title", "Mers-el-Kébir")
-  const parsed = bufferFilterSetSchema.safeParse(bufferFilterInputFromParams(params))
-  assert.ok(parsed.success)
-  assert.deepEqual(parsed.data, {
+  const r = read(params)
+  assert.ok(r.ok)
+  assert.deepEqual(r.filters, {
     type: ["press", "book"],
     kind: ["periodical_issue"],
     title: ["Oran", "Alger"],
@@ -52,12 +58,30 @@ test("coded lists accept repeats or commas; free-text lists are repeated and kee
 })
 
 test("invalid values are refused, not dropped", () => {
-  assert.equal(parseQs("kind=pamphlet").success, false, "unknown record kind")
-  assert.equal(parseQs("yearFrom=abc").success, false, "non-numeric year")
-  assert.equal(parseQs("title=a").success, false, "a one-letter text criterion")
-  assert.equal(parseQs("type=presse").success, false, "a type outside the vocabulary")
-  assert.equal(parseQs("not.type=presse").success, false, "even under not")
-  assert.equal(parseQs("lang=ger").success, false, "a non-canonical language code")
+  for (const qs of ["kind=pamphlet", "yearFrom=abc", "title=a", "type=presse", "not.type=presse", "lang=FR"]) {
+    assert.equal(readQs(qs).ok, false, qs)
+  }
+})
+
+test("integers are digits only: hex, exponent and decimals are refused, not read as numbers", () => {
+  for (const qs of ["yearFrom=0x10", "yearFrom=1e3", "yearTo=12.5", "yearFrom=%20"]) {
+    assert.equal(readQs(qs).ok, false, qs)
+  }
+  assert.equal(ok("yearFrom=-50")?.yearFrom, -50)
+})
+
+test("an unknown parameter is refused with a message, never dropped (it would widen a removal)", () => {
+  for (const qs of ["langs=fr", "not.not.type=press", "session=11111111-1111-4111-8111-111111111111"]) {
+    const r = readQs(qs)
+    assert.equal(r.ok, false, qs)
+    assert.ok(!r.ok && /inconnu/.test(r.error), qs)
+  }
+  assert.equal(readQs("limit=5").ok, true, "the route's own parameter is not a filter")
+})
+
+test("the schema is strict at both levels: unknown keys from the agent are refused too", () => {
+  assert.equal(bufferFilterSetSchema.safeParse({ langs: ["fr"] }).success, false)
+  assert.equal(bufferFilterSetSchema.safeParse({ not: { not: { type: ["press"] } } }).success, false)
 })
 
 test("encoding then decoding returns the same filter set", () => {
@@ -71,7 +95,7 @@ test("encoding then decoding returns the same filter set", () => {
     creator: ["Hugo, Victor"],
     not: { lang: ["fr"], unresolved: true },
   }
-  const parsed = parseQs(bufferFiltersToParams(filters).toString())
-  assert.ok(parsed.success)
-  assert.deepEqual(parsed.data, filters)
+  const r = read(bufferFilterQuery.encode(filters))
+  assert.ok(r.ok)
+  assert.deepEqual(r.filters, filters)
 })

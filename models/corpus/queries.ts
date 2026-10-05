@@ -576,6 +576,17 @@ export class CorpusQueries {
     return { dims, cells }
   }
 
+  /** The languages a version's documents hold — what the language facet shows. */
+  static async langsInVersion(versionId: string): Promise<string[]> {
+    const rows = await prisma.document.findMany({
+      where: { membership: { some: { versionId } }, lang: { not: null } },
+      distinct: ["lang"],
+      select: { lang: true },
+      orderBy: { lang: "asc" },
+    })
+    return rows.flatMap((r) => (r.lang !== null ? [r.lang] : []))
+  }
+
   /** The ARKs matching `where`, in stable ascending order (a reproducible preview). */
   static async arks(where: Prisma.DocumentWhereInput): Promise<string[]> {
     const rows = await prisma.document.findMany({ where, select: { ark: true }, orderBy: { ark: "asc" } })

@@ -117,3 +117,22 @@ export type BufferCrossFacets = {
   dims: [BufferFacetDimension, BufferFacetDimension]
   cells: { a: string; b: string; count: number }[]
 }
+
+/**
+ * The buffer's own counters of a commit (BufferService.commit returns them
+ * with the corpus add result, `corpus`, typed in models/corpus/schema.ts).
+ */
+export type BufferCommitCounts = {
+  /** Candidate ARKs submitted to the corpus. */
+  committed: number
+  /** Of those, catalogue notices (`cb…`) — queued for cb→Gallica
+   *  canonicalisation, so the caller knows whether to kick that drain. */
+  catalogueNotices: number
+  /** ARKs already present in the corpus (skipped by addArks dedupe). */
+  duplicates: number
+  /** Head members still waiting for cb→Gallica canonicalisation AFTER the
+   *  commit: while above zero, `corpus.total` will still change. */
+  canonicalizationPending: number
+  /** Committed candidates whose metadata was still being resolved. */
+  committedUnresolved: number
+}

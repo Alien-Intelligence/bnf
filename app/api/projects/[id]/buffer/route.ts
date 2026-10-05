@@ -5,7 +5,7 @@
  * candidate count, facets (type / language / source / period), and a bounded
  * candidate sample. Mirrors GET /corpus but over the pre-commit staging area.
  *
- * Query params: the buffer filters, decoded by `bufferFilterInputFromParams`
+ * Query params: the buffer filters, read by `parseFilterParams` (lib/filter-query.ts)
  * and validated by `bufferFilterSetSchema` — the SAME schema the agent tools
  * use (models/buffer/types.ts): type / kind / lang / source / title / creator /
  * subject as CSV, yearFrom / yearTo (overlap), undated / unresolved
@@ -26,7 +26,8 @@ import { BUFFER_LIST_MAX_LIMIT, BUFFER_SAMPLE_SIZE } from "@/lib/constants"
 import { ProjectQueries } from "@/models/projects/queries"
 import { BufferPolicy } from "@/models/buffer/policy"
 import { BufferService } from "@/models/buffer/service"
-import { bufferFilterInputFromParams } from "@/lib/buffer/filter-query"
+import { bufferFilterQuery } from "@/lib/buffer/filter-query"
+import { parseFilterParams } from "@/lib/filter-query"
 import { bufferDiscardSchema, bufferFilterSetSchema } from "@/models/buffer/types"
 import type { BufferDiscardResult, BufferSnapshot } from "@/models/buffer/schema"
 
@@ -43,14 +44,19 @@ export const GET = withAuth(async (req, user, bouncer, ctx: RouteCtx) => {
   if (page instanceof Response) return page
   // The shared filter schema, never a local copy: a second copy is how the
   // "undated=false parsed as true" bug lived in this route.
-  const filters = bufferFilterSetSchema.safeParse(bufferFilterInputFromParams(new URL(req.url).searchParams))
-  if (!filters.success) return badRequest("Invalid buffer filters", filters.error.issues)
+  const filters = parseFilterParams(
+    bufferFilterQuery,
+    bufferFilterSetSchema,
+    new URL(req.url).searchParams,
+    Object.keys(pageQuerySchema.shape),
+  )
+  if (!filters.ok) return badRequest(filters.error, filters.issues)
 
   const project = await ProjectQueries.get(projectId)
   if (!project) return notFound("Projet introuvable")
   await bouncer.with(BufferPolicy).authorize("read", project)
 
-  const snapshot = await BufferService.snapshot(projectId, filters.data, page.limit ?? BUFFER_SAMPLE_SIZE)
+  const snapshot = await BufferService.snapshot(projectId, filters.filters ?? {}, page.limit ?? BUFFER_SAMPLE_SIZE)
   return ok<BufferSnapshot>(snapshot)
 })
 

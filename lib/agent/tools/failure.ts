@@ -9,7 +9,7 @@
 // these, and the model reads `error` to recover.
 //
 // Pure — no server-only import, so the display layer can share the types.
-import { REMOVE_BY_FILTER_STATUS } from "@/lib/filters"
+import { FilterValueError, REMOVE_BY_FILTER_STATUS } from "@/lib/filters"
 
 /** A tool call that failed or was refused; `error` is model-readable. */
 export type ToolFailure = { success: false; error: string }
@@ -36,3 +36,20 @@ export const INVALID_PARAMS_REFUSAL = "invalid_params" as const
 
 /** The BnF declined a query it cannot express on that index (never sent). */
 export const QUERY_NOT_EXPRESSIBLE_REFUSAL = "query_not_expressible" as const
+
+/**
+ * Run a filtered read or removal; a filter value the data refuses (a language
+ * the buffer or corpus does not hold — lib/filters.ts FilterValueError) comes
+ * back as an `invalid_params` refusal the model can correct, never a throw out
+ * of the tool loop (§15). Any other error propagates.
+ */
+export async function refusingBadFilterValues<T>(
+  run: () => Promise<T>,
+): Promise<T | ToolRefusal<typeof INVALID_PARAMS_REFUSAL>> {
+  try {
+    return await run()
+  } catch (err) {
+    if (err instanceof FilterValueError) return toolRefusal(INVALID_PARAMS_REFUSAL, err.message)
+    throw err
+  }
+}

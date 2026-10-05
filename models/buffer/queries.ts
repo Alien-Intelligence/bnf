@@ -73,6 +73,17 @@ export class BufferQueries {
     return { projectId, status: BUFFER_STATUS.CANDIDATE }
   }
 
+  /** The languages the project's candidates hold — what the language facet shows. */
+  static async langsHeld(projectId: string): Promise<string[]> {
+    const rows = await prisma.bufferItem.findMany({
+      where: { ...BufferQueries.candidateScope(projectId), lang: { not: null } },
+      distinct: ["lang"],
+      select: { lang: true },
+      orderBy: { lang: "asc" },
+    })
+    return rows.flatMap((r) => (r.lang !== null ? [r.lang] : []))
+  }
+
   /**
    * The whole candidate set's enrichment state, whatever the filters: how many
    * candidates are without their metadata (`unresolved` — the same set the

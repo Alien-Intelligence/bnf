@@ -37,7 +37,7 @@ import type { DocumentRow } from "@/models/corpus/schema"
 import type { TurnScopedCtx } from "./registry-factory"
 import { authorizeProjectTool } from "./authorize"
 import { REMOVE_BY_FILTER_STATUS } from "@/lib/filters"
-import { EMPTY_FILTER_REFUSAL, toolFailure, toolRefusal, type ToolFailure } from "./failure"
+import { EMPTY_FILTER_REFUSAL, refusingBadFilterValues, toolFailure, toolRefusal, type ToolFailure } from "./failure"
 import { CORPUS_ACCESS_REVOKED_ERROR } from "./ingestion-guard"
 import { emitDomainEvent, STREAM_DOMAIN_EVENT } from "@/lib/agent/stream-events"
 import { AGENT_TOOLS } from "./constants"
@@ -47,7 +47,7 @@ import { provisionalTotal } from "./provisional-total"
 // Shared filter schema: models/corpus/types.ts (one definition with REST)
 // ---------------------------------------------------------------------------
 
-const corpusFiltersSchema = corpusAgentFilterSetSchema
+const corpusToolFiltersSchema = corpusAgentFilterSetSchema
 
 /**
  * The corpus a read tool reads, or the refusal when the derived workspace's
@@ -114,7 +114,7 @@ export const corpusGetStateTool = defineTool<
   z.ZodObject<{
     include_sample: z.ZodOptional<z.ZodBoolean>
     sample_limit: z.ZodOptional<z.ZodNumber>
-    filters: z.ZodOptional<typeof corpusFiltersSchema>
+    filters: z.ZodOptional<typeof corpusToolFiltersSchema>
   }>,
   TurnScopedCtx
 >({
@@ -140,31 +140,33 @@ export const corpusGetStateTool = defineTool<
       .max(100)
       .optional()
       .describe("Maximum number of sample documents to return (1–100, default 25)."),
-    filters: corpusFiltersSchema.optional(),
+    filters: corpusToolFiltersSchema.optional(),
   }),
-  handler: async (input, ctx) => {
-    const includeSample = input.include_sample ?? true
-    const sampleLimit = input.sample_limit
-    const filters = input.filters
-    const target = corpusReadTarget(ctx)
-    if (!target.ok) return target.result
-    const projectId = target.projectId
-    const snapshot = await CorpusService.snapshot(
-      projectId,
-      "head",
-      includeSample ? { filters, limit: sampleLimit } : { filters, limit: 0 },
-    )
-    if (!includeSample) {
-      const { sample: _sample, ...rest } = snapshot
-      return rest
-    }
-    return {
-      ...snapshot,
-      sample: snapshot.sample.map((d) =>
-        agentDocumentView(d, snapshot.paidOcrEnabled),
-      ),
-    }
-  },
+  handler: (input, ctx) =>
+    // A filter value the data refuses → an invalid_params refusal (failure.ts).
+    refusingBadFilterValues(async () => {
+      const includeSample = input.include_sample ?? true
+      const sampleLimit = input.sample_limit
+      const filters = input.filters
+      const target = corpusReadTarget(ctx)
+      if (!target.ok) return target.result
+      const projectId = target.projectId
+      const snapshot = await CorpusService.snapshot(
+        projectId,
+        "head",
+        includeSample ? { filters, limit: sampleLimit } : { filters, limit: 0 },
+      )
+      if (!includeSample) {
+        const { sample: _sample, ...rest } = snapshot
+        return rest
+      }
+      return {
+        ...snapshot,
+        sample: snapshot.sample.map((d) =>
+          agentDocumentView(d, snapshot.paidOcrEnabled),
+        ),
+      }
+    }),
 })
 
 // ---------------------------------------------------------------------------
@@ -173,7 +175,7 @@ export const corpusGetStateTool = defineTool<
 
 export const corpusListTool = defineTool<
   z.ZodObject<{
-    filters: z.ZodOptional<typeof corpusFiltersSchema>
+    filters: z.ZodOptional<typeof corpusToolFiltersSchema>
     cursor: z.ZodOptional<z.ZodString>
     limit: z.ZodOptional<z.ZodNumber>
     fields: z.ZodOptional<z.ZodArray<typeof corpusListFieldEnum>>
@@ -192,7 +194,7 @@ export const corpusListTool = defineTool<
     "compact. This is the right tool for 'show me every document from 1970 onward' " +
     "or 'which catalogue notices are in the corpus' — filter, then page through.",
   inputSchema: z.object({
-    filters: corpusFiltersSchema.optional(),
+    filters: corpusToolFiltersSchema.optional(),
     cursor: z
       .string()
       .optional()
@@ -213,41 +215,43 @@ export const corpusListTool = defineTool<
         "Document fields to return besides `ark` (always included). Omit to return all fields.",
       ),
   }),
-  handler: async (input, ctx) => {
-    const filters = input.filters
-    const target = corpusReadTarget(ctx)
-    if (!target.ok) return target.result
-    const page = await CorpusService.list(target.projectId, "head", {
-      filters,
-      cursor: input.cursor,
-      limit: input.limit,
-    })
+  handler: (input, ctx) =>
+    // A filter value the data refuses → an invalid_params refusal (failure.ts).
+    refusingBadFilterValues(async () => {
+      const filters = input.filters
+      const target = corpusReadTarget(ctx)
+      if (!target.ok) return target.result
+      const page = await CorpusService.list(target.projectId, "head", {
+        filters,
+        cursor: input.cursor,
+        limit: input.limit,
+      })
 
-    // Project each document down to the requested fields (token economy). `ark`
-    // is always kept so the agent can act on / cite the document. When no
-    // `fields` are given, return the full row.
-    const rows = page.documents.map((d) =>
-      agentDocumentView(d, page.paidOcrEnabled),
-    )
-    const documents =
-      input.fields && input.fields.length > 0
-        ? rows.map((doc) => {
-            const picked: Record<string, unknown> = { ark: doc.ark }
-            for (const f of input.fields as (keyof typeof doc)[]) {
-              picked[f] = doc[f]
-            }
-            return picked
-          })
-        : rows
+      // Project each document down to the requested fields (token economy). `ark`
+      // is always kept so the agent can act on / cite the document. When no
+      // `fields` are given, return the full row.
+      const rows = page.documents.map((d) =>
+        agentDocumentView(d, page.paidOcrEnabled),
+      )
+      const documents =
+        input.fields && input.fields.length > 0
+          ? rows.map((doc) => {
+              const picked: Record<string, unknown> = { ark: doc.ark }
+              for (const f of input.fields as (keyof typeof doc)[]) {
+                picked[f] = doc[f]
+              }
+              return picked
+            })
+          : rows
 
-    return {
-      versionSeq: page.versionSeq,
-      total: page.total,
-      documents,
-      ...(page.nextCursor !== undefined ? { nextCursor: page.nextCursor } : {}),
-      ...(page.notUnknown !== undefined ? { notUnknown: page.notUnknown } : {}),
-    }
-  },
+      return {
+        versionSeq: page.versionSeq,
+        total: page.total,
+        documents,
+        ...(page.nextCursor !== undefined ? { nextCursor: page.nextCursor } : {}),
+        ...(page.notUnknown !== undefined ? { notUnknown: page.notUnknown } : {}),
+      }
+    }),
 })
 
 // ---------------------------------------------------------------------------
@@ -439,7 +443,7 @@ const CORPUS_EMPTY_FILTER_ERROR =
 
 export const corpusRemoveByFilterTool = defineTool<
   z.ZodObject<{
-    filters: typeof corpusFiltersSchema
+    filters: typeof corpusToolFiltersSchema
     reason: z.ZodString
     dry_run: z.ZodOptional<z.ZodBoolean>
   }>,
@@ -460,7 +464,7 @@ export const corpusRemoveByFilterTool = defineTool<
     "corpus; narrow it instead. Removing a document drops its membership only; " +
     "it is never deleted from the database.",
   inputSchema: z.object({
-    filters: corpusFiltersSchema,
+    filters: corpusToolFiltersSchema,
     reason: z
       .string()
       .trim()
@@ -478,37 +482,39 @@ export const corpusRemoveByFilterTool = defineTool<
         "When true (default), preview only — report what would be removed without mutating. Set false to commit.",
       ),
   }),
-  handler: async (input, ctx) => {
-    // Preview-first: dry_run defaults to true so an unconfirmed call never
-    // mutates the corpus. A dry run only reads, so it needs only read access.
-    const dryRun = input.dry_run ?? true
-    const gate = await authorizeProjectTool(ctx, CorpusPolicy, dryRun ? "read" : "mutate")
-    if (!gate.ok) return gate.result
-    const project = gate.project
+  handler: (input, ctx) =>
+    // A filter value the data refuses → an invalid_params refusal (failure.ts).
+    refusingBadFilterValues(async () => {
+      // Preview-first: dry_run defaults to true so an unconfirmed call never
+      // mutates the corpus. A dry run only reads, so it needs only read access.
+      const dryRun = input.dry_run ?? true
+      const gate = await authorizeProjectTool(ctx, CorpusPolicy, dryRun ? "read" : "mutate")
+      if (!gate.ok) return gate.result
+      const project = gate.project
 
-    const result = await CorpusService.removeByFilter(project, ctx.user, {
-      filters: input.filters,
-      reason: input.reason,
-      dryRun,
-    })
-    if (result.status === REMOVE_BY_FILTER_STATUS.EMPTY_FILTER) {
-      return toolRefusal(EMPTY_FILTER_REFUSAL, CORPUS_EMPTY_FILTER_ERROR)
-    }
-
-    // Only a committed removal emits a corpus_event and advances a version.
-    if (result.status === REMOVE_BY_FILTER_STATUS.REMOVED && result.removed > 0) {
-      emitDomainEvent(ctx, {
-        type: STREAM_DOMAIN_EVENT.CORPUS,
-        data: {
-          kind: "remove",
-          count: result.removed,
-          versionSeq: result.versionSeq,
-        },
+      const result = await CorpusService.removeByFilter(project, ctx.user, {
+        filters: input.filters,
+        reason: input.reason,
+        dryRun,
       })
-    }
+      if (result.status === REMOVE_BY_FILTER_STATUS.EMPTY_FILTER) {
+        return toolRefusal(EMPTY_FILTER_REFUSAL, CORPUS_EMPTY_FILTER_ERROR)
+      }
 
-    return result
-  },
+      // Only a committed removal emits a corpus_event and advances a version.
+      if (result.status === REMOVE_BY_FILTER_STATUS.REMOVED && result.removed > 0) {
+        emitDomainEvent(ctx, {
+          type: STREAM_DOMAIN_EVENT.CORPUS,
+          data: {
+            kind: "remove",
+            count: result.removed,
+            versionSeq: result.versionSeq,
+          },
+        })
+      }
+
+      return result
+    }),
 })
 
 // ---------------------------------------------------------------------------
@@ -519,7 +525,7 @@ const facetDimensionEnum = z.enum(["period", "type", "lang", "source"])
 
 export const corpusStatsTool = defineTool<
   z.ZodObject<{
-    filters: z.ZodOptional<typeof corpusFiltersSchema>
+    filters: z.ZodOptional<typeof corpusToolFiltersSchema>
     cross_facets: z.ZodOptional<z.ZodArray<typeof facetDimensionEnum>>
   }>,
   TurnScopedCtx
@@ -535,7 +541,7 @@ export const corpusStatsTool = defineTool<
     "the fastest way to locate a sub-population (\"the recent documents are catalogue " +
     "books\") without inspecting documents one by one.",
   inputSchema: z.object({
-    filters: corpusFiltersSchema.optional(),
+    filters: corpusToolFiltersSchema.optional(),
     // A fixed-length ARRAY, not a z.tuple: a tuple serialises to the positional
     // `items: [A, B]` JSON-schema form, which Google's function-declaration
     // schema rejects ("properties[cross_facets].items: missing field"), crashing
@@ -550,27 +556,29 @@ export const corpusStatsTool = defineTool<
         'Two dimensions to cross-tabulate, e.g. ["period","type"] or ["period","source"].',
       ),
   }),
-  handler: async (input, ctx) => {
-    const filters = input.filters
-    const target = corpusReadTarget(ctx)
-    if (!target.ok) return target.result
-    const projectId = target.projectId
-    const snapshot = await CorpusService.snapshot(projectId, "head", {
-      filters,
-      limit: 0,
-    })
-    const { sample: _sample, ...stats } = snapshot
+  handler: (input, ctx) =>
+    // A filter value the data refuses → an invalid_params refusal (failure.ts).
+    refusingBadFilterValues(async () => {
+      const filters = input.filters
+      const target = corpusReadTarget(ctx)
+      if (!target.ok) return target.result
+      const projectId = target.projectId
+      const snapshot = await CorpusService.snapshot(projectId, "head", {
+        filters,
+        limit: 0,
+      })
+      const { sample: _sample, ...stats } = snapshot
 
-    if (!input.cross_facets) return stats
+      if (!input.cross_facets) return stats
 
-    const cross = await CorpusService.crossFacets(
-      projectId,
-      "head",
-      [input.cross_facets[0], input.cross_facets[1]],
-      filters,
-    )
-    return { ...stats, cross }
-  },
+      const cross = await CorpusService.crossFacets(
+        projectId,
+        "head",
+        [input.cross_facets[0], input.cross_facets[1]],
+        filters,
+      )
+      return { ...stats, cross }
+    }),
 })
 
 // ---------------------------------------------------------------------------

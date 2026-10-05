@@ -16,6 +16,7 @@ import { CorpusService } from "@/models/corpus/service"
 import { BUFFER_STATUS } from "@/models/buffer/schema"
 import { createTestUser, createTestProject, deleteTestUser } from "@/lib/testing/fixtures"
 import { cleanupProject } from "@/lib/testing/project-cleanup"
+import { FilterValueError } from "@/lib/filters"
 
 let user: User
 const projects: string[] = []
@@ -598,4 +599,28 @@ test("a lone `not` is a constraint; an empty `not` is not", async () => {
   const empty = await BufferService.removeByFilter(project.id, { filters: { not: {} }, dryRun: false })
   assert.equal(empty.status, "empty_filter")
   assert.equal(await BufferService.count(project.id), 7)
+})
+
+test("not.yearFrom with undated:true means what the positive filter means: undated rows are MATCHED", async () => {
+  const project = await filterFixture("f-not-year-undated")
+  // Positive: in [1940, …] OR undated → the 1997 book, the 1861–1946 run, the bare row.
+  const positive = (await BufferService.candidateArks(project.id, { yearFrom: 1940, undated: true })).sort()
+  assert.deepEqual(positive, [ARK(2_004), ARK(2_005), ARK(2_007)].sort())
+  // Under `not`, exactly that set is excluded — the undated row is not "unknown".
+  const filters = { not: { yearFrom: 1940, undated: true } }
+  const shown = (await BufferService.candidateArks(project.id, filters)).sort()
+  assert.deepEqual(shown, [ARK(2_001), ARK(2_002), ARK(2_003), ARK(2_006)].sort())
+  assert.deepEqual(await BufferService.notUnknownCounts(project.id, filters), {}, "nothing is unknown")
+  const preview = await BufferService.removeByFilter(project.id, { filters, dryRun: true })
+  if (preview.status === "dry_run") assert.equal(preview.matched, shown.length)
+})
+
+test("a language the buffer does not hold is refused, positive or under not — never matched against everything", async () => {
+  const project = await filterFixture("f-lang-held")
+  await assert.rejects(BufferService.candidateArks(project.id, { not: { lang: ["xx"] } }), FilterValueError)
+  await assert.rejects(BufferService.removeByFilter(project.id, { filters: { not: { lang: ["xx"] } }, dryRun: false }), /xx/)
+  await assert.rejects(BufferService.snapshot(project.id, { lang: ["xx"] }), FilterValueError)
+  assert.equal(await BufferService.count(project.id), 7, "nothing was removed")
+  // Languages the facet shows are accepted.
+  assert.deepEqual(await BufferService.candidateArks(project.id, { lang: ["de"] }), [ARK(2_004)])
 })

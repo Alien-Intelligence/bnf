@@ -20,6 +20,10 @@ export const DB_CONNECTION_TIMEOUT_MS = 10_000
 // Locale prefix is handled by next-intl's <Link>; these are locale-agnostic.
 // ---------------------------------------------------------------------------
 
+/** The Constituer page's own URL parameter (the open document); every other
+ *  parameter of that page is a corpus filter. */
+export const SELECTED_ARK_PARAM = "selectedArk"
+
 export const ROUTES = {
   projects: "/projects",
   constituer: (projectId: string) => `/projects/${projectId}/constituer`,
@@ -198,6 +202,9 @@ export const TEXT_FILTER_MIN_CHARS = 2
 export const TEXT_FILTER_MAX_VALUES = 20
 /** Values per coded filter list (`type`, `lang`, `source`, `kind`). */
 export const FILTER_LIST_MAX_VALUES = 20
+/** Longest language value a filter accepts — the store holds BnF's own
+ *  language strings, the longest seen being « sans contenu linguistique ». */
+export const LANG_FILTER_MAX_CHARS = 40
 
 /** Candidate rows the Constituer buffer panel requests (a curation buffer is
  *  bounded, so one page comfortably shows the working set). */

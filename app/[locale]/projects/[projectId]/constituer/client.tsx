@@ -18,13 +18,12 @@ import { bufferKeys } from "@/hooks/api/buffer"
 import { memoryKeys } from "@/hooks/api/memory"
 import { sessionKeys } from "@/hooks/api/sessions"
 import { useTurnStream } from "@/hooks/api/turn-stream"
-import {
-  corpusFiltersFromParams,
-  corpusFiltersToParams,
-  emptyCorpusFilters,
-  hasActiveFilters,
-  type CorpusFilters,
-} from "@/models/corpus/types"
+import { SELECTED_ARK_PARAM } from "@/lib/constants"
+import { corpusFilterQuery } from "@/lib/corpus/filter-query"
+import { EMPTY_CORPUS_FILTERS, hasActiveFilters } from "@/lib/corpus/filter-state"
+import { parseFilterParams } from "@/lib/filter-query"
+import { corpusFilterSetSchema, type CorpusFilterSet } from "@/models/corpus/types"
+import { AlertCorpusFiltersRefused } from "@/components/alerts/corpus/filters-refused"
 import { LayoutCorpusChat } from "@/components/layouts/corpus/chat"
 import { LayoutSessionsSidebar } from "@/components/layouts/corpus/sessions-sidebar"
 import { CardCorpusSummary } from "@/components/cards/corpus/summary"
@@ -189,25 +188,31 @@ export function ConstituerClient({
   }, [stream.isStreaming, projectId, qc])
 
   // ── Filter + selection state (React state; seeded from the URL once) ──────────
-  const [filters, setFilters] = useState<CorpusFilters>(() =>
-    corpusFiltersFromParams(searchParams),
+  // Read through the ONE codec + schema the routes use; a URL the schema
+  // refuses opens the page unfiltered with a visible notice, never a thrown
+  // render. `selectedArk` is the page's own parameter.
+  const [initialFilters] = useState(() =>
+    parseFilterParams(corpusFilterQuery, corpusFilterSetSchema, searchParams, [SELECTED_ARK_PARAM]),
+  )
+  const [filters, setFilters] = useState<CorpusFilterSet>(() =>
+    initialFilters.ok ? (initialFilters.filters ?? EMPTY_CORPUS_FILTERS) : EMPTY_CORPUS_FILTERS,
   )
   const [selectedArk, setSelectedArk] = useState<string | null>(() =>
-    searchParams.get("selectedArk"),
+    searchParams.get(SELECTED_ARK_PARAM),
   )
 
   // ── Corpus CSV export — honours the active filters (exports what's shown) ─────
   const exportCorpus = useExportCorpus(projectId)
 
-  const onFiltersChange = useCallback((next: CorpusFilters) => setFilters(next), [])
-  const onClearFilters = useCallback(() => setFilters(emptyCorpusFilters()), [])
+  const onFiltersChange = useCallback((next: CorpusFilterSet) => setFilters(next), [])
+  const onClearFilters = useCallback(() => setFilters(EMPTY_CORPUS_FILTERS), [])
   const onSelectArk = useCallback((ark: string | null) => setSelectedArk(ark), [])
 
   // Mirror state → URL with a shallow history replace (NO Next navigation, so no
   // server round-trip / page reload). Purely for copy-paste + reload.
   useEffect(() => {
-    const params = corpusFiltersToParams(filters)
-    if (selectedArk) params.set("selectedArk", selectedArk)
+    const params = corpusFilterQuery.encode(filters)
+    if (selectedArk) params.set(SELECTED_ARK_PARAM, selectedArk)
     const qs = params.toString()
     window.history.replaceState(null, "", qs ? `${pathname}?${qs}` : pathname)
   }, [filters, selectedArk, pathname])
@@ -303,6 +308,7 @@ export function ConstituerClient({
               </div>
             </div>
             <CardCorpusSummary corpus={displaySnapshot} />
+            {!initialFilters.ok && <AlertCorpusFiltersRefused reason={initialFilters.error} />}
             <CardCorpusFiltersDrawer
               corpus={displaySnapshot}
               filters={filters}

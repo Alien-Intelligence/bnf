@@ -15,7 +15,7 @@ import { cleanupProject } from "@/lib/testing/project-cleanup"
 import { corpusRemoveByFilterView, toolCallErrored } from "@/lib/tools/display"
 import { SESSION_SCOPE } from "@/models/sessions/schema"
 import type { PolicyUser } from "@/models/users/schema"
-import { bufferRemoveByFilterTool, corpusSearchTool } from "./buffer"
+import { bufferListTool, bufferRemoveByFilterTool, corpusSearchTool } from "./buffer"
 import { corpusDiffTool, corpusGetStateTool, corpusListTool, corpusRemoveByFilterTool, corpusStatsTool } from "./corpus"
 import { CORPUS_ACCESS_REVOKED_ERROR } from "./ingestion-guard"
 import { EMPTY_FILTER_REFUSAL, INVALID_PARAMS_REFUSAL } from "./failure"
@@ -79,6 +79,20 @@ test("corpus_search refuses parameters it cannot honour in the one refusal shape
   assert.match("error" in result && typeof result.error === "string" ? result.error : "", /Paramètres de recherche refusés/)
   assert.ok("problems" in result && Array.isArray(result.problems) && result.problems.length === 1, "the fixes travel along")
   assert.equal(toolCallErrored(false, JSON.stringify(result)), true)
+})
+
+test("a filter language the store does not hold is an invalid_params refusal, never a throw", async () => {
+  for (const call of [
+    () => bufferListTool.handler({ filters: { not: { lang: ["xx"] } } }, ctx()),
+    () => bufferRemoveByFilterTool.handler({ filters: { not: { lang: ["xx"] } }, dry_run: true }, ctx()),
+    () => corpusListTool.handler({ filters: { not: { lang: ["xx"] } } }, ctx()),
+    () => corpusRemoveByFilterTool.handler({ filters: { not: { lang: ["xx"] } }, reason: "test", dry_run: true }, ctx()),
+  ]) {
+    const result = await call()
+    assert.ok(typeof result === "object" && result !== null)
+    assert.equal("refused" in result && result.refused, INVALID_PARAMS_REFUSAL, JSON.stringify(result))
+    assert.match("error" in result && typeof result.error === "string" ? result.error : "", /xx/)
+  }
 })
 
 test("note_get on an unknown id fails with success:false", async () => {

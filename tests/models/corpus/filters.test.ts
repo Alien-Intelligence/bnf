@@ -15,6 +15,7 @@ import { prisma } from "@/lib/db"
 import type { Project, User } from "@/lib/generated/prisma/client"
 import { createTestUser, createTestProject, deleteTestUser } from "@/lib/testing/fixtures"
 import { cleanupProject } from "@/lib/testing/project-cleanup"
+import { FilterValueError } from "@/lib/filters"
 import type { CorpusFilterSet } from "@/models/corpus/types"
 import { CorpusService } from "@/models/corpus/service"
 import { arkKindWhere, classifyArkKind } from "@/lib/documents/ark-kind"
@@ -192,4 +193,12 @@ test("remove_by_filter with not: the dry run counts the removal and reports what
   if (langOnly.status !== "dry_run") return
   assert.equal(langOnly.matched, 1)
   assert.deepEqual(langOnly.notUnknown, { lang: 2 })
+})
+
+test("a language the version does not hold is refused for every read and the removal", async () => {
+  await assert.rejects(CorpusService.snapshot(project.id, "head", { filters: { not: { lang: ["xx"] } }, limit: 0 }), FilterValueError)
+  await assert.rejects(CorpusService.list(project.id, "head", { filters: { lang: ["xx"] } }), FilterValueError)
+  await assert.rejects(CorpusService.notUnknownCounts(project.id, "head", { not: { lang: ["xx"] } }), FilterValueError)
+  await assert.rejects(arksRemovedBy({ not: { lang: ["xx"] } }), /Langue\(s\) absente\(s\) du corpus : xx/)
+  assert.deepEqual(await arksFor({ lang: ["de"] }), ["ark:/12148/bpt6k9200003"], "a held language is accepted")
 })

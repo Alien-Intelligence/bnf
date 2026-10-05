@@ -109,7 +109,7 @@ export const GET = withAuth(async (req, user, bouncer, ctx: RouteCtx) => {
 
   // Mirror the corpus snapshot route: build the filter set only when at least
   // one filter field is present; pass undefined otherwise.
-  const filters = parseCorpusFilters(req)
+  const filters = parseCorpusFilters(req, Object.keys(exportQuerySchema.shape))
   if (filters instanceof Response) return filters
 
   const versionRef = parsed.version ?? "head"

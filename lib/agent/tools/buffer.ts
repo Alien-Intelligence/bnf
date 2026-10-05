@@ -71,6 +71,7 @@ import { REMOVE_BY_FILTER_STATUS } from "@/lib/filters"
 import {
   EMPTY_FILTER_REFUSAL,
   INVALID_PARAMS_REFUSAL,
+  refusingBadFilterValues,
   QUERY_NOT_EXPRESSIBLE_REFUSAL,
   toolFailure,
   toolRefusal,
@@ -150,14 +151,16 @@ export const bufferListTool = defineTool<
       .optional()
       .describe(`Page size (1–${BUFFER_LIST_MAX_LIMIT}, default ${BUFFER_SAMPLE_SIZE}).`),
   }),
-  handler: async (input, ctx) => {
-    const [{ total, rows }, enrich, notUnknown] = await Promise.all([
-      BufferService.list(ctx.projectId, input.filters, input.limit ?? BUFFER_SAMPLE_SIZE),
-      BufferQueries.enrichCounts(ctx.projectId),
-      notUnknownFor(ctx.projectId, input.filters),
-    ])
-    return { total, ...enrich, ...notUnknown, candidates: rows }
-  },
+  handler: (input, ctx) =>
+    // A filter value the data refuses → an invalid_params refusal (failure.ts).
+    refusingBadFilterValues(async () => {
+      const [{ total, rows }, enrich, notUnknown] = await Promise.all([
+        BufferService.list(ctx.projectId, input.filters, input.limit ?? BUFFER_SAMPLE_SIZE),
+        BufferQueries.enrichCounts(ctx.projectId),
+        notUnknownFor(ctx.projectId, input.filters),
+      ])
+      return { total, ...enrich, ...notUnknown, candidates: rows }
+    }),
 })
 
 /**
@@ -204,25 +207,27 @@ export const bufferStatsTool = defineTool<
       .optional()
       .describe('Two dimensions to cross-tabulate, e.g. ["period","type"].'),
   }),
-  handler: async (input, ctx) => {
-    const projectId = ctx.projectId
-    const filters = input.filters
-    const [snapshot, enrich, notUnknown] = await Promise.all([
-      BufferService.snapshot(projectId, filters, 0),
-      BufferQueries.enrichCounts(projectId),
-      notUnknownFor(projectId, filters),
-    ])
-    const stats = { total: snapshot.total, ...enrich, ...notUnknown, facets: snapshot.facets }
+  handler: (input, ctx) =>
+    // A filter value the data refuses → an invalid_params refusal (failure.ts).
+    refusingBadFilterValues(async () => {
+      const projectId = ctx.projectId
+      const filters = input.filters
+      const [snapshot, enrich, notUnknown] = await Promise.all([
+        BufferService.snapshot(projectId, filters, 0),
+        BufferQueries.enrichCounts(projectId),
+        notUnknownFor(projectId, filters),
+      ])
+      const stats = { total: snapshot.total, ...enrich, ...notUnknown, facets: snapshot.facets }
 
-    if (!input.cross_facets) return stats
+      if (!input.cross_facets) return stats
 
-    const cross = await BufferService.crossFacets(
-      projectId,
-      [input.cross_facets[0], input.cross_facets[1]],
-      filters,
-    )
-    return { ...stats, cross }
-  },
+      const cross = await BufferService.crossFacets(
+        projectId,
+        [input.cross_facets[0], input.cross_facets[1]],
+        filters,
+      )
+      return { ...stats, cross }
+    }),
 })
 
 // ---------------------------------------------------------------------------
@@ -266,27 +271,29 @@ export const bufferRemoveByFilterTool = defineTool<
         "When true (default), preview only — report what would be removed without mutating. Set false to commit.",
       ),
   }),
-  handler: async (input, ctx) => {
-    const dryRun = input.dry_run ?? true
-    // A dry run only reads; the removal itself mutates the buffer.
-    const gate = await authorizeProjectTool(ctx, BufferPolicy, dryRun ? "read" : "mutate")
-    if (!gate.ok) return gate.result
-    const projectId = gate.project.id
+  handler: (input, ctx) =>
+    // A filter value the data refuses → an invalid_params refusal (failure.ts).
+    refusingBadFilterValues(async () => {
+      const dryRun = input.dry_run ?? true
+      // A dry run only reads; the removal itself mutates the buffer.
+      const gate = await authorizeProjectTool(ctx, BufferPolicy, dryRun ? "read" : "mutate")
+      if (!gate.ok) return gate.result
+      const projectId = gate.project.id
 
-    const result = await BufferService.removeByFilter(projectId, {
-      filters: input.filters,
-      dryRun,
-    })
-    if (result.status === REMOVE_BY_FILTER_STATUS.EMPTY_FILTER) {
-      return toolRefusal(EMPTY_FILTER_REFUSAL, BUFFER_EMPTY_FILTER_ERROR)
-    }
+      const result = await BufferService.removeByFilter(projectId, {
+        filters: input.filters,
+        dryRun,
+      })
+      if (result.status === REMOVE_BY_FILTER_STATUS.EMPTY_FILTER) {
+        return toolRefusal(EMPTY_FILTER_REFUSAL, BUFFER_EMPTY_FILTER_ERROR)
+      }
 
-    if (result.status === REMOVE_BY_FILTER_STATUS.REMOVED && result.removed > 0) {
-      await emitBuffer(ctx, projectId, BUFFER_EVENT_KIND.REMOVED, result.removed)
-    }
+      if (result.status === REMOVE_BY_FILTER_STATUS.REMOVED && result.removed > 0) {
+        await emitBuffer(ctx, projectId, BUFFER_EVENT_KIND.REMOVED, result.removed)
+      }
 
-    return result
-  },
+      return result
+    }),
 })
 
 // ---------------------------------------------------------------------------
