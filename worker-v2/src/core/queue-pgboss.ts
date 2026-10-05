@@ -41,6 +41,8 @@ export class PgBossQueue implements QueueClient {
   private pool: Pool | null = null;
   private readonly policies = new Map<string, QueuePolicy>();
   private readonly created = new Set<string>();
+  /** The policy last written to each queue's row (identity of the `policies` entry). */
+  private readonly applied = new Map<string, QueuePolicy>();
   /** Set on stop() so the sliding-window pumps stop fetching new work. */
   private stopped = false;
   /** The per-queue safety-poll timers, cleared on stop(). */
@@ -115,11 +117,16 @@ export class PgBossQueue implements QueueClient {
    * "declared" their retry policy: nothing ever wrote the row again. `updateQueue`
    * COALESCEs each column, so it applies the declared values without clobbering
    * anything we don't set.
+   *
+   * The early return is for a queue whose CURRENT policy is already written:
+   * a `send` before the consuming stage's `work()` (a producer stage that
+   * starts first) creates the row without a policy, and the later `work()`
+   * must still write it — `applied` tracks which policy the row has.
    */
   private async ensureQueue(name: string, policy?: QueuePolicy): Promise<void> {
     if (policy) this.policies.set(name, policy);
-    if (this.created.has(name)) return;
     const p = this.policies.get(name);
+    if (this.created.has(name) && (p === undefined || this.applied.get(name) === p)) return;
     const queueOpts = p
       ? {
           name,
@@ -129,13 +136,16 @@ export class PgBossQueue implements QueueClient {
           expireInSeconds: p.expireInSeconds,
         }
       : { name };
-    await this.b()
-      .createQueue(name, queueOpts)
-      .catch(() => undefined); // idempotent
+    if (!this.created.has(name)) {
+      await this.b()
+        .createQueue(name, queueOpts)
+        .catch(() => undefined); // idempotent
+    }
     if (p) {
       await this.b()
         .updateQueue(name, queueOpts)
         .catch((e) => console.error(`[pg-boss] updateQueue(${name}) failed:`, e));
+      this.applied.set(name, p);
     }
     this.created.add(name);
   }

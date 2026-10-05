@@ -1,7 +1,10 @@
 /**
  * PgBossQueue against a real pg-boss (`npm run test:pg`, WORKER_TEST_DATABASE_URL
- * — RUN.md). What a MemoryQueue cannot prove:
+ * — RUN.md). Two properties a MemoryQueue cannot prove:
  *
+ *  - a queue first touched by a `send` (a producer that starts before the
+ *    consuming stage) still gets the policy its `work()` declares written to
+ *    its row (pass-5 item 11: ensureQueue returned early once the row existed);
  *  - a delivery handed back at shutdown keeps its attempt history across a
  *    RESTART (a new PgBossQueue on the same database): the copy is delivered
  *    as the attempt it was, its retry budget is what was left, and
@@ -82,6 +85,24 @@ class FlakyStage extends PipelineStage<{ ark: string }, never> {
 }
 
 describe("PgBossQueue on a real pg-boss", { skip: pool ? undefined : "WORKER_TEST_DATABASE_URL is not set" }, () => {
+  test("item 11: a send BEFORE work() still gets the work() policy written to the queue row", async () => {
+    if (!pool || !PG_URL) throw new Error("unreachable: skipped without a database");
+    const queue = new PgBossQueue(pgPoolConfig(PG_URL));
+    await queue.start();
+    try {
+      const name = freshQueue("policy");
+      await queue.send(name, { ark: "ark:/12148/p" }); // the row is created policy-less
+      await queue.work(name, async () => {}, { concurrency: 1, retryLimit: 5, expireInSeconds: 77 });
+      const { rows } = await pool.query<{ retry_limit: number; expire_seconds: number }>(
+        "SELECT retry_limit, expire_seconds FROM pgboss.queue WHERE name = $1",
+        [name],
+      );
+      assert.deepEqual(rows, [{ retry_limit: 5, expire_seconds: 77 }]);
+    } finally {
+      await queue.stop();
+    }
+  });
+
   test("item 10: a hand-back keeps retry history across a restart; onExhausted fires at the real last attempt", async () => {
     if (!pool || !PG_URL) throw new Error("unreachable: skipped without a database");
     const name = freshQueue("handback");
