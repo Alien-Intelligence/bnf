@@ -5,8 +5,8 @@
  *
  * Two rules (platform CLAUDE_ERROR_PATTERNS §9/§10):
  * - Secrets (the BnF KEY/SECRET) and RATES are REQUIRED. Every bucket's rpm and
- *   burst is a BnF quota decision (helm `broker.config.rates`), so a missing
- *   one stops the broker at boot instead of running on a guessed number — and
+ *   burst is a BnF quota decision (helm `broker.config.rates`, rendered as the
+ *   one JSON object BNF_RATES), so a missing one stops the broker at boot instead of running on a guessed number — and
  *   a new image with an old ConfigMap fails loudly instead of silently.
  * - Tuning knobs (timeouts, sizes, the call-log length) keep documented
  *   defaults: they are not quotas, and a wrong one cannot over-spend BnF.
@@ -16,26 +16,8 @@ import { BUCKET_NAMES, type BucketName, type BucketRate } from "./plan.js";
 /** An environment: process.env, or a plain object in tests. */
 type Env = Readonly<Record<string, string | undefined>>;
 
-/** The env stem of each bucket: `BNF_<STEM>_RPM` / `BNF_<STEM>_BURST`. */
-export const RATE_ENV_STEM: Readonly<Record<BucketName, string>> = {
-  global: "GLOBAL",
-  manifest: "MANIFEST",
-  external: "EXTERNAL",
-  presentation: "PRESENTATION",
-  image: "IMAGE",
-  iiifLegacy: "IIIF_LEGACY",
-  catalogue: "CATALOGUE",
-  gallicaSru: "GALLICA_SRU",
-  grapheData: "GRAPHE_DATA",
-  datePeriodique: "DATE_PERIODIQUE",
-  documentTdm: "DOCUMENT_TDM",
-};
-
-/** Every rate env var the broker requires (2 per bucket). */
-export const RATE_ENV_VARS: readonly string[] = BUCKET_NAMES.flatMap((b) => [
-  `BNF_${RATE_ENV_STEM[b]}_RPM`,
-  `BNF_${RATE_ENV_STEM[b]}_BURST`,
-]);
+/** The one variable carrying every bucket's pace, as a JSON object. */
+export const RATES_ENV = "BNF_RATES";
 
 function required(env: Env, name: string): string {
   const v = env[name];
@@ -43,20 +25,6 @@ function required(env: Env, name: string): string {
     throw new Error(`Broker env not configured: ${name} is required (no default for secrets/credentials).`);
   }
   return v.trim();
-}
-
-/** A rate value: required, and a whole number ≥ 1 written in plain digits. */
-function requiredPositiveInt(env: Env, name: string): number {
-  const v = env[name];
-  if (v == null || v.trim() === "") {
-    throw new Error(`Broker env not configured: ${name} is required (no default for rate limits).`);
-  }
-  const text = v.trim();
-  const n = /^[0-9]+$/.test(text) ? Number(text) : Number.NaN;
-  if (!Number.isSafeInteger(n) || n < 1) {
-    throw new Error(`Invalid ${name}=${v}: must be a positive integer.`);
-  }
-  return n;
 }
 
 function num(env: Env, name: string, fallback: number): number {
@@ -90,11 +58,84 @@ function url(env: Env, name: string, fallback: string): string {
   return raw.replace(/\/$/, "");
 }
 
-function rateOf(env: Env, bucket: BucketName): BucketRate {
-  const stem = RATE_ENV_STEM[bucket];
+function ratesError(detail: string): Error {
+  return new Error(
+    `Broker env not configured: ${RATES_ENV} ${detail}. It is one JSON object, ` +
+      `{"<bucket>": {"rpm": n, "burst": n}, …}, with exactly these buckets: ${BUCKET_NAMES.join(", ")} ` +
+      `(helm broker.config.rates). No rate has a default.`,
+  );
+}
+
+/** A whole number ≥ 1, as a JSON number (never a string). */
+function positiveInt(v: unknown): v is number {
+  return typeof v === "number" && Number.isSafeInteger(v) && v >= 1;
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/** One bucket's {rpm, burst}, or null with its problems appended. */
+function readBucket(given: Record<string, unknown>, bucket: BucketName, problems: string[]): BucketRate | null {
+  const entry = given[bucket];
+  if (entry === undefined) {
+    problems.push(`${bucket}: missing`);
+    return null;
+  }
+  if (!isRecord(entry)) {
+    problems.push(`${bucket}: must be {"rpm": n, "burst": n}`);
+    return null;
+  }
+  for (const key of Object.keys(entry)) {
+    if (key !== "rpm" && key !== "burst") problems.push(`${bucket}.${key}: not a field`);
+  }
+  const { rpm, burst } = entry;
+  if (!positiveInt(rpm)) problems.push(`${bucket}.rpm: must be a whole number >= 1`);
+  if (!positiveInt(burst)) problems.push(`${bucket}.burst: must be a whole number >= 1`);
+  return positiveInt(rpm) && positiveInt(burst) ? { rpm, burst } : null;
+}
+
+/**
+ * BNF_RATES: REQUIRED, one JSON object with EXACTLY the known buckets, each
+ * EXACTLY {rpm, burst} as whole numbers ≥ 1. A missing, unknown or malformed
+ * bucket stops the broker at boot, naming every problem at once — a typo'd
+ * bucket is never silently left at no limit.
+ */
+export function parseRates(raw: string | undefined): Record<BucketName, BucketRate> {
+  if (raw == null || raw.trim() === "") throw ratesError("is not set");
+  let json: unknown;
+  try {
+    json = JSON.parse(raw);
+  } catch (err) {
+    throw ratesError(`is not valid JSON (${err instanceof Error ? err.message : String(err)})`);
+  }
+  if (!isRecord(json)) throw ratesError("is not a JSON object");
+  const known = new Set<string>(BUCKET_NAMES);
+  const problems: string[] = [];
+  for (const key of Object.keys(json)) if (!known.has(key)) problems.push(`${key}: not a bucket`);
+  const rates = new Map<BucketName, BucketRate>();
+  for (const bucket of BUCKET_NAMES) {
+    const rate = readBucket(json, bucket, problems);
+    if (rate !== null) rates.set(bucket, rate);
+  }
+  if (problems.length > 0) throw ratesError(`is invalid — ${problems.join("; ")}`);
+  const of = (bucket: BucketName): BucketRate => {
+    const rate = rates.get(bucket);
+    if (rate === undefined) throw ratesError(`is invalid — ${bucket}: missing`);
+    return rate;
+  };
   return {
-    rpm: requiredPositiveInt(env, `BNF_${stem}_RPM`),
-    burst: requiredPositiveInt(env, `BNF_${stem}_BURST`),
+    global: of("global"),
+    manifest: of("manifest"),
+    external: of("external"),
+    presentation: of("presentation"),
+    image: of("image"),
+    iiifLegacy: of("iiifLegacy"),
+    catalogue: of("catalogue"),
+    gallicaSru: of("gallicaSru"),
+    grapheData: of("grapheData"),
+    datePeriodique: of("datePeriodique"),
+    documentTdm: of("documentTdm"),
   };
 }
 
@@ -141,19 +182,7 @@ export function loadConfig(env: Env): BrokerConfig {
     // checked against each other at render (rpm + burst ≤ quota: BnF counts
     // fixed clock-minute windows, and a token bucket can emit rpm + burst in
     // one). No defaults.
-    rates: {
-      global: rateOf(env, "global"),
-      manifest: rateOf(env, "manifest"),
-      external: rateOf(env, "external"),
-      presentation: rateOf(env, "presentation"),
-      image: rateOf(env, "image"),
-      iiifLegacy: rateOf(env, "iiifLegacy"),
-      catalogue: rateOf(env, "catalogue"),
-      gallicaSru: rateOf(env, "gallicaSru"),
-      grapheData: rateOf(env, "grapheData"),
-      datePeriodique: rateOf(env, "datePeriodique"),
-      documentTdm: rateOf(env, "documentTdm"),
-    },
+    rates: parseRates(env[RATES_ENV]),
 
     /**
      * Per-attempt upstream timeout (ms). 120s, not 30s: under ingest load BnF can

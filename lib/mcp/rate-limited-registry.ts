@@ -68,7 +68,7 @@ function isUpstreamRateLimited(result: ToolDispatchResult): boolean {
  *
  * The limiter's config is validated HERE, at build time, whenever this process
  * can reach BnF (BNF_MCP_URL set) or the registry carries the BnF server: a
- * missing BNF_MCP_RATE_* value fails the turn before the model runs, with the
+ * missing BNF_MCP_RATES fails the turn before the model runs, with the
  * variable named, rather than throwing out of `dispatch` mid-loop.
  *
  * An abort during the wait is coerced into an error result exactly as the

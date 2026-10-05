@@ -123,6 +123,20 @@ Usage: {{ include "bnf-demo.bnfRateShare" (dict "root" . "key" "catalogueRpm") }
 {{- end -}}
 
 {{/*
+The app's BNF_MCP_RATES: one JSON object with each per-API rate already split
+over the replicas (bnf-demo.bnfRateShare) and the wait budget
+(bnf-demo.bnfMaxWaitMs), every value an integer. lib/env.ts parses it strictly.
+*/}}
+{{- define "bnf-demo.bnfMcpRatesJson" -}}
+{{- $out := dict -}}
+{{- range $key := list "globalRpm" "catalogueRpm" "gallicaSruRpm" "iiifRpm" "issuesRpm" "grapheRpm" -}}
+{{- $_ := set $out $key (include "bnf-demo.bnfRateShare" (dict "root" $ "key" $key) | atoi) -}}
+{{- end -}}
+{{- $_ := set $out "maxWaitMs" (include "bnf-demo.bnfMaxWaitMs" . | atoi) -}}
+{{- $out | toJson -}}
+{{- end -}}
+
+{{/*
 config.bnfMcpRate.maxWaitMs, checked at render time against the app's boot
 rule (lib/env.ts: an integer in 1..BNF_MCP_RATE_MAX_WAIT_MS_CEILING = 60000),
 so a bad value fails `helm template` instead of crash-looping the pod. A
@@ -149,13 +163,19 @@ would otherwise leave its bucket unset and stop the broker at boot).
 {{- end -}}
 
 {{/*
-The env stem of a rate bucket: BNF_<STEM>_RPM / BNF_<STEM>_BURST (the broker's
-RATE_ENV_STEM, broker/src/config.ts).
-Usage: {{ include "bnf-demo.rateEnvStem" "iiifLegacy" }} → IIIF_LEGACY
+BNF_RATES: every rate bucket's {rpm, burst} as one JSON object of integers,
+read by the broker (all buckets) and the worker (its four gates). Each field
+goes through bnf-demo.rateField, so a missing or malformed one fails the
+render; validateRates checks the buckets and the quota margin.
 */}}
-{{- define "bnf-demo.rateEnvStem" -}}
-{{- $stems := dict "global" "GLOBAL" "manifest" "MANIFEST" "external" "EXTERNAL" "presentation" "PRESENTATION" "image" "IMAGE" "iiifLegacy" "IIIF_LEGACY" "catalogue" "CATALOGUE" "gallicaSru" "GALLICA_SRU" "grapheData" "GRAPHE_DATA" "datePeriodique" "DATE_PERIODIQUE" "documentTdm" "DOCUMENT_TDM" -}}
-{{- required (printf "no env stem for rate bucket %q" .) (get $stems .) -}}
+{{- define "bnf-demo.ratesJson" -}}
+{{- $out := dict -}}
+{{- range $b := include "bnf-demo.rateBuckets" . | fromJsonArray -}}
+{{- $rpm := include "bnf-demo.rateField" (dict "root" $ "bucket" $b "field" "rpm") | atoi -}}
+{{- $burst := include "bnf-demo.rateField" (dict "root" $ "bucket" $b "field" "burst") | atoi -}}
+{{- $_ := set $out $b (dict "rpm" $rpm "burst" $burst) -}}
+{{- end -}}
+{{- $out | toJson -}}
 {{- end -}}
 
 {{/*

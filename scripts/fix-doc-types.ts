@@ -46,7 +46,7 @@ function numArg(name: string, dflt: number): number {
 // Pacing: re-fetch in small batches with a pause between them, leaving headroom
 // for the ingest worker. Batch 10 / delay 2000ms offers up to ~300 resolutions
 // per minute; through the broker a Gallica ARK resolves from its manifest, which
-// the broker meters at its manifest bucket (BNF_MANIFEST_RPM, far below that),
+// the broker meters at its manifest bucket (BNF_RATES.manifest.rpm, far below that),
 // and sheds the rest with HTTP 429 that the resolver retries. Going faster only
 // wastes retries. Tune with --batch/--delay.
 const LIMIT = numArg("--limit", Infinity)

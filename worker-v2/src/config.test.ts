@@ -58,11 +58,15 @@ test("malformed values throw", () => {
 });
 
 /** The BnF rates and fetch concurrencies — required, no defaults (Track D). */
+const RATES = {
+  global: { rpm: 950, burst: 20 },
+  presentation: { rpm: 1425, burst: 30 },
+  image: { rpm: 285, burst: 6 },
+  manifest: { rpm: 38, burst: 2 },
+  catalogue: { rpm: 95, burst: 2 },
+};
 const RATE_ENV = {
-  BNF_GLOBAL_RPM: "950",
-  BNF_PRESENTATION_RPM: "1425",
-  BNF_IMAGE_RPM: "285",
-  BNF_MANIFEST_RPM: "38",
+  BNF_RATES: JSON.stringify(RATES),
   BNF_ALTO_FETCH_CONCURRENCY: "96",
   BNF_IMAGE_FETCH_CONCURRENCY: "32",
 };
@@ -92,10 +96,6 @@ test("loadConfigFrom: ONE rule for every numeric knob — zero, negative, fracti
   for (const name of [
     "BNF_ALTO_FETCH_CONCURRENCY",
     "BNF_IMAGE_FETCH_CONCURRENCY",
-    "BNF_GLOBAL_RPM",
-    "BNF_PRESENTATION_RPM",
-    "BNF_IMAGE_RPM",
-    "BNF_MANIFEST_RPM",
     "MAX_OCR_PAGES",
     "DESCRIBE_CONCURRENCY",
     "REGISTER_CONCURRENCY",
@@ -110,6 +110,29 @@ test("loadConfigFrom: ONE rule for every numeric knob — zero, negative, fracti
   assert.throws(() => loadConfigFrom({ ...REQUIRED_ENV, WORKER_HTTP_PORT: "70000" }), /WORKER_HTTP_PORT/);
   assert.throws(() => loadConfigFrom({ ...REQUIRED_ENV, DOC_FAIL_RATIO: "1.5" }), /DOC_FAIL_RATIO/);
   assert.throws(() => loadConfigFrom({ ...REQUIRED_ENV, MISTRAL_OCR_ENABLED: "yes" }), /MISTRAL_OCR_ENABLED/);
+});
+
+test("BNF_RATES: the worker reads its four gates from the broker's one rate object", () => {
+  const cfg = loadConfigFrom(REQUIRED_ENV);
+  assert.deepEqual(cfg.rates, { globalRpm: 950, presentationRpm: 1425, imageRpm: 285, manifestRpm: 38 });
+  const { BNF_RATES: _rates, ...noRates } = REQUIRED_ENV;
+  assert.throws(() => loadConfigFrom(noRates), /Missing required env var BNF_RATES/);
+  assert.throws(() => loadConfigFrom({ ...REQUIRED_ENV, BNF_RATES: "global=950" }), /BNF_RATES is not valid JSON/);
+  const { image: _image, ...noImage } = RATES;
+  assert.throws(() => loadConfigFrom({ ...REQUIRED_ENV, BNF_RATES: JSON.stringify(noImage) }), /image\.rpm/);
+  for (const bad of [0, -1, 1.5, "285"]) {
+    assert.throws(
+      () => loadConfigFrom({ ...REQUIRED_ENV, BNF_RATES: JSON.stringify({ ...RATES, manifest: { rpm: bad, burst: 2 } }) }),
+      /manifest\.rpm must be a whole number >= 1/,
+      String(bad),
+    );
+  }
+});
+
+test("the per-gate rate variables are retired: a stale ConfigMap refuses to boot", () => {
+  for (const name of ["BNF_GLOBAL_RPM", "BNF_PRESENTATION_RPM", "BNF_IMAGE_RPM", "BNF_MANIFEST_RPM"]) {
+    assert.throws(() => loadConfigFrom({ ...REQUIRED_ENV, [name]: "950" }), new RegExp(`${name} is retired`), name);
+  }
 });
 
 test("loadConfigFrom: booleans and integers parse the same way everywhere (trimmed, case-insensitive booleans)", () => {

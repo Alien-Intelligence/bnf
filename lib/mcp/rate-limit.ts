@@ -43,7 +43,7 @@
 //       it is sync-only and cannot veto.
 // Every call reserves on the GLOBAL limiter first, then on its API limiter,
 // against ONE deadline computed when the call is enqueued
-// (BNF_MCP_RATE_MAX_WAIT_MS); both are stamped as sent when `acquireBnfMcp`
+// (BNF_MCP_RATES.maxWaitMs); both are stamped as sent when `acquireBnfMcp`
 // returns. WHERE THE STAMP SITS relative to the real HTTP send, per caller:
 //   (a) callBnfTool: the abort check and `fetch(...)` follow the stamp in the
 //       same synchronous run — the request leaves at the stamp.
@@ -60,7 +60,7 @@
 //       sends trail them by at most that lag.
 // Each limiter refuses a deadline already in the past before any grant, and a
 // reservation that is neither sent nor released within its TTL
-// (BNF_MCP_RATE_MAX_WAIT_MS + BNF_MCP_TIMEOUT_MS) is dropped and logged, so a
+// (BNF_MCP_RATES.maxWaitMs + BNF_MCP_TIMEOUT_MS) is dropped and logged, so a
 // lost reservation can never hold capacity for ever. A
 // call that cannot be granted before the deadline is SHED: it never reaches
 // BnF, every grant it took is released (a refused catalogue retry must not
@@ -232,7 +232,7 @@ export const BNF_RATE_LIMIT_FREEZE_MAX_MS = 5 * 60_000
 const MIN_WAIT_MS = 1
 
 /** How long an unsent reservation may hold capacity by default (tests); the
- *  process-wide limiters use BNF_MCP_RATE_MAX_WAIT_MS + BNF_MCP_TIMEOUT_MS. */
+ *  process-wide limiters use BNF_MCP_RATES.maxWaitMs + BNF_MCP_TIMEOUT_MS. */
 const DEFAULT_RESERVATION_TTL_MS = 2 * BNF_RATE_WINDOW_MS
 
 /** How often a caller blocked only by RESERVATIONS (calls granted, not yet
@@ -573,21 +573,12 @@ let limiter: BnfRateLimiter | null = null
 /** Lazily built from env on the first BnF MCP call; one per process. */
 function getLimiter(): BnfRateLimiter {
   if (limiter !== null) return limiter
-  const env = requireBnfRateEnv()
-  limiter = new BnfRateLimiter({
-    globalRpm: env.BNF_MCP_RATE_GLOBAL_RPM,
-    catalogueRpm: env.BNF_MCP_RATE_CATALOGUE_RPM,
-    gallicaSruRpm: env.BNF_MCP_RATE_GALLICA_SRU_RPM,
-    iiifRpm: env.BNF_MCP_RATE_IIIF_RPM,
-    issuesRpm: env.BNF_MCP_RATE_ISSUES_RPM,
-    grapheRpm: env.BNF_MCP_RATE_GRAPHE_RPM,
-    maxWaitMs: env.BNF_MCP_RATE_MAX_WAIT_MS,
-  })
+  limiter = new BnfRateLimiter(requireBnfRateEnv())
   return limiter
 }
 
 /**
- * Build the process-wide limiter now, so a missing or invalid BNF_MCP_RATE_*
+ * Build the process-wide limiter now, so a missing or invalid BNF_MCP_RATES
  * value throws (naming the variable) where the caller can fail cleanly — at
  * boot (lib/env.ts) and when a registry is built — instead of inside a tool
  * dispatch, where a throw would abort the model's tool loop mid-turn (§15).
@@ -621,7 +612,7 @@ export type BnfRateGrant =
 /**
  * Take the capacity for one BnF MCP call: a reservation on the global limiter,
  * then on the tool's API limiter, against one deadline
- * (`now + BNF_MCP_RATE_MAX_WAIT_MS`); then both are stamped as SENT, now — the
+ * (`now + BNF_MCP_RATES.maxWaitMs`); then both are stamped as SENT, now — the
  * global reservation counted throughout the API wait and never aged. Resolves
  * `{ ok: false }` when either cannot grant in time (the global reservation is
  * then released) or when the input cannot be metered — a weight over a limit

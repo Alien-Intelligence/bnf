@@ -17,13 +17,7 @@ data:
   # and the fleet stays under the BnF quota by construction; a share below 1
   # fails the render (bnf-demo.bnfRateShare). The wait budget is per call and
   # is not divided; the app bounds it at boot (lib/env.ts).
-  BNF_MCP_RATE_GLOBAL_RPM: {{ include "bnf-demo.bnfRateShare" (dict "root" . "key" "globalRpm") | quote }}
-  BNF_MCP_RATE_CATALOGUE_RPM: {{ include "bnf-demo.bnfRateShare" (dict "root" . "key" "catalogueRpm") | quote }}
-  BNF_MCP_RATE_GALLICA_SRU_RPM: {{ include "bnf-demo.bnfRateShare" (dict "root" . "key" "gallicaSruRpm") | quote }}
-  BNF_MCP_RATE_IIIF_RPM: {{ include "bnf-demo.bnfRateShare" (dict "root" . "key" "iiifRpm") | quote }}
-  BNF_MCP_RATE_ISSUES_RPM: {{ include "bnf-demo.bnfRateShare" (dict "root" . "key" "issuesRpm") | quote }}
-  BNF_MCP_RATE_GRAPHE_RPM: {{ include "bnf-demo.bnfRateShare" (dict "root" . "key" "grapheRpm") | quote }}
-  BNF_MCP_RATE_MAX_WAIT_MS: {{ include "bnf-demo.bnfMaxWaitMs" . | quote }}
+  BNF_MCP_RATES: {{ include "bnf-demo.bnfMcpRatesJson" . | quote }}
   DATACLUSTER_MCP_URL: {{ .Values.config.dataclusterMcpUrl | quote }}
   OTEL_SERVICE_NAME: {{ .Values.config.otelServiceName | quote }}
   # BnF partner API host (lib/bnf/direct.ts). Required by the app's boot schema;

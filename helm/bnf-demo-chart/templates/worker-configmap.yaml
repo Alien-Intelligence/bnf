@@ -85,14 +85,12 @@ data:
   BNF_IIIF_PRESENTATION_BASE_URL: {{ required "bnfIiif.presentationBaseUrl is required" .Values.bnfIiif.presentationBaseUrl | quote }}
   BNF_IIIF_IMAGE_BASE_URL: {{ required "bnfIiif.imageBaseUrl is required" .Values.bnfIiif.imageBaseUrl | quote }}
 
-  # --- The worker's BnF gates (REQUIRED) — the SAME values as the broker's
-  # buckets (broker.config.rates), so the two cannot drift. ALTO = presentation
-  # ∧ global, images = image ∧ global, manifests = manifest ∧ presentation ∧
-  # global (worker-v2/src/main.ts).
-  BNF_GLOBAL_RPM: {{ include "bnf-demo.rateField" (dict "root" . "bucket" "global" "field" "rpm") | quote }}
-  BNF_PRESENTATION_RPM: {{ include "bnf-demo.rateField" (dict "root" . "bucket" "presentation" "field" "rpm") | quote }}
-  BNF_IMAGE_RPM: {{ include "bnf-demo.rateField" (dict "root" . "bucket" "image" "field" "rpm") | quote }}
-  BNF_MANIFEST_RPM: {{ include "bnf-demo.rateField" (dict "root" . "bucket" "manifest" "field" "rpm") | quote }}
+  # --- The worker's BnF gates (REQUIRED) — the broker's very object
+  # (BNF_RATES, broker.config.rates), so the two cannot drift; the worker reads
+  # global, presentation, image and manifest from it. ALTO = presentation ∧
+  # global, images = image ∧ global, manifests = manifest ∧ presentation ∧
+  # global (worker-v2/src/live-pipeline.ts).
+  BNF_RATES: {{ include "bnf-demo.ratesJson" . | quote }}
   # In-flight fetches per stage (REQUIRED) — see values.yaml for the sizing.
   BNF_ALTO_FETCH_CONCURRENCY: {{ required "worker.config.altoFetchConcurrency is required" .Values.worker.config.altoFetchConcurrency | quote }}
   BNF_IMAGE_FETCH_CONCURRENCY: {{ required "worker.config.imageFetchConcurrency is required" .Values.worker.config.imageFetchConcurrency | quote }}

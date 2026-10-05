@@ -286,39 +286,57 @@ export function requireClusterEnv(): z.infer<typeof clusterEnvSchema> {
 // ---------------------------------------------------------------------------
 
 /**
- * Upper bound on BNF_MCP_RATE_MAX_WAIT_MS. A call queued for longer than this
+ * Upper bound on BNF_MCP_RATES.maxWaitMs. A call queued for longer than this
  * holds its tool loop (and its HTTP stream) hostage; one minute is a full BnF
  * quota window, past which waiting cannot buy a token the next window would
  * not.
  */
 export const BNF_MCP_RATE_MAX_WAIT_MS_CEILING = 60_000
 
-const bnfRateEnvSchema = z.object({
-  BNF_MCP_RATE_GLOBAL_RPM: z.coerce.number().int().positive(),
-  BNF_MCP_RATE_CATALOGUE_RPM: z.coerce.number().int().positive(),
-  BNF_MCP_RATE_GALLICA_SRU_RPM: z.coerce.number().int().positive(),
-  BNF_MCP_RATE_IIIF_RPM: z.coerce.number().int().positive(),
-  BNF_MCP_RATE_ISSUES_RPM: z.coerce.number().int().positive(),
-  BNF_MCP_RATE_GRAPHE_RPM: z.coerce.number().int().positive(),
-  BNF_MCP_RATE_MAX_WAIT_MS: z.coerce.number().int().positive().max(BNF_MCP_RATE_MAX_WAIT_MS_CEILING),
+/** The JSON in BNF_MCP_RATES: every key required, nothing else accepted. */
+const bnfRatesSchema = z.strictObject({
+  globalRpm: z.number().int().positive(),
+  catalogueRpm: z.number().int().positive(),
+  gallicaSruRpm: z.number().int().positive(),
+  iiifRpm: z.number().int().positive(),
+  issuesRpm: z.number().int().positive(),
+  grapheRpm: z.number().int().positive(),
+  maxWaitMs: z.number().int().positive().max(BNF_MCP_RATE_MAX_WAIT_MS_CEILING),
 })
 
-export type BnfRateEnv = z.infer<typeof bnfRateEnvSchema>
+export type BnfRateEnv = z.infer<typeof bnfRatesSchema>
+
+/** The variable that carries the app's BnF MCP rates, as one JSON object. */
+export const BNF_MCP_RATES_ENV = "BNF_MCP_RATES"
+
+function bnfRatesError(detail: string): Error {
+  return new Error(
+    `BnF MCP rate-limit env not configured: ${BNF_MCP_RATES_ENV} ${detail}. ` +
+      `Set it in .env.local to one JSON object (see .env.example) — in the chart it ` +
+      `comes from config.bnfMcpRate. The app refuses to call BnF unthrottled.`,
+  )
+}
 
 /**
- * Parse the BNF_MCP_RATE_* values out of `source`. Pure: throws, naming every
- * offending key, when one is absent or invalid.
+ * Parse BNF_MCP_RATES out of `source`. Pure: throws, naming every offending
+ * key, when the variable is absent, is not JSON, or a key is missing, unknown
+ * or not a whole number in range.
  */
 export function parseBnfRateEnv(source: Record<string, string | undefined>): BnfRateEnv {
-  const parsed = bnfRateEnvSchema.safeParse(source)
+  const raw = source[BNF_MCP_RATES_ENV]
+  if (raw === undefined || raw.trim() === "") throw bnfRatesError("is not set")
+  let json: unknown
+  try {
+    json = JSON.parse(raw)
+  } catch (err) {
+    throw bnfRatesError(`is not valid JSON (${err instanceof Error ? err.message : String(err)})`)
+  }
+  const parsed = bnfRatesSchema.safeParse(json)
   if (!parsed.success) {
-    const problems = parsed.error.issues.map((i) => `${i.path.join(".")} (${i.message})`).join(", ")
-    throw new Error(
-      `BnF MCP rate-limit env not configured: ${problems}. ` +
-        `Set the seven BNF_MCP_RATE_* variables in .env.local (see .env.example) — ` +
-        `in the chart they come from config.bnfMcpRate. The app refuses to call ` +
-        `BnF unthrottled.`,
-    )
+    const problems = parsed.error.issues
+      .map((i) => `${i.path.length > 0 ? i.path.join(".") : "(root)"}: ${i.message}`)
+      .join(", ")
+    throw bnfRatesError(`is invalid — ${problems}`)
   }
   return parsed.data
 }
@@ -330,8 +348,7 @@ export function bnfMcpUrlConfigured(source: Record<string, string | undefined> =
 }
 
 /**
- * The boot rule: when `source` sets BNF_MCP_URL, the BNF_MCP_RATE_* values
- * must parse. Pure, so the rule is testable without reloading this module.
+ * The boot rule: when `source` sets BNF_MCP_URL, BNF_MCP_RATES must parse. Pure, so the rule is testable without reloading this module.
  */
 export function assertBootBnfRateEnv(source: Record<string, string | undefined>): void {
   if (bnfMcpUrlConfigured(source)) parseBnfRateEnv(source)
@@ -340,8 +357,8 @@ export function assertBootBnfRateEnv(source: Record<string, string | undefined>)
 let _bnfRateEnv: BnfRateEnv | null = null
 
 /**
- * Returns the validated BnF MCP rate-limit env object. Throws on first call if
- * any BNF_MCP_RATE_* value is absent / invalid, naming the offending key(s).
+ * Returns the validated BnF MCP rates. Throws on first call if BNF_MCP_RATES is
+ * absent or invalid, naming the offending key(s).
  * Subsequent calls return the cached object.
  */
 export function requireBnfRateEnv(): BnfRateEnv {

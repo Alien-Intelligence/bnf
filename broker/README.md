@@ -42,7 +42,7 @@ Only `*.bnf.fr` upstreams are accepted (SSRF guard). Partner-API hosts get a Bea
 
 ## Configuration
 
-Every bucket's `BNF_<BUCKET>_RPM` and `BNF_<BUCKET>_BURST` is **required** — 22 variables, stems `GLOBAL`, `MANIFEST`, `EXTERNAL`, `PRESENTATION`, `IMAGE`, `IIIF_LEGACY`, `CATALOGUE`, `GALLICA_SRU`, `GRAPHE_DATA`, `DATE_PERIODIQUE`, `DOCUMENT_TDM`. A missing, zero or non-integer value stops the broker at boot (`Broker env not configured: … is required (no default for rate limits)`): a rate is a BnF quota decision, never a code default, and a new image booted with an old ConfigMap fails loudly instead of running on guesses. `BNF_CLIENT_KEY` / `BNF_CLIENT_SECRET` are required too. Timeouts and sizes keep documented defaults (`src/config.ts`).
+Every bucket's rate is **required**, carried by ONE variable, `BNF_RATES`: a JSON object `{"<bucket>": {"rpm": n, "burst": n}, …}` with exactly the buckets `global`, `manifest`, `external`, `presentation`, `image`, `iiifLegacy`, `catalogue`, `gallicaSru`, `grapheData`, `datePeriodique`, `documentTdm` (see `.env.example`). A missing, unknown or non-integer bucket or field stops the broker at boot, naming every problem: a rate is a BnF quota decision, never a code default, and a new image booted with an old ConfigMap fails loudly instead of running on guesses. The chart renders it from `broker.config.rates`, and the worker reads its four gates from the same object. `BNF_CLIENT_KEY` / `BNF_CLIENT_SECRET` are required too. Timeouts and sizes keep documented defaults (`src/config.ts`).
 
 In the chart the rates live in ONE place, `broker.config.rates.<bucket>.{quota,rpm,burst}` in `helm/bnf-demo-chart/values.yaml`; the worker's own gates render from the same keys.
 

@@ -1,7 +1,7 @@
 export async function register() {
   if (process.env.NEXT_RUNTIME !== "nodejs") return
   // Validate the boot env FIRST, before serving: required variables, and the
-  // BNF_MCP_RATE_* limiter config whenever BNF_MCP_URL is set (lib/env.ts). A
+  // BNF_MCP_RATES limiter config whenever BNF_MCP_URL is set (lib/env.ts). A
   // misconfigured process refuses to start instead of failing its first turn.
   await import("@/lib/env")
   // Defer the import so this file doesn't pull node-only modules into edge runtimes.

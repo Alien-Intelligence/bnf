@@ -19,11 +19,9 @@ data:
 
   # --- Rate buckets (broker/src/plan.ts) — rpm + burst of every bucket of the
   # ingestion subscription, from broker.config.rates (checked at render:
-  # rpm + burst <= quota). All REQUIRED: the broker refuses to boot without one.
-{{- range $b := include "bnf-demo.rateBuckets" . | fromJsonArray }}
-  BNF_{{ include "bnf-demo.rateEnvStem" $b }}_RPM: {{ include "bnf-demo.rateField" (dict "root" $ "bucket" $b "field" "rpm") | quote }}
-  BNF_{{ include "bnf-demo.rateEnvStem" $b }}_BURST: {{ include "bnf-demo.rateField" (dict "root" $ "bucket" $b "field" "burst") | quote }}
-{{- end }}
+  # rpm + burst <= quota), as ONE JSON object. REQUIRED, every bucket: the
+  # broker refuses to boot on a missing, unknown or malformed one.
+  BNF_RATES: {{ include "bnf-demo.ratesJson" . | quote }}
 
   # --- Timeouts ---
   # Per-attempt upstream timeout to BnF. 120s: under ingest load BnF is slow to

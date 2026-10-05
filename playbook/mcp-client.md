@@ -179,7 +179,7 @@ catalogue searches in 2.5 h, blowing the 100/min quota (346 × 429, 252 × 500).
 The app therefore rate-limits **every** BnF MCP call it dispatches, in
 `lib/mcp/rate-limit.ts`: one process-wide set of sliding-window limiters
 (global + one per BnF API: catalogue, Gallica SRU, Gallica-IIIF,
-date-périodique, graphe), set from the required `BNF_MCP_RATE_*` env (helm
+date-périodique, graphe), set from the required `BNF_MCP_RATES` env — one JSON object (helm
 `config.bnfMcpRate`, the interface-key quotas × 0.95, divided by
 `replicaCount`). **The guarantee:** in ANY 60 s sliding window, the weighted
 requests a replica sends to one BnF API never exceed that API's limit, and all
@@ -215,7 +215,7 @@ reservation that is neither sent nor released within `maxWaitMs` +
 `BNF_MCP_TIMEOUT_MS` is released and logged. The rules:
 
 - **Shed, never thrown.** A call that cannot be granted within
-  `BNF_MCP_RATE_MAX_WAIT_MS` is shed with a structured `{ success: false,
+  `BNF_MCP_RATES.maxWaitMs` is shed with a structured `{ success: false,
   rate_limited: true, api, error: « Quota BnF saturé … » }` tool result — never
   a throw out of the loop, never a call that reaches BnF. Every grant a call
   took is **released** when the call is not sent — its API limiter shed it, its
@@ -248,11 +248,12 @@ and `runClaudeSdk`, over `buildTurnScopedRegistry`, against local fake model
 endpoints and a fake mcp-bnf.
 
 **Config is validated at boot.** When `BNF_MCP_URL` is set, `lib/env.ts`
-parses the seven `BNF_MCP_RATE_*` values on import (`instrumentation.ts`
-imports it first), with `BNF_MCP_RATE_MAX_WAIT_MS` ≤ 60 s; a missing value
-stops the process instead of failing its first turn. `withBnfRateLimit`
-re-asserts it when a registry is built. The chart renders every rate with
-`required`, and a per-replica share below 1/min fails the render
+parses `BNF_MCP_RATES` on import (`instrumentation.ts` imports it first):
+one JSON object, every key required and no other accepted, `maxWaitMs` ≤ 60 s;
+a missing, unknown or non-integer key stops the process instead of failing its
+first turn. `withBnfRateLimit`
+re-asserts it when a registry is built. The chart renders the object from
+`config.bnfMcpRate`, every rate `required`, and a per-replica share below 1/min fails the render
 (`bnf-demo.bnfRateShare`) instead of flooring up past the quota.
 
 Not covered, on purpose: MCP `tools/list` discovery (never reaches BnF);

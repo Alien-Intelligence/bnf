@@ -135,14 +135,14 @@ export interface WorkerConfig {
    * global, manifests = manifest ∧ presentation ∧ global.
    */
   rates: {
-    /** BNF_GLOBAL_RPM — the subscription's cap over every partner API. */
+    /** BNF_RATES.global.rpm — the subscription's cap over every partner API. */
     globalRpm: number;
-    /** BNF_PRESENTATION_RPM — the Presentation API (manifests, ALTO). */
+    /** BNF_RATES.presentation.rpm — the Presentation API (manifests, ALTO). */
     presentationRpm: number;
-    /** BNF_IMAGE_RPM — the Image API (folio images). */
+    /** BNF_RATES.image.rpm — the Image API (folio images). */
     imageRpm: number;
     /**
-     * BNF_MANIFEST_RPM — the per-IP manifest sub-limit. Shared by MetadataStage
+     * BNF_RATES.manifest.rpm — the per-IP manifest sub-limit. Shared by MetadataStage
      * and ManifestStage through ONE gate (build.ts `rates.manifest`) — see F1/F2
      * in ai-memories/tech/repos/bnf/ingest-hardening for what happens when it
      * isn't (the 2026-08-11 broker queue collapse).
@@ -360,12 +360,68 @@ export function loadIiifBases(env: Env): IiifBases {
 }
 
 /**
+ * BNF_RATES: the broker's whole bucket table as one JSON object (helm
+ * `broker.config.rates`, the SAME object the broker reads), of which the
+ * worker's gates use four buckets' rpm. REQUIRED. The other buckets are the
+ * broker's business and are not read here; the four this worker needs must be
+ * present with an rpm that is a whole number ≥ 1 (a JSON number, never a
+ * string), or the worker refuses to boot naming each one.
+ */
+export const RATES_ENV = "BNF_RATES";
+
+/** The broker buckets whose rpm the worker's gates mirror (main.ts composes them). */
+const WORKER_RATE_BUCKETS = {
+  globalRpm: "global",
+  presentationRpm: "presentation",
+  imageRpm: "image",
+  manifestRpm: "manifest",
+} as const;
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+export function workerRatesFrom(env: Env): WorkerConfig["rates"] {
+  const raw = env[RATES_ENV];
+  if (raw === undefined || raw.trim() === "") {
+    throw new Error(`Missing required env var ${RATES_ENV} (the broker's rate buckets as one JSON object; no default for a rate)`);
+  }
+  let json: unknown;
+  try {
+    json = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(`${RATES_ENV} is not valid JSON (${err instanceof Error ? err.message : String(err)})`);
+  }
+  if (!isRecord(json)) throw new Error(`${RATES_ENV} is not a JSON object`);
+  const problems: string[] = [];
+  const rpmOf = (bucket: string): number => {
+    const entry = json[bucket];
+    const rpm = isRecord(entry) ? entry.rpm : undefined;
+    if (typeof rpm === "number" && Number.isSafeInteger(rpm) && rpm >= 1) return rpm;
+    problems.push(`${bucket}.rpm must be a whole number >= 1`);
+    return 0;
+  };
+  const rates = {
+    globalRpm: rpmOf(WORKER_RATE_BUCKETS.globalRpm),
+    presentationRpm: rpmOf(WORKER_RATE_BUCKETS.presentationRpm),
+    imageRpm: rpmOf(WORKER_RATE_BUCKETS.imageRpm),
+    manifestRpm: rpmOf(WORKER_RATE_BUCKETS.manifestRpm),
+  };
+  if (problems.length > 0) throw new Error(`${RATES_ENV} is invalid — ${problems.join("; ")}`);
+  return rates;
+}
+
+/**
  * Env vars a previous release read and this one does not, with what replaced
  * each. Set, they mean a stale chart or .env: the worker refuses to boot
  * rather than look configured by a value nothing reads (the F-D3 class).
  */
 export const RETIRED_ENV: Readonly<Record<string, string>> = {
   BNF_API_BASE_URL: "BNF_IIIF_PRESENTATION_BASE_URL and BNF_IIIF_IMAGE_BASE_URL",
+  BNF_GLOBAL_RPM: `${RATES_ENV}.global.rpm`,
+  BNF_PRESENTATION_RPM: `${RATES_ENV}.presentation.rpm`,
+  BNF_IMAGE_RPM: `${RATES_ENV}.image.rpm`,
+  BNF_MANIFEST_RPM: `${RATES_ENV}.manifest.rpm`,
   BNF_FETCH_CONCURRENCY: "BNF_ALTO_FETCH_CONCURRENCY and BNF_IMAGE_FETCH_CONCURRENCY",
   MISTRAL_IMAGE_SIZE: "nothing: the Mistral image size is chosen per canvas (bnf/image-size.ts MISTRAL_MAX_EDGE_PX)",
   VISION_IMAGE_SIZE: "nothing: the vision image size is chosen per canvas (bnf/image-size.ts VISION_MAX_EDGE_PX)",
@@ -422,12 +478,7 @@ export function loadConfigFrom(env: Env): WorkerConfig {
     mistralEnabled: boolFrom(env, "MISTRAL_OCR_ENABLED", CONFIG_DEFAULTS.mistralEnabled),
     maxPages: positiveIntFrom(env, "MAX_OCR_PAGES", CONFIG_DEFAULTS.maxPages),
     maxCanvases: positiveIntFrom(env, "MISTRAL_OCR_MAX_PAGES", CONFIG_DEFAULTS.maxCanvases),
-    rates: {
-      globalRpm: requiredPositiveIntFrom(env, "BNF_GLOBAL_RPM"),
-      presentationRpm: requiredPositiveIntFrom(env, "BNF_PRESENTATION_RPM"),
-      imageRpm: requiredPositiveIntFrom(env, "BNF_IMAGE_RPM"),
-      manifestRpm: requiredPositiveIntFrom(env, "BNF_MANIFEST_RPM"),
-    },
+    rates: workerRatesFrom(env),
     altoFetchConcurrency: requiredPositiveIntFrom(env, "BNF_ALTO_FETCH_CONCURRENCY"),
     imageFetchConcurrency: requiredPositiveIntFrom(env, "BNF_IMAGE_FETCH_CONCURRENCY"),
     describeConcurrency: positiveIntFrom(env, "DESCRIBE_CONCURRENCY", CONFIG_DEFAULTS.describeConcurrency),

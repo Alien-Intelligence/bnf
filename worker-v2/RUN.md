@@ -33,12 +33,12 @@ BNF_BROKER_URL=…                         # REQUIRED at boot: the egress chokep
 BNF_IIIF_PRESENTATION_BASE_URL=https://openapiproext.bnf.fr/presentation/iiif/gallica/1.0.0  # REQUIRED at boot: manifests + ALTO
 BNF_IIIF_IMAGE_BASE_URL=https://openapiproext.bnf.fr/image/iiif/gallica/1.0.0                # REQUIRED at boot: folio images
 # BNF_API_BASE_URL is RETIRED: set, the worker refuses to boot and names the two bases above.
-# The worker's own BnF gates — REQUIRED, no defaults, the SAME values as the
-# broker's buckets (helm broker.config.rates.<bucket>.rpm; broker/README.md):
-BNF_GLOBAL_RPM=950                       # the ingestion subscription's global cap
-BNF_PRESENTATION_RPM=1425                # Presentation API (manifests, ALTO)
-BNF_IMAGE_RPM=285                        # Image API (folio images)
-BNF_MANIFEST_RPM=38                      # per-IP manifest sub-limit
+# The worker's own BnF gates — REQUIRED, no defaults: the broker's very rate
+# object (helm broker.config.rates; broker/README.md). The worker reads the rpm
+# of global (subscription cap), presentation (manifests, ALTO), image (folio
+# images) and manifest (per-IP manifest sub-limit). The old BNF_*_RPM variables
+# are retired: set, the worker refuses to boot.
+BNF_RATES={"global":{"rpm":950,"burst":20},"manifest":{"rpm":38,"burst":2},"external":{"rpm":120,"burst":20},"presentation":{"rpm":1425,"burst":30},"image":{"rpm":285,"burst":6},"iiifLegacy":{"rpm":950,"burst":20},"catalogue":{"rpm":95,"burst":2},"gallicaSru":{"rpm":95,"burst":2},"grapheData":{"rpm":47,"burst":1},"datePeriodique":{"rpm":95,"burst":2},"documentTdm":{"rpm":95,"burst":2}}
 # Fetch concurrency per stage — REQUIRED; permits ≈ rpm × latency_s / 60 + headroom:
 BNF_ALTO_FETCH_CONCURRENCY=96            # 1425 × ~3 s / 60 ≈ 71
 BNF_IMAGE_FETCH_CONCURRENCY=32           # 285 × ~4 s / 60 ≈ 19
@@ -127,7 +127,7 @@ This is accepted for the demo deployment — flagged for ISO 27001 work (F22,
   window.
 - **The global cap is the binding one and is not yet measured** (1000/min, maybe
   1500 since the API split — the Track D ramp test settles it). Do not raise
-  `BNF_GLOBAL_RPM` past the broker's `rates.global.rpm`.
+  the worker's `BNF_RATES.global.rpm` past the broker's — they are the same object.
 - **The broker is hard-pinned to one replica.** Never scale it (in-memory buckets
   + per-IP caps).
 - **Mistral is a paid, budget-capped operation.** `MISTRAL_OCR_ENABLED=true` runs
