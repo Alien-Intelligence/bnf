@@ -39,7 +39,7 @@ import { authorizeProjectTool } from "./authorize"
 import { REMOVE_BY_FILTER_STATUS } from "@/lib/filters"
 import { EMPTY_FILTER_REFUSAL, refusingBadFilterValues, toolFailure, toolRefusal, type ToolFailure } from "./failure"
 import { CORPUS_ACCESS_REVOKED_ERROR } from "./ingestion-guard"
-import { emitDomainEvent, STREAM_DOMAIN_EVENT } from "@/lib/agent/stream-events"
+import { CORPUS_EVENT_KIND, emitDomainEvent, STREAM_DOMAIN_EVENT } from "@/lib/agent/stream-events"
 import { AGENT_TOOLS } from "./constants"
 import { provisionalTotal } from "./provisional-total"
 
@@ -348,7 +348,7 @@ export const corpusAddTool = defineTool<
     emitDomainEvent(ctx, {
       type: STREAM_DOMAIN_EVENT.CORPUS,
       data: {
-        kind: "add",
+        kind: CORPUS_EVENT_KIND.ADD,
         count: result.lastDeltaAdded,
         versionSeq: result.versionSeq,
       },
@@ -418,7 +418,7 @@ export const corpusRemoveTool = defineTool<
     emitDomainEvent(ctx, {
       type: STREAM_DOMAIN_EVENT.CORPUS,
       data: {
-        kind: "remove",
+        kind: CORPUS_EVENT_KIND.REMOVE,
         count: result.lastDeltaRemoved,
         versionSeq: result.versionSeq,
       },
@@ -506,7 +506,7 @@ export const corpusRemoveByFilterTool = defineTool<
         emitDomainEvent(ctx, {
           type: STREAM_DOMAIN_EVENT.CORPUS,
           data: {
-            kind: "remove",
+            kind: CORPUS_EVENT_KIND.REMOVE,
             count: result.removed,
             versionSeq: result.versionSeq,
           },

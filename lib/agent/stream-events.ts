@@ -9,12 +9,27 @@
 import { z } from "zod"
 import { subagentEventDataSchema } from "@/lib/tools/subagent-runs"
 import { MEMORY_SCOPE } from "@/models/memory/schema"
-import { BUFFER_EVENT_KIND, STREAM_DOMAIN_EVENT, type StreamDomainEventType } from "./stream-event-types"
+import {
+  BUFFER_EVENT_KIND,
+  CORPUS_EVENT_KIND,
+  INGEST_EVENT_KIND,
+  MEMORY_EVENT_KIND,
+  NOTE_EVENT_KIND,
+  STREAM_DOMAIN_EVENT,
+  type StreamDomainEventType,
+} from "./stream-event-types"
 
 export {
   BUFFER_EVENT_KIND,
+  CORPUS_EVENT_KIND,
+  INGEST_EVENT_KIND,
+  MEMORY_EVENT_KIND,
+  NOTE_EVENT_KIND,
   STREAM_DOMAIN_EVENT,
   type BufferEventKind,
+  type CorpusEventKind,
+  type MemoryEventKind,
+  type NoteEventKind,
   type StreamDomainEventType,
 } from "./stream-event-types"
 
@@ -22,13 +37,13 @@ const count = z.number().int().nonnegative()
 
 const corpusEventSchema = z.object({
   type: z.literal(STREAM_DOMAIN_EVENT.CORPUS),
-  data: z.object({ kind: z.enum(["add", "remove"]), count, versionSeq: z.number().int() }),
+  data: z.object({ kind: z.enum(CORPUS_EVENT_KIND), count, versionSeq: z.number().int() }),
 })
 
 const memoryEventSchema = z.object({
   type: z.literal(STREAM_DOMAIN_EVENT.MEMORY),
   data: z.object({
-    kind: z.literal("write"),
+    kind: z.literal(MEMORY_EVENT_KIND.WRITE),
     scope: z.enum(MEMORY_SCOPE),
     section: z.string(),
     itemId: z.string(),
@@ -37,12 +52,12 @@ const memoryEventSchema = z.object({
 
 const ingestEventSchema = z.object({
   type: z.literal(STREAM_DOMAIN_EVENT.INGEST),
-  data: z.object({ kind: z.literal("submitted"), jobId: z.string(), status: z.string() }),
+  data: z.object({ kind: z.literal(INGEST_EVENT_KIND.SUBMITTED), jobId: z.string(), status: z.string() }),
 })
 
 const noteEventSchema = z.object({
   type: z.literal(STREAM_DOMAIN_EVENT.NOTE),
-  data: z.object({ kind: z.enum(["created", "updated"]), noteId: z.string(), title: z.string() }),
+  data: z.object({ kind: z.enum(NOTE_EVENT_KIND), noteId: z.string(), title: z.string() }),
 })
 
 const bufferEventSchema = z.object({

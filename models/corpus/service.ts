@@ -21,7 +21,7 @@ import {
 } from "@/lib/constants"
 import { prisma } from "@/lib/db"
 import { sourceFromArk } from "@/lib/mcp/vocab"
-import { DOCUMENT_CANONICAL_STATUS } from "@/models/documents/schema"
+import { DOCUMENT_CANONICAL_STATUS, DOCUMENT_SOURCE } from "@/models/documents/schema"
 import { DocumentService } from "@/models/documents/service"
 import type { Project } from "@/models/projects/schema"
 import type { User } from "@/models/users/schema"
@@ -281,7 +281,7 @@ export class CorpusService {
     // delta model absorbs the ordering (see playbook/corpus-versioning.md).
     if (opts?.canonicalize) {
       const noticeArks = uniqueArks.filter(
-        (a) => sourceFromArk(a) === "catalogue",
+        (a) => sourceFromArk(a) === DOCUMENT_SOURCE.CATALOGUE,
       )
       if (noticeArks.length > 0) {
         await prisma.document.updateMany({
@@ -347,7 +347,7 @@ export class CorpusService {
     // IIIF manifest, so anything else (catalogue, other) is non-ingestable.
     const nonIngestable: NonIngestableDocument[] = advance.addedArks
       .map((ark) => ({ ark, source: sourceFromArk(ark) }))
-      .filter((d) => d.source !== "gallica")
+      .filter((d) => d.source !== DOCUMENT_SOURCE.GALLICA)
 
     // How many of the docs added this call are still resolving in the background.
     const pending = advance.addedArks.filter((a) => newStubSet.has(a)).length
@@ -388,7 +388,7 @@ export class CorpusService {
   ): Promise<CorpusPromoteResult> {
     const projectId = project.id
 
-    if (sourceFromArk(ark) !== "catalogue") {
+    if (sourceFromArk(ark) !== DOCUMENT_SOURCE.CATALOGUE) {
       return { promoted: false, status: "not_catalogue" }
     }
 

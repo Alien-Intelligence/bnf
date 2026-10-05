@@ -17,6 +17,21 @@ export const STREAM_DOMAIN_EVENT = {
 } as const
 export type StreamDomainEventType = (typeof STREAM_DOMAIN_EVENT)[keyof typeof STREAM_DOMAIN_EVENT]
 
+/** What a corpus_event reports happened to the corpus head. */
+export const CORPUS_EVENT_KIND = { ADD: "add", REMOVE: "remove" } as const
+export type CorpusEventKind = (typeof CORPUS_EVENT_KIND)[keyof typeof CORPUS_EVENT_KIND]
+
+/** What a memory_event reports (the agent has no forget tool). */
+export const MEMORY_EVENT_KIND = { WRITE: "write" } as const
+export type MemoryEventKind = (typeof MEMORY_EVENT_KIND)[keyof typeof MEMORY_EVENT_KIND]
+
+/** What an ingest_event reports. */
+export const INGEST_EVENT_KIND = { SUBMITTED: "submitted" } as const
+
+/** What a note_event reports. */
+export const NOTE_EVENT_KIND = { CREATED: "created", UPDATED: "updated" } as const
+export type NoteEventKind = (typeof NOTE_EVENT_KIND)[keyof typeof NOTE_EVENT_KIND]
+
 /** What a buffer_event reports happened to the buffer. */
 export const BUFFER_EVENT_KIND = {
   ADDED: "added",

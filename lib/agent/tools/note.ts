@@ -30,7 +30,7 @@ import { NoteService } from "@/models/notes/service"
 import { NoteQueries } from "@/models/notes/queries"
 import type { TurnScopedCtx } from "./registry-factory"
 import { authorizeOnProject, authorizeProjectTool } from "./authorize"
-import { emitDomainEvent, STREAM_DOMAIN_EVENT } from "@/lib/agent/stream-events"
+import { emitDomainEvent, NOTE_EVENT_KIND, STREAM_DOMAIN_EVENT } from "@/lib/agent/stream-events"
 import { AGENT_TOOLS } from "./constants"
 import { toolFailure } from "./failure"
 import { NOTE_NOT_INGESTED_ERROR, resolveIngestedCorpus } from "./ingestion-guard"
@@ -172,7 +172,7 @@ export const noteCreateTool = defineTool<
 
     emitDomainEvent(ctx, {
       type: STREAM_DOMAIN_EVENT.NOTE,
-      data: { kind: "created", noteId: note.id, title: note.title },
+      data: { kind: NOTE_EVENT_KIND.CREATED, noteId: note.id, title: note.title },
     })
 
     return noteResult(note, rejected)
@@ -243,7 +243,7 @@ export const noteUpdateTool = defineTool<
 
     emitDomainEvent(ctx, {
       type: STREAM_DOMAIN_EVENT.NOTE,
-      data: { kind: "updated", noteId: written.note.id, title: written.note.title },
+      data: { kind: NOTE_EVENT_KIND.UPDATED, noteId: written.note.id, title: written.note.title },
     })
 
     return noteResult(written.note, written.rejected)
@@ -305,7 +305,7 @@ export const noteAppendTool = defineTool<
 
     emitDomainEvent(ctx, {
       type: STREAM_DOMAIN_EVENT.NOTE,
-      data: { kind: "updated", noteId: written.note.id, title: written.note.title },
+      data: { kind: NOTE_EVENT_KIND.UPDATED, noteId: written.note.id, title: written.note.title },
     })
 
     return noteResult(written.note, written.rejected)

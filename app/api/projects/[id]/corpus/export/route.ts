@@ -34,6 +34,7 @@ import {
   DOCUMENT_RESOLVE_STATUS,
   classifyIngestion,
   classifyOutcome,
+  DOCUMENT_SOURCE,
 } from "@/models/documents/schema"
 import { GALLICA_IIIF_VIEWER_URL, CATALOGUE_RECORD_URL } from "@/lib/constants"
 import { toCsv } from "@/lib/csv"
@@ -77,8 +78,8 @@ const EXPORT_HEADER = [
 
 /** The stable external surface for a document, derived from its ARK + source. */
 function documentUrl(row: DocumentRow): string {
-  if (row.source === "gallica") return GALLICA_IIIF_VIEWER_URL(row.ark)
-  if (row.source === "catalogue") return CATALOGUE_RECORD_URL(row.ark)
+  if (row.source === DOCUMENT_SOURCE.GALLICA) return GALLICA_IIIF_VIEWER_URL(row.ark)
+  if (row.source === DOCUMENT_SOURCE.CATALOGUE) return CATALOGUE_RECORD_URL(row.ark)
   return ""
 }
 

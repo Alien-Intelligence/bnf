@@ -1,6 +1,8 @@
 // lib/tools/display.ts
 // Pure, client-safe helpers for rendering agent tool calls in the chat panel.
 // No server imports — used by the chat tool renderers (components/badges/tools).
+import { CORPUS_EVENT_KIND, type CorpusEventKind } from "@/lib/agent/stream-event-types"
+import { AGENT_TOOLS } from "@/lib/agent/tools/constants"
 import { EMPTY_FILTER_REFUSAL } from "@/lib/agent/tools/failure"
 import { REMOVE_BY_FILTER_STATUS } from "@/lib/filters"
 
@@ -39,23 +41,25 @@ export function deriveToolKey(
 }
 
 /** True for the corpus mutation tools that render as a +N / −N pill. */
-export function isCorpusMutationTool(toolName: string): "add" | "remove" | null {
-  if (toolName === "corpus_add") return "add"
-  if (toolName === "corpus_remove") return "remove"
+export function isCorpusMutationTool(toolName: string): CorpusEventKind | null {
+  if (toolName === AGENT_TOOLS.corpusAdd) return CORPUS_EVENT_KIND.ADD
+  if (toolName === AGENT_TOOLS.corpusRemove) return CORPUS_EVENT_KIND.REMOVE
   return null
 }
+
+/** How a note-writing tool writes its note. */
+export const NOTE_WRITE_KIND = { CREATE: "create", UPDATE: "update", APPEND: "append" } as const
+export type NoteWriteKind = (typeof NOTE_WRITE_KIND)[keyof typeof NOTE_WRITE_KIND]
 
 /**
  * True for the note-writing tools whose input IS the artifact — the whole note
  * body streams in as the tool input, so while running they get a live progress
  * view (char count + elapsed) instead of a motionless "running" badge.
  */
-export function isNoteWriteTool(
-  toolName: string,
-): "create" | "update" | "append" | null {
-  if (toolName === "note_create") return "create"
-  if (toolName === "note_update") return "update"
-  if (toolName === "note_append") return "append"
+export function isNoteWriteTool(toolName: string): NoteWriteKind | null {
+  if (toolName === AGENT_TOOLS.noteCreate) return NOTE_WRITE_KIND.CREATE
+  if (toolName === AGENT_TOOLS.noteUpdate) return NOTE_WRITE_KIND.UPDATE
+  if (toolName === AGENT_TOOLS.noteAppend) return NOTE_WRITE_KIND.APPEND
   return null
 }
 
@@ -202,7 +206,7 @@ function pickString(result: string, keys: string[]): string | null {
 
 /** True for the bulk remove-by-filter tool (rendered as a dedicated pill). */
 export function isCorpusRemoveByFilterTool(toolName: string): boolean {
-  return toolName === "corpus_remove_by_filter"
+  return toolName === AGENT_TOOLS.corpusRemoveByFilter
 }
 
 /**

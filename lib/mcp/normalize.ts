@@ -24,6 +24,7 @@ import {
   mapGallicaTypedoc,
   sourceFromArk,
 } from "@/lib/mcp/vocab"
+import { DOCUMENT_SOURCE } from "@/models/documents/schema"
 
 // ---------------------------------------------------------------------------
 // Output type
@@ -315,7 +316,7 @@ export function normalizeDocument(
     // No typedoc and no doc_type field at all:
     //   Catalogue records are predominantly books → "book"
     //   Everything else → "other"
-    docType = source === "catalogue" ? "book" : "other"
+    docType = source === DOCUMENT_SOURCE.CATALOGUE ? "book" : "other"
   }
 
   // ── 8. Pages + excerpt ────────────────────────────────────────────────────

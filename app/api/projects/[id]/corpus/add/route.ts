@@ -26,6 +26,7 @@ import { CorpusPolicy } from "@/models/corpus/policy"
 import { CorpusService } from "@/models/corpus/service"
 import type { CorpusAddResult } from "@/models/corpus/schema"
 import { ProjectQueries } from "@/models/projects/queries"
+import { DOCUMENT_SOURCE } from "@/models/documents/schema"
 
 type RouteCtx = { params: Promise<{ id: string }> }
 
@@ -47,7 +48,7 @@ export const POST = withAuth(async (req, user, bouncer, ctx: RouteCtx) => {
   // Resolve the new stubs' metadata in the background, after the response flushes.
   if (result.pending > 0) kickResolve(projectId)
   // Upgrade any added catalogue notices out-of-band too (no-op when none).
-  if (parsed.arks.some((a) => sourceFromArk(a) === "catalogue")) {
+  if (parsed.arks.some((a) => sourceFromArk(a) === DOCUMENT_SOURCE.CATALOGUE)) {
     kickCanonicalize(projectId)
   }
   return ok<CorpusAddResult>(result)

@@ -30,7 +30,7 @@ import { memoryOriginSchema, memoryScopeSchema } from "@/models/memory/types"
 import { MemoryService } from "@/models/memory/service"
 import type { TurnScopedCtx } from "./registry-factory"
 import { authorizeProjectTool } from "./authorize"
-import { emitDomainEvent, STREAM_DOMAIN_EVENT } from "@/lib/agent/stream-events"
+import { emitDomainEvent, MEMORY_EVENT_KIND, STREAM_DOMAIN_EVENT } from "@/lib/agent/stream-events"
 import { AGENT_TOOLS } from "./constants"
 
 /** The origins the model may name, quoted, for the tool description. */
@@ -134,7 +134,7 @@ export const memoryWriteTool = defineTool<
 
     emitDomainEvent(ctx, {
       type: STREAM_DOMAIN_EVENT.MEMORY,
-      data: { kind: "write", scope: ctx.scope, section: item.section, itemId: item.id },
+      data: { kind: MEMORY_EVENT_KIND.WRITE, scope: ctx.scope, section: item.section, itemId: item.id },
     })
 
     return { itemId: item.id, section: item.section, text: item.text, origin: item.origin }

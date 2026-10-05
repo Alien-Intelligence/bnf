@@ -59,6 +59,7 @@ import {
 } from "@/lib/mcp/errors"
 import { type Settled, withConcurrency, withRetry } from "@/lib/mcp/retry"
 import { GALLICA_DOC_TYPE, sourceFromArk } from "@/lib/mcp/vocab"
+import { DOCUMENT_SOURCE } from "@/models/documents/schema"
 
 /**
  * Outcome of classifying a catalogue (`cb…`) ARK against its digitized Gallica
@@ -454,7 +455,7 @@ export class BnfDirectClient {
     const settled: Settled<BnfMcpDocumentDetail>[] = await withConcurrency(
       arks,
       (ark) =>
-        sourceFromArk(ark) === "catalogue" ? this.resolveCatalogue(ark) : this.resolveGallicaViaOai(ark),
+        sourceFromArk(ark) === DOCUMENT_SOURCE.CATALOGUE ? this.resolveCatalogue(ark) : this.resolveGallicaViaOai(ark),
       BNF_DIRECT_CONCURRENCY,
     )
     return arks.map((ark, i) => {
@@ -467,7 +468,7 @@ export class BnfDirectClient {
 
   /** Resolve one ARK to BnfMcpDocumentDetail (the shape normalize.ts consumes). */
   async resolveArk(ark: string): Promise<BnfMcpDocumentDetail> {
-    return sourceFromArk(ark) === "catalogue"
+    return sourceFromArk(ark) === DOCUMENT_SOURCE.CATALOGUE
       ? this.resolveCatalogue(ark)
       : this.resolveGallica(ark)
   }
@@ -519,7 +520,7 @@ export class BnfDirectClient {
    * (non-catalogue ARKs are skipped — they need no canonicalization).
    */
   async canonicalizeArks(arks: string[]): Promise<CanonicalizeOutcome[]> {
-    const cbArks = arks.filter((a) => sourceFromArk(a) === "catalogue")
+    const cbArks = arks.filter((a) => sourceFromArk(a) === DOCUMENT_SOURCE.CATALOGUE)
     if (cbArks.length === 0) return []
 
     const settled: Settled<CanonicalizeOutcome>[] = await withConcurrency(

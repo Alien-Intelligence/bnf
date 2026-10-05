@@ -345,7 +345,7 @@ export function sourceFromArk(ark: string): DocumentSource {
  * Caller should lazily HEAD-check on first access (slice 5+).
  */
 export function iiifManifestUrl(ark: string, source: string): string | null {
-  if (source !== "gallica") return null
+  if (source !== DOCUMENT_SOURCE.GALLICA) return null
   const full = ark.startsWith("ark:/") ? ark : `ark:/12148/${ark}`
   return `https://gallica.bnf.fr/iiif/${full}/manifest.json`
 }

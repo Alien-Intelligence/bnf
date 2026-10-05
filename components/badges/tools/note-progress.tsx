@@ -19,17 +19,18 @@
 import { useEffect, useState } from "react"
 import { NotebookPen } from "lucide-react"
 import { useTranslations } from "next-intl"
+import { NOTE_WRITE_KIND, type NoteWriteKind } from "@/lib/tools/display"
 
 interface Props {
-  kind: "create" | "update" | "append"
+  kind: NoteWriteKind
   /** Epoch ms when the tool call started (SDK ToolPartEntry.startedAt). */
   startedAt: number
 }
 
-const LABEL_KEY: Record<Props["kind"], string> = {
-  create: "writing",
-  update: "updating",
-  append: "appending",
+const LABEL_KEY: Record<NoteWriteKind, string> = {
+  [NOTE_WRITE_KIND.CREATE]: "writing",
+  [NOTE_WRITE_KIND.UPDATE]: "updating",
+  [NOTE_WRITE_KIND.APPEND]: "appending",
 }
 
 export function BadgeNoteProgress({ kind, startedAt }: Props) {

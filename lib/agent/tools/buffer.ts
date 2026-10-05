@@ -77,7 +77,13 @@ import {
   toolRefusal,
   type ToolRefusal,
 } from "./failure"
-import { BUFFER_EVENT_KIND, emitDomainEvent, STREAM_DOMAIN_EVENT, type BufferEventKind } from "@/lib/agent/stream-events"
+import {
+  BUFFER_EVENT_KIND,
+  CORPUS_EVENT_KIND,
+  emitDomainEvent,
+  STREAM_DOMAIN_EVENT,
+  type BufferEventKind,
+} from "@/lib/agent/stream-events"
 import { AGENT_TOOLS } from "./constants"
 import { provisionalTotal } from "./provisional-total"
 
@@ -444,7 +450,7 @@ export const bufferCommitTool = defineTool<
       emitDomainEvent(ctx, {
         type: STREAM_DOMAIN_EVENT.CORPUS,
         data: {
-          kind: "add",
+          kind: CORPUS_EVENT_KIND.ADD,
           count: result.corpus.lastDeltaAdded,
           versionSeq: result.corpus.versionSeq,
         },
