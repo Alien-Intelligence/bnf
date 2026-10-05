@@ -2,6 +2,7 @@
 // Vocabulary mapping tables for the BnF MCP normalization layer.
 // Pure data + pure functions — no server-only import, safe on either side.
 // See playbook/mcp-client.md and ai-memories/…/persistence-architecture/research/bnf-mcp-contract.md
+import type { DocTypeCode } from "@/models/documents/schema"
 
 /**
  * MARC 639-2 → ISO 639-1 language code mapping.
@@ -111,7 +112,7 @@ export function canonicalLang(raw: string | null | undefined): string | null {
  * Tolerant by design: it keeps values the SRU may still emit on old records
  * even where they are no longer usable as a search filter.
  */
-export const GALLICA_DOC_TYPE: Record<string, string> = {
+export const GALLICA_DOC_TYPE: Record<string, DocTypeCode> = {
   monographie: "book",
   image: "image",
   carte: "map",
@@ -188,10 +189,10 @@ export const GALLICA_FILTER_DOC_TYPE = {
   carte: "map",
   partition: "score",
   sonore: "audio",
-} as const satisfies Record<(typeof GALLICA_SEARCHABLE_DOC_TYPE)[number], string>
+} as const satisfies Record<(typeof GALLICA_SEARCHABLE_DOC_TYPE)[number], DocTypeCode>
 
 /** GALLICA_DOC_TYPE keyed by its folded label, for a case-insensitive lookup. */
-const GALLICA_DOC_TYPE_FOLDED: Record<string, string> = Object.fromEntries(
+const GALLICA_DOC_TYPE_FOLDED: Record<string, DocTypeCode> = Object.fromEntries(
   Object.entries(GALLICA_DOC_TYPE).map(([k, v]) => [foldLabel(k), v]),
 )
 
@@ -215,7 +216,7 @@ const GALLICA_DOC_TYPE_FOLDED: Record<string, string> = Object.fromEntries(
  */
 export function canonicalDocTypeFromLabel(
   raw: string | null | undefined,
-): { code: string | null; known: boolean } {
+): { code: DocTypeCode | null; known: boolean } {
   if (typeof raw !== "string" || raw.trim() === "") return { code: null, known: true }
   const label = foldLabel(raw.split(" | ")[0])
   if (label === "") return { code: null, known: true }
@@ -223,7 +224,7 @@ export function canonicalDocTypeFromLabel(
   const enumMatch = GALLICA_DOC_TYPE_FOLDED[label]
   if (enumMatch !== undefined) return { code: enumMatch, known: true }
 
-  const rules: Array<[RegExp, string]> = [
+  const rules: Array<[RegExp, DocTypeCode]> = [
     [/cartograph|^carte|^map$|^plan$/, "map"],
     [/^genre musical|musique|notated music|partition|manuscript music/, "score"],
     [/manuscri/, "manuscript"],
@@ -254,7 +255,7 @@ export function canonicalDocTypeFromLabel(
  * on the FIRST segment after "gallica:typedoc:"; subcategories roll up. The full
  * top-level vocabulary is the live ListSets output (same date).
  */
-export const GALLICA_TYPEDOC: Record<string, string> = {
+export const GALLICA_TYPEDOC: Record<string, DocTypeCode> = {
   periodiques: "press",
   monographies: "book",
   cartes: "map",
@@ -273,7 +274,7 @@ export const GALLICA_TYPEDOC: Record<string, string> = {
  */
 export function mapGallicaTypedoc(
   typedoc: string | null | undefined,
-): string | null {
+): DocTypeCode | null {
   if (typeof typedoc !== "string" || typedoc.trim() === "") return null
   const top = typedoc.trim().toLowerCase().split(":")[0]
   return GALLICA_TYPEDOC[top] ?? null

@@ -169,6 +169,10 @@ export const CORPUS_REASON_MAX_LEN = 1_000
 /** Candidate rows per page in a buffer list / snapshot sample. */
 export const BUFFER_SAMPLE_SIZE = 25
 
+/** Hits shown in a corpus_search result's `sample` — enough to judge a page,
+ *  never the page itself (the buffer holds it). */
+export const CORPUS_SEARCH_SAMPLE_SIZE = 8
+
 /** Upper bound on one buffer page (buffer_list, GET /buffer `limit`). */
 export const BUFFER_LIST_MAX_LIMIT = 200
 

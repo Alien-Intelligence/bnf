@@ -18,6 +18,7 @@ import { arkSchema, type BufferCandidateInput } from "./types"
 import { BUFFER_CLASSIFIER_VERSION, BUFFER_SAMPLE_SIZE, CORPUS_REMOVE_PREVIEW_LIMIT } from "@/lib/constants"
 import { sourceFromArk } from "@/lib/mcp/vocab"
 import { classifyArkKind } from "@/lib/documents/ark-kind"
+import { DOCUMENT_SOURCE } from "@/models/documents/schema"
 
 /**
  * Result of registerCandidates() — what became of every hit, so a staging tool
@@ -684,7 +685,7 @@ export class BufferService {
 
     return {
       committed: arks.length,
-      catalogueNotices: arks.filter((a) => sourceFromArk(a) === "catalogue").length,
+      catalogueNotices: arks.filter((a) => sourceFromArk(a) === DOCUMENT_SOURCE.CATALOGUE).length,
       duplicates: corpus.duplicates,
       // After addArks: the notices it just queued count, and so do any still
       // pending from earlier. While this is above zero the background

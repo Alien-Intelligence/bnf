@@ -25,6 +25,7 @@ import {
   BUFFER_SEARCH_DEFAULT_PAGE_SIZE_BY_SOURCE,
   BUFFER_SEARCH_MAX_PAGE_SIZE_BY_SOURCE,
   CORPUS_REASON_MAX_LEN,
+  CORPUS_SEARCH_SAMPLE_SIZE,
 } from "@/lib/constants"
 import { kickCanonicalize } from "@/lib/documents/canonicalizer"
 import { kickResolve } from "@/lib/documents/resolver"
@@ -1447,7 +1448,7 @@ export const corpusSearchTool = defineTool<
               '`doc_type: "fascicule"` (presse) ou `"monographie"` (livres) pour les distinguer.',
           }
         : {}),
-      sample: candidates.slice(0, 8).map((c) => ({
+      sample: candidates.slice(0, CORPUS_SEARCH_SAMPLE_SIZE).map((c) => ({
         ark: c.ark,
         title: c.title ?? null,
         year: c.year ?? null,
