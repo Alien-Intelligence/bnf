@@ -29,6 +29,8 @@
  *    caller knows when the job has none — verifyJobCallback) and all three
  *    answer the same 401 message, so the endpoint reveals neither which job
  *    ids exist nor how they were submitted, by its answer or its timing.
+ *  - A body over PROGRESS_CALLBACK_MAX_BODY_BYTES is refused with that same
+ *    answer before it is buffered or hashed.
  *  - Malformed JSON after a valid HMAC is rejected with 400; the cluster must fix its payload.
  *  - So is a well-formed body that is not a ClusterProgressEvent
  *    (clusterProgressEventSchema, found bug B2): 400 with the Zod issues. The
@@ -44,6 +46,32 @@ import {
   type ProgressCallbackAck,
 } from "@/models/ingest/types"
 import { CALLBACK_REJECTED_MESSAGE, verifyJobCallback } from "@/lib/cluster/callback-auth"
+import { PROGRESS_CALLBACK_MAX_BODY_BYTES } from "@/lib/constants"
+
+/**
+ * The request body as text, or null when it is larger than `max` bytes —
+ * checked on the declared Content-Length first, then while reading, so an
+ * oversize body is never buffered whole (or hashed).
+ */
+async function readCappedText(req: Request, max: number): Promise<string | null> {
+  const declared = req.headers.get("content-length")
+  if (declared !== null && (!/^[0-9]+$/.test(declared) || Number(declared) > max)) return null
+  if (req.body === null) return ""
+  const reader = req.body.getReader()
+  const chunks: Uint8Array[] = []
+  let size = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    size += value.byteLength
+    if (size > max) {
+      await reader.cancel()
+      return null
+    }
+    chunks.push(value)
+  }
+  return Buffer.concat(chunks).toString("utf8")
+}
 
 export async function POST(
   req: Request,
@@ -58,7 +86,8 @@ export async function POST(
   // attacks. Read and verified whatever the job: an unknown job or one without
   // a callbackSecret (never submitted through IngestService.submit, or
   // corrupted) takes the same path and gets the same answer as a bad signature.
-  const bodyText = await req.text()
+  const bodyText = await readCappedText(req, PROGRESS_CALLBACK_MAX_BODY_BYTES)
+  if (bodyText === null) return unauthorized(CALLBACK_REJECTED_MESSAGE)
   const signature = req.headers.get("x-callback-signature")
   const verified = verifyJobCallback(bodyText, signature, job === null ? null : job.callbackSecret)
   if (job === null || !verified) return unauthorized(CALLBACK_REJECTED_MESSAGE)

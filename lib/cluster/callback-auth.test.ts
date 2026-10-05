@@ -8,6 +8,7 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 
 import { POST } from "@/app/api/internal/ingest/[job_id]/progress/route"
+import { PROGRESS_CALLBACK_MAX_BODY_BYTES } from "@/lib/constants"
 
 import { CALLBACK_REJECTED_MESSAGE, signCallback, verifyCallback, verifyJobCallback } from "./callback-auth"
 
@@ -40,4 +41,20 @@ test("progress route: an unknown job reads the body and answers the bad-signatur
   assert.equal(res.status, 401)
   assert.equal(req.bodyUsed, true, "the body is read on the unknown-job path too")
   assert.deepEqual(await res.json(), { error: CALLBACK_REJECTED_MESSAGE })
+})
+
+test("progress route: an oversize body is refused with the same answer, before it is read", async () => {
+  const big = "x".repeat(PROGRESS_CALLBACK_MAX_BODY_BYTES + 1)
+  for (const req of [
+    new Request("http://localhost/api/internal/ingest/x/progress", { method: "POST", body: big }),
+    new Request("http://localhost/api/internal/ingest/x/progress", {
+      method: "POST",
+      headers: { "content-length": String(PROGRESS_CALLBACK_MAX_BODY_BYTES + 1) },
+      body: "{}",
+    }),
+  ]) {
+    const res = await POST(req, { params: Promise.resolve({ job_id: "00000000-0000-4000-8000-00000000dead" }) })
+    assert.equal(res.status, 401)
+    assert.deepEqual(await res.json(), { error: CALLBACK_REJECTED_MESSAGE })
+  }
 })
