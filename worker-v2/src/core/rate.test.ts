@@ -8,7 +8,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { acquireWithin, RateGateStoppedError, RateGateTimeoutError, RateLimiter } from "./rate.js";
+import { acquireWithin, CompositeRateGate, RateGateStoppedError, RateGateTimeoutError, RateLimiter } from "./rate.js";
+import type { RateGate } from "./types.js";
 
 /** A signal that never aborts — for the cases not about cancellation. */
 const LIVE = new AbortController().signal;
@@ -208,4 +209,71 @@ test("acquireWithin: a wait past its deadline rejects with RateGateTimeoutError 
   );
   assert.equal(limiter.pendingWaiters(), 0);
   limiter.stop();
+});
+
+// --- CompositeRateGate: one token from each nested BnF quota ----------------
+
+/** A gate whose grants the test releases by hand, recording the signal it got. */
+class ManualGate implements RateGate {
+  readonly waiting: Array<() => void> = [];
+  readonly signals: AbortSignal[] = [];
+  constructor(readonly ratePerMin: number) {}
+  acquire(signal: AbortSignal): Promise<void> {
+    this.signals.push(signal);
+    return new Promise<void>((resolve, reject) => {
+      if (signal.aborted) return reject(signal.reason);
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      this.waiting.push(resolve);
+    });
+  }
+  grant(): void {
+    this.waiting.shift()?.();
+  }
+}
+
+/** Let pending promise callbacks run. */
+const settle = (): Promise<void> => new Promise((r) => setImmediate(r));
+
+test("CompositeRateGate: acquire resolves only once EVERY gate granted, specific gate first, global last", async () => {
+  const api = new ManualGate(1425);
+  const global = new ManualGate(950);
+  const gate = new CompositeRateGate([api, global]);
+  let granted = false;
+  const p = gate.acquire(LIVE).then(() => {
+    granted = true;
+  });
+  await settle();
+  assert.equal(api.waiting.length, 1, "waits on the specific gate first");
+  assert.equal(global.waiting.length, 0, "holds no global token while the API gate is empty");
+  api.grant();
+  await settle();
+  assert.equal(global.waiting.length, 1, "then waits on global");
+  assert.equal(granted, false, "not granted with only the API token");
+  global.grant();
+  await p;
+  assert.equal(granted, true);
+  assert.deepEqual([api.signals[0], global.signals[0]], [LIVE, LIVE], "the caller's signal bounds every wait");
+});
+
+test("CompositeRateGate: ratePerMin is the binding (smallest) rate", () => {
+  assert.equal(new CompositeRateGate([new ManualGate(1425), new ManualGate(950)]).ratePerMin, 950);
+  assert.equal(new CompositeRateGate([new ManualGate(38), new ManualGate(1425), new ManualGate(950)]).ratePerMin, 38);
+});
+
+test("CompositeRateGate: an empty gate list is a wiring error", () => {
+  assert.throws(() => new CompositeRateGate([]), /at least one gate/);
+});
+
+test("CompositeRateGate: a stopped inner gate rejects the composite with RateGateStoppedError (shutdown hands back)", async () => {
+  const api = new RateLimiter({ ratePerMin: 60, burst: 1 });
+  const global = new RateLimiter({ ratePerMin: 60, burst: 1 });
+  global.stop();
+  await assert.rejects(() => new CompositeRateGate([api, global]).acquire(LIVE), RateGateStoppedError);
+  api.stop();
+});
+
+test("CompositeRateGate: acquireWithin bounds the whole composite wait", async () => {
+  const api = new ManualGate(60);
+  const global = new ManualGate(60);
+  await assert.rejects(() => acquireWithin(new CompositeRateGate([api, global]), 20), RateGateTimeoutError);
 });
