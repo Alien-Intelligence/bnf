@@ -9,6 +9,7 @@
 // French, like every agent-facing prompt (the working language is FR).
 import { AGENT_TOOLS } from "@/lib/agent/tools/constants"
 import { SESSION_SCOPE, type SessionScope } from "@/models/sessions/schema"
+import { SUBAGENT_QUOTING_RULE } from "./quoting"
 
 /** Sub-agent directive for a given scope + concrete sub-task. */
 export function buildSubagentDirective(scope: SessionScope, task: string): string {
@@ -41,7 +42,8 @@ export function buildSubagentDirective(scope: SessionScope, task: string): strin
         `Utilise \`${AGENT_TOOLS.ragQuery}\` / \`${AGENT_TOOLS.ragKeywordSearch}\` / \`${AGENT_TOOLS.ragGetText}\` pour rassembler ` +
         `les passages pertinents du corpus ingéré, et \`${AGENT_TOOLS.docGet}\` au besoin. Ta ` +
         "synthèse cite les ARK+folios clés trouvés ; l'agent principal rédigera la " +
-        "note finale à partir de ta synthèse.\n"
+        "note finale à partir de ta synthèse.\n" +
+        `${SUBAGENT_QUOTING_RULE}\n`
 
   return `${shared}\n${deposit}\n## TA TÂCHE\n${task}\n`
 }

@@ -29,12 +29,13 @@ import { NotePolicy } from "@/models/notes/policy"
 import { withDeadline } from "@/lib/async/deadline"
 import { classifyFolioRefs } from "@/lib/citations/ocr"
 import { TOOL_DB_TIMEOUT_MS } from "@/lib/constants"
-import { noteOcrIndex, type OcrReader } from "@/lib/ocr/quality"
+import { folioOcrKey, noteOcrIndex, type OcrReader } from "@/lib/ocr/quality"
 import { OCR_ACCESS } from "@/models/documents/schema"
 import { NoteService } from "@/models/notes/service"
 import { NoteQueries } from "@/models/notes/queries"
-import { checkNoteQuotes } from "@/lib/citations/quote-check"
-import { QUOTE_CHECK_BUDGET_MS } from "@/lib/constants"
+import { checkNoteQuotes, type LowOcrFoliosLookup } from "@/lib/citations/quote-check"
+import { OCR_CORRECTION_MARKING, QUOTE_CHECK_BUDGET_MS } from "@/lib/constants"
+import { renderNoteQuoteHint } from "@/lib/agent/prompts/quoting"
 import {
   NOTE_BODY_MAX_CHARS,
   NOTE_TITLE_MAX_CHARS,
@@ -172,6 +173,27 @@ export function noteResult(
 }
 
 /**
+ * The quote check's per-folio quality lookup, on the turn's corpus (Track B's
+ * stored folio quality): the cited folios recorded as low. A folio whose
+ * quality is not recorded (pending, unavailable, not part of the processed
+ * pages) is not reported low — the quality is unknown, and the general OCR
+ * rule still applies to it. A failed or revoked read throws: the check reports
+ * `status: "failed"` after the write (plan D5), never a silent "not low".
+ */
+function lowOcrFoliosOf(ctx: TurnScopedCtx): LowOcrFoliosLookup {
+  return async ({ corpusProjectId, ark, folios }) => {
+    if (corpusProjectId !== ctx.corpusProjectId) {
+      throw new Error(`quote check asked for corpus ${corpusProjectId}, the turn reads ${ctx.corpusProjectId}`)
+    }
+    const index = await loadOcrIndex(ctx, [...folios].map((folio) => ({ ark, folio })))
+    if (index.access !== OCR_ACCESS.OK) {
+      throw new Error(`OCR quality of ${ark} not readable for the quote check: ${index.access}`)
+    }
+    return new Set([...folios].filter((folio) => index.folios.get(folioOcrKey(ark, folio))?.low === true))
+  }
+}
+
+/**
  * The quote check runs AFTER the write, against the corpus the note's
  * citations point into. It must not decide whether the note exists: an
  * unexpected failure here is logged and reported as `status: "failed"` rather
@@ -190,9 +212,7 @@ async function runQuoteCheck(
       bodyMd,
       priorBodyMd,
       signal: ctx.signal,
-      // Track B's per-folio quality index is not in this build: the check
-      // reports `correction_on_low_ocr` as unevaluated rather than pretending.
-      lowOcrFolios: null,
+      lowOcrFolios: lowOcrFoliosOf(ctx),
       budgetMs: QUOTE_CHECK_BUDGET_MS,
     })
   } catch (err) {
@@ -265,7 +285,7 @@ export const noteListTool = defineTool<z.ZodObject<Record<never, never>>, TurnSc
   description:
     "List all research notes for this project, pinned first, then most-recently-updated first. " +
     "Call this before note_create to check whether a closely related note already exists — " +
-    "prefer note_update over creating a near-duplicate. " +
+    "prefer note_append (add to the end) or note_update (correct existing text) over creating a near-duplicate. " +
     "Each note's id is the value to use when linking to it with [[note:<id>|<label>]]. " +
     "Each note also carries low_ocr_citation_count (citations of poorly recognised " +
     "folios — the note shows the BnF disclaimer) and ocr_unknown_citation_count " +
@@ -397,7 +417,8 @@ export const noteCreateTool = defineTool<typeof noteCreateInputSchema, TurnScope
     "to show a page — the image is fetched from Gallica by ark+folio, no link needed. " +
     "Link to another note with [[note:<note_id>|<label>]] (ids from note_list/note_get) — " +
     "the pill opens that note. " +
-    "Call note_list first to avoid near-duplicates.",
+    "Call note_list first to avoid near-duplicates. " +
+    renderNoteQuoteHint(OCR_CORRECTION_MARKING),
   inputSchema: noteCreateInputSchema,
   handler: handleNoteCreate,
 })
@@ -475,9 +496,11 @@ export const noteUpdateTool = defineTool<typeof noteUpdateInputSchema, TurnScope
     "Update an existing note's title and/or body. " +
     "The previous body is automatically snapshotted to NoteVersion before mutation. " +
     "Omit a field to leave it unchanged. " +
-    "Use this to extend a note with new findings rather than creating a near-duplicate. " +
+    "Use this to CORRECT or remove existing text — including fixing a quote flagged in " +
+    "quote_warnings; to add findings, use note_append. " +
     "Body supports [[ark|label|folio]] citations, ![[ark|caption|folio]] image embeds, and " +
-    "[[note:<id>|<label>]] links to other notes.",
+    "[[note:<id>|<label>]] links to other notes. " +
+    renderNoteQuoteHint(OCR_CORRECTION_MARKING),
   inputSchema: noteUpdateInputSchema,
   handler: handleNoteUpdate,
 })
@@ -546,7 +569,8 @@ export const noteAppendTool = defineTool<typeof noteAppendInputSchema, TurnScope
     "NoteVersion and citations are re-parsed over the whole note. " +
     "Use [[<ark>|<short label>|<folio>]] citations, ![[<ark>|<caption>|<folio>]] image embeds, " +
     "and [[note:<id>|<label>]] links to other notes. " +
-    "Use note_update only for surgical edits to existing text (fixing or removing).",
+    "Use note_update only for surgical edits to existing text (fixing or removing). " +
+    renderNoteQuoteHint(OCR_CORRECTION_MARKING),
   inputSchema: noteAppendInputSchema,
   handler: handleNoteAppend,
 })

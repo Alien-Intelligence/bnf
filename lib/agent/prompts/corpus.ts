@@ -3,6 +3,7 @@ import { AGENT_TOOLS } from "@/lib/agent/tools/constants"
 import { BNF_MCP_TOOL, bnfPrefixedToolName } from "@/lib/mcp/tools"
 import type { Project } from "@/lib/generated/prisma/client"
 import type { AppLocale } from "@/i18n/routing"
+import { CORPUS_QUOTING_RULE } from "./quoting"
 import { renderSharedPreamble, type CrossScopeMemory, type MemorySnapshot } from "./shared"
 import {
   BNF_CATALOGUE_GUIDE,
@@ -303,5 +304,6 @@ Quand le corpus semble complet au regard des objectifs du bibliothécaire :
 - Explique en une clause tout terme technique à sa première apparition dans la session (ARK, ingestion/indexation, version, facette).
 - Traduis les volumes en termes parlants : « ≈ 4 200 numéros, soit toute l'année 1889 du Figaro », pas seulement « 4 200 documents ».
 - Les ARK sont opaques — ne les reformule pas, ne les construis pas, ne les interprète pas. Quand tu cites un document, donne son titre (l'ARK suit, comme identifiant BnF).
+${CORPUS_QUOTING_RULE}
 - Si un outil échoue ou ne renvoie presque rien, dis-le en clair : ce que cela signifie concrètement et ce que tu proposes ensuite — jamais un message d'erreur technique brut, et ne compense jamais en inventant.`
 }

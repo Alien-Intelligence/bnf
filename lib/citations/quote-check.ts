@@ -31,10 +31,11 @@
  *     fetches and propagates — the tool layer turns it into
  *     `quote_check.status: "failed"` after the write (plan D5).
  *
- * Honesty about what was checked: until Track B's per-folio quality index is
- * passed as `lowOcrFolios`, `correction_on_low_ocr` cannot be evaluated. The
- * result then lists it in `unevaluated_rules` and is `partial`, never
- * `complete`.
+ * Honesty about what was checked: a caller without a per-folio quality index
+ * passes `lowOcrFolios: null`, and `correction_on_low_ocr` cannot be evaluated.
+ * The result then lists it in `unevaluated_rules` and is `partial`, never
+ * `complete`. The note tools pass Track B's stored folio quality
+ * (lib/agent/tools/note.ts lowOcrFoliosOf).
  */
 import "server-only"
 

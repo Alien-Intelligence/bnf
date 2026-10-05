@@ -292,9 +292,8 @@ test("a committed note_create whose OCR check fails is still a success, never is
 // folio 1 ends « … se pressait aux abords du Champ de Mars. », folio 2 holds
 // « C'est la fête du travail et de la paix … ».
 //
-// The note tools pass no per-folio quality lookup in this build (Track B), so
-// every check that had a quote in scope is `partial`, naming the rule it could
-// not evaluate.
+// The note tools pass Track B's stored folio quality as the low-OCR lookup, so
+// a check with nothing wrong is `complete`: every rule was evaluated.
 
 const FIGARO = "ark:/12148/bpt6k2839841"
 const FIGARO_CITE = (folio: number) => `[[${FIGARO}|Le Figaro, 6 mai 1889|${folio}]]`
@@ -303,13 +302,9 @@ const STITCHED =
   `C'est la fête du travail et de la paix » ${FIGARO_CITE(1)}`
 const EXACT = `« une foule considérable se pressait aux abords du Champ de Mars » ${FIGARO_CITE(1)}`
 
-/** What a check with `checked` quotes in scope reports in this build. */
-function checkedWithoutQuality(checked: number): NoteToolResult["quote_check"] {
-  return {
-    status: QUOTE_CHECK_STATUS.PARTIAL,
-    checked,
-    unevaluated_rules: [QUOTE_WARNING_REASON.CORRECTION_ON_LOW_OCR],
-  }
+/** What a check with `checked` quotes in scope and every rule evaluated reports. */
+function checkedComplete(checked: number): NoteToolResult["quote_check"] {
+  return { status: QUOTE_CHECK_STATUS.COMPLETE, checked }
 }
 
 function reasonsAndCitations(result: NoteToolResult): Array<[QuoteWarningReason, QuoteCitation | null]> {
@@ -333,7 +328,7 @@ describe("quote guard", () => {
 
   test("note_create with a quote stitched across two folios returns quote_warnings[elision_across_folios]", async () => {
     const result = written(await handleNoteCreate({ title: "Inauguration", body_md: `## Foule\n\n${STITCHED}` }, ctxFor()))
-    assert.deepEqual(result.quote_check, checkedWithoutQuality(1))
+    assert.deepEqual(result.quote_check, checkedComplete(1))
     assert.deepEqual(reasonsAndCitations(result), [
       [QUOTE_WARNING_REASON.ELISION_ACROSS_FOLIOS, { ark: FIGARO, folio: 1 }],
     ])
@@ -341,7 +336,7 @@ describe("quote guard", () => {
 
   test("an exact quote yields no warning and quote_check.checked === 1", async () => {
     const result = written(await handleNoteCreate({ title: "Foule", body_md: `## Foule\n\n${EXACT}` }, ctxFor()))
-    assert.deepEqual(result.quote_check, checkedWithoutQuality(1))
+    assert.deepEqual(result.quote_check, checkedComplete(1))
     assert.equal(result.quote_warnings, undefined)
   })
 
@@ -370,7 +365,7 @@ describe("quote guard", () => {
     assert.equal(updated.quote_warnings, undefined)
 
     const appended = written(await handleNoteAppend({ id: created.note_id, body_md: `## Suite\n\n${EXACT}` }, ctxFor()))
-    assert.deepEqual(appended.quote_check, checkedWithoutQuality(1))
+    assert.deepEqual(appended.quote_check, checkedComplete(1))
     assert.equal(appended.quote_warnings, undefined)
   })
 
@@ -389,6 +384,36 @@ describe("quote guard", () => {
     const failed: Pick<QuoteCheckResult, "status" | "checked"> = { status: QUOTE_CHECK_STATUS.FAILED, checked: 0 }
     assert.deepEqual(result.quote_check, failed)
     assert.equal(result.quote_warnings, undefined)
+  })
+
+  test("a bracketed correction on a folio stored as low OCR returns correction_on_low_ocr", async () => {
+    // A fake-cluster document no other test stores OCR quality for (the
+    // quality is global per ARK and the files run in parallel). Its folio 12
+    // reads « … le visiteur empruntera l'ascenseur Otis … ».
+    const GUIDE = "ark:/12148/bpt6k6529871"
+    await seedCorpusDocuments(projectId, [{ ark: GUIDE, title: "Guide bleu" }], `user:${userId}`)
+    await prisma.documentOcr.create({
+      data: {
+        ark: GUIDE,
+        status: OCR_SYNC_STATUS.AVAILABLE,
+        ocrRate: 0.5,
+        checkedAt: new Date(),
+        syncedAt: new Date(),
+        folios: { create: [{ folio: 12, ocrSource: OCR_SOURCE.ALTO, ocrQuality: 0.5, wordCount: 900 }] },
+      },
+    })
+    try {
+      const corrected = `« le [visiteur] empruntera l'ascenseur Otis » [[${GUIDE}|Guide bleu|12]]`
+      const result = written(
+        await handleNoteCreate({ title: "Ascenseur", body_md: `## Visite\n\n${corrected}` }, ctxFor()),
+      )
+      assert.deepEqual(reasonsAndCitations(result), [
+        [QUOTE_WARNING_REASON.CORRECTION_ON_LOW_OCR, { ark: GUIDE, folio: 12 }],
+      ])
+      assert.equal(result.quote_check?.unevaluated_rules, undefined, "the rule was evaluated")
+    } finally {
+      await prisma.documentOcr.delete({ where: { ark: GUIDE } })
+    }
   })
 
   test("a derived-workspace context checks against corpusProjectId, not projectId", async () => {
@@ -410,7 +435,7 @@ describe("quote guard", () => {
           { ...ctxFor(), projectId: derived.id, corpusProjectId: projectId },
         ),
       )
-      assert.deepEqual(result.quote_check, checkedWithoutQuality(1))
+      assert.deepEqual(result.quote_check, checkedComplete(1))
     } finally {
       ClusterRagClient.getDocumentFolios = original
       await cleanupProject(derived.id)
