@@ -165,21 +165,89 @@ function parseFrame(raw: string): Frame {
 
 /** Ceiling on the cancel request sent when a turn is abandoned. */
 const CANCEL_TIMEOUT_MS = 10_000
+/** Ceiling on waiting for a cancelled turn to settle (its tools stop, its session lets go). */
+const SETTLE_TIMEOUT_MS = 60_000
+/** Interval between two reads of the session's turn state while waiting for it to settle. */
+const SETTLE_POLL_MS = 250
 
-/**
- * Cancel the session's active turn on the server (the messages route's
- * DELETE). The agent turn runs detached from the SSE request, so dropping the
- * stream does not stop it: without this, an abandoned turn keeps spending and
- * writing while the caller moves on (or deletes its project).
- */
-export async function cancelTurn(sessionId: string, cookie: string): Promise<void> {
+/** The messages route's DELETE answer: whether it found an active turn to cancel. */
+const cancelResponseSchema = z.object({ canceled: z.boolean() })
+
+/** Ask the server to cancel the session's active turn; true when it had one and cancelled it. */
+async function requestCancel(sessionId: string, cookie: string): Promise<boolean> {
   const res = await fetch(`${BASE_URL}/api/sessions/${sessionId}/messages`, {
     method: "DELETE",
     headers: { Cookie: cookie },
     signal: AbortSignal.timeout(CANCEL_TIMEOUT_MS),
   })
+  const body = await res.text()
   if (!res.ok) {
-    throw new Error(`cancelling the turn of session ${sessionId} failed: HTTP ${res.status} ${(await res.text()).slice(0, 200)}`)
+    throw new Error(`cancelling the turn of session ${sessionId} failed: HTTP ${res.status} ${body.slice(0, 200)}`)
+  }
+  let json: unknown
+  try {
+    json = JSON.parse(body)
+  } catch (err) {
+    throw new Error(`cancelling the turn of session ${sessionId}: the answer is not JSON: ${body.slice(0, 200)}`, { cause: err })
+  }
+  const parsed = cancelResponseSchema.safeParse(json)
+  if (!parsed.success) {
+    throw new Error(`cancelling the turn of session ${sessionId}: expected { canceled: boolean }, got ${body.slice(0, 200)}`)
+  }
+  return parsed.data.canceled
+}
+
+/** The session's turn state, from the database the server writes it to. */
+async function turnActivity(sessionId: string): Promise<{ activeTurnId: string | null; runningTool: string | null }> {
+  const session = await prisma.appSession.findUnique({ where: { id: sessionId }, select: { activeMessageId: true } })
+  if (session === null) throw new Error(`session ${sessionId} does not exist`)
+  const last = await prisma.toolCall.findFirst({
+    where: { message: { appSessionId: sessionId } },
+    orderBy: { createdAt: "desc" },
+    select: { id: true, tool: true, status: true },
+  })
+  return {
+    activeTurnId: session.activeMessageId,
+    runningTool: last !== null && last.status === TOOL_CALL_STATUS.RUNNING ? `${last.tool} (${last.id})` : null,
+  }
+}
+
+/** What cancelling a turn found: whether the server had a turn to cancel. */
+export type CancelOutcome = { canceled: boolean }
+
+/**
+ * Cancel the session's active turn on the server (the messages route's
+ * DELETE) and wait until it has SETTLED: no active turn on the session and
+ * its last tool call no longer running. The agent turn runs detached from the
+ * SSE request, so dropping the stream does not stop it, and the cancel itself
+ * is asynchronous: without the wait, an abandoned turn keeps writing while the
+ * caller moves on (or deletes its project under it).
+ *
+ * `{ canceled: false }` is taken at its word — the server had no active turn
+ * at that moment — and NOT as "stopped": a turn whose POST was cut short may
+ * register only afterwards, so the wait still runs, and a turn that becomes
+ * active during it is cancelled too. Settling past SETTLE_TIMEOUT_MS is an
+ * error naming what is still running.
+ */
+export async function cancelTurn(sessionId: string, cookie: string): Promise<CancelOutcome> {
+  let canceled = await requestCancel(sessionId, cookie)
+  const cancelledTurns = new Set<string>()
+  const deadline = performance.now() + SETTLE_TIMEOUT_MS
+  for (;;) {
+    const activity = await turnActivity(sessionId)
+    if (activity.activeTurnId === null && activity.runningTool === null) return { canceled }
+    if (activity.activeTurnId !== null && !cancelledTurns.has(activity.activeTurnId)) {
+      // A turn the first DELETE did not see (or one still being torn down): ask once per turn.
+      cancelledTurns.add(activity.activeTurnId)
+      canceled = (await requestCancel(sessionId, cookie)) || canceled
+    }
+    if (performance.now() >= deadline) {
+      throw new Error(
+        `the turn of session ${sessionId} did not settle within ${SETTLE_TIMEOUT_MS} ms after cancelling ` +
+          `(active turn: ${activity.activeTurnId ?? "none"}, running tool: ${activity.runningTool ?? "none"})`,
+      )
+    }
+    await new Promise((resolve) => setTimeout(resolve, SETTLE_POLL_MS))
   }
 }
 
@@ -274,7 +342,17 @@ export async function runTurn(
     controller.abort(failure)
     const cleanup: unknown[] = []
     if (reader !== null) await reader.cancel(failure).catch((e: unknown) => cleanup.push(e))
-    await cancelTurn(sessionId, cookie).catch((e: unknown) => cleanup.push(e))
+    const cancel = await cancelTurn(sessionId, cookie).catch((e: unknown) => {
+      cleanup.push(e)
+      return null
+    })
+    if (cancel !== null) {
+      console.warn(
+        `[e2e] turn of session ${sessionId} abandoned (${String(failure)}); ` +
+          (cancel.canceled ? "the server cancelled it" : "the server had no active turn left to cancel") +
+          ", and it has settled",
+      )
+    }
     if (cleanup.length > 0) {
       throw new AggregateError([failure, ...cleanup], `turn failed and could not be fully cancelled: ${String(failure)}`)
     }
