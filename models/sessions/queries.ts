@@ -100,6 +100,37 @@ export class SessionQueries {
     })
   }
 
+  /** The project's first session in this scope, oldest first. */
+  static async firstForScope(projectId: string, scope: SessionScope): Promise<AppSession | null> {
+    return prisma.appSession.findFirst({ where: { projectId, scope }, orderBy: { createdAt: "asc" } })
+  }
+
+  /** A new active session. */
+  static async create(projectId: string, scope: SessionScope, title: string): Promise<AppSession> {
+    return prisma.appSession.create({
+      data: { projectId, scope, title, status: SESSION_STATUS.ACTIVE, updatedAt: new Date() },
+    })
+  }
+
+  static async titleOf(id: string): Promise<string | null> {
+    const row = await prisma.appSession.findUnique({ where: { id }, select: { title: true } })
+    return row?.title ?? null
+  }
+
+  /** Rename only while the title is still one of `placeholders` — a rename
+   *  that landed meanwhile wins. */
+  static async setTitleIfPlaceholder(id: string, title: string, placeholders: readonly string[]): Promise<void> {
+    await prisma.appSession.updateMany({ where: { id, title: { in: [...placeholders] } }, data: { title } })
+  }
+
+  static async rename(id: string, title: string): Promise<AppSession> {
+    return prisma.appSession.update({ where: { id }, data: { title } })
+  }
+
+  static async archive(id: string): Promise<void> {
+    await prisma.appSession.update({ where: { id }, data: { status: SESSION_STATUS.ARCHIVED } })
+  }
+
   static async get(id: string): Promise<AppSession | null> {
     return prisma.appSession.findUnique({ where: { id } })
   }
