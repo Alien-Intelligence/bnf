@@ -337,8 +337,12 @@ backfilled automatically — no manual step:
   `POST /ocr-quality/sync`. Each missing artifact is queued once on the worker's
   `ocr-quality-backfill` stage, which answers `building` until it is done.
 - **How to watch it:**
-  - app logs: `[ocr-sync] cycle: available=…, building=…, unavailable=…, rejected=…, pending-left=…`
-    (`pending-left` reaching 0 and staying there means converged);
+  - app logs: `[ocr-sync] cycle (<trigger>): available=…, building=…, unavailable=…, rejected=…, outage=…, stop=…`
+    — `trigger` is `boot`, `sweep` or `commit`; `stop` says why the cycle ended
+    (`done` = nothing left to ask; `budget` / `deadline` = it will resume next
+    sweep; `worker_unavailable` = an outage, `exchange_paused` = the worker's
+    answers break the contract as a whole, `coalesced` = another drain ran).
+    Cycles ending `done` with `building=0` mean converged;
   - worker pod: `npm run status` prints `ocrBackfill: {queued, done, failed}`;
   - Postgres: `SELECT status, reason, count(*) FROM document_ocr GROUP BY 1, 2;`
 - **App-side sync state (persisted, nothing in memory):** a row is asked again
@@ -349,8 +353,12 @@ backfilled automatically — no manual step:
   splitting the batch, backs it off (3 min doubling, capped at 24 h) and, after
   5 consecutive failures, marks it `quarantined` with `reason =
   sync_rejected: …`; a quarantined ARK is only asked again after a re-ingest.
-  An unreachable worker (timeout, 5xx, 404 from an old worker) stops the cycle
-  and penalises nothing. To list problems:
+  If the whole exchange is broken (an incompatible worker version, a 401/413),
+  no ARK is blamed: the sync pauses (backing off from 3 min to 1 h) and
+  resumes by itself when the worker answers again. An unreachable worker
+  (timeout, 5xx, 404 from an old worker) stops the cycle and records a
+  backoff on the batch's ARKs (`reason = sync_worker_unavailable: …`) without
+  counting an attempt. To list problems:
   `SELECT ark, status, reason, sync_attempts FROM document_ocr WHERE status IN ('quarantined', 'unavailable') ORDER BY checked_at DESC;`
 - **BnF cost:** one Presentation-API (ALTO) call per indexed **text** folio,
   once — the `alto` cache holds extracted text, not XML, so the word confidences
@@ -361,9 +369,12 @@ backfilled automatically — no manual step:
   120 s) is retried with a backoff of `ocrBackfillRetryFailedAfterMs` doubling
   per attempt, at most 5 attempts; a permanent failure (no metadata, no pages
   artifact, unclassifiable, a permanent BnF error) is never retried and is
-  reported `unavailable` with its reason. A build pg-boss expired (the delivery
-  ran past 1 h) is re-queued after 6 h as one attempt, so nothing stays
-  `building` forever.
+  reported `unavailable` with its reason. A build pg-boss expired (one
+  delivery ran past 1 h) is re-queued 1 h 30 after its last delivery STARTED,
+  as one attempt — a build still waiting in the backlog is never counted as
+  expired; after 5 attempts it is `build_expired`. An artifact that keeps
+  vanishing after being built ends as `artifact_lost` the same way. The base
+  backoff `ocrBackfillRetryFailedAfterMs` must be at least 60000 ms.
 - **How to speed it up:** raise `worker.config.ocrBackfillConcurrency` off-hours
   (default 2 ≈ 60–120 folios/min).
 - **How to stop the spend without a rollback:** set
