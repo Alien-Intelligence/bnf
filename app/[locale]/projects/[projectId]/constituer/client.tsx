@@ -9,6 +9,7 @@
 // reload. The URL is only MIRRORED (shallow history.replaceState) so the view is
 // copy-paste/reload-able, and the initial state is seeded from it once on mount.
 
+import { STREAM_DOMAIN_EVENT } from "@/lib/agent/stream-events"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useSearchParams, usePathname } from "next/navigation"
 import { useQueryClient } from "@tanstack/react-query"
@@ -108,7 +109,7 @@ export function ConstituerClient({
 
   useEffect(() => {
     const currentCount = stream.domainEvents.filter(
-      (e) => e.type === "corpus_event",
+      (e) => e.type === STREAM_DOMAIN_EVENT.CORPUS,
     ).length
 
     if (currentCount <= corpusEventCountRef.current) return
@@ -136,7 +137,7 @@ export function ConstituerClient({
   // fires a buffer_event. Debounce like the corpus refresh so a paginated sweep
   // (one event per page) doesn't hammer the API.
   useEffect(() => {
-    const currentCount = stream.domainEvents.filter((e) => e.type === "buffer_event").length
+    const currentCount = stream.domainEvents.filter((e) => e.type === STREAM_DOMAIN_EVENT.BUFFER).length
     if (currentCount <= bufferEventCountRef.current) return
     bufferEventCountRef.current = currentCount
 
@@ -158,7 +159,7 @@ export function ConstituerClient({
   const memoryEventCountRef = useRef(0)
   useEffect(() => {
     const currentCount = stream.domainEvents.filter(
-      (e) => e.type === "memory_event",
+      (e) => e.type === STREAM_DOMAIN_EVENT.MEMORY,
     ).length
     if (currentCount <= memoryEventCountRef.current) return
     memoryEventCountRef.current = currentCount

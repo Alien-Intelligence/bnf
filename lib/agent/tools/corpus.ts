@@ -38,7 +38,7 @@ import type { TurnScopedCtx } from "./registry-factory"
 import { authorizeProjectTool } from "./authorize"
 import { EMPTY_FILTER_REFUSAL, toolFailure, toolRefusal, type ToolFailure } from "./failure"
 import { CORPUS_ACCESS_REVOKED_ERROR } from "./ingestion-guard"
-import { emitDomainEvent } from "@/lib/agent/stream-events"
+import { emitDomainEvent, STREAM_DOMAIN_EVENT } from "@/lib/agent/stream-events"
 import { AGENT_TOOLS } from "./constants"
 import { provisionalTotal } from "./provisional-total"
 
@@ -341,7 +341,7 @@ export const corpusAddTool = defineTool<
     }
 
     emitDomainEvent(ctx, {
-      type: "corpus_event",
+      type: STREAM_DOMAIN_EVENT.CORPUS,
       data: {
         kind: "add",
         count: result.lastDeltaAdded,
@@ -411,7 +411,7 @@ export const corpusRemoveTool = defineTool<
     })
 
     emitDomainEvent(ctx, {
-      type: "corpus_event",
+      type: STREAM_DOMAIN_EVENT.CORPUS,
       data: {
         kind: "remove",
         count: result.lastDeltaRemoved,
@@ -497,7 +497,7 @@ export const corpusRemoveByFilterTool = defineTool<
     // Only a committed removal emits a corpus_event and advances a version.
     if (result.status === "removed" && result.removed > 0) {
       emitDomainEvent(ctx, {
-        type: "corpus_event",
+        type: STREAM_DOMAIN_EVENT.CORPUS,
         data: {
           kind: "remove",
           count: result.removed,

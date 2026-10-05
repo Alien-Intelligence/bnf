@@ -1,4 +1,5 @@
 import "server-only"
+import { AGENT_TOOLS } from "@/lib/agent/tools/constants"
 
 // lib/agent/prompts/bnf-knowledge.ts
 // Static BnF domain knowledge injected into the corpus agent's system prompt.
@@ -41,7 +42,7 @@ Inutile donc de précharger l'ARK Gallica avant d'ajouter ; n'écarte jamais une
 
 1. **Champ UNIMARC 856 $u** — \`bnf__bnf_get_catalogue_record\` : URL Gallica (ex. \`http://gallica.bnf.fr/ark:/12148/bpt6k2029874\`) → ARK \`bpt6k…\`/\`btv1b…\`.
 2. **SPARQL data.bnf.fr** — \`rdarelationships:electronicReproduction\` au niveau de la manifestation (voir « SPARQL sur data.bnf.fr »).
-3. **Re-recherche Gallica** — \`corpus_search\` avec \`source: "gallica"\` par titre + auteur + date (vérifie la concordance des métadonnées ; le résultat entre dans le tampon — écarte-le avec \`buffer_discard\` s'il n'a pas sa place).\``
+3. **Re-recherche Gallica** — \`${AGENT_TOOLS.corpusSearch}\` avec \`source: "gallica"\` par titre + auteur + date (vérifie la concordance des métadonnées ; le résultat entre dans le tampon — écarte-le avec \`${AGENT_TOOLS.bufferDiscard}\` s'il n'a pas sa place).\``
 
 // ---------------------------------------------------------------------------
 // What the BnF holds, how it names things, and where it stops
@@ -102,17 +103,17 @@ Certaines notices portent \`Appartient à l'ensemble documentaire : <CODE>\` —
 
 export const BNF_PERIODICAL_GUIDE = `## ÉNUMÉRER UN PÉRIODIQUE (outil \`bnf__bnf_get_periodical_issues\`)
 
-Un périodique (journal, revue) n'est pas un document unique : c'est une **collection** de numéros, chacun avec son propre ARK numérisé \`bpt6k…\`. Pour « ajouter toute l'année X de tel journal », tu dois énumérer ses numéros — \`corpus_search\` avec \`collapsing: false\` les trouve par mots-clés ; cet outil les énumère tous, sans critère de contenu.
+Un périodique (journal, revue) n'est pas un document unique : c'est une **collection** de numéros, chacun avec son propre ARK numérisé \`bpt6k…\`. Pour « ajouter toute l'année X de tel journal », tu dois énumérer ses numéros — \`${AGENT_TOOLS.corpusSearch}\` avec \`collapsing: false\` les trouve par mots-clés ; cet outil les énumère tous, sans critère de contenu.
 
 L'API a **deux niveaux** :
 
-1. **Identifie la collection.** Il te faut l'ARK **de collection** \`cb…\` du périodique (ex. \`cb34355551z\` pour Le Figaro, \`cb34431794k\` pour Le Temps). Trouve-le via \`corpus_search\` (\`source: "catalogue"\`, \`title\`) si tu ne l'as pas — la notice entre dans le tampon ; écarte-la avec \`buffer_discard\` si elle n'a pas sa place dans le corpus. **N'utilise jamais un \`bpt6k…\` de numéro isolé ici** — seuls les \`cb…\` de collection sont valides.
+1. **Identifie la collection.** Il te faut l'ARK **de collection** \`cb…\` du périodique (ex. \`cb34355551z\` pour Le Figaro, \`cb34431794k\` pour Le Temps). Trouve-le via \`${AGENT_TOOLS.corpusSearch}\` (\`source: "catalogue"\`, \`title\`) si tu ne l'as pas — la notice entre dans le tampon ; écarte-la avec \`${AGENT_TOOLS.bufferDiscard}\` si elle n'a pas sa place dans le corpus. **N'utilise jamais un \`bpt6k…\` de numéro isolé ici** — seuls les \`cb…\` de collection sont valides.
 2. **Liste les années.** Appelle \`bnf__bnf_get_periodical_issues\` avec l'ARK \`cb…\` **sans** \`year\` : tu obtiens \`available_years[]\` et le total de numéros.
 3. **Liste les numéros d'une année.** Rappelle l'outil **avec** \`year\` (ex. \`"1889"\`) : tu obtiens \`issues[{ark, date, gallica_url}]\`.
 
 **Pagination obligatoire.** Un quotidien compte 250–365 numéros par an, mais l'outil en renvoie un nombre limité par appel : continue avec \`start_record\` croissant (et \`maximum_records\`) jusqu'à avoir parcouru tous les numéros de l'année — comme toute recherche paginée (voir « EXHAUSTIVITÉ ET PAGINATION »). Ne t'arrête jamais au premier appel.
 
-**Puis dépose.** Dépose les ARK \`bpt6k…\` des numéros visés dans le tampon avec \`buffer_add\` (toutes les pages, toutes les années demandées) : leurs métadonnées se résolvent en arrière-plan, puis tu tries et tu valides avec \`buffer_commit\`. Si une recherche Gallica \`doc_type: "fascicule"\` + \`collapsing: false\` + \`title\` + \`date\` couvre le besoin, elle est préférable : elle dépose les numéros AVEC leurs métadonnées immédiatement.
+**Puis dépose.** Dépose les ARK \`bpt6k…\` des numéros visés dans le tampon avec \`${AGENT_TOOLS.bufferAdd}\` (toutes les pages, toutes les années demandées) : leurs métadonnées se résolvent en arrière-plan, puis tu tries et tu valides avec \`${AGENT_TOOLS.bufferCommit}\`. Si une recherche Gallica \`doc_type: "fascicule"\` + \`collapsing: false\` + \`title\` + \`date\` couvre le besoin, elle est préférable : elle dépose les numéros AVEC leurs métadonnées immédiatement.
 
 Préviens l'utilisateur avant un balayage long (« je parcours l'ensemble des numéros de 1889, cela peut prendre un instant ») et, pour de très gros volumes, annonce le total et propose de confirmer le périmètre (une année ? plusieurs ? tout ?) avant de tout tirer.`
 

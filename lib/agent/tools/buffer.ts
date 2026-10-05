@@ -67,7 +67,7 @@ import {
 import type { TurnScopedCtx } from "./registry-factory"
 import { authorizeProjectTool } from "./authorize"
 import { EMPTY_FILTER_REFUSAL, toolRefusal } from "./failure"
-import { emitDomainEvent } from "@/lib/agent/stream-events"
+import { emitDomainEvent, STREAM_DOMAIN_EVENT } from "@/lib/agent/stream-events"
 import { AGENT_TOOLS } from "./constants"
 import { provisionalTotal } from "./provisional-total"
 
@@ -107,7 +107,7 @@ async function emitBuffer(
   count: number,
 ): Promise<number> {
   const total = await BufferService.count(projectId)
-  emitDomainEvent(ctx, { type: "buffer_event", data: { kind, count, total } })
+  emitDomainEvent(ctx, { type: STREAM_DOMAIN_EVENT.BUFFER, data: { kind, count, total } })
   return total
 }
 
@@ -426,7 +426,7 @@ export const bufferCommitTool = defineTool<
     // the buffer panel.
     if (result.corpus.lastDeltaAdded > 0) {
       emitDomainEvent(ctx, {
-        type: "corpus_event",
+        type: STREAM_DOMAIN_EVENT.CORPUS,
         data: {
           kind: "add",
           count: result.corpus.lastDeltaAdded,

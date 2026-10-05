@@ -55,7 +55,7 @@ import {
 } from "@/lib/constants"
 import { resolveRequestLocale } from "@/lib/locale"
 import { withBnfRateLimit } from "@/lib/mcp/rate-limited-registry"
-import type { SubagentEventData, SubagentTerminalData } from "@/lib/tools/subagent-runs"
+import { SUBAGENT_EVENT_KIND, type SubagentEventData, type SubagentTerminalData } from "@/lib/tools/subagent-runs"
 import { AgentQueries } from "@/models/agents/queries"
 import { AgentService } from "@/models/agents/service"
 import { SESSION_SCOPE, type SessionScope } from "@/models/sessions/schema"
@@ -262,12 +262,12 @@ function stoppedOutcome(bounds: ChildBounds, timeoutMs: number, toolCalls: numbe
         child_tool_calls: toolCalls,
         ...staged,
       },
-      terminal: { kind: "timeout", toolCalls, ...(buffered !== undefined ? { buffered } : {}) },
+      terminal: { kind: SUBAGENT_EVENT_KIND.TIMEOUT, toolCalls, ...(buffered !== undefined ? { buffered } : {}) },
     }
   }
   return {
     result: { success: false, error: "Le sous-agent a été annulé avec le tour.", child_tool_calls: toolCalls, ...staged },
-    terminal: { kind: "aborted", toolCalls, ...(buffered !== undefined ? { buffered } : {}) },
+    terminal: { kind: SUBAGENT_EVENT_KIND.ABORTED, toolCalls, ...(buffered !== undefined ? { buffered } : {}) },
   }
 }
 
@@ -319,7 +319,7 @@ export async function runSpawn(
     // fault outside its try, so the pairing holds even then (§15).
     const runId = randomUUID()
     emitSubagent(ctx, {
-      kind: "start",
+      kind: SUBAGENT_EVENT_KIND.START,
       runId,
       scope: ctx.scope,
       label: input.task.slice(0, SPAWN_LABEL_MAX_CHARS),
@@ -328,7 +328,7 @@ export async function runSpawn(
       const message = err instanceof Error ? err.message : String(err)
       return {
         result: { success: false, error: `Le sous-agent n'a pas pu s'exécuter : ${message}` },
-        terminal: { kind: "error", toolCalls: 0, error: message },
+        terminal: { kind: SUBAGENT_EVENT_KIND.ERROR, toolCalls: 0, error: message },
       }
     })
     emitSubagent(ctx, { ...outcome.terminal, runId, scope: ctx.scope })
@@ -437,7 +437,7 @@ async function runChild(
           child_tool_calls: toolCalls,
           ...(staged !== undefined ? { buffered_added: staged } : {}),
         },
-        terminal: { kind: "error", toolCalls, error: childError, ...(staged !== undefined ? { buffered: staged } : {}) },
+        terminal: { kind: SUBAGENT_EVENT_KIND.ERROR, toolCalls, error: childError, ...(staged !== undefined ? { buffered: staged } : {}) },
       }
     }
     return {
@@ -447,7 +447,7 @@ async function runChild(
         ...(staged !== undefined ? { buffered_added: staged } : {}),
         ...(childError ? { child_error: childError } : {}),
       },
-      terminal: { kind: "done", toolCalls, ...(staged !== undefined ? { buffered: staged } : {}) },
+      terminal: { kind: SUBAGENT_EVENT_KIND.DONE, toolCalls, ...(staged !== undefined ? { buffered: staged } : {}) },
     }
   } catch (err) {
     // Coerce any failure into a tool result (§15) — a timeout or a parent
@@ -462,7 +462,7 @@ async function runChild(
         child_tool_calls: toolCalls,
         ...(staged !== undefined ? { buffered_added: staged } : {}),
       },
-      terminal: { kind: "error", toolCalls, error: message, ...(staged !== undefined ? { buffered: staged } : {}) },
+      terminal: { kind: SUBAGENT_EVENT_KIND.ERROR, toolCalls, error: message, ...(staged !== undefined ? { buffered: staged } : {}) },
     }
   }
 }

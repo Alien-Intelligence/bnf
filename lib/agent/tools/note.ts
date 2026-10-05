@@ -30,7 +30,7 @@ import { NoteService } from "@/models/notes/service"
 import { NoteQueries } from "@/models/notes/queries"
 import type { TurnScopedCtx } from "./registry-factory"
 import { authorizeProjectTool, toolForbidden } from "./authorize"
-import { emitDomainEvent } from "@/lib/agent/stream-events"
+import { emitDomainEvent, STREAM_DOMAIN_EVENT } from "@/lib/agent/stream-events"
 import { AGENT_TOOLS } from "./constants"
 import { toolFailure } from "./failure"
 import { NOTE_NOT_INGESTED_ERROR, resolveIngestedCorpus } from "./ingestion-guard"
@@ -171,7 +171,7 @@ export const noteCreateTool = defineTool<
     })
 
     emitDomainEvent(ctx, {
-      type: "note_event",
+      type: STREAM_DOMAIN_EVENT.NOTE,
       data: { kind: "created", noteId: note.id, title: note.title },
     })
 
@@ -241,7 +241,7 @@ export const noteUpdateTool = defineTool<
     if (!written) return toolFailure(NOTE_NOT_FOUND_ERROR)
 
     emitDomainEvent(ctx, {
-      type: "note_event",
+      type: STREAM_DOMAIN_EVENT.NOTE,
       data: { kind: "updated", noteId: written.note.id, title: written.note.title },
     })
 
@@ -302,7 +302,7 @@ export const noteAppendTool = defineTool<
     if (!written) return toolFailure(NOTE_NOT_FOUND_ERROR)
 
     emitDomainEvent(ctx, {
-      type: "note_event",
+      type: STREAM_DOMAIN_EVENT.NOTE,
       data: { kind: "updated", noteId: written.note.id, title: written.note.title },
     })
 

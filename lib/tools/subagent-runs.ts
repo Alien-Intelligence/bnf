@@ -9,16 +9,32 @@
 // with the same runId. Domain events are live-only (not persisted), so a turn
 // that ENDS with a run still open — a server restart, a dropped stream — shows
 // that run as `interrupted`, never as a spinner.
+import { STREAM_DOMAIN_EVENT } from "@/lib/agent/stream-event-types"
 import { z } from "zod"
 import { SESSION_SCOPE } from "@/models/sessions/schema"
 
 const scopeSchema = z.enum(SESSION_SCOPE)
 
-export const SUBAGENT_TERMINAL_KINDS = ["done", "error", "timeout", "aborted"] as const
+/** The kinds of a subagent_event — ONE vocabulary: spawn.ts emits these, the
+ *  reducer folds them, and the run statuses below are derived from them. */
+export const SUBAGENT_EVENT_KIND = {
+  START: "start",
+  DONE: "done",
+  ERROR: "error",
+  TIMEOUT: "timeout",
+  ABORTED: "aborted",
+} as const
+
+export const SUBAGENT_TERMINAL_KINDS = [
+  SUBAGENT_EVENT_KIND.DONE,
+  SUBAGENT_EVENT_KIND.ERROR,
+  SUBAGENT_EVENT_KIND.TIMEOUT,
+  SUBAGENT_EVENT_KIND.ABORTED,
+] as const
 export type SubagentTerminalKind = (typeof SUBAGENT_TERMINAL_KINDS)[number]
 
 const startSchema = z.object({
-  kind: z.literal("start"),
+  kind: z.literal(SUBAGENT_EVENT_KIND.START),
   runId: z.string().min(1),
   scope: scopeSchema,
   label: z.string(),
@@ -42,10 +58,11 @@ export type SubagentTerminalData = z.infer<typeof terminalSchema>
 /** A run's display status — shared by the reducer and the row component. */
 export const SUBAGENT_RUN_STATUS = {
   RUNNING: "running",
-  DONE: "done",
-  ERROR: "error",
-  TIMEOUT: "timeout",
-  ABORTED: "aborted",
+  // A closed run shows its terminal event's kind — the same values, by construction.
+  DONE: SUBAGENT_EVENT_KIND.DONE,
+  ERROR: SUBAGENT_EVENT_KIND.ERROR,
+  TIMEOUT: SUBAGENT_EVENT_KIND.TIMEOUT,
+  ABORTED: SUBAGENT_EVENT_KIND.ABORTED,
   /** The turn ended with no terminal event: the final state is unknown. */
   INTERRUPTED: "interrupted",
   /** A subagent_event the client could not read (contract mismatch). */
@@ -72,16 +89,18 @@ export type SubagentTurnInput = {
   events: ReadonlyArray<{ type: string; data: unknown }>
 }
 
-/** A folded run, and which of its events renders its one row. */
+/** A folded run, and the ONE event that renders its row. */
 export type SubagentRun = {
   state: SubagentRunState
-  /** `start` normally; `terminal` for a run whose start never arrived. */
-  anchor: "start" | "terminal"
+  /** The anchor event, by identity: the start event normally; the FIRST
+   *  terminal for a run whose start never arrived — so a duplicate terminal
+   *  can never render a second row. */
+  anchor: { readonly type: string; readonly data: unknown }
 }
 
 function terminalState(label: string, t: SubagentTerminalData): SubagentRunState {
   const buffered = t.buffered !== undefined ? { buffered: t.buffered } : {}
-  if (t.kind === "done") return { status: SUBAGENT_RUN_STATUS.DONE, label, toolCalls: t.toolCalls, ...buffered }
+  if (t.kind === SUBAGENT_EVENT_KIND.DONE) return { status: SUBAGENT_RUN_STATUS.DONE, label, toolCalls: t.toolCalls, ...buffered }
   return { status: t.kind, label, toolCalls: t.toolCalls, ...buffered, ...(t.error !== undefined ? { error: t.error } : {}) }
 }
 
@@ -107,33 +126,37 @@ export function parseSubagentEvent(data: unknown): SubagentEventData | null {
  * at their own position.
  */
 export function reduceSubagentRuns(turns: ReadonlyArray<SubagentTurnInput>): Map<string, SubagentRun> {
-  const starts = new Map<string, { label: string; streaming: boolean }>()
-  const terminals = new Map<string, SubagentTerminalData>()
+  type Seen<T> = { data: T; event: { readonly type: string; readonly data: unknown } }
+  const starts = new Map<string, Seen<{ label: string; streaming: boolean }>>()
+  const terminals = new Map<string, Seen<SubagentTerminalData>>()
   for (const turn of turns) {
     for (const event of turn.events) {
-      if (event.type !== "subagent_event") continue
+      if (event.type !== STREAM_DOMAIN_EVENT.SUBAGENT) continue
       const data = parseSubagentEvent(event.data)
       if (data === null) continue
-      if (data.kind === "start") {
-        if (!starts.has(data.runId)) starts.set(data.runId, { label: data.label, streaming: turn.streaming })
+      if (data.kind === SUBAGENT_EVENT_KIND.START) {
+        if (!starts.has(data.runId)) {
+          starts.set(data.runId, { data: { label: data.label, streaming: turn.streaming }, event })
+        }
       } else if (!terminals.has(data.runId)) {
-        terminals.set(data.runId, data)
+        terminals.set(data.runId, { data, event })
       }
     }
   }
   const runs = new Map<string, SubagentRun>()
   for (const [runId, start] of starts) {
     const t = terminals.get(runId)
+    const { label, streaming } = start.data
     const state: SubagentRunState =
       t !== undefined
-        ? terminalState(start.label, t)
-        : start.streaming
-          ? { status: SUBAGENT_RUN_STATUS.RUNNING, label: start.label }
-          : { status: SUBAGENT_RUN_STATUS.INTERRUPTED, label: start.label }
-    runs.set(runId, { state, anchor: "start" })
+        ? terminalState(label, t.data)
+        : streaming
+          ? { status: SUBAGENT_RUN_STATUS.RUNNING, label }
+          : { status: SUBAGENT_RUN_STATUS.INTERRUPTED, label }
+    runs.set(runId, { state, anchor: start.event })
   }
   for (const [runId, t] of terminals) {
-    if (!starts.has(runId)) runs.set(runId, { state: terminalState("", t), anchor: "terminal" })
+    if (!starts.has(runId)) runs.set(runId, { state: terminalState("", t.data), anchor: t.event })
   }
   return runs
 }

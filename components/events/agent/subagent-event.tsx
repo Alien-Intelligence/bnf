@@ -13,81 +13,99 @@
 
 "use client"
 
-import { Bot, CircleSlash, Loader2, TriangleAlert } from "lucide-react"
+import { Bot, CircleSlash, Loader2, TriangleAlert, type LucideIcon } from "lucide-react"
 import { useTranslations } from "next-intl"
+import { Card } from "@/components/ui/card"
+import { cn } from "@/lib/utils"
 import { SUBAGENT_RUN_STATUS, type SubagentRunState } from "@/lib/tools/subagent-runs"
 
 type Props = { run: SubagentRunState }
 
+/** The row's look per tone — one component, variants instead of four panels. */
+const TONE = {
+  active: { card: "bg-brand-teal/5 ring-brand-teal/30", icon: "text-brand-teal", text: "font-medium text-brand-teal" },
+  failed: { card: "bg-destructive/5 ring-destructive/30", icon: "text-destructive", text: "text-destructive" },
+  done: { card: "", icon: "text-brand-teal", text: "text-muted-foreground" },
+  muted: { card: "bg-muted/40", icon: "text-muted-foreground", text: "text-muted-foreground" },
+} as const
+
+function RunRow({
+  tone,
+  icon: Icon,
+  spin = false,
+  text,
+  details,
+}: {
+  tone: keyof typeof TONE
+  icon: LucideIcon
+  spin?: boolean
+  text: string
+  details: ReadonlyArray<string | null>
+}) {
+  const look = TONE[tone]
+  return (
+    <Card size="sm" className={cn("flex-row items-center gap-2.5 px-3 py-2", look.card)}>
+      <Icon className={cn("size-4 shrink-0", look.icon, spin && "animate-spin")} aria-hidden="true" />
+      <div className="flex min-w-0 flex-col">
+        <span className={cn("text-xs", look.text)}>{text}</span>
+        {details
+          .filter((d): d is string => d !== null && d !== "")
+          .map((d) => (
+            <span key={d} className="truncate text-[11px] text-muted-foreground">
+              {d}
+            </span>
+          ))}
+      </div>
+    </Card>
+  )
+}
+
 export function EventSubagentRow({ run }: Props) {
   const t = useTranslations("corpus.events")
+  /** What a stopped run had staged — never lost from the row. */
+  const staged = (buffered: number | undefined) =>
+    buffered !== undefined && buffered > 0 ? t("subagentStagedBeforeStop", { buffered }) : null
 
   switch (run.status) {
     case SUBAGENT_RUN_STATUS.RUNNING:
       return (
-        <div className="flex items-center gap-2.5 rounded-lg border border-brand-teal/30 bg-brand-teal/5 px-3 py-2">
-          <Loader2 className="size-4 shrink-0 animate-spin text-brand-teal" aria-hidden="true" />
-          <div className="flex min-w-0 flex-col">
-            <span className="text-xs font-medium text-brand-teal">{t("subagentStart")}</span>
-            <span className="truncate text-[11px] text-muted-foreground">{run.label}</span>
-            <span className="text-[11px] text-muted-foreground">{t("subagentStartHint")}</span>
-          </div>
-        </div>
+        <RunRow tone="active" icon={Loader2} spin text={t("subagentStart")} details={[run.label, t("subagentStartHint")]} />
       )
     case SUBAGENT_RUN_STATUS.ERROR:
+      return (
+        <RunRow
+          tone="failed"
+          icon={TriangleAlert}
+          text={t("subagentError", { toolCalls: run.toolCalls })}
+          details={[staged(run.buffered), run.label]}
+        />
+      )
     case SUBAGENT_RUN_STATUS.TIMEOUT:
       return (
-        <div className="flex items-center gap-2.5 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2">
-          <TriangleAlert className="size-4 shrink-0 text-destructive" aria-hidden="true" />
-          <div className="flex min-w-0 flex-col">
-            <span className="text-xs text-destructive">
-              {run.status === SUBAGENT_RUN_STATUS.ERROR
-                ? t("subagentError", { toolCalls: run.toolCalls })
-                : t("subagentTimeout")}
-            </span>
-            {run.buffered !== undefined && run.buffered > 0 && (
-              <span className="text-[11px] text-muted-foreground">
-                {t("subagentStagedBeforeStop", { buffered: run.buffered })}
-              </span>
-            )}
-            {run.label !== "" && <span className="truncate text-[11px] text-muted-foreground">{run.label}</span>}
-          </div>
-        </div>
+        <RunRow tone="failed" icon={TriangleAlert} text={t("subagentTimeout")} details={[staged(run.buffered), run.label]} />
       )
-    case SUBAGENT_RUN_STATUS.DONE: {
-      const label =
-        run.buffered !== undefined
-          ? t("subagentDoneBuffered", { toolCalls: run.toolCalls, buffered: run.buffered })
-          : t("subagentDone", { toolCalls: run.toolCalls })
+    case SUBAGENT_RUN_STATUS.DONE:
       return (
-        <div className="flex items-center gap-2.5 rounded-lg border bg-card px-3 py-2">
-          <Bot className="size-4 shrink-0 text-brand-teal" aria-hidden="true" />
-          <div className="flex min-w-0 flex-col">
-            <span className="text-xs text-muted-foreground">{label}</span>
-            {run.label !== "" && <span className="truncate text-[11px] text-muted-foreground">{run.label}</span>}
-          </div>
-        </div>
+        <RunRow
+          tone="done"
+          icon={Bot}
+          text={
+            run.buffered !== undefined
+              ? t("subagentDoneBuffered", { toolCalls: run.toolCalls, buffered: run.buffered })
+              : t("subagentDone", { toolCalls: run.toolCalls })
+          }
+          details={[run.label]}
+        />
       )
-    }
     // Cancelled with the turn, ended with no terminal event, or an event the
     // client could not read: muted, never a spinner.
     case SUBAGENT_RUN_STATUS.ABORTED:
-      return <MutedRow text={t("subagentAborted")} label={run.label} />
+      return (
+        <RunRow tone="muted" icon={CircleSlash} text={t("subagentAborted")} details={[staged(run.buffered), run.label]} />
+      )
     case SUBAGENT_RUN_STATUS.INTERRUPTED:
-      return <MutedRow text={t("subagentInterrupted")} label={run.label} />
+      return <RunRow tone="muted" icon={CircleSlash} text={t("subagentInterrupted")} details={[run.label]} />
     case SUBAGENT_RUN_STATUS.UNREADABLE:
-      return <MutedRow text={t("subagentUnreadable")} label="" />
+      return <RunRow tone="muted" icon={CircleSlash} text={t("subagentUnreadable")} details={[]} />
   }
-}
-
-function MutedRow({ text, label }: { text: string; label: string }) {
-  return (
-    <div className="flex items-center gap-2.5 rounded-lg border bg-muted/40 px-3 py-2">
-      <CircleSlash className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-      <div className="flex min-w-0 flex-col">
-        <span className="text-xs text-muted-foreground">{text}</span>
-        {label !== "" && <span className="truncate text-[11px] text-muted-foreground">{label}</span>}
-      </div>
-    </div>
-  )
 }

@@ -235,22 +235,25 @@ function turnsToRunInput(turns: ReadonlyArray<ChatTurn>): SubagentTurnInput[] {
 
 function DomainPartView({
   event,
+  rawEvent,
   projectId,
   locale,
   subagentRuns,
 }: {
   event: StreamDomainEvent
+  /** The part's event as the turn carries it — the identity the reducer anchors on. */
+  rawEvent: { readonly type: string; readonly data: unknown }
   projectId: string
   locale: string
   subagentRuns: ReadonlyMap<string, SubagentRun>
 }) {
   // Corpus mutations render from their tool part (the +N/−N pill), so the
   // corpus_event row is suppressed to avoid doubling the count.
-  if (event.type === "corpus_event") return null
-  if (event.type === "memory_event") {
+  if (event.type === STREAM_DOMAIN_EVENT.CORPUS) return null
+  if (event.type === STREAM_DOMAIN_EVENT.MEMORY) {
     return <EventMemoryRow kind={event.data.kind} section={event.data.section} />
   }
-  if (event.type === "ingest_event") {
+  if (event.type === STREAM_DOMAIN_EVENT.INGEST) {
     return (
       <EventIngestRow
         status={event.data.status}
@@ -259,16 +262,16 @@ function DomainPartView({
       />
     )
   }
-  if (event.type === "subagent_event") {
+  if (event.type === STREAM_DOMAIN_EVENT.SUBAGENT) {
     // One row per run, at its anchor: the start event, or the terminal of a
     // run whose start never arrived. Any other event of the run is folded into
     // that row (reduceSubagentRuns) and renders nothing of its own.
     const run = subagentRuns.get(event.data.runId)
-    if (run === undefined) return null
-    const isAnchor = event.data.kind === "start" ? run.anchor === "start" : run.anchor === "terminal"
-    return isAnchor ? <EventSubagentRow run={run.state} /> : null
+    // Only the run's anchor event renders its row (by identity: one row per
+    // run, a duplicate terminal included).
+    return run !== undefined && run.anchor === rawEvent ? <EventSubagentRow run={run.state} /> : null
   }
-  if (event.type === "compaction_event") {
+  if (event.type === STREAM_DOMAIN_EVENT.COMPACTION) {
     // Only surface a FRESH compaction; the per-turn cache-reuse is silent.
     if (event.data.reused) return null
     return <EventCompactionRow coveredMessageCount={event.data.coveredMessageCount} />
@@ -314,7 +317,13 @@ function PartView({
       ) : null
     }
     return (
-      <DomainPartView event={parsed.event} projectId={projectId} locale={locale} subagentRuns={subagentRuns} />
+      <DomainPartView
+        event={parsed.event}
+        rawEvent={part.event}
+        projectId={projectId}
+        locale={locale}
+        subagentRuns={subagentRuns}
+      />
     )
   }
   return null

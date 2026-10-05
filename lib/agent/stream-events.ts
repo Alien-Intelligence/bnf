@@ -9,19 +9,9 @@
 import { z } from "zod"
 import { subagentEventDataSchema } from "@/lib/tools/subagent-runs"
 import { MEMORY_SCOPE } from "@/models/memory/schema"
+import { STREAM_DOMAIN_EVENT, type StreamDomainEventType } from "./stream-event-types"
 
-/** Every domain event type the stream carries. */
-export const STREAM_DOMAIN_EVENT = {
-  CORPUS: "corpus_event",
-  MEMORY: "memory_event",
-  INGEST: "ingest_event",
-  NOTE: "note_event",
-  BUFFER: "buffer_event",
-  SUBAGENT: "subagent_event",
-  /** Emitted by the chat-sdk runtime when it compacts the history. */
-  COMPACTION: "compaction_event",
-} as const
-export type StreamDomainEventType = (typeof STREAM_DOMAIN_EVENT)[keyof typeof STREAM_DOMAIN_EVENT]
+export { STREAM_DOMAIN_EVENT, type StreamDomainEventType } from "./stream-event-types"
 
 const count = z.number().int().nonnegative()
 

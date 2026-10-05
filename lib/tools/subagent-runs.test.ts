@@ -73,12 +73,20 @@ test("events without a runId are logged and skipped", () => {
   assert.equal(runs.size, 0)
 })
 
-test("a terminal whose start never arrived still makes a row, anchored at the terminal", () => {
-  const runs = reduceRuns([{ streaming: false, events: [terminal("ghost", "done", { buffered: 2 })] }])
-  assert.deepEqual(runs.get("ghost"), {
-    state: { status: "done", label: "", toolCalls: 4, buffered: 2 },
-    anchor: "terminal",
-  })
+test("a terminal whose start never arrived makes ONE row, anchored at the first terminal", () => {
+  const first = terminal("ghost", "done", { buffered: 2 })
+  const duplicate = terminal("ghost", "done", { buffered: 2 })
+  const run = reduceRuns([{ streaming: false, events: [first, duplicate] }]).get("ghost")
+  assert.deepEqual(run?.state, { status: "done", label: "", toolCalls: 4, buffered: 2 })
+  assert.equal(run?.anchor, first, "the first terminal anchors the row")
+  assert.notEqual(run?.anchor, duplicate, "a duplicate never renders a second row")
+})
+
+test("a started run is anchored at its start event", () => {
+  const s = start("a")
+  const run = reduceRuns([{ streaming: false, events: [s, terminal("a", "aborted", { buffered: 5 })] }]).get("a")
+  assert.equal(run?.anchor, s)
+  assert.deepEqual(run?.state, { status: "aborted", label: "balaie 1937", toolCalls: 4, buffered: 5 }, "the aborted row keeps what was staged")
 })
 
 test("a duplicate terminal keeps the first (a stray aborted after done)", () => {
