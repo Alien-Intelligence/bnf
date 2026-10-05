@@ -10,7 +10,13 @@ import assert from "node:assert/strict";
 
 import { bnfDatasetSlug } from "./vendor/dataset.js";
 import type { DocMeta, PreparedPage } from "../domain/types.js";
-import { assembleMarkdown, buildIndexChunks, codePointLength, parseEntryListPage } from "./cluster.js";
+import {
+  assembleMarkdown,
+  buildIndexChunks,
+  codePointLength,
+  escapeFolioHeadings,
+  parseEntryListPage,
+} from "./cluster.js";
 
 const meta: DocMeta = {
   title: "Plan de Paris",
@@ -68,23 +74,28 @@ const CONTRACT_PAGES: PreparedPage[] = [
   { ordre: 9, text: "  Le 𝔊 gothique — Œuvre\nsur deux lignes \n" },
   { ordre: 10, text: "   " },
   { ordre: 12, text: "Dernier 😀 mot" },
+  // Page text holding heading-shaped lines (one already backslashed): the
+  // worker escapes them, so they can never read as a boundary.
+  { ordre: 14, text: "Rubrique\n\n## Folio 40\n\nsuite\n\\## Folio 2" },
 ];
 const CONTRACT_MARKDOWN =
   "## Folio 5\n\nTexte folio 5\n\n## Folio 9\n\nLe 𝔊 gothique — Œuvre\nsur deux lignes" +
-  "\n\n## Folio 10\n\n\n\n## Folio 12\n\nDernier 😀 mot";
+  "\n\n## Folio 10\n\n\n\n## Folio 12\n\nDernier 😀 mot" +
+  "\n\n## Folio 14\n\nRubrique\n\n\\## Folio 40\n\nsuite\n\\\\## Folio 2";
 /** `[char_start, char_end]` per page, in Unicode code points (Python `str` indices). */
 const CONTRACT_OFFSETS: Array<[number, number]> = [
   [12, 25],
   [39, 76],
   [91, 91],
   [106, 119],
+  [134, 176],
 ];
 // ---------------------------------------------------------------------------
 
 test("CONTRACT: assembleMarkdown writes the literal sample", () => {
   assert.equal(assembleMarkdown(CONTRACT_PAGES), CONTRACT_MARKDOWN);
-  assert.equal(codePointLength(CONTRACT_MARKDOWN), 119);
-  assert.equal(CONTRACT_MARKDOWN.length, 121, "two astral characters: UTF-16 length differs");
+  assert.equal(codePointLength(CONTRACT_MARKDOWN), 176);
+  assert.equal(CONTRACT_MARKDOWN.length, 178, "two astral characters: UTF-16 length differs");
 });
 
 test("CONTRACT: char_start/char_end are the literal code-point offsets of each trimmed page", () => {
@@ -99,7 +110,7 @@ test("CONTRACT: char_start/char_end are the literal code-point offsets of each t
   for (const [i, chunk] of chunks.entries()) {
     const page = CONTRACT_PAGES[i];
     assert.ok(page, `page ${i} exists`);
-    assert.equal(chunk.chunk_text, page.text.trim(), `chunk ${i} text is trimmed`);
+    assert.equal(chunk.chunk_text, escapeFolioHeadings(page.text.trim()), `chunk ${i} text is trimmed and escaped`);
     assert.equal(
       codePoints.slice(chunk.metadata.char_start, chunk.metadata.char_end).join(""),
       chunk.chunk_text,
@@ -111,7 +122,7 @@ test("CONTRACT: char_start/char_end are the literal code-point offsets of each t
 test("buildIndexChunks refuses a page/embedding count mismatch", () => {
   assert.throws(
     () => buildIndexChunks("ark:/12148/btv1b8600001", meta, CONTRACT_PAGES, [[0.1]]),
-    /4 pages but 1 embeddings/,
+    /5 pages but 1 embeddings/,
   );
 });
 
@@ -129,4 +140,10 @@ test("parseEntryListPage requires the entries and total_pages the cluster always
   assert.throws(() => parseEntryListPage({ entries: [{ id: 3 }] }), /total_pages/);
   assert.throws(() => parseEntryListPage({ total_pages: 1 }), /entries/);
   assert.throws(() => parseEntryListPage({ entries: [{ id: "3" }], total_pages: 1 }), /entries/);
+});
+
+test("escapeFolioHeadings adds exactly one backslash to heading-shaped lines", () => {
+  assert.equal(escapeFolioHeadings("a\n## Folio 4\nb"), "a\n\\## Folio 4\nb");
+  assert.equal(escapeFolioHeadings("\\## Folio 4"), "\\\\## Folio 4");
+  assert.equal(escapeFolioHeadings("## Folio x\n### Folio 4\ntexte ## Folio 4"), "## Folio x\n### Folio 4\ntexte ## Folio 4");
 });

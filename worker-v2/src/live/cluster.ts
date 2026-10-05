@@ -146,8 +146,24 @@ function headCodePoints(s: string, n: number): string {
  */
 export function assembleMarkdown(pages: PreparedPage[]): string {
   return pages
-    .map((p) => `${folioHeading(p.ordre)}${p.text.trim()}`)
+    .map((p) => `${folioHeading(p.ordre)}${pageBody(p.text)}`)
     .join(FOLIO_BLOCK_SEPARATOR);
+}
+
+/**
+ * A line of page text that starts like a folio heading — `## Folio <digits>`,
+ * after any number of backslashes — gets one more leading backslash, so no
+ * page text can ever read as a boundary the worker wrote (a Mistral-lane page
+ * can contain a Markdown `## Folio 40`). Reversible: the app's splitter
+ * (lib/cluster/folio-text.ts unescapeFolioHeadings) removes exactly one.
+ */
+export function escapeFolioHeadings(text: string): string {
+  return text.replace(/^(\\*)## Folio (\d)/gm, "\\$1## Folio $2");
+}
+
+/** A page's stored text: trimmed, then heading-shaped lines escaped. */
+function pageBody(text: string): string {
+  return escapeFolioHeadings(text.trim());
 }
 
 /**
@@ -159,7 +175,8 @@ export function assembleMarkdown(pages: PreparedPage[]): string {
  * `assembleMarkdown(pages)` in Unicode code points, computed with the same
  * heading and separator, so a code-point slice of the markdown (Python's
  * `markdown[char_start:char_end]`) equals `chunk_text` for every chunk.
- * The chunk text is therefore the TRIMMED page text, as the markdown holds it.
+ * The chunk text is therefore the page text exactly as the markdown holds it:
+ * trimmed, with heading-shaped lines escaped (escapeFolioHeadings).
  * The app surfaces the pair as `RagPassage.charRange` for `rag_get_text`.
  */
 export function buildIndexChunks(
@@ -178,7 +195,7 @@ export function buildIndexChunks(
   return pages.map((p, i) => {
     const embedding = embeddings[i];
     if (embedding === undefined) throw new Error(`buildIndexChunks: no embedding for page ${i} of ${ark}`);
-    const text = p.text.trim();
+    const text = pageBody(p.text);
     const charStart = offset + codePointLength(folioHeading(p.ordre));
     const charEnd = charStart + codePointLength(text);
     offset = charEnd + codePointLength(FOLIO_BLOCK_SEPARATOR);
