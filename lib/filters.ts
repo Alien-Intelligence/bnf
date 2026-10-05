@@ -9,6 +9,16 @@ import { FILTER_LIST_MAX_VALUES, TEXT_FILTER_MAX_VALUES, TEXT_FILTER_MIN_CHARS }
 import { canonicalLang } from "@/lib/mcp/vocab"
 import { ARK_KIND_VALUES, DOC_TYPE_CODE, DOCUMENT_SOURCE, INDEXATION_OUTCOME, INGESTION_CLASS } from "@/models/documents/schema"
 
+/** What a `*_remove_by_filter` call did — buffer and corpus alike. */
+export const REMOVE_BY_FILTER_STATUS = {
+  /** No constraint: it would match everything, so it was refused unmutated. */
+  EMPTY_FILTER: "empty_filter",
+  /** A preview: nothing removed. */
+  DRY_RUN: "dry_run",
+  /** The removal committed. */
+  REMOVED: "removed",
+} as const
+
 /** Text criteria: contains-ANY, case-insensitive, accent-sensitive. */
 export const textAnySchema = z
   .array(z.string().trim().min(TEXT_FILTER_MIN_CHARS))

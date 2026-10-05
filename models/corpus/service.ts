@@ -37,6 +37,7 @@ import type {
   DocumentRow,
 } from "./schema"
 import type { CorpusFilterSet } from "./types"
+import { REMOVE_BY_FILTER_STATUS } from "@/lib/filters"
 import { advanceVersion } from "./versioning"
 import type { AddToCorpusInput, RemoveFromCorpusInput } from "./types"
 
@@ -109,9 +110,9 @@ export type CorpusPromoteResult =
  *                      new corpus size.
  */
 export type CorpusRemoveByFilterResult =
-  | { status: "empty_filter" }
+  | { status: typeof REMOVE_BY_FILTER_STATUS.EMPTY_FILTER }
   | {
-      status: "dry_run"
+      status: typeof REMOVE_BY_FILTER_STATUS.DRY_RUN
       matched: number
       arks: string[]
       /** With `not`: per dimension it names, the documents left in place
@@ -119,7 +120,7 @@ export type CorpusRemoveByFilterResult =
       notUnknown?: Record<string, number>
     }
   | {
-      status: "removed"
+      status: typeof REMOVE_BY_FILTER_STATUS.REMOVED
       matched: number
       removed: number
       versionSeq: number
@@ -586,7 +587,7 @@ export class CorpusService {
     input: { filters: CorpusFilterSet; reason: string; dryRun: boolean },
   ): Promise<CorpusRemoveByFilterResult> {
     if (CorpusService.isEmptyFilterSet(input.filters)) {
-      return { status: "empty_filter" }
+      return { status: REMOVE_BY_FILTER_STATUS.EMPTY_FILTER }
     }
 
     const arks = await CorpusService.arksMatchingFilters(project.id, "head", input.filters)
@@ -597,7 +598,7 @@ export class CorpusService {
           ? await CorpusService.notUnknownCounts(project.id, "head", input.filters)
           : null
       return {
-        status: "dry_run",
+        status: REMOVE_BY_FILTER_STATUS.DRY_RUN,
         matched: arks.length,
         arks: arks.slice(0, CORPUS_REMOVE_PREVIEW_LIMIT),
         ...(notUnknown !== null ? { notUnknown } : {}),
@@ -611,7 +612,7 @@ export class CorpusService {
         where: { versionId: head.id },
       })
       return {
-        status: "removed",
+        status: REMOVE_BY_FILTER_STATUS.REMOVED,
         matched: 0,
         removed: 0,
         versionSeq: head.seq,
@@ -625,7 +626,7 @@ export class CorpusService {
     })
 
     return {
-      status: "removed",
+      status: REMOVE_BY_FILTER_STATUS.REMOVED,
       matched: arks.length,
       removed: result.lastDeltaRemoved,
       versionSeq: result.versionSeq,

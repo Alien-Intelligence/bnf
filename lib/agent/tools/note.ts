@@ -29,7 +29,7 @@ import { NotePolicy } from "@/models/notes/policy"
 import { NoteService } from "@/models/notes/service"
 import { NoteQueries } from "@/models/notes/queries"
 import type { TurnScopedCtx } from "./registry-factory"
-import { authorizeProjectTool, toolForbidden } from "./authorize"
+import { authorizeOnProject, authorizeProjectTool } from "./authorize"
 import { emitDomainEvent, STREAM_DOMAIN_EVENT } from "@/lib/agent/stream-events"
 import { AGENT_TOOLS } from "./constants"
 import { toolFailure } from "./failure"
@@ -230,7 +230,8 @@ export const noteUpdateTool = defineTool<
     // in the database, not necessarily one this project owns.
     const target = await NoteQueries.getForProject(input.id, ctx.projectId)
     if (!target) return toolFailure(NOTE_NOT_FOUND_ERROR)
-    if (!new NotePolicy(ctx.user).update(gate.project, target)) return toolForbidden()
+    const noteGate = authorizeOnProject(ctx, gate.project, NotePolicy, "update", target)
+    if (!noteGate.ok) return noteGate.result
 
     const written = await NoteService.update(input.id, ctx.corpusProjectId, {
       title: input.title,
@@ -294,7 +295,8 @@ export const noteAppendTool = defineTool<
     // Scope before mutating — see note_update.
     const target = await NoteQueries.getForProject(input.id, ctx.projectId)
     if (!target) return toolFailure(NOTE_NOT_FOUND_ERROR)
-    if (!new NotePolicy(ctx.user).update(gate.project, target)) return toolForbidden()
+    const noteGate = authorizeOnProject(ctx, gate.project, NotePolicy, "update", target)
+    if (!noteGate.ok) return noteGate.result
 
     const written = await NoteService.append(input.id, ctx.corpusProjectId, {
       bodyMd: input.body_md,

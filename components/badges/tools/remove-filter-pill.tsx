@@ -9,6 +9,7 @@
 
 import { Filter, Minus, Search } from "lucide-react"
 import { useTranslations } from "next-intl"
+import { REMOVE_BY_FILTER_STATUS } from "@/lib/filters"
 import { cn } from "@/lib/utils"
 import type { RemoveByFilterView } from "@/lib/tools/display"
 
@@ -35,7 +36,7 @@ export function BadgeToolRemoveFilter({ view, running, isError }: Props) {
 
   // The empty-filter refusal is a `success: false` result, so it arrives with
   // isError set; it is named before the generic failure label.
-  if (view?.status === "empty_filter") {
+  if (view?.status === REMOVE_BY_FILTER_STATUS.EMPTY_FILTER) {
     tone = "warning"
     label = t("emptyFilter")
   } else if (isError) {
@@ -46,7 +47,7 @@ export function BadgeToolRemoveFilter({ view, running, isError }: Props) {
     Icon = Search
     tone = "muted"
     label = t("removingByFilter")
-  } else if (view.status === "dry_run") {
+  } else if (view.status === REMOVE_BY_FILTER_STATUS.DRY_RUN) {
     // Preview only — nothing removed. Info tone, "match" wording, no minus.
     Icon = Search
     tone = "info"

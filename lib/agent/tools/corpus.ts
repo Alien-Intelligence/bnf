@@ -32,10 +32,11 @@ import { CorpusPolicy } from "@/models/corpus/policy"
 import { CorpusQueries } from "@/models/corpus/queries"
 import { CorpusService } from "@/models/corpus/service"
 import { arkSchema, corpusAgentFilterSetSchema } from "@/models/corpus/types"
-import { INDEXATION_OUTCOME, classifyOutcome } from "@/models/documents/schema"
+import { DOCUMENT_SOURCE, INDEXATION_OUTCOME, classifyOutcome } from "@/models/documents/schema"
 import type { DocumentRow } from "@/models/corpus/schema"
 import type { TurnScopedCtx } from "./registry-factory"
 import { authorizeProjectTool } from "./authorize"
+import { REMOVE_BY_FILTER_STATUS } from "@/lib/filters"
 import { EMPTY_FILTER_REFUSAL, toolFailure, toolRefusal, type ToolFailure } from "./failure"
 import { CORPUS_ACCESS_REVOKED_ERROR } from "./ingestion-guard"
 import { emitDomainEvent, STREAM_DOMAIN_EVENT } from "@/lib/agent/stream-events"
@@ -336,7 +337,7 @@ export const corpusAddTool = defineTool<
     // in the background too — same detachment, so a cb-heavy batch never stalls
     // the turn on rate-limited data.bnf.fr/SRU lookups. The drain is a fast
     // no-op when nothing is pending, so only kick it when a notice was supplied.
-    if (input.arks.some((a) => sourceFromArk(a) === "catalogue")) {
+    if (input.arks.some((a) => sourceFromArk(a) === DOCUMENT_SOURCE.CATALOGUE)) {
       kickCanonicalize(projectId)
     }
 
@@ -490,12 +491,12 @@ export const corpusRemoveByFilterTool = defineTool<
       reason: input.reason,
       dryRun,
     })
-    if (result.status === "empty_filter") {
+    if (result.status === REMOVE_BY_FILTER_STATUS.EMPTY_FILTER) {
       return toolRefusal(EMPTY_FILTER_REFUSAL, CORPUS_EMPTY_FILTER_ERROR)
     }
 
     // Only a committed removal emits a corpus_event and advances a version.
-    if (result.status === "removed" && result.removed > 0) {
+    if (result.status === REMOVE_BY_FILTER_STATUS.REMOVED && result.removed > 0) {
       emitDomainEvent(ctx, {
         type: STREAM_DOMAIN_EVENT.CORPUS,
         data: {

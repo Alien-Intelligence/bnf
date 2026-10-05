@@ -55,6 +55,7 @@ import {
   type GallicaSearchDocType,
 } from "@/lib/buffer/classify"
 import { classifyArkKind } from "@/lib/documents/ark-kind"
+import { DOCUMENT_SOURCE } from "@/models/documents/schema"
 import { BufferPolicy } from "@/models/buffer/policy"
 import { BufferQueries } from "@/models/buffer/queries"
 import { BufferService, explainRegistration, type BufferRegisterResult } from "@/models/buffer/service"
@@ -66,8 +67,16 @@ import {
 } from "@/models/buffer/types"
 import type { TurnScopedCtx } from "./registry-factory"
 import { authorizeProjectTool } from "./authorize"
-import { EMPTY_FILTER_REFUSAL, toolRefusal } from "./failure"
-import { emitDomainEvent, STREAM_DOMAIN_EVENT } from "@/lib/agent/stream-events"
+import { REMOVE_BY_FILTER_STATUS } from "@/lib/filters"
+import {
+  EMPTY_FILTER_REFUSAL,
+  INVALID_PARAMS_REFUSAL,
+  QUERY_NOT_EXPRESSIBLE_REFUSAL,
+  toolFailure,
+  toolRefusal,
+  type ToolRefusal,
+} from "./failure"
+import { BUFFER_EVENT_KIND, emitDomainEvent, STREAM_DOMAIN_EVENT, type BufferEventKind } from "@/lib/agent/stream-events"
 import { AGENT_TOOLS } from "./constants"
 import { provisionalTotal } from "./provisional-total"
 
@@ -103,7 +112,7 @@ function countKinds(candidates: BufferCandidateInput[]): Record<string, number> 
 async function emitBuffer(
   ctx: TurnScopedCtx,
   projectId: string,
-  kind: "added" | "removed" | "committed" | "cleared",
+  kind: BufferEventKind,
   count: number,
 ): Promise<number> {
   const total = await BufferService.count(projectId)
@@ -268,12 +277,12 @@ export const bufferRemoveByFilterTool = defineTool<
       filters: input.filters,
       dryRun,
     })
-    if (result.status === "empty_filter") {
+    if (result.status === REMOVE_BY_FILTER_STATUS.EMPTY_FILTER) {
       return toolRefusal(EMPTY_FILTER_REFUSAL, BUFFER_EMPTY_FILTER_ERROR)
     }
 
-    if (result.status === "removed" && result.removed > 0) {
-      await emitBuffer(ctx, projectId, "removed", result.removed)
+    if (result.status === REMOVE_BY_FILTER_STATUS.REMOVED && result.removed > 0) {
+      await emitBuffer(ctx, projectId, BUFFER_EVENT_KIND.REMOVED, result.removed)
     }
 
     return result
@@ -321,7 +330,7 @@ export const bufferAddTool = defineTool<
     if (ctx.stagingTally) ctx.stagingTally.added += result.added
     // Bare ARKs: their metadata is resolved out of band, never inline.
     if (result.unresolved > 0) kickBufferEnrich(projectId)
-    const total = await emitBuffer(ctx, projectId, "added", result.added)
+    const total = await emitBuffer(ctx, projectId, BUFFER_EVENT_KIND.ADDED, result.added)
     return {
       requested: result.requested,
       ...stagingCounts(input.arks.length, result),
@@ -366,7 +375,7 @@ export const bufferDiscardTool = defineTool<
     if (!gate.ok) return gate.result
     const projectId = gate.project.id
     const discarded = await BufferService.discard(projectId, input.arks)
-    const total = await emitBuffer(ctx, projectId, "removed", discarded)
+    const total = await emitBuffer(ctx, projectId, BUFFER_EVENT_KIND.REMOVED, discarded)
     return { discarded, total }
   },
 })
@@ -434,7 +443,7 @@ export const bufferCommitTool = defineTool<
         },
       })
     }
-    const total = await emitBuffer(ctx, projectId, "committed", result.committed)
+    const total = await emitBuffer(ctx, projectId, BUFFER_EVENT_KIND.COMMITTED, result.committed)
 
     return {
       committed: result.corpus.lastDeltaAdded,
@@ -471,7 +480,7 @@ export const bufferClearTool = defineTool<z.ZodObject<Record<string, never>>, Tu
     if (!gate.ok) return gate.result
     const projectId = gate.project.id
     const cleared = await BufferService.clear(projectId)
-    await emitBuffer(ctx, projectId, "cleared", cleared)
+    await emitBuffer(ctx, projectId, BUFFER_EVENT_KIND.CLEARED, cleared)
     return { cleared }
   },
 })
@@ -754,7 +763,7 @@ export function mostDistinctiveTerm(query: string): string | null {
  */
 async function countMatches(
   mcpEnv: { BNF_MCP_URL: string; BNF_MCP_TOKEN: string },
-  source: "gallica" | "catalogue",
+  source: SearchSource,
   query: string,
   signal: AbortSignal | undefined,
 ): Promise<number | null> {
@@ -836,12 +845,12 @@ export function refusalZeroResult(diagnostics: BnfDiagnostic[]): ZeroResultDiagn
  */
 async function zeroResultDiagnostic(
   mcpEnv: { BNF_MCP_URL: string; BNF_MCP_TOKEN: string },
-  source: "gallica" | "catalogue",
+  source: SearchSource,
   query: string | undefined,
   signal: AbortSignal | undefined,
 ): Promise<ZeroResultDiagnostic> {
   const meaning =
-    source === "catalogue"
+    source === DOCUMENT_SOURCE.CATALOGUE
       ? "`total: 0` ne veut PAS dire que ces documents sont absents des collections de la BnF. " +
         "Le catalogue indexe des NOTICES bibliographiques (titre, auteur, éditeur, sujet), sans plein texte, " +
         "et TOUS les mots de `query` doivent figurer dans une même notice : un seul mot descriptif " +
@@ -886,11 +895,22 @@ async function zeroResultDiagnostic(
   }
 }
 
-const searchSourceEnum = z.enum(["gallica", "catalogue"])
+/** The two BnF indexes corpus_search queries. */
+const SEARCH_SOURCES = [DOCUMENT_SOURCE.GALLICA, DOCUMENT_SOURCE.CATALOGUE] as const
+const searchSourceEnum = z.enum(SEARCH_SOURCES)
 const gallicaSortEnum = z.enum(GALLICA_SORT_KEYS)
 /** A 4-digit year, the form bib.publicationdate takes. */
 const yearStringSchema = z.string().trim().regex(/^\d{4}$/, "année sur 4 chiffres, ex. \"1960\"")
 type SearchSource = z.infer<typeof searchSourceEnum>
+
+/** corpus_search's refusal of parameters it cannot honour: the fixes travel
+ *  in `problems`, and `error` says so in one line the model reads first. */
+function invalidSearchParams(problems: string[]): ToolRefusal<typeof INVALID_PARAMS_REFUSAL> & { problems: string[] } {
+  return {
+    ...toolRefusal(INVALID_PARAMS_REFUSAL, `Paramètres de recherche refusés, rien n'a été envoyé : ${problems.join(" ; ")}`),
+    problems,
+  }
+}
 
 /** The criteria part of a corpus_search input — what the pure helpers below read. */
 export type CorpusSearchCriteria = {
@@ -958,7 +978,7 @@ function given(value: string | boolean | undefined): boolean {
  */
 export function incompatibleSearchParams(input: CorpusSearchCriteria): string[] {
   const problems: string[] = []
-  if (input.source === "catalogue") {
+  if (input.source === DOCUMENT_SOURCE.CATALOGUE) {
     const gallicaOnly = (["doc_type", "collapsing", "sort"] as const).filter((k) => given(input[k]))
     if (gallicaOnly.length > 0) {
       problems.push(
@@ -1045,7 +1065,7 @@ export function buildSearchArgs(
     maximum_records: pageSize,
   }
   // `collapsing` is a Gallica request parameter, honoured with or without cql.
-  if (input.source === "gallica" && input.collapsing !== undefined) args.collapsing = input.collapsing
+  if (input.source === DOCUMENT_SOURCE.GALLICA && input.collapsing !== undefined) args.collapsing = input.collapsing
   if (input.cql) {
     args.cql = input.cql
     return args
@@ -1057,7 +1077,7 @@ export function buildSearchArgs(
   if (input.date) args.date = input.date
   if (input.language) args.language = input.language
   const person = input.creator ?? input.author
-  if (input.source === "gallica") {
+  if (input.source === DOCUMENT_SOURCE.GALLICA) {
     if (person) args.creator = person
     if (input.doc_type) args.doc_type = input.doc_type
     if (input.sort) args.sort = input.sort
@@ -1102,7 +1122,7 @@ export const corpusSearchTool = defineTool<
     "lookup PER ARK to recover the metadata. Pick `source`: \"gallica\" for digitised full-text " +
     "documents, \"catalogue\" for bibliographic records. Give at least one of " +
     "query / title / creator / subject / date / shelfmark (catalogue: date_from / date_to). " +
-    "A parameter the chosen source cannot honour is REFUSED with `invalid_params` and " +
+    "A parameter the chosen source cannot honour is REFUSED (`refused: \"invalid_params\"`) with " +
     "the fix — never silently dropped. It returns a COMPACT summary — total available, " +
     "how many were added to the buffer, the buffer size, and a small sample — NOT " +
     "the full result list; inspect the staged candidates with buffer_stats / " +
@@ -1263,24 +1283,18 @@ export const corpusSearchTool = defineTool<
     // validation throw, never a silent clamp (incident 2026-09-30, root causes
     // 3 and 5).
     const criterionProblems = searchCriterionProblems(input)
-    if (criterionProblems.length > 0) {
-      return { success: false, invalid_params: true, problems: criterionProblems }
-    }
+    if (criterionProblems.length > 0) return invalidSearchParams(criterionProblems)
     const incompatible = incompatibleSearchParams(input)
-    if (incompatible.length > 0) return { success: false, invalid_params: true, problems: incompatible }
+    if (incompatible.length > 0) return invalidSearchParams(incompatible)
     const page = resolveSearchPageSize(input.source, input.maximum_records)
-    if (!page.ok) return { success: false, invalid_params: true, problems: page.problems }
+    if (!page.ok) return invalidSearchParams(page.problems)
 
     let mcpEnv: { BNF_MCP_URL: string; BNF_MCP_TOKEN: string }
     try {
       mcpEnv = requireMcpEnv()
     } catch (err) {
       console.error("[corpus_search] BnF MCP env not configured:", err)
-      return {
-        success: false,
-        error:
-          "La recherche BnF est indisponible (le MCP BnF n'est pas configuré pour cette session).",
-      }
+      return toolFailure("La recherche BnF est indisponible (le MCP BnF n'est pas configuré pour cette session).")
     }
 
     const args = buildSearchArgs(input, page.pageSize)
@@ -1296,7 +1310,7 @@ export const corpusSearchTool = defineTool<
     // Every hit the BnF returned for this page, before identifier mapping.
     let hitCount = 0
     try {
-      if (input.source === "gallica") {
+      if (input.source === DOCUMENT_SOURCE.GALLICA) {
         const payload = await callBnfTool<GallicaPayload>(
           mcpEnv.BNF_MCP_URL,
           mcpEnv.BNF_MCP_TOKEN,
@@ -1357,24 +1371,20 @@ export const corpusSearchTool = defineTool<
       // Coerce the transport/tool failure into a structured tool result the
       // agent can react to (CLAUDE_ERROR_PATTERNS §15) — never throw out.
       //
-      // `success: false` is what marks this as a REAL failure rather than a
-      // structured outcome. `toolCallErrored` keys on that flag, so without it
-      // the row persists as status "ok": the chip shows ✓ and the health lane
-      // stays green through an outage. It is set deliberately here and NOT
-      // inferred from the presence of an `error` key, because several handlers
-      // return `{ error }` for expected states — rag_* before ingestion,
-      // doc_get on an ARK outside the corpus — which must NOT flare the lanes.
+      // Every return below is the one failure shape of failure.ts: its
+      // `success: false` is what `toolCallErrored` keys on, so an outage turns
+      // the chip and the health lane red instead of persisting as "ok".
       // A refused query is not a failure: nothing broke, the CQL was simply not
       // expressible on that index and the MCP declined to send it. Hand the
       // agent the specific fixes so it can correct itself inside the turn —
       // flattening this into "la recherche a échoué" would teach it nothing.
       if (err instanceof BnfMcpQueryRefusedError) {
         return {
-          success: false,
-          refused: true,
-          error:
+          ...toolRefusal(
+            QUERY_NOT_EXPRESSIBLE_REFUSAL,
             "Cette requête n'est pas exprimable sur cet index : elle n'a PAS été envoyée. " +
-            "Ce n'est pas un résultat vide — corrige la requête et relance.",
+              "Ce n'est pas un résultat vide — corrige la requête et relance.",
+          ),
           problems: err.problems,
         }
       }
@@ -1385,7 +1395,7 @@ export const corpusSearchTool = defineTool<
         return quotaSaturatedResult({ api: err.api, waitedMs: err.waitedMs })
       }
       const message = err instanceof BnfMcpError ? err.message : String(err)
-      return { success: false, error: `La recherche BnF a échoué : ${message}` }
+      return toolFailure(`La recherche BnF a échoué : ${message}`)
     }
 
     const registered = await BufferService.registerCandidates({
@@ -1418,7 +1428,7 @@ export const corpusSearchTool = defineTool<
 
     // A spawn_research child reports what IT staged (never a project-wide delta).
     if (ctx.stagingTally) ctx.stagingTally.added += registered.added
-    const buffered = await emitBuffer(ctx, projectId, "added", registered.added)
+    const buffered = await emitBuffer(ctx, projectId, BUFFER_EVENT_KIND.ADDED, registered.added)
 
     // Never return a bare zero — see zeroResultDiagnostic.
     //

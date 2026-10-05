@@ -9,6 +9,7 @@
 // these, and the model reads `error` to recover.
 //
 // Pure — no server-only import, so the display layer can share the types.
+import { REMOVE_BY_FILTER_STATUS } from "@/lib/filters"
 
 /** A tool call that failed or was refused; `error` is model-readable. */
 export type ToolFailure = { success: false; error: string }
@@ -25,4 +26,13 @@ export function toolRefusal<R extends string>(refused: R, error: string): ToolRe
 }
 
 /** `*_remove_by_filter` with no constraint: it would match everything. */
-export const EMPTY_FILTER_REFUSAL = "empty_filter" as const
+export const EMPTY_FILTER_REFUSAL = REMOVE_BY_FILTER_STATUS.EMPTY_FILTER
+
+/** The turn's user may not perform the action (lib/agent/tools/authorize.ts). */
+export const FORBIDDEN_REFUSAL = "forbidden" as const
+
+/** A parameter the tool cannot honour; `problems` says how to fix it. */
+export const INVALID_PARAMS_REFUSAL = "invalid_params" as const
+
+/** The BnF declined a query it cannot express on that index (never sent). */
+export const QUERY_NOT_EXPRESSIBLE_REFUSAL = "query_not_expressible" as const

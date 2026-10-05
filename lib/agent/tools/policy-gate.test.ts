@@ -48,6 +48,7 @@ import { ingestSubmitTool } from "./ingest"
 import { memoryWriteTool } from "./memory"
 import { noteAppendTool, noteCreateTool, noteUpdateTool } from "./note"
 import { AGENT_TOOLS, MUTATING_AGENT_TOOLS } from "./constants"
+import { FORBIDDEN_REFUSAL } from "./failure"
 import { toolsForScope } from "./index"
 import type { TurnScopedCtx } from "./registry-factory"
 
@@ -142,11 +143,28 @@ const MUTATIONS: Array<[string, "corpus" | "research", ToolCall]> = [
   [AGENT_TOOLS.noteAppend, "research", (c) => noteAppendTool.handler({ id: noteId, body_md: "Ajout." }, c)],
 ]
 
+/** The field each mutating tool's SUCCESS result carries — what the owner
+ *  control asserts, so a refusal or bare `{ error }` can never pass as success. */
+const OWNER_SUCCESS_FIELD: Readonly<Record<string, string>> = {
+  [AGENT_TOOLS.bufferAdd]: "added",
+  [AGENT_TOOLS.bufferDiscard]: "discarded",
+  [AGENT_TOOLS.bufferRemoveByFilter]: "removed",
+  [AGENT_TOOLS.bufferCommit]: "committed",
+  [AGENT_TOOLS.bufferClear]: "cleared",
+  [AGENT_TOOLS.corpusAdd]: "added",
+  [AGENT_TOOLS.corpusRemove]: "removed",
+  [AGENT_TOOLS.corpusRemoveByFilter]: "removed",
+  [AGENT_TOOLS.memoryWrite]: "itemId",
+  [AGENT_TOOLS.noteCreate]: "note_id",
+  [AGENT_TOOLS.noteUpdate]: "note_id",
+  [AGENT_TOOLS.noteAppend]: "note_id",
+}
+
 function isForbidden(result: unknown): boolean {
   return (
     typeof result === "object" &&
     result !== null &&
-    (result as { forbidden?: unknown }).forbidden === true &&
+    (result as { refused?: unknown }).refused === FORBIDDEN_REFUSAL &&
     (result as { success?: unknown }).success === false
   )
 }
@@ -259,8 +277,13 @@ test("positive control: the owner's same calls go through the gate", async () =>
       assert.match(shown, /MCP BnF n'est pas configuré/, `${name} reached the search, got ${shown}`)
       continue
     }
-    const failed = typeof result === "object" && result !== null && "success" in result && result.success === false
-    assert.ok(!failed, `${name} must SUCCEED for the owner, got ${shown}`)
+    // A POSITIVE success, not merely the absence of `success: false`: a bare
+    // `{ error }` would pass that. Each tool's success carries its own field.
+    assert.ok(typeof result === "object" && result !== null, `${name} returned an object`)
+    assert.ok(!("error" in result), `${name} must SUCCEED for the owner, got ${shown}`)
+    const field = OWNER_SUCCESS_FIELD[name]
+    assert.ok(field !== undefined, `${name} has a declared success field`)
+    assert.ok(field in result, `${name} must SUCCEED for the owner (no \`${field}\`), got ${shown}`)
   }
 
   // The owner's calls really mutated: versions advanced, a memory item and a

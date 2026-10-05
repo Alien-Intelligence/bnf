@@ -14,6 +14,7 @@ import {
 } from "./schema"
 import { BufferQueries } from "./queries"
 import type { BufferFilterFields, BufferFilterSet } from "./types"
+import { REMOVE_BY_FILTER_STATUS } from "@/lib/filters"
 import { arkSchema, type BufferCandidateInput } from "./types"
 import { BUFFER_CLASSIFIER_VERSION, BUFFER_SAMPLE_SIZE, CORPUS_REMOVE_PREVIEW_LIMIT } from "@/lib/constants"
 import { sourceFromArk } from "@/lib/mcp/vocab"
@@ -104,16 +105,16 @@ export function explainRegistration(found: number, r: BufferRegisterResult): str
  *   - "removed"      — the removal committed: matching candidates are discarded.
  */
 export type BufferRemoveByFilterResult =
-  | { status: "empty_filter" }
+  | { status: typeof REMOVE_BY_FILTER_STATUS.EMPTY_FILTER }
   | {
-      status: "dry_run"
+      status: typeof REMOVE_BY_FILTER_STATUS.DRY_RUN
       matched: number
       arks: string[]
       /** With `not`: per excluded dimension, candidates of UNKNOWN value that
        *  the exclusion deliberately left alone (Decision 4). */
       notUnknown?: Record<string, number>
     }
-  | { status: "removed"; matched: number; removed: number }
+  | { status: typeof REMOVE_BY_FILTER_STATUS.REMOVED; matched: number; removed: number }
 
 /**
  * Result of commit() — the candidate set moved into the versioned corpus.
@@ -608,7 +609,7 @@ export class BufferService {
     projectId: string,
     input: { filters: BufferFilterSet; dryRun: boolean },
   ): Promise<BufferRemoveByFilterResult> {
-    if (!BufferService.hasConstraint(input.filters)) return { status: "empty_filter" }
+    if (!BufferService.hasConstraint(input.filters)) return { status: REMOVE_BY_FILTER_STATUS.EMPTY_FILTER }
 
     const arks = await BufferQueries.arks(BufferService.where(projectId, input.filters))
 
@@ -616,7 +617,7 @@ export class BufferService {
       const notUnknown =
         input.filters.not !== undefined ? await BufferService.notUnknownCounts(projectId, input.filters) : null
       return {
-        status: "dry_run",
+        status: REMOVE_BY_FILTER_STATUS.DRY_RUN,
         matched: arks.length,
         arks: arks.slice(0, CORPUS_REMOVE_PREVIEW_LIMIT),
         ...(notUnknown !== null ? { notUnknown } : {}),
@@ -624,7 +625,7 @@ export class BufferService {
     }
 
     const removed = await BufferService.discard(projectId, arks)
-    return { status: "removed", matched: arks.length, removed }
+    return { status: REMOVE_BY_FILTER_STATUS.REMOVED, matched: arks.length, removed }
   }
 
   /**

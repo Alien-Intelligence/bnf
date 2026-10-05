@@ -9,9 +9,14 @@
 import { z } from "zod"
 import { subagentEventDataSchema } from "@/lib/tools/subagent-runs"
 import { MEMORY_SCOPE } from "@/models/memory/schema"
-import { STREAM_DOMAIN_EVENT, type StreamDomainEventType } from "./stream-event-types"
+import { BUFFER_EVENT_KIND, STREAM_DOMAIN_EVENT, type StreamDomainEventType } from "./stream-event-types"
 
-export { STREAM_DOMAIN_EVENT, type StreamDomainEventType } from "./stream-event-types"
+export {
+  BUFFER_EVENT_KIND,
+  STREAM_DOMAIN_EVENT,
+  type BufferEventKind,
+  type StreamDomainEventType,
+} from "./stream-event-types"
 
 const count = z.number().int().nonnegative()
 
@@ -42,7 +47,7 @@ const noteEventSchema = z.object({
 
 const bufferEventSchema = z.object({
   type: z.literal(STREAM_DOMAIN_EVENT.BUFFER),
-  data: z.object({ kind: z.enum(["added", "removed", "committed", "cleared"]), count, total: count }),
+  data: z.object({ kind: z.enum(BUFFER_EVENT_KIND), count, total: count }),
 })
 
 const subagentEventSchema = z.object({

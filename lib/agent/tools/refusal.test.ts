@@ -15,10 +15,10 @@ import { cleanupProject } from "@/lib/testing/project-cleanup"
 import { corpusRemoveByFilterView, toolCallErrored } from "@/lib/tools/display"
 import { SESSION_SCOPE } from "@/models/sessions/schema"
 import type { PolicyUser } from "@/models/users/schema"
-import { bufferRemoveByFilterTool } from "./buffer"
+import { bufferRemoveByFilterTool, corpusSearchTool } from "./buffer"
 import { corpusDiffTool, corpusGetStateTool, corpusListTool, corpusRemoveByFilterTool, corpusStatsTool } from "./corpus"
 import { CORPUS_ACCESS_REVOKED_ERROR } from "./ingestion-guard"
-import { EMPTY_FILTER_REFUSAL } from "./failure"
+import { EMPTY_FILTER_REFUSAL, INVALID_PARAMS_REFUSAL } from "./failure"
 import { noteGetTool } from "./note"
 import type { TurnScopedCtx } from "./registry-factory"
 
@@ -69,6 +69,17 @@ for (const [name, call] of [
     assert.deepEqual(corpusRemoveByFilterView(persisted), { status: "empty_filter" }, "the pill still names it")
   })
 }
+
+test("corpus_search refuses parameters it cannot honour in the one refusal shape, with an error", async () => {
+  // No criterion at all: refused before any BnF egress.
+  const result = await corpusSearchTool.handler({ source: "gallica" }, ctx())
+  assert.ok(typeof result === "object" && result !== null)
+  assert.equal("success" in result && result.success, false)
+  assert.equal("refused" in result && result.refused, INVALID_PARAMS_REFUSAL)
+  assert.match("error" in result && typeof result.error === "string" ? result.error : "", /Paramètres de recherche refusés/)
+  assert.ok("problems" in result && Array.isArray(result.problems) && result.problems.length === 1, "the fixes travel along")
+  assert.equal(toolCallErrored(false, JSON.stringify(result)), true)
+})
 
 test("note_get on an unknown id fails with success:false", async () => {
   const result = await noteGetTool.handler({ id: "00000000-0000-4000-8000-000000000000" }, ctx())

@@ -251,6 +251,7 @@ export const DOCUMENT_SOURCE = {
   DATABNF: "databnf",
   OTHER: "other",
 } as const
+export type DocumentSource = (typeof DOCUMENT_SOURCE)[keyof typeof DOCUMENT_SOURCE]
 
 export const SOURCE: Record<string, VocabEntry> = {
   gallica: { label: "gallica", color: "bg-dataset-3/15 text-dataset-3" },

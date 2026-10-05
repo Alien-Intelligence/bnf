@@ -2,6 +2,7 @@
 // Pure, client-safe helpers for rendering agent tool calls in the chat panel.
 // No server imports — used by the chat tool renderers (components/badges/tools).
 import { EMPTY_FILTER_REFUSAL } from "@/lib/agent/tools/failure"
+import { REMOVE_BY_FILTER_STATUS } from "@/lib/filters"
 
 /** Whether a tool name is an MCP tool (server-prefixed: "bnf__bnf_search…"). */
 export function toolSource(toolName: string): "custom" | "mcp" {
@@ -212,22 +213,22 @@ export function isCorpusRemoveByFilterTool(toolName: string): boolean {
  * the pill then shows its running/neutral state.
  */
 export type RemoveByFilterView =
-  | { status: "empty_filter" }
-  | { status: "dry_run"; matched: number }
-  | { status: "removed"; removed: number; matched: number }
+  | { status: typeof REMOVE_BY_FILTER_STATUS.EMPTY_FILTER }
+  | { status: typeof REMOVE_BY_FILTER_STATUS.DRY_RUN; matched: number }
+  | { status: typeof REMOVE_BY_FILTER_STATUS.REMOVED; removed: number; matched: number }
   | null
 
 export function corpusRemoveByFilterView(result: string): RemoveByFilterView {
   // The refusal is a `{ success: false, refused: "empty_filter" }` tool failure
   // (lib/agent/tools/failure.ts); the outcomes carry `status`.
-  if (pickString(result, ["refused"]) === EMPTY_FILTER_REFUSAL) return { status: "empty_filter" }
+  if (pickString(result, ["refused"]) === EMPTY_FILTER_REFUSAL) return { status: REMOVE_BY_FILTER_STATUS.EMPTY_FILTER }
   const status = pickString(result, ["status"])
-  if (status === "dry_run") {
-    return { status: "dry_run", matched: pickNumber(result, ["matched"]) ?? 0 }
+  if (status === REMOVE_BY_FILTER_STATUS.DRY_RUN) {
+    return { status: REMOVE_BY_FILTER_STATUS.DRY_RUN, matched: pickNumber(result, ["matched"]) ?? 0 }
   }
-  if (status === "removed") {
+  if (status === REMOVE_BY_FILTER_STATUS.REMOVED) {
     return {
-      status: "removed",
+      status: REMOVE_BY_FILTER_STATUS.REMOVED,
       removed: pickNumber(result, ["removed"]) ?? 0,
       matched: pickNumber(result, ["matched"]) ?? 0,
     }

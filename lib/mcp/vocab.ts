@@ -2,7 +2,7 @@
 // Vocabulary mapping tables for the BnF MCP normalization layer.
 // Pure data + pure functions — no server-only import, safe on either side.
 // See playbook/mcp-client.md and ai-memories/…/persistence-architecture/research/bnf-mcp-contract.md
-import type { DocTypeCode } from "@/models/documents/schema"
+import { DOCUMENT_SOURCE, type DocTypeCode, type DocumentSource } from "@/models/documents/schema"
 
 /**
  * MARC 639-2 → ISO 639-1 language code mapping.
@@ -329,12 +329,12 @@ export function mapCatalogueDocType(raw: string): string | null {
  *   temp-work/    → "databnf"    (semantic-tools temporary URI)
  *   anything else → "other"
  */
-export function sourceFromArk(ark: string): string {
+export function sourceFromArk(ark: string): DocumentSource {
   const id = ark.replace(/^ark:\/\d+\//, "")
-  if (id.startsWith("cb")) return "catalogue"
-  if (/^(bpt6k|btv1b|bd6t)/.test(id)) return "gallica"
-  if (id.startsWith("temp-work/")) return "databnf"
-  return "other"
+  if (id.startsWith("cb")) return DOCUMENT_SOURCE.CATALOGUE
+  if (/^(bpt6k|btv1b|bd6t)/.test(id)) return DOCUMENT_SOURCE.GALLICA
+  if (id.startsWith("temp-work/")) return DOCUMENT_SOURCE.DATABNF
+  return DOCUMENT_SOURCE.OTHER
 }
 
 /**

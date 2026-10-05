@@ -17,3 +17,12 @@ export const STREAM_DOMAIN_EVENT = {
 } as const
 export type StreamDomainEventType = (typeof STREAM_DOMAIN_EVENT)[keyof typeof STREAM_DOMAIN_EVENT]
 
+/** What a buffer_event reports happened to the buffer. */
+export const BUFFER_EVENT_KIND = {
+  ADDED: "added",
+  REMOVED: "removed",
+  COMMITTED: "committed",
+  CLEARED: "cleared",
+} as const
+export type BufferEventKind = (typeof BUFFER_EVENT_KIND)[keyof typeof BUFFER_EVENT_KIND]
+
