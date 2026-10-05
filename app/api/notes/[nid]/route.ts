@@ -1,6 +1,7 @@
 /**
- * GET    /api/notes/:nid  — fetch a single note with its citations
- * PUT    /api/notes/:nid  — update title and/or body
+ * GET    /api/notes/:nid  — fetch a single note with its citations and the
+ *                           OCR quality of its cited folios (NoteDetail)
+ * PUT    /api/notes/:nid  — update title and/or body; answers the NoteDetail
  * DELETE /api/notes/:nid  — delete note and all its citations + versions
  *
  * Authorization: read access on the project (read) / write access on it
@@ -14,9 +15,9 @@ import { NotePolicy } from "@/models/notes/policy"
 import { ProjectQueries } from "@/models/projects/queries"
 import { NoteQueries } from "@/models/notes/queries"
 import { NoteService } from "@/models/notes/service"
-import { corpusProjectId } from "@/lib/authz/corpus-source"
+import { noteOcrReader, resolveCorpusProject } from "@/app/api/_corpus-source"
 import { updateNoteSchema } from "@/models/notes/types"
-import type { NoteWithCitations } from "@/models/notes/schema"
+import type { NoteDeleted, NoteDetail } from "@/models/notes/schema"
 
 type RouteCtx = { params: Promise<{ nid: string }> }
 
@@ -30,7 +31,11 @@ export const GET = withAuth(async (req, _user, bouncer, ctx: RouteCtx) => {
   if (!project) return notFound("Projet introuvable")
   await bouncer.with(NotePolicy).authorize("read", project)
 
-  return ok<NoteWithCitations>(note)
+  // Authorized: now add the cited folios' OCR quality, read on the corpus the
+  // note's citations were validated against — bounded, tied to the request,
+  // and non-fatal. A revoked derived workspace keeps reading its own notes;
+  // their OCR is then an explicit corpus_revoked state, never the source's rows.
+  return ok<NoteDetail>(await NoteService.detail(note, noteOcrReader(project, req.signal)))
 })
 
 export const PUT = withAuth(async (req, _user, bouncer, ctx: RouteCtx) => {
@@ -46,17 +51,22 @@ export const PUT = withAuth(async (req, _user, bouncer, ctx: RouteCtx) => {
   await bouncer.with(NotePolicy).authorize("update", project, note)
 
   // Citations are validated against the corpus the note's project reads —
-  // the source's when that project is a derived workspace.
-  const updated = await NoteService.update(nid, corpusProjectId(project), {
+  // the source's when that project is a derived workspace; a revoked grant is
+  // a 409, never a write validated against a corpus no longer reachable.
+  const corpusId = resolveCorpusProject(project)
+  if (corpusId instanceof Response) return corpusId
+
+  const updated = await NoteService.update(nid, corpusId, {
     title: parsed.title,
     bodyMd: parsed.bodyMd,
   })
   // Deleted between the authorize() above and the write.
   if (!updated) return notFound("Note introuvable")
 
-  // Re-fetch to include fresh citations after the update.
-  const full = await NoteQueries.get(updated.note.id)
-  return ok<NoteWithCitations>(full!)
+  // The written note already carries its citations (read in the write's own
+  // transaction): no re-read after the commit. Its OCR is enriched
+  // best-effort — a failed read answers check_failed, never a failed update.
+  return ok<NoteDetail>(await NoteService.detail(updated.note, noteOcrReader(project, req.signal)))
 })
 
 export const DELETE = withAuth(async (req, _user, bouncer, ctx: RouteCtx) => {
@@ -70,5 +80,5 @@ export const DELETE = withAuth(async (req, _user, bouncer, ctx: RouteCtx) => {
   await bouncer.with(NotePolicy).authorize("delete", project, note)
 
   await NoteService.delete(nid)
-  return ok<{ deleted: true }>({ deleted: true })
+  return ok<NoteDeleted>({ deleted: true })
 })

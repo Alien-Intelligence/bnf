@@ -544,8 +544,6 @@
         "consultBnf": "Consulter sur la BnF",
         "iiifViewer": "Visionneuse IIIF",
         "iiifViewerSub": "Ouvrir dans le viewer BnF",
-        "gallicaNotice": "Notice Gallica",
-        "gallicaNoticeSub": "Fiche document et fac-similé",
         "iiifManifest": "Manifeste IIIF",
         "iiifManifestSub": "manifest.json",
         "oai": "Notice OAI",
@@ -581,6 +579,16 @@
           "ingestSansTexte": "Sans texte · non ingéré",
           "ingestNonNumerise": "Non ingéré",
           "unknown": "—"
+        },
+        "ocrQuality": {
+          "docRate": "Taux OCR du document : {rate} %",
+          "noRate": "Taux OCR non publié par la BnF",
+          "pending": "Qualité OCR : en attente de synchronisation",
+          "building": "Qualité OCR : calcul en cours",
+          "unavailable": "Qualité OCR non disponible",
+          "quarantined": "Qualité OCR pas encore disponible (synchronisation en échec, réessayée chaque jour)",
+          "loadError": "Impossible de charger la qualité OCR.",
+          "incompatible": "Qualité OCR : en attente d'une mise à jour du service"
         }
       },
       "indexation": {
@@ -855,14 +863,20 @@
       "cites": "{count, plural, =0 {aucune référence} one {# référence ARK} other {# références ARK}}",
       "export": "Exporter en Markdown",
       "loadError": "Impossible de charger la note.",
-      "retry": "Réessayer"
+      "retry": "Réessayer",
+      "noActiveTab": "Choisissez un onglet pour lire sa note."
     },
     "carnet": {
       "title": "Carnet de recherche",
       "projectEyebrow": "Projet de recherche",
       "compiledHeader": "Carnet de recherche · {count, plural, =0 {aucune note} one {# note} other {# notes}}",
       "export": "Exporter en Markdown",
-      "empty": "Aucune note dans ce carnet."
+      "empty": "Aucune note dans ce carnet.",
+      "loadError": "Impossible de charger cette note.",
+      "exportBlocked": "Certaines notes n'ont pas pu être chargées : rechargez-les avant d'exporter.",
+      "retryLoad": "Recharger les notes",
+      "loadListError": "Impossible de charger la liste des notes.",
+      "exportPartial": "Toutes les notes doivent être chargées avant l'export."
     },
     "revoked": {
       "title": "Accès au corpus révoqué",
@@ -881,7 +895,33 @@
       "iiifViewerSub": "Ouvrir la page exacte dans le viewer",
       "gallicaViewer": "Voir sur Gallica",
       "gallicaViewerSub": "Le document dans la visionneuse Gallica",
-      "usages": "Utilisé dans d'autres notes"
+      "usages": "Utilisé dans d'autres notes",
+      "usagesLoadError": "Impossible de charger les autres notes qui citent ce document.",
+      "usagesNone": "Aucune autre note ne cite ce document."
+    },
+    "ocr": {
+      "disclaimer": "La lisibilité de certains documents originaux peut limiter la reconnaissance du texte. L'outil a pu donc, dans certains cas, mal retranscrire / interpréter certaines citations figurant dans les notes. Le lien vers le document source permet d'en vérifier l'exactitude.",
+      "bannerLabel": "Mise en garde sur la qualité de reconnaissance du texte",
+      "lowPill": "Qualité OCR faible sur ce folio ({quality} %) — vérifiez la citation sur la source",
+      "exportLowMarker": "(qualité OCR faible)",
+      "sheetTitle": "Qualité OCR",
+      "folioAlto": "Qualité OCR du folio : {quality} % ({words, number} mots)",
+      "folioAltoUnscored": "Texte OCR de la BnF — qualité non mesurée",
+      "folioMistral": "Transcription automatique (Mistral) — qualité non mesurée",
+      "folioVision": "Description d'image générée — pas de texte OCR",
+      "lowFolio": "Qualité faible — vérifiez la citation sur la source",
+      "unavailable": "Qualité OCR non disponible",
+      "docRate": "Taux OCR du document : {rate} %",
+      "loadError": "Impossible de charger la qualité OCR.",
+      "pillUnavailable": "qualité OCR non disponible pour ce folio",
+      "folioNotRecorded": "Aucune qualité OCR pour ce folio : il ne fait pas partie des pages traitées du document",
+      "statusPending": "Qualité OCR : en attente de synchronisation",
+      "statusBuilding": "Qualité OCR : calcul en cours",
+      "statusUnavailable": "Qualité OCR non disponible pour ce document",
+      "statusQuarantined": "Qualité OCR pas encore disponible (synchronisation en échec, réessayée chaque jour)",
+      "corpusRevoked": "Qualité OCR non lue : l'accès au corpus partagé a été révoqué",
+      "noRate": "Taux OCR du document non publié par la BnF",
+      "statusIncompatible": "Qualité OCR : en attente d'une mise à jour du service"
     }
   },
   "ingest": {

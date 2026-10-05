@@ -3,18 +3,19 @@
 // handlers and agent tools validate against, and what client hooks import.
 //
 // DB-derived shapes (BufferRow, BufferSnapshot) live in schema.ts, not here —
-// per playbook/models.md. No imports from other model directories: `arkSchema`
-// is redefined here rather than imported from models/corpus (the import diagram
-// forbids sideways model imports in types.ts).
+// per playbook/models.md. `arkSchema` comes from the one shared definition in
+// lib/validation/ark.ts (no sideways import from models/corpus) and is
+// re-exported for this model's existing importers.
 import { z } from "zod"
 import { arkKindListSchema, docTypeListSchema, langListSchema, sourceListSchema, textAnySchema } from "@/lib/filters"
+
+import { arkSchema } from "@/lib/validation/ark"
 
 // ---------------------------------------------------------------------------
 // ARK validation (opaque identifier — never constructed, never mutated)
 // ---------------------------------------------------------------------------
 
-/** ark:/<NAAN>/<name>, e.g. ark:/12148/bpt6k2839841. */
-export const arkSchema = z.string().regex(/^ark:\/\d+\/[A-Za-z0-9]+$/, "ARK invalide")
+export { arkSchema }
 
 // ---------------------------------------------------------------------------
 // Buffer filters — ONE definition for the agent tools AND the REST route

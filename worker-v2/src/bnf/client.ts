@@ -31,18 +31,22 @@
  * (permanent — it's an access decision, not throttling), 404→not_found, 400→
  * bad_ark, 429→transient(is429), 5xx→transient.
  */
-import type { AltoFolio, BnfClient, BnfDocInfo, Manifest } from "./types.js";
+import { DOC_INFO_SOURCE, type AltoFolio, type BnfClient, type BnfDocInfo, type Manifest } from "./types.js";
 import { PermanentBnfError, TransientBnfError } from "./errors.js";
 import { brokerGet, brokerUrl } from "./broker-client.js";
 import {
+  altoFolioFromParse,
   arkToSlug,
   descriptionsHaveModeTexte,
+  emptyAltoFolio,
   ensureCanonicalArk,
   extractPageCountFromFormat,
   firstOrNull,
   metadataValue,
   oaiParser,
-  parseAltoText,
+  ocrRateValue,
+  parseAlto,
+  type OcrRateParse,
   parseV3Manifest,
   pickDcType,
   pickFirstLanguage,
@@ -140,7 +144,7 @@ async function brokerFetch(
 function decodeBnfBytes(bytes: Buffer, contentType?: string): string {
   let charset: string | undefined;
   const ctMatch = contentType?.match(/charset=([^;]+)/i);
-  if (ctMatch) charset = ctMatch[1]!.trim().toLowerCase();
+  if (ctMatch) charset = ctMatch[1]!.trim().replace(/^"(.*)"$/, "$1").toLowerCase(); // RFC 9110 allows a quoted value
   if (!charset) {
     // Sniff the XML prolog from the ASCII-safe head (the declaration is itself
     // ASCII regardless of the document body's encoding).
@@ -155,9 +159,20 @@ function decodeBnfBytes(bytes: Buffer, contentType?: string): string {
     // TextDecoder handles iso-8859-1 / latin1 / windows-1252 and many others.
     return new TextDecoder(charset).decode(bytes);
   } catch {
-    // Unknown label — UTF-8 is the least-surprising fallback.
-    return bytes.toString("utf8");
+    // Unknown label: decoding as UTF-8 anyway would turn accents into U+FFFD
+    // in the indexed text. Permanent — the stage records it with ARK/folio.
+    throw new PermanentBnfError("unknown_charset", { hint: `charset "${charset}"` });
   }
+}
+
+/**
+ * The body text for `status`: a non-2xx body is decoded as UTF-8 for
+ * classification context only, so a 429/5xx page is classified by its STATUS
+ * (transient) whatever charset it declares; only a 2xx body goes through the
+ * strict declared-charset decode.
+ */
+function decodeForStatus(status: number, bytes: Buffer, contentType?: string): string {
+  return status >= 200 && status < 300 ? decodeBnfBytes(bytes, contentType) : bytes.toString("utf8");
 }
 
 /**
@@ -231,7 +246,11 @@ function classifyStatus(
  *   • subtype  — null: the fine Gallica typedoc sub-category (fascicules/titres)
  *                lives only in OAI's setSpec, which the manifest does not carry.
  */
-export function docInfoFromManifest(manifest: Manifest, canonicalArk: string): BnfDocInfo {
+export function docInfoFromManifest(
+  manifest: Manifest,
+  canonicalArk: string,
+  tauxOcr: OcrRateParse,
+): BnfDocInfo {
   const title = metadataValue(manifest.metadata, ["titre", "title"]) ?? manifest.title;
   if (!title) {
     throw new PermanentBnfError("not_found", {
@@ -257,7 +276,7 @@ export function docInfoFromManifest(manifest: Manifest, canonicalArk: string): B
   const typeGeneric = metadataValue(manifest.metadata, ["type", "nature"]);
   const docType =
     [typeDocument, typeGeneric].filter(Boolean).join(" | ").toLowerCase() || null;
-  const ocrAvailable = metadataValue(manifest.metadata, ["taux ocr", "taux d'ocr"]) !== null;
+  const ocrAvailable = tauxOcr.kind !== "missing"; // tauxOcr: the caller's one tauxOcrOf(manifest) lookup
   const pageCount = manifest.totalPages || null;
 
   const slug = arkToSlug(canonicalArk);
@@ -271,11 +290,12 @@ export function docInfoFromManifest(manifest: Manifest, canonicalArk: string): B
     docType,
     subtype: null,
     ocrAvailable,
+    ocrRate: ocrRateValue(tauxOcr),
     pageCount,
     iiifManifestUrl,
     lang,
     raw: {
-      source: "iiif_manifest",
+      source: DOC_INFO_SOURCE.IIIF_MANIFEST,
       type_document: typeDocument,
       type: typeGeneric,
       language: lang,
@@ -310,7 +330,7 @@ export class LiveBnfClient implements BnfClient {
       "application/xml, text/xml, */*",
       DEFAULT_TIMEOUT_MS,
     );
-    const body = decodeBnfBytes(bytes, contentType);
+    const body = decodeForStatus(status, bytes, contentType);
     const err = classifyStatus(status, body, url);
     if (err) throw err;
 
@@ -376,13 +396,14 @@ export class LiveBnfClient implements BnfClient {
       docType,
       subtype,
       ocrAvailable,
+      ocrRate: null, // OAI-PMH publishes no "Taux OCR"
       pageCount,
       iiifManifestUrl,
       lang,
       raw: {
         ...(dc as Record<string, unknown>),
         language: lang,
-        source: "oai_pmh",
+        source: DOC_INFO_SOURCE.OAI_PMH,
         gallica_typedoc: typedoc,
         pageNumber: pageCount,
       },
@@ -405,7 +426,7 @@ export class LiveBnfClient implements BnfClient {
       "application/json, application/ld+json",
       PAGE_TIMEOUT_MS,
     );
-    const body = decodeBnfBytes(bytes, contentType);
+    const body = decodeForStatus(status, bytes, contentType);
     const err = classifyStatus(status, body, url);
     if (err) throw err;
 
@@ -428,24 +449,24 @@ export class LiveBnfClient implements BnfClient {
    * no OCR (blank page, plate) — that is NOT an error: return {text:"",
    * empty:true}. Any other non-2xx is classified and thrown for the stage.
    */
-  async fetchAltoFolio(ark: string, ordre: number): Promise<AltoFolio> {
+  async fetchAltoFolio(ark: string, ordre: number, signal?: AbortSignal): Promise<AltoFolio> {
     const canonicalArk = ensureCanonicalArk(ark);
     const slug = arkToSlug(canonicalArk);
     const url = `${OPENAPI}/iiif/presentation/v3/ark:/12148/${slug}/f${ordre}/alto.xml`;
 
+    signal?.throwIfAborted();
     const { status, bytes, contentType } = await brokerFetch(
       url,
       "application/xml, text/xml, */*",
       PAGE_TIMEOUT_MS,
     );
-    if (status === 404) return { text: "", empty: true };
-    const body = decodeBnfBytes(bytes, contentType);
+    signal?.throwIfAborted(); // an answer arriving after the caller's ceiling is discarded
+    if (status === 404) return emptyAltoFolio();
+    const body = decodeForStatus(status, bytes, contentType);
     const err = classifyStatus(status, body, url);
     if (err) throw err;
-    if (!body || body.trim().length === 0) return { text: "", empty: true };
-
-    const text = parseAltoText(body);
-    return { text, empty: text.trim() === "" };
+    if (!body || body.trim().length === 0) throw new TransientBnfError("alto_empty_body", { hint: url });
+    return altoFolioFromParse(parseAlto(body));
   }
 
   // ---------------- fetchImageFolio ----------------
@@ -466,7 +487,7 @@ export class LiveBnfClient implements BnfClient {
     );
     if (status < 200 || status >= 300) {
       // Decode the (small) error body for classification context only.
-      const body = decodeBnfBytes(bytes, contentType);
+      const body = decodeForStatus(status, bytes, contentType);
       const err = classifyStatus(status, body, url);
       if (err) throw err;
     }

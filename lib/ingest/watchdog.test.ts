@@ -14,7 +14,16 @@ import {
   WATCHDOG_RUNNING_STALE_MS,
   type WatchdogJobInput,
 } from "./watchdog"
-import type { ClusterQueueProgress } from "@/lib/cluster/contracts"
+import {
+  CLUSTER_POLL,
+  type ClusterProgressPoll,
+  type ClusterQueueProgress,
+} from "@/lib/cluster/contracts"
+
+const UNKNOWN: ClusterProgressPoll = { kind: CLUSTER_POLL.RUN_UNKNOWN }
+function polled(progress: ClusterQueueProgress): ClusterProgressPoll {
+  return { kind: CLUSTER_POLL.PROGRESS, progress }
+}
 
 const NOW = new Date("2026-08-11T12:00:00.000Z")
 
@@ -80,8 +89,8 @@ test("QUEUED that already has a clusterJobId → none (not this rule's business)
   assert.equal(nullSince, null)
 })
 
-test("RUNNING with null progress under the stale threshold → none, but tracks nullSince", () => {
-  const { action, nullSince } = decideWatchdogAction(runningJob(), null, NOW, null)
+test("RUNNING with the run unknown (404) under the stale threshold → none, but tracks nullSince", () => {
+  const { action, nullSince } = decideWatchdogAction(runningJob(), UNKNOWN, NOW, null)
   assert.deepEqual(action, { kind: "none" })
   assert.equal(nullSince?.getTime(), NOW.getTime(), "starts the staleness clock at `now`")
 })
@@ -90,7 +99,7 @@ test("RUNNING with null progress under the stale threshold → none, but tracks 
 
 test("RUNNING + non-null progress → write_progress with the docs-terminal fraction", () => {
   const p = progress({ docsTotal: 465, docsFinished: 331, docs: { done: 331, failed: 133, queued: 1 } })
-  const { action, nullSince } = decideWatchdogAction(runningJob(), p, NOW, minutesAgo(10))
+  const { action, nullSince } = decideWatchdogAction(runningJob(), polled(p), NOW, minutesAgo(10))
   assert.deepEqual(action, {
     kind: "write_progress",
     progress: 331 / 465,
@@ -101,7 +110,7 @@ test("RUNNING + non-null progress → write_progress with the docs-terminal frac
 
 test("write_progress fraction is 0 when docsTotal is 0 (never divides by zero)", () => {
   const p = progress({ docsTotal: 0, docsFinished: 0 })
-  const { action } = decideWatchdogAction(runningJob(), p, NOW, null)
+  const { action } = decideWatchdogAction(runningJob(), polled(p), NOW, null)
   assert.equal(action.kind, "write_progress")
   if (action.kind === "write_progress") assert.equal(action.progress, 0)
 })
@@ -126,36 +135,53 @@ test("QUEUED exactly at the threshold does not fail (strictly greater-than)", ()
 
 // --- fail-stale ---------------------------------------------------------------
 
-test("RUNNING with progress null continuously for > 30 min → fail (worker unreachable)", () => {
+test("RUNNING with the run unknown continuously for > 30 min → fail", () => {
   const staleSince = new Date(NOW.getTime() - WATCHDOG_RUNNING_STALE_MS - 1)
-  const { action, nullSince } = decideWatchdogAction(runningJob(), null, NOW, staleSince)
+  const { action, nullSince } = decideWatchdogAction(runningJob(), UNKNOWN, NOW, staleSince)
   assert.deepEqual(action, {
     kind: "fail",
-    reason: "worker injoignable / run inconnu depuis 30 min (watchdog)",
+    reason: "run inconnu du worker depuis 30 min (watchdog)",
   })
   assert.equal(nullSince, null, "nothing left to track once the job is about to go terminal")
 })
 
-test("RUNNING with progress null for exactly 30 min does not yet fail (strictly greater-than)", () => {
+test("RUNNING with the run unknown for exactly 30 min does not yet fail (strictly greater-than)", () => {
   const staleSince = new Date(NOW.getTime() - WATCHDOG_RUNNING_STALE_MS)
-  const { action, nullSince } = decideWatchdogAction(runningJob(), null, NOW, staleSince)
+  const { action, nullSince } = decideWatchdogAction(runningJob(), UNKNOWN, NOW, staleSince)
   assert.deepEqual(action, { kind: "none" })
   assert.equal(nullSince?.getTime(), staleSince.getTime(), "clock is not reset while still under threshold")
 })
 
 test("a single null tick starts the clock; a later non-null tick resets it before staleness ever fires", () => {
   // Tick 1: worker unreachable, first time.
-  const t1 = decideWatchdogAction(runningJob(), null, minutesAgo(40), null)
+  const t1 = decideWatchdogAction(runningJob(), UNKNOWN, minutesAgo(40), null)
   assert.deepEqual(t1.action, { kind: "none" })
   assert.ok(t1.nullSince)
 
   // Tick 2 (10 minutes later, still within the 30-min budget): progress comes back.
-  const t2 = decideWatchdogAction(runningJob(), progress(), minutesAgo(30), t1.nullSince)
+  const t2 = decideWatchdogAction(runningJob(), polled(progress()), minutesAgo(30), t1.nullSince)
   assert.equal(t2.action.kind, "write_progress")
   assert.equal(t2.nullSince, null)
 
   // Tick 3: null again — the clock restarts from THIS tick, not tick 1's timestamp.
-  const t3 = decideWatchdogAction(runningJob(), null, minutesAgo(20), t2.nullSince)
+  const t3 = decideWatchdogAction(runningJob(), UNKNOWN, minutesAgo(20), t2.nullSince)
   assert.deepEqual(t3.action, { kind: "none" })
   assert.equal(t3.nullSince?.getTime(), minutesAgo(20).getTime())
 })
+
+// --- an outage is not "the run is gone" ------------------------------------
+
+for (const poll of [
+  { kind: CLUSTER_POLL.WORKER_UNREACHABLE, detail: "ECONNREFUSED" },
+  { kind: CLUSTER_POLL.WORKER_ERROR, status: 503 },
+] as const) {
+  test(`RUNNING with the worker ${poll.kind} → none, the clock is held (not started, not reset)`, () => {
+    const fresh = decideWatchdogAction(runningJob(), poll, NOW, null)
+    assert.deepEqual(fresh, { action: { kind: "none" }, nullSince: null }, "never starts the clock")
+    const staleSince = new Date(NOW.getTime() - WATCHDOG_RUNNING_STALE_MS - 1)
+    const held = decideWatchdogAction(runningJob(), poll, NOW, staleSince)
+    assert.deepEqual(held.action, { kind: "none" }, "never fails the job during an outage")
+    assert.equal(held.nullSince?.getTime(), staleSince.getTime(), "and never resets it either")
+  })
+}
+

@@ -8,6 +8,10 @@ This doc covers running it locally and the three acceptance gates from the goal.
 
 ```bash
 npm test          # 100+ unit tests + a full fake-mode integration run
+# The Postgres contract suite of the OCR backfill store (skipped by `npm test`
+# without a database). Point it at a Postgres YOU own — it applies schema.sql
+# (idempotent) and only touches rows under a unique test ARK prefix:
+WORKER_TEST_DATABASE_URL=postgresql://… npm run test:pg   # fails, never skips, without the URL
 npm run typecheck # tsc --noEmit, 0 errors
 ```
 
@@ -25,14 +29,27 @@ Env (required vars throw at startup — see `src/config.ts` + the live clients):
 DATABASE_URL=postgresql://…              # pg-boss buckets + sandbox_ingest_v2 doc state
 SCW_S3_BUCKET= SCW_S3_ENDPOINT_URL= SCW_S3_REGION= SCW_S3_ACCESS_KEY= SCW_S3_SECRET_KEY=
 V2_S3_PREFIX=v2/                         # isolates V2 artifacts from V1 in the shared bucket
-BNF_BROKER_URL=…                         # the egress chokepoint (owns OAuth + the rate caps)
+BNF_BROKER_URL=…                         # REQUIRED at boot: the egress chokepoint (owns OAuth + the rate caps)
 BNF_GLOBAL_RPM=300                       # fetch rate gate (→ 1000 only if the per-IP raise lands)
 BNF_FETCH_CONCURRENCY=12
 BNF_MANIFEST_RPM=42
 MISTRAL_OCR_ENABLED=true                 # + MISTRAL_API_KEY … (mistral lane)
 # vision: SCW_API_KEY/SCW_GENAI_BASE_URL/HOLO_MODEL + GOOGLE_AI_API_KEY  (see src/live/*)
 # embed:  RunPod creds;  cluster: CLUSTER_* (mirrors V1 env.ts names)
+# OCR-quality backfill (validated at startup — a malformed value throws).
+# LOCAL: keep it off — each backfilled text doc spends shared BnF quota.
+OCR_BACKFILL_ENABLED=false               # code default true (prod); false: no stage, sync queues nothing
+OCR_BACKFILL_CONCURRENCY=2               # in-flight backfill docs (positive integer; plan D6 default)
+OCR_BACKFILL_RETRY_FAILED_AFTER_MS=86400000  # base retry backoff in ms (≥ 60000), doubles per attempt (5 max)
 ```
+
+Every numeric knob above is a strict integer (≥ 1; a port ≤ 65535): a zero, a
+negative, a fraction or a typo throws at startup instead of being floored.
+
+Each backfilled TEXT document costs one BnF ALTO call per indexed folio, once,
+through the same fetch gate as live ingests — the block above therefore sets
+`OCR_BACKFILL_ENABLED=false`; turn it on only when you mean to spend that quota
+(see `helm/DEPLOY.md`, "OCR quality backfill").
 
 ```bash
 npm start                                # boots the worker (all stages long-poll forever)
@@ -70,9 +87,13 @@ SELECT ark FROM "Document" WHERE "ocrAvailable" = false
 
 ## Security posture
 
-The worker's HTTP ingress (`POST /ingest`, `POST /ingest/:id/cancel`) has **no
-authentication of its own** — it trusts the cluster network (any pod that can
-reach `:7777` can open or cancel a run). The broker it talks to has the same
+The worker's HTTP ingress (`POST /ingest`, `POST /ingest/:id/cancel`,
+`POST /ocr-quality/sync`) has **no authentication of its own** — it trusts the
+cluster network (any pod that can reach `:7777` can open or cancel a run, or ask
+for OCR-quality artifacts). `/ocr-quality/sync` can at most enqueue rate-gated,
+idempotent artifact builds, one row per ARK, with bounded retries (plan D17); its
+body is capped at 16 KiB, the whole request (body read included) at 20 s — under the
+app's 30 s `WORKER_RUNNER_TIMEOUT_MS` — and at most 2 requests are served at once. The broker it talks to has the same
 posture (see `../broker/README.md`). The one thing that IS authenticated is
 the terminal callback the worker POSTs back to the app: it's HMAC-signed
 (`x-callback-signature`, per-run secret) and the app verifies it byte-for-byte.

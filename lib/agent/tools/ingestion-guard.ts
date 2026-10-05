@@ -10,6 +10,8 @@
 // throws out of the loop (CLAUDE_ERROR_PATTERNS.md §15).
 import "server-only"
 
+import { withDeadline } from "@/lib/async/deadline"
+import { TOOL_DB_TIMEOUT_MS } from "@/lib/constants"
 import { prisma } from "@/lib/db"
 
 /** Error shown when a search is attempted before any ingestion is committed. */
@@ -41,6 +43,8 @@ export type CorpusScopedCtx = {
   corpusProjectId: string
   /** False when this is a derived project whose grant was revoked. */
   corpusReachable: boolean
+  /** The turn's signal: the ingestion read is bounded and tied to it. */
+  signal: AbortSignal
 }
 
 /**
@@ -54,7 +58,11 @@ export async function resolveIngestedCorpus(
 ): Promise<{ versionId: string } | { error: string }> {
   if (!ctx.corpusReachable) return { error: CORPUS_ACCESS_REVOKED_ERROR }
 
-  const versionId = await ingestedVersionId(ctx.corpusProjectId)
+  const versionId = await withDeadline(ingestedVersionId(ctx.corpusProjectId), {
+    label: "ingested-corpus read",
+    ms: TOOL_DB_TIMEOUT_MS,
+    signal: ctx.signal,
+  })
   if (!versionId) return { error: notIngestedError }
 
   return { versionId }

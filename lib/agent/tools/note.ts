@@ -26,13 +26,34 @@ import "server-only"
 import { z } from "zod"
 import { defineTool } from "@alien/chat-sdk/claude"
 import { NotePolicy } from "@/models/notes/policy"
+import { withDeadline } from "@/lib/async/deadline"
+import { classifyFolioRefs } from "@/lib/citations/ocr"
+import { TOOL_DB_TIMEOUT_MS } from "@/lib/constants"
+import { noteOcrIndex, type OcrReader } from "@/lib/ocr/quality"
+import { OCR_ACCESS } from "@/models/documents/schema"
 import { NoteService } from "@/models/notes/service"
 import { NoteQueries } from "@/models/notes/queries"
+import type { NoteDetail, NoteWithCitations } from "@/models/notes/schema"
 import type { TurnScopedCtx } from "./registry-factory"
 import { authorizeOnProject, authorizeProjectTool } from "./authorize"
 import { emitDomainEvent, NOTE_EVENT_KIND, STREAM_DOMAIN_EVENT } from "@/lib/agent/stream-events"
-import { AGENT_TOOLS } from "./constants"
+import {
+  AGENT_TOOLS,
+  FOLIO_OCR_STATE_LEGEND,
+  NOTE_INVALID_CITATION_MESSAGE,
+  NOTE_LOW_OCR_NOTICE,
+  NOTE_OCR_CHECK_FAILED_NOTICE,
+  NOTE_OCR_CORPUS_REVOKED_NOTICE,
+  NOTE_OCR_READ_FAILED_NOTICE,
+  NOTE_OCR_UNKNOWN_NOTICE,
+} from "./constants"
 import { toolFailure } from "./failure"
+import {
+  loadOcrIndex,
+  noteCitationRefs,
+  noteOcrReport,
+  type NoteOcrReport,
+} from "./rag-ocr"
 import { NOTE_NOT_INGESTED_ERROR, resolveIngestedCorpus } from "./ingestion-guard"
 
 /**
@@ -45,48 +66,165 @@ import { NOTE_NOT_INGESTED_ERROR, resolveIngestedCorpus } from "./ingestion-guar
 export const NOTE_NOT_FOUND_ERROR = "note_not_found"
 
 /**
+ * What is known of a note's citations' OCR quality (feedback 2026-09-29 #7):
+ * the report; or that the source corpus's grant was revoked (nothing is
+ * read); or that the check itself failed. A failed check never turns a
+ * committed write — or a note read — into an error the model would retry
+ * (CLAUDE_ERROR_PATTERNS §15).
+ */
+export type NoteOcrOutcome =
+  | { kind: typeof OCR_ACCESS.OK; report: NoteOcrReport }
+  | { kind: typeof OCR_ACCESS.CORPUS_REVOKED }
+  | { kind: typeof OCR_ACCESS.CHECK_FAILED }
+
+/**
+ * The OCR fields of a note tool result; none at all when nothing is to be
+ * said. `failedNotice` is what a failed check means where it happened: after
+ * a committed write (do not retry it) or on a read (the quality is unknown).
+ */
+export function noteOcrFields(outcome: NoteOcrOutcome, failedNotice: string) {
+  if (outcome.kind === OCR_ACCESS.CHECK_FAILED) {
+    return { ocr_check: { status: outcome.kind, message: failedNotice } }
+  }
+  if (outcome.kind === OCR_ACCESS.CORPUS_REVOKED) {
+    return { ocr_check: { status: outcome.kind, message: NOTE_OCR_CORPUS_REVOKED_NOTICE } }
+  }
+  const { low, unknown } = outcome.report
+  return {
+    ...(low.length > 0
+      ? { low_ocr_citations: { citations: low, message: NOTE_LOW_OCR_NOTICE } }
+      : {}),
+    ...(unknown.length > 0
+      ? { ocr_unknown_citations: { citations: unknown, message: NOTE_OCR_UNKNOWN_NOTICE } }
+      : {}),
+  }
+}
+
+/**
  * The tool result for a write, naming any citation the corpus could not vouch
  * for. A rejected ARK is not a failure — the note was written, and its body
  * still contains the text — but the agent must be told, or it will believe it
  * cited a source it actually invented (playbook/citations.md).
+ *
+ * It also names the citations of low-OCR folios and those whose quality is
+ * unknown, so the agent knows the BnF disclaimer is added BY CODE (and does
+ * not write its own) and never presents an unknown quality as verified.
+ * With nothing to say, the result is unchanged. Exported for the tests.
  */
-function noteResult(
+export function noteResult(
   note: { id: string; title: string; citationCount: number },
   rejected: string[],
+  ocr: NoteOcrOutcome,
 ) {
   const base = {
     note_id: note.id,
     title: note.title,
     citation_count: note.citationCount,
+    ...noteOcrFields(ocr, NOTE_OCR_CHECK_FAILED_NOTICE),
   }
   if (rejected.length === 0) return base
   return {
     ...base,
-    invalid_citation: {
-      arks: rejected,
-      message:
-        "Ces ARK ne figurent dans aucune version du corpus : la citation a été " +
-        "conservée dans le texte mais n'a pas été indexée. Vérifie l'ARK avec " +
-        "rag_query ou retire la citation.",
-    },
+    invalid_citation: { arks: rejected, message: NOTE_INVALID_CITATION_MESSAGE },
   }
+}
+
+/**
+ * The OCR check of a COMMITTED write: the written body's corpus-vouched
+ * citations against the stored quality. Its failure is logged and reported in
+ * the result (`ocr_check: check_failed`), never thrown — the note exists.
+ */
+async function checkWrittenNoteOcr(
+  body: string,
+  rejected: string[],
+  reader: OcrReader,
+): Promise<NoteOcrOutcome> {
+  try {
+    const index = await loadOcrIndex(reader, noteCitationRefs(body, rejected))
+    if (index.access !== OCR_ACCESS.OK) return { kind: index.access }
+    return { kind: OCR_ACCESS.OK, report: noteOcrReport(noteCitationRefs(body, rejected), index) }
+  } catch (err) {
+    console.error("[note] OCR-quality check after a committed write failed:", err)
+    return { kind: OCR_ACCESS.CHECK_FAILED }
+  }
+}
+
+/** A loaded note's OCR outcome, from its NoteDetail (NoteService.details). */
+function noteDetailOcr(note: NoteDetail): NoteOcrOutcome {
+  if (note.ocr.access !== OCR_ACCESS.OK) return { kind: note.ocr.access }
+  return { kind: OCR_ACCESS.OK, report: noteOcrReport(note.citations, noteOcrIndex(note.ocr)) }
+}
+
+/** A note read of a note tool, scoped to the turn's project and bounded. */
+function readNote(id: string, ctx: TurnScopedCtx): Promise<NoteWithCitations | null> {
+  return withDeadline(NoteQueries.getForProject(id, ctx.projectId), {
+    label: "note read",
+    ms: TOOL_DB_TIMEOUT_MS,
+    signal: ctx.signal,
+  })
 }
 
 // ---------------------------------------------------------------------------
 // note_list
 // ---------------------------------------------------------------------------
 
+/** Low / unknown citation counts of a listed note; null when its OCR was not read. */
+function noteListOcrCounts(note: NoteDetail): { low: number | null; unknown: number | null } {
+  if (note.ocr.access !== OCR_ACCESS.OK) return { low: null, unknown: null }
+  const { low, unknown } = classifyFolioRefs(note.citations, noteOcrIndex(note.ocr))
+  return { low: low.length, unknown: unknown.length }
+}
+
+/**
+ * The note_list OCR status line: present only when the counts could not be
+ * computed (one OCR read serves every note, so one note says it for all).
+ */
+function noteListOcrCheck(notes: NoteDetail[]) {
+  for (const n of notes) {
+    if (n.ocr.access !== OCR_ACCESS.OK) {
+      return noteOcrFields({ kind: n.ocr.access }, NOTE_OCR_READ_FAILED_NOTICE)
+    }
+  }
+  return {}
+}
+
 export const noteListTool = defineTool<z.ZodObject<Record<never, never>>, TurnScopedCtx>({
   name: AGENT_TOOLS.noteList,
   description:
-    "List all research notes for this project, ordered most-recently-updated first. " +
+    "List all research notes for this project, pinned first, then most-recently-updated first. " +
     "Call this before note_create to check whether a closely related note already exists — " +
     "prefer note_update over creating a near-duplicate. " +
-    "Each note's id is the value to use when linking to it with [[note:<id>|<label>]].",
+    "Each note's id is the value to use when linking to it with [[note:<id>|<label>]]. " +
+    "Each note also carries low_ocr_citation_count (citations of poorly recognised " +
+    "folios — the note shows the BnF disclaimer) and ocr_unknown_citation_count " +
+    "(citations whose OCR quality is unknown — never 'good'). Both are null, and " +
+    "ocr_check says why, when the OCR quality could not be read " +
+    `(${OCR_ACCESS.CORPUS_REVOKED}, ${OCR_ACCESS.CHECK_FAILED}).`,
   inputSchema: z.object({}),
   handler: async (_input, ctx) => {
-    const notes = await NoteQueries.listForProject(ctx.projectId)
-    return { notes }
+    // One read (notes + their Citation rows, in the note-list order), then ONE
+    // OCR read for all of them (NoteService.details: gated, bounded, non-fatal).
+    const notes = await withDeadline(
+      NoteQueries.listWithCitationsForProject(ctx.projectId),
+      { label: "note list read", ms: TOOL_DB_TIMEOUT_MS, signal: ctx.signal },
+    )
+    const details = await NoteService.details(notes, ctx)
+    return {
+      notes: details.map((n) => {
+        const counts = noteListOcrCounts(n)
+        return {
+          id: n.id,
+          title: n.title,
+          updatedAt: n.updatedAt,
+          citationCount: n.citationCount,
+          pinned: n.pinned,
+          createdAt: n.createdAt,
+          low_ocr_citation_count: counts.low,
+          ocr_unknown_citation_count: counts.unknown,
+        }
+      }),
+      ...noteListOcrCheck(details),
+    }
   },
 })
 
@@ -101,14 +239,22 @@ export const noteGetTool = defineTool<
   name: AGENT_TOOLS.noteGet,
   description:
     "Fetch the full body and citations of a single note by its id. " +
-    "Use this to read a note before deciding whether to update it.",
+    "Use this to read a note before deciding whether to update it. " +
+    "The result also names its low_ocr_citations (poorly recognised folios — the " +
+    "note shows the BnF disclaimer) and ocr_unknown_citations (quality unknown — " +
+    "never 'good'; each carries its ocr_state). When the OCR quality could not be " +
+    `read, ocr_check says why (${OCR_ACCESS.CORPUS_REVOKED}, ${OCR_ACCESS.CHECK_FAILED}) instead. ` +
+    `ocr_state : ${FOLIO_OCR_STATE_LEGEND}.`,
   inputSchema: z.object({
     id: z.string().uuid().describe("The note's UUID."),
   }),
   handler: async (input, ctx) => {
-    const note = await NoteQueries.getForProject(input.id, ctx.projectId)
+    const note = await readNote(input.id, ctx)
     if (!note) return toolFailure(NOTE_NOT_FOUND_ERROR)
-    return { note }
+    // The note is the project's own and is always returned; its OCR is read on
+    // the corpus — never when the grant was revoked, and non-fatally.
+    const detail = await NoteService.detail(note, ctx)
+    return { note, ...noteOcrFields(noteDetailOcr(detail), NOTE_OCR_READ_FAILED_NOTICE) }
   },
 })
 
@@ -175,7 +321,7 @@ export const noteCreateTool = defineTool<
       data: { kind: NOTE_EVENT_KIND.CREATED, noteId: note.id, title: note.title },
     })
 
-    return noteResult(note, rejected)
+    return noteResult(note, rejected, await checkWrittenNoteOcr(note.body_md, rejected, ctx))
   },
 })
 
@@ -228,7 +374,7 @@ export const noteUpdateTool = defineTool<
 
     // Scope before mutating. `input.id` came from the model and names any note
     // in the database, not necessarily one this project owns.
-    const target = await NoteQueries.getForProject(input.id, ctx.projectId)
+    const target = await readNote(input.id, ctx)
     if (!target) return toolFailure(NOTE_NOT_FOUND_ERROR)
     const noteGate = authorizeOnProject(ctx, gate.project, NotePolicy, "update", target)
     if (!noteGate.ok) return noteGate.result
@@ -246,7 +392,11 @@ export const noteUpdateTool = defineTool<
       data: { kind: NOTE_EVENT_KIND.UPDATED, noteId: written.note.id, title: written.note.title },
     })
 
-    return noteResult(written.note, written.rejected)
+    return noteResult(
+      written.note,
+      written.rejected,
+      await checkWrittenNoteOcr(written.note.body_md, written.rejected, ctx),
+    )
   },
 })
 
@@ -293,7 +443,7 @@ export const noteAppendTool = defineTool<
     if ("error" in corpus) return toolFailure(corpus.error)
 
     // Scope before mutating — see note_update.
-    const target = await NoteQueries.getForProject(input.id, ctx.projectId)
+    const target = await readNote(input.id, ctx)
     if (!target) return toolFailure(NOTE_NOT_FOUND_ERROR)
     const noteGate = authorizeOnProject(ctx, gate.project, NotePolicy, "update", target)
     if (!noteGate.ok) return noteGate.result
@@ -308,7 +458,11 @@ export const noteAppendTool = defineTool<
       data: { kind: NOTE_EVENT_KIND.UPDATED, noteId: written.note.id, title: written.note.title },
     })
 
-    return noteResult(written.note, written.rejected)
+    return noteResult(
+      written.note,
+      written.rejected,
+      await checkWrittenNoteOcr(written.note.body_md, written.rejected, ctx),
+    )
   },
 })
 

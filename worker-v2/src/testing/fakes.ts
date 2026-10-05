@@ -6,7 +6,8 @@
  * BnF quota. The live clients (ported from V1) implement the same interfaces.
  */
 import { PermanentBnfError, TransientBnfError } from "../bnf/errors.js";
-import type { AltoFolio, BnfClient, BnfDocInfo, Manifest } from "../bnf/types.js";
+import { altoFolioFromParse, emptyAltoFolio, parseAlto } from "../bnf/parse.js";
+import { DOC_INFO_SOURCE, type AltoFolio, type BnfClient, type BnfDocInfo, type Manifest } from "../bnf/types.js";
 import type { ClusterSink, Describer, Embedder, OcrEngine, OcrBatchStatus } from "../ports.js";
 import type { PreparedPage } from "../domain/types.js";
 
@@ -43,10 +44,34 @@ export interface FakeDocSpec {
   ark: string;
   ocrAvailable: boolean;
   docType: string | null;
-  pageCount: number;
+  /**
+   * The page count BnF publishes; `null` = it publishes none. The OAI path
+   * carries it as is (pageCount null); a manifest always has a canvas count,
+   * so the fake manifest of a `null` doc has no canvases.
+   */
+  pageCount: number | null;
   title?: string | null;
   /** Folios (ordre) that have no ALTO text — fetched ok but empty. */
   emptyFolios?: number[];
+  /**
+   * Mean word confidence the fake reports per ALTO folio. Default 1 (a fully
+   * confident fake OCR, so every unrelated test reads "not low"); `null` models
+   * an ALTO without WC. The real client derives this from the XML (parseAlto).
+   */
+  folioMeanWc?: Record<number, number | null>;
+  /**
+   * Raw WC attribute values, one per word of the folio's fake text (6 words),
+   * written verbatim into the fake ALTO — so a test can script values the real
+   * parser must reject ("abc", "1.5") and see invalidWcCount. Overrides
+   * folioMeanWc for that folio; null omits WC on that word.
+   */
+  folioWc?: Record<number, Array<string | null>>;
+  /**
+   * The raw "Taux OCR" metadata value the fake manifest publishes when
+   * `ocrAvailable` (default "100%"). Any string — "78.21 %", "n/a", "150 %" — so
+   * tests can drive every parseOcrRate outcome through the real parsing path.
+   */
+  tauxOcr?: string;
   /** Image folios (ordre) served TRUNCATED (valid SOI, missing EOI) — the
    *  poisoned-transport shape the fetch stage must reject, never cache. */
   truncatedFolios?: number[];
@@ -66,6 +91,22 @@ export interface FakeDocSpec {
   /** Faults per folio fetch (ALTO or image), keyed by ordre. */
   folioFaults?: Record<number, Fault>;
 }
+
+/** The mean WC a fake ALTO word carries unless the spec says otherwise: fully
+ *  confident, so every unrelated test reads "not low". `null` = no WC at all. */
+const FAKE_DEFAULT_WC = "1";
+
+function fakeMeanWc(mean: number | null | undefined): string | null {
+  if (mean === undefined) return FAKE_DEFAULT_WC;
+  return mean === null ? null : String(mean);
+}
+
+function xmlAttr(v: string): string {
+  return v.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+}
+
+/** The Taux OCR a fake text document publishes unless its spec says otherwise. */
+const FAKE_DEFAULT_TAUX_OCR = "100%";
 
 export class FakeBnfClient implements BnfClient {
   private readonly docs = new Map<string, FakeDocSpec>();
@@ -95,10 +136,12 @@ export class FakeBnfClient implements BnfClient {
       docType: s.docType,
       subtype: null,
       ocrAvailable: s.ocrAvailable,
+      // The OAI path publishes no Taux OCR (client.ts getDocumentInfoViaOai).
+      ocrRate: null,
       pageCount: s.pageCount,
       iiifManifestUrl: null,
       lang: "fre",
-      raw: {},
+      raw: { source: DOC_INFO_SOURCE.OAI_PMH },
     };
   }
 
@@ -106,7 +149,8 @@ export class FakeBnfClient implements BnfClient {
     this.calls.manifest++;
     const s = this.spec(ark);
     this.faults.hit(`manifest:${ark}`, s.manifestFault);
-    const canvases = Array.from({ length: Math.min(s.pageCount, maxCanvases) }, (_, i) => ({
+    const canvasCount = s.pageCount ?? 0; // a manifest always has a canvas list (see FakeDocSpec.pageCount)
+    const canvases = Array.from({ length: Math.min(canvasCount, maxCanvases) }, (_, i) => ({
       ordre: i + 1,
       label: `f${i + 1}`,
       width: 1000,
@@ -120,16 +164,32 @@ export class FakeBnfClient implements BnfClient {
     // never round-tripped through a manifest at all.)
     const metadata: Array<{ label: string; value: string }> = [{ label: "langue", value: "fre" }];
     if (s.docType) metadata.push({ label: "type document", value: s.docType });
-    if (s.ocrAvailable) metadata.push({ label: "taux ocr", value: "100%" });
-    return { title: s.title ?? `Doc ${ark}`, metadata, totalPages: s.pageCount, canvases };
+    if (s.ocrAvailable) metadata.push({ label: "taux ocr", value: s.tauxOcr ?? FAKE_DEFAULT_TAUX_OCR });
+    return { title: s.title ?? `Doc ${ark}`, metadata, totalPages: canvasCount, canvases };
   }
 
-  async fetchAltoFolio(ark: string, ordre: number): Promise<AltoFolio> {
+  async fetchAltoFolio(ark: string, ordre: number, signal?: AbortSignal): Promise<AltoFolio> {
+    signal?.throwIfAborted();
     this.calls.alto++;
     const s = this.spec(ark);
     this.faults.hit(`folio:${ark}:${ordre}`, s.folioFaults?.[ordre]);
-    if (s.emptyFolios?.includes(ordre)) return { text: "", empty: true };
-    return { text: `ALTO text of ${ark} folio ${ordre}`, empty: false };
+    if (s.emptyFolios?.includes(ordre)) return emptyAltoFolio();
+    // A real ALTO document, parsed by the REAL parser (range check, invalid WC
+    // count, rounding) and mapped by the SAME altoFolioFromParse the live
+    // client uses — so the fake cannot report a quality the client never could.
+    const words = `ALTO text of ${ark} folio ${ordre}`.split(" ");
+    const wcs = s.folioWc?.[ordre] ?? words.map(() => fakeMeanWc(s.folioMeanWc?.[ordre]));
+    if (wcs.length !== words.length) {
+      throw new Error(`fake folioWc[${ordre}] must hold ${words.length} values, got ${wcs.length}`);
+    }
+    const strings = words
+      .map((w, i) => {
+        const wc = wcs[i];
+        return `<String CONTENT="${xmlAttr(w)}"${wc === null || wc === undefined ? "" : ` WC="${xmlAttr(wc)}"`}/>`;
+      })
+      .join("");
+    const xml = `<alto><Layout><Page><PrintSpace><TextBlock><TextLine>${strings}</TextLine></TextBlock></PrintSpace></Page></Layout></alto>`;
+    return altoFolioFromParse(parseAlto(xml));
   }
 
   async fetchImageFolio(ark: string, ordre: number, _size?: string): Promise<Buffer> {

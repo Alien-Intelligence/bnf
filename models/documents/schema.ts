@@ -19,6 +19,19 @@
 //
 // No imports from other model directories — schema.ts is the foundation layer.
 
+import type { Document, Prisma } from "@/lib/generated/prisma/client"
+
+export type { Document }
+
+/** Shape of a document to upsert (DocumentService.upsertMany). Mirrors the Document table columns. */
+export type DocumentUpsertData = Omit<
+  Prisma.DocumentCreateInput,
+  "project" | "membership"
+> & {
+  projectId: string
+  ark: string
+}
+
 /** One entry in a facet vocabulary map. */
 export type VocabEntry = {
   /** i18n key suffix used to look up the display label. */
@@ -506,6 +519,12 @@ const INDEXATION_REASON_KEY: Record<string, string> = {
   // Indexing itself failed after the content was in hand.
   embed_failed_after_retries: "indexFailed",
   register_missing_artifacts: "indexFailed",
+  // The per-ARK OCR-quality artifact could not be built (worker-v2
+  // stages/ocr-quality.ts): a terminal pipeline failure, not a BnF one.
+  ocr_quality_no_metadata: "indexFailed",
+  ocr_quality_missing_sidecar: "indexFailed",
+  ocr_quality_corrupt_sidecar: "indexFailed",
+  ocr_quality_corrupt_metadata: "indexFailed",
 }
 
 /**
@@ -568,4 +587,211 @@ const NON_LATIN_SCRIPT_LANGS = new Set<string>(NON_LATIN_SCRIPT_LANG_CODES)
 export function isLatinScriptLang(lang: string | null | undefined): boolean {
   if (!lang) return true
   return !NON_LATIN_SCRIPT_LANGS.has(lang.trim().toLowerCase())
+}
+
+// ---------------------------------------------------------------------------
+// OCR quality — DocumentOcr / DocumentFolio (feedback 2026-09-29 #7, Track B)
+//
+// Per ARK, global across projects (plan D8): the OCR quality is a property of
+// the BnF content, not of a project. Every read takes the reader's corpus
+// project and returns nothing for an ARK outside it (DocumentQueries).
+// Values mirror worker-v2/src/domain/types.ts (OCR_SOURCE, DocOcrQuality); the
+// wire schema in lib/cluster/ocr-quality.ts validates them. Change both sides
+// together. The "low" decision and the views are pure functions in
+// lib/ocr/quality.ts (they need the app-wide threshold constant, which this
+// foundation file may not import).
+// ---------------------------------------------------------------------------
+
+/**
+ * What produced a prepared folio's text. Only `alto` carries a measured quality
+ * (the mean ALTO word confidence); a Mistral page's own confidence does not
+ * flag hallucinations and a vision page is a description, so both are recorded
+ * with a null quality and are never "low" (plan D2/D3).
+ */
+export const OCR_SOURCE = {
+  ALTO: "alto",
+  MISTRAL: "mistral",
+  VISION: "vision",
+} as const
+export type OcrSource = (typeof OCR_SOURCE)[keyof typeof OCR_SOURCE]
+
+/**
+ * DocumentOcr.status (plan D18, plus the app-side quarantine):
+ *   pending      — asked, never answered (a transport failure);
+ *   available    — the folios are stored; only a new `available` or an
+ *                  `incompatible` answer moves it;
+ *   building     — the worker is building the artifact (backfill), recheck later;
+ *   incompatible — the artifact is another version than the app reads (a
+ *                  deploy mismatch), recheck in 24 h or at the fixing deploy;
+ *   unavailable  — the worker cannot build it, or the app could not sync it
+ *                  (`reason` says which), recheck in 24 h;
+ *   quarantined  — OCR_SYNC_MAX_ATTEMPTS rejections or outage strikes in a
+ *                  row; a LONG backoff, never terminal (24 h doubling to 7
+ *                  days, at once on a re-ingest's resync), healed by any answer.
+ */
+export const OCR_SYNC_STATUS = {
+  /** Asked, never answered yet (a transport failure stored its backoff). */
+  PENDING: "pending",
+  AVAILABLE: "available",
+  BUILDING: "building",
+  /** The worker's artifact is another version (`v`) than the app reads: a deploy problem, retried. */
+  INCOMPATIBLE: "incompatible",
+  UNAVAILABLE: "unavailable",
+  QUARANTINED: "quarantined",
+} as const
+export type OcrSyncStatus = (typeof OCR_SYNC_STATUS)[keyof typeof OCR_SYNC_STATUS]
+
+/** The app-side reason prefixes stored in DocumentOcr.reason (the worker's own reasons are stored as sent). */
+export const OCR_SYNC_REASON = {
+  /** The worker's answer for this ARK broke the contract (backoff, then quarantine). */
+  REJECTED: "sync_rejected",
+  /**
+   * The worker fails on this ARK ALONE: asked by itself it failed on the
+   * transport twice per drain, bracketed by answered controls, in
+   * OCR_SYNC_MAX_ATTEMPTS drains (lib/documents/ocr-sync.ts).
+   */
+  WORKER_FAILS_ALONE: "worker_fails_alone",
+  /** The worker's artifact for this ARK is another version than the app reads. */
+  INCOMPATIBLE: "artifact_version",
+} as const
+
+/**
+ * The status a READER sees for a document: the stored statuses plus `pending`
+ * — an ARK with NO DocumentOcr row yet (never stored: the absence of the row
+ * is the state). Distinct from "not low".
+ */
+export const DOCUMENT_OCR_STATUS = OCR_SYNC_STATUS
+export type DocumentOcrStatus = (typeof DOCUMENT_OCR_STATUS)[keyof typeof DOCUMENT_OCR_STATUS]
+
+/**
+ * What a reader knows of ONE cited (or retrieved) folio's OCR quality. Every
+ * reader — tools, pills, banner, side panel, exports — uses this vocabulary,
+ * and the model-facing descriptions and prompt are built from it.
+ *   recorded       — the stored quality (low, not low, or unscored);
+ *   pending        — the document's quality is not synced YET (no row, building);
+ *   unavailable    — the document's quality cannot be obtained (unavailable,
+ *                    quarantined) — not "yet";
+ *   not_recorded   — the document is synced but this folio has no stored row:
+ *                    it was not a prepared page — permanent;
+ *   no_folio       — the reference carries no folio;
+ *   corpus_revoked — the reader's grant on the corpus was revoked: its
+ *                    Document and OCR rows are no longer read;
+ *   check_failed   — reading the quality failed (it is not known, not "good").
+ */
+export const FOLIO_OCR_STATE = {
+  RECORDED: "recorded",
+  PENDING: "pending",
+  UNAVAILABLE: "unavailable",
+  NOT_RECORDED: "not_recorded",
+  NO_FOLIO: "no_folio",
+  CORPUS_REVOKED: "corpus_revoked",
+  CHECK_FAILED: "check_failed",
+} as const
+export type FolioOcrStateKind = (typeof FOLIO_OCR_STATE)[keyof typeof FOLIO_OCR_STATE]
+
+/** Whether a reader may read OCR rows at all, or why not. */
+export const OCR_ACCESS = {
+  OK: "ok",
+  CORPUS_REVOKED: "corpus_revoked",
+  CHECK_FAILED: "check_failed",
+} as const
+export type OcrAccess = (typeof OCR_ACCESS)[keyof typeof OCR_ACCESS]
+
+/** One (ark, folio) whose stored quality a reader wants. */
+export type FolioRef = { ark: string; folio: number }
+
+/** Query shape: one folio's stored quality (every scalar column of DocumentFolio). */
+export const documentFolioRow = {
+  select: {
+    ark: true,
+    folio: true,
+    ocrSource: true,
+    ocrQuality: true,
+    wordCount: true,
+  },
+} satisfies Prisma.DocumentFolioDefaultArgs
+export type DocumentFolioRow = Prisma.DocumentFolioGetPayload<typeof documentFolioRow>
+
+/** Query shape: a document's sync status only (no folios). */
+export const documentOcrStatusRow = {
+  select: { ark: true, status: true },
+} satisfies Prisma.DocumentOcrDefaultArgs
+export type DocumentOcrStatusRow = Prisma.DocumentOcrGetPayload<typeof documentOcrStatusRow>
+
+/** Query shape: a document's OCR summary with every stored folio. */
+export const documentOcrWithFolios = {
+  select: {
+    ark: true,
+    status: true,
+    ocrRate: true,
+    reason: true,
+    folios: documentFolioRow,
+  },
+} satisfies Prisma.DocumentOcrDefaultArgs
+export type DocumentOcrWithFolios = Prisma.DocumentOcrGetPayload<typeof documentOcrWithFolios>
+
+/** One folio's OCR quality as every reader (tools, pills, sheet, export) sees it. */
+export type FolioOcrView = {
+  ark: string
+  folio: number
+  ocrSource: OcrSource
+  /** Mean ALTO word confidence in [0, 1]; null when unscored. */
+  ocrQuality: number | null
+  /** ALTO word count; null for non-ALTO sources. */
+  wordCount: number | null
+  /** isLowOcr(ocrQuality) — lib/ocr/quality.ts. */
+  low: boolean
+}
+
+/**
+ * A note's OCR rows as the note views receive them (NoteDetail.ocr): the
+ * stored quality of its cited folios and the sync status of the cited
+ * documents — or why they are not given (a revoked grant, a failed read).
+ */
+export type NoteOcrRows =
+  | { access: typeof OCR_ACCESS.OK; folioOcr: DocumentFolioRow[]; documentOcr: DocumentOcrStatusRow[] }
+  | { access: typeof OCR_ACCESS.CORPUS_REVOKED }
+  | { access: typeof OCR_ACCESS.CHECK_FAILED }
+
+/** A document's OCR summary — GET /api/projects/[id]/documents/ocr and doc_get. */
+export type DocumentOcrView = {
+  ark: string
+  status: DocumentOcrStatus
+  /** The manifest "Taux OCR" / 100; null when BnF publishes none or not synced. */
+  ocrRate: number | null
+  /** Why the document's quality is not available (unavailable / quarantined). */
+  reason: string | null
+  /** Every stored folio, folio-ascending. Empty while pending. */
+  folios: FolioOcrView[]
+}
+
+/**
+ * What one worker sync answer writes, per ARK (DocumentService.recordOcrSync):
+ *   available   → replace the ARK's folios and mark it available;
+ *   building    → status only (folios left as they are);
+ *   unavailable → status + reason only (folios left as they are).
+ * `checkedAt` is the time of the answer, stamped on every row.
+ */
+export type OcrSyncWritePlan = {
+  checkedAt: Date
+  available: Array<{
+    ark: string
+    ocrRate: number | null
+    folios: Array<{
+      folio: number
+      ocrSource: OcrSource
+      ocrQuality: number | null
+      wordCount: number | null
+    }>
+  }>
+  building: string[]
+  unavailable: Array<{ ark: string; reason: string }>
+  /** Artifacts of another version than the app reads: `v` is the worker's. */
+  incompatible: Array<{ ark: string; v: number }>
+}
+
+/** One sync batch as written: the plan, and the ARKs whose artifact is broken (for the drainer to reject). */
+export type OcrSyncBatchResult = {
+  plan: OcrSyncWritePlan
+  broken: Array<{ ark: string; message: string }>
 }

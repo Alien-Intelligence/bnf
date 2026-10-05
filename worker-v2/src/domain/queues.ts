@@ -21,6 +21,9 @@ export const Q = {
   ocrPoll: "v2.ocr.poll",
   embed: "v2.embed",
   register: "v2.register",
+  /** OCR-quality backfill — NOT part of a run: fed by POST /ocr-quality/sync,
+   *  one `{ark}` per missing per-ARK artifact (stages/ocr-quality-backfill.ts). */
+  ocrQualityBackfill: "v2.ocr-quality.backfill",
 } as const;
 
 export type QueueName = (typeof Q)[keyof typeof Q];

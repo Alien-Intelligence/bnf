@@ -10,6 +10,7 @@ import type { BlobStore, Logger, QueueClient, RateGate } from "./core/types.js";
 import type { StageDeps } from "./core/stage.js";
 import type { BnfClient } from "./bnf/types.js";
 import type { DocStateStore } from "./domain/doc-state.js";
+import type { OcrBackfillWiring } from "./domain/ocr-backfill.js";
 import type { ClusterSink, Describer, Embedder, OcrEngine } from "./ports.js";
 
 import { MetadataStage } from "./stages/metadata.js";
@@ -22,6 +23,7 @@ import { OcrSubmitStage } from "./stages/ocr-submit.js";
 import { OcrPollStage } from "./stages/ocr-poll.js";
 import { EmbedStage } from "./stages/embed.js";
 import { RegisterStage } from "./stages/register.js";
+import { OCR_BACKFILL_RATE_WAIT_MS, OcrQualityBackfillStage } from "./stages/ocr-quality-backfill.js";
 
 export interface PipelineDeps {
   queue: QueueClient;
@@ -33,6 +35,12 @@ export interface PipelineDeps {
   ocr: OcrEngine;
   embedder: Embedder;
   cluster: ClusterSink;
+  /**
+   * The OCR-quality backfill as main.ts wired it — the SAME object the HTTP
+   * server gets. The stage is registered exactly when `enabled`, on
+   * `rates.fetch` (required then), the SAME gate FetchStage holds.
+   */
+  ocrBackfill: OcrBackfillWiring;
   /** Optional per-dispatch observability hook (also feeds the read-model). */
   onOutcome?: StageDeps["onOutcome"];
   /** Per-stage rate gates (undefined → unthrottled, e.g. in tests). */
@@ -111,6 +119,22 @@ export function buildPipeline(deps: PipelineDeps): Pipeline {
       ...(cfg.registerConcurrency !== undefined ? { concurrency: cfg.registerConcurrency } : {}),
     }),
   ];
+
+  // The backfill is not part of a run. It is registered exactly when the wiring
+  // says enabled — the same flag the endpoint obeys — so OCR_BACKFILL_ENABLED=
+  // false truly stops its BnF spend (D6) and an enabled endpoint always has a
+  // consumer for what it enqueues.
+  if (deps.ocrBackfill.enabled) {
+    if (!rates.fetch) {
+      throw new Error("buildPipeline: the OCR backfill stage requires rates.fetch (the shared fetch gate)");
+    }
+    stages.push(
+      new OcrQualityBackfillStage(base, deps.bnf, deps.ocrBackfill.store, rates.fetch, {
+        concurrency: deps.ocrBackfill.concurrency,
+        rateWaitMs: OCR_BACKFILL_RATE_WAIT_MS,
+      }),
+    );
+  }
 
   return new Pipeline(queue, stages, log);
 }

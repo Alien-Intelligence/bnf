@@ -32,16 +32,34 @@
  * idempotent counter). The resolved metadata JSON is persisted to S3 for reuse.
  */
 import { PipelineStage, type StageDeps } from "../core/stage.js";
+import { acquireWithin, RateGateStoppedError } from "../core/rate.js";
 import type { RateGate, StageContext, StageOutcome } from "../core/types.js";
 import { classifyLane } from "../bnf/classify.js";
 import { docInfoFromManifest } from "../bnf/client.js";
+import {
+  CorruptDocInfoError,
+  inspectCachedDocInfo,
+  isCachedManifest,
+  unusableTauxOcr,
+} from "../bnf/doc-info.js";
 import type { BnfClient, BnfDocInfo, Manifest } from "../bnf/types.js";
 import { PermanentBnfError } from "../bnf/errors.js";
-import { ensureCanonicalArk, isCatalogueNotice } from "../bnf/parse.js";
+import { ensureCanonicalArk, isCatalogueNotice, tauxOcrOf, type OcrRateParse } from "../bnf/parse.js";
 import type { DocStateStore } from "../domain/doc-state.js";
 import { keys } from "../domain/keys.js";
 import { Q, withFetchPriority } from "../domain/queues.js";
 import type { DocMeta, DocRef, FolioItem, ManifestReq } from "../domain/types.js";
+
+
+/** Why the metadata stage skips a document — the doc's recorded skipReason. */
+export const METADATA_SKIP_REASON = {
+  NOT_DIGITIZED: "not_digitized",
+  METADATA_UNAVAILABLE: "metadata_unavailable",
+  /** BnF publishes no page count for a text doc: unknown, not empty. */
+  PAGE_COUNT_UNKNOWN: "page_count_unknown",
+  /** BnF publishes a page count of zero. */
+  NO_PAGES: "no_pages",
+} as const;
 
 export interface MetadataOpts {
   /** Paid Mistral OCR enabled → sans_texte text docs route to the mistral lane. */
@@ -122,12 +140,19 @@ export class MetadataStage extends PipelineStage<DocRef, never> {
     try {
       // The metadata blob cache is the OUTERMOST cache — a hit here means zero
       // work at all (no manifest cache lookup, no gate acquire, no BnF call).
-      const cached = await this.blob.getJson<BnfDocInfo>(keys.metadata(doc.ark));
-      info = cached ?? (await this.resolveDocInfo(doc.ark));
+      // Read through the normalizer: a pre-release blob lacks `ocrRate`, which
+      // is derived from its cached manifest metadata (bnf/doc-info.ts, D5).
+      const cached = await this.readCachedDocInfo(doc.ark, ctx);
+      info = cached ?? (await this.resolveDocInfo(doc.ark, ctx));
       if (!cached) await this.blob.putJson(keys.metadata(doc.ark), info);
     } catch (e) {
+      // A stopped gate (shutdown) is handed back by the stage base — never a doc failure.
+      if (e instanceof RateGateStoppedError) throw e;
       if (e instanceof PermanentBnfError) {
-        const reason = e.cause === "not_digitized" ? "not_digitized" : "metadata_unavailable";
+        const reason =
+          e.cause === METADATA_SKIP_REASON.NOT_DIGITIZED
+            ? METADATA_SKIP_REASON.NOT_DIGITIZED
+            : METADATA_SKIP_REASON.METADATA_UNAVAILABLE;
         await this.docState.setStatus(doc.docJobId, "skipped", { skipReason: reason });
         return { kind: "skip", reason };
       }
@@ -150,10 +175,18 @@ export class MetadataStage extends PipelineStage<DocRef, never> {
     }
 
     if (decision.lane === "text") {
-      const pageCount = info.pageCount ?? 0;
+      // An unknown count is not an empty document: say which one it is rather
+      // than defaulting null to 0 and reporting "no pages".
+      if (info.pageCount === null) {
+        const reason = METADATA_SKIP_REASON.PAGE_COUNT_UNKNOWN;
+        await this.docState.setStatus(doc.docJobId, "skipped", { skipReason: reason });
+        return { kind: "skip", reason };
+      }
+      const pageCount = info.pageCount;
       if (pageCount <= 0) {
-        await this.docState.setStatus(doc.docJobId, "skipped", { skipReason: "no_pages" });
-        return { kind: "skip", reason: "no_pages" };
+        const reason = METADATA_SKIP_REASON.NO_PAGES;
+        await this.docState.setStatus(doc.docJobId, "skipped", { skipReason: reason });
+        return { kind: "skip", reason };
       }
       const pages = Math.min(pageCount, this.maxPages);
       await this.docState.recordPlan(doc.docJobId, { lane: "text", pagesExpected: pages, meta });
@@ -177,13 +210,35 @@ export class MetadataStage extends PipelineStage<DocRef, never> {
   }
 
   /**
+   * The cached doc-info, or null on a miss. A corrupt blob (CorruptDocInfoError)
+   * is logged and treated as a miss: process() resolves it again from BnF and
+   * overwrites it, instead of retrying a blob that will never parse and then
+   * failing the doc as "metadata unavailable".
+   */
+  private async readCachedDocInfo(ark: string, ctx: StageContext): Promise<BnfDocInfo | null> {
+    const rawCached = await this.blob.getJson<unknown>(keys.metadata(ark));
+    if (rawCached === null) return null;
+    try {
+      const cached = inspectCachedDocInfo(rawCached);
+      if (cached.unusableTauxOcr !== null) {
+        ctx.log.warn("taux_ocr_unusable", { ark, origin: "legacy_cache", ...cached.unusableTauxOcr });
+      }
+      return cached.info;
+    } catch (e) {
+      if (!(e instanceof CorruptDocInfoError)) throw e;
+      ctx.log.warn("metadata_cache_corrupt", { ark, key: keys.metadata(ark), error: e.message });
+      return null;
+    }
+  }
+
+  /**
    * Resolve BnfDocInfo on a metadata-cache MISS. The IIIF manifest is the
    * PRIMARY path (see docInfoFromManifest's header for why); OAI-PMH is the
    * fallback for the rare permanently-manifest-less ARK. Transient errors from
    * either path propagate to process()'s catch, which retries/exhausts exactly
    * like every other stage.
    */
-  private async resolveDocInfo(ark: string): Promise<BnfDocInfo> {
+  private async resolveDocInfo(ark: string, ctx: StageContext): Promise<BnfDocInfo> {
     const canonicalArk = ensureCanonicalArk(ark);
     // Fail fast on catalogue notices. `cb*` ARKs are bibliographic/authority
     // records, not digitized documents — they have no pages, so every fetch
@@ -193,13 +248,17 @@ export class MetadataStage extends PipelineStage<DocRef, never> {
     // getDocumentInfo — same check, same place in the flow, just moved here now
     // that this stage owns metadata resolution.
     if (isCatalogueNotice(canonicalArk)) {
-      throw new PermanentBnfError("not_digitized", {
+      throw new PermanentBnfError(METADATA_SKIP_REASON.NOT_DIGITIZED, {
         hint: `${canonicalArk}: catalogue notice (cb*), not a digitized document`,
       });
     }
     try {
-      const manifest = await this.resolveManifest(canonicalArk);
-      return docInfoFromManifest(manifest, canonicalArk);
+      const manifest = await this.resolveManifest(canonicalArk, ctx.signal);
+      // The ONE Taux OCR lookup of this manifest: logged here if unusable,
+      // then handed to docInfoFromManifest — never parsed twice.
+      const tauxOcr = tauxOcrOf(manifest.metadata);
+      logUnusableTauxOcr(ctx, canonicalArk, tauxOcr);
+      return docInfoFromManifest(manifest, canonicalArk, tauxOcr);
     } catch (e) {
       // A permanently-unavailable manifest is rare (every digitized doc has one)
       // but possible for a few legacy/edge ARKs. Fall back to OAI so those still
@@ -219,12 +278,30 @@ export class MetadataStage extends PipelineStage<DocRef, never> {
    * finds it already there. This is the F1/F2 fix made concrete: one fetch per
    * ARK, gated once, no matter how many stages end up wanting the manifest.
    */
-  private async resolveManifest(canonicalArk: string): Promise<Manifest> {
-    const cached = await this.blob.getJson<Manifest>(keys.manifest(canonicalArk));
-    if (cached) return cached;
-    if (this.manifestRate) await this.manifestRate.acquire();
+  private async resolveManifest(canonicalArk: string, signal: AbortSignal): Promise<Manifest> {
+    const cached = await this.blob.getJson<unknown>(keys.manifest(canonicalArk));
+    if (cached !== null) {
+      if (isCachedManifest(cached)) return cached;
+      // Corrupt: repaired below from BnF (and overwritten), like a corrupt doc-info.
+      this.log.warn("manifest_cache_corrupt", { ark: canonicalArk, key: keys.manifest(canonicalArk) });
+    }
+    if (this.manifestRate) await acquireWithin(this.manifestRate, this.rateWaitMs, signal);
     const manifest = await this.bnf.getManifest(canonicalArk, this.maxCanvases);
     await this.blob.putJson(keys.manifest(canonicalArk), manifest);
     return manifest;
   }
 }
+
+/**
+ * Log a "Taux OCR" row BnF published but we cannot read (unparseable or out of
+ * range): docInfoFromManifest records it as `ocrRate: null`, which on its own
+ * is indistinguishable from "no OCR row". This is where the value first enters
+ * the worker (a fresh manifest), so it is the one place it is logged.
+ */
+function logUnusableTauxOcr(ctx: StageContext, ark: string, parsed: OcrRateParse): void {
+  const unusable = unusableTauxOcr(parsed);
+  if (unusable !== null) {
+    ctx.log.warn("taux_ocr_unusable", { ark, origin: "manifest", ...unusable });
+  }
+}
+

@@ -32,7 +32,7 @@ import { FETCH_PRIORITY, Q } from "../domain/queues.js";
 import type { RateGate } from "../core/types.js";
 import type { DocRef, FolioItem, ManifestReq } from "../domain/types.js";
 import { FakeBnfClient, type FakeDocSpec } from "../testing/fakes.js";
-import { MetadataStage, type MetadataOpts } from "./metadata.js";
+import { METADATA_SKIP_REASON, MetadataStage, type MetadataOpts } from "./metadata.js";
 import { ManifestStage } from "./manifest.js";
 
 type FetchItem = FolioItem & { priority: number };
@@ -57,6 +57,8 @@ interface Harness {
   ref: DocRef;
   /** Push the seeded DocRef onto Q.metadata (a fresh delivery). */
   deliver: () => Promise<void>;
+  /** Every structured log line the stage emitted. */
+  lines: Array<Record<string, unknown>>;
 }
 
 /** Wire a started MetadataStage over a doc spec + capturing sinks on the two
@@ -69,7 +71,7 @@ async function setup(args: {
 }): Promise<Harness> {
   const q = new MemoryQueue();
   const blob = new MemoryBlobStore();
-  const { logger } = createMemoryLogger();
+  const { logger, lines } = createMemoryLogger();
   const ds = new MemoryDocState();
   const bnf = new FakeBnfClient();
   bnf.add(args.spec);
@@ -104,6 +106,7 @@ async function setup(args: {
     manifested,
     ref,
     deliver: () => q.send(Q.metadata, ref),
+    lines,
   };
 }
 
@@ -405,4 +408,98 @@ test("manifest cache MISS costs exactly one gate acquire + one getManifest, and 
   assert.equal(row?.status, "planned", "ManifestStage successfully planned from the cached manifest");
   assert.equal(row?.pagesExpected, 4);
   assert.equal(fetched.length, 4, "ManifestStage fanned out image folios from the SAME cached manifest");
+});
+
+test("an unusable Taux OCR value is logged with what was seen; the doc still routes on the row's presence", async () => {
+  for (const [tauxOcr, kind] of [
+    ["n/a", "unparseable"],
+    ["150 %", "out_of_range"],
+  ] as const) {
+    const h = await setup({
+      spec: { ark: "ark:/12148/textdoc", ocrAvailable: true, docType: "texte", pageCount: 1, tauxOcr },
+    });
+    await h.deliver();
+    await h.q.idle();
+    const line = h.lines.find((l) => l.event === "taux_ocr_unusable");
+    assert.ok(line, `a taux_ocr_unusable line for ${tauxOcr}`);
+    assert.equal(line.kind, kind);
+    assert.equal(line.raw, tauxOcr);
+    assert.equal(h.fetched.length, 1, "the text lane still runs: the label is present");
+  }
+});
+
+test("a missing or valid Taux OCR logs nothing", async () => {
+  const h = await setup({
+    spec: { ark: "ark:/12148/textdoc", ocrAvailable: true, docType: "texte", pageCount: 1, tauxOcr: "78.21 %" },
+  });
+  await h.deliver();
+  await h.q.idle();
+  assert.equal(h.lines.some((l) => l.event === "taux_ocr_unusable"), false);
+});
+
+
+test("a text doc whose page count BnF does not publish is skipped as page_count_unknown, not as an empty no_pages doc", async () => {
+  // The fake can express a MISSING count (pageCount null): its manifest is
+  // unusable here (permanent) and the OAI fallback publishes no count.
+  const h = await setup({
+    spec: {
+      ark: "ark:/12148/textdoc",
+      ocrAvailable: true,
+      docType: "texte",
+      pageCount: null,
+      manifestFault: { permanent: true },
+    },
+  });
+  await h.deliver();
+  await h.q.idle();
+  const row = await h.ds.get(h.ref.docJobId);
+  assert.equal(row?.status, "skipped");
+  assert.equal(row?.skipReason, METADATA_SKIP_REASON.PAGE_COUNT_UNKNOWN);
+  assert.equal(h.fetched.length, 0);
+});
+
+test("a text doc whose published page count is zero is skipped as no_pages", async () => {
+  const h = await setup({
+    spec: {
+      ark: "ark:/12148/textdoc",
+      ocrAvailable: true,
+      docType: "texte",
+      pageCount: 0,
+      manifestFault: { permanent: true },
+    },
+  });
+  await h.deliver();
+  await h.q.idle();
+  const row = await h.ds.get(h.ref.docJobId);
+  assert.equal(row?.status, "skipped");
+  assert.equal(row?.skipReason, METADATA_SKIP_REASON.NO_PAGES);
+  assert.equal(h.fetched.length, 0);
+});
+
+test("a corrupt cached doc-info blob is logged and repaired from BnF, not retried as a transient failure", async () => {
+  const h = await setup({
+    spec: { ark: "ark:/12148/textdoc", ocrAvailable: true, docType: "texte", pageCount: 2 },
+  });
+  await h.blob.putJson(keys.metadata(h.ref.ark), { ark: h.ref.ark, ocrAvailable: "yes", raw: {} });
+  await h.deliver();
+  await h.q.idle();
+
+  assert.ok(h.lines.some((l) => l.event === "metadata_cache_corrupt"), "the corruption is logged");
+  assert.equal(h.fetched.length, 2, "the doc resolved fresh and fanned out");
+  const repaired = await h.blob.getJson<{ ocrAvailable: unknown }>(keys.metadata(h.ref.ark));
+  assert.equal(repaired?.ocrAvailable, true, "the blob was rewritten from BnF");
+  assert.equal(h.bnf.calls.manifest, 1);
+});
+
+test("a corrupt cached manifest is logged and repaired from BnF, never cast and crashed on", async () => {
+  const h = await setup({
+    spec: { ark: "ark:/12148/textdoc", ocrAvailable: true, docType: "texte", pageCount: 2 },
+  });
+  await h.blob.putJson(keys.manifest(h.ref.ark), { title: "x", metadata: "not a list" });
+  await h.deliver();
+  await h.q.idle();
+  assert.ok(h.lines.some((l) => l.event === "manifest_cache_corrupt"));
+  const row = await h.ds.get(h.ref.docJobId);
+  assert.notEqual(row?.status, "failed");
+  assert.equal(h.fetched.length, 2, "resolved from the repaired manifest: two folios fanned out");
 });

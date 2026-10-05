@@ -24,16 +24,68 @@
  * Security properties:
  *  - The secret is generated per-job with crypto.randomBytes(32) in IngestService.submit.
  *  - Verification is constant-time (crypto.timingSafeEqual inside verifyCallback).
- *  - A missing or blank callbackSecret on the job row is rejected with 401.
+ *  - An unknown job, a job without a callbackSecret and a bad signature take
+ *    ONE path: the body is read and verified (against a per-process secret no
+ *    caller knows when the job has none — verifyJobCallback) and all three
+ *    answer the same 401 message, so the endpoint reveals neither which job
+ *    ids exist nor how they were submitted, by its answer or its timing.
+ *  - A body over PROGRESS_CALLBACK_MAX_BODY_BYTES, or not received within
+ *    PROGRESS_CALLBACK_BODY_READ_MS, is refused with that same answer before
+ *    it is buffered whole or hashed.
  *  - Malformed JSON after a valid HMAC is rejected with 400; the cluster must fix its payload.
+ *  - So is a well-formed body that is not a ClusterProgressEvent
+ *    (clusterProgressEventSchema, found bug B2): 400 with the Zod issues. The
+ *    HMAC is still verified first, over the raw bytes, before anything is parsed.
  *
  * See playbook/ingestion-jobs.md §"The cluster ingest script contract".
  */
-import { ok, notFound, unauthorized } from "@/lib/api-response"
+import { badRequest, ok, unauthorized } from "@/lib/api-response"
 import { IngestQueries } from "@/models/ingest/queries"
 import { IngestService } from "@/models/ingest/service"
-import { verifyCallback } from "@/lib/cluster/callback-auth"
-import type { ClusterProgressEvent } from "@/lib/cluster/contracts"
+import {
+  clusterProgressEventSchema,
+  type ProgressCallbackAck,
+} from "@/models/ingest/types"
+import { CALLBACK_REJECTED_MESSAGE, verifyJobCallback } from "@/lib/cluster/callback-auth"
+import { PROGRESS_CALLBACK_BODY_READ_MS, PROGRESS_CALLBACK_MAX_BODY_BYTES } from "@/lib/constants"
+
+/**
+ * The request body as text, or null when it is larger than `max` bytes or
+ * not fully received within `deadlineMs` — the size is checked on the declared
+ * Content-Length first, then while reading, so an oversize body is never
+ * buffered whole (or hashed), and a trickling one is cut off at the deadline.
+ */
+async function readCappedText(req: Request, max: number, deadlineMs: number): Promise<string | null> {
+  const declared = req.headers.get("content-length")
+  if (declared !== null && (!/^[0-9]+$/.test(declared) || Number(declared) > max)) return null
+  if (req.body === null) return ""
+  const reader = req.body.getReader()
+  const deadline = AbortSignal.any([AbortSignal.timeout(deadlineMs), req.signal])
+  const onDeadline = (): void => {
+    void reader.cancel(deadline.reason).catch((err: unknown) => {
+      console.warn("[progress] body reader cancel failed:", err)
+    })
+  }
+  deadline.addEventListener("abort", onDeadline, { once: true })
+  const chunks: Uint8Array[] = []
+  let size = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (deadline.aborted) return null
+      if (done) break
+      size += value.byteLength
+      if (size > max) {
+        await reader.cancel()
+        return null
+      }
+      chunks.push(value)
+    }
+  } finally {
+    deadline.removeEventListener("abort", onDeadline)
+  }
+  return Buffer.concat(chunks).toString("utf8")
+}
 
 export async function POST(
   req: Request,
@@ -42,34 +94,31 @@ export async function POST(
   const { job_id } = await ctx.params
 
   const job = await IngestQueries.get(job_id)
-  if (!job) return notFound()
-
-  // A job without a callbackSecret was never submitted through IngestService.submit
-  // (or was corrupted). Reject rather than silently accept.
-  if (!job.callbackSecret) return unauthorized("no callback secret")
 
   // Read the body as text so we can verify the HMAC over the exact bytes the
-  // cluster signed — parsing before verification would allow canonicalization attacks.
-  const bodyText = await req.text()
+  // cluster signed — parsing before verification would allow canonicalization
+  // attacks. Read and verified whatever the job: an unknown job or one without
+  // a callbackSecret (never submitted through IngestService.submit, or
+  // corrupted) takes the same path and gets the same answer as a bad signature.
+  const bodyText = await readCappedText(req, PROGRESS_CALLBACK_MAX_BODY_BYTES, PROGRESS_CALLBACK_BODY_READ_MS)
+  if (bodyText === null) return unauthorized(CALLBACK_REJECTED_MESSAGE)
+  const signature = req.headers.get("x-callback-signature")
+  const verified = verifyJobCallback(bodyText, signature, job === null ? null : job.callbackSecret)
+  if (job === null || !verified) return unauthorized(CALLBACK_REJECTED_MESSAGE)
 
-  if (
-    !verifyCallback(
-      bodyText,
-      req.headers.get("x-callback-signature"),
-      job.callbackSecret,
-    )
-  ) {
-    return unauthorized("invalid callback signature")
-  }
-
-  let event: ClusterProgressEvent
+  // Body was signed correctly but is not valid JSON / not a progress event —
+  // a cluster bug, not ours: refuse it before anything is written.
+  let raw: unknown
   try {
-    event = JSON.parse(bodyText) as ClusterProgressEvent
+    raw = JSON.parse(bodyText)
   } catch {
-    // Body was signed correctly but is not valid JSON — cluster bug, not ours.
-    return ok({ accepted: false }, 400)
+    return badRequest("invalid JSON")
   }
+  const event = clusterProgressEventSchema.safeParse(raw)
+  if (!event.success) return badRequest("invalid event", event.error.issues)
 
-  await IngestService.applyProgress(job, event)
-  return ok({ accepted: true })
+  // A `done` event commits the version AND (inside IngestService) requests a
+  // fresh OCR-quality pull for the run's documents.
+  await IngestService.applyProgress(job, event.data)
+  return ok<ProgressCallbackAck>({ accepted: true })
 }

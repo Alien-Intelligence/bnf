@@ -27,7 +27,7 @@ import {
   isIngestableClass,
   isLatinScriptLang,
 } from "@/models/documents/schema"
-import { estimatePaidOcrCostUsd, INGEST_STATUS } from "./schema"
+import { CLUSTER_TERMINAL_STAGE, estimatePaidOcrCostUsd, INGEST_STATUS } from "./schema"
 import type { PaidOcrEstimate } from "./schema"
 import type {
   IngestDeltaPreview,
@@ -35,13 +35,17 @@ import type {
   IngestSubmitInput,
   IngestSubmitOutcome,
 } from "./types"
-import type {
-  ClusterProgressEvent,
-  ClusterQueueProgress,
+import {
+  CLUSTER_POLL,
+  type ClusterProgressEvent,
+  type ClusterQueueProgress,
 } from "@/lib/cluster/contracts"
 import { ClusterRunner } from "@/lib/cluster/runner"
+import { requestOcrSync } from "@/lib/documents/ocr-sync-signal"
+import { DocumentService } from "@/models/documents/service"
 import { PAID_OCR_DEFAULT_BUDGET_USD } from "@/lib/constants"
 import { env } from "@/lib/env"
+import { toInputJson } from "@/lib/validation/json"
 
 /**
  * F20 — the pure selection logic behind {@link IngestService.retryFailed}.
@@ -462,7 +466,11 @@ export class IngestService {
     if (job.status !== INGEST_STATUS.RUNNING && job.status !== INGEST_STATUS.QUEUED) {
       return null
     }
-    return ClusterRunner.progress(job.clusterJobId)
+    // Best-effort live view: only a read-model is shown; a run the worker does
+    // not know, an unreachable worker or a worker error all degrade to the
+    // banner (the watchdog, not this view, acts on the difference).
+    const poll = await ClusterRunner.progress(job.clusterJobId)
+    return poll.kind === CLUSTER_POLL.PROGRESS ? poll.progress : null
   }
 
   /**
@@ -488,7 +496,7 @@ export class IngestService {
     job: IngestJob,
     event: ClusterProgressEvent,
   ): Promise<void> {
-    if (event.stage === "done") {
+    if (event.stage === CLUSTER_TERMINAL_STAGE.DONE) {
       // The job reached "done": commit (all succeeded) or commitPartialFailure
       // (some failed). BOTH advance the baseline pointer — the per-doc
       // Document.indexedAt carries which docs actually made it, so a partial run
@@ -514,7 +522,7 @@ export class IngestService {
           stats: event.stats,
         })
       }
-    } else if (event.stage === "failed") {
+    } else if (event.stage === CLUSTER_TERMINAL_STAGE.FAILED) {
       await prisma.ingestJob.update({
         where: { id: job.id },
         data: {
@@ -522,7 +530,7 @@ export class IngestService {
           error: event.error,
           finishedAt: new Date(),
           ...(event.partialStats
-            ? { stats: event.partialStats as never }
+            ? { stats: toInputJson(event.partialStats) }
             : {}),
         },
       })
@@ -534,7 +542,7 @@ export class IngestService {
           status: INGEST_STATUS.RUNNING,
           stage: event.stage,
           progress: event.fraction,
-          stats: event.counters as never,
+          stats: event.counters,
         },
       })
     }
@@ -581,7 +589,7 @@ export class IngestService {
           status: INGEST_STATUS.DONE,
           finishedAt: now,
           chunksWritten: results.chunksWritten,
-          stats: results.stats as never,
+          stats: toInputJson(results.stats),
           ...(paidOcrCharge !== null
             ? { paidOcrActualUsd: paidOcrCharge }
             : {}),
@@ -622,6 +630,11 @@ export class IngestService {
         }),
       )
     }
+    // OCR quality (feedback 2026-09-29 #7): the run's documents may have been
+    // re-OCR'd, so their stored quality is due again — persisted in the same
+    // transaction as the commit; the drainer is signalled once it commits
+    // (lib/documents/ocr-sync-signal.ts → lib/documents/ocr-sync.ts).
+    ops.push(DocumentService.ocrResyncOp(job.addedArks, now))
     // The research prompt embeds ÉTAT DU CORPUS, so a commit makes it stale:
     // without this the agent keeps saying the corpus is not ingested and
     // refuses to search. Derived workspaces reading this corpus are affected by
@@ -630,6 +643,7 @@ export class IngestService {
     // A statement of the batch $transaction(ops) below: built on the app client.
     ops.push(SessionQueries.invalidatePrompts(researchPromptsOf(job.projectId), prisma))
     await prisma.$transaction(ops)
+    requestOcrSync()
   }
 
   /**
@@ -675,7 +689,7 @@ export class IngestService {
           status: INGEST_STATUS.PARTIAL,
           finishedAt: now,
           chunksWritten: results.chunksWritten,
-          stats: results.stats as never,
+          stats: toInputJson(results.stats),
           error: `${failed}/${total} document(s) en échec — réessayez les documents échoués`,
           ...(paidOcrCharge !== null ? { paidOcrActualUsd: paidOcrCharge } : {}),
         },
@@ -738,6 +752,11 @@ export class IngestService {
         }),
       )
     }
+    // OCR quality (feedback 2026-09-29 #7): the run's documents may have been
+    // re-OCR'd, so their stored quality is due again — persisted in the same
+    // transaction as the commit; the drainer is signalled once it commits
+    // (lib/documents/ocr-sync-signal.ts → lib/documents/ocr-sync.ts).
+    ops.push(DocumentService.ocrResyncOp(job.addedArks, now))
     // The research prompt embeds ÉTAT DU CORPUS, so a commit makes it stale:
     // without this the agent keeps saying the corpus is not ingested and
     // refuses to search. Derived workspaces reading this corpus are affected by
@@ -746,6 +765,7 @@ export class IngestService {
     // A statement of the batch $transaction(ops) below: built on the app client.
     ops.push(SessionQueries.invalidatePrompts(researchPromptsOf(job.projectId), prisma))
     await prisma.$transaction(ops)
+    requestOcrSync()
   }
 
   /**

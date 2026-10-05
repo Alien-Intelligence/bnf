@@ -9,6 +9,39 @@
  */
 import type { RateGate } from "./types.js";
 
+/** The gate was stopped (shutdown) while — or before — a caller waited. */
+export class RateGateStoppedError extends Error {
+  constructor() {
+    super("rate gate stopped");
+    this.name = "RateGateStoppedError";
+  }
+}
+
+/** A token wait outlived its deadline — the gate is saturated. Retry later. */
+export class RateGateTimeoutError extends Error {
+  constructor(readonly waitedMs: number) {
+    super(`no rate-gate token within ${waitedMs}ms`);
+    this.name = "RateGateTimeoutError";
+  }
+}
+
+/**
+ * Acquire one token from `gate`, or reject with RateGateTimeoutError after
+ * `ms` — THE bounded wait every gated caller uses (CLAUDE_ERROR_PATTERNS §14).
+ * `signal` (a delivery's ceiling, StageContext.signal) aborts the wait too,
+ * with its own reason. The abandoned waiter gives up its place and consumes no
+ * token.
+ */
+export async function acquireWithin(gate: RateGate, ms: number, signal?: AbortSignal): Promise<void> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new RateGateTimeoutError(ms)), ms);
+  try {
+    await gate.acquire(signal ? AbortSignal.any([controller.signal, signal]) : controller.signal);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export interface RateLimiterOpts {
   /** Sustained tokens per minute. */
   ratePerMin: number;
@@ -26,7 +59,7 @@ export class RateLimiter implements RateGate {
 
   private tokens: number;
   private last: number;
-  private readonly waiters: Array<() => void> = [];
+  private readonly waiters: Array<{ grant: () => void; refuse: (e: Error) => void }> = [];
   private timer: ReturnType<typeof setTimeout> | null = null;
   private stopped = false;
 
@@ -71,12 +104,38 @@ export class RateLimiter implements RateGate {
     return Math.ceil((1 - this.tokens) / this.refillPerMs);
   }
 
-  /** Acquire one token, waiting (FIFO) if the bucket is empty. */
-  acquire(): Promise<void> {
-    if (this.stopped) return Promise.reject(new Error("RateLimiter stopped"));
+  /** Waiters currently queued — for tests/introspection. */
+  pendingWaiters(): number {
+    return this.waiters.length;
+  }
+
+  /**
+   * Acquire one token, waiting (FIFO) if the bucket is empty. An abort of
+   * `signal` rejects with its reason and removes the waiter, so an abandoned
+   * wait never consumes a token later; stop() rejects every waiter.
+   */
+  acquire(signal: AbortSignal): Promise<void> {
+    if (this.stopped) return Promise.reject(new RateGateStoppedError());
+    if (signal.aborted) return Promise.reject(signal.reason);
     if (this.waiters.length === 0 && this.tryAcquire()) return Promise.resolve();
-    return new Promise<void>((resolve) => {
-      this.waiters.push(resolve);
+    return new Promise<void>((resolve, reject) => {
+      const waiter = {
+        grant: (): void => {
+          signal.removeEventListener("abort", onAbort);
+          resolve();
+        },
+        refuse: (e: Error): void => {
+          signal.removeEventListener("abort", onAbort);
+          reject(e);
+        },
+      };
+      const onAbort = (): void => {
+        const i = this.waiters.indexOf(waiter);
+        if (i >= 0) this.waiters.splice(i, 1);
+        reject(signal.reason);
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      this.waiters.push(waiter);
       this.schedule();
     });
   }
@@ -93,8 +152,7 @@ export class RateLimiter implements RateGate {
   private drain(): void {
     if (this.stopped) return;
     while (this.waiters.length > 0 && this.tryAcquire()) {
-      const next = this.waiters.shift();
-      next?.();
+      this.waiters.shift()?.grant();
     }
     if (this.waiters.length > 0) this.schedule();
   }
@@ -105,7 +163,8 @@ export class RateLimiter implements RateGate {
       clearTimeout(this.timer);
       this.timer = null;
     }
-    // Release any blocked acquirers so shutdown doesn't hang.
-    while (this.waiters.length > 0) this.waiters.shift()?.();
+    // Refuse every blocked acquirer so shutdown doesn't hang — never grant
+    // them: a waiter let through here would call BnF ungated.
+    while (this.waiters.length > 0) this.waiters.shift()?.refuse(new RateGateStoppedError());
   }
 }

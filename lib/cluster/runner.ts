@@ -1,42 +1,61 @@
 import "server-only"
 // lib/cluster/runner.ts
 // Facade that routes to the real ClusterClient or the FakeClusterRunner
-// based on the CLUSTER_MODE env variable.
+// based on CLUSTER_MODE (lib/cluster/mode.ts — unset fails, never defaults):
 //
-// CLUSTER_MODE=fake  (default) → FakeClusterRunner (in-process, no real HTTP)
-// CLUSTER_MODE=real             → ClusterClient (real cluster API)
+// CLUSTER_MODE=fake → FakeClusterRunner (in-process, no real HTTP)
+// CLUSTER_MODE=real → ClusterClient (real cluster API)
 //
 // All app code submits and cancels jobs through this facade; it never imports
 // ClusterClient or FakeClusterRunner directly.
-import type { ClusterIngestRequest, ClusterQueueProgress } from "./contracts"
+import type { WorkerSyncAnswer } from "./ocr-quality"
+import { CLUSTER_POLL, type ClusterIngestRequest, type ClusterProgressPoll } from "./contracts"
 import { ClusterClient } from "./client"
 import { FakeClusterRunner } from "./fake"
+import { CLUSTER_MODE, clusterMode } from "./mode"
 
 export const ClusterRunner = {
   async submit(
     req: ClusterIngestRequest,
   ): Promise<{ clusterJobId: string }> {
-    const mode = process.env.CLUSTER_MODE ?? "fake"
-    return mode === "real"
+    return clusterMode() === CLUSTER_MODE.REAL
       ? ClusterClient.submit(req)
       : FakeClusterRunner.submit(req)
   },
 
   /**
-   * Live queue-status read-model for a run. Fake mode has no real pipeline to
-   * report on (the FakeClusterRunner drives terminal progress directly), so it
-   * returns null and the UI falls back to the reassurance banner.
+   * Poll the live queue-status read-model for a run. Fake mode has no real
+   * pipeline to report on (the FakeClusterRunner drives terminal progress
+   * directly): the run is reported unknown and the UI falls back to the
+   * reassurance banner.
    */
-  async progress(
-    clusterJobId: string,
-  ): Promise<ClusterQueueProgress | null> {
-    const mode = process.env.CLUSTER_MODE ?? "fake"
-    return mode === "real" ? ClusterClient.progress(clusterJobId) : null
+  async progress(clusterJobId: string): Promise<ClusterProgressPoll> {
+    return clusterMode() === CLUSTER_MODE.REAL
+      ? ClusterClient.progress(clusterJobId)
+      : { kind: CLUSTER_POLL.RUN_UNKNOWN }
+  },
+
+  /**
+   * Per-ARK OCR-quality artifacts (lib/documents/ocr-sync.ts). Real mode only:
+   * the fake runner prepares no pages, so there is no artifact to sync. The
+   * sync drainer is a no-op outside real mode; reaching this in fake mode is a
+   * wiring bug and throws.
+   */
+  async ocrQualitySync(
+    arks: string[],
+    signal: AbortSignal,
+  ): Promise<WorkerSyncAnswer> {
+    const mode = clusterMode()
+    if (mode !== CLUSTER_MODE.REAL) {
+      throw new Error(
+        `ClusterRunner.ocrQualitySync: no worker in CLUSTER_MODE=${mode} — the OCR sync runs in real mode only`,
+      )
+    }
+    return ClusterClient.ocrQualitySync(arks, signal)
   },
 
   async cancel(clusterJobId: string): Promise<void> {
-    const mode = process.env.CLUSTER_MODE ?? "fake"
-    return mode === "real"
+    return clusterMode() === CLUSTER_MODE.REAL
       ? ClusterClient.cancel(clusterJobId)
       : FakeClusterRunner.cancel(clusterJobId)
   },

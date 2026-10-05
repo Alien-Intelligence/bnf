@@ -16,8 +16,13 @@ import { MemoryQueue } from "./core/queue-memory.js";
 import { MemoryBlobStore } from "./core/blob.js";
 import { createMemoryLogger } from "./core/logger.js";
 import { MemoryDocState } from "./domain/doc-state-memory.js";
+import { MemoryOcrBackfillStore } from "./domain/ocr-backfill-memory.js";
+import type { OcrBackfillWiring } from "./domain/ocr-backfill.js";
+import type { RateGate } from "./core/types.js";
+import { syncOcrQuality } from "./live/ocr-quality-sync.js";
 import type { DocStatus } from "./domain/doc-state.js";
-import type { DocRef } from "./domain/types.js";
+import { keys } from "./domain/keys.js";
+import type { DocOcrQuality, DocRef } from "./domain/types.js";
 import {
   FakeBnfClient,
   FakeClusterSink,
@@ -28,7 +33,9 @@ import {
 } from "./testing/fakes.js";
 
 interface Harness {
+  backfill: OcrBackfillWiring;
   queue: MemoryQueue;
+  blob: MemoryBlobStore;
   docState: MemoryDocState;
   cluster: FakeClusterSink;
   bnf: FakeBnfClient;
@@ -50,6 +57,14 @@ function harness(
   for (const s of specs) bnf.add(s);
   const ocr = new FakeOcrEngine(opts.ocrFail ? { fail: true } : {});
   const events: Array<{ stage: string; kind: string }> = [];
+  const backfill: OcrBackfillWiring = {
+    store: new MemoryOcrBackfillStore(),
+    enabled: true,
+    concurrency: 1,
+    policy: { retryFailedAfterMs: 60_000, maxAttempts: 5, startedStaleAfterMs: 90 * 60 * 1_000, unstartedStaleAfterMs: 14 * 24 * 60 * 60 * 1_000, unsentStaleAfterMs: 10 * 60 * 1_000 },
+  };
+  // The backfill stage requires the shared fetch gate; an always-open one here.
+  const fetchGate: RateGate = { ratePerMin: 1_000_000, acquire: async () => {} };
 
   const pipeline = buildPipeline({
     queue,
@@ -61,12 +76,16 @@ function harness(
     ocr,
     embedder: new FakeEmbedder(),
     cluster,
+    ocrBackfill: backfill,
+    rates: { fetch: fetchGate },
     onOutcome: (e) => events.push({ stage: e.stage, kind: e.kind }),
     config: { mistralEnabled: opts.mistralEnabled ?? true, maxPages: 200 },
   });
 
   return {
+    backfill,
     queue,
+    blob,
     docState,
     cluster,
     bnf,
@@ -103,6 +122,39 @@ test("one doc of each lane flows end to end to registration", async () => {
   // cached blob MetadataStage populated, at zero extra cost.
   assert.equal(h.bnf.calls.manifest, 3);
   assert.equal(h.ocr.submitted.length, 1); // one Mistral batch (the mistral doc)
+});
+
+test("every lane leaves an ocr-quality artifact behind once its doc completes", async () => {
+  const h = harness([
+    { ark: "ark:/12148/textdoc", ocrAvailable: true, docType: "texte", pageCount: 3, folioMeanWc: { 2: 0.661 } },
+    { ark: "ark:/12148/visiondoc", ocrAvailable: false, docType: "estampe", pageCount: 2 },
+    { ark: "ark:/12148/mistraldoc", ocrAvailable: false, docType: "texte", pageCount: 2 },
+  ]);
+  await h.seed([ref("textdoc"), ref("visiondoc"), ref("mistraldoc")]);
+  await h.queue.idle();
+  assert.equal((await h.docState.statusCounts()).done, 3);
+
+  const text = await h.blob.getJson<DocOcrQuality>(keys.ocrQuality("ark:/12148/textdoc"));
+  assert.ok(text, "text-lane artifact exists");
+  assert.equal(text.lane, "text");
+  // The fake manifest publishes "taux ocr: 100%" for an OCR doc → 1.
+  assert.equal(text.ocrRate, 1);
+  assert.deepEqual(
+    text.folios.map((f) => [f.ordre, f.ocrSource, f.ocrQuality]),
+    [[1, "alto", 1], [2, "alto", 0.661], [3, "alto", 1]],
+  );
+  assert.ok(text.folios.every((f) => typeof f.wordCount === "number" && f.wordCount > 0));
+
+  const vision = await h.blob.getJson<DocOcrQuality>(keys.ocrQuality("ark:/12148/visiondoc"));
+  assert.ok(vision);
+  assert.equal(vision.lane, "vision");
+  assert.equal(vision.ocrRate, null);
+  assert.ok(vision.folios.every((f) => f.ocrSource === "vision" && f.ocrQuality === null && f.wordCount === null));
+
+  const mistral = await h.blob.getJson<DocOcrQuality>(keys.ocrQuality("ark:/12148/mistraldoc"));
+  assert.ok(mistral);
+  assert.equal(mistral.lane, "mistral");
+  assert.ok(mistral.folios.every((f) => f.ocrSource === "mistral" && f.ocrQuality === null));
 });
 
 test("transient 5xx on a folio recovers after retries (doc still completes)", async () => {
@@ -236,3 +288,29 @@ test("observability counters reconcile: done + failed + skipped = total", async 
   assert.equal(c.done, 2);
   assert.equal(c.skipped, 1);
 });
+
+test("backfill round trip: a pre-release doc (no artifact, no sidecars) is synced → queued → built by the stage → served", async () => {
+  const h = harness([
+    { ark: "ark:/12148/textdoc", ocrAvailable: true, docType: "texte", pageCount: 2, folioMeanWc: { 1: 0.5 } },
+  ]);
+  await h.seed([ref("textdoc")]);
+  await h.queue.idle();
+  const ark = "ark:/12148/textdoc";
+  // Make it look indexed before the release: pages + text cache only.
+  await h.blob.delete(keys.ocrQuality(ark));
+  for (const ordre of [1, 2]) await h.blob.delete(keys.altoQuality(ark, ordre));
+  const altoCallsBefore = h.bnf.calls.alto;
+  const { logger } = createMemoryLogger();
+  const deps = { blob: h.blob, queue: h.queue, log: logger, backfill: h.backfill };
+
+  const first = await syncOcrQuality(deps, [ark], new AbortController().signal);
+  assert.deepEqual(first, { documents: [], building: [ark], unavailable: [] });
+  await h.queue.idle();
+
+  assert.equal(h.bnf.calls.alto - altoCallsBefore, 2, "one ALTO call per prepared page, through the stage");
+  assert.equal((await h.backfill.store.get(ark))?.state, "done");
+  const second = await syncOcrQuality(deps, [ark], new AbortController().signal);
+  assert.deepEqual(second.building, []);
+  assert.deepEqual(second.documents[0]?.folios.map((f) => [f.ordre, f.ocrQuality]), [[1, 0.5], [2, 1]]);
+});
+

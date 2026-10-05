@@ -21,7 +21,8 @@ import assert from "node:assert/strict";
 import { MemoryBlobStore } from "./blob.js";
 import { createMemoryLogger } from "./logger.js";
 import { MemoryQueue } from "./queue-memory.js";
-import { DEFAULT_EXPIRE_IN_SECONDS, PipelineStage, type StageDeps } from "./stage.js";
+import { DEFAULT_EXPIRE_IN_SECONDS, DeliveryExpiredError, PipelineStage, type StageDeps } from "./stage.js";
+import { RateLimiter } from "./rate.js";
 import type {
   QueueClient,
   QueueCounts,
@@ -124,6 +125,11 @@ interface SpyWorkOpts {
 
 class SpyQueue implements QueueClient {
   readonly workCalls: Array<{ queue: string; opts: SpyWorkOpts }> = [];
+  readonly declareCalls: Array<{ queue: string; opts: SpyWorkOpts }> = [];
+
+  declare(queue: string, opts: SpyWorkOpts): void {
+    this.declareCalls.push({ queue, opts });
+  }
 
   async send(): Promise<void> {}
   async sendMany(): Promise<void> {}
@@ -142,6 +148,9 @@ class SpyQueue implements QueueClient {
   }
   async liveDocJobIds(): Promise<ReadonlySet<string>> {
     return new Set<string>();
+  }
+  async drain(): Promise<number> {
+    return 0;
   }
   async stop(): Promise<void> {}
 }
@@ -522,4 +531,74 @@ test("F11: a throw from the outcome PERSIST on the final attempt fires onExhaust
 
   assert.equal(stage.processed.length, 1, "process() ran and succeeded");
   assert.equal(stage.exhausted.length, 1, "the persist failure still reached the safety net");
+});
+
+// ---------------------------------------------------------------------------
+// Pass 3: the delivery ceiling is real; a stopped gate hands the delivery back
+// ---------------------------------------------------------------------------
+
+/** A stage whose process() never finishes on its own but watches ctx.signal. */
+class HangingStage extends PipelineStage<Item, Item> {
+  readonly name = "hanging-stage";
+  readonly inputQueue = IN_Q;
+  readonly concurrency = 1;
+  override readonly expireInSeconds = 1;
+  readonly sawAbort: unknown[] = [];
+  declare readonly retry: PipelineStage<Item, Item>["retry"];
+
+  constructor(deps: StageDeps) {
+    super(deps);
+    this.retry = { attempts: 1, baseMs: 1, maxDelayMs: 1 };
+  }
+
+  override process(_payload: Item, ctx: StageContext): Promise<StageOutcome<Item>> {
+    return new Promise((_resolve, reject) => {
+      ctx.signal.addEventListener("abort", () => {
+        this.sawAbort.push(ctx.signal.reason);
+        reject(ctx.signal.reason);
+      });
+    });
+  }
+}
+
+test("a delivery past expireInSeconds is aborted: process() sees the signal and the message fails", async () => {
+  const queue = new MemoryQueue();
+  const { logger } = createMemoryLogger();
+  const stage = new HangingStage({ queue, blob: new MemoryBlobStore(), log: logger });
+  await stage.start();
+  await queue.send(IN_Q, { ark: "a" });
+  await queue.idle();
+  assert.equal(stage.sawAbort.length, 1);
+  assert.ok(stage.sawAbort[0] instanceof DeliveryExpiredError);
+  assert.equal((await queue.counts(IN_Q)).failed, 1);
+});
+
+/** A MemoryQueue that records (instead of delivering) every send after `armed`. */
+class HandBackQueue extends MemoryQueue {
+  armed = false;
+  readonly handedBack: unknown[] = [];
+  override async send<T>(queue: string, payload: T, opts?: { startAfterMs?: number }): Promise<void> {
+    if (this.armed) {
+      this.handedBack.push(payload);
+      return;
+    }
+    return super.send(queue, payload, opts);
+  }
+}
+
+test("a stopped rate gate hands the delivery back: re-queued, no attempt counted, no exhaustion", async () => {
+  const queue = new HandBackQueue();
+  const { logger, lines } = createMemoryLogger();
+  const gate = new RateLimiter({ ratePerMin: 60 });
+  gate.stop();
+  const stage = new TestStage({ deps: { queue, blob: new MemoryBlobStore(), log: logger }, rate: gate, retryAttempts: 1 });
+  await stage.start();
+  await queue.send(IN_Q, { ark: "a" });
+  queue.armed = true;
+  await queue.idle();
+  assert.deepEqual(queue.handedBack, [{ ark: "a" }], "a fresh copy is queued");
+  assert.ok(lines.some((l) => l.event === "delivery_handed_back"));
+  assert.equal(stage.processed.length, 0, "no work ran ungated");
+  assert.equal(stage.exhausted.length, 0, "never exhausted, never a doc failure");
+  assert.equal((await queue.counts(IN_Q)).failed, 0, "the delivery is not failed (no attempt spent)");
 });

@@ -17,6 +17,8 @@ import {
   textAnySchema,
 } from "@/lib/filters"
 
+import { arkSchema } from "@/lib/validation/ark"
+
 // ---------------------------------------------------------------------------
 // Corpus filters — ONE definition for the agent tools AND the REST routes
 // (GET /corpus and /corpus/export decode their query string into this shape
@@ -132,15 +134,9 @@ export const corpusAgentFilterSetSchema = corpusFilterSetSchema.omit({ session: 
 // ARK validation
 // ---------------------------------------------------------------------------
 
-/**
- * Validates a BnF ARK identifier.
- * Format: ark:/<NAAN>/<name> where <NAAN> is digits and <name> is
- * alphanumeric. ARKs are opaque — never constructed, never mutated.
- * Example: ark:/12148/bpt6k2839841
- */
-export const arkSchema = z
-  .string()
-  .regex(/^ark:\/\d+\/[A-Za-z0-9]+$/, "ARK invalide")
+// One definition for the whole app (lib/validation/ark.ts); re-exported here
+// for this model's existing importers.
+export { arkSchema }
 
 // ---------------------------------------------------------------------------
 // Corpus mutation inputs

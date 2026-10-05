@@ -10,7 +10,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { PermanentBnfError } from "./errors.js";
+import { PermanentBnfError, TransientBnfError } from "./errors.js";
 import {
   arkToSlug,
   descriptionsHaveModeTexte,
@@ -19,16 +19,52 @@ import {
   iiifV3Label,
   isCatalogueNotice,
   oaiParser,
-  parseAltoText,
+  altoFolioFromParse,
+  ocrRateValue,
+  parseAlto,
+  parseOcrRate,
   parseV3Manifest,
   pickDcType,
 } from "./parse.js";
 
 // ---------------------------------------------------------------------------
-// parseAltoText
+// parseAlto — text extraction + per-folio word-confidence statistics (D1)
 // ---------------------------------------------------------------------------
 
-test("parseAltoText joins Strings into words and TextLines into lines", () => {
+/** An ALTO folio in the real BnF shape: HPOS/VPOS/WIDTH/HEIGHT attributes on
+ *  every String, WC written as "1" or "0.34" (parseAttributeValue is off, so
+ *  the parser hands them to us as strings). */
+const ALTO_WITH_WC = `<?xml version="1.0" encoding="UTF-8"?>
+  <alto xmlns="http://www.loc.gov/standards/alto/ns-v3#">
+    <Layout>
+      <Page ID="PAG_1" PHYSICAL_IMG_NR="1" QUALITY="OK" ACCURACY="99.50">
+        <PrintSpace>
+          <TextBlock ID="TB_1">
+            <TextLine ID="TL_1">
+              <String ID="S_1" HPOS="10" VPOS="20" WIDTH="100" HEIGHT="30" WC="1" CONTENT="L'Auto"/>
+              <String ID="S_2" HPOS="120" VPOS="20" WIDTH="80" HEIGHT="30" WC="0.34" CONTENT="vélo"/>
+            </TextLine>
+            <TextLine ID="TL_2">
+              <String ID="S_3" HPOS="10" VPOS="60" WIDTH="90" HEIGHT="30" WC="0.84" CONTENT="2"/>
+              <String ID="S_4" HPOS="110" VPOS="60" WIDTH="90" HEIGHT="30" WC="0.5" CONTENT="juillet"/>
+            </TextLine>
+          </TextBlock>
+        </PrintSpace>
+      </Page>
+    </Layout>
+  </alto>`;
+
+test("parseAlto: mean WC over scored words, text identical to the plain extraction", () => {
+  const r = parseAlto(ALTO_WITH_WC);
+  assert.equal(r.text, "L'Auto vélo\n2 juillet");
+  assert.equal(r.wordCount, 4);
+  assert.equal(r.scoredWordCount, 4);
+  // (1 + 0.34 + 0.84 + 0.5) / 4 = 0.67
+  assert.equal(r.meanWordConfidence, 0.67);
+  assert.equal(r.invalidWcCount, 0);
+});
+
+test("parseAlto: ALTO without WC → meanWordConfidence null (never 0), words still counted", () => {
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
     <alto>
       <Layout>
@@ -49,15 +85,172 @@ test("parseAltoText joins Strings into words and TextLines into lines", () => {
         </Page>
       </Layout>
     </alto>`;
-  assert.equal(parseAltoText(xml), "Bonjour le monde\ndeuxième ligne");
+  const r = parseAlto(xml);
+  assert.equal(r.text, "Bonjour le monde\ndeuxième ligne");
+  assert.equal(r.wordCount, 5);
+  assert.equal(r.scoredWordCount, 0);
+  assert.equal(r.meanWordConfidence, null, "no scored word → null, not a default 0");
+  assert.equal(r.invalidWcCount, 0);
 });
 
-test("parseAltoText returns '' for structurally-empty / whitespace ALTO", () => {
-  const empty = `<?xml version="1.0"?><alto><Layout><Page><PrintSpace></PrintSpace></Page></Layout></alto>`;
-  assert.equal(parseAltoText(empty), "");
-  // Malformed XML must not throw — a text-less folio is legitimate.
-  assert.equal(parseAltoText("<not-alto>"), "");
-  assert.equal(parseAltoText("   "), "");
+test("parseAlto: invalid WC values (non-numeric, > 1, < 0) are excluded and counted, never coerced", () => {
+  const xml = `<alto><Layout><Page><PrintSpace><TextBlock><TextLine>
+      <String WC="abc" CONTENT="a"/>
+      <String WC="1.5" CONTENT="b"/>
+      <String WC="-0.1" CONTENT="c"/>
+      <String WC="0.8" CONTENT="d"/>
+      <String WC="0.6" CONTENT="e"/>
+    </TextLine></TextBlock></PrintSpace></Page></Layout></alto>`;
+  const r = parseAlto(xml);
+  assert.equal(r.text, "a b c d e", "invalid WC never drops the word from the text");
+  assert.equal(r.wordCount, 5);
+  assert.equal(r.scoredWordCount, 2);
+  assert.equal(r.meanWordConfidence, 0.7);
+  assert.equal(r.invalidWcCount, 3);
+});
+
+test("parseAlto: a String with empty CONTENT is neither a word nor scored", () => {
+  const xml = `<alto><Layout><Page><PrintSpace><TextBlock><TextLine>
+      <String WC="0.2" CONTENT=""/>
+      <String WC="1" CONTENT="seul"/>
+    </TextLine></TextBlock></PrintSpace></Page></Layout></alto>`;
+  const r = parseAlto(xml);
+  assert.equal(r.text, "seul");
+  assert.equal(r.wordCount, 1);
+  assert.equal(r.scoredWordCount, 1);
+  assert.equal(r.meanWordConfidence, 1);
+});
+
+test("parseAlto: mean is rounded to 4 decimals", () => {
+  const xml = `<alto><Layout><Page><PrintSpace><TextBlock><TextLine>
+      <String WC="1" CONTENT="a"/>
+      <String WC="1" CONTENT="b"/>
+      <String WC="0" CONTENT="c"/>
+    </TextLine></TextBlock></PrintSpace></Page></Layout></alto>`;
+  assert.equal(parseAlto(xml).meanWordConfidence, 0.6667);
+});
+
+test("parseAlto: an empty Layout structure (no words) → empty text, wordCount 0, null mean", () => {
+  // An <alto> with no <Layout> at all is a parse failure (pass 3) — see the
+  // structure-failure tests below.
+  const emptyPrintSpace = `<?xml version="1.0"?><alto><Layout><Page><PrintSpace></PrintSpace></Page></Layout></alto>`;
+  assert.deepEqual(parseAlto(emptyPrintSpace), {
+    text: "",
+    wordCount: 0,
+    scoredWordCount: 0,
+    meanWordConfidence: null,
+    invalidWcCount: 0,
+  });
+});
+
+const isAltoParseFailure = (err: unknown): boolean =>
+  err instanceof TransientBnfError && err.cause === "alto_parse_failed";
+
+test("parseAlto: XML truncated inside a tag throws TransientBnfError alto_parse_failed (B9)", () => {
+  // Pre-fix this was swallowed into "" and the folio counted as legitimately empty.
+  const truncated = `<alto><Layout><Page><PrintSpace><TextBlock><TextLine><String CONTENT="a" WC="1"/><String CONTENT="b" WC="0.3`;
+  assert.throws(() => parseAlto(truncated), isAltoParseFailure);
+});
+
+test("parseAlto: XML truncated BETWEEN elements (no closing tags) is rejected too, not read as a shorter page", () => {
+  // A chunked response closed after a complete element: fast-xml-parser alone
+  // accepts it and returns the words seen so far, so the page silently loses
+  // its tail. The document must be well-formed (XMLValidator) to be read.
+  const truncated = `<alto><Layout><Page><PrintSpace><TextBlock><TextLine><String CONTENT="a" WC="1"/>`;
+  assert.throws(() => parseAlto(truncated), isAltoParseFailure);
+});
+
+test("parseAlto: an <alto> root or Layout that is not an element structure is a parse failure", () => {
+  assert.throws(() => parseAlto("<alto>hello</alto>"), isAltoParseFailure);
+  assert.throws(() => parseAlto("<alto><Layout>hello</Layout></alto>"), isAltoParseFailure);
+});
+
+test("parseAlto: a body with no <alto> root (e.g. an HTML error page served as 200) is a parse failure, not an empty folio", () => {
+  const html = `<html><body>Service Unavailable</body></html>`;
+  assert.throws(
+    () => parseAlto(html),
+    (err: unknown) => err instanceof TransientBnfError && err.cause === "alto_parse_failed",
+  );
+  assert.throws(
+    () => parseAlto("<not-alto>"),
+    (err: unknown) => err instanceof TransientBnfError && err.cause === "alto_parse_failed",
+  );
+});
+
+test("parseAlto: a lone ComposedBlock's words are read and scored (not dropped as an empty page)", () => {
+  // fast-xml-parser turns a SINGLE child element into an object, not an array;
+  // ComposedBlock was missing from the parser's isArray list, so a TextBlock
+  // or PrintSpace holding exactly one ComposedBlock lost every word in it and
+  // the folio read as confidently empty.
+  const xml = `<alto><Layout><Page><PrintSpace>
+    <ComposedBlock><TextBlock><TextLine>
+      <String CONTENT="Paris" WC="0.5"/><String CONTENT="1889" WC="1"/>
+    </TextLine></TextBlock></ComposedBlock>
+  </PrintSpace></Page></Layout></alto>`;
+  const r = parseAlto(xml);
+  assert.equal(r.text, "Paris 1889");
+  assert.equal(r.wordCount, 2);
+  assert.equal(r.meanWordConfidence, 0.75);
+});
+
+// ---------------------------------------------------------------------------
+// parseOcrRate — the manifest "Taux OCR" row as a [0,1] score
+// ---------------------------------------------------------------------------
+
+test("parseOcrRate: percentage strings (dot or comma decimal) → fraction, 4 decimals", () => {
+  assert.deepEqual(parseOcrRate("78.21 %"), { kind: "ok", rate: 0.7821 });
+  assert.deepEqual(parseOcrRate("89,59 %"), { kind: "ok", rate: 0.8959 });
+  assert.deepEqual(parseOcrRate("100 %"), { kind: "ok", rate: 1 });
+  assert.deepEqual(parseOcrRate("0 %"), { kind: "ok", rate: 0 });
+  assert.deepEqual(parseOcrRate("78.21%"), { kind: "ok", rate: 0.7821 }, "no space before the sign");
+  assert.deepEqual(parseOcrRate("78.21"), { kind: "ok", rate: 0.7821 }, "no sign at all");
+});
+
+test("parseOcrRate: missing, unparseable and out-of-range are told apart (never coerced)", () => {
+  assert.deepEqual(parseOcrRate(null), { kind: "missing" });
+  assert.deepEqual(parseOcrRate("150 %"), { kind: "out_of_range", raw: "150 %" }, "the mcp-bnf port lacks this check");
+  assert.deepEqual(parseOcrRate("n/a"), { kind: "unparseable", raw: "n/a" });
+  assert.deepEqual(parseOcrRate("-5 %"), { kind: "unparseable", raw: "-5 %" });
+  assert.deepEqual(parseOcrRate(""), { kind: "unparseable", raw: "" });
+  assert.deepEqual(parseOcrRate("   "), { kind: "unparseable", raw: "   " });
+});
+
+test("parseOcrRate: a multi-valued metadata row takes the first value", () => {
+  // parseV3ManifestMetadata joins multi-valued fields with " | ".
+  assert.deepEqual(parseOcrRate("78.21 % | x"), { kind: "ok", rate: 0.7821 });
+});
+
+test("ocrRateValue: only an ok parse yields a number", () => {
+  assert.equal(ocrRateValue({ kind: "ok", rate: 0.5 }), 0.5);
+  assert.equal(ocrRateValue({ kind: "missing" }), null);
+  assert.equal(ocrRateValue({ kind: "unparseable", raw: "x" }), null);
+  assert.equal(ocrRateValue({ kind: "out_of_range", raw: "150" }), null);
+});
+
+// ---------------------------------------------------------------------------
+// altoFolioFromParse — the ONE AltoParse → AltoFolio mapping (client + fake)
+// ---------------------------------------------------------------------------
+
+test("altoFolioFromParse: maps the statistics into the sidecar shape", () => {
+  assert.deepEqual(
+    altoFolioFromParse({
+      text: "a b",
+      wordCount: 2,
+      scoredWordCount: 1,
+      meanWordConfidence: 0.5,
+      invalidWcCount: 1,
+    }),
+    {
+      text: "a b",
+      empty: false,
+      quality: { v: 1, wordCount: 2, scoredWordCount: 1, meanWc: 0.5 },
+      invalidWcCount: 1,
+    },
+  );
+  assert.equal(
+    altoFolioFromParse({ text: "  ", wordCount: 0, scoredWordCount: 0, meanWordConfidence: null, invalidWcCount: 0 }).empty,
+    true,
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -225,4 +418,55 @@ test("isCatalogueNotice flags cb* ARKs as notices", () => {
   assert.equal(isCatalogueNotice("ark:/12148/cb32798326r"), true);
   assert.equal(isCatalogueNotice("ark:/12148/btv1b9015469h"), false);
   assert.equal(isCatalogueNotice("ark:/12148/bpt6k123456"), false);
+});
+
+// ---------------------------------------------------------------------------
+// Pass-2: text where ALTO structure belongs is a parse failure at every level
+// ---------------------------------------------------------------------------
+
+test("parseAlto: <Page>, <PrintSpace>, <TextBlock>, <TextLine> or <ComposedBlock> holding text is a transient parse failure, never a blank folio", () => {
+  for (const xml of [
+    `<alto><Layout><Page>hello world</Page></Layout></alto>`,
+    `<alto><Layout><Page><PrintSpace>hello world</PrintSpace></Page></Layout></alto>`,
+    `<alto><Layout><Page><PrintSpace><TextBlock>hello world</TextBlock></PrintSpace></Page></Layout></alto>`,
+    `<alto><Layout><Page><PrintSpace><TextBlock><TextLine>hello</TextLine></TextBlock></PrintSpace></Page></Layout></alto>`,
+    `<alto><Layout><Page><PrintSpace><ComposedBlock>hello</ComposedBlock></PrintSpace></Page></Layout></alto>`,
+  ]) {
+    assert.throws(
+      () => parseAlto(xml),
+      (e: unknown) => e instanceof TransientBnfError && e.cause === "alto_parse_failed",
+      xml,
+    );
+  }
+});
+
+test("parseAlto: empty structural elements are an empty page, not a failure", () => {
+  const parsed = parseAlto(`<alto><Layout><Page><PrintSpace/></Page></Layout></alto>`);
+  assert.equal(parsed.text, "");
+  assert.equal(parsed.wordCount, 0);
+});
+
+test("parseAlto: a lone ComposedBlock inside a TextBlock is walked", () => {
+  const parsed = parseAlto(
+    `<alto><Layout><Page><PrintSpace><TextBlock><ComposedBlock><TextBlock><TextLine>` +
+      `<String CONTENT="imbriqué" WC="0.8"/></TextLine></TextBlock></ComposedBlock></TextBlock>` +
+      `</PrintSpace></Page></Layout></alto>`,
+  );
+  assert.equal(parsed.text, "imbriqué");
+  assert.equal(parsed.meanWordConfidence, 0.8);
+});
+
+test("parseAlto: <String> text content, mixed content and a missing <Layout> are parse failures", () => {
+  for (const xml of [
+    `<alto><Layout><Page><PrintSpace><TextBlock><TextLine><String>hello</String></TextLine></TextBlock></PrintSpace></Page></Layout></alto>`,
+    `<alto><Layout><Page><PrintSpace><TextBlock><TextLine><String CONTENT="a">b</String></TextLine></TextBlock></PrintSpace></Page></Layout></alto>`,
+    `<alto><Layout><Page><PrintSpace>stray<TextBlock><TextLine><String CONTENT="a"/></TextLine></TextBlock></PrintSpace></Page></Layout></alto>`,
+    `<alto><Description/></alto>`,
+  ]) {
+    assert.throws(
+      () => parseAlto(xml),
+      (e: unknown) => e instanceof TransientBnfError && e.cause === "alto_parse_failed",
+      xml,
+    );
+  }
 });

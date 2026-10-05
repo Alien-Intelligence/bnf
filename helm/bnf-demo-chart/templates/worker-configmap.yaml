@@ -58,13 +58,16 @@ data:
   # --- Data cluster (register) ---
   BACKEND_API_URL: {{ .Values.worker.config.backendApiUrl | quote }}
   CLUSTER_ID: {{ .Values.worker.config.clusterId | quote }}
-{{- if .Values.broker.enabled }}
 
-  # --- BnF broker ---
-  # When set, ALL BnF traffic (OCR/manifest/metadata) goes through the broker —
-  # it owns the OAuth token + shared rate caps. Supersedes the legacy
-  # gallica.bnf.fr relay/direct path. Unset → worker falls back to that path.
+  # --- BnF broker (REQUIRED) ---
+  # ALL BnF traffic (OCR/manifest/metadata) goes through the broker — it owns
+  # the OAuth token + shared rate caps. The worker REFUSES TO BOOT without a
+  # valid URL (no fallback path): the chart's own broker when enabled, else
+  # worker.config.bnfBrokerUrl, which the render requires.
+{{- if .Values.broker.enabled }}
   BNF_BROKER_URL: {{ include "bnf-demo.brokerInternalUrl" . | quote }}
+{{- else }}
+  BNF_BROKER_URL: {{ required "worker.config.bnfBrokerUrl is required when broker.enabled is false: the worker refuses to boot without BNF_BROKER_URL" .Values.worker.config.bnfBrokerUrl | quote }}
 {{- end }}
 
   # --- Worker HTTP API ---
@@ -106,6 +109,14 @@ data:
   # held below the doc loop so the broker's rate bucket stays continuously fed.
   BNF_FETCH_CONCURRENCY: {{ .Values.worker.config.bnfFetchConcurrency | quote }}
   WORKER_CONCURRENCY: {{ .Values.worker.config.workerConcurrency | quote }}
+
+  # --- OCR-quality backfill ---
+  # Per-ARK OCR-quality artifacts for documents indexed before the feature. One
+  # Presentation (ALTO) call per indexed text folio, once, behind the shared
+  # fetch gate. See values.yaml's comment and helm/DEPLOY.md "OCR quality backfill".
+  OCR_BACKFILL_ENABLED: {{ .Values.worker.config.ocrBackfillEnabled | quote }}
+  OCR_BACKFILL_CONCURRENCY: {{ .Values.worker.config.ocrBackfillConcurrency | quote }}
+  OCR_BACKFILL_RETRY_FAILED_AFTER_MS: {{ .Values.worker.config.ocrBackfillRetryFailedAfterMs | quote }}
 
   # --- Reconciliation sweep ---
   # The periodic re-drive of docs whose queue job vanished (pg-boss expiration, a

@@ -18,6 +18,18 @@ export const DB_STATEMENT_TIMEOUT_MS = 30_000
 export const DB_CONNECTION_TIMEOUT_MS = 10_000
 
 // ---------------------------------------------------------------------------
+// Database pool bounds (lib/db.ts) — every query the app sends is bounded
+// (CLAUDE_ERROR_PATTERNS §14), so a hung statement or an exhausted pool fails
+// instead of wedging the caller and every guard it holds. Same names and
+// values as Track B's ingestion pipeline.
+// ---------------------------------------------------------------------------
+
+/** Server-side ceiling of one SQL statement (Postgres `statement_timeout`). */
+export const DB_STATEMENT_TIMEOUT_MS = 30_000
+/** Ceiling of the wait for a pooled connection (pg `connectionTimeoutMillis`). */
+export const DB_CONNECTION_TIMEOUT_MS = 10_000
+
+// ---------------------------------------------------------------------------
 // Routes — single source of truth for in-app navigation paths.
 // Locale prefix is handled by next-intl's <Link>; these are locale-agnostic.
 // ---------------------------------------------------------------------------
@@ -588,6 +600,169 @@ export const CANONICALIZE_BATCH_SIZE = 25
 export const CANONICALIZE_SWEEP_INTERVAL_MS = RESOLVE_SWEEP_INTERVAL_MS
 
 // ---------------------------------------------------------------------------
+// OCR quality (feedback 2026-09-29 #7 — ai-memories/tech/repos/bnf/
+// feedback-2026-09-29, Track B)
+// ---------------------------------------------------------------------------
+// The worker records each prepared folio's OCR source and, for ALTO folios,
+// the mean word confidence (WC) in its per-ARK `ocr-quality/<slug>.json`
+// artifact. The app pulls those artifacts into DocumentOcr / DocumentFolio
+// (lib/documents/ocr-sync.ts) and decides "low" at READ time against the
+// threshold below, so changing it applies retroactively to every note.
+
+/**
+ * Per-folio mean ALTO word confidence (WC) below which a cited folio is "low
+ * OCR": a marker on its citation pill plus the note-level BnF disclaimer.
+ * Strict `<` (0.80 itself is not low). Leo, 2026-09-30. The ONLY place the
+ * number appears — every comparison goes through isLowOcr()
+ * (models/documents/schema.ts).
+ */
+export const OCR_LOW_QUALITY_THRESHOLD = 0.8
+
+/**
+ * Cadence of the OCR-quality sync sweep (instrumentation.ts). The terminal
+ * ingest callback kicks a sync for its ARKs; the sweep re-pulls every indexed
+ * ARK still pending (and, through it, drives the backfill of documents indexed
+ * before the feature). Shares the resolver's 3-min cadence.
+ */
+export const OCR_SYNC_SWEEP_INTERVAL_MS = RESOLVE_SWEEP_INTERVAL_MS
+
+/** ARKs per POST /ocr-quality/sync call — equals the worker's OCR_SYNC_MAX_ARKS. */
+export const OCR_SYNC_BATCH_SIZE = 100
+
+/**
+ * Safety bound on one sync cycle: at most this many batches, so a single sweep
+ * can never spin unboundedly (CLAUDE_ERROR_PATTERNS §14). What is still pending
+ * afterwards is picked up by the next sweep.
+ */
+export const OCR_SYNC_MAX_BATCHES_PER_CYCLE = 10
+
+/** A `building` row is asked again after this long (the worker is still building it). */
+export const OCR_SYNC_BUILDING_RECHECK_MS = OCR_SYNC_SWEEP_INTERVAL_MS
+
+/** An `unavailable` row is asked again after this long (24 h). */
+export const OCR_SYNC_UNAVAILABLE_RECHECK_MS = 24 * 60 * 60 * 1_000
+
+/**
+ * After this many consecutive rejections (a 400 naming the ARK, an artifact of
+ * the expected version failing its schema) OR outage strikes (failed ALONE,
+ * twice, bracketed by answered controls — lib/documents/ocr-sync.ts), an ARK
+ * is `quarantined`: rechecked on the long quarantine backoff below, at once on
+ * a re-ingest's resync. One poison ARK must never starve the sweep
+ * (CLAUDE_ERROR_PATTERNS §10).
+ */
+export const OCR_SYNC_MAX_ATTEMPTS = 5
+
+/**
+ * An artifact of another version than the app reads (`incompatible`, a deploy
+ * mismatch) is asked again after this long (24 h).
+ */
+export const OCR_SYNC_INCOMPATIBLE_RECHECK_MS = 24 * 60 * 60 * 1_000
+
+/**
+ * Quarantine is a long backoff, never a terminal state: a `quarantined` ARK
+ * (worker_fails_alone or sync_rejected) is asked again after 24 h, doubling
+ * per further failure up to 7 days, and recovers fully on any answer — so a
+ * false quarantine heals itself.
+ */
+export const OCR_SYNC_QUARANTINE_RECHECK_BASE_MS = 24 * 60 * 60 * 1_000
+export const OCR_SYNC_QUARANTINE_RECHECK_MAX_MS = 7 * 24 * 60 * 60 * 1_000
+
+/**
+ * The control that proves the worker up (lib/documents/ocr-sync.ts) rotates
+ * among this many most recently synced `available` ARKs without an outage on
+ * record, so one bad control is never asked for ever.
+ */
+export const OCR_SYNC_CONTROL_POOL = 10
+
+/** Backoff of a contract-failing ARK: base × 2^(attempt − 1), capped. */
+export const OCR_SYNC_REJECT_BACKOFF_BASE_MS = OCR_SYNC_SWEEP_INTERVAL_MS
+export const OCR_SYNC_REJECT_BACKOFF_MAX_MS = OCR_SYNC_UNAVAILABLE_RECHECK_MS
+
+/**
+ * Wall-clock ceiling of one drain. Every request and write of the drain is
+ * cancelled at this deadline, and no batch starts unless its worst-case cost
+ * (OCR_SYNC_BATCH_WRITE_MARGIN_MS + the worker request timeout) still fits.
+ * A sweep that fires while a drain runs is folded into it (re-entrancy guard).
+ */
+export const OCR_SYNC_DRAIN_DEADLINE_MS = 10 * 60 * 1_000
+
+/** Worst-case time to write one batch's answer (≤ OCR_SYNC_BATCH_SIZE per-ARK transactions). */
+export const OCR_SYNC_BATCH_WRITE_MARGIN_MS = 15_000
+
+/**
+ * The one exponential schedule of the sync's transport and exchange failures:
+ * base × 2^(failures − 1), capped (3, 6, 12, 24, 48 min, then 1 h). It paces
+ * the WHOLE sync after an exchange-level contract break (401/403/413, an
+ * envelope that does not parse), a CORPUS's turn after its batch failed on the
+ * transport, and an ARK asked alone after it failed on the transport.
+ */
+export const OCR_SYNC_BACKOFF_BASE_MS = OCR_SYNC_SWEEP_INTERVAL_MS
+export const OCR_SYNC_BACKOFF_MAX_MS = 60 * 60 * 1_000
+
+/**
+ * Requests one drain may spend asking ARKs ALONE (the ARKs of a batch that
+ * failed on the transport twice), the controls of their strike brackets
+ * included (lib/documents/ocr-sync.ts). While the worker answers them, a lone
+ * ARK costs one request (the previous answer opens its bracket), so a 100-ARK
+ * batch is gone through in about 10 drains; a strike costs 4 more (two
+ * controls, the second ask). Measured with a poison at position 0 of 100
+ * (tests/models/documents/ocr-sync-pg.test.ts): the 99 others served and the
+ * poison quarantined in 23 drains (69 min). A worker outage costs one failed
+ * control per drain.
+ */
+export const OCR_SYNC_ISOLATION_BUDGET = 10
+
+/**
+ * Ceiling on one database await in the OCR-quality paths (the drainer and the
+ * agent-tool reads). Prisma takes no per-query signal, so the await is raced
+ * against this deadline (lib/async/deadline.ts) and fails loudly.
+ */
+export const OCR_DB_TIMEOUT_MS = 10_000
+
+/**
+ * Ceiling on one database await on an agent tool-call path outside the OCR
+ * reads (the ingested-corpus guard, the note reads of the note tools): the
+ * await is raced against it and the turn's signal (lib/async/deadline.ts).
+ */
+export const TOOL_DB_TIMEOUT_MS = 10_000
+
+
+/**
+ * Largest progress-callback body the unauthenticated route reads and HMACs.
+ * A terminal event carries per-document error entries; 4 MiB holds thousands
+ * of them. Above it the route answers the uniform rejection without reading.
+ */
+export const PROGRESS_CALLBACK_MAX_BODY_BYTES = 4 * 1024 * 1024
+
+/**
+ * How long the progress route waits for a callback body: a trickling body is
+ * refused (the uniform 401) instead of being held up to Node's 300 s
+ * requestTimeout. The worker posts a few KiB at once; 15 s is generous.
+ */
+export const PROGRESS_CALLBACK_BODY_READ_MS = 15_000
+
+/**
+ * Sanity cap on the folios one worker artifact may carry — above any worker
+ * MAX_OCR_PAGES. A response beyond it is a contract break, not a big document.
+ */
+export const OCR_SYNC_MAX_FOLIOS_PER_DOC = 1_000
+
+/** Low-OCR folio numbers listed per document in a rag_keyword_search hit / doc_get result. */
+export const RAG_OCR_LOW_FOLIOS_MAX = 20
+
+/**
+ * The folio heading worker-v2's assembleMarkdown writes into an entry's
+ * processed text (worker-v2/src/live/cluster.ts, `## Folio N`). A worker
+ * contract: rag_get_text reads the folios of a text slice from it. Iterate it
+ * with String.prototype.matchAll (which clones the regex), never with .exec on
+ * this shared instance — it is a stateful /g regex.
+ */
+export const PROCESSED_TEXT_FOLIO_HEADING = /^## Folio (\d+)$/gm
+
+/** File name of a whole-carnet Markdown export (in-espace Carnet and the Carnet page). */
+export const CARNET_EXPORT_FILENAME = "carnet-de-recherche.md"
+
+// ---------------------------------------------------------------------------
 // Agent runtime
 // ---------------------------------------------------------------------------
 
@@ -905,8 +1080,11 @@ export function IIIF_IMAGE_URL(ark: string, folio: number, size = "full"): strin
 
 /** IIIF size (`{width},` syntax) for a folio image embedded in a note figure.
  * Constrained so a full press-page scan isn't fetched at native resolution;
- * the source panel uses a smaller `200,` thumbnail. */
+ * the source panel uses the smaller CITATION_THUMB_IIIF_SIZE thumbnail. */
 export const NOTE_IMAGE_IIIF_SIZE = "843,"
+
+/** IIIF size (`{width},` syntax) of the cited folio's thumbnail in the source panel. */
+export const CITATION_THUMB_IIIF_SIZE = "200,"
 
 /** IIIF manifest URL for a given ARK. */
 export function IIIF_MANIFEST_URL(ark: string): string {

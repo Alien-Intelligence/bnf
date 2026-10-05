@@ -34,7 +34,9 @@ import { prisma } from "@/lib/db"
 import { INGEST_STATUS } from "@/models/ingest/schema"
 import { IngestQueries } from "@/models/ingest/queries"
 import { ClusterRunner } from "@/lib/cluster/runner"
-import type { ClusterQueueProgress } from "@/lib/cluster/contracts"
+import { CLUSTER_MODE, clusterMode } from "@/lib/cluster/mode"
+import { CLUSTER_POLL, type ClusterProgressPoll } from "@/lib/cluster/contracts"
+import { startPeriodic } from "@/lib/async/periodic"
 
 /** How stale a QUEUED job (no clusterJobId) must be to count as an F19 corpse. */
 export const WATCHDOG_QUEUED_STALE_MS = 15 * 60 * 1000
@@ -74,16 +76,21 @@ export interface WatchdogDecision {
  * @param job - the candidate job. Expected to already be either RUNNING or
  *   QUEUED (the caller's query is the coarse filter); the rules below
  *   re-derive everything else from the inputs so they are provable standalone.
- * @param clusterProgress - the worker's live read-model for this job, or
- *   null (no clusterJobId to poll yet, or the poll 404'd / was unreachable).
+ * @param poll - this tick's poll of the worker's read-model for the job, or
+ *   null when nothing was polled (no clusterJobId yet, or a QUEUED job).
  * @param now - injected clock.
- * @param nullSince - when `clusterProgress` started being continuously null
- *   for this job, as tracked by the caller across previous ticks; null if it
- *   has never been null (or was last seen non-null).
+ * @param nullSince - when the worker started CONTINUOUSLY answering "run
+ *   unknown" (404) for this job, as tracked by the caller across ticks; null
+ *   if it has not (or progress was last seen).
+ *
+ * Only a 404 — the worker is up and does not know the run — advances the
+ * give-up clock. A worker that cannot be reached, or answers an error, is an
+ * outage, not evidence the run is gone: the clock is held (neither started
+ * nor reset) until the worker answers again.
  */
 export function decideWatchdogAction(
   job: WatchdogJobInput,
-  clusterProgress: ClusterQueueProgress | null,
+  poll: ClusterProgressPoll | null,
   now: Date,
   nullSince: Date | null,
 ): WatchdogDecision {
@@ -107,7 +114,14 @@ export function decideWatchdogAction(
   // to poll yet, nothing to decide.
   if (!job.clusterJobId) return { action: { kind: "none" }, nullSince }
 
-  if (clusterProgress !== null) {
+  if (poll === null) return { action: { kind: "none" }, nullSince }
+
+  if (poll.kind === CLUSTER_POLL.WORKER_UNREACHABLE || poll.kind === CLUSTER_POLL.WORKER_ERROR) {
+    return { action: { kind: "none" }, nullSince }
+  }
+
+  if (poll.kind === CLUSTER_POLL.PROGRESS) {
+    const clusterProgress = poll.progress
     // F21: write-through a compact summary so the DB row stops lying while
     // v2 (which sends only the terminal callback) is running. `stage` is left
     // as-is (v2 has no per-stage breakdown to offer); `progress` is the docs
@@ -122,8 +136,8 @@ export function decideWatchdogAction(
     }
   }
 
-  // clusterProgress === null: the worker 404'd or was unreachable this tick.
-  // Track how long that has been continuously true.
+  // RUN_UNKNOWN: the worker is up and 404'd this run. Track how long that has
+  // been continuously true.
   const since = nullSince ?? now
   const staleMs = now.getTime() - since.getTime()
   if (staleMs > WATCHDOG_RUNNING_STALE_MS) {
@@ -131,7 +145,7 @@ export function decideWatchdogAction(
     return {
       action: {
         kind: "fail",
-        reason: "worker injoignable / run inconnu depuis 30 min (watchdog)",
+        reason: "run inconnu du worker depuis 30 min (watchdog)",
       },
       nullSince: null,
     }
@@ -161,19 +175,11 @@ const nullSinceByJob = new Map<string, Date>()
  * corpse, so there is nothing for this watchdog to reconcile.
  */
 export function startIngestWatchdog(): { stop: () => void } {
-  if (process.env.CLUSTER_MODE !== "real") {
+  if (clusterMode() !== CLUSTER_MODE.REAL) {
     return { stop: () => {} }
   }
-  const timer = setInterval(() => {
-    void runWatchdogTick().catch((err) => {
-      console.error("[ingest-watchdog] tick failed:", err)
-    })
-  }, WATCHDOG_TICK_MS)
-  return {
-    stop: () => {
-      clearInterval(timer)
-    },
-  }
+  // Unref'd, and replaced (not stacked) on a re-run of register().
+  return startPeriodic("ingest-watchdog", WATCHDOG_TICK_MS, runWatchdogTick)
 }
 
 async function runWatchdogTick(): Promise<void> {
@@ -187,7 +193,7 @@ async function runWatchdogTick(): Promise<void> {
 }
 
 async function applyToJob(job: WatchdogJobInput, now: Date): Promise<void> {
-  const clusterProgress =
+  const poll =
     job.status === INGEST_STATUS.RUNNING && job.clusterJobId
       ? await ClusterRunner.progress(job.clusterJobId)
       : null
@@ -195,7 +201,7 @@ async function applyToJob(job: WatchdogJobInput, now: Date): Promise<void> {
   const nullSince = nullSinceByJob.get(job.id) ?? null
   const { action, nullSince: nextNullSince } = decideWatchdogAction(
     job,
-    clusterProgress,
+    poll,
     now,
     nullSince,
   )

@@ -10,13 +10,24 @@
  */
 import { Pool } from "pg";
 
-import { loadConfig } from "./config.js";
+import { loadBrokerUrl, loadConfig, pgPoolConfig } from "./config.js";
+import { configureBrokerUrl } from "./bnf/broker-client.js";
 import { buildPipeline } from "./build.js";
 import { PgBossQueue } from "./core/queue-pgboss.js";
 import { S3BlobStore } from "./core/blob.js";
 import { RateLimiter } from "./core/rate.js";
 import { createLogger } from "./core/logger.js";
 import { PgDocState } from "./domain/doc-state-pg.js";
+import {
+  OCR_BACKFILL_MAX_ATTEMPTS,
+  OCR_BACKFILL_STARTED_STALE_MS,
+  OCR_BACKFILL_UNSENT_STALE_MS,
+  OCR_BACKFILL_UNSTARTED_STALE_MS,
+  validateOcrBackfillPolicy,
+  type OcrBackfillWiring,
+} from "./domain/ocr-backfill.js";
+import { PgOcrBackfillStore } from "./domain/ocr-backfill-pg.js";
+import { OCR_SYNC_BODY_READ_MS, OCR_SYNC_DEADLINE_MS } from "./live/ocr-quality-sync.js";
 import { PgRunStore } from "./domain/run-store-pg.js";
 import { LiveBnfClient } from "./bnf/client.js";
 import { LiveDescriber } from "./live/describer.js";
@@ -27,23 +38,37 @@ import { TerminalEmitter } from "./live/progress-callback.js";
 import { CompletionMonitor } from "./live/completion-monitor.js";
 import { Reconciler } from "./live/reconciler.js";
 import { startServer } from "./server.js";
+import { SHUTDOWN_BUDGETS, shutdownWorker } from "./shutdown.js";
 
 async function main(): Promise<void> {
   const cfg = loadConfig();
+  // The worker runtime — and only it — needs the broker: validated here, once.
+  configureBrokerUrl(loadBrokerUrl(process.env));
   const log = createLogger({ worker: "bnf-ingest-v2" });
 
-  const queue = new PgBossQueue(cfg.databaseUrl);
+  const queue = new PgBossQueue(pgPoolConfig(cfg.databaseUrl));
   await queue.start();
 
-  // statement_timeout: pg has NO query timeout by default, so a lock wait or a bad
-  // plan parks whatever awaited it — a stage handler until pg-boss expires the job,
-  // or (new in this slice) the reconciliation sweep, forever. Every query this pool
-  // runs is small OLTP work measured in milliseconds, so 30s only ever fires on
-  // something genuinely stuck (CLAUDE_ERROR_PATTERNS §14).
-  const pool = new Pool({ connectionString: cfg.databaseUrl, statement_timeout: 30_000 });
+  // Both pg timeouts (pgPoolConfig): a stuck query or an exhausted pool must not
+  // park a stage handler until pg-boss expires the job, nor the sweep/endpoint.
+  const pool = new Pool(pgPoolConfig(cfg.databaseUrl));
   const docState = new PgDocState(pool);
   await docState.migrate();
   const runStore = new PgRunStore(pool);
+  // ONE wiring object for the backfill, handed to both the pipeline (stage) and
+  // the server (endpoint) so their enable decision cannot diverge.
+  const ocrBackfill: OcrBackfillWiring = {
+    store: new PgOcrBackfillStore(pool),
+    enabled: cfg.ocrBackfill.enabled,
+    concurrency: cfg.ocrBackfill.concurrency,
+    policy: validateOcrBackfillPolicy({
+      retryFailedAfterMs: cfg.ocrBackfill.retryFailedAfterMs,
+      maxAttempts: OCR_BACKFILL_MAX_ATTEMPTS,
+      startedStaleAfterMs: OCR_BACKFILL_STARTED_STALE_MS,
+      unstartedStaleAfterMs: OCR_BACKFILL_UNSTARTED_STALE_MS,
+      unsentStaleAfterMs: OCR_BACKFILL_UNSENT_STALE_MS,
+    }),
+  };
 
   const blob = new S3BlobStore({ ...cfg.s3, prefix: cfg.s3Prefix });
 
@@ -68,6 +93,7 @@ async function main(): Promise<void> {
     ocr: new LiveOcrEngine(),
     embedder: new LiveEmbedder(),
     cluster: new LiveClusterSink(),
+    ocrBackfill,
     onOutcome: (e) => completion.noteOutcome({ kind: e.kind, payload: e.payload }),
     rates: { fetch: fetchRate, manifest: manifestRate },
     config: {
@@ -113,6 +139,10 @@ async function main(): Promise<void> {
       log,
       fetchRatePerMin: cfg.fetchRatePerMin,
       manifestRatePerMin: cfg.manifestRatePerMin,
+      blob,
+      ocrBackfill,
+      ocrSyncDeadlineMs: OCR_SYNC_DEADLINE_MS,
+      ocrSyncBodyReadMs: OCR_SYNC_BODY_READ_MS,
     },
     cfg.httpPort,
   );
@@ -123,6 +153,9 @@ async function main(): Promise<void> {
     manifestRatePerMin: cfg.manifestRatePerMin,
     mistralEnabled: cfg.mistralEnabled,
     reconcilerIntervalMs: cfg.reconcilerIntervalMs,
+    ocrBackfillEnabled: cfg.ocrBackfill.enabled,
+    ocrBackfillConcurrency: cfg.ocrBackfill.concurrency,
+    ocrBackfillRetryFailedAfterMs: cfg.ocrBackfill.retryFailedAfterMs,
   });
 
   let shuttingDown = false;
@@ -130,18 +163,23 @@ async function main(): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     log.info("worker_v2_shutdown", { sig });
-    // Order matters: stop the sweep FIRST. It re-enqueues work, and re-enqueueing
-    // into a pipeline that is draining would leave fresh jobs behind with nobody
-    // consuming them (and could race pg-boss's shutdown mid-send).
-    reconciler.stop();
-    fetchRate.stop();
-    manifestRate.stop();
-    await new Promise<void>((r) => server.close(() => r()));
-    // pipeline.stop() → PgBossQueue.stop(), which drains in-flight handlers within
-    // an explicit 110s budget (F12) — inside the pod's 120s grace period, and
-    // immediate when nothing is in flight.
-    await pipeline.stop().catch(() => {});
-    await pool.end().catch(() => {});
+    // The order is shutdownWorker's (src/shutdown.ts): intake, drain with the
+    // transport alive, gates (hand-backs through a working send), transport.
+    await shutdownWorker(
+      {
+        log,
+        stopIntake: async () => {
+          reconciler.stop();
+          await new Promise<void>((r) => server.close(() => r()));
+        },
+        pipeline,
+        gates: [fetchRate, manifestRate],
+        closePools: () => pool.end(),
+      },
+      SHUTDOWN_BUDGETS,
+    ).catch((err: unknown) =>
+      log.error("shutdown_failed", { error: err instanceof Error ? err.message : String(err) }),
+    );
     process.exit(0);
   };
   process.on("SIGINT", () => void shutdown("SIGINT"));

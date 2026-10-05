@@ -4,36 +4,99 @@
  * empty defaults — platform CLAUDE_ERROR_PATTERNS §10). The downstream live
  * clients (vision/mistral/embed/cluster) read their OWN secrets from env, mirroring
  * V1's names, so they are not duplicated here.
+ *
+ * Env readers that remain OUTSIDE this family (not routed through it; listed so
+ * the claim above stays true):
+ *   - bnf/client.ts `optionalIntEnv` (BNF_META_TIMEOUT_MS, BNF_PAGE_TIMEOUT_MS)
+ *     — a Track D shared file kept to its listed hunks;
+ *   - live/vendor/broker-client.ts `brokerUrl()` reads BNF_BROKER_URL per call
+ *     (vendored V1, the vision path); bnf/broker-client.ts takes it ONCE from
+ *     loadBrokerUrl at boot (main.ts);
+ *   - live/vendor/{env,fetch-gate,rate-limiter,vision,gallica-relay}.ts — V1
+ *     code vendored verbatim (its own floors and silent defaults, e.g.
+ *     BNF_FETCH_CONCURRENCY parsed a second time in fetch-gate.ts);
+ *   - live/cluster-http.ts and live/ocr.ts — the downstream clients' secrets.
  */
-function required(name: string): string {
-  const v = process.env[name];
-  if (v == null || v.trim() === "") throw new Error(`Missing required env var ${name}`);
+// ---------------------------------------------------------------------------
+// The ONE family of env readers for every knob in WorkerConfig: unset or
+// blank means the documented default, anything set must be well-formed — a
+// typo, a zero, a negative or a fraction THROWS at startup instead of being
+// floored, ignored or silently disabling a gate (F23, CLAUDE_ERROR_PATTERNS
+// §10/§12). Each takes the env, so loadConfigFrom is pure and unit-tested.
+// ---------------------------------------------------------------------------
+
+type Env = NodeJS.ProcessEnv;
+
+/** An integer knob is written in plain decimal digits — nothing else. */
+const DIGITS_ONLY = /^[0-9]+$/;
+/** A ratio knob is a plain decimal (no exponent, sign or hex). */
+const PLAIN_DECIMAL = /^[0-9]+(\.[0-9]+)?$/;
+
+function isBlank(v: string | undefined): v is undefined {
+  return v == null || v.trim() === "";
+}
+
+/** A required string: missing or blank throws. */
+function requiredFrom(env: Env, name: string): string {
+  const v = env[name];
+  if (isBlank(v)) throw new Error(`Missing required env var ${name}`);
   return v.trim();
 }
-function optionalInt(name: string, fallback: number): number {
-  const v = process.env[name];
-  if (v == null || v.trim() === "") return fallback;
-  const n = Number(v);
-  if (!Number.isFinite(n)) throw new Error(`${name} must be a number, got ${v}`);
-  return Math.floor(n);
+
+/** A non-empty string, or `fallback` when unset/blank. */
+function stringFrom(env: Env, name: string, fallback: string): string {
+  const v = env[name];
+  return isBlank(v) ? fallback : v.trim();
 }
-function optionalBool(name: string, fallback: boolean): boolean {
-  const v = process.env[name];
-  if (v == null || v.trim() === "") return fallback;
-  if (v !== "true" && v !== "false") throw new Error(`${name} must be "true"|"false", got ${v}`);
-  return v === "true";
+
+/**
+ * A strict integer in [min, max] (min defaults to 1), or `fallback` when
+ * unset/blank; a fraction, a non-number or an out-of-range value throws.
+ */
+function positiveIntFrom(
+  env: Env,
+  name: string,
+  fallback: number,
+  bounds: { min?: number; max?: number } = {},
+): number {
+  const v = env[name];
+  if (isBlank(v)) return fallback;
+  const min = bounds.min ?? 1;
+  const max = bounds.max ?? Number.MAX_SAFE_INTEGER;
+  const text = v.trim();
+  // Digits only: Number() would also read "0x10", "1e1", "+5" or "6e4".
+  const n = DIGITS_ONLY.test(text) ? Number(text) : Number.NaN;
+  if (!Number.isSafeInteger(n) || n < min || n > max) {
+    const range = bounds.max === undefined ? `an integer ≥ ${min}` : `an integer in [${min}, ${max}]`;
+    throw new Error(`${name} must be ${range}, got ${JSON.stringify(v)}`);
+  }
+  return n;
 }
-/** A ratio var (0 < v <= 1) — NaN or an out-of-range value throws rather than
- *  silently disabling whatever gate reads it (F23,
- *  ai-memories/tech/repos/bnf/ingest-hardening: `Number(env ?? fallback)` let a
- *  typo'd DOC_FAIL_RATIO become NaN, which compares false against every ratio
- *  and quietly turns the Monitor's fail-ratio gate off). */
-function optionalFloat(name: string, fallback: number): number {
-  const v = process.env[name];
-  if (v == null || v.trim() === "") return fallback;
-  const n = Number(v);
+
+/** A strict "true" / "false", or `fallback` when unset/blank; anything else throws. */
+function boolFrom(env: Env, name: string, fallback: boolean): boolean {
+  const v = env[name];
+  if (isBlank(v)) return fallback;
+  const t = v.trim().toLowerCase();
+  if (t === "true") return true;
+  if (t === "false") return false;
+  throw new Error(`${name} must be "true" or "false", got ${JSON.stringify(v)}`);
+}
+
+/**
+ * A ratio in (0, 1], or `fallback` when unset/blank — NaN or an out-of-range
+ * value throws rather than silently disabling whatever gate reads it (F23,
+ * ai-memories/tech/repos/bnf/ingest-hardening: `Number(env ?? fallback)` let a
+ * typo'd DOC_FAIL_RATIO become NaN, which compares false against every ratio
+ * and quietly turns the Monitor's fail-ratio gate off).
+ */
+function ratioFrom(env: Env, name: string, fallback: number): number {
+  const v = env[name];
+  if (isBlank(v)) return fallback;
+  const text = v.trim();
+  const n = PLAIN_DECIMAL.test(text) ? Number(text) : Number.NaN;
   if (!Number.isFinite(n) || n <= 0 || n > 1) {
-    throw new Error(`${name} must be a number in (0, 1], got ${v}`);
+    throw new Error(`${name} must be a number in (0, 1], got ${JSON.stringify(v)}`);
   }
   return n;
 }
@@ -141,41 +204,184 @@ export interface WorkerConfig {
    * give-up item, ai-memories/tech/repos/bnf/ingest-hardening.
    */
   reconcilerMaxCallbackFailures: number;
+  /** The OCR-quality backfill knobs — see OcrBackfillConfig / loadOcrBackfillConfig. */
+  ocrBackfill: OcrBackfillConfig;
 }
 
-export function loadConfig(): WorkerConfig {
+/**
+ * statement_timeout for every pg Pool the worker opens (main.ts, status.ts): pg
+ * has NO query timeout by default, so a lock wait or a bad plan parks whatever
+ * awaited it. Every query is small OLTP work measured in milliseconds, so 30 s
+ * only ever fires on something genuinely stuck (CLAUDE_ERROR_PATTERNS §14).
+ */
+export const PG_STATEMENT_TIMEOUT_MS = 30_000;
+
+/**
+ * connectionTimeoutMillis for every pg Pool: by default pg waits FOREVER for a
+ * free client (pool exhausted) or a TCP connect — the one await
+ * statement_timeout does not cover. 10 s is far above a healthy checkout.
+ */
+export const PG_CONNECTION_TIMEOUT_MS = 10_000;
+
+/** The options of every pg Pool the worker opens — both timeouts, one place. */
+export function pgPoolConfig(databaseUrl: string): {
+  connectionString: string;
+  statement_timeout: number;
+  connectionTimeoutMillis: number;
+} {
   return {
-    databaseUrl: required("DATABASE_URL"),
-    httpPort: optionalInt("WORKER_HTTP_PORT", 7777),
+    connectionString: databaseUrl,
+    statement_timeout: PG_STATEMENT_TIMEOUT_MS,
+    connectionTimeoutMillis: PG_CONNECTION_TIMEOUT_MS,
+  };
+}
+
+/**
+ * OCR-quality backfill (ai-memories/tech/repos/bnf/feedback-2026-09-29, Track B).
+ * The defaults are explicit, named and documented in RUN.md, helm/DEPLOY.md and
+ * values.yaml — the plan (D6) fixes them; nothing else in the worker restates
+ * them.
+ */
+export interface OcrBackfillConfig {
+  /**
+   * OCR_BACKFILL_ENABLED (default true). False leaves the stage unregistered AND
+   * makes /ocr-quality/sync answer missing ARKs `unavailable: backfill_disabled`
+   * — the switch that stops the BnF spend without a rollback; artifacts that
+   * already exist are still served.
+   */
+  enabled: boolean;
+  /**
+   * OCR_BACKFILL_CONCURRENCY (default 2, plan D6): in-flight backfill docs. Each
+   * text doc costs one Presentation (ALTO) call per indexed folio, once, through
+   * the SAME fetch gate live ingests use — raise it off-hours to drain the
+   * backlog. Must be a positive integer: turning the stage off is `enabled`'s
+   * job, not a zero that would wedge its queue consumer.
+   */
+  concurrency: number;
+  /**
+   * OCR_BACKFILL_RETRY_FAILED_AFTER_MS (default 24 h): the BASE backoff before a
+   * transiently failed build is retried; it doubles per attempt
+   * (domain/ocr-backfill.ts). Integer milliseconds, at least
+   * MIN_OCR_BACKFILL_RETRY_FAILED_AFTER_MS: the value is milliseconds, and a
+   * "60" meant as minutes would otherwise re-spend BnF quota every sweep.
+   */
+  retryFailedAfterMs: number;
+}
+
+/** The floor of OCR_BACKFILL_RETRY_FAILED_AFTER_MS: one minute. */
+export const MIN_OCR_BACKFILL_RETRY_FAILED_AFTER_MS = 60_000;
+
+export const DEFAULT_OCR_BACKFILL_ENABLED = true;
+export const DEFAULT_OCR_BACKFILL_CONCURRENCY = 2;
+export const DEFAULT_OCR_BACKFILL_RETRY_FAILED_AFTER_MS = 24 * 60 * 60 * 1_000;
+
+/** The OCR backfill knobs, validated. Pure (takes the env) so it is unit-tested. */
+export function loadOcrBackfillConfig(env: NodeJS.ProcessEnv): OcrBackfillConfig {
+  return {
+    enabled: boolFrom(env, "OCR_BACKFILL_ENABLED", DEFAULT_OCR_BACKFILL_ENABLED),
+    concurrency: positiveIntFrom(env, "OCR_BACKFILL_CONCURRENCY", DEFAULT_OCR_BACKFILL_CONCURRENCY),
+    retryFailedAfterMs: positiveIntFrom(
+      env,
+      "OCR_BACKFILL_RETRY_FAILED_AFTER_MS",
+      DEFAULT_OCR_BACKFILL_RETRY_FAILED_AFTER_MS,
+      { min: MIN_OCR_BACKFILL_RETRY_FAILED_AFTER_MS },
+    ),
+  };
+}
+
+/**
+ * BNF_BROKER_URL — the egress chokepoint every BnF call goes through. Required
+ * by the worker RUNTIME only (main.ts hands it to bnf/broker-client.ts once,
+ * at boot): unset or malformed, every BnF call would fail as a per-ARK
+ * PERMANENT error and a deployment mistake would permanently fail the
+ * backfill. The read-only scripts (status, seed, requeue-stranded) make no
+ * BnF call and do not need it. An http(s) URL; a trailing slash is dropped.
+ */
+export function loadBrokerUrl(env: Env): string {
+  const raw = requiredFrom(env, "BNF_BROKER_URL");
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error(`BNF_BROKER_URL must be an http(s) URL, got ${JSON.stringify(raw)}`);
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error(`BNF_BROKER_URL must be an http(s) URL, got ${JSON.stringify(raw)}`);
+  }
+  return raw.replace(/\/+$/, "");
+}
+
+/** The highest TCP port. */
+const MAX_PORT = 65_535;
+
+/**
+ * The documented default of every knob (RUN.md, helm values) — named here once,
+ * so loadConfigFrom below states only which env var feeds which field. The
+ * reasons for each value are on the WorkerConfig field it fills.
+ */
+export const CONFIG_DEFAULTS = {
+  httpPort: 7777,
+  s3Prefix: "v2/",
+  mistralEnabled: false,
+  maxPages: 300,
+  maxCanvases: 300,
+  fetchRatePerMin: 300,
+  fetchConcurrency: 32,
+  manifestRatePerMin: 42,
+  visionImageSize: "pct:33",
+  mistralImageSize: "max",
+  describeConcurrency: 16,
+  describeCallConcurrency: 64,
+  metadataConcurrency: 16,
+  registerConcurrency: 24,
+  embedConcurrency: 8,
+  ocrSubmitConcurrency: 12,
+  ocrPollConcurrency: 16,
+  failRatio: 0.25,
+  reconcilerIntervalMs: 60_000,
+  reconcilerMaxRequeues: 3,
+  reconcilerMaxCallbackFailures: 120,
+} as const;
+
+/** The whole worker config from `env`, validated. Pure, so it is unit-tested. */
+export function loadConfigFrom(env: Env): WorkerConfig {
+  return {
+    databaseUrl: requiredFrom(env, "DATABASE_URL"),
+    httpPort: positiveIntFrom(env, "WORKER_HTTP_PORT", CONFIG_DEFAULTS.httpPort, { max: MAX_PORT }),
     s3: {
-      bucket: required("SCW_S3_BUCKET"),
-      endpoint: required("SCW_S3_ENDPOINT_URL"),
-      region: required("SCW_S3_REGION"),
-      accessKeyId: required("SCW_S3_ACCESS_KEY"),
-      secretAccessKey: required("SCW_S3_SECRET_KEY"),
+      bucket: requiredFrom(env, "SCW_S3_BUCKET"),
+      endpoint: requiredFrom(env, "SCW_S3_ENDPOINT_URL"),
+      region: requiredFrom(env, "SCW_S3_REGION"),
+      accessKeyId: requiredFrom(env, "SCW_S3_ACCESS_KEY"),
+      secretAccessKey: requiredFrom(env, "SCW_S3_SECRET_KEY"),
     },
-    s3Prefix: process.env.V2_S3_PREFIX?.trim() || "v2/",
-    mistralEnabled: optionalBool("MISTRAL_OCR_ENABLED", false),
-    maxPages: optionalInt("MAX_OCR_PAGES", 300),
-    maxCanvases: optionalInt("MISTRAL_OCR_MAX_PAGES", 300),
-    fetchRatePerMin: optionalInt("BNF_GLOBAL_RPM", 300),
-    fetchConcurrency: optionalInt("BNF_FETCH_CONCURRENCY", 32),
-    manifestRatePerMin: optionalInt("BNF_MANIFEST_RPM", 42),
-    visionImageSize: process.env.VISION_IMAGE_SIZE?.trim() || "pct:33",
-    mistralImageSize: process.env.MISTRAL_IMAGE_SIZE?.trim() || "max",
-    describeConcurrency: optionalInt("DESCRIBE_CONCURRENCY", 16),
+    s3Prefix: stringFrom(env, "V2_S3_PREFIX", CONFIG_DEFAULTS.s3Prefix),
+    mistralEnabled: boolFrom(env, "MISTRAL_OCR_ENABLED", CONFIG_DEFAULTS.mistralEnabled),
+    maxPages: positiveIntFrom(env, "MAX_OCR_PAGES", CONFIG_DEFAULTS.maxPages),
+    maxCanvases: positiveIntFrom(env, "MISTRAL_OCR_MAX_PAGES", CONFIG_DEFAULTS.maxCanvases),
+    fetchRatePerMin: positiveIntFrom(env, "BNF_GLOBAL_RPM", CONFIG_DEFAULTS.fetchRatePerMin),
+    fetchConcurrency: positiveIntFrom(env, "BNF_FETCH_CONCURRENCY", CONFIG_DEFAULTS.fetchConcurrency),
+    manifestRatePerMin: positiveIntFrom(env, "BNF_MANIFEST_RPM", CONFIG_DEFAULTS.manifestRatePerMin),
+    visionImageSize: stringFrom(env, "VISION_IMAGE_SIZE", CONFIG_DEFAULTS.visionImageSize),
+    mistralImageSize: stringFrom(env, "MISTRAL_IMAGE_SIZE", CONFIG_DEFAULTS.mistralImageSize),
+    describeConcurrency: positiveIntFrom(env, "DESCRIBE_CONCURRENCY", CONFIG_DEFAULTS.describeConcurrency),
     // 64: the vision lane is the bottleneck and the paid OpenRouter key has no
     // per-key RPM cap — push concurrency hard and let the in-call 429/timeout
     // backoff (vision.ts) ride the provider's capacity edge. See hardening-pass-2.
-    describeCallConcurrency: optionalInt("DESCRIBE_CALL_CONCURRENCY", 64),
-    metadataConcurrency: optionalInt("METADATA_CONCURRENCY", 16),
-    registerConcurrency: optionalInt("REGISTER_CONCURRENCY", 24),
-    embedConcurrency: optionalInt("EMBED_CONCURRENCY", 8),
-    ocrSubmitConcurrency: optionalInt("OCR_SUBMIT_CONCURRENCY", 12),
-    ocrPollConcurrency: optionalInt("OCR_POLL_CONCURRENCY", 16),
-    failRatio: optionalFloat("DOC_FAIL_RATIO", 0.25),
-    reconcilerIntervalMs: optionalInt("RECONCILER_INTERVAL_MS", 60_000),
-    reconcilerMaxRequeues: optionalInt("RECONCILER_MAX_REQUEUES", 3),
-    reconcilerMaxCallbackFailures: optionalInt("RECONCILER_MAX_CALLBACK_FAILURES", 120),
+    describeCallConcurrency: positiveIntFrom(env, "DESCRIBE_CALL_CONCURRENCY", CONFIG_DEFAULTS.describeCallConcurrency),
+    metadataConcurrency: positiveIntFrom(env, "METADATA_CONCURRENCY", CONFIG_DEFAULTS.metadataConcurrency),
+    registerConcurrency: positiveIntFrom(env, "REGISTER_CONCURRENCY", CONFIG_DEFAULTS.registerConcurrency),
+    embedConcurrency: positiveIntFrom(env, "EMBED_CONCURRENCY", CONFIG_DEFAULTS.embedConcurrency),
+    ocrSubmitConcurrency: positiveIntFrom(env, "OCR_SUBMIT_CONCURRENCY", CONFIG_DEFAULTS.ocrSubmitConcurrency),
+    ocrPollConcurrency: positiveIntFrom(env, "OCR_POLL_CONCURRENCY", CONFIG_DEFAULTS.ocrPollConcurrency),
+    failRatio: ratioFrom(env, "DOC_FAIL_RATIO", CONFIG_DEFAULTS.failRatio),
+    reconcilerIntervalMs: positiveIntFrom(env, "RECONCILER_INTERVAL_MS", CONFIG_DEFAULTS.reconcilerIntervalMs),
+    reconcilerMaxRequeues: positiveIntFrom(env, "RECONCILER_MAX_REQUEUES", CONFIG_DEFAULTS.reconcilerMaxRequeues),
+    reconcilerMaxCallbackFailures: positiveIntFrom(env, "RECONCILER_MAX_CALLBACK_FAILURES", CONFIG_DEFAULTS.reconcilerMaxCallbackFailures),
+    ocrBackfill: loadOcrBackfillConfig(env),
   };
+}
+
+export function loadConfig(): WorkerConfig {
+  return loadConfigFrom(process.env);
 }

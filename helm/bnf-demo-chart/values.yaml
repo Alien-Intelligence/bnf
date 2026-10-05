@@ -149,6 +149,9 @@ worker:
     port: 7777
 
   config:
+    # BNF_BROKER_URL when broker.enabled is false (an external broker). Ignored
+    # when the chart runs its own broker. The worker refuses to boot without it.
+    bnfBrokerUrl: ""
     # Blob storage — "s3" (Scaleway Object Storage) for real, "local" for debug.
     blobStore: s3
     s3Bucket: bnf-corpus-demo
@@ -274,6 +277,25 @@ worker:
     # rate gate (bnfGlobalRpm) MUST equal broker globalRpm or it self-throttles.
     bnfGlobalRpm: "1000"
     bnfFetchConcurrency: "128"
+    # OCR-quality backfill (ai-memories/tech/repos/bnf/feedback-2026-09-29, Track B).
+    # The app's periodic [ocr-sync] sweep asks the worker for every indexed ARK's
+    # ocr-quality artifact; the ones S3 lacks are built by this stage. A text
+    # document costs ONE Presentation-API (ALTO) call per indexed folio, once —
+    # the "alto" cache holds extracted text, not XML, so the word confidences
+    # cannot be recovered without a re-fetch. Image lanes cost nothing. The stage
+    # shares the worker's fetch rate gate (bnfGlobalRpm) FIFO with live ingests,
+    # so live runs keep their share. Raise the concurrency off-hours to drain the
+    # backlog faster; set enabled "false" to stop the BnF spend without a
+    # rollback (existing artifacts stay served). Progress: `npm run status` in
+    # the worker pod (ocrBackfill counts) and the app's [ocr-sync] log lines.
+    # Validated at startup: enabled "true"|"false"; concurrency and the retry
+    # backoff positive integers (a malformed value stops the worker).
+    ocrBackfillEnabled: "true"
+    ocrBackfillConcurrency: "2"
+    # Base backoff (ms) before a transiently failed build is retried; it doubles
+    # per attempt, up to 5 attempts. Permanent failures (no metadata, no pages)
+    # are never retried. 86400000 = 24 h.
+    ocrBackfillRetryFailedAfterMs: "86400000"
     # In-flight doc-jobs. This is the knob that keeps the fetch gate FED: each job
     # runs fetch→embed→index serially in its slot, so at a low value the docs move
     # as a synchronized cohort — fetch bursts to the rate cap, then every job
@@ -306,8 +328,10 @@ worker:
 # BnF broker — the single egress chokepoint for ALL BnF traffic (app metadata
 # resolver + ingest worker). Owns the OAuth token (BnF KEY/SECRET live ONLY
 # here) and enforces the shared rate caps. When enabled, BNF_BROKER_URL is wired
-# into both the app and the worker; both fall back to their direct/relay path if
-# it's ever disabled.
+# into both the app and the worker. The app falls back to its direct/relay path
+# if it is disabled; the WORKER does not — it refuses to boot without a broker,
+# so with broker.enabled=false set worker.config.bnfBrokerUrl (the render
+# requires it).
 #
 # ⚠️ The broker runs as EXACTLY ONE replica (hard-pinned in the Deployment, not
 # configurable here): its rate buckets + token are in-memory per pod, and the

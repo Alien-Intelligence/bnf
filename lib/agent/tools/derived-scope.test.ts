@@ -172,7 +172,7 @@ test("the research scope carries no corpus, buffer or ingest tools", () => {
 
 test("a revoked grant yields the revoked error without touching the database", async () => {
   const result = await resolveIngestedCorpus(
-    { corpusProjectId: "source-1", corpusReachable: false },
+    { corpusProjectId: "source-1", corpusReachable: false, signal: AbortSignal.timeout(5_000) },
     NOT_INGESTED_ERROR,
   )
 
@@ -183,7 +183,7 @@ test("the revoked error is distinct from the not-ingested one", async () => {
   // The two invite different actions: one the researcher can take, one only
   // the corpus owner can. Collapsing them would send them to a dead end.
   const revoked = await resolveIngestedCorpus(
-    { corpusProjectId: "source-1", corpusReachable: false },
+    { corpusProjectId: "source-1", corpusReachable: false, signal: AbortSignal.timeout(5_000) },
     NOT_INGESTED_ERROR,
   )
 

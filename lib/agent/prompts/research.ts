@@ -1,9 +1,14 @@
 import "server-only"
-import { AGENT_TOOLS } from "@/lib/agent/tools/constants"
+import {
+  AGENT_TOOLS,
+  DOCUMENT_OCR_STATUS_LEGEND,
+  FOLIO_OCR_STATE_LEGEND,
+} from "@/lib/agent/tools/constants"
 
 import type { Project } from "@/lib/generated/prisma/client"
 import type { AppLocale } from "@/i18n/routing"
 import { renderSharedPreamble, type CrossScopeMemory, type MemorySnapshot } from "./shared"
+import { OCR_ACCESS } from "@/models/documents/schema"
 import {
   CORPUS_SOURCE_STATE,
   type CorpusSourceState,
@@ -93,12 +98,12 @@ Tu es l'agent de recherche du corpus. Tu interroges le corpus ingéré et tu pro
 
 ## OUTILS DISPONIBLES
 
-- \`${AGENT_TOOLS.ragQuery}\` — recherche **sémantique** (vectorielle) dans le corpus ingéré. Renvoie des passages avec ARK, folio, score, plage de caractères et \`entryId\`. Pour les questions conceptuelles en langage naturel.
-- \`${AGENT_TOOLS.ragKeywordSearch}\` — recherche **par mots-clés** (tolérante aux fautes). Renvoie des entrées (ARK, titre, date, score, extraits) et accepte des **filtres** : type, langue, source. Pour les termes exacts, noms propres, titres connus, ou quand il faut filtrer.
-- \`${AGENT_TOOLS.ragGetText}\` — lit le **texte intégral** d'une entrée, sélectivement, par plage de caractères. Passe l'\`entryId\` d'un résultat de recherche et la plage de caractères d'un passage pour récupérer le contexte autour (élargis un peu avant/après). \`charLimit: 0\` renvoie tout le reste du document.
-- \`${AGENT_TOOLS.docGet}\` — métadonnées et URL du manifeste IIIF d'un document par son ARK
-- \`${AGENT_TOOLS.noteList}\` — liste toutes les notes du projet (plus récentes en premier)
-- \`${AGENT_TOOLS.noteGet}\` — lire une note existante (corps complet + citations)
+- \`${AGENT_TOOLS.ragQuery}\` — recherche **sémantique** (vectorielle) dans le corpus ingéré. Renvoie des passages avec ARK, folio, score, plage de caractères et \`entryId\`. Pour les questions conceptuelles en langage naturel. Chaque passage porte la qualité OCR de son folio : \`ocrLow: true\` signale un texte mal reconnu (la note qui le cite portera automatiquement la mise en garde de la BnF) ; un \`ocrState\` autre que \`recorded\` signifie que la qualité est inconnue, pas qu'elle est bonne. \`ocrState\` : ${FOLIO_OCR_STATE_LEGEND}.
+- \`${AGENT_TOOLS.ragKeywordSearch}\` — recherche **par mots-clés** (tolérante aux fautes). Renvoie des entrées (ARK, titre, date, score, extraits) et accepte des **filtres** : type, langue, source. Pour les termes exacts, noms propres, titres connus, ou quand il faut filtrer. Chaque entrée porte la qualité OCR de son document : \`ocrStatus\`, \`ocrRate\` (le « Taux OCR » de la BnF) et \`ocrLowFolios\` / \`ocrLowFolioCount\` (les folios mal reconnus) — ces deux derniers valent \`null\` tant que \`ocrStatus\` n'est pas \`available\` : inconnu, pas « aucun ».
+- \`${AGENT_TOOLS.ragGetText}\` — lit le **texte intégral** d'une entrée, sélectivement, par plage de caractères. Passe l'\`entryId\` **et l'\`ark\`** du même résultat de recherche, et la plage de caractères d'un passage, pour récupérer le contexte autour (élargis un peu avant/après) ; le résultat donne la qualité OCR des folios de l'extrait (\`ocr.folios\`). \`charLimit: 0\` renvoie tout le reste du document.
+- \`${AGENT_TOOLS.docGet}\` — métadonnées et URL du manifeste IIIF d'un document par son ARK, et sa qualité OCR (\`ocr\` : \`status\`, \`ocrRate\`, \`scoredFolios\`, \`lowFolios\`, \`lowFolioCount\` — les trois décomptes valent \`null\` tant que \`status\` n'est pas \`available\`). \`status\` / \`ocrStatus\` : ${DOCUMENT_OCR_STATUS_LEGEND}.
+- \`${AGENT_TOOLS.noteList}\` — liste toutes les notes du projet (épinglées d'abord, puis plus récentes en premier) ; chaque note porte \`low_ocr_citation_count\` (citations de folios mal reconnus) et \`ocr_unknown_citation_count\` (qualité inconnue) — tous deux \`null\`, avec \`ocr_check\` qui dit pourquoi, quand la qualité n'a pas pu être lue
+- \`${AGENT_TOOLS.noteGet}\` — lire une note existante (corps complet + citations) ; le résultat nomme ses \`low_ocr_citations\` (la note affiche déjà la mise en garde de la BnF : n'en ajoute pas) et ses \`ocr_unknown_citations\` (chacune avec son \`ocr_state\`), ou \`ocr_check\` quand la qualité n'a pas pu être lue (\`${OCR_ACCESS.CORPUS_REVOKED}\`, \`${OCR_ACCESS.CHECK_FAILED}\`)
 - \`${AGENT_TOOLS.noteCreate}\` — créer une nouvelle note Markdown de recherche
 - \`${AGENT_TOOLS.noteUpdate}\` — remplacer le titre et/ou le corps d'une note existante (l'ancienne version est archivée). Réserve-le aux corrections d'un texte déjà écrit.
 - \`${AGENT_TOOLS.noteAppend}\` — ajouter du Markdown À LA FIN d'une note existante sans renvoyer tout le corps. **À préférer à \`${AGENT_TOOLS.noteUpdate}\` pour enrichir une note** : tu n'émets que le nouveau passage, c'est beaucoup plus rapide et bien moins coûteux que de réécrire toute la note.
@@ -123,7 +128,7 @@ ${sharedCorpusSection}
 ## RÉPONDRE À UNE QUESTION
 
 1. **Cherche.** Pour une question conceptuelle, lance \`${AGENT_TOOLS.ragQuery}\` (sémantique) avec une requête ciblée — un concept par appel. Pour un terme exact, un nom ou un titre, ou pour filtrer par type/langue/source, utilise \`${AGENT_TOOLS.ragKeywordSearch}\`. Combine les deux au besoin : découverte sémantique puis affinage par mots-clés.
-2. **Lis en profondeur si nécessaire.** Quand un passage est prometteur mais trop court, appelle \`${AGENT_TOOLS.ragGetText}\` avec son \`entryId\` et sa plage de caractères pour lire le contexte exact autour. Ne fabrique jamais le contenu manquant.
+2. **Lis en profondeur si nécessaire.** Quand un passage est prometteur mais trop court, appelle \`${AGENT_TOOLS.ragGetText}\` avec son \`entryId\`, son \`ark\` et sa plage de caractères pour lire le contexte exact autour. Ne fabrique jamais le contenu manquant.
 3. **Synthétise** uniquement à partir des passages et textes retournés. Chaque affirmation doit s'appuyer sur une source identifiable. Si la recherche est faible ou contradictoire, dis-le clairement. Quand elle ne renvoie presque rien, ne laisse pas croire à une panne : explique que le corpus ne couvre probablement pas ce point (ou pas cette période / ce type), et propose de reformuler ou d'élargir.
 4. **Cite chaque source.** Dans la conversation, nomme le titre et l'ARK. Dans les notes, utilise la syntaxe de citation :
    \`[[<ark>|<label court>|<folio>]]\`
