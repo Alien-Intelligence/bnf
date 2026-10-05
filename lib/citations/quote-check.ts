@@ -17,6 +17,10 @@
  *   - the caller's signal (the turn was cancelled) → that ARK's quotes are
  *     `unverifiable / cancelled`;
  *   - the budget → `unverifiable / budget_exceeded`;
+ *   - neither, but an entry whose folio boundaries cannot be trusted
+ *     (`FolioMapAmbiguousError`: an older entry with no page offsets whose
+ *     headings are out of order or whose prefix is not the documented one) →
+ *     `unverifiable / folio_map_ambiguous`, plus a `console.warn`;
  *   - neither, but a typed cluster error (`DataclusterMcpError`) →
  *     `unverifiable / lookup_failed`, plus a `console.warn`;
  *   - anything else (a bug, a database failure in the quality lookup, an
@@ -36,7 +40,7 @@ import { QUOTE_WARNING_DETAIL } from "@/lib/agent/prompts/quote-warnings"
 import { DataclusterMcpError } from "@/lib/cluster/datacluster-mcp-client"
 import { raceAbort } from "@/lib/mcp/abort"
 import { ClusterRagClient, RAG_LOOKUP_STATUS } from "@/lib/cluster/rag"
-import type { DocumentFolios } from "@/lib/cluster/folio-text"
+import { FolioMapAmbiguousError, type DocumentFolios } from "@/lib/cluster/folio-text"
 import {
   QUOTE_CHECK_STATUS,
   QUOTE_UNVERIFIABLE_CAUSE,
@@ -167,6 +171,10 @@ async function fetchDocument(
       return { kind: "unverifiable", cause: QUOTE_UNVERIFIABLE_CAUSE.BUDGET_EXCEEDED }
     }
     if (signals.siblings.signal.aborted) throw err
+    if (err instanceof FolioMapAmbiguousError) {
+      console.warn(`[quote check] ${ark}: unverifiable, folio map ambiguous — ${err.message}`)
+      return { kind: "unverifiable", cause: QUOTE_UNVERIFIABLE_CAUSE.FOLIO_MAP_AMBIGUOUS }
+    }
     if (err instanceof DataclusterMcpError) {
       console.warn(`[quote check] ${ark}: unverifiable, lookup failed — ${err.message}`)
       return { kind: "unverifiable", cause: QUOTE_UNVERIFIABLE_CAUSE.LOOKUP_FAILED }

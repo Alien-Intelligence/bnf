@@ -61,6 +61,12 @@ export const QUOTE_UNVERIFIABLE_CAUSE = {
   BUDGET_EXCEEDED: "budget_exceeded",
   /** The turn was cancelled while the check was running. */
   CANCELLED: "cancelled",
+  /**
+   * The document's folio boundaries cannot be trusted (an older entry whose
+   * headings are out of order or whose header is not the documented one):
+   * the text cannot be attributed to a folio without guessing.
+   */
+  FOLIO_MAP_AMBIGUOUS: "folio_map_ambiguous",
   TOO_MANY_SOURCES: "too_many_sources",
 } as const
 export type QuoteUnverifiableCause =

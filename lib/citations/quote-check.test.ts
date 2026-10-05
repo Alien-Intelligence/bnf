@@ -8,6 +8,7 @@ import assert from "node:assert/strict"
 import { ClusterRagClient, RAG_LOOKUP_STATUS } from "@/lib/cluster/rag"
 import type { DocumentFoliosRequest, DocumentFoliosResult } from "@/lib/cluster/rag"
 import { DataclusterMcpError } from "@/lib/cluster/datacluster-mcp-client"
+import { FolioMapAmbiguousError } from "@/lib/cluster/folio-text"
 import { QUOTE_CHECK_MAX_SOURCES } from "@/lib/constants"
 import { QUOTE_WARNING_DETAIL } from "@/lib/agent/prompts/quote-warnings"
 import {
@@ -204,6 +205,21 @@ test("a cluster error for one ARK is lookup_failed for that ARK only", async () 
   assert.deepEqual(
     res.warnings.map((w) => [w.citation?.ark, w.cause]),
     [[arkN(1), QUOTE_UNVERIFIABLE_CAUSE.LOOKUP_FAILED]],
+  )
+})
+
+test("an entry whose folio map cannot be trusted is folio_map_ambiguous for that ARK only, never a guess", async () => {
+  const res = await withFacade(
+    async (req) => {
+      if (req.ark === arkN(1)) throw new FolioMapAmbiguousError("heading ## Folio 3 after ## Folio 7")
+      return found([[2, FOLIO_TEXT]])
+    },
+    () => checkNoteQuotes(args({ bodyMd: `« ${QUOTE} » ${cite(arkN(1), 2)}\n\n« ${QUOTE} » ${cite(arkN(2), 2)}` })),
+  )
+  assert.equal(res.status, QUOTE_CHECK_STATUS.PARTIAL)
+  assert.deepEqual(
+    res.warnings.map((w) => [w.citation?.ark, w.reason, w.cause]),
+    [[arkN(1), QUOTE_WARNING_REASON.UNVERIFIABLE, QUOTE_UNVERIFIABLE_CAUSE.FOLIO_MAP_AMBIGUOUS]],
   )
 })
 

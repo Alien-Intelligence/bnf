@@ -20,9 +20,9 @@ import "server-only"
 //     worker's (trimmed page text, ark / folio / offsets / entry_id metadata);
 //   - entry slices are cut like mcp-datacluster's get_entry_content (by code
 //     point, per mode) and mapped by `toEntryContent`;
-//   - the ARK lookup goes through `liveEntryIds` / `pickLiveEntryId`, the split
-//     through `splitEntryText`; rag_get_text reads only an entry id the ARK
-//     lookup returns, exactly as the real runner;
+//   - the ARK lookup goes through `liveEntryIds` / `pickLiveEntryId`, and the
+//     folio map through `foliosForEntry` from the entry's chunks, exactly as
+//     the real runner; rag_get_text reads only the ARK's live entry;
 //   - a failing entry read is a DataclusterMcpToolError, as on the wire.
 // Since fixtures have no entry ids, a stable synthetic id is derived from each
 // unique ARK (1-based, in first-seen order) and shared across all operations.
@@ -30,8 +30,8 @@ import "server-only"
 import { FAKE_RAG_MODEL_VERSION } from "@/lib/constants"
 import { DataclusterMcpToolError } from "./datacluster-mcp-client"
 import type { DataclusterChunk, DataclusterEntryContent } from "./datacluster-mcp-client"
-import { assembleEntryText, codePointLength, sliceCodePoints } from "./folio-text"
-import { chunkToPassage, liveEntryIds, pickLiveEntryId, splitEntryText, toEntryContent } from "./rag-wire"
+import { assembleEntryText, codePointLength, escapeFolioHeadings, sliceCodePoints } from "./folio-text"
+import { chunkToPassage, folioChunksOf, foliosForEntry, liveEntryIds, pickLiveEntryId, toEntryContent } from "./rag-wire"
 import { RAG_LOOKUP_STATUS } from "./rag"
 import type {
   DocumentFoliosRequest,
@@ -91,7 +91,8 @@ function chunkOf(f: RagFixture, score: number): DataclusterChunk {
   return {
     id: `fake-${entryId}-${f.folio}`,
     score,
-    chunk_text: f.snippet.trim(),
+    // Exactly the stored page text, as the worker writes chunk_text.
+    chunk_text: escapeFolioHeadings(f.snippet.trim()),
     metadata: { ark: f.ark, folio: f.folio, char_start: range[0], char_end: range[1], entry_id: entryId },
   }
 }
@@ -262,7 +263,12 @@ export const FakeRagRunner = {
     req.signal.throwIfAborted()
     const entryId = pickLiveEntryId(liveIdsFor(req.ark))
     if (entryId === null) return { status: RAG_LOOKUP_STATUS.ENTRY_NOT_FOUND }
-    return { status: RAG_LOOKUP_STATUS.FOUND, entryId, folios: splitEntryText(entryId, req.ark, bodyOf(req.ark).text) }
+    const chunks = folioChunksOf(fixturesForArk(req.ark).map((f) => chunkOf(f, 1)))
+    return {
+      status: RAG_LOOKUP_STATUS.FOUND,
+      entryId,
+      folios: foliosForEntry(entryId, req.ark, bodyOf(req.ark).text, chunks),
+    }
   },
 }
 

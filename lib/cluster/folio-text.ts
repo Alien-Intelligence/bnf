@@ -80,9 +80,9 @@ export function sliceCodePoints(s: string, start: number, end?: number): string 
 
 /**
  * Assemble pages into processed entry text, and the code-point range of each
- * page's (trimmed) text inside it — the `char_start` / `char_end` the worker
- * writes on the page's chunk. Mirror of worker-v2 `assembleMarkdown` +
- * `buildIndexChunks`.
+ * page's stored text (trimmed, heading-shaped lines escaped) inside it — the
+ * `char_start` / `char_end` the worker writes on the page's chunk. Mirror of
+ * worker-v2 `assembleMarkdown` + `buildIndexChunks`.
  */
 export function assembleEntryText(pages: readonly FolioPage[]): {
   text: string
@@ -93,7 +93,7 @@ export function assembleEntryText(pages: readonly FolioPage[]): {
   let offset = 0
   for (const p of pages) {
     const heading = folioHeading(p.folio)
-    const body = p.text.trim()
+    const body = escapeFolioHeadings(p.text.trim())
     const start = offset + codePointLength(heading)
     const end = start + codePointLength(body)
     ranges.push([start, end])
@@ -104,81 +104,171 @@ export function assembleEntryText(pages: readonly FolioPage[]): {
 }
 
 // ---------------------------------------------------------------------------
-// Splitting
+// Escaping (mirror of worker-v2 escapeFolioHeadings)
 // ---------------------------------------------------------------------------
 
 /**
- * A heading the worker could have written: at the very start of the text or
- * right after a block separator. `## Folio n` after a single newline is page
- * text (a Mistral-lane Markdown heading, say), never a boundary.
- *
- * Global on purpose; consume it through `matchAll` (which clones the regex),
- * never through a shared `.exec` loop that would leak `lastIndex`.
+ * A line of page text that starts like a folio heading (`## Folio <digit>`,
+ * after any backslashes) gets one more leading backslash, so it can never
+ * read as a boundary the worker wrote.
  */
-export const ENTRY_FOLIO_HEADING_RE = /(?:^|(?<=\n\n))## Folio (\d+)\n\n/g
+export function escapeFolioHeadings(text: string): string {
+  return text.replace(/^(\\*)## Folio (\d)/gm, "\\$1## Folio $2")
+}
 
-/** The header the pre-worker-v2 pipeline put before the first folio: `# <title>` … */
-const LEGACY_HEADER_PREFIX = "# "
+/** The inverse of escapeFolioHeadings: one backslash off each escaped line. */
+export function unescapeFolioHeadings(text: string): string {
+  return text.replace(/^\\(\\*## Folio \d)/gm, "$1")
+}
 
-type Heading = { folio: number; start: number; bodyStart: number }
+// ---------------------------------------------------------------------------
+// Code-point → UTF-16 index (for slicing a long text many times)
+// ---------------------------------------------------------------------------
+
+/** `unitIndex[cp]` is the UTF-16 index of code point `cp` (and of the end). */
+function codePointUnitIndex(text: string): Uint32Array {
+  const index = new Uint32Array(codePointLength(text) + 1)
+  let cp = 0
+  for (let i = 0; i < text.length; i++, cp++) {
+    index[cp] = i
+    const unit = text.charCodeAt(i)
+    if (unit >= HIGH_SURROGATE_MIN && unit <= HIGH_SURROGATE_MAX && i + 1 < text.length) {
+      const nextUnit = text.charCodeAt(i + 1)
+      if (nextUnit >= LOW_SURROGATE_MIN && nextUnit <= LOW_SURROGATE_MAX) i++
+    }
+  }
+  index[cp] = text.length
+  return index
+}
+
+// ---------------------------------------------------------------------------
+// Boundaries from the chunks (the authority)
+// ---------------------------------------------------------------------------
+
+/** A page chunk as the worker indexed it: its folio and code-point range. */
+export type FolioChunk = { folio: number; charStart: number; charEnd: number; text: string }
 
 /**
- * The longest strictly increasing (by folio) chain of candidate headings, in
- * document order. The worker writes one heading per page, in `ordre` order,
- * but folio numbers have gaps (dropped pages), so a page whose own text holds
- * a block-anchored `## Folio n` cannot be told apart by monotonicity alone:
- * `3, 40, 4, 5, …, 39` must keep 3–39 and fold "40" into page 3. The longest
- * chain does exactly that. On a tie the chain ending on the smaller folio
- * wins (patience order), which favours real pages over an out-of-sequence
- * number.
+ * The folio map of an entry, taken from its chunks — the worker writes one
+ * chunk per page with the page's code-point range in the stored text, so the
+ * boundaries are data, not parsed headings.
+ *
+ * The chunks must tile the text exactly as worker-v2 writes it: each range
+ * preceded by its own `## Folio n\n\n` heading, consecutive pages joined by
+ * the block separator, the first heading at offset 0, the last range ending
+ * the text, each chunk's text equal to its slice, folios unique and
+ * increasing. Returns null when they do not — chunks without offsets, or the
+ * overlapping fixed windows of the pre-worker-v2 pipeline — so the caller
+ * falls back to splitEntryFolios.
  */
-function longestIncreasingHeadings(candidates: readonly Heading[]): Heading[] {
-  const tails: number[] = [] // tails[k] = index of the smallest-folio end of a chain of length k+1
-  const previous = new Array<number>(candidates.length).fill(-1)
-  for (const [i, c] of candidates.entries()) {
-    let lo = 0
-    let hi = tails.length
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1
-      if (candidates[tails[mid]].folio < c.folio) lo = mid + 1
-      else hi = mid
+export function foliosFromChunks(text: string, chunks: readonly FolioChunk[]): DocumentFolios | null {
+  if (chunks.length === 0) return null
+  const sorted = [...chunks].sort((a, b) => a.charStart - b.charStart)
+  const sitsUnderItsHeading = pageChunkChecker(text)
+  const unit = codePointUnitIndex(text)
+  const cpLength = unit.length - 1
+  const separatorLength = codePointLength(FOLIO_BLOCK_SEPARATOR)
+
+  const folios = new Map<number, string>()
+  let expectedHeadingStart = 0
+  let previousFolio = 0
+  for (const c of sorted) {
+    const headingStart = c.charStart - codePointLength(folioHeading(c.folio))
+    if (c.folio <= previousFolio || headingStart !== expectedHeadingStart || !sitsUnderItsHeading(c)) {
+      return null
     }
-    if (lo > 0) previous[i] = tails[lo - 1]
-    tails[lo] = i
+    folios.set(c.folio, unescapeFolioHeadings(c.text))
+    previousFolio = c.folio
+    const separatorEnd = c.charEnd + separatorLength
+    if (separatorEnd <= cpLength && text.slice(unit[c.charEnd], unit[separatorEnd]) !== FOLIO_BLOCK_SEPARATOR) {
+      return null
+    }
+    expectedHeadingStart = separatorEnd
   }
-  const chain: Heading[] = []
-  for (let i = tails.length > 0 ? tails[tails.length - 1] : -1; i !== -1; i = previous[i]) chain.push(candidates[i])
-  return chain.reverse()
+  return sorted[sorted.length - 1].charEnd === cpLength ? folios : null
 }
 
 /**
- * Split processed entry text into folio → page text.
+ * A checker for single chunks against one entry text: does the chunk sit in
+ * the text the way a worker-v2 page does (its own heading right before its
+ * range, its text equal to its slice)? Lets a caller stop listing an older
+ * entry's chunks — the pre-worker-v2 windows fail it at once — before paying
+ * for every page. The code-point index is built once.
+ */
+export function pageChunkChecker(text: string): (chunk: FolioChunk) => boolean {
+  const unit = codePointUnitIndex(text)
+  const cpLength = unit.length - 1
+  return (c) => {
+    const headingStart = c.charStart - codePointLength(folioHeading(c.folio))
+    return (
+      headingStart >= 0 &&
+      c.charStart <= c.charEnd &&
+      c.charEnd <= cpLength &&
+      text.slice(unit[headingStart], unit[c.charStart]) === folioHeading(c.folio) &&
+      text.slice(unit[c.charStart], unit[c.charEnd]) === c.text
+    )
+  }
+}
+
+/** How many block-anchored `## Folio n` headings the text holds (an upper bound on its pages). */
+export function countFolioHeadings(text: string): number {
+  let n = 0
+  for (const _match of text.matchAll(ENTRY_FOLIO_HEADING_RE)) n++
+  return n
+}
+
+// ---------------------------------------------------------------------------
+// Fallback: splitting on headings (entries without usable chunk offsets)
+// ---------------------------------------------------------------------------
+
+/**
+ * The folio boundaries of an entry are ambiguous: the text alone cannot say
+ * which `## Folio n` lines the worker wrote. The quote check reports that ARK
+ * `unverifiable / folio_map_ambiguous` rather than guess.
+ */
+export class FolioMapAmbiguousError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "FolioMapAmbiguousError"
+  }
+}
+
+/**
+ * A heading the worker could have written: at the very start of the text or
+ * right after a block separator. Global on purpose; consume it through
+ * `matchAll` (which clones the regex), never a shared `.exec` loop.
+ */
+export const ENTRY_FOLIO_HEADING_RE = /(?:^|(?<=\n\n))## Folio (\d+)\n\n/g
+
+/**
+ * The header the pre-worker-v2 pipeline put before the first folio: a
+ * `# <title>` line, a blank line, then `**Key :** value` metadata lines
+ * (author, date, type, ARK, pages), then a blank line.
+ */
+const LEGACY_HEADER_RE = /^# [^\n]*\S[^\n]*\n\n(?:\*\*[^*\n]+\*\*[^\n]*\n)+\n$/
+
+/**
+ * Split processed entry text into folio → page text on its headings — the
+ * FALLBACK for entries whose chunks do not carry usable offsets (the
+ * pre-worker-v2 pipeline). Strict: it never guesses.
  *
- * Boundaries are the worker's headings: block-anchored `## Folio n` lines
- * (ENTRY_FOLIO_HEADING_RE) forming the longest strictly increasing chain
- * (see longestIncreasingHeadings); any other heading-shaped line is page text
- * and stays inside its folio.
- *
- * Text before the first heading must be the legacy document header (entries
- * from the pre-worker-v2 pipeline open with `# <title>` and a metadata block):
- * it belongs to no folio and is dropped. Anything else before the first
- * heading, or text with no heading at all, throws EntryFolioFormatError: that
- * is not an entry the worker wrote, and an empty or shifted map would let a
- * caller check quotes against the wrong text (CLAUDE_ERROR_PATTERNS §9).
+ * - Headings are block-anchored `## Folio n` lines (ENTRY_FOLIO_HEADING_RE)
+ *   and must be strictly increasing; one that is not means page text holds a
+ *   heading-shaped line, so the map is ambiguous (FolioMapAmbiguousError).
+ *   (Entries written by worker-v2 escape such lines; old ones do not, and a
+ *   page-text heading that happens to fit the sequence cannot be detected
+ *   from the text — which is why chunk offsets are the authority.)
+ * - Text before the first heading must be the documented legacy header
+ *   (LEGACY_HEADER_RE); anything else is ambiguous too.
+ * - Text with no heading at all is not an entry this app wrote
+ *   (EntryFolioFormatError).
+ * Page bodies are unescaped (unescapeFolioHeadings).
  */
 export function splitEntryFolios(text: string): DocumentFolios {
-  const candidates: Heading[] = []
+  const headings: Array<{ folio: number; start: number; bodyStart: number }> = []
   for (const m of text.matchAll(ENTRY_FOLIO_HEADING_RE)) {
-    candidates.push({ folio: Number(m[1]), start: m.index, bodyStart: m.index + m[0].length })
+    headings.push({ folio: Number(m[1]), start: m.index, bodyStart: m.index + m[0].length })
   }
-  // Worker-written text opens with its first page's heading: a heading at
-  // offset 0 anchors the chain, and only later, higher headings can follow it.
-  const anchor = candidates[0]
-  const headings =
-    anchor !== undefined && anchor.start === 0
-      ? [anchor, ...longestIncreasingHeadings(candidates.filter((c) => c.folio > anchor.folio))]
-      : longestIncreasingHeadings(candidates)
-
   const first = headings[0]
   if (first === undefined) {
     throw new EntryFolioFormatError(
@@ -186,11 +276,20 @@ export function splitEntryFolios(text: string): DocumentFolios {
         "by worker-v2 (see assembleMarkdown)",
     )
   }
-  if (first.start > 0 && !text.startsWith(LEGACY_HEADER_PREFIX)) {
-    throw new EntryFolioFormatError(
-      `${first.start} characters before the first \`## Folio <n>\` heading that are not a ` +
-        `\`${LEGACY_HEADER_PREFIX}<title>\` document header`,
+  if (first.start > 0 && !LEGACY_HEADER_RE.test(text.slice(0, first.start))) {
+    throw new FolioMapAmbiguousError(
+      `${first.start} characters before the first \`## Folio <n>\` heading are not the documented ` +
+        "`# <title>` + metadata header",
     )
+  }
+  for (const [i, h] of headings.entries()) {
+    const previous = headings[i - 1]
+    if (previous !== undefined && h.folio <= previous.folio) {
+      throw new FolioMapAmbiguousError(
+        `heading \`## Folio ${h.folio}\` follows \`## Folio ${previous.folio}\`: page text holds a ` +
+          "heading-shaped line, and the text alone cannot say which",
+      )
+    }
   }
 
   const folios = new Map<number, string>()
@@ -202,7 +301,7 @@ export function splitEntryFolios(text: string): DocumentFolios {
     if (next && body.endsWith(FOLIO_BLOCK_SEPARATOR)) {
       body = body.slice(0, -FOLIO_BLOCK_SEPARATOR.length)
     }
-    folios.set(h.folio, body)
+    folios.set(h.folio, unescapeFolioHeadings(body))
   }
   return folios
 }

@@ -18,6 +18,7 @@ import {
 } from "@/lib/constants"
 import { prisma } from "@/lib/db"
 import { raceAbort } from "@/lib/mcp/abort"
+import { countFolioHeadings, pageChunkChecker, type FolioChunk } from "./folio-text"
 import {
   DataclusterMcpClient,
   DataclusterMcpError,
@@ -25,8 +26,8 @@ import {
   DataclusterMcpProtocolError,
   DataclusterMcpToolError,
 } from "./datacluster-mcp-client"
-import type { DataclusterKeywordHit } from "./datacluster-mcp-client"
-import { chunkToPassage, liveEntryIds, pickLiveEntryId, splitEntryText, toEntryContent } from "./rag-wire"
+import type { DataclusterChunk, DataclusterKeywordHit } from "./datacluster-mcp-client"
+import { chunkToPassage, folioChunksOf, foliosForEntry, liveEntryIds, pickLiveEntryId, toEntryContent } from "./rag-wire"
 import { RAG_LOOKUP_STATUS } from "./rag"
 import type {
   DocumentFoliosRequest,
@@ -52,6 +53,13 @@ const MODEL_VERSION = "datacluster-mcp"
  * re-ingests, which the lookup pages through.
  */
 const ARK_LOOKUP_PAGE_SIZE = 20
+
+/** Chunks per page when listing an entry's chunks (the MCP's maximum). */
+const CHUNK_LIST_PAGE_SIZE = 100
+/** Pages of chunks one entry may need: one chunk per page, 10 000 pages. */
+const CHUNK_LIST_MAX_PAGES = 100
+/** Chunk pages fetched in parallel (each is a vector search, ~1–3 s on the dev cluster). */
+const CHUNK_LIST_CONCURRENCY = 4
 
 /**
  * Resolve the project's numeric cluster dataset id, persisting it on first use.
@@ -247,8 +255,79 @@ export const RealRagRunner = {
     if (entryId === null) return { status: RAG_LOOKUP_STATUS.ENTRY_NOT_FOUND }
 
     const content = await client.getEntryContent({ entryId, charOffset: 0, charLimit: 0 })
-    return { status: RAG_LOOKUP_STATUS.FOUND, entryId, folios: splitEntryText(entryId, req.ark, content.text) }
+    const chunks = await listEntryChunks(client, datasetId, entryId, req.ark, content.text)
+    return {
+      status: RAG_LOOKUP_STATUS.FOUND,
+      entryId,
+      folios: foliosForEntry(entryId, req.ark, content.text, chunks),
+    }
   },
+}
+
+/**
+ * Every chunk of one entry — the worker writes one per page, with its folio
+ * and code-point range — through vector search restricted to the entry (the
+ * MCP has no chunk listing; the query only orders the results, and no score
+ * threshold drops any).
+ *
+ * Returns [] as soon as the first page shows chunks that are not worker-v2
+ * pages (no offsets, or ranges that do not sit under their own heading — the
+ * pre-worker-v2 windows): the caller then falls back to the headings without
+ * paying for the rest. Otherwise the remaining pages, sized from the text's
+ * heading count, are fetched CHUNK_LIST_CONCURRENCY at a time, then any
+ * further full page in sequence. A cluster that keeps returning full pages
+ * past CHUNK_LIST_MAX_PAGES is a protocol error, not a loop.
+ */
+async function listEntryChunks(
+  client: DataclusterMcpClient,
+  datasetId: number,
+  entryId: number,
+  ark: string,
+  text: string,
+): Promise<FolioChunk[]> {
+  const page = (offset: number) =>
+    client.vectorSearchChunks({
+      query: ark,
+      datasetIds: [datasetId],
+      entryIds: [entryId],
+      limit: CHUNK_LIST_PAGE_SIZE,
+      offset,
+    })
+  const fitsText = pageChunkChecker(text)
+  const asPages = (results: readonly DataclusterChunk[]) => {
+    const chunks = folioChunksOf(results)
+    return chunks.length === results.length && chunks.every(fitsText) ? chunks : null
+  }
+
+  const first = await page(0)
+  const firstChunks = asPages(first.results)
+  if (firstChunks === null) return []
+  if (first.results.length < CHUNK_LIST_PAGE_SIZE) return firstChunks
+
+  const expectedPages = Math.min(
+    CHUNK_LIST_MAX_PAGES,
+    Math.max(1, Math.ceil(countFolioHeadings(text) / CHUNK_LIST_PAGE_SIZE)),
+  )
+  const offsets = Array.from({ length: expectedPages - 1 }, (_, i) => (i + 1) * CHUNK_LIST_PAGE_SIZE)
+  const pages: Array<readonly DataclusterChunk[]> = [first.results]
+  for (let i = 0; i < offsets.length; i += CHUNK_LIST_CONCURRENCY) {
+    const batch = await Promise.all(offsets.slice(i, i + CHUNK_LIST_CONCURRENCY).map((o) => page(o)))
+    pages.push(...batch.map((b) => b.results))
+  }
+  // More chunks than headings would be odd, but the cluster is the authority:
+  // keep reading while pages come back full.
+  let offset = expectedPages * CHUNK_LIST_PAGE_SIZE
+  while (pages[pages.length - 1].length === CHUNK_LIST_PAGE_SIZE) {
+    if (pages.length >= CHUNK_LIST_MAX_PAGES) {
+      throw new DataclusterMcpProtocolError(
+        `entry ${entryId} (${ark}) returned more than ${CHUNK_LIST_MAX_PAGES} full pages of chunks`,
+      )
+    }
+    pages.push((await page(offset)).results)
+    offset += CHUNK_LIST_PAGE_SIZE
+  }
+  const all = asPages(pages.flat())
+  return all ?? []
 }
 
 /**

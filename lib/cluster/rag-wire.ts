@@ -12,8 +12,8 @@ import "server-only"
 
 import { DataclusterMcpProtocolError } from "./datacluster-mcp-client"
 import type { DataclusterChunk, DataclusterEntryContent } from "./datacluster-mcp-client"
-import { EntryFolioFormatError, codePointLength, splitEntryFolios } from "./folio-text"
-import type { DocumentFolios } from "./folio-text"
+import { EntryFolioFormatError, codePointLength, foliosFromChunks, splitEntryFolios } from "./folio-text"
+import type { DocumentFolios, FolioChunk } from "./folio-text"
 import type { RagEntryContent, RagPassage } from "./rag"
 
 /**
@@ -257,11 +257,36 @@ export function pickLiveEntryId(ids: readonly number[]): number | null {
 }
 
 /**
- * An entry's processed text split per folio. Text that is not in the worker's
- * folio format is a protocol error of the cluster (the quote check makes that
- * ARK unverifiable), the same in both runners.
+ * An entry's chunks as page ranges, or [] when any of them lacks a folio or
+ * offsets (the pre-worker-v2 pipeline): then the ranges cannot be the
+ * authority and foliosForEntry falls back to the headings. Each chunk goes
+ * through chunkToPassage, so an invalid folio or range is a protocol error.
  */
-export function splitEntryText(entryId: number, ark: string, text: string): DocumentFolios {
+export function folioChunksOf(chunks: readonly DataclusterChunk[]): FolioChunk[] {
+  const out: FolioChunk[] = []
+  for (const chunk of chunks) {
+    const passage = chunkToPassage(chunk)
+    if (passage === null || passage.folio === null || passage.charRange === null) return []
+    out.push({ folio: passage.folio, charStart: passage.charRange[0], charEnd: passage.charRange[1], text: passage.snippet })
+  }
+  return out
+}
+
+/**
+ * An entry's processed text split per folio, the same in both runners: from
+ * its chunks' offsets when they tile the text (worker-v2 entries), else from
+ * its headings (older entries). Text with no heading at all is a protocol
+ * error of the cluster; a heading map that cannot be trusted is a
+ * FolioMapAmbiguousError, which the quote check reports as such.
+ */
+export function foliosForEntry(
+  entryId: number,
+  ark: string,
+  text: string,
+  chunks: readonly FolioChunk[],
+): DocumentFolios {
+  const fromChunks = foliosFromChunks(text, chunks)
+  if (fromChunks !== null) return fromChunks
   try {
     return splitEntryFolios(text)
   } catch (err) {
