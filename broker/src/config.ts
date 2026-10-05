@@ -13,7 +13,8 @@
  */
 import { BUCKET_NAMES, type BucketName, type BucketRate } from "./plan.js";
 
-type Env = NodeJS.ProcessEnv;
+/** An environment: process.env, or a plain object in tests. */
+type Env = Readonly<Record<string, string | undefined>>;
 
 /** The env stem of each bucket: `BNF_<STEM>_RPM` / `BNF_<STEM>_BURST`. */
 export const RATE_ENV_STEM: Readonly<Record<BucketName, string>> = {

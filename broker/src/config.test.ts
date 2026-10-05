@@ -9,8 +9,8 @@ import assert from "node:assert/strict";
 import { loadConfig, RATE_ENV_VARS } from "./config.js";
 
 /** A complete env: the credentials plus one value per rate var. */
-function fullEnv(): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { BNF_CLIENT_KEY: "k", BNF_CLIENT_SECRET: "s" };
+function fullEnv(): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = { BNF_CLIENT_KEY: "k", BNF_CLIENT_SECRET: "s" };
   for (const name of RATE_ENV_VARS) env[name] = name.endsWith("_RPM") ? "60" : "2";
   return env;
 }
