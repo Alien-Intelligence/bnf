@@ -169,8 +169,11 @@ export function culpritsOf(
   if (!isRecord(failure.raw)) return []
   const askedSet = new Set(asked)
   const culprits = new Set<string>()
+  // Per bucket: the entries with issues, and the schema paths (inside an
+  // entry) they fail on.
+  const failing = new Map<string, { entries: Set<number>; paths: Set<string> }>()
   for (const path of failure.issuePaths) {
-    const [bucket, index] = path
+    const [bucket, index, ...inside] = path
     if (typeof bucket !== "string" || typeof index !== "number") return []
     const entries = failure.raw[bucket]
     if (!Array.isArray(entries)) return []
@@ -178,6 +181,19 @@ export function culpritsOf(
     const ark = typeof entry === "string" ? entry : isRecord(entry) ? entry.ark : undefined
     if (typeof ark !== "string" || !askedSet.has(ark)) return []
     culprits.add(ark)
+    const seen = failing.get(bucket) ?? { entries: new Set<number>(), paths: new Set<string>() }
+    seen.entries.add(index)
+    seen.paths.add(inside.map(String).join("."))
+    failing.set(bucket, seen)
+  }
+  // Every returned entry of a bucket (at least two) failing on ONE schema path
+  // is a contract change (a worker version skew: `v: 2`, a renamed field), not
+  // N bad documents: the exchange's fault, no ARK blamed.
+  for (const [bucket, seen] of failing) {
+    const entries = failure.raw[bucket]
+    if (Array.isArray(entries) && entries.length >= 2 && seen.entries.size === entries.length && seen.paths.size === 1) {
+      return []
+    }
   }
   return [...culprits]
 }

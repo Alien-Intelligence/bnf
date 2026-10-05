@@ -472,6 +472,14 @@ export const OCR_SYNC_EXCHANGE_BACKOFF_BASE_MS = OCR_SYNC_SWEEP_INTERVAL_MS
 export const OCR_SYNC_EXCHANGE_BACKOFF_MAX_MS = 60 * 60 * 1_000
 
 /**
+ * Extra requests one drain may spend bisecting a batch whose ARKs ALL failed
+ * an outage before (lib/documents/ocr-sync.ts): enough to halve a 100-ARK
+ * batch down to a lone poison ARK over a few drains, few enough that a real
+ * worker outage costs a handful of extra requests per sweep.
+ */
+export const OCR_SYNC_OUTAGE_BISECT_BUDGET = 4
+
+/**
  * Ceiling on one database await in the OCR-quality paths (the drainer and the
  * agent-tool reads). Prisma takes no per-query signal, so the await is raced
  * against this deadline (lib/async/deadline.ts) and fails loudly.
@@ -484,6 +492,28 @@ export const OCR_DB_TIMEOUT_MS = 10_000
  * await is raced against it and the turn's signal (lib/async/deadline.ts).
  */
 export const TOOL_DB_TIMEOUT_MS = 10_000
+
+/**
+ * statement_timeout of the app's pg pool (lib/db.ts): Postgres has none by
+ * default, so a lock wait or a bad plan parked whatever awaited it — a request,
+ * a tool call, or the OCR drainer (whose running guard then stayed set until a
+ * restart). It bounds EVERY query at once; withDeadline stays where a caller
+ * needs a tighter, signal-tied bound. 30 s is far above any OLTP query here.
+ */
+export const DB_STATEMENT_TIMEOUT_MS = 30_000
+
+/**
+ * connectionTimeoutMillis of the app's pg pool: by default pg waits forever for
+ * a client when the pool is exhausted or the server unreachable.
+ */
+export const DB_CONNECTION_TIMEOUT_MS = 10_000
+
+/**
+ * Largest progress-callback body the unauthenticated route reads and HMACs.
+ * A terminal event carries per-document error entries; 4 MiB holds thousands
+ * of them. Above it the route answers the uniform rejection without reading.
+ */
+export const PROGRESS_CALLBACK_MAX_BODY_BYTES = 4 * 1024 * 1024
 
 /**
  * Sanity cap on the folios one worker artifact may carry — above any worker

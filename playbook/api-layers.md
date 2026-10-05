@@ -251,9 +251,9 @@ services for the same reason a route does — the service is the only writer of
 its tables. Each drainer is listed here; a new one is added to this list in the
 same change.
 
-| Drainer | Calls | Nudged by |
+| Drainer | Imports (exactly) | Nudged by |
 |---|---|---|
-| `lib/documents/ocr-sync.ts` (OCR-quality sync) | `DocumentService` (writes), `DocumentQueries` (reads) | `lib/documents/ocr-sync-signal.ts` |
+| `lib/documents/ocr-sync.ts` (OCR-quality sync) | `DocumentService` (writes, the worker call and its timeout), `DocumentQueries` (reads), `lib/async/deadline` (bounded reads), `lib/cluster/mode` (enabled?), `lib/cluster/ocr-quality` (the typed fault classes it switches on), `lib/constants`, its signal | `lib/documents/ocr-sync-signal.ts` |
 
 Rules:
 - A drainer reads through `queries.ts` and writes through `service.ts`; it never
@@ -262,8 +262,12 @@ Rules:
   drainer up, it persists the work in its own transaction and raises the
   drainer's signal — a module that imports nothing from `models/` — so the
   dependency points from the drainer to the signal, never back.
-- Every await of a drainer is bounded (CLAUDE_ERROR_PATTERNS §14) and the drainer
-  is a no-op unless the infrastructure it drives is configured.
+- Every await of a drainer is bounded (CLAUDE_ERROR_PATTERNS §14) — its reads
+  by `withDeadline`, every query by the pool's `statement_timeout` (lib/db.ts) —
+  and the drainer is a no-op unless the infrastructure it drives is configured.
+- Its lifecycle (timer, listener, running guard, stop) lives on `globalThis`
+  under a registered symbol, so a second evaluation of its module (Next.js
+  bundles) replaces the one drainer instead of starting another.
 
 (`lib/documents/resolver.ts`, `canonicalizer.ts` and `lib/ingest/watchdog.ts`
 predate this rule and still write through Prisma directly; they are not

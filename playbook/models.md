@@ -81,6 +81,10 @@ export type DocumentRow = Prisma.DocumentGetPayload<typeof documentRow>
 
 Rules:
 - No imports from other model directories — `schema.ts` is the foundation.
+  One narrow exception: a **type-only** import of another model's `schema.ts`
+  for a composed response type that carries that model's rows (e.g.
+  `NoteDetail.ocr: NoteOcrRows` from `models/documents/schema.ts`), so the row
+  shape is defined once. Never a value import, never anything but `schema.ts`.
 - No imports from `app/`, `components/`, `hooks/`, `lib/mcp/`, `lib/cluster/`.
 - Enums are plain `const` objects with a companion type, not `enum` keyword.
 - Domain enums (status, scope, role) belong here, not in `app/api/` or
@@ -169,6 +173,11 @@ Rules:
 Zod schemas for request validation and their inferred TypeScript types. These
 are what route handlers validate against and what hooks import.
 
+`types.ts` may import `zod`, its model's `./schema` (domain constants such as
+length limits) and `@/lib/constants` — nothing server-only, since hooks import it.
+It may also import the shared pure validators in `@/lib/validation/` (the ARK
+schema, defined once there).
+
 ```ts
 // models/corpus/types.ts
 import { z } from "zod"
@@ -212,8 +221,8 @@ Rules:
 ## Import diagram
 
 ```
-types.ts      ← zod (no internal imports)
-schema.ts     ← @/lib/generated/prisma/client (no internal imports)
+types.ts      ← zod, ./schema, @/lib/constants, @/lib/validation (nothing else internal)
+schema.ts     ← @/lib/generated/prisma/client (+ type-only: another model's schema.ts, for a composed response type)
 queries.ts    ← @/lib/db, ./schema
 policy.ts     ← ./schema (types only)
 service.ts    ← ./queries, ./types, lib/mcp, lib/cluster, other models' queries

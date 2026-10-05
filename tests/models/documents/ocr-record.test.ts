@@ -254,18 +254,51 @@ test("ocrPendingByCorpus: names the corpus with due work, never an ARK", async (
   const rows = await DocumentQueries.ocrPendingByCorpus(new Date())
   const mine = rows.find((r) => r.corpusProjectId === projectId)
   assert.ok(mine !== undefined && mine.pending >= 1)
-  assert.deepEqual(Object.keys(mine).sort(), ["corpusProjectId", "pending"])
+  assert.deepEqual(Object.keys(mine).sort(), ["corpusProjectId", "pending", "resync"])
 })
 
-test("recordOcrUnavailable: backs the ARK off without touching its contract budget", async () => {
+test("recordOcrOutage: a never-asked ARK gets NO row (it stays pending, never `unavailable`)", async () => {
   await prisma.documentOcr.deleteMany({ where: { ark: ARK_A } })
-  await DocumentService.recordOcrUnavailable([ARK_A], "ECONNREFUSED", new Date(), ALIVE)
+  await DocumentService.recordOcrOutage([ARK_A], new Date(), ALIVE)
+  assert.equal(await prisma.documentOcr.findUnique({ where: { ark: ARK_A } }), null)
+})
+
+test("recordOcrOutage: an existing row keeps its status and budget, and backs off", async () => {
+  await prisma.documentOcr.deleteMany({ where: { ark: ARK_A } })
+  await prisma.documentOcr.create({
+    data: { ark: ARK_A, status: OCR_SYNC_STATUS.BUILDING, checkedAt: new Date(), syncAttempts: 2 },
+  })
+  await DocumentService.recordOcrOutage([ARK_A], new Date(), ALIVE)
   const row = await prisma.documentOcr.findUniqueOrThrow({ where: { ark: ARK_A } })
-  assert.equal(row.status, OCR_SYNC_STATUS.UNAVAILABLE)
-  assert.equal(row.syncAttempts, 0)
+  assert.equal(row.status, OCR_SYNC_STATUS.BUILDING)
+  assert.equal(row.syncAttempts, 2)
   assert.ok(row.nextCheckAt !== null && row.nextCheckAt > new Date())
   assert.ok(!(await pendingAt(new Date())).includes(ARK_A), "not offered while backing off")
 })
+
+for (const answer of ["building", "unavailable"] as const) {
+  test(`a resync requested while the question is in flight stays due after a ${answer} answer`, async () => {
+    await prisma.documentOcr.deleteMany({ where: { ark: ARK_A } })
+    await prisma.documentOcr.create({
+      data: { ark: ARK_A, status: OCR_SYNC_STATUS.AVAILABLE, checkedAt: new Date(0) },
+    })
+    const askedAt = new Date(Date.now() - 1_000)
+    await DocumentService.ocrResyncOp([ARK_A], new Date())
+    await DocumentService.recordOcrSync(
+      {
+        checkedAt: askedAt,
+        available: [],
+        building: answer === "building" ? [ARK_A] : [],
+        unavailable: answer === "unavailable" ? [{ ark: ARK_A, reason: "no_pages_artifact" }] : [],
+      },
+      ALIVE,
+    )
+    const row = await prisma.documentOcr.findUniqueOrThrow({ where: { ark: ARK_A } })
+    assert.ok(row.resyncRequestedAt !== null, "the request is kept")
+    assert.ok(row.nextCheckAt !== null && row.nextCheckAt <= new Date(), "and stays due now")
+    assert.ok((await pendingAt(new Date())).includes(ARK_A))
+  })
+}
 
 test("a resync requested while the question is in flight stays due after the answer", async () => {
   const askedAt = new Date(Date.now() - 1_000)

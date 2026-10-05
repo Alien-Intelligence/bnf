@@ -141,9 +141,12 @@ export class DocumentQueries {
    * whose `next_check_at` has passed (building, unavailable, backing off, or a
    * re-ingest's resync request).
    */
-  static async ocrPendingByCorpus(now: Date): Promise<Array<{ corpusProjectId: string; pending: number }>> {
-    const rows = await prisma.$queryRaw<Array<{ project_id: string; n: bigint }>>`
-      SELECT d.project_id, count(*) AS n
+  static async ocrPendingByCorpus(
+    now: Date,
+  ): Promise<Array<{ corpusProjectId: string; pending: number; resync: number }>> {
+    const rows = await prisma.$queryRaw<Array<{ project_id: string; n: bigint; resync: bigint }>>`
+      SELECT d.project_id, count(*) AS n,
+             count(*) FILTER (WHERE o.resync_requested_at IS NOT NULL) AS resync
       FROM document d
       LEFT JOIN document_ocr o ON o.ark = d.ark
       WHERE d.indexed_at IS NOT NULL
@@ -151,7 +154,11 @@ export class DocumentQueries {
       GROUP BY d.project_id
       ORDER BY d.project_id
     `
-    return rows.map((r) => ({ corpusProjectId: r.project_id, pending: Number(r.n) }))
+    return rows.map((r) => ({
+      corpusProjectId: r.project_id,
+      pending: Number(r.n),
+      resync: Number(r.resync),
+    }))
   }
 
   /**
@@ -175,7 +182,8 @@ export class DocumentQueries {
       WHERE d.project_id = ${opts.corpusProjectId}
         AND d.indexed_at IS NOT NULL
         AND (o.ark IS NULL OR o.next_check_at <= ${opts.now})
-      ORDER BY (o.ark IS NULL OR o.resync_requested_at IS NOT NULL) DESC,
+      ORDER BY (o.resync_requested_at IS NOT NULL) DESC,
+               (o.ark IS NULL) DESC,
                EXISTS (SELECT 1 FROM citation c WHERE c.ark = d.ark) DESC,
                o.next_check_at ASC NULLS FIRST,
                d.ark

@@ -9,15 +9,21 @@
 //   - a row is due again at `next_check_at` (building, unavailable, backing off,
 //     or a re-ingest's resync request written in the commit's own transaction).
 // The sweep (boot + every OCR_SYNC_SWEEP_INTERVAL_MS) drains whatever is due,
-// corpus by corpus, cited ARKs first; it is also what drives the backfill of
+// round-robin over the corpora (one batch per corpus per round, corpora with
+// resync requests first; inside a corpus resync-requested ARKs first, then
+// never-asked, then cited) so a large backfill in one corpus never starves
+// another corpus's fresh commit; it is also what drives the backfill of
 // documents indexed before the feature. A commit nudges it through
 // lib/documents/ocr-sync-signal.ts (IngestService never imports this module).
 //
 // Failure handling (CLAUDE_ERROR_PATTERNS §10/§14):
 //   - OcrSyncUnavailableError (worker unreachable, timeout, 5xx, old worker):
-//     the batch's ARKs back off (OCR_SYNC_OUTAGE_BACKOFF_MS) so the next sweep
-//     asks other ARKs first, without touching their contract budget; the drain
-//     stops.
+//     the batch's rows back off (OCR_SYNC_OUTAGE_BACKOFF_MS) without touching
+//     their contract budget or status; a never-asked ARK stays pending (no
+//     row); the drain stops. A batch whose ARKs ALL failed an outage before
+//     (in this process) is bisected instead, within OCR_SYNC_OUTAGE_BISECT_BUDGET
+//     requests per drain, so an ARK that reliably makes the worker fail is
+//     isolated and its batch-mates are released.
 //   - OcrSyncContractError on the EXCHANGE (version skew, 401/403/413, a body
 //     that is not a sync answer): the SYNC pauses with an exponential backoff,
 //     no ARK is penalised, and the first valid answer resumes it.
@@ -37,7 +43,6 @@
 import "server-only"
 
 import { DeadlineExceededError, withDeadline } from "@/lib/async/deadline"
-import { workerRequestTimeoutMs } from "@/lib/cluster/client"
 import { CLUSTER_MODE, clusterMode } from "@/lib/cluster/mode"
 import {
   OCR_SYNC_FAULT_SCOPE,
@@ -52,6 +57,7 @@ import {
   OCR_SYNC_EXCHANGE_BACKOFF_BASE_MS,
   OCR_SYNC_EXCHANGE_BACKOFF_MAX_MS,
   OCR_SYNC_MAX_BATCHES_PER_CYCLE,
+  OCR_SYNC_OUTAGE_BISECT_BUDGET,
   OCR_SYNC_SWEEP_INTERVAL_MS,
 } from "@/lib/constants"
 import { DocumentQueries } from "@/models/documents/queries"
@@ -96,11 +102,11 @@ export type OcrSyncPorts = {
   pendingByCorpus(
     now: Date,
     signal: AbortSignal,
-  ): Promise<Array<{ corpusProjectId: string; pending: number }>>
+  ): Promise<Array<{ corpusProjectId: string; pending: number; resync: number }>>
   pendingArks(corpusProjectId: string, limit: number, now: Date, signal: AbortSignal): Promise<string[]>
   syncBatch(arks: string[], signal: AbortSignal): Promise<OcrSyncWritePlan>
   recordRejection(ark: string, message: string, now: Date, signal: AbortSignal): Promise<void>
-  recordUnavailable(arks: string[], message: string, now: Date, signal: AbortSignal): Promise<void>
+  recordOutage(arks: string[], now: Date, signal: AbortSignal): Promise<void>
   /** Worst-case cost of one batch (request timeout + write margin). */
   batchCostMs(): number
   now(): number
@@ -112,6 +118,8 @@ export type OcrSyncLimits = {
   drainDeadlineMs: number
   batchSize: number
   maxBatches: number
+  /** Extra requests one drain may spend bisecting a batch that keeps failing on an outage. */
+  outageBisectBudget: number
 }
 
 export type OcrSyncTally = {
@@ -148,6 +156,14 @@ class DrainStop extends Error {
 export function createOcrSyncDrainer(ports: OcrSyncPorts, limits: OcrSyncLimits) {
   const state = { running: false, rerun: false }
   const pause = { until: 0, failures: 0 }
+  /**
+   * ARKs that were in a batch the worker failed to answer (an outage), in
+   * this process — cleared when they are answered. A batch made only of such
+   * ARKs is bisected on its next outage (repeated outage = maybe one poison
+   * ARK). Bounded: reset past OUTAGE_MEMORY_MAX entries.
+   */
+  const outageSeen = new Set<string>()
+  const OUTAGE_MEMORY_MAX = 10_000
 
   function tallyPlan(tally: OcrSyncTally, plan: OcrSyncWritePlan): void {
     tally.available += plan.available.length
@@ -170,9 +186,11 @@ export function createOcrSyncDrainer(ports: OcrSyncPorts, limits: OcrSyncLimits)
     arks: string[],
     tally: OcrSyncTally,
     signal: AbortSignal,
+    budget: { bisects: number },
   ): Promise<void> {
     try {
       tallyPlan(tally, await ports.syncBatch(arks, signal))
+      for (const ark of arks) outageSeen.delete(ark)
       if (pause.failures > 0) {
         ports.log(`worker answers validly again after ${pause.failures} exchange failure(s); sync resumed`)
         pause.failures = 0
@@ -182,8 +200,18 @@ export function createOcrSyncDrainer(ports: OcrSyncPorts, limits: OcrSyncLimits)
     } catch (err) {
       if (signal.aborted) throw new DrainStop(OCR_SYNC_STOP.DEADLINE)
       if (err instanceof OcrSyncUnavailableError) {
+        const repeated = arks.every((a) => outageSeen.has(a))
+        if (repeated && arks.length > 1 && budget.bisects > 0) {
+          // The same ARKs keep failing: isolate rather than back them all off.
+          budget.bisects -= 1
+          ports.log(`batch of ${arks.length} failed an outage again; bisecting`)
+          for (const half of splitBatch(arks)) await syncIsolating(half, tally, signal, budget)
+          return
+        }
+        if (outageSeen.size > OUTAGE_MEMORY_MAX) outageSeen.clear()
+        for (const ark of arks) outageSeen.add(ark)
         ports.error(`batch of ${arks.length} unanswered (${arks.join(", ")})`, err)
-        await ports.recordUnavailable(arks, err.message, new Date(ports.now()), signal)
+        await ports.recordOutage(arks, new Date(ports.now()), signal)
         tally.outage += arks.length
         throw new DrainStop(OCR_SYNC_STOP.WORKER_UNAVAILABLE)
       }
@@ -205,7 +233,7 @@ export function createOcrSyncDrainer(ports: OcrSyncPorts, limits: OcrSyncLimits)
       if (culprits.length > 0) {
         for (const ark of culprits) await reject(ark, err.message, tally, signal)
         const rest = arks.filter((a) => !culprits.includes(a))
-        if (rest.length > 0) await syncIsolating(rest, tally, signal)
+        if (rest.length > 0) await syncIsolating(rest, tally, signal, budget)
         return
       }
       const [only] = arks
@@ -213,30 +241,36 @@ export function createOcrSyncDrainer(ports: OcrSyncPorts, limits: OcrSyncLimits)
         await reject(only, err.message, tally, signal)
         return
       }
-      for (const half of splitBatch(arks)) await syncIsolating(half, tally, signal)
+      for (const half of splitBatch(arks)) await syncIsolating(half, tally, signal, budget)
     }
   }
 
+  /**
+   * Round-robin: each round takes ONE batch from every corpus that still has
+   * due ARKs — corpora with resync requests first — so no corpus starves
+   * another; a corpus leaves the rotation once a batch comes back short.
+   */
   async function sweep(deadline: number, signal: AbortSignal, tally: OcrSyncTally): Promise<OcrSyncStop> {
     if (ports.now() < pause.until) return OCR_SYNC_STOP.EXCHANGE_PAUSED
     const corpora = await ports.pendingByCorpus(new Date(ports.now()), signal)
+    let rotation = corpora
+      .filter((c) => c.pending > 0)
+      .sort((x, y) => y.resync - x.resync)
+      .map((c) => c.corpusProjectId)
+    const budget = { bisects: limits.outageBisectBudget }
     let batches = 0
-    for (const { corpusProjectId, pending } of corpora) {
-      if (pending === 0) continue
-      for (;;) {
+    while (rotation.length > 0) {
+      const next: string[] = []
+      for (const corpusProjectId of rotation) {
         if (batches >= limits.maxBatches) return OCR_SYNC_STOP.BUDGET
         if (remainingMs(deadline, ports.now()) < ports.batchCostMs()) return OCR_SYNC_STOP.BUDGET
-        const arks = await ports.pendingArks(
-          corpusProjectId,
-          limits.batchSize,
-          new Date(ports.now()),
-          signal,
-        )
-        if (arks.length === 0) break
-        await syncIsolating(arks, tally, signal)
+        const arks = await ports.pendingArks(corpusProjectId, limits.batchSize, new Date(ports.now()), signal)
+        if (arks.length === 0) continue
+        await syncIsolating(arks, tally, signal, budget)
         batches += 1
-        if (arks.length < limits.batchSize) break
+        if (arks.length === limits.batchSize) next.push(corpusProjectId)
       }
+      rotation = next
     }
     return OCR_SYNC_STOP.DONE
   }
@@ -309,23 +343,56 @@ const realPorts: OcrSyncPorts = {
   syncBatch: (arks, signal) => DocumentService.syncOcrBatch(arks, signal),
   recordRejection: (ark, message, now, signal) =>
     DocumentService.recordOcrRejection(ark, message, now, signal),
-  recordUnavailable: (arks, message, now, signal) =>
-    DocumentService.recordOcrUnavailable(arks, message, now, signal),
-  batchCostMs: () => workerRequestTimeoutMs() + OCR_SYNC_BATCH_WRITE_MARGIN_MS,
+  recordOutage: (arks, now, signal) => DocumentService.recordOcrOutage(arks, now, signal),
+  batchCostMs: () => DocumentService.ocrSyncRequestTimeoutMs() + OCR_SYNC_BATCH_WRITE_MARGIN_MS,
   now: () => Date.now(),
   log: (message) => console.log(`[ocr-sync] ${message}`),
   error: (message, err) => console.error(`[ocr-sync] ${message}:`, err),
 }
 
-const drainer = createOcrSyncDrainer(realPorts, {
-  drainDeadlineMs: OCR_SYNC_DRAIN_DEADLINE_MS,
-  batchSize: OCR_SYNC_BATCH_SIZE,
-  maxBatches: OCR_SYNC_MAX_BATCHES_PER_CYCLE,
-})
+/**
+ * The drainer's whole lifecycle — the drainer (and so its running guard,
+ * pause and outage memory), the abort controller and the stop handle — lives
+ * on globalThis under a registered symbol: Next.js may evaluate this module
+ * more than once (instrumentation and route bundles, dev re-evaluation), and a
+ * second module copy must find and REPLACE the one drainer, never start a
+ * second one beside it.
+ */
+type OcrSyncLifecycle = {
+  drain: (lifecycle: AbortSignal) => Promise<OcrSyncReport>
+  controller: AbortController
+  stop: (() => void) | null
+}
 
-const lifecycle: { controller: AbortController; stop: (() => void) | null } = {
-  controller: new AbortController(),
-  stop: null,
+const LIFECYCLE_KEY = Symbol.for("bnf.documents.ocr-sync-lifecycle")
+
+function isLifecycle(v: unknown): v is OcrSyncLifecycle {
+  return (
+    typeof v === "object" &&
+    v !== null &&
+    "drain" in v &&
+    typeof v.drain === "function" &&
+    "controller" in v &&
+    v.controller instanceof AbortController &&
+    "stop" in v
+  )
+}
+
+function lifecycle(): OcrSyncLifecycle {
+  const existing: unknown = Reflect.get(globalThis, LIFECYCLE_KEY)
+  if (isLifecycle(existing)) return existing
+  const created: OcrSyncLifecycle = {
+    drain: createOcrSyncDrainer(realPorts, {
+      drainDeadlineMs: OCR_SYNC_DRAIN_DEADLINE_MS,
+      batchSize: OCR_SYNC_BATCH_SIZE,
+      maxBatches: OCR_SYNC_MAX_BATCHES_PER_CYCLE,
+      outageBisectBudget: OCR_SYNC_OUTAGE_BISECT_BUDGET,
+    }).drain,
+    controller: new AbortController(),
+    stop: null,
+  }
+  Reflect.set(globalThis, LIFECYCLE_KEY, created)
+  return created
 }
 
 function syncEnabled(): boolean {
@@ -333,7 +400,8 @@ function syncEnabled(): boolean {
 }
 
 async function runDrain(trigger: string): Promise<void> {
-  const report = await drainer.drain(lifecycle.controller.signal)
+  const life = lifecycle()
+  const report = await life.drain(life.controller.signal)
   if (report.stop === OCR_SYNC_STOP.COALESCED) return
   const { tally } = report
   const moved = tally.available + tally.building + tally.unavailable + tally.rejected + tally.outage
@@ -343,27 +411,23 @@ async function runDrain(trigger: string): Promise<void> {
   )
 }
 
-/** Drain whatever is due now. Throws what the drain threw; the caller logs it. */
-export async function resumePendingOcrSync(): Promise<void> {
-  if (!syncEnabled()) return
-  await runDrain("sweep")
-}
-
 /**
  * Boot resume + periodic sweep + the commit signal (instrumentation.ts).
  * Returns a stop handle that clears the timer, unsubscribes the signal and
  * aborts an in-flight drain at its next cancellation point. The timer is
  * unref'd so it never holds the process open; a second start (dev hot-reload
- * re-running register()) replaces the first. One log line and nothing else
- * outside real mode.
+ * re-running register(), or another copy of this module) stops the first
+ * through the global lifecycle. One log line and nothing else outside real
+ * mode.
  */
 export function startOcrSync(): { stop: () => void } {
   if (!syncEnabled()) {
     realPorts.log("disabled: CLUSTER_MODE is not real (no worker artifacts to sync)")
     return { stop: () => {} }
   }
-  lifecycle.stop?.()
-  lifecycle.controller = new AbortController()
+  const life = lifecycle()
+  life.stop?.()
+  life.controller = new AbortController()
   const kick = (trigger: string) => {
     void runDrain(trigger).catch((err: unknown) => {
       realPorts.error(`${trigger} drain failed`, err)
@@ -373,13 +437,13 @@ export function startOcrSync(): { stop: () => void } {
   const timer = setInterval(() => kick("sweep"), OCR_SYNC_SWEEP_INTERVAL_MS)
   timer.unref()
   const unsubscribe = onOcrSyncRequested(() => kick("commit"))
-  const controller = lifecycle.controller
+  const controller = life.controller
   const stop = () => {
     clearInterval(timer)
     unsubscribe()
     controller.abort()
-    if (lifecycle.stop === stop) lifecycle.stop = null
+    if (life.stop === stop) life.stop = null
   }
-  lifecycle.stop = stop
+  life.stop = stop
   return { stop }
 }

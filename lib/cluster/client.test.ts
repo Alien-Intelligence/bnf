@@ -157,6 +157,37 @@ test("culpritsOf: an invalid entry outside the asked ARKs is the exchange's faul
   )
 })
 
+test("culpritsOf: every returned document failing ONE schema path is version skew — the exchange's fault", () => {
+  const A = "ark:/12148/aaa"
+  const B = "ark:/12148/bbb"
+  assert.deepEqual(
+    culpritsOf([A, B], {
+      kind: "invalid",
+      raw: { documents: [{ ark: A, v: 2 }, { ark: B, v: 2 }] },
+      issuePaths: [["documents", 0, "v"], ["documents", 1, "v"]],
+    }),
+    [],
+  )
+  // One bad document among good ones is that document's fault.
+  assert.deepEqual(
+    culpritsOf([A, B], {
+      kind: "invalid",
+      raw: { documents: [{ ark: A, v: 2 }, { ark: B, v: 1 }] },
+      issuePaths: [["documents", 0, "v"]],
+    }),
+    [A],
+  )
+  // Different paths on different documents stay per-document.
+  assert.deepEqual(
+    culpritsOf([A, B], {
+      kind: "invalid",
+      raw: { documents: [{ ark: A }, { ark: B }] },
+      issuePaths: [["documents", 0, "v"], ["documents", 1, "lane"]],
+    }).sort(),
+    [A, B],
+  )
+})
+
 // ---------------------------------------------------------------------------
 // progress(): four outcomes, never "run gone" for an outage
 // ---------------------------------------------------------------------------
