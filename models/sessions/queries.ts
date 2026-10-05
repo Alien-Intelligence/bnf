@@ -19,6 +19,20 @@ export class SessionQueries {
     })
   }
 
+  /**
+   * Claim one spawn_research run for the session, atomically: the counter
+   * moves only while it is below `max`, so concurrent launches cannot both
+   * take the last slot, a refusal never counts, and the count survives a
+   * reload. Returns false when the session has used all its runs.
+   */
+  static async claimSpawnRun(id: string, max: number): Promise<boolean> {
+    const { count } = await prisma.appSession.updateMany({
+      where: { id, spawnRuns: { lt: max } },
+      data: { spawnRuns: { increment: 1 } },
+    })
+    return count === 1
+  }
+
   static async listForProject(projectId: string, scope: string): Promise<AppSession[]> {
     return prisma.appSession.findMany({
       where: { projectId, scope, status: { not: "archived" } },

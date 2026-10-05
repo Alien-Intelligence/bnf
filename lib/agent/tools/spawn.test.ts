@@ -63,6 +63,27 @@ test("the default allow-list grants NO destructive / commit tools", () => {
   }
 })
 
+test("the child POOL itself grants no destructive / commit / write tool (the description's promise)", () => {
+  const forbidden = new Set<string>([
+    AGENT_TOOLS.bufferCommit,
+    AGENT_TOOLS.bufferClear,
+    AGENT_TOOLS.bufferDiscard,
+    AGENT_TOOLS.bufferRemoveByFilter,
+    AGENT_TOOLS.corpusAdd,
+    AGENT_TOOLS.corpusRemove,
+    AGENT_TOOLS.corpusRemoveByFilter,
+    AGENT_TOOLS.memoryWrite,
+    AGENT_TOOLS.ingestSubmit,
+    AGENT_TOOLS.spawnResearch,
+  ])
+  for (const scope of SCOPES) {
+    const leaked = childPool(scope)
+      .map((t) => t.name)
+      .filter((n) => forbidden.has(n))
+    assert.deepEqual(leaked, [], `${scope} child pool leaks: ${leaked.join(", ")}`)
+  }
+})
+
 test("corpus child default can search + stage; research child default can read RAG", () => {
   assert.ok(defaultAllowlist("corpus").includes(AGENT_TOOLS.corpusSearch), "corpus child can search")
   assert.ok(defaultAllowlist("corpus").includes(AGENT_TOOLS.bufferAdd), "corpus child can stage")
@@ -74,17 +95,17 @@ test("corpus child default can search + stage; research child default can read R
 // parallel and d1073498… ran 17 in one session, all sharing one BnF quota. The
 // caps are enforced in runSpawn with injected deps, so they are tested with a
 // fake runner and no LLM. DB-backed for the per-session count, which is durable
-// (tool_call rows), so a reload cannot reset it.
+// (app_session.spawn_runs, claimed atomically per run), so a reload cannot reset
+// it and a refusal never counts.
 // ---------------------------------------------------------------------------
 
 import { before, after } from "node:test"
-import { randomUUID } from "node:crypto"
 import type { ChatEvent } from "@alien/chat-sdk/events"
 import { prisma } from "@/lib/db"
 import type { Project, User } from "@/lib/generated/prisma/client"
 import { SPAWN_MAX_CONCURRENT_PER_TURN, SPAWN_MAX_PER_SESSION } from "@/lib/constants"
-import { MESSAGE_ROLE, MESSAGE_STATUS, TOOL_CALL_STATUS } from "@/models/messages/schema"
 import { SESSION_SCOPE } from "@/models/sessions/schema"
+import { SessionQueries } from "@/models/sessions/queries"
 import {
   createTestProject,
   createTestSession,
@@ -132,35 +153,22 @@ function stamp(e: DistributiveOmit<ChatEvent, "at">): ChatEvent {
   return { at: Date.now(), ...e }
 }
 
-function deps(runner: SpawnRunner, timeoutMs = 5_000): SpawnDeps {
+function deps(runner: SpawnRunner, timeoutMs = 5_000, overrides: Partial<SpawnDeps> = {}): SpawnDeps {
   return {
     runner,
     timeoutMs,
     buildSystem: async () => "SYSTEM",
     resolveMcpServers: async () => [],
+    claimRun: (appSessionId) => SessionQueries.claimSpawnRun(appSessionId, SPAWN_MAX_PER_SESSION),
+    ...overrides,
   }
 }
 
-/** Seed `n` spawn_research tool_call rows on one assistant message of the session. */
-async function seedSpawnCalls(appSessionId: string, n: number): Promise<void> {
-  const message = await prisma.message.create({
-    data: {
-      id: randomUUID(),
-      appSessionId,
-      seq: 1,
-      role: MESSAGE_ROLE.ASSISTANT,
-      status: MESSAGE_STATUS.DONE,
-    },
-  })
-  await prisma.toolCall.createMany({
-    data: Array.from({ length: n }, () => ({
-      id: randomUUID(),
-      messageId: message.id,
-      tool: AGENT_TOOLS.spawnResearch,
-      input: {},
-      status: TOOL_CALL_STATUS.OK,
-    })),
-  })
+/** A promise that never settles — a hung database or provider call. */
+const hang = <T,>(): Promise<T> => new Promise<T>(() => undefined)
+
+async function spawnRuns(appSessionId: string): Promise<number> {
+  return (await prisma.appSession.findUniqueOrThrow({ where: { id: appSessionId } })).spawnRuns
 }
 
 test("at most SPAWN_MAX_CONCURRENT_PER_TURN children run at once; the extra one is refused without a subagent_event", async () => {
@@ -194,13 +202,12 @@ test("at most SPAWN_MAX_CONCURRENT_PER_TURN children run at once; the extra one 
   assert.equal(started, SPAWN_MAX_CONCURRENT_PER_TURN, "the others all ran")
   const starts = emitted.filter((e) => e.type === "subagent_event" && (e.data as { kind: string }).kind === "start")
   assert.equal(starts.length, SPAWN_MAX_CONCURRENT_PER_TURN, "no start event for the refused spawn")
+  assert.equal(await spawnRuns(sid), SPAWN_MAX_CONCURRENT_PER_TURN, "the refused launch is not counted as a run")
 })
 
-test("the durable per-session count refuses the spawn past SPAWN_MAX_PER_SESSION", async () => {
+test("the durable per-session count refuses the spawn once SPAWN_MAX_PER_SESSION runs were made", async () => {
   const sid = await createTestSession(project.id, SESSION_SCOPE.CORPUS)
-  // The runtime persists the CURRENT call's tool_call row before the handler
-  // runs, so "12 earlier spawns + this one" is 13 rows.
-  await seedSpawnCalls(sid, SPAWN_MAX_PER_SESSION + 1)
+  await prisma.appSession.update({ where: { id: sid }, data: { spawnRuns: SPAWN_MAX_PER_SESSION } })
   const emitted: Emitted[] = []
   let started = 0
   const runner: SpawnRunner = async function* () {
@@ -212,11 +219,12 @@ test("the durable per-session count refuses the spawn past SPAWN_MAX_PER_SESSION
   assert.match(result.error, /par session/)
   assert.equal(started, 0)
   assert.equal(emitted.length, 0)
+  assert.equal(await spawnRuns(sid), SPAWN_MAX_PER_SESSION, "a refusal is not a run")
 })
 
-test("exactly SPAWN_MAX_PER_SESSION rows (the current call included) still runs", async () => {
+test("the last run of the session still runs, and is counted", async () => {
   const sid = await createTestSession(project.id, SESSION_SCOPE.CORPUS)
-  await seedSpawnCalls(sid, SPAWN_MAX_PER_SESSION)
+  await prisma.appSession.update({ where: { id: sid }, data: { spawnRuns: SPAWN_MAX_PER_SESSION - 1 } })
   let started = 0
   const runner: SpawnRunner = async function* () {
     started += 1
@@ -225,6 +233,54 @@ test("exactly SPAWN_MAX_PER_SESSION rows (the current call included) still runs"
   const result = await runSpawn({ task: "balaie" }, makeCtx(sid, []), deps(runner))
   assert.equal("summary" in result && result.summary, "fini")
   assert.equal(started, 1)
+  assert.equal(await spawnRuns(sid), SPAWN_MAX_PER_SESSION)
+})
+
+test("a hung session cap check is bounded: it ends at the ceiling, emits nothing, frees its slot", async () => {
+  const sid = await createTestSession(project.id, SESSION_SCOPE.CORPUS)
+  const emitted: Emitted[] = []
+  const result = await runSpawn(
+    { task: "balaie" },
+    makeCtx(sid, emitted),
+    deps(waitsForAbort, 20, { claimRun: () => hang<boolean>() }),
+  )
+  assert.ok("success" in result && result.success === false)
+  assert.match(String("error" in result ? result.error : ""), /délai/)
+  assert.equal(emitted.length, 0, "no run was admitted, so no start row")
+  // The slot came back: a full set of concurrent runs is admitted afterwards.
+  const ok = await runSpawn({ task: "balaie" }, makeCtx(sid, []), deps(async function* () {
+    yield stamp({ type: "text-delta", text: "fini" })
+  }))
+  assert.equal("summary" in ok && ok.summary, "fini")
+})
+
+for (const [what, overrides] of [
+  ["prompt build", { buildSystem: () => hang<string>() }],
+  ["MCP resolve", { resolveMcpServers: () => hang<never[]>() }],
+] as const) {
+  test(`a hung ${what} is bounded: one start, one timeout`, async () => {
+    const sid = await createTestSession(project.id, SESSION_SCOPE.CORPUS)
+    const emitted: Emitted[] = []
+    const result = await runSpawn({ task: "balaie" }, makeCtx(sid, emitted), deps(waitsForAbort, 20, overrides))
+    assert.ok("success" in result && result.success === false)
+    assertPaired(emitted, "timeout")
+  })
+}
+
+test("a child that staged then timed out still reports what it staged", async () => {
+  const sid = await createTestSession(project.id, SESSION_SCOPE.CORPUS)
+  const emitted: Emitted[] = []
+  const stagesThenHangs: SpawnRunner = async function* ({ toolContext, signal }) {
+    if (toolContext.stagingTally) toolContext.stagingTally.added += 7
+    await new Promise<void>((_, reject) => {
+      signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true })
+    })
+    yield stamp({ type: "text-delta", text: "jamais" })
+  }
+  const result = await runSpawn({ task: "balaie" }, makeCtx(sid, emitted), deps(stagesThenHangs, 20))
+  assert.ok("success" in result && result.success === false)
+  assert.equal("buffered_added" in result && result.buffered_added, 7)
+  assert.equal(assertPaired(emitted, "timeout").buffered, 7)
 })
 
 test("a slot is freed when the run ends, even when the runner throws", async () => {
@@ -317,9 +373,19 @@ test("a parent abort ends the child with one aborted event", async () => {
   const sid = await createTestSession(project.id, SESSION_SCOPE.CORPUS)
   const emitted: Emitted[] = []
   const controller = new AbortController()
-  const ctx: TurnScopedCtx = { ...makeCtx(sid, emitted), signal: controller.signal }
+  // Abort once the run is admitted (its start row is out): an abort during the
+  // cap check ends the launch before it starts, with no row at all.
+  const { promise: startedRun, resolve: onStart } = Promise.withResolvers<void>()
+  const ctx: TurnScopedCtx = {
+    ...makeCtx(sid, emitted),
+    signal: controller.signal,
+    emit: (e) => {
+      emitted.push(e)
+      if (e.type === "subagent_event") onStart()
+    },
+  }
   const run = runSpawn({ task: "balaie" }, ctx, deps(waitsForAbort))
-  await new Promise((resolve) => setImmediate(resolve))
+  await startedRun
   controller.abort()
   const result = await run
   assert.ok("success" in result && result.success === false)
