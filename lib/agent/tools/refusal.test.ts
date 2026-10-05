@@ -20,6 +20,9 @@ import { corpusDiffTool, corpusGetStateTool, corpusListTool, corpusRemoveByFilte
 import { CORPUS_ACCESS_REVOKED_ERROR } from "./ingestion-guard"
 import { EMPTY_FILTER_REFUSAL, INVALID_PARAMS_REFUSAL } from "./failure"
 import { noteGetTool } from "./note"
+import { ragGetTextTool, ragKeywordSearchTool, ragQueryTool } from "./rag"
+import { memoryWriteTool } from "./memory"
+import { TOOL_PROJECT_GONE_ERROR } from "./authorize"
 import type { TurnScopedCtx } from "./registry-factory"
 
 let ownerRow: User
@@ -93,6 +96,25 @@ test("a filter language the store does not hold is an invalid_params refusal, ne
     assert.equal("refused" in result && result.refused, INVALID_PARAMS_REFUSAL, JSON.stringify(result))
     assert.match("error" in result && typeof result.error === "string" ? result.error : "", /xx/)
   }
+})
+
+test("the rag_* tools on a corpus never ingested fail with success:false (the chip is not green)", async () => {
+  for (const call of [
+    () => ragQueryTool.handler({ query: "incendie" }, ctx()),
+    () => ragKeywordSearchTool.handler({ query: "incendie" }, ctx()),
+    () => ragGetTextTool.handler({ entryId: 1 }, ctx()),
+  ]) {
+    const result = await call()
+    assert.equal(toolCallErrored(false, JSON.stringify(result)), true, JSON.stringify(result))
+  }
+})
+
+test("a mutating tool whose project vanished mid-turn returns a failure, never a throw", async () => {
+  const gone: TurnScopedCtx = { ...ctx(), projectId: "00000000-0000-4000-8000-0000000000ff" }
+  const result = await memoryWriteTool.handler({ section: "Sources", text: "Fait" }, gone)
+  assert.ok(typeof result === "object" && result !== null)
+  assert.equal("success" in result && result.success, false)
+  assert.equal("error" in result && result.error, TOOL_PROJECT_GONE_ERROR)
 })
 
 test("note_get on an unknown id fails with success:false", async () => {

@@ -37,6 +37,9 @@ export const INVALID_PARAMS_REFUSAL = "invalid_params" as const
 /** The BnF declined a query it cannot express on that index (never sent). */
 export const QUERY_NOT_EXPRESSIBLE_REFUSAL = "query_not_expressible" as const
 
+/** spawn_research past its per-turn or per-session cap (never queued). */
+export const SPAWN_LIMIT_REFUSAL = "spawn_limit" as const
+
 /**
  * Run a filtered read or removal; a filter value the data refuses (a language
  * the buffer or corpus does not hold — lib/filters.ts FilterValueError) comes

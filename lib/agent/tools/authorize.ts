@@ -19,7 +19,7 @@ import "server-only"
 import { ProjectQueries } from "@/models/projects/queries"
 import type { ProjectWithShares } from "@/models/projects/schema"
 import type { PolicyUser } from "@/models/users/schema"
-import { FORBIDDEN_REFUSAL, toolRefusal, type ToolRefusal } from "./failure"
+import { FORBIDDEN_REFUSAL, toolFailure, toolRefusal, type ToolFailure, type ToolRefusal } from "./failure"
 import type { TurnScopedCtx } from "./registry-factory"
 
 /** The refusal of an action the turn's user may not perform. */
@@ -42,7 +42,12 @@ type ProjectPolicyClass<A extends string, R extends unknown[]> = new (
 ) => Record<A, (project: ProjectWithShares, ...rest: R) => boolean>
 
 /** What a gate decides: the project to act on, or the refusal to return. */
-export type ToolGate = { ok: true; project: ProjectWithShares } | { ok: false; result: ToolForbidden }
+export type ToolGate = { ok: true; project: ProjectWithShares } | { ok: false; result: ToolForbidden | ToolFailure }
+
+/** What the agent is told when the session's project is gone (deleted mid-turn). */
+export const TOOL_PROJECT_GONE_ERROR =
+  "Action impossible : le projet de cette conversation est introuvable (supprimé ?). " +
+  "Préviens le bibliothécaire ; ne réessaie pas."
 
 /**
  * Authorize `action` on a project the handler already loaded WITH its shares —
@@ -66,8 +71,9 @@ export function authorizeOnProject<A extends string, R extends unknown[]>(
  * the project with its shares for the handler to use, or the structured
  * refusal to return as the tool result.
  *
- * Throws only when the session's project does not exist — the route resolved
- * `ctx.projectId` from the session row, so that is a bug, not a user state.
+ * A project that no longer exists (deleted while the turn ran — the route
+ * resolved `ctx.projectId` from the session row) is logged and returned as a
+ * failure the agent reads, never thrown out of the tool loop (§15).
  */
 export async function authorizeProjectTool<A extends string, R extends unknown[]>(
   ctx: TurnScopedCtx,
@@ -77,7 +83,8 @@ export async function authorizeProjectTool<A extends string, R extends unknown[]
 ): Promise<ToolGate> {
   const project = await ProjectQueries.get(ctx.projectId)
   if (!project) {
-    throw new Error(`Project ${ctx.projectId} not found for session ${ctx.appSessionId}`)
+    console.error(`[agent-tools] project ${ctx.projectId} not found for session ${ctx.appSessionId}`)
+    return { ok: false, result: toolFailure(TOOL_PROJECT_GONE_ERROR) }
   }
   return authorizeOnProject(ctx, project, PolicyClass, action, ...rest)
 }

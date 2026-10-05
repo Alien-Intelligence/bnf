@@ -116,6 +116,7 @@ import {
 import { cleanupProject } from "@/lib/testing/project-cleanup"
 import { runSpawn, type SpawnDeps, type SpawnFailure, type SpawnRunner } from "./spawn"
 import type { TurnScopedCtx } from "./registry-factory"
+import { SPAWN_LIMIT_REFUSAL } from "./failure"
 
 let user: User
 let project: Project
@@ -196,7 +197,7 @@ test("at most SPAWN_MAX_CONCURRENT_PER_TURN children run at once; the extra one 
   const results = await Promise.all(runs)
 
   const refused = results.filter(
-    (r): r is SpawnFailure => "refused" in r && r.refused === "spawn_limit",
+    (r): r is SpawnFailure => "refused" in r && r.refused === SPAWN_LIMIT_REFUSAL,
   )
   assert.equal(refused.length, 1, "exactly one launch over the cap is refused")
   assert.equal(refused[0].success, false, "a refusal is marked as a failure for the chip")
@@ -217,7 +218,7 @@ test("the durable per-session count refuses the spawn once SPAWN_MAX_PER_SESSION
     yield stamp({ type: "text-delta", text: "fini" })
   }
   const result = await runSpawn({ task: "balaie" }, makeCtx(sid, emitted), deps(runner))
-  assert.ok("refused" in result && result.refused === "spawn_limit")
+  assert.ok("refused" in result && result.refused === SPAWN_LIMIT_REFUSAL)
   assert.match(result.error, /par session/)
   assert.equal(started, 0)
   assert.equal(emitted.length, 0)
@@ -464,4 +465,16 @@ test("a missing session is a fault, not the quota refusal", async () => {
   assert.ok("success" in result && result.success === false)
   assert.ok(!("refused" in result), "not reported as spawn_limit")
   assert.match(result.error, /session de cette conversation est introuvable/)
+})
+
+test("a claim that fails (database down) is a failure the parent reads, never a throw", async () => {
+  const sid = randomUUID()
+  const result = await runSpawn(
+    { task: "balaie" },
+    makeCtx(sid, []),
+    deps(waitsForAbort, 5_000, { claimRun: () => Promise.reject(new Error("db down")) }),
+  )
+  assert.ok("success" in result && result.success === false)
+  assert.ok(!("refused" in result), "a fault, not the quota")
+  assert.match(result.error, /compteur de sous-agents de la session est indisponible/)
 })

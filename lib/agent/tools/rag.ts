@@ -9,9 +9,11 @@
  *   - rag_get_text       — selective full-text retrieval by entryId and a
  *                          character range (pull context around a passage).
  *
- * Each tool checks that the project has a committed ingested version before
- * delegating to ClusterRagClient. If not, it returns a structured error so the
- * agent can explain the situation to the user rather than crashing.
+ * Each tool checks that the project has a committed ingested version (and,
+ * for a derived workspace, a live grant) before delegating to
+ * ClusterRagClient. If not, it returns failure.ts's `toolFailure` — the chip
+ * shows the call did nothing, and the agent reads `error` to explain the
+ * situation rather than crashing.
  */
 import "server-only"
 
@@ -21,6 +23,7 @@ import { ClusterRagClient } from "@/lib/cluster/rag"
 import type { TurnScopedCtx } from "./registry-factory"
 import { AGENT_TOOLS } from "./constants"
 import { NOT_INGESTED_ERROR, resolveIngestedCorpus } from "./ingestion-guard"
+import { toolFailure } from "./failure"
 
 // ---------------------------------------------------------------------------
 // rag_query
@@ -78,7 +81,7 @@ export const ragQueryTool = defineTool<
   handler: async (input, ctx) => {
     const corpus = await resolveIngestedCorpus(ctx, NOT_INGESTED_ERROR)
     if ("error" in corpus) {
-      return { passages: [], total: 0, error: corpus.error }
+      return toolFailure(corpus.error)
     }
 
     return ClusterRagClient.query({
@@ -143,7 +146,7 @@ export const ragKeywordSearchTool = defineTool<
   handler: async (input, ctx) => {
     const corpus = await resolveIngestedCorpus(ctx, NOT_INGESTED_ERROR)
     if ("error" in corpus) {
-      return { hits: [], total: 0, error: corpus.error }
+      return toolFailure(corpus.error)
     }
 
     return ClusterRagClient.keywordSearch({
@@ -198,7 +201,7 @@ export const ragGetTextTool = defineTool<
   handler: async (input, ctx) => {
     const corpus = await resolveIngestedCorpus(ctx, NOT_INGESTED_ERROR)
     if ("error" in corpus) {
-      return { text: "", error: corpus.error }
+      return toolFailure(corpus.error)
     }
 
     return ClusterRagClient.getEntryContent({

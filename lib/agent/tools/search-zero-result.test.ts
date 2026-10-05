@@ -85,11 +85,10 @@ test("a corpus_search failure records as an error, not an ok", () => {
 })
 
 test("routine { error } outcomes must NOT be treated as failures", () => {
-  // The regression guard. Several handlers use `{ error }` for EXPECTED states:
-  // rag_* before the corpus is ingested, doc_get on an ARK outside the corpus.
-  // Those are normal answers in a Step 1 → Step 3 workflow. Keying failure
-  // detection on the mere presence of an `error` key would flare the health
-  // lanes on every one of them, so detection keys on `success: false` instead.
+  // The detector's regression guard: failure detection keys on `success: false`
+  // (failure.ts), never on the mere presence of an `error` key — doc_get's
+  // ark_not_in_corpus answer and rows persisted before the rag_* tools adopted
+  // toolFailure carry a bare `error` that must not flare the health lanes.
   const notIngested = {
     content: JSON.stringify({ passages: [], total: 0, error: "not_ingested" }),
   }

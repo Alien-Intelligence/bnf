@@ -70,6 +70,7 @@ import { resolveMcpServers, type McpServerEntry } from "./mcp-servers"
 import type { TurnScopedCtx } from "./registry-factory"
 import { STREAM_DOMAIN_EVENT, emitDomainEvent } from "@/lib/agent/stream-events"
 import { AGENT_TOOLS } from "./constants"
+import { SPAWN_LIMIT_REFUSAL, toolFailure, toolRefusal, type ToolFailure, type ToolRefusal } from "./failure"
 
 /**
  * The app tools a child MAY be granted, per parent scope: read and gather
@@ -158,15 +159,17 @@ export interface SpawnDeps {
   releaseRun: (appSessionId: string) => Promise<void>
 }
 
-/** A refusal or failure the parent sees plainly. `success: false` is what makes
- *  the chip red (toolCallErrored keys on it). */
-export type SpawnFailure = {
-  success: false
-  error: string
-  refused?: "spawn_limit"
-  child_tool_calls?: number
-  /** Candidates THIS child staged before it failed — they are in the buffer. */
-  buffered_added?: number
+/** What a child that ran reports beside a failure: its tool calls, and the
+ *  candidates THIS child staged before it stopped — they are in the buffer. */
+type ChildTally = { child_tool_calls?: number; buffered_added?: number }
+
+/** A refusal or failure the parent sees plainly, in failure.ts's one shape
+ *  (`success: false` makes the chip red), with the child's tally. */
+export type SpawnFailure = (ToolFailure | ToolRefusal<typeof SPAWN_LIMIT_REFUSAL>) & ChildTally
+
+/** A child that failed or stopped, with what it did before. */
+function childFailure(error: string, toolCalls: number, buffered: number | undefined): SpawnFailure {
+  return { ...toolFailure(error), child_tool_calls: toolCalls, ...(buffered !== undefined ? { buffered_added: buffered } : {}) }
 }
 export type SpawnSuccess = {
   summary: string
@@ -248,27 +251,24 @@ function emitSubagent(ctx: TurnScopedCtx, data: SubagentEventData): void {
 const activeBySession = new Map<string, number>()
 
 function spawnLimitRefusal(error: string): SpawnFailure {
-  return { success: false, refused: "spawn_limit", error }
+  return toolRefusal(SPAWN_LIMIT_REFUSAL, error)
 }
 
 /** The outcome when the bounds fired: the ceiling, or the parent's cancel. */
 function stoppedOutcome(bounds: ChildBounds, timeoutMs: number, toolCalls: number, buffered: number | undefined): ChildOutcome {
-  const staged = buffered !== undefined ? { buffered_added: buffered } : {}
   if (bounds.timedOut()) {
     return {
-      result: {
-        success: false,
-        error:
-          `Le sous-agent a dépassé le délai de ${Math.round(timeoutMs / 1000)}s et a été arrêté. ` +
+      result: childFailure(
+        `Le sous-agent a dépassé le délai de ${Math.round(timeoutMs / 1000)}s et a été arrêté. ` +
           "Redécoupe la tâche en un périmètre plus étroit.",
-        child_tool_calls: toolCalls,
-        ...staged,
-      },
+        toolCalls,
+        buffered,
+      ),
       terminal: { kind: SUBAGENT_EVENT_KIND.TIMEOUT, toolCalls, ...(buffered !== undefined ? { buffered } : {}) },
     }
   }
   return {
-    result: { success: false, error: "Le sous-agent a été annulé avec le tour.", child_tool_calls: toolCalls, ...staged },
+    result: childFailure("Le sous-agent a été annulé avec le tour.", toolCalls, buffered),
     terminal: { kind: SUBAGENT_EVENT_KIND.ABORTED, toolCalls, ...(buffered !== undefined ? { buffered } : {}) },
   }
 }
@@ -307,7 +307,15 @@ export async function runSpawn(
     try {
       claimed = await bounds.race(claim, "the session cap check")
     } catch (err) {
-      if (!bounds.signal.aborted) throw err
+      if (!bounds.signal.aborted) {
+        // The claim itself failed (database down): a failure the parent reads,
+        // never a throw out of the tool loop (§15). No run was claimed.
+        console.error(`[spawn_research] session ${ctx.appSessionId}: run claim failed:`, err)
+        return toolFailure(
+          "Le sous-agent n'a pas pu démarrer : le compteur de sous-agents de la session est indisponible. " +
+            "Continue avec les outils directs.",
+        )
+      }
       // The race gave up; a claim that still commits afterwards is given back,
       // so a cancelled turn never burns the session's run budget.
       claim.then(
@@ -325,10 +333,7 @@ export async function runSpawn(
     if (claimed === SPAWN_CLAIM.NO_SESSION) {
       // A fault, not the quota: the turn's session row is gone.
       console.error(`[spawn_research] session ${ctx.appSessionId} not found when claiming a run`)
-      return {
-        success: false,
-        error: "Le sous-agent n'a pas pu démarrer : la session de cette conversation est introuvable.",
-      }
+      return toolFailure("Le sous-agent n'a pas pu démarrer : la session de cette conversation est introuvable.")
     }
     if (claimed === SPAWN_CLAIM.CAP_REACHED) {
       return spawnLimitRefusal(
@@ -352,7 +357,7 @@ export async function runSpawn(
     const outcome = await runChild(input, ctx, deps, bounds).catch((err: unknown): ChildOutcome => {
       const message = err instanceof Error ? err.message : String(err)
       return {
-        result: { success: false, error: `Le sous-agent n'a pas pu s'exécuter : ${message}` },
+        result: toolFailure(`Le sous-agent n'a pas pu s'exécuter : ${message}`),
         terminal: { kind: SUBAGENT_EVENT_KIND.ERROR, toolCalls: 0, error: message },
       }
     })
@@ -456,12 +461,7 @@ async function runChild(
     // should see plainly; otherwise return the distilled result.
     if (!summary && childError) {
       return {
-        result: {
-          success: false,
-          error: `Le sous-agent a échoué : ${childError}`,
-          child_tool_calls: toolCalls,
-          ...(staged !== undefined ? { buffered_added: staged } : {}),
-        },
+        result: childFailure(`Le sous-agent a échoué : ${childError}`, toolCalls, staged),
         terminal: { kind: SUBAGENT_EVENT_KIND.ERROR, toolCalls, error: childError, ...(staged !== undefined ? { buffered: staged } : {}) },
       }
     }
@@ -481,12 +481,7 @@ async function runChild(
     const message = err instanceof Error ? err.message : String(err)
     const staged = buffered()
     return {
-      result: {
-        success: false,
-        error: `Le sous-agent n'a pas pu s'exécuter : ${message}`,
-        child_tool_calls: toolCalls,
-        ...(staged !== undefined ? { buffered_added: staged } : {}),
-      },
+      result: childFailure(`Le sous-agent n'a pas pu s'exécuter : ${message}`, toolCalls, staged),
       terminal: { kind: SUBAGENT_EVENT_KIND.ERROR, toolCalls, error: message, ...(staged !== undefined ? { buffered: staged } : {}) },
     }
   }
