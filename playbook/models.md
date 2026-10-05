@@ -215,7 +215,7 @@ Rules:
 ## Import diagram
 
 ```
-types.ts      ← zod (no internal imports)
+types.ts      ← zod, ./schema, @/lib/constants (nothing server-only)
 schema.ts     ← @/lib/generated/prisma/client (no internal imports)
 queries.ts    ← @/lib/db, ./schema
 policy.ts     ← ./schema (types only)
