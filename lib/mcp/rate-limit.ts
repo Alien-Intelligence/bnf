@@ -11,11 +11,20 @@
 // corpus_search.
 //
 // THE GUARANTEE, provable from SlidingWindowLimiter below: in ANY 60 s sliding
-// window, the upstream requests this process sends to one BnF API — weighted by
+// window, the upstream requests this process SENDS to one BnF API — weighted by
 // `bnfMcpCallWeight` — never exceed that API's configured limit, and all of
-// them together never exceed the global limit. A call is granted only when the
-// weights granted in the trailing 60 s plus its own fit; a call heavier than
-// the whole limit is refused, never overdrawn.
+// them together never exceed the global limit. Each limiter's ledger counts a
+// call from its grant until 60 s after its SEND: while a granted call still
+// waits (on its API limiter after the global grant) it is a RESERVATION that
+// counts in every window and never ages; when it is sent it is stamped with the
+// send time and leaves the ledger 60 s later. A call is granted only when the
+// reservations plus the sends of the trailing 60 s plus its own weight fit.
+// Proof: in any window W, take the call X sent in W that was granted LAST. At
+// X's grant every other call sent in W was either still reserved or already
+// sent within the 60 s before (it was sent after W's start, which is less than
+// 60 s before X's send, and X's grant is no later), so the ledger counted it;
+// hence W's total ≤ the limit. A call heavier than the whole limit is refused,
+// never overdrawn.
 //
 // COVERAGE CONTRACT (Decision 17 of the Track E plan). One process-wide set of
 // limiters, two enforcement points:
@@ -32,8 +41,10 @@
 //       provider) over the registry `buildTurnScopedRegistry` builds, against
 //       local fake model and mcp-bnf endpoints. `onToolStart` cannot do this:
 //       it is sync-only and cannot veto.
-// Every call acquires the GLOBAL limiter first, then its API limiter, against
-// ONE deadline computed when the call is enqueued (BNF_MCP_RATE_MAX_WAIT_MS). A
+// Every call reserves on the GLOBAL limiter first, then on its API limiter,
+// against ONE deadline computed when the call is enqueued
+// (BNF_MCP_RATE_MAX_WAIT_MS); both are stamped as sent when `acquireBnfMcp`
+// returns, and both callers send (or release on abort) synchronously after. A
 // call that cannot be granted before the deadline is SHED: it never reaches
 // BnF, every grant it took is released (a refused catalogue retry must not
 // starve the other APIs, and a cancelled caller frees what it held even when
@@ -203,6 +214,10 @@ export const BNF_RATE_LIMIT_FREEZE_MAX_MS = 5 * 60_000
  *  and the acquire loop would spin without progress. */
 const MIN_WAIT_MS = 1
 
+/** How often a caller blocked only by RESERVATIONS (calls granted, not yet
+ *  sent — they cannot be waited out by the clock) re-checks the ledger. */
+const RESERVATION_POLL_MS = 25
+
 /** Default sleep: a real timer that ends early when `signal` aborts. */
 function realSleep(ms: number, signal?: AbortSignal): Promise<void> {
   if (ms <= 0) return Promise.resolve()
@@ -235,8 +250,12 @@ export class RateWaitTimeoutError extends Error {
   }
 }
 
-/** One granted call: its weight, at its grant time. Released by identity. */
-export type RateGrantTicket = { readonly at: number; readonly weight: number }
+/** One granted call. `sentAt` is null while it is a reservation (granted, not
+ *  yet sent); released by identity. */
+export type RateGrantTicket = { readonly weight: number; readonly sentAt: number | null }
+
+/** The limiter's own mutable view of a ticket. */
+type LedgerTicket = { weight: number; sentAt: number | null }
 
 export interface SlidingWindowLimiterOptions {
   /** Upstream requests allowed in any window of `windowMs`. */
@@ -250,18 +269,23 @@ export interface SlidingWindowLimiterOptions {
 }
 
 /**
- * At most `limit` weighted requests in ANY window of `windowMs`: a ledger of
- * the grants of the trailing window. A grant of weight w at time t happens
- * only when the weights granted in (t − windowMs, t] plus w fit in `limit`;
- * otherwise the caller waits for the oldest grants to leave the window, or is
- * shed at its deadline. That invariant holds at every grant, so it holds over
- * every sliding window — there is no burst on top of the rate and no
- * overdraft. A weight above `limit` could never fit, so it is refused at once.
+ * At most `limit` weighted requests SENT in ANY window of `windowMs`. The
+ * ledger holds the reservations (granted, not yet sent: they always count) and
+ * the sends of the trailing window. A grant of weight w at time t happens only
+ * when reservations + sends in (t − windowMs, t] + w fit in `limit`; otherwise
+ * the caller waits for the oldest sends to leave the window (or for a
+ * reservation to be sent or released), or is shed at its deadline. See the
+ * proof in the header: the invariant at every grant bounds every window of
+ * sends — no burst on top of the rate, no overdraft. A weight above `limit`
+ * could never fit, so it is refused at once.
  */
 export class SlidingWindowLimiter {
   readonly limit: number
   private readonly windowMs: number
-  private granted: RateGrantTicket[] = []
+  /** Granted, not yet sent: counted in every window until sent or released. */
+  private reserved = new Set<LedgerTicket>()
+  /** Sent, in send order (the clock is monotonic). */
+  private sent: LedgerTicket[] = []
   /** No grant before this instant (a 429 freeze). */
   private frozenUntil = Number.NEGATIVE_INFINITY
   /** FIFO chain so acquirers are granted in arrival order, not racing. */
@@ -285,20 +309,52 @@ export class SlidingWindowLimiter {
 
   /**
    * Grant `weight` no later than the ABSOLUTE `deadlineMs` (on this limiter's
-   * clock), or reject with RateWaitTimeoutError. The deadline is the caller's,
-   * computed before the call joined the FIFO chain, so queue time counts
-   * against the same budget. A caller whose `signal` aborts leaves the queue at
-   * once; if its grant was made in the same instant, the grant is released, so
-   * a cancelled call never holds capacity it will not use.
+   * clock), or reject with RateWaitTimeoutError, as a call SENT at its grant.
+   * The deadline is the caller's, computed before the call joined the FIFO
+   * chain, so queue time counts against the same budget. A caller whose
+   * `signal` aborts leaves the queue at once; if its grant was made in the same
+   * instant, the grant is released, so a cancelled call never holds capacity
+   * it will not use.
    */
   acquire(weight: number, deadlineMs: number, signal?: AbortSignal): Promise<RateGrantTicket> {
+    return this.enqueue(weight, deadlineMs, signal, true)
+  }
+
+  /**
+   * As `acquire`, but the grant is a RESERVATION: it counts in every window
+   * until `markSent` stamps it (or `release` drops it). For a call that must
+   * still wait elsewhere before it is sent.
+   */
+  reserve(weight: number, deadlineMs: number, signal?: AbortSignal): Promise<RateGrantTicket> {
+    return this.enqueue(weight, deadlineMs, signal, false)
+  }
+
+  /** A reservation was sent now: from here it ages like any send. */
+  markSent(ticket: RateGrantTicket): void {
+    const own = [...this.reserved].find((t) => t === ticket)
+    if (own === undefined) return
+    this.reserved.delete(own)
+    own.sentAt = this.now()
+    this.sent.push(own)
+  }
+
+  private enqueue(
+    weight: number,
+    deadlineMs: number,
+    signal: AbortSignal | undefined,
+    sentAtGrant: boolean,
+  ): Promise<RateGrantTicket> {
     if (!Number.isInteger(weight) || weight < 1) {
       return Promise.reject(new RangeError(`weight must be an integer >= 1, got ${weight}`))
     }
     if (weight > this.limit) {
       return Promise.reject(new RangeError(`weight ${weight} exceeds the limit of ${this.limit} per window`))
     }
-    const turn = this.chain.then(() => this.grant(weight, deadlineMs, signal))
+    if (!Number.isFinite(deadlineMs)) {
+      // A NaN or infinite deadline would wait without bound (§14).
+      return Promise.reject(new RangeError(`deadlineMs must be a finite instant, got ${deadlineMs}`))
+    }
+    const turn = this.chain.then(() => this.grant(weight, deadlineMs, signal, sentAtGrant))
     this.chain = turn.then(
       () => undefined,
       () => undefined, // never poison the queue
@@ -328,7 +384,8 @@ export class SlidingWindowLimiter {
 
   /** Give back a grant whose call was not sent. Releasing twice is a no-op. */
   release(ticket: RateGrantTicket): void {
-    this.granted = this.granted.filter((t) => t !== ticket)
+    for (const t of this.reserved) if (t === ticket) this.reserved.delete(t)
+    this.sent = this.sent.filter((t) => t !== ticket)
   }
 
   /**
@@ -343,44 +400,67 @@ export class SlidingWindowLimiter {
     this.frozenUntil = Math.max(this.frozenUntil, this.now() + ms)
   }
 
-  /** Weights granted in the trailing window (for tests and the flood replay). */
+  /** Reserved weights plus the weights sent in the trailing window (for tests
+   *  and the flood replay). */
   inWindow(): number {
     this.evict(this.now())
-    return this.granted.reduce((n, t) => n + t.weight, 0)
+    return this.used()
+  }
+
+  private used(): number {
+    let n = 0
+    for (const t of this.reserved) n += t.weight
+    for (const t of this.sent) n += t.weight
+    return n
   }
 
   private evict(now: number): void {
     const horizon = now - this.windowMs
-    if (this.granted.length > 0 && this.granted[0].at <= horizon) {
-      this.granted = this.granted.filter((t) => t.at > horizon)
+    const first = this.sent[0]
+    if (first !== undefined && first.sentAt !== null && first.sentAt <= horizon) {
+      this.sent = this.sent.filter((t) => t.sentAt !== null && t.sentAt > horizon)
     }
   }
 
-  /** When `weight` more would fit, given the grants of the trailing window. */
-  private fitsAt(now: number, weight: number): number {
-    let used = this.granted.reduce((n, t) => n + t.weight, 0)
+  /**
+   * When `weight` more would fit: now, the instant enough of the oldest sends
+   * leave the window, or null when even an empty window of sends would not
+   * make room — only a reservation being sent or released can.
+   */
+  private fitsAt(now: number, weight: number): number | null {
+    let used = this.used()
     if (used + weight <= this.limit) return now
-    // Oldest first (grants are appended in time order): walk until enough leave.
-    for (const t of this.granted) {
+    for (const t of this.sent) {
       used -= t.weight
-      if (used + weight <= this.limit) return t.at + this.windowMs
+      if (used + weight <= this.limit && t.sentAt !== null) return t.sentAt + this.windowMs
     }
-    return now // unreachable: weight <= limit, so an empty ledger always fits
+    return null
   }
 
-  private async grant(weight: number, deadline: number, signal?: AbortSignal): Promise<RateGrantTicket> {
+  private async grant(
+    weight: number,
+    deadline: number,
+    signal: AbortSignal | undefined,
+    sentAtGrant: boolean,
+  ): Promise<RateGrantTicket> {
     for (;;) {
       if (signal?.aborted) throw signal.reason
       const now = this.now()
       this.evict(now)
-      const at = Math.max(this.frozenUntil, this.fitsAt(now, weight))
-      if (at <= now) {
-        const ticket: RateGrantTicket = { at: now, weight }
-        this.granted.push(ticket)
+      const fits = this.fitsAt(now, weight)
+      const at = fits === null ? null : Math.max(this.frozenUntil, fits)
+      if (at !== null && at <= now) {
+        const ticket: LedgerTicket = { weight, sentAt: sentAtGrant ? now : null }
+        if (sentAtGrant) this.sent.push(ticket)
+        else this.reserved.add(ticket)
         return ticket
       }
-      if (at > deadline) throw new RateWaitTimeoutError(at - now)
-      await this.sleepFn(Math.max(MIN_WAIT_MS, at - now), signal)
+      if (at !== null ? at > deadline : now >= deadline) {
+        throw new RateWaitTimeoutError((at ?? deadline) - now)
+      }
+      // Blocked by reservations: re-check soon (never past the deadline).
+      const wakeAt = at ?? Math.min(deadline, Math.max(this.frozenUntil, now + RESERVATION_POLL_MS))
+      await this.sleepFn(Math.max(MIN_WAIT_MS, wakeAt - now), signal)
     }
   }
 }
@@ -480,19 +560,22 @@ export function __bnfRateUsageForTests(name: BnfRateBucketName): number {
   return name === GLOBAL_LIMIT ? l.global.inWindow() : l.byApi[name].inWindow()
 }
 
-/** A granted call. `release()` gives its capacity back if it is not sent. */
+/** A granted call, already counted as sent at the instant it was returned:
+ *  the caller sends it synchronously, or calls `release()` if it does not. */
 export type BnfRateGrant =
   | { ok: true; release: () => void }
   | { ok: false; kind: "saturated"; api: BnfRateBucketName; waitedMs: number }
   | { ok: false; kind: "invalid_input"; error: string }
 
 /**
- * Take the capacity for one BnF MCP call: the global limiter, then the tool's
- * API limiter, against one deadline (`now + BNF_MCP_RATE_MAX_WAIT_MS`).
- * Resolves `{ ok: false }` when either cannot grant in time (the global grant
- * is then released) or when the input cannot be metered — a weight over a
- * limit included. It rethrows a turn abort (`signal`), queued or sleeping,
- * after releasing whatever it held.
+ * Take the capacity for one BnF MCP call: a reservation on the global limiter,
+ * then on the tool's API limiter, against one deadline
+ * (`now + BNF_MCP_RATE_MAX_WAIT_MS`); then both are stamped as SENT, now — the
+ * global reservation counted throughout the API wait and never aged. Resolves
+ * `{ ok: false }` when either cannot grant in time (the global reservation is
+ * then released) or when the input cannot be metered — a weight over a limit
+ * included. It rethrows a turn abort (`signal`), queued or sleeping, after
+ * releasing whatever it held.
  */
 export async function acquireBnfMcp(
   tool: BnfMcpToolName,
@@ -521,7 +604,7 @@ export async function acquireBnfMcp(
     from: SlidingWindowLimiter,
   ): Promise<{ ok: true; ticket: RateGrantTicket } | Extract<BnfRateGrant, { kind: "saturated" }>> => {
     try {
-      return { ok: true, ticket: await from.acquire(weight.weight, deadline, signal) }
+      return { ok: true, ticket: await from.reserve(weight.weight, deadline, signal) }
     } catch (err) {
       if (!(err instanceof RateWaitTimeoutError)) throw err
       const waitedMs = Math.round(l.now() - start)
@@ -546,6 +629,9 @@ export async function acquireBnfMcp(
     return perApi
   }
   const apiTicket = perApi.ticket
+  // Sent now: the caller sends synchronously after this returns (or releases).
+  l.global.markSent(global.ticket)
+  l.byApi[api].markSent(apiTicket)
   return {
     ok: true,
     release: () => {

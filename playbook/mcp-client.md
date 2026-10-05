@@ -174,10 +174,16 @@ date-périodique, graphe), set from the required `BNF_MCP_RATE_*` env (helm
 `config.bnfMcpRate`, the interface-key quotas × 0.95, divided by
 `replicaCount`). **The guarantee:** in ANY 60 s sliding window, the weighted
 requests a replica sends to one BnF API never exceed that API's limit, and all
-of them together never exceed the global limit — a call is granted only when
-the trailing window's grants plus its own weight fit; there is no burst on top
-and no overdraft, and a call heavier than the whole limit is refused. Two
-enforcement points share those limiters:
+of them together never exceed the global limit. Each ledger counts a call
+from its grant until 60 s after its **send**: a call granted on the global
+limiter that still waits on its API limiter is a reservation that counts in
+every window and never ages, and it is stamped with its send time when it
+leaves. A call is granted only when the reservations plus the trailing
+window's sends plus its own weight fit; there is no burst on top and no
+overdraft, and a call heavier than the whole limit is refused. The flood test
+runs eight agents concurrently on a virtual scheduler and asserts the per-API
+and the global sliding-window peaks of the sent calls. Two enforcement points
+share those limiters:
 
 - **(a) app-made calls** — `callBnfTool` acquires before `fetch`
   (`corpus_search` and its zero-result probe).
@@ -188,8 +194,10 @@ enforcement points share those limiters:
   `spawn_research` child. `onToolStart` cannot do this: it is sync-only and
   cannot veto.
 
-Every call takes the global limiter, then its API limiter, against ONE
-deadline computed when it is enqueued. The rules:
+Every call reserves on the global limiter, then on its API limiter, against
+ONE finite deadline computed when it is enqueued; `acquireBnfMcp` stamps both
+as sent when it returns, and both enforcement points send synchronously after
+it (or release the grant if the turn was cancelled meanwhile). The rules:
 
 - **Shed, never thrown.** A call that cannot be granted within
   `BNF_MCP_RATE_MAX_WAIT_MS` is shed with a structured `{ success: false,

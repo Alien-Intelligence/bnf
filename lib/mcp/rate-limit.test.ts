@@ -405,3 +405,116 @@ test("tool names: the known set, and a bare or unknown bnf__ name stays BnF egre
   assert.equal(bnfToolFromPrefixed("corpus_search"), null)
   assert.equal(bnfToolFromPrefixed("other__bnf_search_catalogue"), null)
 })
+
+// --- pass 3: send-time accounting, deadline bound, abort as the grant lands ---
+
+test("acquire refuses a deadline that is not a finite instant (it would wait without bound)", async () => {
+  const { now, sleep } = fakeClock()
+  const lim = new SlidingWindowLimiter({ limit: 1, now, sleep })
+  for (const deadline of [Number.NaN, Number.POSITIVE_INFINITY]) {
+    await assert.rejects(within(lim.acquire(1, deadline)), RangeError)
+    await assert.rejects(within(lim.reserve(1, deadline)), RangeError)
+  }
+  assert.equal(lim.inWindow(), 0)
+})
+
+test("a reservation counts until it is SENT, then ages from its send", async () => {
+  const { clock, now, sleep } = fakeClock()
+  const lim = new SlidingWindowLimiter({ limit: 1, now, sleep })
+  const held = await lim.reserve(1, now() + FAR)
+  clock.t += 2 * WINDOW // a reservation never ages
+  await assert.rejects(within(lim.acquire(1, now() + 100)), RateWaitTimeoutError)
+  lim.markSent(held)
+  const sentAt = clock.t
+  await within(lim.acquire(1, now() + FAR))
+  assert.equal(clock.t, sentAt + WINDOW, "the next grant waited one window from the SEND, not the grant")
+})
+
+test("an abort that lands on the granting instant releases the grant (limiter)", async () => {
+  const clock = { t: 0 }
+  const controller = new AbortController()
+  let abortOnNextNow = true
+  const now = () => {
+    // The first clock read is the granting one: cancel the caller right there.
+    if (abortOnNextNow) {
+      abortOnNextNow = false
+      controller.abort(new Error("cancelled as the grant landed"))
+    }
+    return clock.t
+  }
+  const lim = new SlidingWindowLimiter({ limit: 1, now, sleep: async () => undefined })
+  await assert.rejects(within(lim.acquire(1, 0 + FAR, controller.signal)), /cancelled as the grant landed/)
+  await new Promise((r) => setImmediate(r))
+  assert.equal(lim.inWindow(), 0, "the grant made in the aborting instant was released")
+})
+
+test("an abort that lands as acquireBnfMcp stamps the send releases both grants (registry)", async () => {
+  const { withBnfRateLimit } = await import("./rate-limited-registry")
+  const clock = { t: 0 }
+  let reads = 0
+  let abortAt = Number.POSITIVE_INFINITY
+  const controller = new AbortController()
+  const now = () => {
+    reads += 1
+    if (reads === abortAt) controller.abort(new Error("cancelled as the call was stamped"))
+    return clock.t
+  }
+  const forwarded: string[] = []
+  const registry = withBnfRateLimit({
+    customTools: [],
+    mcpServers: [],
+    resolve: async () => [],
+    async dispatch(toolName) {
+      forwarded.push(toolName)
+      return { isError: false, content: "{}" }
+    },
+  })
+  const rates = { ...PROD_RATES, now, sleep: async () => undefined }
+  // Dry run: how many clock reads one grant takes; the last one is the stamp.
+  __resetBnfRateLimiterForTests(rates)
+  await acquireBnfMcp("bnf_search_catalogue", {}, undefined)
+  const readsPerGrant = reads
+  __resetBnfRateLimiterForTests(rates)
+  reads = 0
+  abortAt = readsPerGrant
+  const ctx = { signal: controller.signal, request: new Request("http://localhost/test") }
+  const result = await within(registry.dispatch("bnf__bnf_search_catalogue", {}, ctx, "tu_1"))
+  assert.equal(result.isError, true)
+  assert.match(result.content, /aborted before it was sent/)
+  assert.deepEqual(forwarded, [], "nothing reached BnF")
+  abortAt = Number.POSITIVE_INFINITY
+  assert.equal(__bnfRateUsageForTests(BNF_API.CATALOGUE), 0, "API grant released")
+  assert.equal(__bnfRateUsageForTests(GLOBAL_LIMIT), 0, "global grant released")
+})
+
+test("the GLOBAL window counts a call from its send: a long API wait cannot age its global grant", async () => {
+  const clock = { t: 0 }
+  const now = () => clock.t
+  __resetBnfRateLimiterForTests({
+    ...PROD_RATES,
+    globalRpm: 2,
+    catalogueRpm: 1,
+    gallicaSruRpm: 2,
+    maxWaitMs: FAR,
+    now,
+    sleep: async (ms) => {
+      clock.t += ms
+    },
+  })
+  const sends: Array<{ at: number }> = []
+  const send = async (tool: "bnf_search_catalogue" | "bnf_search_gallica") => {
+    const g = await acquireBnfMcp(tool, {}, undefined)
+    if (!g.ok) throw new Error(`unexpected shed: ${JSON.stringify(g)}`)
+    sends.push({ at: clock.t })
+  }
+  await send("bnf_search_catalogue") // t=0: catalogue full for 60 s
+  await send("bnf_search_catalogue") // reserves global at t=0, waits on catalogue, sent at t=60 s
+  await send("bnf_search_gallica")
+  await send("bnf_search_gallica")
+  // Any 60 s window of sends holds at most the global limit.
+  const sorted = sends.map((s) => s.at).sort((a, b) => a - b)
+  for (let i = 0; i < sorted.length; i++) {
+    const inWindow = sorted.filter((t) => t >= sorted[i] && t < sorted[i] + WINDOW).length
+    assert.ok(inWindow <= 2, `window from ${sorted[i]} ms holds ${inWindow} sends > global 2 (${sorted.join(",")})`)
+  }
+})

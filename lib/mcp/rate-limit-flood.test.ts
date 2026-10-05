@@ -5,7 +5,9 @@
 // 100/min quota, 346 × 429 and 252 × 500 on connector 46. Both enforcement
 // points (the registry decorator for SDK-dispatched raw tools and callBnfTool
 // for app-made calls) share one process-wide set of limiters, so the forwarded
-// rate can never exceed the configured catalogue rate whatever the fan-out.
+// rate can never exceed the configured rate whatever the fan-out. The agents run
+// CONCURRENTLY on a virtual scheduler, and the per-API and GLOBAL sliding-window
+// peaks of the SENT calls are measured.
 import "server-only"
 
 import { test } from "node:test"
@@ -14,7 +16,8 @@ import type { ToolContext, ToolRegistry } from "@alien/chat-sdk/claude"
 import { callBnfTool } from "./call"
 import { BnfMcpQuotaSaturatedError } from "./errors"
 import { withBnfRateLimit } from "./rate-limited-registry"
-import { __resetBnfRateLimiterForTests } from "./rate-limit"
+import { BNF_API, BNF_MCP_TOOL_API, __resetBnfRateLimiterForTests, isBnfMcpToolName } from "./rate-limit"
+import { bnfToolFromPrefixed } from "./tools"
 
 const PROD_RATES = {
   globalRpm: 475,
@@ -30,7 +33,7 @@ const SIMULATED_MS = 5 * 60_000
 const THINK_MS = 250
 const AGENTS = 8 // the parent + 7 children
 
-/** A stub registry whose dispatch records the (fake) time of every forwarded call. */
+/** A raw (undecorated) registry recording the (fake) time of every call. */
 function stubRegistry(forwarded: number[], now: () => number): ToolRegistry<ToolContext> {
   return {
     customTools: [],
@@ -89,31 +92,89 @@ function peakPerMinute(events: Array<{ at: number; weight: number }>): number {
 
 const unit = (times: number[]) => times.map((at) => ({ at, weight: 1 }))
 
-test("8 agents flooding the catalogue cannot exceed 47/min across both enforcement points", async () => {
-  const clock = { t: 0 }
-  const now = () => clock.t
-  __resetBnfRateLimiterForTests({
-    ...PROD_RATES,
-    now,
-    sleep: async (ms) => {
-      clock.t += ms
+/**
+ * A virtual scheduler: every sleep (the limiter's and the agents' think time)
+ * registers a timer on a virtual clock; the driver lets every runnable agent
+ * settle, then jumps the clock to the next timer. The agents run CONCURRENTLY
+ * — their acquires interleave in the limiters' FIFO queues exactly as they
+ * would in production — and no test waits on real time.
+ */
+class VirtualScheduler {
+  t = 0
+  private timers: Array<{ at: number; resolve: () => void }> = []
+  readonly now = () => this.t
+  readonly sleep = (ms: number, signal?: AbortSignal) =>
+    new Promise<void>((resolve, reject) => {
+      const timer = { at: this.t + Math.max(0, ms), resolve }
+      this.timers.push(timer)
+      signal?.addEventListener(
+        "abort",
+        () => {
+          this.timers = this.timers.filter((x) => x !== timer)
+          reject(signal.reason)
+        },
+        { once: true },
+      )
+    })
+
+  /** Drive until `work` settles. */
+  async run(work: Promise<unknown>): Promise<void> {
+    let finished = false
+    const done = work.finally(() => {
+      finished = true
+    })
+    for (;;) {
+      for (let i = 0; i < 10; i++) await new Promise((r) => setImmediate(r))
+      if (finished) break
+      if (this.timers.length === 0) throw new Error("virtual scheduler: agents pending with no timer (deadlock)")
+      const next = Math.min(...this.timers.map((x) => x.at))
+      this.t = Math.max(this.t, next)
+      const due = this.timers.filter((x) => x.at <= this.t)
+      this.timers = this.timers.filter((x) => x.at > this.t)
+      for (const x of due) x.resolve()
+    }
+    await done
+  }
+}
+
+type Send = { at: number; weight: number; api: string }
+
+/** A stub registry whose dispatch records the (virtual) send time of every forwarded call. */
+function recordingRegistry(sent: Send[], now: () => number, weightOf: (id: string) => number) {
+  return withBnfRateLimit({
+    customTools: [],
+    mcpServers: [],
+    resolve: async () => [],
+    dispatch: async (name, _input, _ctx, toolUseId) => {
+      sent.push({ at: now(), weight: weightOf(toolUseId ?? ""), api: apiOf(name) })
+      return { content: JSON.stringify({ success: true }), isError: false }
     },
   })
+}
 
-  const forwarded: number[] = []
-  const limited = withBnfRateLimit(stubRegistry(forwarded, now))
+function apiOf(prefixed: string): string {
+  const raw = bnfToolFromPrefixed(prefixed)
+  if (raw === null || !isBnfMcpToolName(raw)) throw new Error(`not a metered BnF tool: ${prefixed}`)
+  return BNF_MCP_TOOL_API[raw]
+}
+
+const byApi = (sent: Send[], api: string) => sent.filter((e) => e.api === api)
+
+test("8 CONCURRENT agents flooding the catalogue stay under quota × 0.95, across both enforcement points", async () => {
+  const sched = new VirtualScheduler()
+  __resetBnfRateLimiterForTests({ ...PROD_RATES, now: sched.now, sleep: sched.sleep })
+  const sent: Send[] = []
+  const limited = recordingRegistry(sent, sched.now, () => 1)
   const realFetch = globalThis.fetch
-  globalThis.fetch = stubFetch(forwarded, now)
+  const fetched: number[] = []
+  globalThis.fetch = stubFetch(fetched, sched.now)
 
   let refused = 0
   let attempts = 0
-  try {
-    // Round-robin: each agent's call is awaited to completion before the
-    // next, so the fake clock only moves inside the limiter's own wait (or by
-    // the think time between rounds) and every recorded send time IS its grant
-    // time — the sliding-window measure below is exact, not skewed by another
-    // agent advancing the shared clock mid-dispatch.
-    const call = async (iteration: number) => {
+  const agent = async (id: number) => {
+    let iteration = 0
+    while (sched.t < SIMULATED_MS) {
+      iteration += 1
       attempts += 1
       if (iteration % 3 === 0) {
         // The app-made path: corpus_search → callBnfTool.
@@ -126,79 +187,90 @@ test("8 agents flooding the catalogue cannot exceed 47/min across both enforceme
           if (!(err instanceof BnfMcpQuotaSaturatedError)) throw err
           refused += 1
         }
-        return
+      } else {
+        // The SDK-dispatched raw tool: the model calling bnf__bnf_search_catalogue.
+        const result = await limited.dispatch("bnf__bnf_search_catalogue", { query: "coiffure" }, ctx(), `a${id}_${iteration}`)
+        if (result.isError) {
+          assert.match(result.content, /"rate_limited":true/, "the only error the stub can produce is a refusal")
+          refused += 1
+        }
       }
-      // The SDK-dispatched raw tool: the model calling bnf__bnf_search_catalogue.
-      const result = await limited.dispatch("bnf__bnf_search_catalogue", { query: "coiffure" }, ctx(), `tu_${iteration}`)
-      if (result.isError) {
-        assert.match(result.content, /"rate_limited":true/, "the only error the stub can produce is a refusal")
-        refused += 1
-      }
+      await sched.sleep(THINK_MS)
     }
-    let iteration = 0
-    while (clock.t < SIMULATED_MS) {
-      for (let agent = 0; agent < AGENTS; agent++) await call(++iteration)
-      clock.t += THINK_MS
-    }
+  }
+  try {
+    await sched.run(Promise.all(Array.from({ length: AGENTS }, (_, i) => agent(i))))
   } finally {
     globalThis.fetch = realFetch
   }
 
+  const all = [...sent, ...fetched.map((at) => ({ at, weight: 1, api: BNF_API.CATALOGUE }))]
   const expected = (SIMULATED_MS / 60_000) * PROD_RATES.catalogueRpm
   assert.ok(attempts > expected * 2, `the flood was real: ${attempts} attempts for ${expected} grants`)
   assert.ok(refused > 0, "saturation produced structured refusals")
-  const peak = peakPerMinute(unit(forwarded))
-  assert.ok(
-    peak <= CATALOGUE_QUOTA * QUOTA_SHARE,
-    `sliding-window peak ${peak}/min ≤ quota × 0.95 = ${CATALOGUE_QUOTA * QUOTA_SHARE}`,
-  )
-  const span = Math.max(...forwarded)
-  const windows = Math.floor(span / 60_000) + 1
-  assert.ok(
-    forwarded.length <= windows * PROD_RATES.catalogueRpm,
-    `forwarded ${forwarded.length} ≤ ${windows} windows × ${PROD_RATES.catalogueRpm}`,
-  )
-  assert.ok(forwarded.length >= expected - PROD_RATES.catalogueRpm, "the limiter still lets the quota through")
+  assert.ok(fetched.length > 0 && sent.length > 0, "both enforcement points sent calls")
+  const peak = peakPerMinute(all)
+  assert.ok(peak <= CATALOGUE_QUOTA * QUOTA_SHARE, `catalogue sliding-window peak ${peak}/min ≤ ${CATALOGUE_QUOTA * QUOTA_SHARE}`)
+  assert.ok(all.length >= expected - PROD_RATES.catalogueRpm, `the limiter still lets the quota through (${all.length})`)
 })
 
-test("heavy full-text reads on IIIF stay under quota × 0.95 by WEIGHT in every 60 s window", async () => {
-  const clock = { t: 0 }
-  const now = () => clock.t
-  __resetBnfRateLimiterForTests({
-    ...PROD_RATES,
-    now,
-    sleep: async (ms) => {
-      clock.t += ms
-    },
-  })
-  const sent: Array<{ at: number; weight: number }> = []
+test("8 CONCURRENT agents on two APIs: per-API AND global peaks hold while calls wait a minute on their API", async () => {
+  // The global limit binds below the sum of the two APIs, and a 60 s wait
+  // budget lets a call hold its global grant for a whole window while it waits
+  // on its API — the case where a grant-stamped global ticket would age out.
+  const RATES = { ...PROD_RATES, globalRpm: 10, catalogueRpm: 2, iiifRpm: 10, maxWaitMs: 60_000 }
+  const sched = new VirtualScheduler()
+  __resetBnfRateLimiterForTests({ ...RATES, now: sched.now, sleep: sched.sleep })
+  const sent: Send[] = []
+  const limited = recordingRegistry(sent, sched.now, () => 1)
+  const agent = async (id: number) => {
+    let iteration = 0
+    // Four agents pile up on the tight catalogue, a call every 15 s each —
+    // each holds its global grant while it waits up to a minute for the API;
+    // four keep the global limiter saturated through IIIF page reads.
+    const catalogue = id < 4
+    while (sched.t < SIMULATED_MS) {
+      iteration += 1
+      const tool = catalogue ? "bnf__bnf_search_catalogue" : "bnf__bnf_get_page_text"
+      await limited.dispatch(tool, { query: "coiffure", ark: "x" }, ctx(), `a${id}_${iteration}`)
+      await sched.sleep(catalogue ? 15_000 : THINK_MS)
+    }
+  }
+  await sched.run(Promise.all(Array.from({ length: AGENTS }, (_, i) => agent(i))))
+
+  const catalogue = peakPerMinute(byApi(sent, BNF_API.CATALOGUE))
+  const iiif = peakPerMinute(byApi(sent, BNF_API.IIIF))
+  const global = peakPerMinute(sent)
+  assert.ok(catalogue <= RATES.catalogueRpm, `catalogue peak ${catalogue} ≤ ${RATES.catalogueRpm}`)
+  assert.ok(iiif <= RATES.iiifRpm, `IIIF peak ${iiif} ≤ ${RATES.iiifRpm}`)
+  assert.ok(global <= RATES.globalRpm, `GLOBAL peak ${global} ≤ ${RATES.globalRpm}`)
+  assert.equal(global, RATES.globalRpm, "the global limit is the binding one")
+})
+
+test("8 CONCURRENT agents with heavy full-text reads stay under the IIIF quota × 0.95 by WEIGHT", async () => {
+  const sched = new VirtualScheduler()
+  __resetBnfRateLimiterForTests({ ...PROD_RATES, now: sched.now, sleep: sched.sleep })
+  const sent: Send[] = []
   const weights = new Map<string, number>()
-  const limited = withBnfRateLimit({
-    customTools: [],
-    mcpServers: [],
-    resolve: async () => [],
-    dispatch: async (_name, _input, _ctx, toolUseId) => {
-      sent.push({ at: now(), weight: weights.get(toolUseId ?? "") ?? 0 })
-      return { content: JSON.stringify({ success: true }), isError: false }
-    },
-  })
-  let i = 0
-  while (clock.t < SIMULATED_MS) {
-    for (let agent = 0; agent < AGENTS; agent++) {
-      i += 1
-      const id = `a${agent}_${i}`
+  const limited = recordingRegistry(sent, sched.now, (id) => weights.get(id) ?? 0)
+  const agent = async (id: number) => {
+    let iteration = 0
+    while (sched.t < SIMULATED_MS) {
+      iteration += 1
+      const key = `a${id}_${iteration}`
       // Alternate a 202-request full-text read (200 pages) with single page reads.
-      const heavy = i % 2 === 0
-      weights.set(id, heavy ? 202 : 1)
+      const heavy = (id + iteration) % 2 === 0
+      weights.set(key, heavy ? 202 : 1)
       await limited.dispatch(
         heavy ? "bnf__bnf_get_document_text" : "bnf__bnf_get_page_text",
         heavy ? { ark: "x", max_pages: 200 } : { ark: "x" },
         ctx(),
-        id,
+        key,
       )
+      await sched.sleep(THINK_MS)
     }
-    clock.t += THINK_MS
   }
+  await sched.run(Promise.all(Array.from({ length: AGENTS }, (_, i) => agent(i))))
   const peak = peakPerMinute(sent)
   assert.ok(sent.some((e) => e.weight === 202), "heavy calls were granted at all")
   assert.ok(peak <= IIIF_QUOTA * QUOTA_SHARE, `weighted IIIF peak ${peak}/min ≤ ${IIIF_QUOTA * QUOTA_SHARE}`)
