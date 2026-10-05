@@ -164,7 +164,7 @@ test("forget of an item that is not there reports it and invalidates nothing", a
 })
 
 test("a render that lost the race to a memory write is not cached; the new memory is", async () => {
-  await SessionQueries.invalidatePrompts({ projectId: project.id })
+  await SessionQueries.invalidatePrompts({ projectId: project.id }, prisma)
   // The row as a turn read it BEFORE the write below (its epoch is now stale).
   const stale = await prisma.appSession.findUniqueOrThrow({ where: { id: corpusSession } })
   await MemoryService.write({
@@ -212,4 +212,26 @@ test("update or reorder of a vanished item is null (the route's 404), never a th
   const gone = "00000000-0000-4000-8000-0000000000aa"
   assert.equal(await MemoryService.update(gone, { text: "x" }), null)
   assert.equal(await MemoryService.reorder(gone, 1), null)
+})
+
+test("moving an item onto its exact duplicate MERGES it, like write — never two identical rows", async () => {
+  const scope = MEMORY_SCOPE.CORPUS
+  const keep = await MemoryService.write({ projectId: project.id, scope, section: "Cible", text: "Doublon exact à fusionner" })
+  const moved = await MemoryService.write({ projectId: project.id, scope, section: "Origine", text: "Doublon exact à fusionner" })
+  const result = await MemoryService.update(moved.id, { section: "Cible" })
+  assert.equal(result?.id, keep.id, "the item already in the section is the merged one")
+  const rows = await prisma.memoryItem.findMany({ where: { projectId: project.id, scope, text: "Doublon exact à fusionner" } })
+  assert.equal(rows.length, 1)
+})
+
+test("a move to another section appends at its end, and concurrent moves take distinct positions", async () => {
+  const scope = MEMORY_SCOPE.CORPUS
+  const first = await MemoryService.write({ projectId: project.id, scope, section: "Arrivée", text: "Déjà là" })
+  const a = await MemoryService.write({ projectId: project.id, scope, section: "Départ", text: "Premier fait déplacé" })
+  const b = await MemoryService.write({ projectId: project.id, scope, section: "Départ", text: "Second fait, sans rapport" })
+  await Promise.all([a, b].map((it) => MemoryService.update(it.id, { section: "Arrivée" })))
+  const rows = await prisma.memoryItem.findMany({ where: { projectId: project.id, scope, section: "Arrivée" } })
+  assert.equal(rows.length, 3)
+  assert.deepEqual(rows.map((r) => r.position).sort(), [0, 1, 2], "no two items share a position")
+  assert.equal(rows.find((r) => r.id === first.id)?.position, 0)
 })

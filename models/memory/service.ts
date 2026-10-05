@@ -29,6 +29,15 @@ function levenshtein(a: string, b: string): number {
   return dp[m][n]
 }
 
+/** The near-duplicate of `text` among `items` (equal after normalisation, or
+ *  fewer than MEMORY_NEAR_DUP_MAX_EDIT_DISTANCE edits away), if any. */
+function nearDuplicate<T extends { text: string }>(items: readonly T[], text: string): T | undefined {
+  const target = norm(text)
+  return items.find(
+    (e) => norm(e.text) === target || levenshtein(norm(e.text), target) < MEMORY_NEAR_DUP_MAX_EDIT_DISTANCE,
+  )
+}
+
 /**
  * Every memory change goes through this service, and every one of them
  * invalidates the cached system prompts of ALL the project's sessions IN THE
@@ -62,12 +71,7 @@ export class MemoryService {
       const existing = await tx.memoryItem.findMany({
         where: { projectId: args.projectId, scope: args.scope, section: args.section },
       })
-      const target = norm(args.text)
-      const match = existing.find(
-        (e) =>
-          norm(e.text) === target ||
-          levenshtein(norm(e.text), target) < MEMORY_NEAR_DUP_MAX_EDIT_DISTANCE,
-      )
+      const match = nearDuplicate(existing, args.text)
       const item = match
         ? await tx.memoryItem.update({
             where: { id: match.id },
@@ -95,6 +99,7 @@ export class MemoryService {
    */
   static async forget(projectId: string, scope: MemoryScope, itemId: string): Promise<boolean> {
     return prisma.$transaction(async (tx) => {
+      await MemoryQueries.lockScope(tx, projectId, scope)
       const { count } = await tx.memoryItem.deleteMany({ where: { id: itemId, projectId, scope } })
       if (count === 0) return false
       await SessionQueries.invalidatePrompts({ projectId }, tx)
@@ -117,15 +122,33 @@ export class MemoryService {
   }
 
   /**
-   * Update the text and/or section of an existing memory item. Returns null
-   * — and invalidates nothing — when the item no longer exists (a concurrent
-   * forget): the route answers 404, never a 500 on a missing row.
+   * Update the text and/or section of an existing memory item, under the same
+   * per-scope lock and dedupe as `write`: when the edited text (in its target
+   * section) is a near-duplicate of another item there, the two MERGE — the
+   * other item takes the new text, this one is deleted, the merged item is
+   * returned — instead of leaving two identical rows. A move to another
+   * section appends at its end. Returns null — and invalidates nothing — when
+   * the item no longer exists (a concurrent forget): the route answers 404.
    * Caller must have already verified project ownership (via MemoryPolicy).
    */
   static async update(itemId: string, args: { text?: string; section?: string }): Promise<MemoryItem | null> {
-    return MemoryService.mutateItem(itemId, {
-      ...(args.text !== undefined ? { text: args.text } : {}),
-      ...(args.section !== undefined ? { section: args.section } : {}),
+    return MemoryService.underScopeLock(itemId, async (tx, item) => {
+      const section = args.section ?? item.section
+      const text = args.text ?? item.text
+      const siblings = await tx.memoryItem.findMany({
+        where: { projectId: item.projectId, scope: item.scope, section, id: { not: item.id } },
+        orderBy: { position: "asc" },
+      })
+      const duplicate = nearDuplicate(siblings, text)
+      if (duplicate !== undefined) {
+        await tx.memoryItem.delete({ where: { id: item.id } })
+        return tx.memoryItem.update({ where: { id: duplicate.id }, data: { text } })
+      }
+      const moved = section !== item.section
+      return tx.memoryItem.update({
+        where: { id: item.id },
+        data: { text, section, ...(moved ? { position: siblings.length } : {}) },
+      })
     })
   }
 
@@ -134,17 +157,30 @@ export class MemoryService {
    * item no longer exists. The caller computes the target position.
    */
   static async reorder(itemId: string, position: number): Promise<MemoryItem | null> {
-    return MemoryService.mutateItem(itemId, { position })
+    return MemoryService.underScopeLock(itemId, (tx, item) =>
+      tx.memoryItem.update({ where: { id: item.id }, data: { position } }),
+    )
   }
 
-  /** Apply `data` to one item and invalidate in one transaction; null when it is gone. */
-  private static async mutateItem(itemId: string, data: Prisma.MemoryItemUpdateManyMutationInput): Promise<MemoryItem | null> {
+  /**
+   * Run `change` on one item inside one transaction holding its (project,
+   * scope) lock — the lock `write` takes — then invalidate every cached
+   * prompt of the project. Null when the item is gone (read again under the
+   * lock, so a forget that won the race is seen).
+   */
+  private static async underScopeLock(
+    itemId: string,
+    change: (tx: Prisma.TransactionClient, item: MemoryItem) => Promise<MemoryItem>,
+  ): Promise<MemoryItem | null> {
     return prisma.$transaction(async (tx) => {
-      const { count } = await tx.memoryItem.updateMany({ where: { id: itemId }, data })
-      if (count === 0) return null
-      const item = await tx.memoryItem.findUniqueOrThrow({ where: { id: itemId } })
+      const before = await tx.memoryItem.findUnique({ where: { id: itemId } })
+      if (before === null) return null
+      await MemoryQueries.lockScope(tx, before.projectId, before.scope)
+      const item = await tx.memoryItem.findUnique({ where: { id: itemId } })
+      if (item === null) return null
+      const result = await change(tx, item)
       await SessionQueries.invalidatePrompts({ projectId: item.projectId }, tx)
-      return item
+      return result
     })
   }
 }
