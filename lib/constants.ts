@@ -3,6 +3,8 @@
 // Rule: no magic numbers in routes, services, or components — import from here.
 // See playbook/constants.md.
 
+import { LOGIN_METHOD } from "@/models/users/schema"
+
 // ---------------------------------------------------------------------------
 // Routes — single source of truth for in-app navigation paths.
 // Locale prefix is handled by next-intl's <Link>; these are locale-agnostic.
@@ -24,6 +26,9 @@ export const ROUTES = {
   adminProjects: "/admin/projects",
   signIn: "/sign-in",
   signUp: "/sign-up",
+  forgotPassword: "/forgot-password",
+  /** The site root: the session-aware entry page (app/[locale]/page.tsx). */
+  root: "/",
 } as const
 
 /**
@@ -57,7 +62,16 @@ export const ADMIN_TAB_HREF: Record<AdminTab, string> = {
  * affordance derive their sequence from this list. `key` matches the route
  * segment and the `nav.*` i18n key.
  */
-export const WORKSPACE_STEPS = ["constituer", "ingerer", "rechercher"] as const
+export const WORKSPACE_STEP = {
+  CONSTITUER: "constituer",
+  INGERER: "ingerer",
+  RECHERCHER: "rechercher",
+} as const
+export const WORKSPACE_STEPS = [
+  WORKSPACE_STEP.CONSTITUER,
+  WORKSPACE_STEP.INGERER,
+  WORKSPACE_STEP.RECHERCHER,
+] as const
 export type WorkspaceStep = (typeof WORKSPACE_STEPS)[number]
 
 /**
@@ -65,7 +79,17 @@ export type WorkspaceStep = (typeof WORKSPACE_STEPS)[number]
  * derived workspace over a shared corpus. Constituer and Ingérer mutate the
  * corpus and are not theirs to open.
  */
-export const RESEARCH_ONLY_STEPS = ["rechercher"] as const satisfies readonly WorkspaceStep[]
+export const RESEARCH_ONLY_STEPS = [WORKSPACE_STEP.RECHERCHER] as const satisfies readonly WorkspaceStep[]
+
+// ---------------------------------------------------------------------------
+// Brand assets — the co-brand logos shown in the workspace header and on the
+// auth pages. Intrinsic sizes are the files' own, for next/image.
+// ---------------------------------------------------------------------------
+
+export const BRAND_ASSET = {
+  ALIEN_LOGO: { src: "/brand/logo-w.svg", width: 1048, height: 153 },
+  BNF_LOGO: { src: "/brand/bnf-logo-w.png", width: 960, height: 359 },
+} as const
 
 // ---------------------------------------------------------------------------
 // Authentication — Alien Auth (Authentik) SSO.
@@ -76,9 +100,92 @@ export const RESEARCH_ONLY_STEPS = ["rechercher"] as const satisfies readonly Wo
  * verbatim with the alien-agents demo so the OAuth callback path
  * (`/api/auth/oauth2/callback/authentik`) matches the redirect URI registered
  * on the shared Authentik application. Used server-side (lib/auth.ts) and
- * client-side (the sign-in button).
+ * client-side (the sign-in button). It IS the SSO login method stored on
+ * `session.login_method` (models/users/schema.ts LOGIN_METHOD), so the value
+ * is spelled once, there.
  */
-export const OAUTH_PROVIDER_ID = "authentik"
+export const OAUTH_PROVIDER_ID = LOGIN_METHOD.AUTHENTIK
+
+/**
+ * What the app asks Authentik for at SSO sign-in. `openid` makes it OIDC and
+ * yields the id_token that sign-out sends back as `id_token_hint`;
+ * `offline_access` + offline access type + consent prompt yield a refresh
+ * token. Changing these changes what sign-out can do.
+ */
+export const AUTHENTIK_OAUTH = {
+  SCOPES: ["openid", "email", "profile", "offline_access"],
+  ACCESS_TYPE: "offline",
+  PROMPT: "consent",
+} as const
+
+/**
+ * Query keys the auth pages read and write. `next` is the post-sign-in
+ * destination, always passed through `safeNextPath` (lib/auth-redirect.ts);
+ * written by `requireSessionUser`, read by the sign-in page. `signedOut`
+ * carries a SIGNED_OUT_NOTICE (models/users/schema.ts); written by
+ * UserService.signOut, read by the sign-in page. The auth e2e script asserts
+ * on both.
+ */
+export const AUTH_QUERY = { NEXT: "next", SIGNED_OUT: "signedOut" } as const
+
+/**
+ * better-auth's catch-all mount and the email endpoints under it, as
+ * better-auth names them (the session.create hook sees these paths:
+ * lib/auth-login-method.ts).
+ */
+export const BETTER_AUTH_BASE_PATH = "/api/auth"
+export const BETTER_AUTH_PATH = {
+  SIGN_IN_EMAIL: "/sign-in/email",
+  SIGN_UP_EMAIL: "/sign-up/email",
+} as const
+
+/**
+ * The auth endpoints the app's own clients call: better-auth's email sign-up
+ * and sign-in, and the app's sign-out route. Used by the sign-in/sign-up
+ * clients, the sign-out hook and the e2e/seed scripts.
+ */
+export const AUTH_ENDPOINT = {
+  SIGN_UP_EMAIL: `${BETTER_AUTH_BASE_PATH}${BETTER_AUTH_PATH.SIGN_UP_EMAIL}`,
+  SIGN_IN_EMAIL: `${BETTER_AUTH_BASE_PATH}${BETTER_AUTH_PATH.SIGN_IN_EMAIL}`,
+  SIGN_OUT: "/api/sign-out",
+} as const
+
+/**
+ * better-auth's error codes the auth forms tell apart. Anything else reads as
+ * the generic failure. INVALID_* / USER_NOT_FOUND → « Identifiants invalides »;
+ * *_ALREADY_EXISTS → « adresse déjà utilisée ».
+ */
+export const BETTER_AUTH_ERROR = {
+  INVALID_EMAIL_OR_PASSWORD: "INVALID_EMAIL_OR_PASSWORD",
+  INVALID_PASSWORD: "INVALID_PASSWORD",
+  USER_NOT_FOUND: "USER_NOT_FOUND",
+  USER_ALREADY_EXISTS: "USER_ALREADY_EXISTS",
+  USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL: "USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL",
+  EMAIL_ALREADY_EXISTS: "EMAIL_ALREADY_EXISTS",
+} as const
+
+/**
+ * The UI locales, French first and default. i18n/routing.ts builds next-intl's
+ * routing from these, and models/users/types.ts validates a client-sent locale
+ * against them.
+ */
+export const APP_LOCALES = ["fr", "en"] as const
+export const DEFAULT_LOCALE = "fr" satisfies (typeof APP_LOCALES)[number]
+
+/**
+ * Wall-clock ceiling on fetching Authentik's OIDC discovery document during
+ * sign-out (lib/auth-sso.ts). Sign-out must never hang on an identity
+ * provider: past this bound the app session is ended anyway and the user is
+ * told the Alien session could not be closed (CLAUDE_ERROR_PATTERNS §14).
+ */
+export const OIDC_DISCOVERY_TIMEOUT_MS = 5_000
+
+/**
+ * Longest `?next=` value accepted. A real in-app path is a few dozen
+ * characters; anything near this bound is a crafted payload, and the browser
+ * URL limit is the same order of magnitude.
+ */
+export const SAFE_NEXT_MAX_LENGTH = 2_048
 
 // ---------------------------------------------------------------------------
 // Layout geometry — prototype proportions (BnF Corpus Research.dc.html).

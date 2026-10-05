@@ -3,10 +3,12 @@
 import { useState } from "react"
 import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
-import { useRouter } from "next/navigation"
+import { AUTH_MESSAGE_TONE, AlertAuthMessage } from "@/components/alerts/auth/message"
 import { useTranslations } from "next-intl"
-import { Link } from "@/i18n/navigation"
+import { Link, useRouter } from "@/i18n/navigation"
 import { apiFetch } from "@/lib/api-fetch"
+import { AUTH_ENDPOINT, ROUTES } from "@/lib/constants"
+import { EMAIL_TAKEN_CODES, betterAuthErrorCode } from "@/lib/auth-error"
 import { signUpSchema, type SignUpInput } from "@/models/users/types"
 import {
   Form,
@@ -41,35 +43,32 @@ export function SignUpClient() {
 
   async function handleSubmit(values: SignUpInput) {
     setServerError(null)
-    const response = await apiFetch("/api/auth/sign-up/email", {
-      method: "POST",
-      body: JSON.stringify({
-        name: values.name,
-        email: values.email,
-        password: values.password,
-      }),
-    })
-
-    if (!response.ok) {
-      const body = await response.json().catch(() => ({}))
-      const code: string | undefined =
-        (body as { code?: string }).code ??
-        (body as { error?: string }).error
-
-      const EMAIL_TAKEN_CODES = new Set([
-        "USER_ALREADY_EXISTS",
-        "EMAIL_ALREADY_EXISTS",
-      ])
-      const message =
-        code !== undefined && EMAIL_TAKEN_CODES.has(code)
-          ? t("errorEmailTaken")
-          : tCommon("error")
-
-      setServerError(message)
+    let response: Response
+    try {
+      response = await apiFetch(AUTH_ENDPOINT.SIGN_UP_EMAIL, {
+        method: "POST",
+        body: JSON.stringify({
+          name: values.name,
+          email: values.email,
+          password: values.password,
+        }),
+      })
+    } catch (e) {
+      console.error("[sign-up] request failed", e)
+      setServerError(tCommon("error"))
       return
     }
 
-    router.push("/projects")
+    if (!response.ok) {
+      const code = await betterAuthErrorCode(response)
+      setServerError(
+        code !== null && EMAIL_TAKEN_CODES.has(code) ? t("errorEmailTaken") : tCommon("error"),
+      )
+      return
+    }
+
+    // Locale-aware, and `replace` so Back does not return to the form.
+    router.replace(ROUTES.projects)
   }
 
   return (
@@ -80,12 +79,7 @@ export function SignUpClient() {
         </CardHeader>
         <CardContent>
           {serverError !== null && (
-            <div
-              role="alert"
-              className="mb-4 rounded-md border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive"
-            >
-              {serverError}
-            </div>
+            <AlertAuthMessage tone={AUTH_MESSAGE_TONE.ERROR} message={serverError} />
           )}
           <Form {...form}>
             <form
@@ -147,7 +141,7 @@ export function SignUpClient() {
         </CardContent>
         <CardFooter className="flex justify-center gap-1 text-sm text-muted-foreground">
           <span>{t("hasAccount")}</span>
-          <Link href="/sign-in" className="font-medium text-foreground underline">
+          <Link href={ROUTES.signIn} className="font-medium text-foreground underline">
             {tSignIn("title")}
           </Link>
         </CardFooter>

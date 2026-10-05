@@ -1,7 +1,9 @@
+import { ROUTES } from "@/lib/constants"
 import { getTranslations } from "next-intl/server"
 import type { Metadata } from "next"
 import { requireSessionUser } from "@/lib/auth-helpers"
 import { listProjectsForUser } from "@/models/projects/service"
+import { workspaceHeaderViewer } from "@/lib/authz/workspace-header"
 import { ProjectsClient } from "./client"
 
 export async function generateMetadata(): Promise<Metadata> {
@@ -10,14 +12,13 @@ export async function generateMetadata(): Promise<Metadata> {
 }
 
 export default async function ProjectsPage() {
-  const user = await requireSessionUser("/projects")
+  const user = await requireSessionUser(ROUTES.projects)
   const projects = await listProjectsForUser(user)
 
   return (
     <ProjectsClient
       initialProjects={projects}
-      user={{ id: user.id, name: user.name, email: user.email }}
-      isAdmin={user.role === "admin"}
+      viewer={workspaceHeaderViewer(user)}
     />
   )
 }

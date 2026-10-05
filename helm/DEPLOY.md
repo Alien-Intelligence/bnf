@@ -54,10 +54,14 @@ make `worker.replicaCount > 1` safe (one shared queue, no double-processing). A
 it doesn't crash-loop on boot (the worker connects to pg-boss immediately and
 has no in-process retry/wait of its own).
 
-**Auth**: plain better-auth email/password. No Authentik / OAuth — and the
-better-auth tables live in the same Prisma schema as the domain tables, so the
-entrypoint's single `prisma migrate deploy` covers the whole schema (no separate
-migrate-auth step).
+**Auth**: better-auth, email/password plus Alien Auth (Authentik) SSO through
+the genericOAuth plugin when `config.authentikBaseUrl` and the shared
+`authentik-prod` credentials are present (see `values.yaml`). The better-auth
+tables live in the same Prisma schema as the domain tables, so the entrypoint's
+single `prisma migrate deploy` covers the whole schema (no separate migrate-auth
+step). Each `session` row records how it was opened (`login_method`), which
+sign-out reads to decide whether Authentik's session must end too — see
+"Sign-out and the Authentik session" below.
 
 **Gateway / certificate**: `bnf.demo.alien.club` is a dedicated subdomain served
 at root `/`, so the chart provisions its **own** Istio Gateway + cert-manager
@@ -273,6 +277,53 @@ kubectl --context platform-prod -n bnf get pods
 curl -sS -o /dev/null -w "%{http_code}\n" https://bnf.demo.alien.club/   # 307 → /sign-in
 curl -sS -o /dev/null -w "%{http_code}\n" https://bnf.demo.alien.club/api/auth/get-session  # 200
 ```
+
+### Sign-out and the Authentik session (ops prerequisites)
+
+`POST /api/sign-out` always deletes the app session. For a session opened
+through Authentik it also sends the browser to the application's OIDC
+`end_session_endpoint` (read from
+`<authentikBaseUrl>/application/o/<authentikAppSlug>/.well-known/openid-configuration`,
+never guessed), with `id_token_hint`, `client_id` and
+`post_logout_redirect_uri = <publicUrl>/sign-in?signedOut=done` (or
+`/en/sign-in?signedOut=done`). No new value or secret: it reuses
+`config.authentikBaseUrl`, `config.authentikAppSlug`, the shared client id and
+`config.publicUrl`. If discovery is unreachable (5 s bound), the app session
+still ends and the sign-in page says the Alien session could not be closed.
+
+Two Authentik-side changes are needed for the SSO half to do what users expect.
+They are **not** made from this repo:
+
+1. **Required — a User Logout stage.** Authentik's
+   `default-provider-invalidation-flow` has no User Logout stage, so
+   end-session closes the provider session only and the Authentik session
+   survives: « Se connecter avec Alien » signs the user straight back in.
+   Create a dedicated invalidation flow containing a User Logout stage and bind
+   it to the `datastreaming` provider. Do not edit the default flow, which every
+   provider shares. The `datastreaming` application is shared with the
+   alien-agents demo, so its logout changes the same way.
+2. **For the redirect back to BnF — Authentik ≥ 2026.5.3.** Prod pins chart
+   `2026.2.2` (`k8s-charts/helm/cluster-infrastructure/templates/authentik.yaml`).
+   `post_logout_redirect_uri` is honoured from 2026.5 (2026.5.3 fixes a matching
+   regression), and must be registered on the provider as a **Logout**-type
+   redirect URI, e.g. the regex
+   `^https://bnf\.demo\.alien\.club/(en/)?sign-in\?signedOut=done$`.
+   Avoid 2026.8.0+ until goauthentik/authentik#26561 (blank 200 at
+   end-session) is fixed. Until the upgrade, the browser stops on Authentik's
+   own "logged out" page.
+
+These facts come from Authentik's docs and issue tracker, not from a probe of
+`auth.alien.club`; the first SSO sign-out after deploy confirms them:
+
+```bash
+# The discovery document must carry end_session_endpoint:
+curl -sS https://auth.alien.club/application/o/datastreaming/.well-known/openid-configuration \
+  | jq -r .end_session_endpoint
+```
+
+Then, in a browser: sign in with « Se connecter avec Alien », sign out, and
+check that the address bar passes through `…/end-session/?id_token_hint=…`,
+and that signing in again asks for credentials (it will not until step 1).
 
 ### Adopting into ArgoCD later
 

@@ -13,7 +13,7 @@ import { ProjectQueries } from "@/models/projects/queries"
 import { IngestQueries } from "@/models/ingest/queries"
 import { IngestService } from "@/models/ingest/service"
 import { serializeIngestJob } from "@/models/ingest/types"
-import { ROUTES } from "@/lib/constants"
+import { INGEST_RECENT_JOBS_LIMIT, ROUTES } from "@/lib/constants"
 import { IngererClient } from "./client"
 
 type RouteParams = { locale: string; projectId: string }
@@ -25,7 +25,7 @@ export default async function IngererPage({
 }) {
   const { locale, projectId } = await params
 
-  const user = await requireSessionUser(`/projects/${projectId}/ingerer`)
+  const user = await requireSessionUser(ROUTES.ingerer(projectId))
 
   const project = await ProjectQueries.get(projectId)
   if (!project) notFound()
@@ -37,13 +37,12 @@ export default async function IngererPage({
   const [deltaPreview, activeJob, recentJobs] = await Promise.all([
     IngestService.previewDelta(project),
     IngestQueries.activeForProject(projectId),
-    IngestQueries.listForProject(projectId, 20),
+    IngestQueries.listForProject(projectId, INGEST_RECENT_JOBS_LIMIT),
   ])
 
   return (
     <IngererClient
       projectId={projectId}
-      initialUser={{ name: user.name ?? undefined, email: user.email }}
       initialDeltaPreview={deltaPreview}
       initialActiveJobId={activeJob?.id ?? null}
       initialRecentJobs={recentJobs.map(({ targetVersion, baseVersion, ...job }) => ({

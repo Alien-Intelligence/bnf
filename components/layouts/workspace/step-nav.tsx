@@ -12,15 +12,19 @@ import { useTranslations } from "next-intl"
 import { Link, usePathname } from "@/i18n/navigation"
 import { ROUTES, WORKSPACE_STEPS, type WorkspaceStep } from "@/lib/constants"
 import { cn } from "@/lib/utils"
+import { Badge } from "@/components/ui/badge"
+import { Separator } from "@/components/ui/separator"
 
 interface LayoutWorkspaceStepNavProps {
   projectId: string
   /**
-   * The steps this user actually has on this project. A read-only member and a
-   * derived workspace both get Rechercher alone: showing a step that answers
-   * 404 is worse than not showing it. Defaults to the full progression.
+   * The steps this user actually has on this project (workspaceStepsFor, via
+   * the server's header model). A read-only member and a derived workspace
+   * both get Rechercher alone: showing a step that answers 404 is worse than
+   * not showing it. Required: which steps exist is a permission decision, never
+   * a default.
    */
-  steps?: readonly WorkspaceStep[]
+  steps: readonly WorkspaceStep[]
 }
 
 const STEP_HREF: Record<WorkspaceStep, (projectId: string) => string> = {
@@ -29,37 +33,47 @@ const STEP_HREF: Record<WorkspaceStep, (projectId: string) => string> = {
   rechercher: ROUTES.rechercher,
 }
 
-function activeStepFromPathname(pathname: string): WorkspaceStep {
-  // Carnet is a sub-view of Rechercher; match it to the rechercher step.
-  if (pathname.includes("/rechercher")) return "rechercher"
-  if (pathname.includes("/ingerer")) return "ingerer"
-  return "constituer"
+/**
+ * The step whose route the (locale-less) pathname is on, or null when it is on
+ * none of them. Carnet lives under Rechercher's route, so it lights Rechercher.
+ */
+function activeStepFromPathname(pathname: string, projectId: string): WorkspaceStep | null {
+  const step = WORKSPACE_STEPS.find((s) => {
+    const href = STEP_HREF[s](projectId)
+    return pathname === href || pathname.startsWith(`${href}/`)
+  })
+  return step ?? null
+}
+
+/** Active step filled, completed steps outlined (with a check), later ones muted. */
+function stepBadgeVariant(isActive: boolean, isDone: boolean): "default" | "outline" | "secondary" {
+  if (isActive) return "default"
+  if (isDone) return "outline"
+  return "secondary"
 }
 
 export function LayoutWorkspaceStepNav({
   projectId,
-  steps = WORKSPACE_STEPS,
+  steps,
 }: LayoutWorkspaceStepNavProps) {
   const t = useTranslations("nav")
   const pathname = usePathname()
-  const activeStep = activeStepFromPathname(pathname)
-  const activeIndex = steps.indexOf(activeStep)
+  const activeStep = activeStepFromPathname(pathname, projectId)
+  const activeIndex = activeStep === null ? -1 : steps.indexOf(activeStep)
 
   // A single-step progression is not a progression — the numbered dots would
   // read as "step 1 of 1" and say nothing.
   if (steps.length < 2) return null
 
   return (
-    <nav className="flex items-center gap-1" aria-label={t("constituer")}>
+    <nav className="flex items-center gap-1" aria-label={t("steps")}>
       {steps.map((step, index) => {
         const isDone = index < activeIndex
         const isActive = index === activeIndex
 
         return (
           <div key={step} className="flex items-center gap-1">
-            {index > 0 && (
-              <div className="mx-0.5 h-px w-6 bg-border" aria-hidden />
-            )}
+            {index > 0 && <Separator className="mx-0.5 data-horizontal:w-6" />}
             <Link
               href={STEP_HREF[step](projectId)}
               aria-current={isActive ? "step" : undefined}
@@ -70,16 +84,12 @@ export function LayoutWorkspaceStepNav({
                   : "text-muted-foreground hover:text-foreground",
               )}
             >
-              <span
-                className={cn(
-                  "flex size-5 items-center justify-center rounded-full font-mono text-[11px] font-semibold",
-                  isActive && "bg-primary text-primary-foreground",
-                  isDone && "bg-brand-teal/20 text-brand-teal",
-                  !isActive && !isDone && "bg-secondary text-muted-foreground",
-                )}
+              <Badge
+                variant={stepBadgeVariant(isActive, isDone)}
+                className="size-5 rounded-full p-0 font-mono text-[11px] font-semibold"
               >
-                {isDone ? <Check className="size-3" strokeWidth={3} /> : index + 1}
-              </span>
+                {isDone ? <Check strokeWidth={3} /> : index + 1}
+              </Badge>
               <span className={cn("font-medium", isActive && "text-foreground")}>
                 {t(step)}
               </span>

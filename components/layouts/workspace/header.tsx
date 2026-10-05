@@ -1,41 +1,63 @@
 "use client"
 
 // components/layouts/workspace/header.tsx
-// WorkspaceHeader — the co-branded Alien Intelligence × BnF top bar shared by
-// every workspace screen. Left: Alien wordmark · divider · BnF logo · optional
-// project label. Centre: the step-nav (only on a project). Right: MCP status +
-// user menu. Mirrors design/BnF Corpus Research.dc.html header (lines 34-114).
+// LayoutWorkspaceHeader — the co-branded Alien Intelligence × BnF top bar shared
+// by every workspace screen. Left: Alien wordmark · divider · BnF logo (together
+// one link back to the projects list), then, inside a project, the « Projets › »
+// crumb, the project switcher and the « Partager » button. Centre: the step-nav
+// (only on a project). Right: admin link, language, MCP status, the signed-in
+// user's initials and sign-out. Mirrors design/BnF Corpus Research.dc.html
+// header (lines 34-114).
 //
-// Client component: the step-nav needs the pathname and the user menu is
-// interactive, so this cannot be an async server component (next-intl's client
-// useTranslations is used, provided by NextIntlClientProvider in the layout).
+// Inside a project it is mounted once, by LayoutWorkspaceProjectShell under
+// app/[locale]/projects/[projectId]/layout.tsx, from server data
+// (lib/authz/workspace-header.ts): the step list, the share button and the
+// admin link come from the same predicates the routes and pages enforce.
+//
+// Client component: the step-nav needs the pathname and the switcher and share
+// button are interactive, so this cannot be an async server component
+// (next-intl's client useTranslations is used, provided by
+// NextIntlClientProvider in the layout).
 
 import Image from "next/image"
 import { ShieldUser } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { Link } from "@/i18n/navigation"
-import { ROUTES, type WorkspaceStep } from "@/lib/constants"
+import { BRAND_ASSET, ROUTES } from "@/lib/constants"
+import type {
+  WorkspaceHeaderProject,
+  WorkspaceHeaderViewer,
+} from "@/lib/authz/workspace-header"
 import { LayoutWorkspaceStepNav } from "./step-nav"
-import { LayoutWorkspaceProjectSwitcher } from "./project-switcher"
+import { LayoutWorkspaceProjectNav } from "./project-nav"
 import { LayoutWorkspaceLangToggle } from "./lang-toggle"
 import { WorkspaceHealthStatus } from "./health-status"
-import { SignOutButton } from "./sign-out-button"
+import { ButtonAuthSignOut } from "@/components/buttons/auth/sign-out"
+import { Avatar, AvatarFallback } from "@/components/ui/avatar"
+import { buttonVariants } from "@/components/ui/button"
+import { Separator } from "@/components/ui/separator"
 
-interface WorkspaceHeaderProps {
-  user: { name?: string; email: string }
-  /** When present, the step-nav and project switcher render. */
-  projectId?: string
-  /** When true, reveal the discreet link to the admin console. */
-  isAdmin?: boolean
+type HeaderUser = Pick<WorkspaceHeaderViewer, "name" | "email">
+
+interface LayoutWorkspaceHeaderProps {
+  /** Who is signed in, and whether the admin link shows (workspaceHeaderViewer). */
+  viewer: WorkspaceHeaderViewer
   /**
-   * The steps available on this project. Omitted means the full progression;
-   * a read-only member or a derived workspace passes `["rechercher"]`.
+   * The open project, decided on the server (workspaceHeaderProject). `null`
+   * outside a project: the projects list and the admin console. Inside one,
+   * the header sits under LayoutWorkspaceProjectShell, whose dialogs the
+   * project cluster opens.
    */
-  workspaceSteps?: readonly WorkspaceStep[]
+  project: WorkspaceHeaderProject | null
 }
 
-function initials(user: { name?: string; email: string }): string {
-  const source = user.name?.trim() || user.email
+/** The name when there is one, else the email: what the avatar stands for. */
+function displayName(user: HeaderUser): string {
+  return user.name.trim() || user.email
+}
+
+function initials(user: HeaderUser): string {
+  const source = displayName(user)
   const parts = source.split(/\s+/).filter(Boolean)
   if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase()
   return source.slice(0, 2).toUpperCase()
@@ -45,26 +67,21 @@ function initials(user: { name?: string; email: string }): string {
  *  git short SHA when available. Both inlined at build (next.config.ts). Helps
  *  pin down which build is running when debugging. */
 function AppVersion() {
+  const t = useTranslations("nav.version")
   const version = process.env.NEXT_PUBLIC_APP_VERSION
   if (!version) return null
   const sha = process.env.NEXT_PUBLIC_GIT_SHA
-  const label = sha ? `v${version}·${sha}` : `v${version}`
   return (
     <span
       className="hidden font-mono text-[10px] text-muted-foreground/60 select-none sm:inline"
-      title={sha ? `Version ${version} · ${sha}` : `Version ${version}`}
+      title={sha ? t("titleWithSha", { version, sha }) : t("title", { version })}
     >
-      {label}
+      {sha ? t("labelWithSha", { version, sha }) : t("label", { version })}
     </span>
   )
 }
 
-export function WorkspaceHeader({
-  user,
-  projectId,
-  isAdmin = false,
-  workspaceSteps,
-}: WorkspaceHeaderProps) {
+export function LayoutWorkspaceHeader({ viewer, project }: LayoutWorkspaceHeaderProps) {
   const t = useTranslations("nav")
   const tBrand = useTranslations("brand")
 
@@ -72,60 +89,66 @@ export function WorkspaceHeader({
     <header className="relative z-20 flex h-14 shrink-0 items-center justify-between gap-4 border-b bg-background/85 px-4.5 backdrop-blur-md">
       {/* Brand + project cluster */}
       <div className="flex min-w-0 items-center gap-3">
-        <Image
-          src="/brand/logo-w.svg"
-          alt={tBrand("alien")}
-          width={1048}
-          height={153}
-          priority
-          className="h-4.5 w-auto opacity-90"
-        />
-        <div className="h-6.5 w-px bg-border" aria-hidden />
-        <Image
-          src="/brand/bnf-logo-w.png"
-          alt={tBrand("bnf")}
-          title={tBrand("bnfFull")}
-          width={960}
-          height={359}
-          priority
-          className="h-5 w-auto opacity-90"
-        />
-        {projectId && (
-          <>
-            <div className="h-6.5 w-px bg-border" aria-hidden />
-            <LayoutWorkspaceProjectSwitcher projectId={projectId} />
-          </>
-        )}
+        <Link
+          href={ROUTES.projects}
+          title={t("homeLink")}
+          aria-label={t("homeLink")}
+          className="flex items-center gap-3 rounded-md opacity-90 outline-none transition-opacity hover:opacity-100 focus-visible:ring-3 focus-visible:ring-ring/50"
+        >
+          <Image
+            src={BRAND_ASSET.ALIEN_LOGO.src}
+            alt={tBrand("alien")}
+            width={BRAND_ASSET.ALIEN_LOGO.width}
+            height={BRAND_ASSET.ALIEN_LOGO.height}
+            priority
+            className="h-4.5 w-auto"
+          />
+          <Separator orientation="vertical" className="data-vertical:h-6.5 data-vertical:self-center" />
+          <Image
+            src={BRAND_ASSET.BNF_LOGO.src}
+            alt={tBrand("bnf")}
+            width={BRAND_ASSET.BNF_LOGO.width}
+            height={BRAND_ASSET.BNF_LOGO.height}
+            priority
+            className="h-5 w-auto"
+          />
+        </Link>
+        {project && <LayoutWorkspaceProjectNav project={project} />}
       </div>
 
       {/* Step navigation — only inside a project workspace */}
-      {projectId && (
-        <LayoutWorkspaceStepNav projectId={projectId} steps={workspaceSteps} />
+      {project && (
+        <LayoutWorkspaceStepNav projectId={project.id} steps={project.steps} />
       )}
 
-      {/* Version + MCP status + user menu */}
+      {/* Version + admin + language + MCP status + user */}
       <div className="flex items-center gap-3">
         <AppVersion />
-        {isAdmin && (
+        {viewer.isAdmin && (
           <Link
             href={ROUTES.admin}
             title={t("admin")}
             aria-label={t("admin")}
-            className="flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+            className={buttonVariants({ variant: "ghost", size: "icon-sm" })}
           >
             <ShieldUser className="size-4" />
           </Link>
         )}
         <LayoutWorkspaceLangToggle />
         <WorkspaceHealthStatus />
-        <span
-          className="flex size-7 items-center justify-center rounded-full bg-secondary text-[11px] font-semibold text-foreground"
-          title={user.name ?? user.email}
-          aria-label={t("userMenu")}
+        {/* An avatar, not a menu: it opens nothing, so it says who is signed in
+            rather than claiming to be a « Menu utilisateur ». */}
+        <Avatar
+          size="sm"
+          role="img"
+          title={displayName(viewer)}
+          aria-label={t("signedInAs", { name: displayName(viewer) })}
         >
-          {initials(user)}
-        </span>
-        <SignOutButton />
+          <AvatarFallback className="text-[11px] font-semibold text-foreground">
+            {initials(viewer)}
+          </AvatarFallback>
+        </Avatar>
+        <ButtonAuthSignOut />
       </div>
     </header>
   )

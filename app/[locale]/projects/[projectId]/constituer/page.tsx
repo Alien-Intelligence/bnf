@@ -29,7 +29,7 @@ export default async function ConstituerPage({
 }) {
   const { locale, projectId } = await params
 
-  const user = await requireSessionUser(`/projects/${projectId}/constituer`)
+  const user = await requireSessionUser(ROUTES.constituer(projectId))
 
   const project = await ProjectQueries.get(projectId)
   if (!project) notFound()
@@ -61,7 +61,6 @@ export default async function ConstituerPage({
       locale={locale}
       projectId={projectId}
       initialCorpus={initialCorpus}
-      initialUser={{ name: user.name, email: user.email }}
       initialSessionId={initialSessionId}
       initialSessions={initialSessions}
       introSeen={seenIntros.includes(ONBOARDING_INTRO.CORPUS)}

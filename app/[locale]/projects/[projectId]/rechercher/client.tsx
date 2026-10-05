@@ -8,12 +8,13 @@
 // and the Atelier/Carnet disposition.
 
 import { useCallback, useEffect, useRef, useState } from "react"
+import { useTranslations } from "next-intl"
+import { useToast } from "@/components/ui/toast"
 import { useQueryClient } from "@tanstack/react-query"
 import { useTurnStream } from "@/hooks/api/turn-stream"
 import { useNotes, noteKeys } from "@/hooks/api/notes"
 import { memoryKeys } from "@/hooks/api/memory"
 import { sessionKeys } from "@/hooks/api/sessions"
-import { WorkspaceHeader } from "@/components/layouts/workspace/header"
 import { CardProjectCorpusRevoked } from "@/components/cards/projects/corpus-revoked"
 import { CardProjectCorpusNotIngested } from "@/components/cards/projects/corpus-not-ingested"
 import { LayoutSessionsSidebar } from "@/components/layouts/corpus/sessions-sidebar"
@@ -27,7 +28,6 @@ import {
   SESSIONS_RAIL_WIDTH,
   AGENT_DEFAULT_MODEL,
   type AgentProvider,
-  type WorkspaceStep,
 } from "@/lib/constants"
 import type { NoteListItem } from "@/models/notes/schema"
 import { SESSION_SCOPE, type AppSession } from "@/models/sessions/schema"
@@ -43,7 +43,6 @@ interface RechercherClientProps {
   projectId: string
   locale: string
   projectName: string
-  initialUser: { name?: string | null; email: string }
   initialSessionId: string
   initialSessions: AppSession[]
   initialNotes: NoteListItem[]
@@ -53,8 +52,6 @@ interface RechercherClientProps {
    * grant revoked. `revoked` is NOT "not ingested": the carnet stays open, and
    * the fix is the corpus owner's, not the researcher's.
    */
-  /** The steps this user has on this project — see LayoutWorkspaceStepNav. */
-  initialWorkspaceSteps: readonly WorkspaceStep[]
   initialCorpusSourceState: CorpusSourceState
   /** The corpus source's project name, when this project is derived. */
   initialCorpusSourceName: string | null
@@ -70,12 +67,10 @@ export function RechercherClient({
   projectId,
   locale,
   projectName,
-  initialUser,
   initialSessionId,
   initialSessions,
   initialNotes,
   initialIsIngested,
-  initialWorkspaceSteps,
   initialCorpusSourceState,
   initialCorpusSourceName,
   initialClusterId,
@@ -94,7 +89,15 @@ export function RechercherClient({
   )
 
   // ── Notes (live; seeded from the server) ───────────────────────────────────
-  const { data: notes } = useNotes(projectId, { initialData: initialNotes })
+  const notesQuery = useNotes(projectId, { initialData: initialNotes })
+  // Seeded from the server, so there is always a list to show; a failed
+  // refresh keeps the last one and says so instead of passing for "no notes".
+  const notes = notesQuery.data ?? initialNotes
+  const { toast } = useToast()
+  const tEspace = useTranslations("research.espace")
+  useEffect(() => {
+    if (notesQuery.isError) toast(tEspace("notesRefreshError"))
+  }, [notesQuery.isError, toast, tEspace])
 
   // ── Reader state — open tabs, active tab, disposition ───────────────────────
   // Seed the reader with the most recent note so the espace isn't empty when a
@@ -186,59 +189,38 @@ export function RechercherClient({
     prevStreamingRef.current = streaming
   }, [stream.isStreaming, projectId, qc])
 
-  const user: { name?: string; email: string } = {
-    name: initialUser.name ?? undefined,
-    email: initialUser.email,
-  }
+  // The header is the project layout's (app/[locale]/projects/[projectId]/
+  // layout.tsx); every branch below fills its min-h-0 flex-1 slot.
 
   // A revoked grant and a never-ingested corpus both block research, but for
   // opposite reasons: one the researcher can fix from « Ingérer », the other
   // only the corpus owner can. Offering the wrong action is worse than none.
   if (initialCorpusSourceState === CORPUS_SOURCE_STATE.REVOKED) {
     return (
-      <div className="flex h-screen flex-col">
-        <WorkspaceHeader
-          user={user}
+      <div className="flex min-h-0 flex-1 items-center justify-center p-6">
+        <CardProjectCorpusRevoked
           projectId={projectId}
-          workspaceSteps={initialWorkspaceSteps}
+          sourceName={initialCorpusSourceName}
         />
-        <div className="flex flex-1 items-center justify-center p-6">
-          <CardProjectCorpusRevoked
-            projectId={projectId}
-            sourceName={initialCorpusSourceName}
-          />
-        </div>
       </div>
     )
   }
 
   if (!initialIsIngested) {
     return (
-      <div className="flex h-screen flex-col">
-        <WorkspaceHeader
-          user={user}
+      <div className="flex min-h-0 flex-1 items-center justify-center p-6">
+        <CardProjectCorpusNotIngested
           projectId={projectId}
-          workspaceSteps={initialWorkspaceSteps}
+          sourceState={initialCorpusSourceState}
+          sourceName={initialCorpusSourceName}
         />
-        <div className="flex flex-1 items-center justify-center p-6">
-          <CardProjectCorpusNotIngested
-            projectId={projectId}
-            sourceState={initialCorpusSourceState}
-            sourceName={initialCorpusSourceName}
-          />
-        </div>
       </div>
     )
   }
 
   return (
-    <div className="flex h-screen flex-col">
-      <WorkspaceHeader
-          user={user}
-          projectId={projectId}
-          workspaceSteps={initialWorkspaceSteps}
-        />
-      <div className="flex flex-1 overflow-hidden">
+    <>
+      <div className="flex min-h-0 flex-1 overflow-hidden">
         {/* Rail — sessions + artefacts picker + project memory */}
         <div className="shrink-0 overflow-hidden" style={{ width: SESSIONS_RAIL_WIDTH }}>
           <LayoutSessionsSidebar
@@ -266,7 +248,7 @@ export function RechercherClient({
             projectName={projectName}
             stream={stream}
             appSessionId={activeSessionId}
-            notes={notes ?? []}
+            notes={notes}
             openNoteIds={openNoteIds}
             activeNoteId={activeNoteId}
             onActivateNote={setActiveNoteId}
@@ -297,6 +279,6 @@ export function RechercherClient({
           if (!o) setSelectedCitation(null)
         }}
       />
-    </div>
+    </>
   )
 }

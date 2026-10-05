@@ -6,18 +6,19 @@
 // renders loading / error / empty / content as distinct branches
 // (playbook/ui-states).
 //
-// Two sections: « Mes projets » (owned) and « Partagés avec moi » (everything
-// else the caller can see). The split is on actual ownership, NOT on the
-// resolved access level: an admin resolves to `owner` on every project (rule 2
-// of the access table), and filing someone else's corpus under « Mes projets »
-// would be a lie. Visibility itself is still decided server-side by
-// lib/authz/project-access.ts — the client never re-decides who may see what.
+// Three sections: « Mes projets », « Partagés avec moi » and « Projets
+// publics », filed by the server-computed `relation` (projectRelation in
+// lib/authz/project-access.ts), NOT by the resolved access level: an admin
+// resolves to `owner` on every project (rule 2 of the access table), and
+// filing someone else's corpus under « Mes projets » would be a lie; a public
+// project is not shared with anyone. The client never re-decides who owns or
+// may see what.
 
 import { useState } from "react"
 import { FolderOpen, Plus } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { useProjects } from "@/hooks/api/projects"
-import { WorkspaceHeader } from "@/components/layouts/workspace/header"
+import { LayoutWorkspaceHeader } from "@/components/layouts/workspace/header"
 import { CardProjectTile } from "@/components/cards/projects/tile"
 import { DialogProjectCreate } from "@/components/dialogs/projects/create"
 import { DialogProjectShare } from "@/components/dialogs/projects/share"
@@ -26,47 +27,31 @@ import { LayoutSharedEmptyState } from "@/components/layouts/shared/empty-state"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import type { ProjectListItem } from "@/models/projects/schema"
+import type { WorkspaceHeaderViewer } from "@/lib/authz/workspace-header"
+import { PROJECT_RELATION } from "@/models/projects/schema"
+
+/** Placeholder tiles while the list loads. */
+const PROJECTS_SKELETON_TILES = 3
 
 interface ProjectsClientProps {
   initialProjects: ProjectListItem[]
-  user: { id: string; name?: string; email: string }
-  isAdmin?: boolean
+  viewer: WorkspaceHeaderViewer
 }
 
 export function ProjectsClient({
   initialProjects,
-  user,
-  isAdmin = false,
+  viewer,
 }: ProjectsClientProps) {
   const t = useTranslations("projects")
   const [createOpen, setCreateOpen] = useState(false)
   const [sharing, setSharing] = useState<ProjectListItem | null>(null)
   const [deriving, setDeriving] = useState<ProjectListItem | null>(null)
 
-  const { data: projects, isLoading, isError } = useProjects({
-    initialData: initialProjects,
-  })
-
-  const owned = (projects ?? []).filter((p) => p.ownerId === user.id)
-  const shared = (projects ?? []).filter((p) => p.ownerId !== user.id)
-
-  const grid = (items: ProjectListItem[]) => (
-    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-      {items.map((project) => (
-        <CardProjectTile
-          key={project.id}
-          project={project}
-          currentUserId={user.id}
-          onShare={() => setSharing(project)}
-          onDerive={() => setDeriving(project)}
-        />
-      ))}
-    </div>
-  )
+  const projects = useProjects({ initialData: initialProjects })
 
   return (
     <div className="flex min-h-screen flex-col">
-      <WorkspaceHeader user={user} isAdmin={isAdmin} />
+      <LayoutWorkspaceHeader viewer={viewer} project={null} />
 
       <main className="mx-auto w-full max-w-7xl px-6 py-12">
         <div className="mb-8 flex items-end justify-between gap-4">
@@ -81,61 +66,21 @@ export function ProjectsClient({
           </Button>
         </div>
 
-        {isLoading ? (
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-            {Array.from({ length: 3 }).map((_, i) => (
-              <Skeleton key={i} className="h-44 rounded-xl" />
-            ))}
-          </div>
-        ) : isError ? (
-          <p className="text-sm text-destructive">{t("loadError")}</p>
-        ) : owned.length === 0 && shared.length === 0 ? (
-          <LayoutSharedEmptyState
-            icon={FolderOpen}
-            title={t("empty")}
-            description={t("emptyHint")}
-            action={
-              <Button onClick={() => setCreateOpen(true)}>
-                <Plus className="size-4" />
-                {t("new")}
-              </Button>
-            }
-          />
-        ) : (
-          <div className="flex flex-col gap-10">
-            {/* The owned section is shown even when empty as long as something
-                is shared, so a reader-only account still sees where their own
-                projects would go. */}
-            <section className="space-y-4">
-              <h2 className="text-sm font-medium text-muted-foreground">
-                {t("section.mine")}
-              </h2>
-              {owned.length === 0 ? (
-                <p className="text-sm text-muted-foreground">
-                  {t("section.mineEmpty")}
-                </p>
-              ) : (
-                grid(owned)
-              )}
-            </section>
-
-            {shared.length > 0 && (
-              <section className="space-y-4">
-                <h2 className="text-sm font-medium text-muted-foreground">
-                  {t("section.shared")}
-                </h2>
-                {grid(shared)}
-              </section>
-            )}
-          </div>
-        )}
+        <ProjectsBody
+          projects={projects}
+          onCreate={() => setCreateOpen(true)}
+          onShare={setSharing}
+          onDerive={setDeriving}
+        />
       </main>
 
       <DialogProjectCreate open={createOpen} onOpenChange={setCreateOpen} />
 
       {sharing && (
         <DialogProjectShare
-          project={sharing}
+          projectId={sharing.id}
+          projectName={sharing.name}
+          viewerIsAdmin={viewer.isAdmin}
           open
           onOpenChange={(open) => {
             if (!open) setSharing(null)
@@ -151,6 +96,111 @@ export function ProjectsClient({
             if (!open) setDeriving(null)
           }}
         />
+      )}
+    </div>
+  )
+}
+
+/** The list: loading → error (with retry) → empty → sections. */
+function ProjectsBody({
+  projects,
+  onCreate,
+  onShare,
+  onDerive,
+}: {
+  projects: ReturnType<typeof useProjects>
+  onCreate: () => void
+  onShare: (project: ProjectListItem) => void
+  onDerive: (project: ProjectListItem) => void
+}) {
+  const t = useTranslations("projects")
+  const tCommon = useTranslations("common")
+
+  if (projects.isPending) {
+    return (
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+        {Array.from({ length: PROJECTS_SKELETON_TILES }, (_, i) => (
+          <Skeleton key={i} className="h-44 rounded-xl" />
+        ))}
+      </div>
+    )
+  }
+
+  if (projects.isError) {
+    return (
+      <div className="flex flex-col items-start gap-2">
+        <p role="alert" className="text-sm text-destructive">{t("loadError")}</p>
+        <Button variant="outline" size="sm" onClick={() => void projects.refetch()}>
+          {tCommon("tryAgain")}
+        </Button>
+      </div>
+    )
+  }
+
+  if (projects.data.length === 0) {
+    return (
+      <LayoutSharedEmptyState
+        icon={FolderOpen}
+        title={t("empty")}
+        description={t("emptyHint")}
+        action={
+          <Button onClick={onCreate}>
+            <Plus className="size-4" />
+            {t("new")}
+          </Button>
+        }
+      />
+    )
+  }
+
+  const owned = projects.data.filter((p) => p.relation === PROJECT_RELATION.OWN)
+  const shared = projects.data.filter((p) => p.relation === PROJECT_RELATION.SHARED)
+  const publicProjects = projects.data.filter((p) => p.relation === PROJECT_RELATION.PUBLIC)
+
+  // Deriving is offered on shared projects only: a public project is readable,
+  // not derivable (the server refuses with NoCorpusGrantError), and your own
+  // project needs no workspace on top of it.
+  const grid = (items: ProjectListItem[]) => (
+    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+      {items.map((project) => (
+        <CardProjectTile
+          key={project.id}
+          project={project}
+          onShare={() => onShare(project)}
+          onDerive={
+            project.relation === PROJECT_RELATION.SHARED ? () => onDerive(project) : undefined
+          }
+        />
+      ))}
+    </div>
+  )
+
+  return (
+    <div className="flex flex-col gap-10">
+      {/* The owned section is shown even when empty as long as something
+          else is listed, so a reader-only account still sees where their own
+          projects would go. */}
+      <section className="space-y-4">
+        <h2 className="text-sm font-medium text-muted-foreground">{t("section.mine")}</h2>
+        {owned.length === 0 ? (
+          <p className="text-sm text-muted-foreground">{t("section.mineEmpty")}</p>
+        ) : (
+          grid(owned)
+        )}
+      </section>
+
+      {shared.length > 0 && (
+        <section className="space-y-4">
+          <h2 className="text-sm font-medium text-muted-foreground">{t("section.shared")}</h2>
+          {grid(shared)}
+        </section>
+      )}
+
+      {publicProjects.length > 0 && (
+        <section className="space-y-4">
+          <h2 className="text-sm font-medium text-muted-foreground">{t("section.public")}</h2>
+          {grid(publicProjects)}
+        </section>
       )}
     </div>
   )

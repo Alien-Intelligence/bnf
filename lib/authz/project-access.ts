@@ -12,7 +12,11 @@
 
 import { USER_ROLE } from "@/models/users/schema"
 import type { PolicyUser } from "@/models/users/schema"
-import type { ProjectWithShares } from "@/models/projects/schema"
+import {
+  PROJECT_RELATION,
+  type ProjectRelation,
+  type ProjectWithShares,
+} from "@/models/projects/schema"
 
 /** The access a ProjectShare grants. Stored as a plain String column. */
 export const PROJECT_ACCESS = {
@@ -76,6 +80,28 @@ export function projectAccessLevel(
   return PROJECT_ACCESS_LEVEL.NONE
 }
 
+/**
+ * How a project reaches this user's OWN lists — "is it mine, shared with me,
+ * or public?" — which is not "may I open it": an admin may open every project
+ * (rule 2 of the access table) without any of them being theirs. Built on
+ * projectAccessLevel, never beside it: the level is asked for the user WITHOUT
+ * the admin rule and WITHOUT the public rule, so `owner` means they own it and
+ * `write`/`read` means a real share; only then is `isPublic` consulted. The
+ * projects page files its sections by this (PROJECT_RELATION,
+ * models/projects/schema.ts).
+ */
+export function projectRelation(
+  user: PolicyUser,
+  project: ProjectWithShares,
+): ProjectRelation {
+  const asMember: PolicyUser = { ...user, role: USER_ROLE.MEMBER }
+  const level = projectAccessLevel(asMember, { ...project, isPublic: false })
+  if (level === PROJECT_ACCESS_LEVEL.OWNER) return PROJECT_RELATION.OWN
+  if (level !== PROJECT_ACCESS_LEVEL.NONE) return PROJECT_RELATION.SHARED
+  if (project.isPublic) return PROJECT_RELATION.PUBLIC
+  return PROJECT_RELATION.NONE
+}
+
 /** Any level above `none` can read. */
 export function canReadProject(
   user: PolicyUser,
@@ -119,7 +145,14 @@ export function isProjectOwner(
  */
 export type VisibilityScope =
   | { unrestricted: true }
-  | { unrestricted: false; userId: string; groupIds: string[] }
+  | {
+      unrestricted: false
+      userId: string
+      groupIds: string[]
+      /** The share levels that count as a grant (an unrecognised stored value
+       *  grants nothing, as in projectAccessLevel). */
+      shareAccess: ProjectAccess[]
+    }
 
 /**
  * What belongs to a user personally: projects they own, projects shared into one
@@ -134,7 +167,12 @@ export type VisibilityScope =
  * question, asked in the admin console (`adminVisibilityScope`).
  */
 export function personalVisibilityScope(user: PolicyUser): VisibilityScope {
-  return { unrestricted: false, userId: user.id, groupIds: user.groupIds }
+  return {
+    unrestricted: false,
+    userId: user.id,
+    groupIds: user.groupIds,
+    shareAccess: [PROJECT_ACCESS.READ, PROJECT_ACCESS.WRITE],
+  }
 }
 
 /**

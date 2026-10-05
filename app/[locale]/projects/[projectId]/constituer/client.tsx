@@ -33,7 +33,6 @@ import { SheetDocumentDetail } from "@/components/sheets/corpus/document-detail"
 import { HelpCircle, Download } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useTranslations } from "next-intl"
-import { WorkspaceHeader } from "@/components/layouts/workspace/header"
 import { DialogOnboardingCorpus } from "@/components/dialogs/onboarding/corpus"
 import { useMarkOnboardingSeen } from "@/hooks/api/onboarding"
 import { ONBOARDING_INTRO } from "@/models/onboarding/schema"
@@ -45,7 +44,6 @@ interface Props {
   locale: string
   projectId: string
   initialCorpus: CorpusSnapshot
-  initialUser: { name?: string; email: string }
   initialSessionId: string
   initialSessions: AppSession[]
   introSeen: boolean
@@ -58,7 +56,6 @@ export function ConstituerClient({
   locale,
   projectId,
   initialCorpus,
-  initialUser,
   initialSessionId,
   initialSessions,
   introSeen,
@@ -245,10 +242,11 @@ export function ConstituerClient({
   // the server-rendered initial snapshot while the first page loads.
   const displaySnapshot = snapshot ?? initialCorpus
 
+  // The header is the project layout's (app/[locale]/projects/[projectId]/
+  // layout.tsx); this client fills the layout's min-h-0 flex-1 slot.
   return (
-    <div className="flex flex-col h-screen">
-      <WorkspaceHeader user={initialUser} projectId={projectId} />
-      <div className="flex flex-1 overflow-hidden">
+    <>
+      <div className="flex min-h-0 flex-1 overflow-hidden">
         {/* Sessions sidebar — left strip, fixed width */}
         <div
           className="shrink-0 overflow-hidden"
@@ -335,6 +333,6 @@ export function ConstituerClient({
       </div>
 
       <DialogOnboardingCorpus open={introOpen} onOpenChange={onIntroOpenChange} />
-    </div>
+    </>
   )
 }

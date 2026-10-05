@@ -12,4 +12,5 @@ export class UserPolicy {
   view(target: User): boolean {
     return this.user.role === USER_ROLE.ADMIN || this.user.id === target.id
   }
+
 }

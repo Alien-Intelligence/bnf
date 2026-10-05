@@ -6,9 +6,9 @@
 import { notFound } from "next/navigation"
 import { requireSessionUser } from "@/lib/auth-helpers"
 import { canReadProject } from "@/lib/authz/project-access"
-import { workspaceStepsFor } from "@/lib/authz/workspace-steps"
 import {
   CORPUS_SOURCE_STATE,
+  CorpusSourceMissingError,
   corpusProjectId,
   corpusSourceState,
 } from "@/lib/authz/corpus-source"
@@ -20,7 +20,7 @@ import { SessionQueries } from "@/models/sessions/queries"
 import { OnboardingQueries } from "@/models/onboarding/queries"
 import { ONBOARDING_INTRO } from "@/models/onboarding/schema"
 import { SESSION_SCOPE } from "@/models/sessions/schema"
-import { RAG_CLUSTER_ID } from "@/lib/constants"
+import { RAG_CLUSTER_ID, ROUTES } from "@/lib/constants"
 import { env } from "@/lib/env"
 import { RechercherClient } from "./client"
 
@@ -33,7 +33,7 @@ export default async function RechercherPage({
 }) {
   const { locale, projectId } = await params
 
-  const user = await requireSessionUser(`/projects/${projectId}/rechercher`)
+  const user = await requireSessionUser(ROUTES.rechercher(projectId))
 
   const project = await ProjectQueries.get(projectId)
   if (!project) notFound()
@@ -44,8 +44,6 @@ export default async function RechercherPage({
   const corpusId = corpusProjectId(project)
   const sourceState = corpusSourceState(project)
   const revoked = sourceState === CORPUS_SOURCE_STATE.REVOKED
-
-  const workspaceSteps = workspaceStepsFor(user, project)
 
   const [session, initialNotes, seenIntros] = await Promise.all([
     SessionService.ensureDefaultForScope(projectId, SESSION_SCOPE.RESEARCH),
@@ -60,10 +58,9 @@ export default async function RechercherPage({
     corpusId === projectId
       ? project
       : await ProjectQueries.get(corpusId)
+  if (!corpusProject) throw new CorpusSourceMissingError(projectId, corpusId)
 
-  const ingestedVersionId = revoked
-    ? null
-    : (corpusProject?.ingestedVersionId ?? null)
+  const ingestedVersionId = revoked ? null : corpusProject.ingestedVersionId
 
   const [initialSessions, ingestedArks] = await Promise.all([
     SessionQueries.listForProject(projectId, SESSION_SCOPE.RESEARCH),
@@ -86,14 +83,12 @@ export default async function RechercherPage({
       projectId={projectId}
       locale={locale}
       projectName={project.name}
-      initialUser={{ name: user.name, email: user.email }}
       initialSessionId={initialSessionId}
       initialSessions={initialSessions}
       initialNotes={initialNotes}
       initialIsIngested={isIngested}
-      initialWorkspaceSteps={workspaceSteps}
       initialCorpusSourceState={sourceState}
-      initialCorpusSourceName={corpusProject?.name ?? null}
+      initialCorpusSourceName={corpusProject.name}
       initialClusterId={RAG_CLUSTER_ID}
       initialDocCount={ingestedArks.length}
       initialIntroSeen={seenIntros.includes(ONBOARDING_INTRO.RESEARCH)}

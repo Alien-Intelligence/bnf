@@ -20,9 +20,9 @@ export async function generateMetadata(): Promise<Metadata> {
  * and claimed a share that had never happened. Listing them all is a console
  * question; it is asked here, under a heading that says so.
  *
- * Access is gated twice: app/[locale]/admin/layout.tsx runs requireAdminUser
- * for every tab, and ProjectPolicy.listAll is authorized here so the check
- * travels with the data rather than relying on the layout alone.
+ * Access is gated here, like every admin tab (the layout never gates):
+ * requireAdminUser with this tab's own path, then ProjectPolicy.listAll, so
+ * the check travels with the data.
  */
 export default async function AdminProjectsPage() {
   const user = await requireAdminUser(ROUTES.adminProjects)

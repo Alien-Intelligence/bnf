@@ -55,12 +55,26 @@ export function printVerdict(context: Record<string, string> = {}): void {
   }
 }
 
+/** Ceiling on the reachability probe: a hung server must fail the run fast. */
+const HEALTH_PROBE_TIMEOUT_MS = 5_000
+
 /** Fail fast if the dev server isn't reachable — otherwise every turn error
- *  looks like a bug. Any HTTP status counts as "up" (the route is auth-gated). */
-export async function requireServer(): Promise<void> {
-  const health = await fetch(`${BASE_URL}/api/health`, { method: "GET" }).catch(() => null)
-  if (health === null) {
-    throw new Error(`dev server unreachable at ${BASE_URL} — start it with: PORT=3939 npm run dev`)
+ *  looks like a bug. Any HTTP status counts as "up" (the route is auth-gated).
+ *  Scripts that target the app's own `APP_URL` (the auth e2e) pass their base
+ *  explicitly; the agent e2es keep the 3939 default. The remediation names the
+ *  port of the base actually probed, and the network error rides as `cause`. */
+export async function requireServer(baseUrl: string = BASE_URL): Promise<void> {
+  // Parsed before the probe: a malformed base fails here with its own error,
+  // not inside the catch where it would replace the network error.
+  const { port } = new URL(baseUrl)
+  const start = port ? `npm run dev -- -p ${port}` : "npm run dev"
+  try {
+    await fetch(`${baseUrl}/api/health`, {
+      method: "GET",
+      signal: AbortSignal.timeout(HEALTH_PROBE_TIMEOUT_MS),
+    })
+  } catch (e) {
+    throw new Error(`dev server unreachable at ${baseUrl} — start it with: ${start}`, { cause: e })
   }
 }
 

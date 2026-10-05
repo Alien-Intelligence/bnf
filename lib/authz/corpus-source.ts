@@ -74,3 +74,18 @@ export function corpusSourceState(
 export function canReachCorpus(project: CorpusSourceFields): boolean {
   return corpusSourceState(project) !== CORPUS_SOURCE_STATE.REVOKED
 }
+
+/**
+ * A derived project whose source project row does not exist. The source FK
+ * is `onDelete: Restrict`, so this cannot happen through the app: it is a
+ * data fault, raised rather than shown as "not ingested".
+ */
+export class CorpusSourceMissingError extends Error {
+  constructor(
+    readonly projectId: string,
+    readonly sourceId: string,
+  ) {
+    super(`Project ${projectId} reads corpus ${sourceId}, which does not exist`)
+    this.name = "CorpusSourceMissingError"
+  }
+}

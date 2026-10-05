@@ -72,6 +72,17 @@ useEffect(() => {
 `useEffect([open])` owns all data loading and reset logic.
 `onOpenChange` only propagates close events back to the parent.
 
+**Accepted alternative for resets when `react-hooks/set-state-in-effect`
+applies.** This repo's lint refuses `setState` inside an effect, and the rule
+is not suppressed. A dialog whose only `[open]` work is resetting transient
+state (a pending confirmation, an error line) instead keeps that state in a
+body component rendered **inside** `DialogContent`: Base UI removes the popup
+on close, so the body unmounts and every piece of state resets, however the
+dialog was closed (user, parent, programmatic). Two conditions, pinned by a
+test (`tests/components/dialogs/share-reset.test.ts` for DialogProjectShare):
+no `keepMounted` on the dialog's parts, and the body inside `DialogContent`.
+Data loading still follows the rule above (the body's queries mount with it).
+
 This bites the BnF app hardest in the **memory dialog** and the **citation
 side panel** (both can be opened programmatically: by the agent emitting a
 `memory_event`, or by the user clicking an ARK pill in chat).

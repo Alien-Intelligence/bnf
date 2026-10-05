@@ -1,58 +1,62 @@
 "use client"
 
 // components/selects/projects/access.tsx
-// The read/write level of a grant, as an immediate-effect select.
-//
-// Distinct from the access select inside FormProjectShare: that one is a field
-// of a validated submission, so it belongs to the form. This one edits a grant
-// that already exists and fires on change — there is nothing to submit, and no
-// form to belong to.
+// SelectProjectAccess — a grant's read/write level, with what each level
+// allows on the option itself. Used twice: as the level field of
+// FormProjectShare (wrapped in FormControl, whose id/aria props it forwards to
+// the trigger) and on each existing grant, where it fires on change.
 
+import type { ComponentProps } from "react"
 import { useTranslations } from "next-intl"
 import {
   Select,
   SelectContent,
-  SelectItem,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { PROJECT_ACCESS } from "@/lib/authz/project-access"
+import {
+  PROJECT_ACCESS,
+  isProjectAccess,
+  type ProjectAccess,
+} from "@/lib/authz/project-access"
+import { SelectProjectAccessOption } from "./access-option"
 
-interface SelectProjectAccessProps {
-  /** The stored level. Prisma types it as a plain string. */
-  value: string
-  onValueChange: (value: string | null) => void
-  /** Names the group this grant belongs to, for the accessible label. */
-  groupName: string
+type SelectProjectAccessProps = {
+  value: ProjectAccess
+  onValueChange: (value: ProjectAccess) => void
   disabled?: boolean
-}
+} & Omit<ComponentProps<typeof SelectTrigger>, "children" | "onChange" | "value" | "defaultValue">
 
 export function SelectProjectAccess({
   value,
   onValueChange,
-  groupName,
   disabled,
+  ...triggerProps
 }: SelectProjectAccessProps) {
   const t = useTranslations("projects.share")
 
   return (
-    <Select value={value} onValueChange={onValueChange} disabled={disabled}>
+    <Select
+      value={value}
+      // The two options are the only values the select can produce; anything
+      // else is ignored rather than written as a level.
+      onValueChange={(v) => {
+        if (typeof v === "string" && isProjectAccess(v)) onValueChange(v)
+      }}
+      disabled={disabled}
+    >
       {/* Base UI renders the raw value unless given a labelling function —
           without this the trigger would read "read" / "write". */}
-      <SelectTrigger
-        size="sm"
-        className="w-36"
-        aria-label={t("changeAccess", { name: groupName })}
-      >
+      <SelectTrigger {...triggerProps}>
         <SelectValue>
-          {(v: string | null) =>
-            v === PROJECT_ACCESS.WRITE ? t("level.write") : t("level.read")
+          {(v: unknown) =>
+            typeof v === "string" && isProjectAccess(v) ? t(`level.${v}`) : null
           }
         </SelectValue>
       </SelectTrigger>
       <SelectContent>
-        <SelectItem value={PROJECT_ACCESS.READ}>{t("level.read")}</SelectItem>
-        <SelectItem value={PROJECT_ACCESS.WRITE}>{t("level.write")}</SelectItem>
+        <SelectProjectAccessOption access={PROJECT_ACCESS.READ} />
+        <SelectProjectAccessOption access={PROJECT_ACCESS.WRITE} />
       </SelectContent>
     </Select>
   )

@@ -7,8 +7,22 @@ import {
   type Project as PrismaProject,
 } from "@/lib/generated/prisma/client"
 import type { ProjectAccessLevel } from "@/lib/authz/project-access"
+import type { WorkspaceStep } from "@/lib/constants"
 
 export type Project = PrismaProject
+
+/**
+ * How a project reaches a user's own lists (lib/authz/project-access.ts
+ * projectRelation): theirs, shared with one of their groups, public, or none
+ * of these (an admin's reach is not a relation).
+ */
+export const PROJECT_RELATION = {
+  OWN: "own",
+  SHARED: "shared",
+  PUBLIC: "public",
+  NONE: "none",
+} as const
+export type ProjectRelation = (typeof PROJECT_RELATION)[keyof typeof PROJECT_RELATION]
 
 /**
  * The query shape every project-authorization path must use. `shares` is what
@@ -39,6 +53,22 @@ export type ProjectListItem = Project & {
   isIngested: boolean
   /** What the requesting user may do with this project. */
   access: ProjectAccessLevel
+  /**
+   * Whether it is the requesting user's own, shared with one of their groups,
+   * or public (lib/authz/project-access.ts projectRelation). "May I open it"
+   * is `access`; this is "is it mine", decided on the server.
+   */
+  relation: ProjectRelation
+  /** ProjectPolicy.share for the requesting user: may they share it. */
+  mayShare: boolean
+  /** workspaceStepsFor: the steps the requesting user may open. */
+  steps: readonly WorkspaceStep[]
+  /**
+   * Whether they may build a research workspace on it: shared with them (a
+   * public project is readable, not derivable — NoCorpusGrantError), owning
+   * its corpus, and ingested.
+   */
+  canDerive: boolean
   /** The owner's display name — shown on tiles under « Partagés avec moi ». */
   ownerName: string
   /**
@@ -57,7 +87,17 @@ export type ProjectListItem = Project & {
  * service that happens to be its first caller.
  */
 export const shareWithGroup = {
-  include: { group: { select: { id: true, name: true, slug: true } } },
+  include: {
+    group: {
+      select: {
+        id: true,
+        name: true,
+        slug: true,
+        // How many people the grant reaches, shown in the share dialog.
+        _count: { select: { members: true } },
+      },
+    },
+  },
 } satisfies Prisma.ProjectShareDefaultArgs
 
 export type ShareWithGroup = Prisma.ProjectShareGetPayload<

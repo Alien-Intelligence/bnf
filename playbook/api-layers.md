@@ -182,6 +182,18 @@ If you need more context to decide (org membership, subscription state), enrich
 the user in `withAuth` and pass it through `PolicyUser` — do not skip the
 check. See the alien-agents playbook for the pattern; the same applies here.
 
+### The one exemption: a route whose resource is the session itself
+
+`POST /api/sign-out` acts on the authenticated session and nothing else. The
+only actor who can reach that resource is the cookie holder `withAuth`
+resolved, so **`withAuth` is the authorization** and no policy is consulted:
+a `UserPolicy.signOut(session)` comparing the session's user to the user
+`withAuth` built from that same session could never refuse, which is the
+`return true` this section forbids. The route takes the session `withAuth`
+hands it (its fifth argument) and passes it to `UserService.signOut`; the e2e
+pins that an anonymous request is refused (401). Any other route that seems
+to need this exemption needs a policy instead.
+
 ## Layer 4 — `models/<model>/service.ts` — Services
 
 All business logic: multi-step ops, MCP/cluster calls, coordinating queries

@@ -43,7 +43,12 @@ export class ProjectQueries {
           OR: [
             { ownerId: scope.userId },
             { isPublic: true },
-            { shares: { some: { groupId: { in: scope.groupIds } } } },
+            // Only a recognised level is a grant (VisibilityScope.shareAccess).
+            {
+              shares: {
+                some: { groupId: { in: scope.groupIds }, access: { in: scope.shareAccess } },
+              },
+            },
           ],
         }
 

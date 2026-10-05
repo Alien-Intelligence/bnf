@@ -107,7 +107,8 @@
     "role": {
       "admin": "Admin",
       "member": "Member",
-      "guest": "Guest"
+      "guest": "Guest",
+      "unknown": "Unknown"
     },
     "ocr": {
       "eyebrow": "Administration",
@@ -167,9 +168,6 @@
     "error": "An error occurred",
     "tryAgain": "Try again",
     "empty": "Empty",
-    "signIn": "Sign in",
-    "signUp": "Create an account",
-    "signOut": "Sign out",
     "welcome": "Welcome, {name}",
     "gotIt": "Got it"
   },
@@ -178,12 +176,29 @@
     "ingerer": "Ingest",
     "rechercher": "Research",
     "carnet": "Notebook",
-    "workspace": "BnF workspace",
-    "newProject": "New project",
-    "switchProject": "Switch project",
-    "userMenu": "User menu",
+    "homeLink": "Back to the projects list",
+    "projectsCrumb": "Projects",
+    "share": "Share",
+    "steps": "Project steps",
+    "signedInAs": "Signed in as {name}",
     "language": "Language",
-    "admin": "Administration"
+    "admin": "Administration",
+    "version": {
+      "title": "Version {version}",
+      "titleWithSha": "Version {version} · {sha}",
+      "label": "v{version}",
+      "labelWithSha": "v{version}·{sha}"
+    },
+    "switcher": {
+      "workspace": "BnF workspace",
+      "newProject": "New project",
+      "allProjects": "All projects",
+      "switchProject": "Switch project",
+      "projectMeta": "{count} · {subtitle}",
+      "projectsError": "Could not load your projects.",
+      "projectsEmpty": "No projects in your list.",
+      "createFirst": "Create your first project"
+    }
   },
   "health": {
     "aria": "Service health",
@@ -229,12 +244,19 @@
       "passwordLabel": "Password",
       "submit": "Sign in",
       "noAccount": "Don't have an account yet?",
-      "errorGeneric": "Invalid credentials",
+      "errorGeneric": "Sign-in failed. Please try again.",
       "errorInvalidCredentials": "Invalid credentials",
       "forgotPassword": "Forgot password?",
       "submitting": "Signing in…",
       "ssoButton": "Sign in with Alien",
-      "or": "or"
+      "or": "or",
+      "signedOut": "You are signed out.",
+      "signedOutSsoUnavailable": "You are signed out of the app, but your Alien session could not be closed. On a shared computer, also sign out of your Alien account."
+    },
+    "signOut": {
+      "action": "Sign out",
+      "pending": "Signing out…",
+      "error": "Sign-out failed. Please try again."
     },
     "signUp": {
       "title": "Create an account",
@@ -286,7 +308,8 @@
     "section": {
       "mine": "My projects",
       "mineEmpty": "You do not own any project yet.",
-      "shared": "Shared with me"
+      "shared": "Shared with me",
+      "public": "Public projects"
     },
     "access": {
       "read": "Read-only",
@@ -298,22 +321,48 @@
     },
     "share": {
       "title": "Share “{name}”",
-      "description": "Give a group access to this project. With read access its members consult the corpus and build their own research workspaces; with edit access they can also change and ingest it. Only you can share or delete the project.",
+      "description": "Members of the chosen group will find this project under “Shared with me”.",
+      "addHeading": "Give a group access",
       "group": "Group",
       "groupPlaceholder": "Choose a group",
+      "groupOption": "{name} · {count, plural, one {# member} other {# members}}",
       "access": "Access",
       "level": {
         "read": "Read-only",
         "write": "Can edit"
       },
+      "levelHint": {
+        "read": "Consult the corpus and run their own research",
+        "write": "Also: change the corpus and run ingestion"
+      },
+      "ownerNote": "Only the project's owner, or an administrator, can share or delete it.",
       "grant": "Share",
+      "granted": "“{group}” now has access to the project ({level}).",
+      "currentHeading": "Groups with access ({count})",
+      "memberCount": "{count, plural, one {# member} other {# members}}",
       "revoke": "Revoke access for {name}",
-      "empty": "This project is not shared with any group.",
-      "noGroups": "No group exists yet. Ask an administrator to create one.",
-      "allGroupsShared": "All of your groups already have access to this project.",
+      "revokeConfirm": "{count, plural, one {# research workspace built on this share will lose} other {# research workspaces built on this share will lose}} access to the corpus.",
+      "revokeConfirmAction": "Revoke access",
+      "revoked": "Access for “{name}” revoked.",
+      "empty": "No group has access to this project yet. Choose a group above to give it access.",
+      "noGroups": "You are not in any group. Sharing works through groups: ask an administrator to add you to one.",
+      "allGroupsShared": "All of your groups already have access to this project. To change their level, use the list below.",
       "groupsError": "Could not load the list of groups.",
       "derived": "{count, plural, one {# research workspace depends on it} other {# research workspaces depend on it}}",
-      "changeAccess": "Change access for {name}"
+      "changeAccess": "Change access for {name}",
+      "revokeTitle": "Revoke access for “{name}”?",
+      "createGroup": "Create a group",
+      "errors": {
+        "forbidden": "You cannot share this project.",
+        "projectGone": "This project no longer exists.",
+        "groupGone": "This group no longer exists. Choose another one.",
+        "generic": "The operation failed. Please try again.",
+        "groupRequired": "Choose a group."
+      },
+      "currentHeadingUnknown": "Groups with access",
+      "grantsError": "Could not load the groups with access.",
+      "noGroupsAdmin": "No group exists yet. Create one in the admin console, then come back to share this project.",
+      "levelUnknown": "Unrecognised access level: this share grants no access. Revoke it, then share again."
     },
     "derive": {
       "title": "Create a research workspace",
@@ -759,7 +808,8 @@
       "emptyReaderTalk": "Talk to the assistant on the left to generate a research note.",
       "emptyReaderTalkSub": "Ask your question; the assistant writes the note, cites its sources, and opens it here.",
       "openSource": "Research assistant",
-      "openSubtitle": "Queries the corpus · cites its sources"
+      "openSubtitle": "Queries the corpus · cites its sources",
+      "notesRefreshError": "Could not refresh the notes list; the last version is still shown."
     },
     "artefacts": {
       "title": "Research artifacts",

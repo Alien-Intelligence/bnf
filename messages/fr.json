@@ -107,7 +107,8 @@
     "role": {
       "admin": "Admin",
       "member": "Membre",
-      "guest": "Invité"
+      "guest": "Invité",
+      "unknown": "Inconnu"
     },
     "ocr": {
       "eyebrow": "Administration",
@@ -167,9 +168,6 @@
     "error": "Une erreur est survenue",
     "tryAgain": "Réessayer",
     "empty": "Vide",
-    "signIn": "Se connecter",
-    "signUp": "Créer un compte",
-    "signOut": "Se déconnecter",
     "welcome": "Bienvenue, {name}",
     "gotIt": "J'ai compris"
   },
@@ -178,16 +176,33 @@
     "ingerer": "Ingérer",
     "rechercher": "Rechercher",
     "carnet": "Carnet",
-    "workspace": "Espace de travail BnF",
-    "newProject": "Nouveau projet",
-    "switchProject": "Changer de projet",
-    "userMenu": "Menu utilisateur",
+    "homeLink": "Retour à la liste des projets",
+    "projectsCrumb": "Projets",
+    "share": "Partager",
+    "steps": "Étapes du projet",
+    "signedInAs": "Connecté en tant que {name}",
     "language": "Langue",
-    "admin": "Administration"
+    "admin": "Administration",
+    "version": {
+      "title": "Version {version}",
+      "titleWithSha": "Version {version} · {sha}",
+      "label": "v{version}",
+      "labelWithSha": "v{version}·{sha}"
+    },
+    "switcher": {
+      "workspace": "Espace de travail BnF",
+      "newProject": "Nouveau projet",
+      "allProjects": "Tous les projets",
+      "switchProject": "Changer de projet",
+      "projectMeta": "{count} · {subtitle}",
+      "projectsError": "Impossible de charger vos projets.",
+      "projectsEmpty": "Aucun projet dans votre liste.",
+      "createFirst": "Créer votre premier projet"
+    }
   },
   "health": {
     "aria": "État des services",
-    "app": "App",
+    "app": "Application",
     "alien": "Alien",
     "bnf": "BnF",
     "status": {
@@ -229,12 +244,19 @@
       "passwordLabel": "Mot de passe",
       "submit": "Se connecter",
       "noAccount": "Pas encore de compte ?",
-      "errorGeneric": "Identifiants invalides",
+      "errorGeneric": "La connexion a échoué. Réessayez.",
       "errorInvalidCredentials": "Identifiants invalides",
       "forgotPassword": "Mot de passe oublié ?",
       "submitting": "Connexion en cours…",
       "ssoButton": "Se connecter avec Alien",
-      "or": "ou"
+      "or": "ou",
+      "signedOut": "Vous êtes déconnecté.",
+      "signedOutSsoUnavailable": "Vous êtes déconnecté de l'application, mais votre session Alien n'a pas pu être fermée. Sur un poste partagé, déconnectez-vous aussi de votre compte Alien."
+    },
+    "signOut": {
+      "action": "Se déconnecter",
+      "pending": "Déconnexion…",
+      "error": "La déconnexion a échoué. Réessayez."
     },
     "signUp": {
       "title": "Créer un compte",
@@ -286,7 +308,8 @@
     "section": {
       "mine": "Mes projets",
       "mineEmpty": "Vous ne possédez aucun projet pour l'instant.",
-      "shared": "Partagés avec moi"
+      "shared": "Partagés avec moi",
+      "public": "Projets publics"
     },
     "access": {
       "read": "Lecture seule",
@@ -298,22 +321,48 @@
     },
     "share": {
       "title": "Partager « {name} »",
-      "description": "Donnez à un groupe l'accès à ce projet. En lecture, ses membres consultent le corpus et créent leurs propres espaces de recherche ; en édition, ils peuvent aussi le modifier et l'ingérer. Vous restez le seul à pouvoir partager ou supprimer le projet.",
+      "description": "Les membres du groupe choisi retrouveront ce projet dans « Partagés avec moi ».",
+      "addHeading": "Donner accès à un groupe",
       "group": "Groupe",
       "groupPlaceholder": "Choisir un groupe",
+      "groupOption": "{name} · {count, plural, one {# membre} other {# membres}}",
       "access": "Accès",
       "level": {
         "read": "Lecture seule",
         "write": "Édition"
       },
+      "levelHint": {
+        "read": "Consulter le corpus et mener ses propres recherches",
+        "write": "En plus : modifier le corpus et lancer l'ingestion"
+      },
+      "ownerNote": "Seul le propriétaire du projet, ou un administrateur, peut le partager ou le supprimer.",
       "grant": "Partager",
+      "granted": "« {group} » a maintenant accès au projet ({level}).",
+      "currentHeading": "Groupes ayant accès ({count})",
+      "memberCount": "{count, plural, one {# membre} other {# membres}}",
       "revoke": "Retirer l'accès de {name}",
-      "empty": "Ce projet n'est partagé avec aucun groupe.",
-      "noGroups": "Aucun groupe n'existe encore. Demandez à un administrateur d'en créer un.",
-      "allGroupsShared": "Tous vos groupes ont déjà accès à ce projet.",
+      "revokeConfirm": "{count, plural, one {# espace de recherche construit sur ce partage perdra} other {# espaces de recherche construits sur ce partage perdront}} l'accès au corpus.",
+      "revokeConfirmAction": "Retirer l'accès",
+      "revoked": "Accès de « {name} » retiré.",
+      "empty": "Aucun groupe n'a encore accès à ce projet. Choisissez un groupe ci-dessus pour lui en donner l'accès.",
+      "noGroups": "Vous ne faites partie d'aucun groupe. Le partage se fait par groupe : demandez à un administrateur de vous ajouter à un groupe.",
+      "allGroupsShared": "Tous vos groupes ont déjà accès à ce projet. Pour changer leur niveau, utilisez la liste ci-dessous.",
       "groupsError": "Impossible de charger la liste des groupes.",
       "derived": "{count, plural, one {# espace de recherche en dépend} other {# espaces de recherche en dépendent}}",
-      "changeAccess": "Modifier l'accès de {name}"
+      "changeAccess": "Modifier l'accès de {name}",
+      "revokeTitle": "Retirer l'accès de « {name} » ?",
+      "createGroup": "Créer un groupe",
+      "errors": {
+        "forbidden": "Vous ne pouvez pas partager ce projet.",
+        "projectGone": "Ce projet n'existe plus.",
+        "groupGone": "Ce groupe n'existe plus. Choisissez-en un autre.",
+        "generic": "L'opération a échoué. Réessayez.",
+        "groupRequired": "Choisissez un groupe."
+      },
+      "currentHeadingUnknown": "Groupes ayant accès",
+      "grantsError": "Impossible de charger les groupes ayant accès.",
+      "noGroupsAdmin": "Aucun groupe n'existe encore. Créez-en un dans la console d'administration, puis revenez partager ce projet.",
+      "levelUnknown": "Niveau d'accès non reconnu : ce partage n'accorde aucun accès. Retirez-le puis partagez à nouveau."
     },
     "derive": {
       "title": "Créer un espace de recherche",
@@ -759,7 +808,8 @@
       "emptyReaderTalk": "Parlez à l'assistant à gauche pour générer une note de recherche.",
       "emptyReaderTalkSub": "Posez votre question ; l'assistant rédige la note, cite ses sources et l'ouvre ici.",
       "openSource": "Assistant de recherche",
-      "openSubtitle": "Interroge le corpus · cite ses sources"
+      "openSubtitle": "Interroge le corpus · cite ses sources",
+      "notesRefreshError": "Impossible d'actualiser la liste des notes ; la dernière version reste affichée."
     },
     "artefacts": {
       "title": "Artefacts de recherche",

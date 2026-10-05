@@ -148,3 +148,41 @@ Constituer page
 - The 40/60 chat-workspace split itself: `<div className="grid grid-cols-[40%_60%]">`
 - Page-level padding / max-width: `<div className="max-w-6xl mx-auto px-6">`
 - Inline layout within a component (icon + label inside a `Card`)
+
+## Project shell ✅
+
+Every step of a project (Constituer, Ingérer, Rechercher, Carnet) shares one
+header, mounted once under `app/[locale]/projects/[projectId]/layout.tsx`.
+
+- The server layout loads the header data and hands it to
+  `LayoutWorkspaceProjectShell` (client), which renders `LayoutWorkspaceHeader`,
+  the page, and — at its own level — the dialogs the header opens (share this
+  project, create a project). Other components under the shell open them with
+  `useWorkspaceProjectDialogs()`; no button owns a dialog's state.
+- Step clients never mount a header: their root fills the shell's
+  `min-h-0 flex-1` slot (a fragment or a `flex min-h-0 flex-1 …` div), never
+  `h-screen`.
+- The layout fetches but **never gates**. A layout does not re-render on
+  navigation and cannot read the pathname (Next 16 authentication guide,
+  "Layouts and auth checks"; `layout.md` "Pathname"), so it can neither keep a
+  session check fresh nor build the right `?next=`. Pages keep
+  `requireSessionUser(ROUTES.<step>(id))` (admin tabs:
+  `requireAdminUser(ROUTES.<tab>)`) and their access checks. With no session,
+  or a project the user may not read, the layout renders `children` bare: the
+  page redirects or answers `notFound()`, and a 404 never shows a project name.
+- Everything the header may show comes from `lib/authz/workspace-header.ts`:
+  `workspaceHeaderViewer` (name, email, `isAdmin` — the console's own rule) and
+  `workspaceHeaderProject` (null without read access; `steps` from
+  `workspaceStepsFor`, `mayShare` from `ProjectPolicy.share`). Never recompute
+  them in a component or a page.
+
+```tsx
+// ❌ A step client mounting its own header, with hand-assembled props
+<div className="flex h-screen flex-col">
+  <LayoutWorkspaceHeader viewer={…} project={…} />
+  <div className="flex flex-1 overflow-hidden">…</div>
+</div>
+
+// ✅ The step client fills the shell's slot
+<div className="flex min-h-0 flex-1 overflow-hidden">…</div>
+```
