@@ -16,7 +16,7 @@ import crypto from "node:crypto"
 import { prisma } from "@/lib/db"
 import { CORPUS_VERSION_STATUS } from "@/models/corpus/schema"
 import { SessionQueries } from "@/models/sessions/queries"
-import { ProjectQueries } from "@/models/projects/queries"
+import { SESSION_SCOPE } from "@/models/sessions/schema"
 import { Prisma } from "@/lib/generated/prisma/client"
 import type { IngestJob, Project, User } from "@/lib/generated/prisma/client"
 import { CorpusQueries } from "@/models/corpus/queries"
@@ -149,17 +149,14 @@ export function splitSucceededArks(
 
 /**
  * An ingestion changes what the research agent can truthfully say about the
- * corpus, so every research prompt built from the old state has to be dropped —
+ * corpus, so every research prompt built from the old state is dropped —
  * including those of the workspaces derived from it, which read this corpus
- * without owning it.
- *
- * Expressed with the two models' own queries rather than by reaching into
- * `lib/agent/prompts/`: that module is the agents runtime, and `service.ts` may
- * import queries, not another domain's internals (playbook/models.md).
+ * without owning it. Expressed with the sessions model's own query (never by
+ * reaching into `lib/agent/prompts/`), and always run INSIDE the transaction
+ * that moves the ingestion state, so the two commit together.
  */
-async function invalidateResearchPrompts(corpusProjectId: string): Promise<void> {
-  const derivedIds = await ProjectQueries.derivedIds(corpusProjectId)
-  await SessionQueries.clearResearchPrompts([corpusProjectId, ...derivedIds])
+function researchPromptsOf(corpusProjectId: string) {
+  return { projectId: corpusProjectId, scope: SESSION_SCOPE.RESEARCH, withDerived: true }
 }
 
 export class IngestService {
@@ -400,7 +397,7 @@ export class IngestService {
 
     // Same partition (and same paidOcr gate) as submit(), so the preview's
     // counts and cost estimate can never drift from what a submit would carry.
-    const { ingestable, excluded, paidOcr, excludedNoText, excludedNoScan } =
+    const { ingestable, excluded, paidOcr, excludedNoText, excludedNoScan, unconfirmed } =
       await IngestService._partitionByIngestability(project.id, deltaAddedArks, {
         paidOcr: project.paidOcrEnabled,
       })
@@ -423,6 +420,15 @@ export class IngestService {
         withinBudget:
           paidOcrEstimate.docCount > 0 &&
           spentUsd + paidOcrEstimate.usd <= ceilingUsd,
+      },
+      coverage: {
+        total: targetArks.length,
+        indexed: targetArks.filter((a) => indexedSet.has(a)).length,
+        toIngest: ingestable.length,
+        paidOcrEligible: paidOcr.length,
+        notDigitized: excludedNoScan,
+        noText: excludedNoText,
+        unconfirmed,
       },
     }
   }
@@ -616,13 +622,14 @@ export class IngestService {
         }),
       )
     }
-    await prisma.$transaction(ops)
-
     // The research prompt embeds ÉTAT DU CORPUS, so a commit makes it stale:
     // without this the agent keeps saying the corpus is not ingested and
     // refuses to search. Derived workspaces reading this corpus are affected by
-    // an ingestion they did not run, so they are invalidated too.
-    await invalidateResearchPrompts(job.projectId)
+    // an ingestion they did not run, so they are invalidated too — in the same
+    // transaction as the state change.
+    // A statement of the batch $transaction(ops) below: built on the app client.
+    ops.push(SessionQueries.invalidatePrompts(researchPromptsOf(job.projectId), prisma))
+    await prisma.$transaction(ops)
   }
 
   /**
@@ -731,13 +738,14 @@ export class IngestService {
         }),
       )
     }
-    await prisma.$transaction(ops)
-
     // The research prompt embeds ÉTAT DU CORPUS, so a commit makes it stale:
     // without this the agent keeps saying the corpus is not ingested and
     // refuses to search. Derived workspaces reading this corpus are affected by
-    // an ingestion they did not run, so they are invalidated too.
-    await invalidateResearchPrompts(job.projectId)
+    // an ingestion they did not run, so they are invalidated too — in the same
+    // transaction as the state change.
+    // A statement of the batch $transaction(ops) below: built on the app client.
+    ops.push(SessionQueries.invalidatePrompts(researchPromptsOf(job.projectId), prisma))
+    await prisma.$transaction(ops)
   }
 
   /**
@@ -921,11 +929,10 @@ export class IngestService {
         where: { id: project.id },
         data: { ingestedVersionId: targetVersionId },
       })
+      // Same reason as the commit path: the pointer moved, so the research
+      // prompt's ÉTAT DU CORPUS is stale here and in every derived workspace.
+      await SessionQueries.invalidatePrompts(researchPromptsOf(project.id), tx)
     })
-
-    // Same reason as the commit path: the pointer moved, so the research
-    // prompt's ÉTAT DU CORPUS is stale here and in every derived workspace.
-    await invalidateResearchPrompts(project.id)
 
     return job
   }
@@ -966,6 +973,9 @@ export class IngestService {
     excludedNoText: number
     /** Excluded docs not digitized at the BnF (NON_NUMERISE). */
     excludedNoScan: number
+    /** Of `ingestable`: pushed without a confident class — no Document row, or
+     *  digitized but not resolved yet. The worker decides for them. */
+    unconfirmed: number
   }> {
     if (arks.length === 0)
       return {
@@ -974,6 +984,7 @@ export class IngestService {
         paidOcr: [],
         excludedNoText: 0,
         excludedNoScan: 0,
+        unconfirmed: 0,
       }
     const rows = await prisma.document.findMany({
       where: { projectId, ark: { in: arks } },
@@ -996,11 +1007,13 @@ export class IngestService {
     // counts always sum to excluded.length.
     let excludedNoText = 0
     let excludedNoScan = 0
+    let unconfirmed = 0
     for (const ark of arks) {
       const doc = byArk.get(ark)
       if (!doc) {
         // No row — let the worker resolve and decide rather than drop blindly.
         ingestable.push(ark)
+        unconfirmed++
         continue
       }
       const digitized = Boolean(doc.iiifManifestUrl)
@@ -1028,9 +1041,10 @@ export class IngestService {
         else excludedNoText++
       } else {
         ingestable.push(ark)
+        if (!confident) unconfirmed++
       }
     }
-    return { ingestable, excluded, paidOcr, excludedNoText, excludedNoScan }
+    return { ingestable, excluded, paidOcr, excludedNoText, excludedNoScan, unconfirmed }
   }
 
   /**

@@ -11,113 +11,52 @@
  * Every mutating tool publishes a `corpus_event` via `ctx.emit` so connected
  * SSE clients receive real-time feedback without polling.
  *
- * ProjectId resolution: resolved lazily from the session row rather than
- * baked into the closure at registry-construction time. This keeps the lookup
- * parallel-safe (no shared mutable state) and avoids a stale projectId if a
- * session were somehow re-used across projects.
+ * Project resolution: the read tools read the corpus this turn reads —
+ * `ctx.corpusProjectId`, the source's when the workspace is derived
+ * (playbook/sharing.md) — and refuse when that grant was revoked
+ * (`ctx.corpusReachable`). Both were resolved by the chat route once per turn. The mutating tools authorise
+ * through CorpusPolicy first (lib/agent/tools/authorize.ts) and act on the
+ * project it returns, loaded WITH its shares — never a bare
+ * `prisma.project.findUniqueOrThrow`, which would make every shared member's
+ * access undecidable.
  */
 import "server-only"
 
 import { z } from "zod"
 import { defineTool } from "@alien/chat-sdk/claude"
 import { CORPUS_REASON_MAX_LEN } from "@/lib/constants"
-import { prisma } from "@/lib/db"
 import { kickCanonicalize } from "@/lib/documents/canonicalizer"
 import { kickResolve } from "@/lib/documents/resolver"
 import { sourceFromArk } from "@/lib/mcp/vocab"
+import { CorpusPolicy } from "@/models/corpus/policy"
 import { CorpusQueries } from "@/models/corpus/queries"
 import { CorpusService } from "@/models/corpus/service"
-import { arkSchema } from "@/models/corpus/types"
-import { INDEXATION_OUTCOME, classifyOutcome } from "@/models/documents/schema"
+import { arkSchema, corpusAgentFilterSetSchema } from "@/models/corpus/types"
+import { DOCUMENT_SOURCE, INDEXATION_OUTCOME, classifyOutcome } from "@/models/documents/schema"
 import type { DocumentRow } from "@/models/corpus/schema"
-import type { CorpusFilterSet } from "@/models/corpus/queries"
 import type { TurnScopedCtx } from "./registry-factory"
+import { authorizeProjectTool } from "./authorize"
+import { REMOVE_BY_FILTER_STATUS } from "@/lib/filters"
+import { EMPTY_FILTER_REFUSAL, refusingBadFilterValues, toolFailure, toolRefusal, type ToolFailure } from "./failure"
+import { CORPUS_ACCESS_REVOKED_ERROR } from "./ingestion-guard"
+import { CORPUS_EVENT_KIND, emitDomainEvent, STREAM_DOMAIN_EVENT } from "@/lib/agent/stream-events"
 import { AGENT_TOOLS } from "./constants"
+import { provisionalTotal } from "./provisional-total"
 
 // ---------------------------------------------------------------------------
-// Shared filter schema (corpus_get_state, corpus_list, corpus_stats,
-// corpus_remove_by_filter all accept the same metadata filter set)
+// Shared filter schema: models/corpus/types.ts (one definition with REST)
 // ---------------------------------------------------------------------------
 
-/** Numérisation / ingestion classes — the derived ingestability buckets. */
-const ingestClassEnum = z.enum(["ocr", "vision", "sans_texte", "non_numerise"])
+const corpusToolFiltersSchema = corpusAgentFilterSetSchema
 
 /**
- * Indexation outcomes — what BECAME of a document at ingestion. Distinct from
- * `ingestClassEnum`, which is the pre-flight expectation. This is the dimension
- * that lets the agent tell "the corpus holds nothing on this subject" apart from
- * "the corpus holds four documents on it that failed to index", which it
- * previously could not and so reported as absence.
+ * The corpus a read tool reads, or the refusal when the derived workspace's
+ * grant was revoked — never the workspace's own (empty) project id.
  */
-const outcomeEnum = z.enum(["indexed", "failed", "excluded", "not_ingested"])
-
-/**
- * The metadata filter set the corpus agent passes to narrow a read or a bulk
- * removal. Mirrors `CorpusFilterSet` (models/corpus/queries.ts) minus `session`
- * (a UI-only attribution facet the agent has no use for). All fields optional;
- * absent means "no constraint on this dimension". Multi-select dimensions are
- * arrays (pass one or several values).
- */
-const corpusFiltersSchema = z
-  .object({
-    type: z
-      .array(z.string())
-      .optional()
-      .describe('Doc-type codes to keep, e.g. ["book","periodique"].'),
-    lang: z
-      .array(z.string())
-      .optional()
-      .describe('BCP-47 language codes to keep, e.g. ["fr","la"].'),
-    source: z
-      .array(z.string())
-      .optional()
-      .describe('Sources to keep: "gallica" | "catalogue" | "other".'),
-    ingest: z
-      .array(ingestClassEnum)
-      .optional()
-      .describe(
-        "Numérisation classes to keep: ocr | vision | sans_texte | non_numerise.",
-      ),
-    outcome: z
-      .array(outcomeEnum)
-      .optional()
-      .describe(
-        "Indexation outcome to keep — what became of the document when the " +
-          "corpus was last ingested. `indexed`: in the search index, you can " +
-          "retrieve it. `failed`: sent for indexing and broke (throttling, bad " +
-          "transcription); it is IN the corpus but NOT searchable. `excluded`: " +
-          "never sent because it has no text to index (a catalogue notice, an " +
-          "undigitized work). `not_ingested`: added since the last ingestion. " +
-          "Use this when a search over the corpus returns less than the corpus " +
-          "visibly contains: documents that are not `indexed` exist but cannot " +
-          "be found by rag_* tools, and saying they are absent would be wrong. " +
-          "This describes the past, not a judgement — never use it to decide " +
-          "which documents belong in a corpus.",
-      ),
-    yearFrom: z
-      .number()
-      .int()
-      .optional()
-      .describe("Year lower bound, inclusive (e.g. 1970)."),
-    yearTo: z
-      .number()
-      .int()
-      .optional()
-      .describe("Year upper bound, inclusive (e.g. 2025)."),
-    undated: z
-      .boolean()
-      .optional()
-      .describe(
-        "Keep only documents with an unknown date. Ignored when yearFrom/yearTo is set.",
-      ),
-    q: z
-      .string()
-      .trim()
-      .min(1)
-      .optional()
-      .describe("Free-text match over title, author, and excerpt."),
-  })
-  .describe("Metadata filters. Omit a field to leave that dimension unconstrained.")
+function corpusReadTarget(ctx: TurnScopedCtx): { ok: true; projectId: string } | { ok: false; result: ToolFailure } {
+  if (!ctx.corpusReachable) return { ok: false, result: toolFailure(CORPUS_ACCESS_REVOKED_ERROR) }
+  return { ok: true, projectId: ctx.corpusProjectId }
+}
 
 /** The document fields corpus_list may project. `ark` is always returned. */
 const corpusListFieldEnum = z.enum([
@@ -168,27 +107,6 @@ function agentDocumentView(doc: DocumentRow, paidOcrEnabled: boolean) {
 }
 
 // ---------------------------------------------------------------------------
-// Helper
-// ---------------------------------------------------------------------------
-
-/**
- * Resolve the projectId for a given appSession.
- *
- * Using a direct Prisma query rather than a service method keeps this module
- * free of circular imports. The lookup is a single primary-key read — cheap.
- *
- * Throws if the session does not exist (programming error; sessions are created
- * before the registry is built).
- */
-async function projectIdFromSession(appSessionId: string): Promise<string> {
-  const session = await prisma.appSession.findUniqueOrThrow({
-    where: { id: appSessionId },
-    select: { projectId: true },
-  })
-  return session.projectId
-}
-
-// ---------------------------------------------------------------------------
 // corpus_get_state
 // ---------------------------------------------------------------------------
 
@@ -196,7 +114,7 @@ export const corpusGetStateTool = defineTool<
   z.ZodObject<{
     include_sample: z.ZodOptional<z.ZodBoolean>
     sample_limit: z.ZodOptional<z.ZodNumber>
-    filters: z.ZodOptional<typeof corpusFiltersSchema>
+    filters: z.ZodOptional<typeof corpusToolFiltersSchema>
   }>,
   TurnScopedCtx
 >({
@@ -210,7 +128,7 @@ export const corpusGetStateTool = defineTool<
     '`{"filters":{"yearFrom":1970}}` to see only documents from 1970 onward) — ' +
     "every count shrinks to the filtered set. For exhaustively enumerating a " +
     "filtered subset page by page, prefer corpus_list.",
-  inputSchema: z.object({
+  inputSchema: z.strictObject({
     include_sample: z
       .boolean()
       .optional()
@@ -222,29 +140,33 @@ export const corpusGetStateTool = defineTool<
       .max(100)
       .optional()
       .describe("Maximum number of sample documents to return (1–100, default 25)."),
-    filters: corpusFiltersSchema.optional(),
+    filters: corpusToolFiltersSchema.optional(),
   }),
-  handler: async (input, ctx) => {
-    const includeSample = input.include_sample ?? true
-    const sampleLimit = input.sample_limit
-    const filters = input.filters as CorpusFilterSet | undefined
-    const projectId = await projectIdFromSession(ctx.appSessionId)
-    const snapshot = await CorpusQueries.snapshot(
-      projectId,
-      "head",
-      includeSample ? { filters, limit: sampleLimit } : { filters, limit: 0 },
-    )
-    if (!includeSample) {
-      const { sample: _sample, ...rest } = snapshot
-      return rest
-    }
-    return {
-      ...snapshot,
-      sample: snapshot.sample.map((d) =>
-        agentDocumentView(d, snapshot.paidOcrEnabled),
-      ),
-    }
-  },
+  handler: (input, ctx) =>
+    // A filter value the data refuses → an invalid_params refusal (failure.ts).
+    refusingBadFilterValues(async () => {
+      const includeSample = input.include_sample ?? true
+      const sampleLimit = input.sample_limit
+      const filters = input.filters
+      const target = corpusReadTarget(ctx)
+      if (!target.ok) return target.result
+      const projectId = target.projectId
+      const snapshot = await CorpusService.snapshot(
+        projectId,
+        "head",
+        includeSample ? { filters, limit: sampleLimit } : { filters, limit: 0 },
+      )
+      if (!includeSample) {
+        const { sample: _sample, ...rest } = snapshot
+        return rest
+      }
+      return {
+        ...snapshot,
+        sample: snapshot.sample.map((d) =>
+          agentDocumentView(d, snapshot.paidOcrEnabled),
+        ),
+      }
+    }),
 })
 
 // ---------------------------------------------------------------------------
@@ -253,7 +175,7 @@ export const corpusGetStateTool = defineTool<
 
 export const corpusListTool = defineTool<
   z.ZodObject<{
-    filters: z.ZodOptional<typeof corpusFiltersSchema>
+    filters: z.ZodOptional<typeof corpusToolFiltersSchema>
     cursor: z.ZodOptional<z.ZodString>
     limit: z.ZodOptional<z.ZodNumber>
     fields: z.ZodOptional<z.ZodArray<typeof corpusListFieldEnum>>
@@ -271,8 +193,8 @@ export const corpusListTool = defineTool<
     "request only the columns you need (ark is always included) to keep responses " +
     "compact. This is the right tool for 'show me every document from 1970 onward' " +
     "or 'which catalogue notices are in the corpus' — filter, then page through.",
-  inputSchema: z.object({
-    filters: corpusFiltersSchema.optional(),
+  inputSchema: z.strictObject({
+    filters: corpusToolFiltersSchema.optional(),
     cursor: z
       .string()
       .optional()
@@ -293,39 +215,43 @@ export const corpusListTool = defineTool<
         "Document fields to return besides `ark` (always included). Omit to return all fields.",
       ),
   }),
-  handler: async (input, ctx) => {
-    const filters = input.filters as CorpusFilterSet | undefined
-    const projectId = await projectIdFromSession(ctx.appSessionId)
-    const page = await CorpusQueries.list(projectId, "head", {
-      filters,
-      cursor: input.cursor,
-      limit: input.limit,
-    })
+  handler: (input, ctx) =>
+    // A filter value the data refuses → an invalid_params refusal (failure.ts).
+    refusingBadFilterValues(async () => {
+      const filters = input.filters
+      const target = corpusReadTarget(ctx)
+      if (!target.ok) return target.result
+      const page = await CorpusService.list(target.projectId, "head", {
+        filters,
+        cursor: input.cursor,
+        limit: input.limit,
+      })
 
-    // Project each document down to the requested fields (token economy). `ark`
-    // is always kept so the agent can act on / cite the document. When no
-    // `fields` are given, return the full row.
-    const rows = page.documents.map((d) =>
-      agentDocumentView(d, page.paidOcrEnabled),
-    )
-    const documents =
-      input.fields && input.fields.length > 0
-        ? rows.map((doc) => {
-            const picked: Record<string, unknown> = { ark: doc.ark }
-            for (const f of input.fields as (keyof typeof doc)[]) {
-              picked[f] = doc[f]
-            }
-            return picked
-          })
-        : rows
+      // Project each document down to the requested fields (token economy). `ark`
+      // is always kept so the agent can act on / cite the document. When no
+      // `fields` are given, return the full row.
+      const rows = page.documents.map((d) =>
+        agentDocumentView(d, page.paidOcrEnabled),
+      )
+      const documents =
+        input.fields && input.fields.length > 0
+          ? rows.map((doc) => {
+              const picked: Record<string, unknown> = { ark: doc.ark }
+              for (const f of input.fields as (keyof typeof doc)[]) {
+                picked[f] = doc[f]
+              }
+              return picked
+            })
+          : rows
 
-    return {
-      versionSeq: page.versionSeq,
-      total: page.total,
-      documents,
-      ...(page.nextCursor !== undefined ? { nextCursor: page.nextCursor } : {}),
-    }
-  },
+      return {
+        versionSeq: page.versionSeq,
+        total: page.total,
+        documents,
+        ...(page.nextCursor !== undefined ? { nextCursor: page.nextCursor } : {}),
+        ...(page.notUnknown !== undefined ? { notUnknown: page.notUnknown } : {}),
+      }
+    }),
 })
 
 // ---------------------------------------------------------------------------
@@ -365,7 +291,7 @@ export const corpusAddTool = defineTool<
     "document (`bpt6k…`/`btv1b…`) in the BACKGROUND, shortly after this returns — " +
     "so just add the `cb…` ARK as-is; you do NOT need to resolve it to its " +
     "Gallica form yourself, and you do NOT need to wait for the upgrade.",
-  inputSchema: z.object({
+  inputSchema: z.strictObject({
     arks: z
       .array(arkSchema)
       .min(1)
@@ -386,11 +312,10 @@ export const corpusAddTool = defineTool<
       ),
   }),
   handler: async (input, ctx) => {
-    const projectId = await projectIdFromSession(ctx.appSessionId)
-
-    const project = await prisma.project.findUniqueOrThrow({
-      where: { id: projectId },
-    })
+    const gate = await authorizeProjectTool(ctx, CorpusPolicy, "mutate")
+    if (!gate.ok) return gate.result
+    const project = gate.project
+    const projectId = project.id
 
     const result = await CorpusService.addArks(
       project,
@@ -416,14 +341,14 @@ export const corpusAddTool = defineTool<
     // in the background too — same detachment, so a cb-heavy batch never stalls
     // the turn on rate-limited data.bnf.fr/SRU lookups. The drain is a fast
     // no-op when nothing is pending, so only kick it when a notice was supplied.
-    if (input.arks.some((a) => sourceFromArk(a) === "catalogue")) {
+    if (input.arks.some((a) => sourceFromArk(a) === DOCUMENT_SOURCE.CATALOGUE)) {
       kickCanonicalize(projectId)
     }
 
-    ctx.emit?.({
-      type: "corpus_event",
+    emitDomainEvent(ctx, {
+      type: STREAM_DOMAIN_EVENT.CORPUS,
       data: {
-        kind: "add",
+        kind: CORPUS_EVENT_KIND.ADD,
         count: result.lastDeltaAdded,
         versionSeq: result.versionSeq,
       },
@@ -432,6 +357,9 @@ export const corpusAddTool = defineTool<
     // Note: `result.nonIngestable` is intentionally NOT surfaced — ingestability
     // is an ingestion-step concern, not a corpus-building one. The agent must not
     // filter or warn on it here.
+    // The total is provisional while catalogue notices may still be replaced
+    // by their digitized document (feedback #10c) — say so, with what to do.
+    const canonicalizationPending = await CorpusService.pendingCanonicalCount(projectId)
     return {
       requested: result.requested,
       added: result.lastDeltaAdded,
@@ -439,6 +367,7 @@ export const corpusAddTool = defineTool<
       versionSeq: result.versionSeq,
       total: result.total,
       pending: result.pending,
+      ...provisionalTotal(canonicalizationPending, result.pending),
     }
   },
 })
@@ -460,7 +389,7 @@ export const corpusRemoveTool = defineTool<
     "Creates a new immutable corpus version. Documents not currently in the corpus " +
     "are silently ignored. Removing a document does NOT delete it from the database — " +
     "it only removes its membership in the current version.",
-  inputSchema: z.object({
+  inputSchema: z.strictObject({
     arks: z
       .array(arkSchema)
       .min(1)
@@ -477,21 +406,19 @@ export const corpusRemoveTool = defineTool<
       ),
   }),
   handler: async (input, ctx) => {
-    const projectId = await projectIdFromSession(ctx.appSessionId)
-
-    const project = await prisma.project.findUniqueOrThrow({
-      where: { id: projectId },
-    })
+    const gate = await authorizeProjectTool(ctx, CorpusPolicy, "mutate")
+    if (!gate.ok) return gate.result
+    const project = gate.project
 
     const result = await CorpusService.removeArks(project, ctx.user, {
       arks: input.arks,
       reason: input.reason,
     })
 
-    ctx.emit?.({
-      type: "corpus_event",
+    emitDomainEvent(ctx, {
+      type: STREAM_DOMAIN_EVENT.CORPUS,
       data: {
-        kind: "remove",
+        kind: CORPUS_EVENT_KIND.REMOVE,
         count: result.lastDeltaRemoved,
         versionSeq: result.versionSeq,
       },
@@ -509,9 +436,14 @@ export const corpusRemoveTool = defineTool<
 // corpus_remove_by_filter
 // ---------------------------------------------------------------------------
 
+/** The model-readable reason an empty remove-by-filter is refused. */
+const CORPUS_EMPTY_FILTER_ERROR =
+  "Filtre vide refusé : " +
+  "il retirerait tout le corpus. Précise au moins un critère."
+
 export const corpusRemoveByFilterTool = defineTool<
   z.ZodObject<{
-    filters: typeof corpusFiltersSchema
+    filters: typeof corpusToolFiltersSchema
     reason: z.ZodString
     dry_run: z.ZodOptional<z.ZodBoolean>
   }>,
@@ -528,11 +460,11 @@ export const corpusRemoveByFilterTool = defineTool<
     "(how many would be removed) and a sample of their ARKs WITHOUT changing " +
     "anything. Show the librarian that count, get confirmation, THEN call again " +
     "with dry_run=false to commit (which seals a new corpus version). An empty " +
-    "filter is refused (status \"empty_filter\") — it would match the whole " +
+    "filter is refused (`success: false, refused: \"empty_filter\"`) — it would match the whole " +
     "corpus; narrow it instead. Removing a document drops its membership only; " +
     "it is never deleted from the database.",
-  inputSchema: z.object({
-    filters: corpusFiltersSchema,
+  inputSchema: z.strictObject({
+    filters: corpusToolFiltersSchema,
     reason: z
       .string()
       .trim()
@@ -550,36 +482,39 @@ export const corpusRemoveByFilterTool = defineTool<
         "When true (default), preview only — report what would be removed without mutating. Set false to commit.",
       ),
   }),
-  handler: async (input, ctx) => {
-    const projectId = await projectIdFromSession(ctx.appSessionId)
-    const project = await prisma.project.findUniqueOrThrow({
-      where: { id: projectId },
-    })
+  handler: (input, ctx) =>
+    // A filter value the data refuses → an invalid_params refusal (failure.ts).
+    refusingBadFilterValues(async () => {
+      // Preview-first: dry_run defaults to true so an unconfirmed call never
+      // mutates the corpus. A dry run only reads, so it needs only read access.
+      const dryRun = input.dry_run ?? true
+      const gate = await authorizeProjectTool(ctx, CorpusPolicy, dryRun ? "read" : "mutate")
+      if (!gate.ok) return gate.result
+      const project = gate.project
 
-    // Preview-first: dry_run defaults to true so an unconfirmed call never
-    // mutates the corpus.
-    const dryRun = input.dry_run ?? true
-
-    const result = await CorpusService.removeByFilter(project, ctx.user, {
-      filters: input.filters as CorpusFilterSet,
-      reason: input.reason,
-      dryRun,
-    })
-
-    // Only a committed removal emits a corpus_event and advances a version.
-    if (result.status === "removed" && result.removed > 0) {
-      ctx.emit?.({
-        type: "corpus_event",
-        data: {
-          kind: "remove",
-          count: result.removed,
-          versionSeq: result.versionSeq,
-        },
+      const result = await CorpusService.removeByFilter(project, ctx.user, {
+        filters: input.filters,
+        reason: input.reason,
+        dryRun,
       })
-    }
+      if (result.status === REMOVE_BY_FILTER_STATUS.EMPTY_FILTER) {
+        return toolRefusal(EMPTY_FILTER_REFUSAL, CORPUS_EMPTY_FILTER_ERROR)
+      }
 
-    return result
-  },
+      // Only a committed removal emits a corpus_event and advances a version.
+      if (result.status === REMOVE_BY_FILTER_STATUS.REMOVED && result.removed > 0) {
+        emitDomainEvent(ctx, {
+          type: STREAM_DOMAIN_EVENT.CORPUS,
+          data: {
+            kind: CORPUS_EVENT_KIND.REMOVE,
+            count: result.removed,
+            versionSeq: result.versionSeq,
+          },
+        })
+      }
+
+      return result
+    }),
 })
 
 // ---------------------------------------------------------------------------
@@ -590,7 +525,7 @@ const facetDimensionEnum = z.enum(["period", "type", "lang", "source"])
 
 export const corpusStatsTool = defineTool<
   z.ZodObject<{
-    filters: z.ZodOptional<typeof corpusFiltersSchema>
+    filters: z.ZodOptional<typeof corpusToolFiltersSchema>
     cross_facets: z.ZodOptional<z.ZodArray<typeof facetDimensionEnum>>
   }>,
   TurnScopedCtx
@@ -605,8 +540,8 @@ export const corpusStatsTool = defineTool<
     "1970s books vs. 1970s periodicals). Crossing period × type or period × source is " +
     "the fastest way to locate a sub-population (\"the recent documents are catalogue " +
     "books\") without inspecting documents one by one.",
-  inputSchema: z.object({
-    filters: corpusFiltersSchema.optional(),
+  inputSchema: z.strictObject({
+    filters: corpusToolFiltersSchema.optional(),
     // A fixed-length ARRAY, not a z.tuple: a tuple serialises to the positional
     // `items: [A, B]` JSON-schema form, which Google's function-declaration
     // schema rejects ("properties[cross_facets].items: missing field"), crashing
@@ -621,25 +556,29 @@ export const corpusStatsTool = defineTool<
         'Two dimensions to cross-tabulate, e.g. ["period","type"] or ["period","source"].',
       ),
   }),
-  handler: async (input, ctx) => {
-    const filters = input.filters as CorpusFilterSet | undefined
-    const projectId = await projectIdFromSession(ctx.appSessionId)
-    const snapshot = await CorpusQueries.snapshot(projectId, "head", {
-      filters,
-      limit: 0,
-    })
-    const { sample: _sample, ...stats } = snapshot
+  handler: (input, ctx) =>
+    // A filter value the data refuses → an invalid_params refusal (failure.ts).
+    refusingBadFilterValues(async () => {
+      const filters = input.filters
+      const target = corpusReadTarget(ctx)
+      if (!target.ok) return target.result
+      const projectId = target.projectId
+      const snapshot = await CorpusService.snapshot(projectId, "head", {
+        filters,
+        limit: 0,
+      })
+      const { sample: _sample, ...stats } = snapshot
 
-    if (!input.cross_facets) return stats
+      if (!input.cross_facets) return stats
 
-    const cross = await CorpusQueries.crossFacets(
-      projectId,
-      "head",
-      [input.cross_facets[0], input.cross_facets[1]],
-      filters,
-    )
-    return { ...stats, cross }
-  },
+      const cross = await CorpusService.crossFacets(
+        projectId,
+        "head",
+        [input.cross_facets[0], input.cross_facets[1]],
+        filters,
+      )
+      return { ...stats, cross }
+    }),
 })
 
 // ---------------------------------------------------------------------------
@@ -657,7 +596,7 @@ export const corpusDiffTool = defineTool<
   description:
     "Compare two corpus versions and return the list of ARKs added and removed " +
     "between them. Useful for explaining to the librarian what changed across sessions.",
-  inputSchema: z.object({
+  inputSchema: z.strictObject({
     from_seq: z
       .number()
       .int()
@@ -670,8 +609,9 @@ export const corpusDiffTool = defineTool<
       .describe("The later version sequence number (to)."),
   }),
   handler: async (input, ctx) => {
-    const projectId = await projectIdFromSession(ctx.appSessionId)
-    return CorpusQueries.diff(projectId, input.from_seq, input.to_seq)
+    const target = corpusReadTarget(ctx)
+    if (!target.ok) return target.result
+    return CorpusQueries.diff(target.projectId, input.from_seq, input.to_seq)
   },
 })
 

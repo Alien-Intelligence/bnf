@@ -383,6 +383,7 @@
       "subtitle": "Gathered candidates, pending commit",
       "count": "{count} candidate(s)",
       "empty": "The buffer is empty. Run a search to gather candidates here.",
+      "emptyCta": "Back to the conversation",
       "emptyHint": "No candidates yet",
       "error": "Could not load the buffer.",
       "noTitle": "(untitled)",
@@ -397,7 +398,17 @@
       "clearConfirmBody": "The {count} gathered candidate(s) will be discarded. The corpus is not affected.",
       "clearConfirmCancel": "Cancel",
       "clearConfirmOk": "Clear",
-      "foundBy": "Found by the search: {query}"
+      "foundBy": "Found by the search: {query}",
+      "kinds": {
+        "periodicalIssue": "Periodical issue",
+        "periodicalCollection": "Periodical title (collection)",
+        "monograph": "Monograph",
+        "image": "Image",
+        "catalogueNotice": "Catalogue record",
+        "otherDocument": "Other digitized document",
+        "unknown": "Kind undetermined"
+      },
+      "enrichPending": "metadata pending"
     },
     "export": {
       "label": "Export (CSV)",
@@ -439,6 +450,7 @@
       "unindexedSub": "{count, number} not indexed"
     },
     "filters": {
+      "urlRefused": "The filters in the address were ignored: {reason}",
       "title": "Filters and statistics",
       "byType": "By type",
       "byLang": "By language",
@@ -600,7 +612,9 @@
       "other": "Other",
       "estampe": "Print",
       "enlum": "Illumination",
-      "charte": "Charter"
+      "charte": "Charter",
+      "text": "Printed text (kind undetermined)",
+      "object": "Object"
     },
     "langs": {
       "fr": "French",
@@ -649,7 +663,13 @@
       "subagentStartHint": "Working in a separate context; it will return a synthesis.",
       "subagentDone": "Sub-agent finished · {toolCalls} tool calls",
       "subagentDoneBuffered": "Sub-agent finished · {buffered} candidates staged in the buffer · {toolCalls} tool calls",
-      "compaction": "Conversation condensed · {count} earlier messages summarized to free context"
+      "compaction": "Conversation condensed · {count} earlier messages summarized to free context",
+      "subagentError": "Sub-agent failed · {toolCalls} tool calls",
+      "subagentTimeout": "Sub-agent stopped (time limit exceeded)",
+      "subagentAborted": "Sub-agent cancelled",
+      "subagentInterrupted": "Sub-agent interrupted (final state unknown)",
+      "subagentUnreadable": "Sub-agent: unreadable event",
+      "subagentStagedBeforeStop": "{buffered} candidates staged in the buffer before it stopped"
     }
   },
   "memory": {
@@ -898,7 +918,8 @@
         "eyebrow": "In your research",
         "suffix": "{count, plural, one {consultable document} other {consultable documents}}",
         "sub": "The assistant can already read and cite them in its notes.",
-        "subNone": "The research assistant cannot read anything in this project yet."
+        "subNone": "The research assistant cannot read anything in this project yet.",
+        "subRemoved": "including {count, plural, one {# no longer in your selection, removed at the next run} other {# no longer in your selection, removed at the next run}}"
       },
       "action": {
         "eyebrow": "What this action will do",
@@ -990,6 +1011,16 @@
         "targetValue": "BnF RAG cluster",
         "processed": "Documents processed",
         "processedValue": "{done, number} / {total, number}"
+      },
+      "coverage": {
+        "eyebrow": "Your selection",
+        "empty": "Your selection is empty: nothing to ingest yet.",
+        "emptyCta": "Build the corpus",
+        "headline": "{ingestable, plural, one {# ingestable document} other {# ingestable documents}} out of {total, number}",
+        "notDigitized": "{count, plural, one {# record not digitized at the BnF} other {# records not digitized at the BnF}}",
+        "noText": "{count, plural, one {# digitized document with no readable text} other {# digitized documents with no readable text}}",
+        "paidOcr": "{count, plural, one {# document recoverable with paid OCR} other {# documents recoverable with paid OCR}}",
+        "unconfirmed": "including {count, plural, one {# whose type is not known yet} other {# whose type is not known yet}} (metadata pending or failed)"
       }
     },
     "paidOcr": {

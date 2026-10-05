@@ -7,7 +7,7 @@
 // (design/BnF Corpus Research.dc.html lines 357-387).
 //
 // Each bucket is a filter on the derived ingestion class — clicking toggles it
-// in/out of CorpusFilters.ingest, exactly like the facet bars. Data comes from
+// in/out of CorpusFilterSet.ingest, exactly like the facet bars. Data comes from
 // CorpusSnapshot.numerisation.
 
 import { useTranslations } from "next-intl"

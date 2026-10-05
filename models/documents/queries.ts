@@ -1,12 +1,69 @@
+import "server-only"
 // models/documents/queries.ts
 // Pure database access for the documents model.
 // Imports only from @/lib/db and ./schema.
-import "server-only"
 
 import { prisma } from "@/lib/db"
-import type { Document } from "@/lib/generated/prisma/client"
+import type { Document, Prisma } from "@/lib/generated/prisma/client"
+import { DOCUMENT_CANONICAL_STATUS, DOCUMENT_RESOLVE_STATUS } from "./schema"
+
+/** The fields of a resolved Document a bare buffer row copies. */
+const resolvedDocumentSelect = {
+  projectId: true,
+  ark: true,
+  title: true,
+  author: true,
+  year: true,
+  dateLabel: true,
+  docType: true,
+  lang: true,
+  rawMetadata: true,
+} satisfies Prisma.DocumentSelect
+
+export type ResolvedDocumentRow = Prisma.DocumentGetPayload<{ select: typeof resolvedDocumentSelect }>
 
 export class DocumentQueries {
+  /** Members of a corpus version still waiting for cb→Gallica canonicalisation. */
+  static async pendingCanonicalInVersion(versionId: string): Promise<number> {
+    return prisma.corpusMembership.count({
+      where: { versionId, document: { canonicalStatus: DOCUMENT_CANONICAL_STATUS.PENDING } },
+    })
+  }
+
+  /** Every distinct non-null `lang` value stored (a few dozen at most). */
+  static async distinctLangs(): Promise<string[]> {
+    const rows = await prisma.document.findMany({
+      where: { lang: { not: null } },
+      distinct: ["lang"],
+      select: { lang: true },
+    })
+    return rows.flatMap((r) => (r.lang !== null ? [r.lang] : []))
+  }
+
+  /** Rewrite one stored `lang` value to another everywhere. Returns the count. */
+  static async replaceLang(from: string, to: string | null): Promise<number> {
+    const { count } = await prisma.document.updateMany({ where: { lang: from }, data: { lang: to } })
+    return count
+  }
+
+  /**
+   * The RESOLVED documents among the given ARKs of each project — the metadata
+   * a bare buffer row can copy at no BnF cost. One query; the caller bounds
+   * the ARK lists (a batch).
+   */
+  static async resolvedAmong(
+    arksByProject: ReadonlyMap<string, readonly string[]>,
+  ): Promise<ResolvedDocumentRow[]> {
+    if (arksByProject.size === 0) return []
+    return prisma.document.findMany({
+      where: {
+        resolveStatus: DOCUMENT_RESOLVE_STATUS.RESOLVED,
+        OR: [...arksByProject].map(([projectId, arks]) => ({ projectId, ark: { in: [...arks] } })),
+      },
+      select: resolvedDocumentSelect,
+    })
+  }
+
   /**
    * Fetches a single document by its composite key (projectId, ark).
    * Returns null if not found.

@@ -28,19 +28,19 @@ import { z } from "zod"
 import { ProjectQueries } from "@/models/projects/queries"
 import { resolveCorpusProject } from "@/app/api/_corpus-source"
 import { CorpusPolicy } from "@/models/corpus/policy"
-import { CorpusQueries } from "@/models/corpus/queries"
-import { corpusFiltersSchema } from "@/models/corpus/types"
-import { corpusFiltersToFilterSet } from "@/app/api/_corpus-filters"
+import { CorpusService } from "@/models/corpus/service"
+import { parseCorpusFilters } from "@/app/api/_corpus-filters"
 import {
   DOCUMENT_RESOLVE_STATUS,
   classifyIngestion,
   classifyOutcome,
+  DOCUMENT_SOURCE,
 } from "@/models/documents/schema"
 import { GALLICA_IIIF_VIEWER_URL, CATALOGUE_RECORD_URL } from "@/lib/constants"
 import { toCsv } from "@/lib/csv"
 import type { DocumentRow } from "@/models/corpus/schema"
 
-const exportQuerySchema = corpusFiltersSchema.extend({
+const exportQuerySchema = z.object({
   version: z
     .union([
       z.literal("head"),
@@ -78,8 +78,8 @@ const EXPORT_HEADER = [
 
 /** The stable external surface for a document, derived from its ARK + source. */
 function documentUrl(row: DocumentRow): string {
-  if (row.source === "gallica") return GALLICA_IIIF_VIEWER_URL(row.ark)
-  if (row.source === "catalogue") return CATALOGUE_RECORD_URL(row.ark)
+  if (row.source === DOCUMENT_SOURCE.GALLICA) return GALLICA_IIIF_VIEWER_URL(row.ark)
+  if (row.source === DOCUMENT_SOURCE.CATALOGUE) return CATALOGUE_RECORD_URL(row.ark)
   return ""
 }
 
@@ -95,6 +95,7 @@ function ingestionClass(row: DocumentRow): string {
 
 type RouteCtx = { params: Promise<{ id: string }> }
 
+
 export const GET = withAuth(async (req, user, bouncer, ctx: RouteCtx) => {
   const { id: projectId } = await ctx.params
   const parsed = parseQuery(req, exportQuerySchema)
@@ -109,10 +110,11 @@ export const GET = withAuth(async (req, user, bouncer, ctx: RouteCtx) => {
 
   // Mirror the corpus snapshot route: build the filter set only when at least
   // one filter field is present; pass undefined otherwise.
-  const filters = corpusFiltersToFilterSet(parsed)
+  const filters = parseCorpusFilters(req, Object.keys(exportQuerySchema.shape))
+  if (filters instanceof Response) return filters
 
   const versionRef = parsed.version ?? "head"
-  const { versionSeq, rows, paidOcrEnabled } = await CorpusQueries.exportRows(
+  const { versionSeq, rows, paidOcrEnabled } = await CorpusService.exportRows(
     corpusId,
     typeof versionRef === "number" ? { seq: versionRef } : versionRef,
     filters,

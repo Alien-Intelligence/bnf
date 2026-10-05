@@ -21,70 +21,29 @@ import {
 } from "@/lib/constants"
 import { prisma } from "@/lib/db"
 import { sourceFromArk } from "@/lib/mcp/vocab"
-import { DOCUMENT_CANONICAL_STATUS } from "@/models/documents/schema"
+import { DOCUMENT_CANONICAL_STATUS, DOCUMENT_SOURCE } from "@/models/documents/schema"
 import { DocumentService } from "@/models/documents/service"
 import type { Project } from "@/models/projects/schema"
 import type { User } from "@/models/users/schema"
-import { CorpusQueries, type CorpusFilterSet } from "./queries"
-import { type CorpusSnapshot } from "./schema"
+import { buildCorpusWhere, notUnknownWheres, numerisationOf } from "@/lib/corpus/filter-where"
+import { CORPUS_SAMPLE_SIZE } from "@/lib/constants"
+import { DocumentQueries } from "@/models/documents/queries"
+import { CorpusQueries } from "./queries"
+import type {
+  CorpusAddResult,
+  CorpusPromoteResult,
+  CorpusCrossFacets,
+  CorpusFacetDimension,
+  CorpusListPage,
+  CorpusMutationResult,
+  CorpusSnapshot,
+  NonIngestableDocument,
+  DocumentRow,
+} from "./schema"
+import type { CorpusFilterSet } from "./types"
+import { REMOVE_BY_FILTER_STATUS, assertLangsHeld, filterLangs } from "@/lib/filters"
 import { advanceVersion } from "./versioning"
 import type { AddToCorpusInput, RemoveFromCorpusInput } from "./types"
-
-/** Return shape for mutating operations — snapshot + delta counters. */
-export type CorpusMutationResult = CorpusSnapshot & {
-  lastDeltaAdded: number
-  lastDeltaRemoved: number
-}
-
-/**
- * An ARK that was added to the corpus but has no digitized full text / IIIF
- * manifest (e.g. a catalogue notice). It is a valid corpus member, but it will
- * be skipped at ingestion time — the corpus can hold it, the RAG index cannot.
- * Derived from the ARK itself, so it is known instantly (no MCP round-trip).
- */
-export type NonIngestableDocument = {
-  ark: string
-  source: string
-}
-
-/**
- * Result of addArks(). Extends the mutation result with:
- *   - `pending`       — how many of the added ARKs are newly-created stubs whose
- *                       metadata is still resolving in the background.
- *   - `nonIngestable` — added ARKs without digitized full text (no RAG ingest
- *                       later). The real ingestion filter runs at ingest time;
- *                       this is an early heads-up derived from the ARK prefix.
- */
-export type CorpusAddResult = CorpusMutationResult & {
-  pending: number
-  nonIngestable: NonIngestableDocument[]
-  /** Number of ARKs supplied in the call (before dedup). */
-  requested: number
-  /** Supplied ARKs NOT newly added: already in the corpus or repeated in the
-   *  same call. `requested === lastDeltaAdded + duplicates`. The caller passes
-   *  every found ARK and lets the service dedup — it never pre-filters. */
-  duplicates: number
-}
-
-/**
- * Result of promoteNotice() — the on-demand cb→Gallica upgrade.
- *   - status "upgraded"      — the notice was replaced by its digitized doc;
- *                              `canonical` is the new member, a new version was
- *                              sealed, `pendingResolve` flags a fresh stub.
- *   - status "not_digitized" — confirmed no Gallica reproduction (notice kept).
- *   - status "api_error"     — BnF still flaky; try again later (notice kept).
- *   - status "not_catalogue" — the ARK is not a `cb…` notice (nothing to do).
- */
-export type CorpusPromoteResult =
-  | {
-      promoted: true
-      status: "upgraded"
-      canonical: string
-      versionSeq: number
-      total: number
-      pendingResolve: boolean
-    }
-  | { promoted: false; status: "not_digitized" | "api_error" | "not_catalogue" }
 
 /**
  * Result of removeByFilter().
@@ -99,17 +58,158 @@ export type CorpusPromoteResult =
  *                      new corpus size.
  */
 export type CorpusRemoveByFilterResult =
-  | { status: "empty_filter" }
-  | { status: "dry_run"; matched: number; arks: string[] }
+  | { status: typeof REMOVE_BY_FILTER_STATUS.EMPTY_FILTER }
   | {
-      status: "removed"
+      status: typeof REMOVE_BY_FILTER_STATUS.DRY_RUN
+      matched: number
+      arks: string[]
+      /** With `not`: per dimension it names, the documents left in place
+       *  because their value is unknown (Decision 4). */
+      notUnknown?: Record<string, number>
+    }
+  | {
+      status: typeof REMOVE_BY_FILTER_STATUS.REMOVED
       matched: number
       removed: number
       versionSeq: number
       total: number
     }
 
+/** A corpus version: the head, the ingested one, or a sequence number. */
+export type CorpusVersionRef = "head" | "ingested" | { seq: number }
+
 export class CorpusService {
+  // -------------------------------------------------------------------------
+  // Filtered reads. The filter semantics are built here (lib/corpus/
+  // filter-where.ts) and CorpusQueries runs the predicates — one translation
+  // shared by every read, the removal and the dry run.
+  // -------------------------------------------------------------------------
+
+  /**
+   * The version a ref names, its project's paid-OCR flag, and the predicates —
+   * after checking the filter's languages against the ones the version holds
+   * (lib/filters.ts: language is the open dimension). Every read, the removal
+   * and the dry run go through it.
+   */
+  private static async plan(projectId: string, ref: CorpusVersionRef, filters: CorpusFilterSet | undefined) {
+    const [version, paidOcr] = await Promise.all([
+      CorpusQueries.resolveVersion(projectId, ref),
+      CorpusQueries.paidOcrEnabled(projectId),
+    ])
+    const requested = filterLangs(filters)
+    if (requested.length > 0) {
+      assertLangsHeld(requested, await CorpusQueries.langsInVersion(version.id), "du corpus")
+    }
+    return { version, paidOcr, where: buildCorpusWhere(version.id, paidOcr, filters) }
+  }
+
+  /**
+   * The corpus comprehension snapshot (total, facets, numérisation, outcomes,
+   * a cursor-paginated sample) of a version under `filters`. `limit` defaults
+   * to CORPUS_SAMPLE_SIZE; 0 skips the sample. Always use `total`, never
+   * `sample.length`.
+   */
+  static async snapshot(
+    projectId: string,
+    ref: CorpusVersionRef,
+    opts: { filters?: CorpusFilterSet; cursor?: string; limit?: number } = {},
+  ): Promise<CorpusSnapshot> {
+    const { version, paidOcr, where } = await CorpusService.plan(projectId, ref, opts.filters)
+    const [{ classRows, ...read }, notUnknown] = await Promise.all([
+      CorpusQueries.snapshot(projectId, version, paidOcr, where, {
+        cursor: opts.cursor,
+        limit: opts.limit ?? CORPUS_SAMPLE_SIZE,
+      }),
+      CorpusService.notUnknownIn(version.id, paidOcr, opts.filters),
+    ])
+    return { ...read, numerisation: numerisationOf(classRows), ...notUnknown }
+  }
+
+  /** One cursor-paginated page of documents (no facets) — the enumeration path. */
+  static async list(
+    projectId: string,
+    ref: CorpusVersionRef,
+    opts: { filters?: CorpusFilterSet; cursor?: string; limit?: number } = {},
+  ): Promise<CorpusListPage> {
+    const { version, paidOcr, where } = await CorpusService.plan(projectId, ref, opts.filters)
+    const [page, notUnknown] = await Promise.all([
+      CorpusQueries.list(version, paidOcr, where.sharedWhere, {
+        cursor: opts.cursor,
+        limit: opts.limit ?? CORPUS_SAMPLE_SIZE,
+      }),
+      CorpusService.notUnknownIn(version.id, paidOcr, opts.filters),
+    ])
+    return { ...page, ...notUnknown }
+  }
+
+  /** Every document of a version under `filters` — the CSV export's read. */
+  static async exportRows(
+    projectId: string,
+    ref: CorpusVersionRef,
+    filters?: CorpusFilterSet,
+  ): Promise<{ versionSeq: number; rows: DocumentRow[]; paidOcrEnabled: boolean }> {
+    const { version, paidOcr, where } = await CorpusService.plan(projectId, ref, filters)
+    return CorpusQueries.exportRows(version, paidOcr, where.sharedWhere)
+  }
+
+  /** Two facet dimensions crossed over the filtered, resolved documents. */
+  static async crossFacets(
+    projectId: string,
+    ref: CorpusVersionRef,
+    dims: [CorpusFacetDimension, CorpusFacetDimension],
+    filters?: CorpusFilterSet,
+  ): Promise<CorpusCrossFacets> {
+    const { where } = await CorpusService.plan(projectId, ref, filters)
+    return CorpusQueries.crossFacets(where.resolvedWhere, dims)
+  }
+
+  /** The ARKs of a version matching `filters` — what a read lists and a removal removes. */
+  static async arksMatchingFilters(
+    projectId: string,
+    ref: CorpusVersionRef,
+    filters: CorpusFilterSet,
+  ): Promise<string[]> {
+    const { where } = await CorpusService.plan(projectId, ref, filters)
+    return CorpusQueries.arks(where.sharedWhere)
+  }
+
+  /**
+   * With a `not`: per dimension it names, how many documents matching the
+   * positive filters `not` left out because their value is unknown
+   * (Decision 4). Every read and the dry run report it. Empty without `not`.
+   */
+  static async notUnknownCounts(
+    projectId: string,
+    ref: CorpusVersionRef,
+    filters: CorpusFilterSet | undefined,
+  ): Promise<Record<string, number>> {
+    if (filters?.not === undefined) return {}
+    const { version, paidOcr } = await CorpusService.plan(projectId, ref, filters)
+    return (await CorpusService.notUnknownIn(version.id, paidOcr, filters)).notUnknown ?? {}
+  }
+
+  /** `{ notUnknown }` for a read with a `not`, `{}` without one. */
+  private static async notUnknownIn(
+    versionId: string,
+    paidOcr: boolean,
+    filters: CorpusFilterSet | undefined,
+  ): Promise<{ notUnknown?: Record<string, number> }> {
+    if (filters?.not === undefined) return {}
+    const unknown = notUnknownWheres(versionId, paidOcr, filters)
+    const counts = await CorpusQueries.counts(unknown.map((u) => u.where))
+    return { notUnknown: Object.fromEntries(unknown.map((u, i) => [u.dimension, counts[i]])) }
+  }
+
+  /**
+   * Head members still waiting for cb→Gallica canonicalisation: catalogue
+   * notices the background canonicaliser may yet REPLACE with their digitized
+   * document — the head total is provisional while this is above zero.
+   */
+  static async pendingCanonicalCount(projectId: string): Promise<number> {
+    const head = await CorpusQueries.headVersion(projectId)
+    return DocumentQueries.pendingCanonicalInVersion(head.id)
+  }
+
   /**
    * Adds ARKs to the project's corpus INSTANTLY — no MCP round-trip.
    *
@@ -181,7 +281,7 @@ export class CorpusService {
     // delta model absorbs the ordering (see playbook/corpus-versioning.md).
     if (opts?.canonicalize) {
       const noticeArks = uniqueArks.filter(
-        (a) => sourceFromArk(a) === "catalogue",
+        (a) => sourceFromArk(a) === DOCUMENT_SOURCE.CATALOGUE,
       )
       if (noticeArks.length > 0) {
         await prisma.document.updateMany({
@@ -240,14 +340,14 @@ export class CorpusService {
     }
 
     // --- Build the comprehension snapshot from the committed head -------------
-    const snapshot = await CorpusQueries.snapshot(projectId, "head")
+    const snapshot = await CorpusService.snapshot(projectId, "head")
 
     // Flag added ARKs with no digitized full text → not ingestable later. The
     // real filter runs at ingestion; gallica is the only source with a derived
     // IIIF manifest, so anything else (catalogue, other) is non-ingestable.
     const nonIngestable: NonIngestableDocument[] = advance.addedArks
       .map((ark) => ({ ark, source: sourceFromArk(ark) }))
-      .filter((d) => d.source !== "gallica")
+      .filter((d) => d.source !== DOCUMENT_SOURCE.GALLICA)
 
     // How many of the docs added this call are still resolving in the background.
     const pending = advance.addedArks.filter((a) => newStubSet.has(a)).length
@@ -288,7 +388,7 @@ export class CorpusService {
   ): Promise<CorpusPromoteResult> {
     const projectId = project.id
 
-    if (sourceFromArk(ark) !== "catalogue") {
+    if (sourceFromArk(ark) !== DOCUMENT_SOURCE.CATALOGUE) {
       return { promoted: false, status: "not_catalogue" }
     }
 
@@ -406,7 +506,7 @@ export class CorpusService {
 
     // Build the comprehension snapshot from the committed head; override the
     // counters with the tx-captured values.
-    const snapshot = await CorpusQueries.snapshot(projectId, "head")
+    const snapshot = await CorpusService.snapshot(projectId, "head")
 
     return {
       ...snapshot,
@@ -441,20 +541,21 @@ export class CorpusService {
     input: { filters: CorpusFilterSet; reason: string; dryRun: boolean },
   ): Promise<CorpusRemoveByFilterResult> {
     if (CorpusService.isEmptyFilterSet(input.filters)) {
-      return { status: "empty_filter" }
+      return { status: REMOVE_BY_FILTER_STATUS.EMPTY_FILTER }
     }
 
-    const arks = await CorpusQueries.arksMatchingFilters(
-      project.id,
-      "head",
-      input.filters,
-    )
+    const arks = await CorpusService.arksMatchingFilters(project.id, "head", input.filters)
 
     if (input.dryRun) {
+      const notUnknown =
+        input.filters.not !== undefined
+          ? await CorpusService.notUnknownCounts(project.id, "head", input.filters)
+          : null
       return {
-        status: "dry_run",
+        status: REMOVE_BY_FILTER_STATUS.DRY_RUN,
         matched: arks.length,
         arks: arks.slice(0, CORPUS_REMOVE_PREVIEW_LIMIT),
+        ...(notUnknown !== null ? { notUnknown } : {}),
       }
     }
 
@@ -465,7 +566,7 @@ export class CorpusService {
         where: { versionId: head.id },
       })
       return {
-        status: "removed",
+        status: REMOVE_BY_FILTER_STATUS.REMOVED,
         matched: 0,
         removed: 0,
         versionSeq: head.seq,
@@ -479,7 +580,7 @@ export class CorpusService {
     })
 
     return {
-      status: "removed",
+      status: REMOVE_BY_FILTER_STATUS.REMOVED,
       matched: arks.length,
       removed: result.lastDeltaRemoved,
       versionSeq: result.versionSeq,
@@ -496,10 +597,17 @@ export class CorpusService {
       hasArray(filters.source) ||
       hasArray(filters.session) ||
       hasArray(filters.ingest) ||
+      // Found bug: a lone `outcome` filter was refused as empty, so
+      // "remove the documents that failed to index" could not be expressed.
+      hasArray(filters.outcome) ||
+      hasArray(filters.title) ||
+      hasArray(filters.creator) ||
+      hasArray(filters.kind) ||
       filters.yearFrom !== undefined ||
       filters.yearTo !== undefined ||
       filters.undated === true ||
-      (typeof filters.q === "string" && filters.q.trim().length > 0)
+      (typeof filters.q === "string" && filters.q.trim().length > 0) ||
+      (filters.not !== undefined && !CorpusService.isEmptyFilterSet(filters.not))
     )
   }
 }

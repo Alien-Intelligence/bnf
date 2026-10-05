@@ -383,6 +383,7 @@
       "subtitle": "Candidats rassemblés, à valider",
       "count": "{count} candidat(s)",
       "empty": "Le tampon est vide. Lance une recherche pour y rassembler des candidats.",
+      "emptyCta": "Revenir à la conversation",
       "emptyHint": "Aucun candidat pour l'instant",
       "error": "Impossible de charger le tampon.",
       "noTitle": "(sans titre)",
@@ -397,7 +398,17 @@
       "clearConfirmBody": "Les {count} candidat(s) rassemblé(s) seront écartés. Le corpus n'est pas affecté.",
       "clearConfirmCancel": "Annuler",
       "clearConfirmOk": "Vider",
-      "foundBy": "Trouvé par la recherche : {query}"
+      "foundBy": "Trouvé par la recherche : {query}",
+      "kinds": {
+        "periodicalIssue": "Numéro de périodique",
+        "periodicalCollection": "Titre de périodique (collection)",
+        "monograph": "Monographie",
+        "image": "Image",
+        "catalogueNotice": "Notice catalogue",
+        "otherDocument": "Autre document numérisé",
+        "unknown": "Nature indéterminée"
+      },
+      "enrichPending": "métadonnées en cours"
     },
     "export": {
       "label": "Exporter (CSV)",
@@ -439,6 +450,7 @@
       "unindexedSub": "dont {count, number} non indexés"
     },
     "filters": {
+      "urlRefused": "Les filtres de l'adresse ont été ignorés : {reason}",
       "title": "Filtres et statistiques",
       "byType": "Par type",
       "byLang": "Par langue",
@@ -600,7 +612,9 @@
       "other": "Autre",
       "estampe": "Estampe",
       "enlum": "Enluminure",
-      "charte": "Charte"
+      "charte": "Charte",
+      "text": "Texte imprimé (nature indéterminée)",
+      "object": "Objet"
     },
     "langs": {
       "fr": "Français",
@@ -649,7 +663,13 @@
       "subagentStartHint": "Il travaille dans un contexte séparé et te renverra une synthèse.",
       "subagentDone": "Sous-agent terminé · {toolCalls} appels d'outils",
       "subagentDoneBuffered": "Sous-agent terminé · {buffered} candidats déposés dans le tampon · {toolCalls} appels d'outils",
-      "compaction": "Conversation condensée · {count} messages résumés pour libérer du contexte"
+      "compaction": "Conversation condensée · {count} messages résumés pour libérer du contexte",
+      "subagentError": "Sous-agent en échec · {toolCalls} appels d'outils",
+      "subagentTimeout": "Sous-agent arrêté (délai dépassé)",
+      "subagentAborted": "Sous-agent annulé",
+      "subagentInterrupted": "Sous-agent interrompu (état final inconnu)",
+      "subagentUnreadable": "Sous-agent : événement illisible",
+      "subagentStagedBeforeStop": "{buffered} candidats déposés dans le tampon avant l'arrêt"
     }
   },
   "memory": {
@@ -898,7 +918,8 @@
         "eyebrow": "Dans votre recherche",
         "suffix": "{count, plural, one {document consultable} other {documents consultables}}",
         "sub": "L'assistant peut déjà les lire et les citer dans ses notes.",
-        "subNone": "L'assistant de recherche ne peut encore rien lire dans ce projet."
+        "subNone": "L'assistant de recherche ne peut encore rien lire dans ce projet.",
+        "subRemoved": "dont {count, plural, one {# ne fait plus partie de votre sélection et sera retiré} other {# ne font plus partie de votre sélection et seront retirés}} au prochain traitement"
       },
       "action": {
         "eyebrow": "Ce que va faire cette action",
@@ -990,6 +1011,16 @@
         "targetValue": "cluster RAG BnF",
         "processed": "Documents traités",
         "processedValue": "{done, number} / {total, number}"
+      },
+      "coverage": {
+        "eyebrow": "Votre sélection",
+        "empty": "Votre sélection est vide : aucun document à ingérer pour l'instant.",
+        "emptyCta": "Constituer le corpus",
+        "headline": "{ingestable, plural, one {# document ingérable} other {# documents ingérables}} sur {total, number}",
+        "notDigitized": "{count, plural, one {# notice sans numérisation à la BnF} other {# notices sans numérisation à la BnF}}",
+        "noText": "{count, plural, one {# document numérisé sans texte lisible} other {# documents numérisés sans texte lisible}}",
+        "paidOcr": "{count, plural, one {# document récupérable avec l'OCR payant} other {# documents récupérables avec l'OCR payant}}",
+        "unconfirmed": "dont {count, plural, one {# au type encore inconnu} other {# au type encore inconnu}} (métadonnées en cours ou en échec)"
       }
     },
     "paidOcr": {

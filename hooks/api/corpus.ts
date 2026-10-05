@@ -12,27 +12,28 @@ import {
   useQueryClient,
   keepPreviousData,
 } from "@tanstack/react-query"
-import { apiFetch } from "@/lib/api-fetch"
+import { apiFetch, readQueryError, retryUnlessRefused } from "@/lib/api-fetch"
 import { CORPUS_RESOLVE_POLL_MS } from "@/lib/constants"
-import type { CorpusDiff, CorpusSnapshot } from "@/models/corpus/schema"
+import { corpusFilterQuery } from "@/lib/corpus/filter-query"
 import type {
+  CorpusDiff,
   CorpusMutationResult,
   CorpusPromoteResult,
-} from "@/models/corpus/service"
-import {
-  corpusFiltersToParams,
-  type AddToCorpusInput,
-  type CorpusFilters,
-  type PromoteNoticeInput,
-  type RemoveFromCorpusInput,
-  type RetryResolveInput,
+  CorpusSnapshot,
+} from "@/models/corpus/schema"
+import type {
+  AddToCorpusInput,
+  CorpusFilterSet,
+  PromoteNoticeInput,
+  RemoveFromCorpusInput,
+  RetryResolveInput,
 } from "@/models/corpus/types"
 
 // ── Query keys ────────────────────────────────────────────────────────────────
 
 export const corpusKeys = {
   all: (projectId: string) => ["corpus", projectId] as const,
-  snapshot: (projectId: string, filters: CorpusFilters) =>
+  snapshot: (projectId: string, filters: CorpusFilterSet) =>
     ["corpus", projectId, "snapshot", filters] as const,
   diff: (projectId: string, from: number, to: number) =>
     ["corpus", projectId, "diff", from, to] as const,
@@ -48,20 +49,22 @@ export const corpusKeys = {
  */
 export function useCorpus(
   projectId: string,
-  filters: CorpusFilters,
+  filters: CorpusFilterSet,
   opts: { initialSnapshot?: CorpusSnapshot } = {},
 ) {
   return useInfiniteQuery({
     queryKey: corpusKeys.snapshot(projectId, filters),
     queryFn: async ({ pageParam }: { pageParam: string | undefined }) => {
-      const params = corpusFiltersToParams(filters)
+      const params = corpusFilterQuery.encode(filters)
       if (pageParam) params.set("cursor", pageParam)
       const res = await apiFetch(
         `/api/projects/${projectId}/corpus?${params.toString()}`,
       )
-      if (!res.ok) throw new Error(`Failed to fetch corpus: ${res.status}`)
+      // A 400 (a filter the corpus refuses) carries its message to the page.
+      if (!res.ok) throw await readQueryError(res, "Failed to fetch corpus")
       return res.json() as Promise<CorpusSnapshot>
     },
+    retry: retryUnlessRefused,
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (last: CorpusSnapshot) => last.nextCursor,
     initialData: opts.initialSnapshot
@@ -90,7 +93,7 @@ export function useCorpus(
  */
 export function useCorpusFlattened(
   projectId: string,
-  filters: CorpusFilters,
+  filters: CorpusFilterSet,
   opts: { initialSnapshot?: CorpusSnapshot } = {},
 ) {
   const query = useCorpus(projectId, filters, opts)
@@ -117,9 +120,9 @@ export function useCorpusFlattened(
  * and saved via a transient anchor element.
  */
 export function useExportCorpus(projectId: string) {
-  return useMutation<void, Error, CorpusFilters>({
+  return useMutation<void, Error, CorpusFilterSet>({
     mutationFn: async (filters) => {
-      const params = corpusFiltersToParams(filters)
+      const params = corpusFilterQuery.encode(filters)
       const qs = params.toString()
       const res = await apiFetch(
         `/api/projects/${projectId}/corpus/export${qs ? `?${qs}` : ""}`,

@@ -1,4 +1,6 @@
 import "server-only"
+import { BNF_MCP_TOOL, bnfPrefixedToolName } from "@/lib/mcp/tools"
+import { AGENT_TOOLS } from "@/lib/agent/tools/constants"
 
 // lib/agent/prompts/bnf-knowledge.ts
 // Static BnF domain knowledge injected into the corpus agent's system prompt.
@@ -39,9 +41,9 @@ Quand tu ajoutes une notice \`cb…\` au corpus, l'application tente automatique
 
 Inutile donc de précharger l'ARK Gallica avant d'ajouter ; n'écarte jamais une notice « parce qu'elle est \`cb…\` ». Les routes ci-dessous (856 $u, \`electronicReproduction\`, re-recherche Gallica) ne te servent plus qu'en **diagnostic**, si tu veux toi-même montrer/consulter le document numérisé d'une notice donnée :
 
-1. **Champ UNIMARC 856 $u** — \`bnf__bnf_get_catalogue_record\` : URL Gallica (ex. \`http://gallica.bnf.fr/ark:/12148/bpt6k2029874\`) → ARK \`bpt6k…\`/\`btv1b…\`.
+1. **Champ UNIMARC 856 $u** — \`${AGENT_TOOLS.bnfGetRecord}\` : URL Gallica (ex. \`http://gallica.bnf.fr/ark:/12148/bpt6k2029874\`) → ARK \`bpt6k…\`/\`btv1b…\`.
 2. **SPARQL data.bnf.fr** — \`rdarelationships:electronicReproduction\` au niveau de la manifestation (voir « SPARQL sur data.bnf.fr »).
-3. **Re-recherche Gallica** — \`bnf__bnf_search_gallica\` par titre + auteur + date (vérifie la concordance des métadonnées).\``
+3. **Re-recherche Gallica** — \`${AGENT_TOOLS.corpusSearch}\` avec \`source: "gallica"\` par titre + auteur + date (vérifie la concordance des métadonnées ; le résultat entre dans le tampon — écarte-le avec \`${AGENT_TOOLS.bufferDiscard}\` s'il n'a pas sa place).\``
 
 // ---------------------------------------------------------------------------
 // What the BnF holds, how it names things, and where it stops
@@ -63,7 +65,7 @@ export const BNF_COLLECTIONS_GUIDE = `## CE QUE CONTIENT LA BnF — ET COMMENT E
 
 Le terme employé dans la demande n'est pas forcément un terme d'indexation, et chercher un mot que la BnF n'emploie pas ne peut rien donner. Cas réel : pour **Francis Jourdain**, la notice d'autorité BnF porte « Artiste peintre, décorateur. — Écrivain. — Militant anarchiste » — le mot **« ensemblier » n'existe pas** dans le vocabulaire BnF.
 
-**Réflexe pour toute personne : résous d'abord son identité** (\`bnf__bnf_find_person\`, ou la notice d'autorité), lis la profession **telle que la BnF l'écrit**, et cherche avec ses mots. Ici les vedettes Rameau utiles étaient « Décoration intérieure », « Décorateurs d'intérieurs », « Arts décoratifs ».
+**Réflexe pour toute personne : résous d'abord son identité** (\`${bnfPrefixedToolName(BNF_MCP_TOOL.FIND_PERSON)}\`, ou la notice d'autorité), lis la profession **telle que la BnF l'écrit**, et cherche avec ses mots. Ici les vedettes Rameau utiles étaient « Décoration intérieure », « Décorateurs d'intérieurs », « Arts décoratifs ».
 
 Si le mot du bibliothécaire ne donne rien, dis-le comme un écart de vocabulaire (« la BnF l'indexe comme décorateur »), pas comme une absence.
 
@@ -71,7 +73,7 @@ Si le mot du bibliothécaire ne donne rien, dis-le comme un écart de vocabulair
 
 Tout ce qui paraît chaque année est un périodique, même si personne ne l'appelle ainsi : salons, annuaires, almanachs, rapports annuels, catalogues d'exposition récurrents. Ils sont donc introuvables par une recherche centrée sur un créateur.
 
-Exemple vérifié : les catalogues de la **Société des artistes décorateurs** sont sur Gallica en tant que collection \`cb32869935k\` (le numéro de 1931 est \`bpt6k98075902\`). Aucune recherche par nom de décorateur ne les fait remonter — il faut viser le titre, puis descendre dans les numéros avec \`bnf__bnf_get_periodical_issues\`.
+Exemple vérifié : les catalogues de la **Société des artistes décorateurs** sont sur Gallica en tant que collection \`cb32869935k\` (le numéro de 1931 est \`bpt6k98075902\`). Aucune recherche par nom de décorateur ne les fait remonter — il faut viser le titre, puis descendre dans les numéros avec \`${bnfPrefixedToolName(BNF_MCP_TOOL.GET_PERIODICAL_ISSUES)}\`.
 
 ### Les collections spécialisées ne se cherchent pas comme des livres
 
@@ -100,19 +102,19 @@ Certaines notices portent \`Appartient à l'ensemble documentaire : <CODE>\` —
 // Enumerating a periodical (newspaper / serial)
 // ---------------------------------------------------------------------------
 
-export const BNF_PERIODICAL_GUIDE = `## ÉNUMÉRER UN PÉRIODIQUE (outil \`bnf__bnf_get_periodical_issues\`)
+export const BNF_PERIODICAL_GUIDE = `## ÉNUMÉRER UN PÉRIODIQUE (outil \`${bnfPrefixedToolName(BNF_MCP_TOOL.GET_PERIODICAL_ISSUES)}\`)
 
-Un périodique (journal, revue) n'est pas un document unique : c'est une **collection** de numéros, chacun avec son propre ARK numérisé \`bpt6k…\`. Pour « ajouter toute l'année X de tel journal », tu dois énumérer ses numéros — \`bnf__bnf_search_gallica\` ne le fait pas.
+Un périodique (journal, revue) n'est pas un document unique : c'est une **collection** de numéros, chacun avec son propre ARK numérisé \`bpt6k…\`. Pour « ajouter toute l'année X de tel journal », tu dois énumérer ses numéros — \`${AGENT_TOOLS.corpusSearch}\` avec \`collapsing: false\` les trouve par mots-clés ; cet outil les énumère tous, sans critère de contenu.
 
 L'API a **deux niveaux** :
 
-1. **Identifie la collection.** Il te faut l'ARK **de collection** \`cb…\` du périodique (ex. \`cb34355551z\` pour Le Figaro, \`cb34431794k\` pour Le Temps). Trouve-le via \`bnf__bnf_search_catalogue\` si tu ne l'as pas. **N'utilise jamais un \`bpt6k…\` de numéro isolé ici** — seuls les \`cb…\` de collection sont valides.
-2. **Liste les années.** Appelle \`bnf__bnf_get_periodical_issues\` avec l'ARK \`cb…\` **sans** \`year\` : tu obtiens \`available_years[]\` et le total de numéros.
+1. **Identifie la collection.** Il te faut l'ARK **de collection** \`cb…\` du périodique (ex. \`cb34355551z\` pour Le Figaro, \`cb34431794k\` pour Le Temps). Trouve-le via \`${AGENT_TOOLS.corpusSearch}\` (\`source: "catalogue"\`, \`title\`) si tu ne l'as pas — la notice entre dans le tampon ; écarte-la avec \`${AGENT_TOOLS.bufferDiscard}\` si elle n'a pas sa place dans le corpus. **N'utilise jamais un \`bpt6k…\` de numéro isolé ici** — seuls les \`cb…\` de collection sont valides.
+2. **Liste les années.** Appelle \`${bnfPrefixedToolName(BNF_MCP_TOOL.GET_PERIODICAL_ISSUES)}\` avec l'ARK \`cb…\` **sans** \`year\` : tu obtiens \`available_years[]\` et le total de numéros.
 3. **Liste les numéros d'une année.** Rappelle l'outil **avec** \`year\` (ex. \`"1889"\`) : tu obtiens \`issues[{ark, date, gallica_url}]\`.
 
 **Pagination obligatoire.** Un quotidien compte 250–365 numéros par an, mais l'outil en renvoie un nombre limité par appel : continue avec \`start_record\` croissant (et \`maximum_records\`) jusqu'à avoir parcouru tous les numéros de l'année — comme toute recherche paginée (voir « EXHAUSTIVITÉ ET PAGINATION »). Ne t'arrête jamais au premier appel.
 
-**Puis ajoute.** Accumule les ARK \`bpt6k…\` de tous les numéros visés (toutes les pages, toutes les années demandées) et fais **un seul** \`corpus.add\`. La déduplication est côté serveur.
+**Puis dépose.** Dépose les ARK \`bpt6k…\` des numéros visés dans le tampon avec \`${AGENT_TOOLS.bufferAdd}\` (toutes les pages, toutes les années demandées) : leurs métadonnées se résolvent en arrière-plan, puis tu tries et tu valides avec \`${AGENT_TOOLS.bufferCommit}\`. Si une recherche Gallica \`doc_type: "fascicule"\` + \`collapsing: false\` + \`title\` + \`date\` couvre le besoin, elle est préférable : elle dépose les numéros AVEC leurs métadonnées immédiatement.
 
 Préviens l'utilisateur avant un balayage long (« je parcours l'ensemble des numéros de 1889, cela peut prendre un instant ») et, pour de très gros volumes, annonce le total et propose de confirmer le périmètre (une année ? plusieurs ? tout ?) avant de tout tirer.`
 
@@ -120,11 +122,11 @@ Préviens l'utilisateur avant un balayage long (« je parcours l'ensemble des nu
 // SPARQL over data.bnf.fr
 // ---------------------------------------------------------------------------
 
-export const BNF_SPARQL_GUIDE = `## SPARQL sur data.bnf.fr (outil \`bnf__bnf_sparql_query\`)
+export const BNF_SPARQL_GUIDE = `## SPARQL sur data.bnf.fr (outil \`${bnfPrefixedToolName(BNF_MCP_TOOL.SPARQL_QUERY)}\`)
 
 Le graphe data.bnf.fr relie personnes, œuvres, sujets (Rameau) et **documents numérisés Gallica**. SPARQL sert surtout à découvrir des œuvres/auteurs/sujets et à **récupérer l'ARK Gallica d'un document numérisé** (\`bpt6k…\`/\`btv1b…\`) d'une œuvre ou d'un sujet.
 
-Quand l'utiliser : pour une simple personne → \`bnf__bnf_find_person\` ; pour une simple œuvre → \`bnf__bnf_find_work\`. Réserve SPARQL aux **jointures** (œuvres d'un auteur sur un sujet, par période, énumérer les éditions numérisées d'une œuvre, etc.).
+Quand l'utiliser : pour une simple personne → \`${bnfPrefixedToolName(BNF_MCP_TOOL.FIND_PERSON)}\` ; pour une simple œuvre → \`${bnfPrefixedToolName(BNF_MCP_TOOL.FIND_WORK)}\`. Réserve SPARQL aux **jointures** (œuvres d'un auteur sur un sujet, par période, énumérer les éditions numérisées d'une œuvre, etc.).
 
 **Corpus thématiques (vérifié en direct, 2026-06-24).** SPARQL est le bon outil pour **constituer un corpus de départ par thème** : sujet Rameau (ou auteur / œuvre / période) → manifestations → ARK Gallica via \`rdarelationships:electronicReproduction\`. Voir Q3 (par sujet) et Q4 (par sujet + plage d'années) ci-dessous : une seule requête renvoie des ARK numérisés datés, prêts pour le corpus. Aucun détour par les pages web Gallica n'est nécessaire.
 

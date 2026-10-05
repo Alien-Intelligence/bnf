@@ -17,8 +17,8 @@ import { DOC_TYPE, LANG, SOURCE } from "@/models/documents/schema"
 import { DATASET_COLOR_CYCLE, TYPE_DATASET_COLOR } from "@/lib/constants"
 import { cn } from "@/lib/utils"
 import type { CorpusSnapshot } from "@/models/corpus/schema"
-import type { CorpusFilters } from "@/models/corpus/types"
-import { emptyCorpusFilters } from "@/models/corpus/types"
+import type { CorpusFilterSet } from "@/models/corpus/types"
+import { EMPTY_CORPUS_FILTERS, patchFilters, selectedValues, toggleFilterValue } from "@/lib/corpus/filter-state"
 import { CardCorpusFacetBars } from "./facet-bars"
 import { CardCorpusPeriodHistogram } from "./period-histogram"
 import { CardCorpusFullTextInput } from "./full-text-input"
@@ -45,26 +45,9 @@ function FacetCard({
 interface Props {
   corpus: CorpusSnapshot
   /** Active filter state. Defaults to empty (no filters) when omitted. */
-  filters?: CorpusFilters
+  filters?: CorpusFilterSet
   /** Called when the user changes a filter. No-op when omitted. */
-  onChange?: (next: CorpusFilters) => void
-}
-
-// ---------------------------------------------------------------------------
-// Helpers: split CSV into selected array; toggle a value; re-join.
-// ---------------------------------------------------------------------------
-
-function csvToSelected(csv: string | undefined): string[] {
-  if (!csv) return []
-  return csv.split(",").filter(Boolean)
-}
-
-function toggleInCsv(csv: string | undefined, value: string): string | undefined {
-  const current = csvToSelected(csv)
-  const next = current.includes(value)
-    ? current.filter((v) => v !== value)
-    : [...current, value]
-  return next.length > 0 ? next.join(",") : undefined
+  onChange?: (next: CorpusFilterSet) => void
 }
 
 // ---------------------------------------------------------------------------
@@ -144,22 +127,19 @@ export function CardCorpusFiltersDrawer({
 
   // Provide stable defaults so the drawer is usable read-only when commit #9
   // hasn't yet wired in the filter state from the Constituer client.
-  const filters: CorpusFilters = useMemo(
-    () => filtersProp ?? emptyCorpusFilters(),
-    [filtersProp],
-  )
+  const filters: CorpusFilterSet = useMemo(() => filtersProp ?? EMPTY_CORPUS_FILTERS, [filtersProp])
   // Stable no-op so useCallback deps remain stable when onChange is omitted.
   const noop = useCallback(() => undefined, [])
-  const onChange: (next: CorpusFilters) => void = onChangeProp ?? noop
+  const onChange: (next: CorpusFilterSet) => void = onChangeProp ?? noop
 
   const { facets, pendingCount, failedCount } = corpus
 
-  const typeSelected = csvToSelected(filters.type)
-  const langSelected = csvToSelected(filters.lang)
-  const sourceSelected = csvToSelected(filters.source)
-  const sessionSelected = csvToSelected(filters.session)
-  const ingestSelected = csvToSelected(filters.ingest)
-  const outcomeSelected = csvToSelected(filters.outcome)
+  const typeSelected = selectedValues(filters, "type")
+  const langSelected = selectedValues(filters, "lang")
+  const sourceSelected = selectedValues(filters, "source")
+  const sessionSelected = selectedValues(filters, "session")
+  const ingestSelected = selectedValues(filters, "ingest")
+  const outcomeSelected = selectedValues(filters, "outcome")
 
   // Session facet record + title map, derived from the snapshot's `sessions`
   // array. The facet bars want a Record<id, count>; the active-filters chips
@@ -201,32 +181,32 @@ export function CardCorpusFiltersDrawer({
 
   const handleTypeToggle = useCallback(
     (code: string) =>
-      onChange({ ...filters, type: toggleInCsv(filters.type, code) }),
+      onChange(toggleFilterValue(filters, "type", code)),
     [filters, onChange],
   )
   const handleLangToggle = useCallback(
     (code: string) =>
-      onChange({ ...filters, lang: toggleInCsv(filters.lang, code) }),
+      onChange(toggleFilterValue(filters, "lang", code)),
     [filters, onChange],
   )
   const handleSourceToggle = useCallback(
     (code: string) =>
-      onChange({ ...filters, source: toggleInCsv(filters.source, code) }),
+      onChange(toggleFilterValue(filters, "source", code)),
     [filters, onChange],
   )
   const handleSessionToggle = useCallback(
     (id: string) =>
-      onChange({ ...filters, session: toggleInCsv(filters.session, id) }),
+      onChange(toggleFilterValue(filters, "session", id)),
     [filters, onChange],
   )
   const handleIngestToggle = useCallback(
     (code: string) =>
-      onChange({ ...filters, ingest: toggleInCsv(filters.ingest, code) }),
+      onChange(toggleFilterValue(filters, "ingest", code)),
     [filters, onChange],
   )
   const handleOutcomeToggle = useCallback(
     (outcome: string) =>
-      onChange({ ...filters, outcome: toggleInCsv(filters.outcome, outcome) }),
+      onChange(toggleFilterValue(filters, "outcome", outcome)),
     [filters, onChange],
   )
   const handleRangeSelect = useCallback(
@@ -235,31 +215,27 @@ export function CardCorpusFiltersDrawer({
       // mirroring the facet bars' click-to-unset behaviour.
       const isActiveRange =
         filters.yearFrom === from && filters.yearTo === to
-      onChange({
-        ...filters,
-        yearFrom: isActiveRange ? undefined : from,
-        yearTo: isActiveRange ? undefined : to,
-        undated: undefined,
-      })
+      onChange(
+        patchFilters(filters, {
+          yearFrom: isActiveRange ? undefined : from,
+          yearTo: isActiveRange ? undefined : to,
+          undated: undefined,
+        }),
+      )
     },
     [filters, onChange],
   )
   const handleUndatedSelect = useCallback(
     () =>
-      onChange({
-        ...filters,
-        undated: !filters.undated,
-        yearFrom: undefined,
-        yearTo: undefined,
-      }),
+      onChange(patchFilters(filters, { undated: filters.undated ? undefined : true, yearFrom: undefined, yearTo: undefined })),
     [filters, onChange],
   )
   const handleQueryCommit = useCallback(
-    (q: string | undefined) => onChange({ ...filters, q }),
+    (q: string | undefined) => onChange(patchFilters(filters, { q })),
     [filters, onChange],
   )
   const handleClearAll = useCallback(
-    () => onChange(emptyCorpusFilters()),
+    () => onChange(EMPTY_CORPUS_FILTERS),
     [onChange],
   )
 

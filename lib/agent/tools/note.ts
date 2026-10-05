@@ -25,10 +25,14 @@ import "server-only"
 
 import { z } from "zod"
 import { defineTool } from "@alien/chat-sdk/claude"
+import { NotePolicy } from "@/models/notes/policy"
 import { NoteService } from "@/models/notes/service"
 import { NoteQueries } from "@/models/notes/queries"
 import type { TurnScopedCtx } from "./registry-factory"
+import { authorizeOnProject, authorizeProjectTool } from "./authorize"
+import { emitDomainEvent, NOTE_EVENT_KIND, STREAM_DOMAIN_EVENT } from "@/lib/agent/stream-events"
 import { AGENT_TOOLS } from "./constants"
+import { toolFailure } from "./failure"
 import { NOTE_NOT_INGESTED_ERROR, resolveIngestedCorpus } from "./ingestion-guard"
 
 /**
@@ -103,7 +107,7 @@ export const noteGetTool = defineTool<
   }),
   handler: async (input, ctx) => {
     const note = await NoteQueries.getForProject(input.id, ctx.projectId)
-    if (!note) return { error: NOTE_NOT_FOUND_ERROR }
+    if (!note) return toolFailure(NOTE_NOT_FOUND_ERROR)
     return { note }
   },
 })
@@ -148,10 +152,13 @@ export const noteCreateTool = defineTool<
       ),
   }),
   handler: async (input, ctx) => {
+    const gate = await authorizeProjectTool(ctx, NotePolicy, "create")
+    if (!gate.ok) return gate.result
+
     // Structural guard: a note must rest on the ingested corpus, never on
     // general knowledge before any retrieval exists (design item 4).
     const corpus = await resolveIngestedCorpus(ctx, NOTE_NOT_INGESTED_ERROR)
-    if ("error" in corpus) return { error: corpus.error }
+    if ("error" in corpus) return toolFailure(corpus.error)
 
     // The note is the project's own; its citations belong to the corpus it
     // reads, which is the source's when this is a derived workspace.
@@ -163,9 +170,9 @@ export const noteCreateTool = defineTool<
       bodyMd: input.body_md,
     })
 
-    ctx.emit?.({
-      type: "note_event",
-      data: { kind: "created", noteId: note.id, title: note.title },
+    emitDomainEvent(ctx, {
+      type: STREAM_DOMAIN_EVENT.NOTE,
+      data: { kind: NOTE_EVENT_KIND.CREATED, noteId: note.id, title: note.title },
     })
 
     return noteResult(note, rejected)
@@ -211,13 +218,20 @@ export const noteUpdateTool = defineTool<
       ),
   }),
   handler: async (input, ctx) => {
+    // The policy gate FIRST, as in note_create: a read-only member is refused
+    // before any lookup, so it can neither write nor learn which ids exist.
+    const gate = await authorizeProjectTool(ctx, NotePolicy, "write")
+    if (!gate.ok) return gate.result
+
     const corpus = await resolveIngestedCorpus(ctx, NOTE_NOT_INGESTED_ERROR)
-    if ("error" in corpus) return { error: corpus.error }
+    if ("error" in corpus) return toolFailure(corpus.error)
 
     // Scope before mutating. `input.id` came from the model and names any note
     // in the database, not necessarily one this project owns.
     const target = await NoteQueries.getForProject(input.id, ctx.projectId)
-    if (!target) return { error: NOTE_NOT_FOUND_ERROR }
+    if (!target) return toolFailure(NOTE_NOT_FOUND_ERROR)
+    const noteGate = authorizeOnProject(ctx, gate.project, NotePolicy, "update", target)
+    if (!noteGate.ok) return noteGate.result
 
     const written = await NoteService.update(input.id, ctx.corpusProjectId, {
       title: input.title,
@@ -225,11 +239,11 @@ export const noteUpdateTool = defineTool<
     })
     // Deleted between the scope check and the write — rare, but the honest
     // answer is the same one the scope check gives.
-    if (!written) return { error: NOTE_NOT_FOUND_ERROR }
+    if (!written) return toolFailure(NOTE_NOT_FOUND_ERROR)
 
-    ctx.emit?.({
-      type: "note_event",
-      data: { kind: "updated", noteId: written.note.id, title: written.note.title },
+    emitDomainEvent(ctx, {
+      type: STREAM_DOMAIN_EVENT.NOTE,
+      data: { kind: NOTE_EVENT_KIND.UPDATED, noteId: written.note.id, title: written.note.title },
     })
 
     return noteResult(written.note, written.rejected)
@@ -271,21 +285,27 @@ export const noteAppendTool = defineTool<
       ),
   }),
   handler: async (input, ctx) => {
+    // The policy gate first — see note_update.
+    const gate = await authorizeProjectTool(ctx, NotePolicy, "write")
+    if (!gate.ok) return gate.result
+
     const corpus = await resolveIngestedCorpus(ctx, NOTE_NOT_INGESTED_ERROR)
-    if ("error" in corpus) return { error: corpus.error }
+    if ("error" in corpus) return toolFailure(corpus.error)
 
     // Scope before mutating — see note_update.
     const target = await NoteQueries.getForProject(input.id, ctx.projectId)
-    if (!target) return { error: NOTE_NOT_FOUND_ERROR }
+    if (!target) return toolFailure(NOTE_NOT_FOUND_ERROR)
+    const noteGate = authorizeOnProject(ctx, gate.project, NotePolicy, "update", target)
+    if (!noteGate.ok) return noteGate.result
 
     const written = await NoteService.append(input.id, ctx.corpusProjectId, {
       bodyMd: input.body_md,
     })
-    if (!written) return { error: NOTE_NOT_FOUND_ERROR }
+    if (!written) return toolFailure(NOTE_NOT_FOUND_ERROR)
 
-    ctx.emit?.({
-      type: "note_event",
-      data: { kind: "updated", noteId: written.note.id, title: written.note.title },
+    emitDomainEvent(ctx, {
+      type: STREAM_DOMAIN_EVENT.NOTE,
+      data: { kind: NOTE_EVENT_KIND.UPDATED, noteId: written.note.id, title: written.note.title },
     })
 
     return noteResult(written.note, written.rejected)

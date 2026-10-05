@@ -6,22 +6,21 @@
 // Query keys are defined once at the top; never inlined at the call site.
 
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tanstack/react-query"
-import { apiFetch } from "@/lib/api-fetch"
+import { apiFetch, readQueryError, retryUnlessRefused } from "@/lib/api-fetch"
 import { corpusKeys } from "./corpus"
-import type { BufferSnapshot } from "@/models/buffer/schema"
-import type { BufferCommitResult } from "@/models/buffer/service"
-import {
-  bufferFiltersToParams,
-  type BufferCommitInput,
-  type BufferDiscardInput,
-  type BufferFilters,
-} from "@/models/buffer/types"
+import { bufferFilterQuery } from "@/lib/buffer/filter-query"
+import type { BufferCommitCounts, BufferSnapshot } from "@/models/buffer/schema"
+import type { CorpusAddResult } from "@/models/corpus/schema"
+
+/** What POST /buffer/commit returns: the buffer counters and the corpus add result. */
+type BufferCommitResponse = BufferCommitCounts & { corpus: CorpusAddResult }
+import type { BufferCommitInput, BufferDiscardInput, BufferFilterSet } from "@/models/buffer/types"
 
 // ── Query keys ────────────────────────────────────────────────────────────────
 
 export const bufferKeys = {
   all: (projectId: string) => ["buffer", projectId] as const,
-  snapshot: (projectId: string, filters: BufferFilters) =>
+  snapshot: (projectId: string, filters: BufferFilterSet) =>
     ["buffer", projectId, "snapshot", filters] as const,
 }
 
@@ -30,19 +29,21 @@ export const bufferKeys = {
 /** The buffer comprehension snapshot (total + facets + candidate sample). */
 export function useBuffer(
   projectId: string,
-  filters: BufferFilters,
+  filters: BufferFilterSet,
   opts: { limit?: number; initialSnapshot?: BufferSnapshot } = {},
 ) {
   return useQuery<BufferSnapshot>({
     queryKey: bufferKeys.snapshot(projectId, filters),
     queryFn: async () => {
-      const params = bufferFiltersToParams(filters)
+      const params = bufferFilterQuery.encode(filters)
       if (opts.limit !== undefined) params.set("limit", String(opts.limit))
       const qs = params.toString()
       const res = await apiFetch(`/api/projects/${projectId}/buffer${qs ? `?${qs}` : ""}`)
-      if (!res.ok) throw new Error(`Failed to fetch buffer: ${res.status}`)
+      // A 400 (a filter the buffer refuses) carries its message to the dialog.
+      if (!res.ok) throw await readQueryError(res, "Failed to fetch buffer")
       return res.json() as Promise<BufferSnapshot>
     },
+    retry: retryUnlessRefused,
     initialData: opts.initialSnapshot,
     // Keep the previous result visible across a filter change instead of a
     // skeleton flash; isPlaceholderData flags the transition.
@@ -56,14 +57,14 @@ export function useBuffer(
 /** Commit the buffer's candidates into the corpus ("Ajouter au corpus"). */
 export function useCommitBuffer(projectId: string) {
   const qc = useQueryClient()
-  return useMutation<BufferCommitResult, Error, BufferCommitInput>({
+  return useMutation<BufferCommitResponse, Error, BufferCommitInput>({
     mutationFn: async (body) => {
       const res = await apiFetch(`/api/projects/${projectId}/buffer/commit`, {
         method: "POST",
         body: JSON.stringify(body),
       })
       if (!res.ok) throw new Error("Failed to commit buffer")
-      return res.json() as Promise<BufferCommitResult>
+      return res.json() as Promise<BufferCommitResponse>
     },
     // A commit empties the buffer AND grows the corpus — refresh both.
     onSuccess: () => {

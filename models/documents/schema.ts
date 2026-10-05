@@ -77,7 +77,7 @@ export type DocumentCanonicalStatus =
 
 // Colors are dark-first dataset tints (bg-{hue}/15 + text-{hue}); the hue
 // mapping follows the prototype TYPES map (design/.dc.html lines 917-925).
-export const DOC_TYPE: Record<string, VocabEntry> = {
+const DOC_TYPE_VOCAB = {
   // Core codes observed via Gallica enum and Catalogue free-text mapping
   press: { label: "press", color: "bg-dataset-3/15 text-dataset-3" },
   book: { label: "book", color: "bg-dataset-2/15 text-dataset-2" },
@@ -93,9 +93,123 @@ export const DOC_TYPE: Record<string, VocabEntry> = {
   estampe: { label: "estampe", color: "bg-dataset-6/15 text-dataset-6" },
   enlum: { label: "enlum", color: "bg-dataset-1/15 text-dataset-1" },
   charte: { label: "charte", color: "bg-dataset-4/15 text-dataset-4" },
+  // Gallica's `objet` maps here (lib/mcp/vocab.ts GALLICA_DOC_TYPE); it was
+  // missing from this map, so the UI rendered the raw code.
+  object: { label: "object", color: "bg-dataset-5/15 text-dataset-5" },
+  // Printed text of undetermined nature. Gallica labels monographs AND press
+  // issues `text` when a search is run without a doc_type filter; mapping that
+  // to `book` would mislabel press as books, so the ambiguity is kept visible
+  // (canonicalDocTypeFromLabel in lib/mcp/vocab.ts) and corpus_search asks for
+  // a rerun with doc_type.
+  text: { label: "text", color: "bg-dataset-2/15 text-dataset-2" },
   // Catch-all for Catalogue free-text types that do not match any known pattern
   other: { label: "other", color: "bg-muted text-muted-foreground" },
+} as const satisfies Record<string, VocabEntry>
+
+/** A canonical docType code — the keys of the vocabulary. */
+export type DocTypeCode = keyof typeof DOC_TYPE_VOCAB
+
+/**
+ * The docType vocabulary, looked up by a STORED code. The column is open (a
+ * future MCP code renders with its raw label), so lookups take any string and
+ * may miss; code that NAMES a type uses DOC_TYPE_CODE, which is checked.
+ */
+export const DOC_TYPE: Readonly<Record<string, VocabEntry>> = DOC_TYPE_VOCAB
+
+/** The canonical codes code refers to by name — each one checked against the vocabulary. */
+export const DOC_TYPE_CODE = {
+  PRESS: "press",
+  BOOK: "book",
+  IMAGE: "image",
+  MAP: "map",
+  MANUSCRIPT: "manuscript",
+  SCORE: "score",
+  VIDEO: "video",
+  AUDIO: "audio",
+  POSTER: "poster",
+  ESTAMPE: "estampe",
+  ENLUM: "enlum",
+  CHARTE: "charte",
+  OBJECT: "object",
+  TEXT: "text",
+  OTHER: "other",
+} as const satisfies Record<string, DocTypeCode>
+
+// Record kind (BufferItem.arkKind, and the SQL mirror arkKindWhere over
+// Document) — WHAT a BnF record is, as opposed to what its content is
+// (docType). The classifier and its SQL mirror are in lib/documents/ark-kind.ts.
+// ---------------------------------------------------------------------------
+
+/** The `cb…` id prefix of a BnF catalogue notice. */
+export const CATALOGUE_ARK_PREFIX = "cb"
+
+export const ARK_KIND = {
+  PERIODICAL_ISSUE: "periodical_issue",
+  PERIODICAL_COLLECTION: "periodical_collection",
+  MONOGRAPH: "monograph",
+  IMAGE: "image",
+  CATALOGUE_NOTICE: "catalogue_notice",
+  OTHER_DOCUMENT: "other_document",
+  UNKNOWN: "unknown",
 } as const
+export type ArkKind = (typeof ARK_KIND)[keyof typeof ARK_KIND]
+/** ARK_KIND's values as a tuple, for z.enum. */
+export const ARK_KIND_VALUES = [
+  ARK_KIND.PERIODICAL_ISSUE,
+  ARK_KIND.PERIODICAL_COLLECTION,
+  ARK_KIND.MONOGRAPH,
+  ARK_KIND.IMAGE,
+  ARK_KIND.CATALOGUE_NOTICE,
+  ARK_KIND.OTHER_DOCUMENT,
+  ARK_KIND.UNKNOWN,
+] as const satisfies readonly ArkKind[]
+
+/** Canonical docTypes whose digitized document is an image. */
+export const ARK_KIND_IMAGE_TYPES = [
+  DOC_TYPE_CODE.IMAGE,
+  DOC_TYPE_CODE.POSTER,
+  DOC_TYPE_CODE.ESTAMPE,
+  DOC_TYPE_CODE.ENLUM,
+] as const satisfies readonly DocTypeCode[]
+/** Canonical docTypes whose digitized document is neither text nor image. */
+export const ARK_KIND_OTHER_DOCUMENT_TYPES = [
+  DOC_TYPE_CODE.MAP,
+  DOC_TYPE_CODE.MANUSCRIPT,
+  DOC_TYPE_CODE.SCORE,
+  DOC_TYPE_CODE.AUDIO,
+  DOC_TYPE_CODE.VIDEO,
+  DOC_TYPE_CODE.OBJECT,
+  DOC_TYPE_CODE.CHARTE,
+] as const satisfies readonly DocTypeCode[]
+/** Gallica digitized-document ARK prefixes (the complement of `cb`). */
+export const GALLICA_ARK_PREFIXES = ["bpt6k", "btv1b", "bd6t"] as const
+
+/** The i18n key of each kind under `corpus.buffer.kinds` (keys are camelCase,
+ *  codes are snake_case — next-intl keys never carry the domain code). */
+export const ARK_KIND_I18N_KEY = {
+  [ARK_KIND.PERIODICAL_ISSUE]: "periodicalIssue",
+  [ARK_KIND.PERIODICAL_COLLECTION]: "periodicalCollection",
+  [ARK_KIND.MONOGRAPH]: "monograph",
+  [ARK_KIND.IMAGE]: "image",
+  [ARK_KIND.CATALOGUE_NOTICE]: "catalogueNotice",
+  [ARK_KIND.OTHER_DOCUMENT]: "otherDocument",
+  [ARK_KIND.UNKNOWN]: "unknown",
+} as const satisfies Record<ArkKind, string>
+
+
+/**
+ * Kind → hue for the buffer's kind facet. `satisfies` binds the map to the
+ * enum, as INGESTION_CLASS_COLOR does: a kind without a colour is a type error.
+ */
+export const ARK_KIND_COLOR = {
+  [ARK_KIND.PERIODICAL_ISSUE]: "var(--dataset-3)",
+  [ARK_KIND.PERIODICAL_COLLECTION]: "var(--dataset-6)",
+  [ARK_KIND.MONOGRAPH]: "var(--dataset-2)",
+  [ARK_KIND.IMAGE]: "var(--dataset-1)",
+  [ARK_KIND.CATALOGUE_NOTICE]: "var(--dataset-4)",
+  [ARK_KIND.OTHER_DOCUMENT]: "var(--dataset-7)",
+  [ARK_KIND.UNKNOWN]: "var(--neutral-500)",
+} satisfies Record<ArkKind, string>
 
 // ---------------------------------------------------------------------------
 // Language vocabulary (lang column)
@@ -129,6 +243,15 @@ export const LANG: Record<string, VocabEntry> = {
 // Derived by sourceFromArk() in lib/mcp/normalize.ts from the ARK identifier
 // prefix. Only sources observed in real MCP output are listed here.
 // ---------------------------------------------------------------------------
+
+/** The source codes code refers to by name (sourceFromArk, lib/mcp/vocab.ts). */
+export const DOCUMENT_SOURCE = {
+  GALLICA: "gallica",
+  CATALOGUE: "catalogue",
+  DATABNF: "databnf",
+  OTHER: "other",
+} as const
+export type DocumentSource = (typeof DOCUMENT_SOURCE)[keyof typeof DOCUMENT_SOURCE]
 
 export const SOURCE: Record<string, VocabEntry> = {
   gallica: { label: "gallica", color: "bg-dataset-3/15 text-dataset-3" },

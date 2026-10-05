@@ -9,11 +9,13 @@ import { useTranslations } from "next-intl"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
+  EMPTY_CORPUS_FILTERS,
   hasActiveFilters,
-  removeFromFilter,
-  emptyCorpusFilters,
-  type CorpusFilters,
-} from "@/models/corpus/types"
+  patchFilters,
+  removeFilterValue,
+  selectedValues,
+} from "@/lib/corpus/filter-state"
+import type { CorpusFilterSet } from "@/models/corpus/types"
 import {
   INDEXATION_OUTCOME,
   INGESTION_CLASS,
@@ -37,8 +39,8 @@ const OUTCOME_LABEL_KEY: Record<string, string> = {
 }
 
 interface Props {
-  filters: CorpusFilters
-  onChange: (next: CorpusFilters) => void
+  filters: CorpusFilterSet
+  onChange: (next: CorpusFilterSet) => void
   onClearAll: () => void
   /**
    * Maps an AppSession id to its human title, for the session chip label.
@@ -88,63 +90,51 @@ export function CardCorpusActiveFiltersBar({
   // Multi-select: type, lang, source
   const multiKeys = ["type", "lang", "source"] as const
   for (const key of multiKeys) {
-    const csv = filters[key]
-    if (!csv) continue
-    csv.split(",").forEach((value) => {
-      if (!value) return
+    for (const value of selectedValues(filters, key)) {
       chips.push(
         <ActiveChip
           key={`${key}:${value}`}
           label={value}
-          onRemove={() => onChange(removeFromFilter(filters, key, value))}
+          onRemove={() => onChange(removeFilterValue(filters, key, value))}
         />,
       )
-    })
+    }
   }
 
   // Sessions — label with the session title (resolved from the snapshot via the
   // threaded title map); fall back to the raw id when unknown.
-  if (filters.session) {
-    filters.session.split(",").forEach((value) => {
-      if (!value) return
-      chips.push(
-        <ActiveChip
-          key={`session:${value}`}
-          label={sessionTitleById?.[value] ?? value}
-          onRemove={() => onChange(removeFromFilter(filters, "session", value))}
-        />,
-      )
-    })
+  for (const value of selectedValues(filters, "session")) {
+    chips.push(
+      <ActiveChip
+        key={`session:${value}`}
+        label={sessionTitleById?.[value] ?? value}
+        onRemove={() => onChange(removeFilterValue(filters, "session", value))}
+      />,
+    )
   }
 
   // Ingestion classes — readable labels from the numérisation vocabulary.
-  if (filters.ingest) {
-    filters.ingest.split(",").forEach((value) => {
-      if (!value) return
-      const key = INGEST_LABEL_KEY[value]
-      chips.push(
-        <ActiveChip
-          key={`ingest:${value}`}
-          label={key ? t(key) : value}
-          onRemove={() => onChange(removeFromFilter(filters, "ingest", value))}
-        />,
-      )
-    })
+  for (const value of selectedValues(filters, "ingest")) {
+    const key = INGEST_LABEL_KEY[value]
+    chips.push(
+      <ActiveChip
+        key={`ingest:${value}`}
+        label={key ? t(key) : value}
+        onRemove={() => onChange(removeFilterValue(filters, "ingest", value))}
+      />,
+    )
   }
 
   // Indexation outcomes — readable labels from the indexation vocabulary.
-  if (filters.outcome) {
-    filters.outcome.split(",").forEach((value) => {
-      if (!value) return
-      const key = OUTCOME_LABEL_KEY[value]
-      chips.push(
-        <ActiveChip
-          key={`outcome:${value}`}
-          label={key ? t(key) : value}
-          onRemove={() => onChange(removeFromFilter(filters, "outcome", value))}
-        />,
-      )
-    })
+  for (const value of selectedValues(filters, "outcome")) {
+    const key = OUTCOME_LABEL_KEY[value]
+    chips.push(
+      <ActiveChip
+        key={`outcome:${value}`}
+        label={key ? t(key) : value}
+        onRemove={() => onChange(removeFilterValue(filters, "outcome", value))}
+      />,
+    )
   }
 
   // Year range
@@ -162,7 +152,7 @@ export function CardCorpusActiveFiltersBar({
         key="yearRange"
         label={label}
         onRemove={() =>
-          onChange({ ...filters, yearFrom: undefined, yearTo: undefined })
+          onChange(patchFilters(filters, { yearFrom: undefined, yearTo: undefined }))
         }
       />,
     )
@@ -174,7 +164,7 @@ export function CardCorpusActiveFiltersBar({
       <ActiveChip
         key="undated"
         label={t("undated")}
-        onRemove={() => onChange({ ...filters, undated: undefined })}
+        onRemove={() => onChange(patchFilters(filters, { undated: undefined }))}
       />,
     )
   }
@@ -185,7 +175,7 @@ export function CardCorpusActiveFiltersBar({
       <ActiveChip
         key="q"
         label={`"${filters.q}"`}
-        onRemove={() => onChange({ ...filters, q: undefined })}
+        onRemove={() => onChange(patchFilters(filters, { q: undefined }))}
       />,
     )
   }
@@ -198,7 +188,7 @@ export function CardCorpusActiveFiltersBar({
         size="sm"
         className="ml-auto h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
         onClick={() => {
-          onChange(emptyCorpusFilters())
+          onChange(EMPTY_CORPUS_FILTERS)
           onClearAll()
         }}
       >

@@ -6,9 +6,25 @@
 import { LOGIN_METHOD } from "@/models/users/schema"
 
 // ---------------------------------------------------------------------------
+// Database pool bounds (lib/db.ts) — every query the app sends is bounded
+// (CLAUDE_ERROR_PATTERNS §14), so a hung statement or an exhausted pool fails
+// instead of wedging the caller and every guard it holds. Same names and
+// values as Track B's ingestion pipeline.
+// ---------------------------------------------------------------------------
+
+/** Server-side ceiling of one SQL statement (Postgres `statement_timeout`). */
+export const DB_STATEMENT_TIMEOUT_MS = 30_000
+/** Ceiling of the wait for a pooled connection (pg `connectionTimeoutMillis`). */
+export const DB_CONNECTION_TIMEOUT_MS = 10_000
+
+// ---------------------------------------------------------------------------
 // Routes — single source of truth for in-app navigation paths.
 // Locale prefix is handled by next-intl's <Link>; these are locale-agnostic.
 // ---------------------------------------------------------------------------
+
+/** The Constituer page's own URL parameter (the open document); every other
+ *  parameter of that page is a corpus filter. */
+export const SELECTED_ARK_PARAM = "selectedArk"
 
 export const ROUTES = {
   projects: "/projects",
@@ -276,6 +292,27 @@ export const CORPUS_REASON_MAX_LEN = 1_000
 /** Candidate rows per page in a buffer list / snapshot sample. */
 export const BUFFER_SAMPLE_SIZE = 25
 
+/** Hits shown in a corpus_search result's `sample` — enough to judge a page,
+ *  never the page itself (the buffer holds it). */
+export const CORPUS_SEARCH_SAMPLE_SIZE = 8
+
+/** Upper bound on one buffer page (buffer_list, GET /buffer `limit`). */
+export const BUFFER_LIST_MAX_LIMIT = 200
+
+/**
+ * Field-scoped text filters (`title`, `creator`, `subject` — buffer and
+ * corpus): each string at least this long, at most this many strings. A
+ * one-letter contains-any matches nearly everything; twenty variants is more
+ * than any real spelling list.
+ */
+export const TEXT_FILTER_MIN_CHARS = 2
+export const TEXT_FILTER_MAX_VALUES = 20
+/** Values per coded filter list (`type`, `lang`, `source`, `kind`). */
+export const FILTER_LIST_MAX_VALUES = 20
+/** Longest language value a filter accepts — the store holds BnF's own
+ *  language strings, the longest seen being « sans contenu linguistique ». */
+export const LANG_FILTER_MAX_CHARS = 40
+
 /** Candidate rows the Constituer buffer panel requests (a curation buffer is
  *  bounded, so one page comfortably shows the working set). */
 export const BUFFER_PANEL_LIMIT = 100
@@ -290,14 +327,63 @@ export const BUFFER_PANEL_LIMIT = 100
 export const BUFFER_AUTO_COMMIT_MAX = 200
 
 /**
- * Default page size for a `corpus_search` call (hits written to the buffer per
- * call). The BnF MCP caps `maximum_records` at 50; the agent paginates with
- * `start_record` to gather more, deliberately, keeping any single page — and the
- * returned summary — bounded (CLAUDE_ERROR_PATTERNS §14).
+ * Per-source page ceilings for a `corpus_search` call — the BnF's own: Gallica
+ * SRU serves ≤ 50 records per page, the catalogue ≤ 1000
+ * (bnf_search_catalogue `maximum_records`). See incident 2026-09-30: a flat 50
+ * cap made a 3 000-record catalogue sweep cost 60 calls instead of 3, each one
+ * drawing on the shared catalogue quota. A request above the chosen source's
+ * ceiling is refused with a structured result, never silently clamped.
  */
-export const BUFFER_SEARCH_PAGE_SIZE = 20
-/** Hard ceiling the BnF SRU search tools enforce on `maximum_records`. */
-export const BUFFER_SEARCH_MAX_PAGE_SIZE = 50
+export const BUFFER_SEARCH_MAX_PAGE_SIZE_BY_SOURCE = { gallica: 50, catalogue: 1000 } as const
+/**
+ * Default page size per source when the agent omits `maximum_records`. The
+ * catalogue default is deliberately large: each call costs BnF quota, and the
+ * returned summary stays compact whatever the page size (CLAUDE_ERROR_PATTERNS
+ * §14 — the page, not the context, is what grows).
+ */
+export const BUFFER_SEARCH_DEFAULT_PAGE_SIZE_BY_SOURCE = { gallica: 50, catalogue: 500 } as const
+
+/**
+ * Version of the buffer classification (canonical docType + docTypeRaw,
+ * canonical lang, arkKind — lib/buffer/classify.ts). Every row written by
+ * registerCandidates carries it; the boot-time reclassifier
+ * (lib/buffer/reclassify.ts) rewrites rows below it once, so bumping this when
+ * the vocabulary changes re-runs the mapping over every existing row
+ * automatically. 0 = a row written before the v2 buffer (raw dc:type labels).
+ */
+export const BUFFER_CLASSIFIER_VERSION = 1
+/** Rows per reclassifier batch (one transaction each); ~87 batches for the
+ *  86 765 prod rows at the first boot, then the version gate makes it a no-op. */
+export const BUFFER_RECLASSIFY_BATCH_SIZE = 1_000
+/** Wall-clock ceiling of one reclassifier run; an unfinished run resumes on
+ *  the next sweep (BUFFER_RECLASSIFY_SWEEP_INTERVAL_MS). */
+export const BUFFER_RECLASSIFY_MAX_MS = 5 * 60_000
+/** How often the reclassifier is retried while rows remain below the version
+ *  (a finished run costs one empty query). */
+export const BUFFER_RECLASSIFY_SWEEP_INTERVAL_MS = 15 * 60_000
+
+// Background enrichment of BARE buffer rows (buffer_add stages ARKs only) —
+// lib/buffer/enricher.ts. Cost: a same-project Document is copied for free;
+// anything else is one broker-routed OAI-PMH GetRecord (Gallica) or catalogue
+// SRU query per ARK, on the broker's `external` bucket (120/min, shared) —
+// about 8–9 minutes per 1 000 ARKs. Never the 40/min manifest bucket, which is
+// the ingestion bottleneck.
+
+/** ARKs resolved per enrichment batch (one bounded client fan-out). */
+export const BUFFER_ENRICH_BATCH_SIZE = 30
+/** Batches per drain pass — a pass touches at most 600 rows, so one kick can
+ *  never spin unboundedly (CLAUDE_ERROR_PATTERNS §14); the rest waits for the
+ *  next kick or the periodic sweep. */
+export const BUFFER_ENRICH_DRAIN_MAX_BATCHES = 20
+/** Attempts per row before it is marked failed (a BnF "unknown ARK" is failed
+ *  at once). Transient failures are retried by the next pass, never in-loop. */
+export const BUFFER_ENRICH_MAX_ATTEMPTS = 3
+/** Backoff before a failed row is retried: this, doubled per attempt (1, 2,
+ *  4 min) — a broker 429/503 burst is not burned through in seconds. */
+export const BUFFER_ENRICH_RETRY_BASE_MS = 60_000
+/** Wall-clock ceiling of one drain (all its passes): under the 3-minute sweep
+ *  interval, so a slow drain ends before the next sweep would start another. */
+export const BUFFER_ENRICH_DRAIN_MAX_MS = 150_000
 
 /**
  * The seq assigned to the first (empty) CorpusVersion created by
@@ -431,6 +517,10 @@ export const RESOLVE_DRAIN_MAX_BATCHES = 50
  * RESOLVE_MAX_ATTEMPTS. 3 min: prompt recovery without hammering BnF.
  */
 export const RESOLVE_SWEEP_INTERVAL_MS = 3 * 60 * 1_000
+
+/** Periodic sweep for buffer rows a restart or a transient outage left
+ *  pending enrichment (lib/buffer/enricher.ts) — same cadence as the resolver. */
+export const BUFFER_ENRICH_SWEEP_INTERVAL_MS = RESOLVE_SWEEP_INTERVAL_MS
 
 /**
  * How often the comprehension panel re-fetches the corpus snapshot while
@@ -579,11 +669,33 @@ export const SPAWN_MAX_TOOL_TURNS = 40
  * throws / never hangs the parent turn — §14/§15). */
 export const SPAWN_TIMEOUT_MS = 240_000
 
-/** Cap on concurrent/total sub-agent tokens is implicit via the two bounds
- * above; the child text returned to the parent is truncated to this many chars
- * so a verbose child cannot re-flood the parent context (the whole point of
+/** The child text returned to the parent is truncated to this many chars so a
+ * verbose child cannot re-flood the parent context (the whole point of
  * isolation). */
 export const SPAWN_SUMMARY_MAX_CHARS = 8_000
+
+/** The task excerpt a sub-agent row shows as its second line (the start
+ *  event's `label`), so parallel sweeps are told apart at a glance. */
+export const SPAWN_LABEL_MAX_CHARS = 80
+
+/**
+ * Fan-out caps (incident 2026-09-30, Decision 20 of the Track E plan). Session
+ * b275569f… ran 7 children in parallel against one BnF quota and made 2 548
+ * catalogue calls in 2.5 h.
+ *
+ * Concurrency: 3 children + the parent = 4 searchers sharing 47 catalogue
+ * calls/min (≈ 12/min each), which is already the limiter's floor — a higher
+ * concurrency only adds queueing, it does not go faster. Counted in-process per
+ * appSessionId (a session runs one turn at a time), decremented in `finally`.
+ */
+export const SPAWN_MAX_CONCURRENT_PER_TURN = 3
+/**
+ * Total `spawn_research` calls per session, counted from the durable tool_call
+ * rows so a reload cannot reset it. 12 covers the largest legitimate prod
+ * session seen; the 17 spawns of session d1073498… were retries of failed
+ * sweeps, which is the pattern this stops.
+ */
+export const SPAWN_MAX_PER_SESSION = 12
 
 // ---------------------------------------------------------------------------
 // Session auto-naming
@@ -800,3 +912,40 @@ export const NOTE_IMAGE_IIIF_SIZE = "843,"
 export function IIIF_MANIFEST_URL(ark: string): string {
   return `https://gallica.bnf.fr/iiif/${ark}/manifest.json`
 }
+
+// ---------------------------------------------------------------------------
+// Cross-scope project memory (Track E Phase 11, feedback #10d)
+// ---------------------------------------------------------------------------
+
+/**
+ * Each agent's system prompt shows the OTHER step's memory as a read-only
+ * section (a research-scope "source à risque" must reach the corpus agent), at
+ * most this many items and characters — past the cap it says how many items
+ * are not shown and how to read them (memory_read). The own-scope memory is
+ * never capped: memory is curated, not trimmed (playbook/memory.md).
+ */
+export const MEMORY_CROSS_SCOPE_MAX_ITEMS = 20
+export const MEMORY_CROSS_SCOPE_MAX_CHARS = 3_000
+
+/**
+ * Memory dedupe (playbook/memory.md): a write whose normalised text is fewer
+ * than this many Levenshtein edits from an item of the same (scope, section)
+ * merges into it instead of adding a near-duplicate.
+ */
+export const MEMORY_NEAR_DUP_MAX_EDIT_DISTANCE = 4
+
+// ---------------------------------------------------------------------------
+// System-prompt cache revision
+// ---------------------------------------------------------------------------
+
+/**
+ * The revision of the rendered system prompts. AppSession caches its rendered
+ * prompt (systemPrompt + promptLocale + promptRevision); a cached prompt is
+ * served only when its revision equals this one, so a prompt-text change
+ * reaches EXISTING sessions on their next turn instead of never.
+ * Bump on ANY change to lib/agent/prompts/*; the fingerprint test enforces it
+ * (lib/agent/prompts/revision.test.ts): the value is `<date>.<label>.<seal>`,
+ * where the seal is content-addressed from the rendered prompts, so a prompt
+ * change cannot be recorded without a new revision.
+ */
+export const PROMPT_REVISION = "2026-10-05.prompt-fingerprints-all-branches.679199805182"

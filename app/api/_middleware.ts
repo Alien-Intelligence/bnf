@@ -23,7 +23,8 @@
  */
 import { auth, OrphanedSessionError, type AuthSession } from "@/lib/auth"
 import { bouncer, type Bouncer, AuthorizationError } from "@/lib/bouncer"
-import { unauthorized, forbidden } from "@/lib/api-response"
+import { badRequest, unauthorized, forbidden } from "@/lib/api-response"
+import { FilterValueError } from "@/lib/filters"
 import { UserQueries } from "@/models/users/queries"
 import { GroupQueries } from "@/models/groups/queries"
 import type { PolicyUser } from "@/models/users/schema"
@@ -36,34 +37,49 @@ type AuthedHandler<C = unknown> = (
   session: AuthSession["session"],
 ) => Promise<Response>
 
+/**
+ * The ONE assembly of a request's PolicyUser: the session, then the full
+ * Prisma User (all application fields — better-auth session.user only carries
+ * BaseUser) and the user's group ids, resolved once so policies stay I/O-free
+ * (every project-access decision reads `groupIds` off the PolicyUser).
+ * Returns null when there is no session; the caller decides the response.
+ * A live session without its user row is a data-integrity fault (the FK
+ * cascades on user deletion), not an unknown visitor: it is raised, logged, as
+ * the page path does (lib/auth-helpers.ts findSessionUser). withAuth uses it,
+ * and so does the chat route's tool-context callback, which the SDK hands a
+ * bare Request (the documented exemption in
+ * app/api/sessions/[sid]/messages/route.ts).
+ */
+export async function resolvePolicyUser(
+  req: Request,
+): Promise<{ user: PolicyUser; session: AuthSession["session"] } | null> {
+  const session = await auth.api.getSession({ headers: req.headers })
+  if (!session) return null
+  const [row, groupIds] = await Promise.all([
+    UserQueries.get(session.user.id),
+    GroupQueries.groupIdsForUser(session.user.id),
+  ])
+  if (!row) {
+    const error = new OrphanedSessionError(session.user.id)
+    console.error("[resolvePolicyUser]", error)
+    throw error
+  }
+  return { user: { ...row, groupIds }, session: session.session }
+}
+
 export function withAuth<C = unknown>(handler: AuthedHandler<C>) {
   return async (req: Request, ctx: C): Promise<Response> => {
-    const session = await auth.api.getSession({ headers: req.headers })
-    if (!session) return unauthorized()
-
-    // Refetch the full Prisma User to ensure all application fields (role,
-    // etc.) are present — better-auth session.user only carries BaseUser.
-    // Group membership is resolved here, once, so policies stay I/O-free:
-    // every project-access decision reads `groupIds` off the PolicyUser.
-    const [row, groupIds] = await Promise.all([
-      UserQueries.get(session.user.id),
-      GroupQueries.groupIdsForUser(session.user.id),
-    ])
-    // A live session without its user row is a data-integrity fault (the FK
-    // cascades on user deletion), not an unknown visitor: raise it, logged,
-    // as the page path does (lib/auth-helpers.ts findSessionUser).
-    if (!row) {
-      const error = new OrphanedSessionError(session.user.id)
-      console.error("[withAuth]", error)
-      throw error
-    }
-
-    const user: PolicyUser = { ...row, groupIds }
+    const resolved = await resolvePolicyUser(req)
+    if (!resolved) return unauthorized()
+    const { user, session } = resolved
 
     try {
-      return await handler(req, user, bouncer(user), ctx, session.session)
+      return await handler(req, user, bouncer(user), ctx, session)
     } catch (e) {
       if (e instanceof AuthorizationError) return forbidden()
+      // A filter value the data refuses (a language the store does not hold):
+      // the caller's mistake, named — never a 500.
+      if (e instanceof FilterValueError) return badRequest(e.message)
       throw e
     }
   }

@@ -7,6 +7,7 @@
 // server can't: active session, which notes are OPEN as tabs, the active tab,
 // and the Atelier/Carnet disposition.
 
+import { STREAM_DOMAIN_EVENT } from "@/lib/agent/stream-events"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import { useToast } from "@/components/ui/toast"
@@ -164,7 +165,7 @@ export function RechercherClient({
     // note_event variant and `data.noteId` is typed.
     const noteIds: string[] = []
     for (const e of fresh) {
-      if (e.type === "note_event") noteIds.push(e.data.noteId)
+      if (e.type === STREAM_DOMAIN_EVENT.NOTE) noteIds.push(e.data.noteId)
     }
     if (noteIds.length === 0) return
 

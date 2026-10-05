@@ -110,6 +110,9 @@ export type CorpusSnapshot = {
   versionSeq: number
   versionStatus: CorpusVersionStatus
   total: number
+  /** With a `not` filter: per named dimension, the documents it left out
+   *  because their value is unknown (Decision 4) — never silently. */
+  notUnknown?: Record<string, number>
   undatedCount: number
   /** Members still resolving metadata in the background (counted in `total`). */
   pendingCount: number
@@ -191,7 +194,7 @@ export type CorpusSnapshot = {
 
 /**
  * A flat, cursor-paginated page of corpus documents — the result of
- * `CorpusQueries.list()`. Unlike `CorpusSnapshot` it computes NO facets (it is
+ * `CorpusService.list()`. Unlike `CorpusSnapshot` it computes NO facets (it is
  * the cheap exhaustive-listing path); `total` is the count within the active
  * filters, `documents` is one keyset page, and `nextCursor` is present iff more
  * pages exist. The agent tool may trim `documents` to a requested field subset
@@ -204,6 +207,8 @@ export type CorpusListPage = {
   paidOcrEnabled: boolean
   documents: DocumentRow[]
   nextCursor?: string
+  /** See CorpusSnapshot.notUnknown. */
+  notUnknown?: Record<string, number>
 }
 
 /**
@@ -214,7 +219,7 @@ export type CorpusListPage = {
 export type CorpusFacetDimension = "period" | "type" | "lang" | "source"
 
 /**
- * A crossed-facet table — the result of `CorpusQueries.crossFacets()`. `cells`
+ * A crossed-facet table — the result of `CorpusService.crossFacets()`. `cells`
  * is sparse (only non-zero combinations), sorted by `count` descending, so
  * "1970s × book = 10" is the kind of single-call insight the corpus agent needs
  * to locate a sub-population without probing ARKs one by one.
@@ -236,3 +241,90 @@ export type CorpusDiff = {
   addedCount: number
   removedCount: number
 }
+
+/**
+ * The predicates a filtered corpus read runs, built once per read from the
+ * filters by CorpusService (lib/corpus/filter-where.ts holds the translation;
+ * see its CorpusWhere for what each one selects). The query layer only
+ * executes them.
+ */
+export type CorpusWherePredicates = {
+  sharedWhere: Prisma.DocumentWhereInput
+  resolvedWhere: Prisma.DocumentWhereInput
+  sharedWhereWithoutOutcome: Prisma.DocumentWhereInput
+  undatedWhere: Prisma.DocumentWhereInput
+  pendingWhere: Prisma.DocumentWhereInput
+  failedWhere: Prisma.DocumentWhereInput
+  outcomeWheres: {
+    indexed: Prisma.DocumentWhereInput
+    failed: Prisma.DocumentWhereInput
+    excluded: Prisma.DocumentWhereInput
+    not_ingested: Prisma.DocumentWhereInput
+  }
+}
+
+/** What CorpusQueries.snapshot reads: the snapshot without the numérisation
+ *  buckets, plus the resolved rows the service classifies them from. */
+export type CorpusSnapshotRead = Omit<CorpusSnapshot, "numerisation" | "notUnknown"> & {
+  classRows: Array<{ docType: string | null; ocrAvailable: boolean | null; iiifManifestUrl: string | null }>
+}
+
+// ---------------------------------------------------------------------------
+// Mutation results (what the add/remove routes return and the hooks read)
+// ---------------------------------------------------------------------------
+
+/** Return shape for mutating operations — snapshot + delta counters. */
+export type CorpusMutationResult = CorpusSnapshot & {
+  lastDeltaAdded: number
+  lastDeltaRemoved: number
+}
+
+/**
+ * An ARK that was added to the corpus but has no digitized full text / IIIF
+ * manifest (e.g. a catalogue notice). It is a valid corpus member, but it will
+ * be skipped at ingestion time — the corpus can hold it, the RAG index cannot.
+ * Derived from the ARK itself, so it is known instantly (no MCP round-trip).
+ */
+export type NonIngestableDocument = {
+  ark: string
+  source: string
+}
+
+/**
+ * Result of addArks(). Extends the mutation result with:
+ *   - `pending`       — how many of the added ARKs are newly-created stubs whose
+ *                       metadata is still resolving in the background.
+ *   - `nonIngestable` — added ARKs without digitized full text (no RAG ingest
+ *                       later). The real ingestion filter runs at ingest time;
+ *                       this is an early heads-up derived from the ARK prefix.
+ */
+export type CorpusAddResult = CorpusMutationResult & {
+  pending: number
+  nonIngestable: NonIngestableDocument[]
+  /** Number of ARKs supplied in the call (before dedup). */
+  requested: number
+  /** Supplied ARKs NOT newly added: already in the corpus or repeated in the
+   *  same call. `requested === lastDeltaAdded + duplicates`. The caller passes
+   *  every found ARK and lets the service dedup — it never pre-filters. */
+  duplicates: number
+}
+
+/**
+ * Result of promoteNotice() — the on-demand cb→Gallica upgrade.
+ *   - status "upgraded"      — the notice was replaced by its digitized doc;
+ *                              `canonical` is the new member, a new version was
+ *                              sealed, `pendingResolve` flags a fresh stub.
+ *   - status "not_digitized" — confirmed no Gallica reproduction (notice kept).
+ *   - status "api_error"     — BnF still flaky; try again later (notice kept).
+ *   - status "not_catalogue" — the ARK is not a `cb…` notice (nothing to do).
+ */
+export type CorpusPromoteResult =
+  | {
+      promoted: true
+      status: "upgraded"
+      canonical: string
+      versionSeq: number
+      total: number
+      pendingResolve: boolean
+    }
+  | { promoted: false; status: "not_digitized" | "api_error" | "not_catalogue" }

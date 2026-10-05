@@ -21,8 +21,10 @@ import {
 } from "@/lib/testing/fixtures"
 import { cleanupProject } from "@/lib/testing/project-cleanup"
 import { SESSION_SCOPE } from "@/models/sessions/schema"
+import type { PolicyUser } from "@/models/users/schema"
 
 let userId: string
+let policyUser: PolicyUser
 let projectId: string
 let sessionId: string
 
@@ -31,7 +33,7 @@ function ctxFor(): TurnScopedCtx {
     signal: new AbortController().signal,
     request: new Request("http://localhost/test"),
     db: prisma,
-    user: { id: userId } as TurnScopedCtx["user"],
+    user: policyUser,
     appSessionId: sessionId,
     projectId,
     // This project owns its corpus, so the corpus id is its own and the grant
@@ -46,6 +48,8 @@ function ctxFor(): TurnScopedCtx {
 before(async () => {
   const user = await createTestUser()
   userId = user.id
+  // The owner: the note tools authorise through NotePolicy before writing.
+  policyUser = { ...user, groupIds: [] }
   const project = await createTestProject(userId, "note-guard")
   projectId = project.id
   sessionId = await createTestSession(projectId, SESSION_SCOPE.RESEARCH)

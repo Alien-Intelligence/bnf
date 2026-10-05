@@ -81,8 +81,37 @@ export function serializeIngestJob(job: IngestJob): IngestJobView {
  * remove, the excluded split (no-text vs not-digitized), and the paid-OCR
  * opt-in context. Crosses to the client as a server-rendered `initial*` snapshot.
  */
+/**
+ * The head corpus version, split by what ingestion can do with each member —
+ * the "X ingérables sur Y" line (feedback #10c: the agent said 58, the list
+ * showed 44, the ingest view showed 22, and nothing explained the gaps).
+ * Invariant: indexed + toIngest + paidOcrEligible + notDigitized + noText === total.
+ */
+export type IngestCoverage = {
+  /** Head members — the selection. */
+  total: number
+  /** Of them, already in the index (readable by the research assistant). */
+  indexed: number
+  /** Of them, sent by the next ingestion (= `added`). */
+  toIngest: number
+  /** Digitized with no text layer, recoverable with the paid OCR. */
+  paidOcrEligible: number
+  /** Not digitized at the BnF (catalogue notices with no reproduction included). */
+  notDigitized: number
+  /** Digitized, but with no readable text. */
+  noText: number
+  /** Of `toIngest`: type not known yet (metadata pending or failed), so the
+   *  worker decides — some may turn out not ingestable. */
+  unconfirmed: number
+}
+
 export type IngestDeltaPreview = {
-  /** Documents currently consultable by the research assistant (indexed). */
+  /**
+   * Documents currently consultable by the research assistant (indexed),
+   * project-wide — deliberately NOT joined to the head version: a document
+   * removed from the selection stays readable until the next ingestion
+   * removes it from the index. `removed` is that difference.
+   */
   already: number
   added: number
   removed: number
@@ -98,6 +127,8 @@ export type IngestDeltaPreview = {
    * single source of truth the client gates on; the server re-checks on submit.
    */
   paidOcrBudget: { spentUsd: number; ceilingUsd: number; withinBudget: boolean }
+  /** The head selection, by ingestability — "X ingérables sur Y". */
+  coverage: IngestCoverage
 }
 
 /**

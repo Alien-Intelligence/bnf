@@ -226,3 +226,82 @@ export function requireClusterEnv(): z.infer<typeof clusterEnvSchema> {
   _clusterEnv = parsed.data
   return _clusterEnv
 }
+
+// ---------------------------------------------------------------------------
+// BnF MCP rate-limit env — per-minute token-bucket rates for each BnF API
+// behind mcp-bnf, plus the bounded wait before a call is shed
+// (lib/mcp/rate-limit.ts). NO defaults (CLAUDE_ERROR_PATTERNS §10): the helm
+// chart renders every value from `config.bnfMcpRate`, divided by the replica
+// count; locally they come from .env.local (see .env.example).
+//
+// Validated at BOOT whenever BNF_MCP_URL is set (bottom of this file): a
+// process that can reach BnF refuses to start unthrottled (incident
+// 2026-09-30), rather than discovering the gap on the first agent turn.
+// ---------------------------------------------------------------------------
+
+/**
+ * Upper bound on BNF_MCP_RATE_MAX_WAIT_MS. A call queued for longer than this
+ * holds its tool loop (and its HTTP stream) hostage; one minute is a full BnF
+ * quota window, past which waiting cannot buy a token the next window would
+ * not.
+ */
+export const BNF_MCP_RATE_MAX_WAIT_MS_CEILING = 60_000
+
+const bnfRateEnvSchema = z.object({
+  BNF_MCP_RATE_GLOBAL_RPM: z.coerce.number().int().positive(),
+  BNF_MCP_RATE_CATALOGUE_RPM: z.coerce.number().int().positive(),
+  BNF_MCP_RATE_GALLICA_SRU_RPM: z.coerce.number().int().positive(),
+  BNF_MCP_RATE_IIIF_RPM: z.coerce.number().int().positive(),
+  BNF_MCP_RATE_ISSUES_RPM: z.coerce.number().int().positive(),
+  BNF_MCP_RATE_GRAPHE_RPM: z.coerce.number().int().positive(),
+  BNF_MCP_RATE_MAX_WAIT_MS: z.coerce.number().int().positive().max(BNF_MCP_RATE_MAX_WAIT_MS_CEILING),
+})
+
+export type BnfRateEnv = z.infer<typeof bnfRateEnvSchema>
+
+/**
+ * Parse the BNF_MCP_RATE_* values out of `source`. Pure: throws, naming every
+ * offending key, when one is absent or invalid.
+ */
+export function parseBnfRateEnv(source: Record<string, string | undefined>): BnfRateEnv {
+  const parsed = bnfRateEnvSchema.safeParse(source)
+  if (!parsed.success) {
+    const problems = parsed.error.issues.map((i) => `${i.path.join(".")} (${i.message})`).join(", ")
+    throw new Error(
+      `BnF MCP rate-limit env not configured: ${problems}. ` +
+        `Set the seven BNF_MCP_RATE_* variables in .env.local (see .env.example) — ` +
+        `in the chart they come from config.bnfMcpRate. The app refuses to call ` +
+        `BnF unthrottled.`,
+    )
+  }
+  return parsed.data
+}
+
+/** True when this process is configured to reach the BnF MCP at all. */
+export function bnfMcpUrlConfigured(source: Record<string, string | undefined> = process.env): boolean {
+  const url = source.BNF_MCP_URL
+  return typeof url === "string" && url.length > 0
+}
+
+/**
+ * The boot rule: when `source` sets BNF_MCP_URL, the BNF_MCP_RATE_* values
+ * must parse. Pure, so the rule is testable without reloading this module.
+ */
+export function assertBootBnfRateEnv(source: Record<string, string | undefined>): void {
+  if (bnfMcpUrlConfigured(source)) parseBnfRateEnv(source)
+}
+
+let _bnfRateEnv: BnfRateEnv | null = null
+
+/**
+ * Returns the validated BnF MCP rate-limit env object. Throws on first call if
+ * any BNF_MCP_RATE_* value is absent / invalid, naming the offending key(s).
+ * Subsequent calls return the cached object.
+ */
+export function requireBnfRateEnv(): BnfRateEnv {
+  if (_bnfRateEnv === null) _bnfRateEnv = parseBnfRateEnv(process.env)
+  return _bnfRateEnv
+}
+
+// Boot check — see the section comment above.
+assertBootBnfRateEnv(process.env)

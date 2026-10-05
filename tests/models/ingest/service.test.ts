@@ -149,3 +149,79 @@ test("splitSucceededArks: mixed warning + real failure ARKs split correctly", ()
   assert.deepEqual(succeeded, [ARK2, ARK3])
   assert.deepEqual(failed, [ARK1])
 })
+
+// ---------------------------------------------------------------------------
+// previewDelta coverage — "X ingérables sur Y" (Track E Phase 12, feedback
+// #10c). Village suisse: the agent said 58, the corpus list showed 44, the
+// ingest view showed 22, and nothing explained the gaps. DB-backed: the
+// preview reads the head membership and the per-document index state.
+// ---------------------------------------------------------------------------
+
+import { before, after } from "node:test"
+import { prisma } from "@/lib/db"
+import type { Project, User } from "@/lib/generated/prisma/client"
+import { IngestService } from "@/models/ingest/service"
+import { CorpusService } from "@/models/corpus/service"
+import { createTestUser, createTestProject, deleteTestUser } from "@/lib/testing/fixtures"
+import { cleanupProject } from "@/lib/testing/project-cleanup"
+
+let coverageUser: User
+let coverageProject: Project
+
+const ark = (prefix: string, n: number) => `ark:/12148/${prefix}${String(9_500_000 + n)}`
+
+before(async () => {
+  coverageUser = await createTestUser()
+  coverageProject = await createTestProject(coverageUser.id, "ingest-coverage")
+  const projectId = coverageProject.id
+  const manifest = (a: string) => `https://gallica.bnf.fr/iiif/${a}/manifest.json`
+  const resolved = { projectId, resolveStatus: "resolved", source: "gallica" }
+  const notices = Array.from({ length: 17 }, (_, i) => ({
+    ...resolved, ark: ark("cb", i), source: "catalogue", docType: "book", title: `Notice ${i}`,
+  }))
+  const stubs = Array.from({ length: 4 }, (_, i) => {
+    const a = ark("bpt6k", 100 + i)
+    return { projectId, ark: a, source: "gallica", resolveStatus: "pending", iiifManifestUrl: manifest(a) }
+  })
+  const indexedImages = Array.from({ length: 12 }, (_, i) => {
+    const a = ark("btv1b", 200 + i)
+    return { ...resolved, ark: a, docType: "image", ocrAvailable: false, iiifManifestUrl: manifest(a), indexedAt: new Date() }
+  })
+  const indexedPress = Array.from({ length: 5 }, (_, i) => {
+    const a = ark("bpt6k", 300 + i)
+    return { ...resolved, ark: a, docType: "press", ocrAvailable: true, iiifManifestUrl: manifest(a), indexedAt: new Date() }
+  })
+  const toIngest = Array.from({ length: 3 }, (_, i) => {
+    const a = ark("btv1b", 400 + i)
+    return { ...resolved, ark: a, docType: "image", ocrAvailable: false, iiifManifestUrl: manifest(a) }
+  })
+  const leftSelection = Array.from({ length: 2 }, (_, i) => {
+    const a = ark("bpt6k", 500 + i)
+    return { ...resolved, ark: a, docType: "press", ocrAvailable: true, iiifManifestUrl: manifest(a), indexedAt: new Date() }
+  })
+  const head = [...notices, ...stubs, ...indexedImages, ...indexedPress, ...toIngest]
+  await prisma.document.createMany({ data: [...head, ...leftSelection] })
+  await CorpusService.addArks(coverageProject, coverageUser, { arks: head.map((d) => d.ark), reason: "fixture" })
+})
+
+after(async () => {
+  await cleanupProject(coverageProject.id)
+  await deleteTestUser(coverageUser.id)
+})
+
+test("previewDelta coverage: X ingérables sur Y, with a breakdown that sums to Y", async () => {
+  const project = await prisma.project.findUniqueOrThrow({ where: { id: coverageProject.id } })
+  const preview = await IngestService.previewDelta(project)
+  const c = preview.coverage
+  assert.equal(c.total, 41)
+  assert.equal(c.indexed, 17)
+  assert.equal(c.notDigitized, 17)
+  assert.equal(c.noText, 0)
+  assert.equal(c.paidOcrEligible, 0)
+  assert.equal(c.toIngest, 7, "3 digitized images + 4 stubs whose type is not known yet")
+  assert.equal(c.unconfirmed, 4)
+  assert.equal(c.indexed + c.toIngest + c.paidOcrEligible + c.notDigitized + c.noText, c.total)
+  // `already` stays the project-wide index content; `removed` is the difference.
+  assert.equal(preview.already, 19)
+  assert.equal(preview.removed, 2)
+})

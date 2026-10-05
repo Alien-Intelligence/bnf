@@ -24,6 +24,9 @@ import { prisma } from "@/lib/db"
 import { BnfDirectClient } from "@/lib/bnf/direct"
 import { normalizeMany } from "@/lib/mcp/normalize"
 import { DOCUMENT_RESOLVE_STATUS } from "@/models/documents/schema"
+import type { Prisma } from "@/lib/generated/prisma/client"
+import { SessionQueries } from "@/models/sessions/queries"
+import { SESSION_SCOPE } from "@/models/sessions/schema"
 
 /** Structured log line for the resolver. Prefix lets ops grep `[resolver]`. */
 function log(msg: string): void {
@@ -52,9 +55,14 @@ function chunk<T>(items: T[], size: number): T[][] {
  * concurrent calls coalesce into a single active drain that re-checks for new
  * pending rows before exiting.
  */
+/** The one method the drain needs — BnfDirectClient in production, a fake in tests. */
+export interface DocumentResolveClient {
+  resolveArks: BnfDirectClient["resolveArks"]
+}
+
 export async function resolvePendingForProject(
   projectId: string,
-  opts?: { signal?: AbortSignal },
+  opts?: { signal?: AbortSignal; client?: DocumentResolveClient },
 ): Promise<void> {
   const existing = active.get(projectId)
   if (existing) {
@@ -66,7 +74,7 @@ export async function resolvePendingForProject(
   try {
     do {
       state.rerun = false
-      await drainOnce(projectId, opts?.signal)
+      await drainOnce(projectId, opts?.signal, opts?.client)
     } while (state.rerun && !opts?.signal?.aborted)
   } finally {
     active.delete(projectId)
@@ -79,7 +87,7 @@ export async function resolvePendingForProject(
  * pass — failures stay pending (below the ceiling) and are retried on the next
  * kick, which gives natural spacing without an in-loop sleep.
  */
-async function drainOnce(projectId: string, signal?: AbortSignal): Promise<void> {
+async function drainOnce(projectId: string, signal?: AbortSignal, injected?: DocumentResolveClient): Promise<void> {
   const pending = await prisma.document.findMany({
     where: {
       projectId,
@@ -94,7 +102,7 @@ async function drainOnce(projectId: string, signal?: AbortSignal): Promise<void>
 
   log(`project ${projectId}: draining ${pending.length} pending document(s) (direct BnF)`)
   const attemptsByArk = new Map(pending.map((p) => [p.ark, p.resolveAttempts]))
-  const client = new BnfDirectClient({ signal })
+  const client: DocumentResolveClient = injected ?? new BnfDirectClient({ signal })
   let resolvedCount = 0
   let failedCount = 0
   let stillPendingCount = 0
@@ -110,11 +118,17 @@ async function drainOnce(projectId: string, signal?: AbortSignal): Promise<void>
     const normalised = normalizeMany(okDocs)
     const normalisedByArk = new Map(normalised.map((n) => [n.ark, n]))
 
+    // One transaction per batch: the rows AND, when any document resolved,
+    // the invalidation of the corpus prompts — they embed the head's type /
+    // lang / period counts, which a resolved stub changes (a stub has none).
+    const writes: Prisma.PrismaPromise<unknown>[] = []
+    let batchResolved = 0
     for (const r of results) {
       const doc = normalisedByArk.get(r.ark)
       if (r.ok && doc) {
         resolvedCount++
-        await prisma.document.update({
+        batchResolved++
+        writes.push(prisma.document.update({
           where: { projectId_ark: { projectId, ark: r.ark } },
           data: {
             title: doc.title,
@@ -134,7 +148,7 @@ async function drainOnce(projectId: string, signal?: AbortSignal): Promise<void>
             resolveError: null,
             resolvedAt: new Date(),
           },
-        })
+        }))
       } else {
         // Either the resolve call failed, or it succeeded but normalize dropped
         // the record (no title / unusable). Both count as a failed attempt.
@@ -148,16 +162,25 @@ async function drainOnce(projectId: string, signal?: AbortSignal): Promise<void>
         log(
           `  ${giveUp ? "FAILED" : "retry"} ${r.ark} (attempt ${nextAttempts}/${RESOLVE_MAX_ATTEMPTS}): ${reason}`,
         )
-        await prisma.document.update({
-          where: { projectId_ark: { projectId, ark: r.ark } },
-          data: {
-            resolveAttempts: nextAttempts,
-            resolveError: reason,
-            ...(giveUp ? { resolveStatus: DOCUMENT_RESOLVE_STATUS.FAILED } : {}),
-          },
-        })
+        writes.push(
+          prisma.document.update({
+            where: { projectId_ark: { projectId, ark: r.ark } },
+            data: {
+              resolveAttempts: nextAttempts,
+              resolveError: reason,
+              ...(giveUp ? { resolveStatus: DOCUMENT_RESOLVE_STATUS.FAILED } : {}),
+            },
+          }),
+        )
       }
     }
+    if (batchResolved > 0) {
+      // A statement of the batch $transaction below: built on the app client.
+      writes.push(
+        SessionQueries.invalidatePrompts({ projectId, scope: SESSION_SCOPE.CORPUS, withDerived: true }, prisma),
+      )
+    }
+    await prisma.$transaction(writes)
   }
 
   log(

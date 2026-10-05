@@ -70,3 +70,33 @@ export async function readError(
   }
   return new ApiError(`${fallback}: ${res.status}`, res.status)
 }
+
+/**
+ * The server refused the request itself (a 4xx) — a filter value the data
+ * does not hold, a malformed parameter. Retrying the SAME request can never
+ * succeed, so the UI shows the message instead of a Retry.
+ */
+export class RequestRefusedError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message)
+    this.name = "RequestRefusedError"
+  }
+}
+
+/** TanStack Query's default retry count for reads, kept for non-refusals. */
+const QUERY_DEFAULT_RETRIES = 3
+
+/** readError for a read: a 4xx becomes a RequestRefusedError carrying the
+ *  server's message; anything else stays a plain Error. */
+export async function readQueryError(res: Response, fallback: string): Promise<Error> {
+  const err = await readError(res, fallback)
+  return res.status >= 400 && res.status < 500 ? new RequestRefusedError(err.message, res.status) : err
+}
+
+/** Retry policy for reads: a refusal is never retried; other failures are, as by default. */
+export function retryUnlessRefused(failureCount: number, error: Error): boolean {
+  return !(error instanceof RequestRefusedError) && failureCount < QUERY_DEFAULT_RETRIES
+}

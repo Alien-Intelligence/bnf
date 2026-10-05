@@ -6,9 +6,10 @@
 
 import { Lightbulb } from "lucide-react"
 import { useTranslations } from "next-intl"
+import type { MemoryEventKind } from "@/lib/agent/stream-event-types"
 
 interface Props {
-  kind: "write"
+  kind: MemoryEventKind
   section: string
 }
 

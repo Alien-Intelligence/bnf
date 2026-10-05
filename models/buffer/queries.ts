@@ -1,32 +1,47 @@
 import "server-only"
+// models/buffer/queries.ts
+// Pure database access for the research buffer. No filter semantics: every
+// read takes the Prisma `where` BufferService built (BufferService.where), so
+// the filter→SQL translation lives in one place, in the service.
 import type { Prisma } from "@/lib/generated/prisma/client"
 import { prisma } from "@/lib/db"
-import { BUFFER_STATUS } from "./schema"
-import type {
-  BufferCrossFacets,
-  BufferFacetDimension,
-  BufferFacets,
-  BufferRow,
-  BufferSnapshot,
-} from "./schema"
+import { BUFFER_ENRICH_STATUS, BUFFER_STATUS, BUFFER_UNRESOLVED_ENRICH_STATUSES } from "./schema"
+import type { BufferCrossFacets, BufferFacetDimension, BufferFacets, BufferRow, BufferSnapshot } from "./schema"
 
-/**
- * The canonical (array-based) buffer filter set — the buffer's counterpart to
- * `CorpusFilterSet`. Queries, the BufferService, and the agent buffer tools all
- * speak this shape; the CSV `BufferFilters` in types.ts is only the REST/UI
- * query-string boundary form (converted via splitCsv in the route). All fields
- * optional; absent means "no constraint on this dimension".
- */
-export type BufferFilterSet = {
-  type?: string[]
-  lang?: string[]
-  source?: string[]
-  yearFrom?: number
-  yearTo?: number
-  /** Include candidates with no date. Ignored when yearFrom/yearTo is set. */
-  undated?: boolean
-  q?: string
+/** A candidate without its metadata (BUFFER_UNRESOLVED_ENRICH_STATUSES) —
+ *  every "unresolved" count, and the `unresolved` filter, read this set. */
+const UNRESOLVED: Prisma.BufferItemWhereInput = { enrichStatus: { in: [...BUFFER_UNRESOLVED_ENRICH_STATUSES] } }
+
+/** A candidate the drain may still take: pending (a failed one is final). */
+const PENDING_ENRICH: Prisma.BufferItemWhereInput = { enrichStatus: BUFFER_ENRICH_STATUS.PENDING }
+
+/** A pending candidate the enrichment drain may take now: under the attempt
+ *  ceiling, and past its backoff. */
+function readyToEnrich(now: Date, maxAttempts: number): Prisma.BufferItemWhereInput {
+  return {
+    status: BUFFER_STATUS.CANDIDATE,
+    ...PENDING_ENRICH,
+    enrichAttempts: { lt: maxAttempts },
+    OR: [{ enrichNextAttemptAt: null }, { enrichNextAttemptAt: { lte: now } }],
+  }
 }
+
+/** The columns the reclassifier reads off a row below the classifier version. */
+const legacyRowSelect = {
+  id: true,
+  projectId: true,
+  ark: true,
+  title: true,
+  docType: true,
+  lang: true,
+  originTool: true,
+  originQuery: true,
+  source: true,
+  status: true,
+  enrichStatus: true,
+} satisfies Prisma.BufferItemSelect
+
+export type LegacyBufferItem = Prisma.BufferItemGetPayload<{ select: typeof legacyRowSelect }>
 
 /** Fields projected for the buffer panel + buffer_list tool. */
 const bufferRowSelect = {
@@ -40,6 +55,11 @@ const bufferRowSelect = {
   snippet: true,
   originQuery: true,
   createdAt: true,
+  creator: true,
+  dateLabel: true,
+  arkKind: true,
+  subjects: true,
+  enrichStatus: true,
 } satisfies Prisma.BufferItemSelect
 
 /** Decade bucket label for a year, e.g. 1887 → "1880s". */
@@ -48,60 +68,143 @@ function decadeBucket(year: number): string {
 }
 
 export class BufferQueries {
+  /** A project's candidate rows, unfiltered — the scope every filtered `where` narrows. */
+  static candidateScope(projectId: string): Prisma.BufferItemWhereInput {
+    return { projectId, status: BUFFER_STATUS.CANDIDATE }
+  }
+
+  /** The languages the project's candidates hold — what the language facet shows. */
+  static async langsHeld(projectId: string): Promise<string[]> {
+    const rows = await prisma.bufferItem.findMany({
+      where: { ...BufferQueries.candidateScope(projectId), lang: { not: null } },
+      distinct: ["lang"],
+      select: { lang: true },
+      orderBy: { lang: "asc" },
+    })
+    return rows.flatMap((r) => (r.lang !== null ? [r.lang] : []))
+  }
+
   /**
-   * Prisma `where` for a project's CANDIDATE rows under the active filters.
-   * Multi-selects (type/lang/source) are OR-within / AND-across dimensions; the
-   * year range and `undated` combine so an explicit `undated` widens a bounded
-   * range to also admit null-dated candidates.
+   * The whole candidate set's enrichment state, whatever the filters: how many
+   * candidates are without their metadata (`unresolved` — the same set the
+   * `unresolved: true` filter selects; no filter on title/type/date can see
+   * them) and, of those, how many the drain gave up on (`unresolvedFailed`).
+   * Every buffer read returns it, so the agent checks it before filtering.
    */
-  static where(projectId: string, filters: BufferFilterSet = {}): Prisma.BufferItemWhereInput {
-    const where: Prisma.BufferItemWhereInput = {
-      projectId,
-      status: BUFFER_STATUS.CANDIDATE,
-    }
-
-    if (filters.type?.length) where.docType = { in: filters.type }
-    if (filters.lang?.length) where.lang = { in: filters.lang }
-    if (filters.source?.length) where.source = { in: filters.source }
-
-    const hasRange = filters.yearFrom !== undefined || filters.yearTo !== undefined
-    if (hasRange) {
-      const range: Prisma.IntNullableFilter = {}
-      if (filters.yearFrom !== undefined) range.gte = filters.yearFrom
-      if (filters.yearTo !== undefined) range.lte = filters.yearTo
-      where.OR = filters.undated ? [{ year: range }, { year: null }] : [{ year: range }]
-    } else if (filters.undated === true) {
-      where.year = null
-    }
-
-    if (filters.q) {
-      const q = filters.q
-      // Text search is a separate AND clause so it composes with the year OR.
-      where.AND = [
-        {
-          OR: [
-            { title: { contains: q, mode: "insensitive" } },
-            { snippet: { contains: q, mode: "insensitive" } },
-          ],
-        },
-      ]
-    }
-
-    return where
+  static async enrichCounts(projectId: string): Promise<{ unresolved: number; unresolvedFailed: number }> {
+    const where = BufferQueries.candidateScope(projectId)
+    const [unresolved, unresolvedFailed] = await Promise.all([
+      prisma.bufferItem.count({ where: { ...where, ...UNRESOLVED } }),
+      prisma.bufferItem.count({ where: { ...where, enrichStatus: BUFFER_ENRICH_STATUS.FAILED } }),
+    ])
+    return { unresolved, unresolvedFailed }
   }
 
-  /** Count of candidates matching the filters. */
-  static async count(projectId: string, filters: BufferFilterSet = {}): Promise<number> {
-    return prisma.bufferItem.count({ where: BufferQueries.where(projectId, filters) })
+  /** Of the given ARKs, how many are candidates without their metadata. */
+  static async unresolvedAmong(projectId: string, arks: string[]): Promise<number> {
+    return prisma.bufferItem.count({
+      where: { ...BufferQueries.candidateScope(projectId), ark: { in: arks }, ...UNRESOLVED },
+    })
   }
 
-  /** One page of candidates (newest first), plus the total match count. */
-  static async list(
+  /** One drain batch of a project: ready rows, fewest attempts first. */
+  static async enrichBatch(
     projectId: string,
-    filters: BufferFilterSet = {},
-    limit = 25,
+    now: Date,
+    maxAttempts: number,
+    take: number,
+  ): Promise<Array<{ ark: string; enrichAttempts: number }>> {
+    return prisma.bufferItem.findMany({
+      where: { projectId, ...readyToEnrich(now, maxAttempts) },
+      select: { ark: true, enrichAttempts: true },
+      orderBy: [{ enrichAttempts: "asc" }, { createdAt: "asc" }],
+      take,
+    })
+  }
+
+  /** The projects with at least one row the drain may take now. */
+  static async projectsReadyToEnrich(now: Date, maxAttempts: number): Promise<string[]> {
+    const rows = await prisma.bufferItem.findMany({
+      where: readyToEnrich(now, maxAttempts),
+      distinct: ["projectId"],
+      select: { projectId: true },
+    })
+    return rows.map((r) => r.projectId)
+  }
+
+  /**
+   * Write one row's enrichment outcome, guarded: only while it is still a
+   * pending candidate. Returns false when it no longer is — buffer_clear or a
+   * discard removed it mid-drain — so the drain moves on instead of aborting
+   * on a missing row.
+   */
+  static async writeEnrichment(
+    projectId: string,
+    ark: string,
+    data: Prisma.BufferItemUpdateManyMutationInput,
+  ): Promise<boolean> {
+    const { count } = await prisma.bufferItem.updateMany({
+      where: { projectId, ark, status: BUFFER_STATUS.CANDIDATE, ...PENDING_ENRICH },
+      data,
+    })
+    return count === 1
+  }
+
+  /** The next rows below `version`, in id order after `cursor`. */
+  static async legacyBatch(version: number, cursor: string | null, take: number): Promise<LegacyBufferItem[]> {
+    return prisma.bufferItem.findMany({
+      where: { classifierVersion: { lt: version }, ...(cursor !== null ? { id: { gt: cursor } } : {}) },
+      orderBy: { id: "asc" },
+      take,
+      select: legacyRowSelect,
+    })
+  }
+
+  /**
+   * Apply one batch of reclassifications in one transaction, each guarded on
+   * the version: a row a live search re-stamped between the read and the
+   * write is left as the search wrote it. `queueEnrich` queues the row for the
+   * drain ONLY while it has never been enriched (enrichStatus NULL), checked
+   * in the same statement — so a terminal status (failed, resolved), even one
+   * the drain wrote after the batch was read, is never regressed to pending.
+   * Returns how many rows were reclassified.
+   */
+  static async applyReclassification(
+    version: number,
+    updates: ReadonlyArray<{ id: string; data: Prisma.BufferItemUpdateManyMutationInput; queueEnrich: boolean }>,
+  ): Promise<number> {
+    const statements = updates.flatMap((u) => [
+      ...(u.queueEnrich
+        ? [
+            prisma.bufferItem.updateMany({
+              where: { id: u.id, classifierVersion: { lt: version }, enrichStatus: null },
+              data: { enrichStatus: BUFFER_ENRICH_STATUS.PENDING },
+            }),
+          ]
+        : []),
+      prisma.bufferItem.updateMany({ where: { id: u.id, classifierVersion: { lt: version } }, data: u.data }),
+    ])
+    const results = await prisma.$transaction(statements)
+    // One classification write per update, always last of its group.
+    let reclassified = 0
+    let i = 0
+    for (const u of updates) {
+      i += u.queueEnrich ? 2 : 1
+      reclassified += results[i - 1].count
+    }
+    return reclassified
+  }
+
+  /** Count of rows matching `where`. */
+  static async count(where: Prisma.BufferItemWhereInput): Promise<number> {
+    return prisma.bufferItem.count({ where })
+  }
+
+  /** One page of rows (newest first), plus the total match count. */
+  static async list(
+    where: Prisma.BufferItemWhereInput,
+    limit: number,
   ): Promise<{ total: number; rows: BufferRow[] }> {
-    const where = BufferQueries.where(projectId, filters)
     const [total, rows] = await Promise.all([
       prisma.bufferItem.count({ where }),
       prisma.bufferItem.findMany({
@@ -114,26 +217,20 @@ export class BufferQueries {
     return { total, rows }
   }
 
-  /** All candidate ARKs matching the filters — the match set for
-   *  remove-by-filter and the commit set. Bounded by the buffer's own size. */
-  static async candidateArks(projectId: string, filters: BufferFilterSet = {}): Promise<string[]> {
-    const rows = await prisma.bufferItem.findMany({
-      where: BufferQueries.where(projectId, filters),
-      select: { ark: true },
-    })
+  /** Every ARK matching `where`. Bounded by the buffer's own size. */
+  static async arks(where: Prisma.BufferItemWhereInput): Promise<string[]> {
+    const rows = await prisma.bufferItem.findMany({ where, select: { ark: true } })
     return rows.map((r) => r.ark)
   }
 
   /** total + facets + a bounded sample — the buffer comprehension shape. */
   static async snapshot(
-    projectId: string,
-    filters: BufferFilterSet = {},
-    sampleSize = 25,
+    where: Prisma.BufferItemWhereInput,
+    sampleSize: number,
   ): Promise<BufferSnapshot> {
-    const where = BufferQueries.where(projectId, filters)
     const [total, facets, sample] = await Promise.all([
       prisma.bufferItem.count({ where }),
-      BufferQueries.facets(projectId, filters),
+      BufferQueries.facets(where),
       prisma.bufferItem.findMany({
         where,
         orderBy: { createdAt: "desc" },
@@ -144,13 +241,17 @@ export class BufferQueries {
     return { total, facets, sample }
   }
 
-  /** Facet distribution over the filtered candidate set. */
-  static async facets(projectId: string, filters: BufferFilterSet = {}): Promise<BufferFacets> {
-    const where = BufferQueries.where(projectId, filters)
-    const [byType, byLang, bySource, years] = await Promise.all([
+  /** Facet distribution over the rows matching `where`. */
+  static async facets(where: Prisma.BufferItemWhereInput): Promise<BufferFacets> {
+    const [byType, byKind, byLang, bySource, years, unresolved] = await Promise.all([
       prisma.bufferItem.groupBy({
         by: ["docType"],
         where: { ...where, docType: { not: null } },
+        _count: { _all: true },
+      }),
+      prisma.bufferItem.groupBy({
+        by: ["arkKind"],
+        where: { ...where, arkKind: { not: null } },
         _count: { _all: true },
       }),
       prisma.bufferItem.groupBy({
@@ -164,6 +265,7 @@ export class BufferQueries {
         _count: { _all: true },
       }),
       prisma.bufferItem.findMany({ where, select: { year: true } }),
+      prisma.bufferItem.count({ where: { ...where, ...UNRESOLVED } }),
     ])
 
     const toRecord = <K extends string>(
@@ -187,10 +289,12 @@ export class BufferQueries {
 
     return {
       type: toRecord(byType, "docType"),
+      kind: toRecord(byKind, "arkKind"),
       lang: toRecord(byLang, "lang"),
       source: toRecord(bySource, "source"),
       period,
       undated,
+      unresolved,
     }
   }
 
@@ -200,22 +304,29 @@ export class BufferQueries {
    * scratch), so a single scan is cheaper than SQL cubes.
    */
   static async crossFacets(
-    projectId: string,
+    where: Prisma.BufferItemWhereInput,
     dims: [BufferFacetDimension, BufferFacetDimension],
-    filters: BufferFilterSet = {},
   ): Promise<BufferCrossFacets> {
     const rows = await prisma.bufferItem.findMany({
-      where: BufferQueries.where(projectId, filters),
-      select: { docType: true, lang: true, source: true, year: true },
+      where,
+      select: { docType: true, arkKind: true, lang: true, source: true, year: true },
     })
 
     const value = (
-      row: { docType: string | null; lang: string | null; source: string | null; year: number | null },
+      row: {
+        docType: string | null
+        arkKind: string | null
+        lang: string | null
+        source: string | null
+        year: number | null
+      },
       dim: BufferFacetDimension,
     ): string | null => {
       switch (dim) {
         case "type":
           return row.docType
+        case "kind":
+          return row.arkKind
         case "lang":
           return row.lang
         case "source":

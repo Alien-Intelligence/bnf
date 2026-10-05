@@ -59,6 +59,7 @@ import {
 } from "@/lib/mcp/errors"
 import { type Settled, withConcurrency, withRetry } from "@/lib/mcp/retry"
 import { GALLICA_DOC_TYPE, sourceFromArk } from "@/lib/mcp/vocab"
+import { DOCUMENT_SOURCE } from "@/models/documents/schema"
 
 /**
  * Outcome of classifying a catalogue (`cb…`) ARK against its digitized Gallica
@@ -437,9 +438,37 @@ export class BnfDirectClient {
     })
   }
 
+  /**
+   * Resolve ARKs STAGED in the research buffer (buffer_add enrichment,
+   * lib/buffer/enricher.ts). Same bounded concurrency and per-attempt timeouts
+   * as resolveArks, but Gallica ARKs always go through the ungated OAI-PMH
+   * record (oai.bnf.fr, broker `external` bucket) regardless of viaPartner():
+   *   - the IIIF manifest path is skipped on purpose — its 40/min bucket is
+   *     the ingestion bottleneck, and staging must never starve ingestion;
+   *   - OAI carries `gallica_typedoc` (periodiques:fascicules, …), the only
+   *     metadata-level press discriminator, which the manifest lacks.
+   * Catalogue ARKs use the catalogue SRU, as resolveArk does.
+   */
+  async resolveArksForStaging(
+    arks: string[],
+  ): Promise<Array<BnfMcpResolveResult | BnfMcpResolveError>> {
+    const settled: Settled<BnfMcpDocumentDetail>[] = await withConcurrency(
+      arks,
+      (ark) =>
+        sourceFromArk(ark) === DOCUMENT_SOURCE.CATALOGUE ? this.resolveCatalogue(ark) : this.resolveGallicaViaOai(ark),
+      BNF_DIRECT_CONCURRENCY,
+    )
+    return arks.map((ark, i) => {
+      const s = settled[i]
+      return s.ok
+        ? { ark, ok: true as const, document: s.value }
+        : { ark, ok: false as const, error: s.error }
+    })
+  }
+
   /** Resolve one ARK to BnfMcpDocumentDetail (the shape normalize.ts consumes). */
   async resolveArk(ark: string): Promise<BnfMcpDocumentDetail> {
-    return sourceFromArk(ark) === "catalogue"
+    return sourceFromArk(ark) === DOCUMENT_SOURCE.CATALOGUE
       ? this.resolveCatalogue(ark)
       : this.resolveGallica(ark)
   }
@@ -491,7 +520,7 @@ export class BnfDirectClient {
    * (non-catalogue ARKs are skipped — they need no canonicalization).
    */
   async canonicalizeArks(arks: string[]): Promise<CanonicalizeOutcome[]> {
-    const cbArks = arks.filter((a) => sourceFromArk(a) === "catalogue")
+    const cbArks = arks.filter((a) => sourceFromArk(a) === DOCUMENT_SOURCE.CATALOGUE)
     if (cbArks.length === 0) return []
 
     const settled: Settled<CanonicalizeOutcome>[] = await withConcurrency(

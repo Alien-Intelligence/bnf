@@ -10,6 +10,8 @@
  * `createToolRegistry` applies automatically when building the Anthropic tool
  * list (see playbook/mcp-client.md).
  */
+import { bnfPrefixedToolName } from "@/lib/mcp/tools"
+
 export const AGENT_TOOLS = {
   // --- Corpus tools -----------------------------------------------------------
   corpusGetState:       "corpus_get_state",
@@ -68,11 +70,36 @@ export const AGENT_TOOLS = {
   // --- BnF MCP tools (prefixed by the MCP server name "bnf") -----------------
   // These are NOT registered via defineTool — they come from the MCP server.
   // Listed here so the prompt-builder and the SSE event labels can reference
-  // them by a typed key rather than a magic string.
-  bnfSearchCatalogue: "bnf__bnf_search_catalogue",
-  bnfSearchGallica:   "bnf__bnf_search_gallica",
-  bnfGetRecord:       "bnf__bnf_get_catalogue_record",
-  bnfGetDocumentInfo: "bnf__bnf_get_document_info",
+  // them by a typed key rather than a magic string; the prefix is derived from
+  // BNF_MCP_SERVER_NAME so a rename cannot leave these stale.
+  bnfSearchCatalogue: bnfPrefixedToolName("bnf_search_catalogue"),
+  bnfSearchGallica: bnfPrefixedToolName("bnf_search_gallica"),
+  bnfGetRecord: bnfPrefixedToolName("bnf_get_catalogue_record"),
+  bnfGetDocumentInfo: bnfPrefixedToolName("bnf_get_document_info"),
 } as const
 
 export type AgentToolName = (typeof AGENT_TOOLS)[keyof typeof AGENT_TOOLS]
+
+/**
+ * Every agent tool that MUTATES project state, and therefore authorises through
+ * its Policy before it acts (lib/agent/tools/authorize.ts; Track E Decision 14).
+ * The policy-gate test asserts this set equals the gate table, so a new mutating
+ * tool cannot ship without a gate decision. `buffer_remove_by_filter` and
+ * `corpus_remove_by_filter` are listed although their dry run is a read.
+ */
+export const MUTATING_AGENT_TOOLS: ReadonlySet<AgentToolName> = new Set<AgentToolName>([
+  AGENT_TOOLS.corpusSearch,
+  AGENT_TOOLS.bufferAdd,
+  AGENT_TOOLS.bufferDiscard,
+  AGENT_TOOLS.bufferRemoveByFilter,
+  AGENT_TOOLS.bufferCommit,
+  AGENT_TOOLS.bufferClear,
+  AGENT_TOOLS.corpusAdd,
+  AGENT_TOOLS.corpusRemove,
+  AGENT_TOOLS.corpusRemoveByFilter,
+  AGENT_TOOLS.ingestSubmit,
+  AGENT_TOOLS.memoryWrite,
+  AGENT_TOOLS.noteCreate,
+  AGENT_TOOLS.noteUpdate,
+  AGENT_TOOLS.noteAppend,
+])
