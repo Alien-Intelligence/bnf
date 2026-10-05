@@ -50,6 +50,14 @@ lib/citations/
   syntax.ts        — parse/render the [[ark|label|folio]] syntax
   schema.ts        — DB shape of `citation` (see models/notes/schema.ts)
   external.ts      — derive IIIF / Gallica URLs from (ark, folio)
+  quotes.ts        — extract the quotes of a note body (forms, attribution)
+  quote-match.ts   — align one quote with the cited folio's text
+  quote-check.ts   — the guard: fetch each cited document once, match, report
+  ocr.ts           — per-folio OCR quality of cited folios (Track B)
+lib/agent/prompts/
+  quoting.ts       — the quoting rules (research section, corpus bullet,
+                     sub-agent deposit, note tool hint)
+  quote-warnings.ts — the French `detail` of each quote_warnings reason
 models/notes/
   service.ts       — on note.create/update, re-parse body_md → upsert citations
   schema.ts        — `citation` Prisma model + GetPayload type
@@ -226,6 +234,45 @@ export function SheetCitationSource({ citation, open, onOpenChange }: Props) {
 The selected citation lives in URL state (`?ark=...&folio=...`) so it survives
 a refresh and is shareable (see [client-patterns.md §5](client-patterns.md)).
 
+## Quotations ✅
+
+A quotation is a promise to the reader: what sits inside the quote marks is
+what the document says, word for word, on the cited folio.
+
+**Forms.** A quote is text inside « » or “ ”, or a `>` blockquote
+(`QUOTE_FORM`, models/notes/schema.ts). It is attributed to the
+`[[ark|label|folio]]` that immediately follows it; a quote without one is
+`uncited_quote`. Spans shorter than `QUOTE_MIN_CHECKED_WORDS` are terms or
+titles, not quotes, and are not checked.
+
+**The `[…]` contract.** `[…]` drops words inside one sentence or between two
+consecutive sentences of the same folio — never across paragraphs, folios,
+articles or sections — and changes nothing of the meaning. At most
+`QUOTE_MAX_ELISIONS` per quote. `(…)`, `…` and `...` are not elision marks
+(`nonstandard_elision_marker`).
+
+**OCR corrections.** Only an evident one-character error in one word, a
+hyphenated line break or a stray line break may be fixed. How a corrected word
+is marked is ONE constant, `OCR_CORRECTION_MARKING` (lib/constants.ts:
+bracketed `[maison]` by default, `SILENT` the alternative); the prompt, the
+tool hint and the guard all render from it. On a folio stored as low OCR
+nothing is corrected at all (`correction_on_low_ocr`). An illegible word is
+copied as is or written `[illisible]`.
+
+**The guard.** Every agent note write (`note_create` / `note_update` /
+`note_append`) runs `checkNoteQuotes` (lib/citations/quote-check.ts) AFTER the
+write, against `ctx.corpusProjectId` — the corpus the citations point into,
+the source's in a derived workspace — and with Track B's per-folio quality as
+its low-OCR lookup. It never decides whether the note exists: the result rides
+in the tool output as `quote_check` (`complete` / `partial` / `failed`) and
+`quote_warnings` (one entry per unfaithful quote, its `reason` from
+`QUOTE_WARNING_REASON` and a French `detail` from
+lib/agent/prompts/quote-warnings.ts). Quotes already present, unchanged, in the
+prior body are not re-checked. The check is bounded (`QUOTE_CHECK_MAX_SOURCES`
+documents, `QUOTE_CHECK_CONCURRENCY` at a time, `QUOTE_CHECK_BUDGET_MS`
+overall); what it could not check is `unverifiable` with its cause, and the
+status is then `partial`.
+
 ## Citations in agent chat
 
 When the research agent answers in chat (not in a note), the response carries
@@ -266,6 +313,21 @@ const fakeFolio = 1
 
 // ❌ Allowing a citation whose ARK is not in the project's corpus
 // → drop silently from the projection, surface in `rejected[]`
+
+// ❌ Hand-rolled scan for quotes in a note body
+body.match(/«([^»]+)»/g)                 // → use scanNoteQuotes() (lib/citations/quotes.ts)
+
+// ❌ Throwing from the quote check after the note was written
+await checkNoteQuotes(args)              // unguarded → the agent retries and duplicates the note
+// → coerce to quote_check.status: "failed" (note.ts runQuoteCheck; CLAUDE_ERROR_PATTERNS §15)
+
+// ❌ Checking quotes against the workspace instead of its corpus
+checkNoteQuotes({ corpusProjectId: ctx.projectId, ... })
+// → ctx.corpusProjectId: a derived workspace's citations point into the source corpus
+
+// ❌ Caching folio text across requests
+const folioCache = new Map<string, string>()   // module scope
+// → a re-ingest replaces the entry and its text; fetch per check
 ```
 
 ## Relation to other rules
@@ -273,10 +335,10 @@ const fakeFolio = 1
 - [mcp-client.md](mcp-client.md): the IIIF URL templates live in
   `lib/constants.ts` (per [constants.md](constants.md)); the citation system
   consumes them but doesn't define them.
-- [agent-streaming.md](agent-streaming.md): the research agent's
-  `note.create` / `note.update` tool returns
-  `{ citationCount, rejected[] }` so the agent can self-correct invalid
-  citations.
+- [agent-streaming.md](agent-streaming.md): the shape of the note tools'
+  result (`NoteToolResult`, models/notes/schema.ts — `citation_count`,
+  `invalid_citation`, `quote_check`, `quote_warnings`, and the OCR fields) and
+  the rule that a failure after the write is returned, never thrown.
 - [corpus-versioning.md](corpus-versioning.md): the corpus membership check
   for citation validity uses `CorpusQueries.allArksInProject(projectId)` —
   any version, not just `head`/`ingested`, because notes outlive corpus
