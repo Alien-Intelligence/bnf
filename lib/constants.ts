@@ -496,13 +496,6 @@ export const RAG_DEFAULT_K = 12
 export const FAKE_RAG_MODEL_VERSION = "fake-rag-v1"
 
 /**
- * A folio is badly recognised (`ocrLow`) when its mean ALTO word confidence
- * is below this. Leo's decision of 2026-10-01 (feedback-2026-09-29 #7). Track B
- * computes it for real passages; the quote harness fixtures derive it here.
- */
-export const OCR_LOW_QUALITY_THRESHOLD = 0.8
-
-/**
  * Characters `rag_get_text` returns when the agent omits `charLimit`. The
  * upstream MCP's own default is the opposite (0 = the whole document), so the
  * app applies its documented default itself rather than inherit a whole
@@ -1209,4 +1202,4 @@ export const MEMORY_NEAR_DUP_MAX_EDIT_DISTANCE = 4
  * where the seal is content-addressed from the rendered prompts, so a prompt
  * change cannot be recorded without a new revision.
  */
-export const PROMPT_REVISION = "2026-10-05.prompt-fingerprints-all-branches.679199805182"
+export const PROMPT_REVISION = "2026-10-05.ocr-quality-and-quote-integrity.a0554f9d4835"

@@ -92,7 +92,7 @@ test("annotatePassages: state, quality, source and low per (ark, folio)", () => 
 })
 
 test("annotatePassages: the passage itself is kept as is", () => {
-  const p = passage({ folio: 2, title: "L'Auto-vélo", year: 1910 })
+  const p = passage({ folio: 2, snippet: "L'Auto-vélo", score: 0.91 })
   const [annotated] = annotatePassages([p], INDEX).passages
   const { ocrState: _s, ocrQuality: _q, ocrSource: _o, ocrLow: _l, ...rest } = annotated
   assert.deepEqual(rest, p)

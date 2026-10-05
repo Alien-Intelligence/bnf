@@ -11,12 +11,10 @@ import assert from "node:assert/strict"
 import { randomUUID } from "node:crypto"
 import { prisma } from "@/lib/db"
 import {
-  noteAppendTool,
   noteCreateTool,
   noteGetTool,
   noteListTool,
   noteResult,
-  noteUpdateTool,
   type NoteOcrOutcome,
 } from "./note"
 import {
@@ -82,7 +80,7 @@ function ctxFor(): TurnScopedCtx {
 }
 
 before(async () => {
-  user = await createTestUser()
+  user = { ...(await createTestUser()), groupIds: [] }
   userId = user.id
   // The owner: the note tools authorise through NotePolicy before writing.
   policyUser = { ...user, groupIds: [] }
@@ -283,6 +281,8 @@ test("a committed note_create whose OCR check fails is still a success, never is
   assert.deepEqual(result["ocr_check"], {
     status: OCR_ACCESS.CHECK_FAILED,
     message: NOTE_OCR_CHECK_FAILED_NOTICE,
+  })
+})
 
 // --- Quote guard: every agent note write checks its quotes ------------------
 //

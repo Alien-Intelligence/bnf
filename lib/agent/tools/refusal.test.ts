@@ -102,7 +102,7 @@ test("the rag_* tools on a corpus never ingested fail with success:false (the ch
   for (const call of [
     () => ragQueryTool.handler({ query: "incendie" }, ctx()),
     () => ragKeywordSearchTool.handler({ query: "incendie" }, ctx()),
-    () => ragGetTextTool.handler({ entryId: 1 }, ctx()),
+    () => ragGetTextTool.handler({ ark: "ark:/12148/bpt6k2839841", entryId: 1 }, ctx()),
   ]) {
     const result = await call()
     assert.equal(toolCallErrored(false, JSON.stringify(result)), true, JSON.stringify(result))

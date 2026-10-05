@@ -43,6 +43,7 @@ import {
   OCR_SYNC_STATUS,
 } from "@/models/documents/schema"
 import { GroupService } from "@/models/groups/service"
+import { GroupQueries } from "@/models/groups/queries"
 import { ProjectQueries } from "@/models/projects/queries"
 import { ProjectService, ProjectSharingService } from "@/models/projects/service"
 import { SESSION_SCOPE } from "@/models/sessions/schema"
@@ -99,7 +100,8 @@ async function ctxOf(projectId: string, user: User): Promise<TurnScopedCtx> {
     signal: new AbortController().signal,
     request: new Request("http://localhost/test"),
     db: prisma,
-    user,
+    // As withAuth assembles it: the row plus the groups it belongs to.
+    user: { ...user, groupIds: await GroupQueries.groupIdsForUser(user.id) },
     appSessionId,
     projectId,
     corpusProjectId: corpusProjectId(project),
@@ -372,6 +374,7 @@ test("granted nothing: a note citing the source ARK is rejected and never report
   )) as Record<string, unknown>
   assert.deepEqual(result["invalid_citation"], {
     arks: [ARK_SOURCE],
+    folios: [],
     message: NOTE_INVALID_CITATION_MESSAGE,
   })
   assert.equal(result["low_ocr_citations"], undefined)
@@ -394,7 +397,10 @@ test("granted nothing: note_get reads its own note without any OCR of the source
   assert.equal(got["low_ocr_citations"], undefined, "the rejected source citation has no Citation row")
   assert.equal(got["ocr_unknown_citations"], undefined)
   const theirs = await prisma.note.findFirstOrThrow({ where: { projectId: workspaceId } })
-  assert.deepEqual(await noteGetTool.handler({ id: theirs.id }, ctx), { error: NOTE_NOT_FOUND_ERROR })
+  assert.deepEqual(await noteGetTool.handler({ id: theirs.id }, ctx), {
+    success: false,
+    error: NOTE_NOT_FOUND_ERROR,
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -416,13 +422,13 @@ test("revoked: the stored project is in the revoked state, and the ctx says so",
 test("revoked: doc_get, rag_query, rag_keyword_search and rag_get_text answer the revocation", async () => {
   const ctx = await ctxOf(workspaceId, member)
   const doc = (await docGetTool.handler({ ark: ARK_SOURCE }, ctx)) as Record<string, unknown>
-  assert.deepEqual(doc, { error: CORPUS_ACCESS_REVOKED_ERROR })
+  assert.deepEqual(doc, { success: false, error: CORPUS_ACCESS_REVOKED_ERROR })
   const query = (await ragQueryTool.handler({ query: FIXTURE_QUERY }, ctx)) as Record<string, unknown>
-  assert.deepEqual(query, { passages: [], total: 0, error: CORPUS_ACCESS_REVOKED_ERROR })
+  assert.deepEqual(query, { success: false, error: CORPUS_ACCESS_REVOKED_ERROR })
   const keyword = (await ragKeywordSearchTool.handler({ query: FIXTURE_QUERY }, ctx)) as Record<string, unknown>
-  assert.deepEqual(keyword, { hits: [], total: 0, error: CORPUS_ACCESS_REVOKED_ERROR })
+  assert.deepEqual(keyword, { success: false, error: CORPUS_ACCESS_REVOKED_ERROR })
   const text = (await ragGetTextTool.handler({ entryId: 1, ark: ARK_SOURCE }, ctx)) as Record<string, unknown>
-  assert.deepEqual(text, { text: "", error: CORPUS_ACCESS_REVOKED_ERROR })
+  assert.deepEqual(text, { success: false, error: CORPUS_ACCESS_REVOKED_ERROR })
 })
 
 test("revoked: note_get returns the note with an explicit corpus_revoked OCR state", async () => {
@@ -457,6 +463,6 @@ test("revoked: a note write is refused before anything is written or read", asyn
     { title: "Après révocation", body_md: `[[${ARK_SOURCE}|Source|2]]` },
     ctx,
   )) as Record<string, unknown>
-  assert.deepEqual(result, { error: CORPUS_ACCESS_REVOKED_ERROR })
+  assert.deepEqual(result, { success: false, error: CORPUS_ACCESS_REVOKED_ERROR })
   assert.equal(await prisma.note.count({ where: { projectId: workspaceId } }), before)
 })

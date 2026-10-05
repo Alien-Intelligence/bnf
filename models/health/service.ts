@@ -18,7 +18,6 @@ import { openMcpSession } from "@/lib/mcp/session"
 import { mcpEnvState, requireClusterEnv } from "@/lib/env"
 import { CLUSTER_MODE, clusterMode } from "@/lib/cluster/mode"
 import { HEALTH_PROBE_TIMEOUT_MS, HEALTH_PROBE_TTL_MS } from "@/lib/constants"
-import { CLUSTER_MODE, clusterMode } from "@/lib/cluster/mode"
 import { HealthQueries } from "./queries"
 import type { HealthSnapshot } from "./schema"
 

@@ -29,7 +29,6 @@ import "server-only"
 import { z } from "zod"
 import { defineTool } from "@alien/chat-sdk/claude"
 import { ClusterRagClient, RAG_LOOKUP_STATUS } from "@/lib/cluster/rag"
-import { arkSchema } from "@/models/corpus/types"
 import {
   RAG_DEFAULT_K,
   RAG_GET_TEXT_DEFAULT_CHAR_LIMIT,

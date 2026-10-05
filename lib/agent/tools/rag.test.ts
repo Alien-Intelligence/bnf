@@ -22,6 +22,7 @@ import {
   deleteTestUser,
 } from "@/lib/testing/fixtures"
 import { markHeadIngested } from "@/lib/testing/mark-ingested"
+import { seedCorpusDocuments } from "@/lib/testing/seed-corpus"
 import { cleanupProject } from "@/lib/testing/project-cleanup"
 import { SESSION_SCOPE } from "@/models/sessions/schema"
 
@@ -51,7 +52,7 @@ function ctxFor(signal: AbortSignal = new AbortController().signal): TurnScopedC
 }
 
 before(async () => {
-  user = await createTestUser()
+  user = { ...(await createTestUser()), groupIds: [] }
   userId = user.id
   const project = await createTestProject(userId, "rag-get-text")
   projectId = project.id
@@ -59,6 +60,10 @@ before(async () => {
   derivedId = derived.id
   sessionId = await createTestSession(derivedId, SESSION_SCOPE.RESEARCH)
   await markHeadIngested(projectId)
+  // rag_get_text reads only an indexed Document of the corpus (plan D8): the
+  // ARK these tests read is one, as every search result's ARK is.
+  await seedCorpusDocuments(projectId, [{ ark: ARK, title: "Le Figaro" }], `user:${userId}`)
+  await prisma.document.updateMany({ where: { projectId, ark: ARK }, data: { indexedAt: new Date() } })
 })
 
 after(async () => {

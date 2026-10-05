@@ -35,7 +35,6 @@ import { INGEST_STATUS } from "@/models/ingest/schema"
 import { IngestQueries } from "@/models/ingest/queries"
 import { IngestService } from "@/models/ingest/service"
 import { ClusterRunner } from "@/lib/cluster/runner"
-import { CLUSTER_MODE, clusterMode } from "@/lib/cluster/mode"
 import { CLUSTER_POLL, type ClusterProgressPoll } from "@/lib/cluster/contracts"
 import { startPeriodic } from "@/lib/async/periodic"
 

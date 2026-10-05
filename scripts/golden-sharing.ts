@@ -44,6 +44,11 @@ function requiredAppUrl(): string {
 }
 const BASE = requiredAppUrl()
 const PW = "TestPassword123!"
+/** The ARK A's corpus is built from in step 2 — its OCR quality is seeded in step 6c. */
+const SOURCE_ARK = "ark:/12148/bpt6k9999991"
+/** Never in any golden corpus — a stored quality B must not be able to read. */
+const OCR_ARK_OUTSIDE = "ark:/12148/bpt6k9999998"
+const OCR_FIXTURE_ARKS = [SOURCE_ARK, OCR_ARK_OUTSIDE]
 
 type Session = { cookie: string; id: string; email: string }
 
