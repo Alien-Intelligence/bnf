@@ -402,12 +402,22 @@ export function ocrRateValue(p: OcrRateParse): number | null {
  */
 export function parseOcrRate(raw: string | null): OcrRateParse {
   if (raw === null) return { kind: "missing" };
-  const [first] = raw.split(" | ");
-  const cleaned = (first ?? raw).replace(/%/g, "").replace(/,/g, ".").trim();
+  const joiner = raw.indexOf(" | ");
+  const first = joiner === -1 ? raw : raw.slice(0, joiner);
+  const cleaned = first.replace(/%/g, "").replace(/,/g, ".").trim();
   if (!/^\d+(\.\d+)?$/.test(cleaned)) return { kind: "unparseable", raw };
   const pct = Number(cleaned);
   if (pct > 100) return { kind: "out_of_range", raw };
   return { kind: "ok", rate: round4(pct / 100) };
+}
+
+/**
+ * THE "Taux OCR" lookup of a manifest's metadata — done once per manifest by
+ * its reader (MetadataStage), which logs an unusable value and hands the parse
+ * to docInfoFromManifest.
+ */
+export function tauxOcrOf(metadata: Array<{ label: string; value: string }>): OcrRateParse {
+  return parseOcrRate(metadataValue(metadata, TAUX_OCR_LABELS));
 }
 
 function round4(n: number): number {
@@ -496,7 +506,9 @@ interface AltoStats {
  *     (a chunked response closed after a complete tag) parses "fine" and would
  *     return the words seen so far — a shorter page, read as complete;
  *   - a well-formed body with no <alto> root (an HTML error page served as 200);
- *   - an <alto> root or a Layout that carries text instead of elements.
+ *   - an <alto>, <Layout>, <Page>, <PrintSpace>, <TextBlock>, <TextLine> or
+ *     <ComposedBlock> that carries text instead of elements — read as an
+ *     empty page it would be a confident blank folio.
  */
 export function parseAlto(xml: string): AltoParse {
   const valid = XMLValidator.validate(xml);
@@ -518,11 +530,10 @@ export function parseAlto(xml: string): AltoParse {
 
   const lines: string[] = [];
   const stats: AltoStats = { words: 0, scored: 0, wcSum: 0, invalid: 0 };
-  for (const page of pages) {
-    if (!isRecord(page)) continue;
-    const printSpace = page.PrintSpace;
-    if (!isRecord(printSpace)) continue;
-    collectLines(printSpace, lines, stats);
+  for (const rawPage of pages) {
+    const page = elementOrEmpty(rawPage, "<Page>");
+    if (page.PrintSpace === undefined) continue;
+    collectLines(elementOrEmpty(page.PrintSpace, "<PrintSpace>"), lines, stats);
   }
   return {
     text: lines.join("\n").trim(),
@@ -552,6 +563,13 @@ function elementOrEmpty(v: unknown, what: string): Record<string, unknown> {
   throw altoParseFailure(`${what} carries text, not ALTO elements`);
 }
 
+/** The children of one ALTO element kind (the parser's isArray makes each a list); none → []. */
+function childList(v: unknown): unknown[] {
+  if (v === undefined) return [];
+  if (Array.isArray(v)) return v;
+  return [v];
+}
+
 /**
  * A WC attribute as a number in [0, 1], or null when it is not one. BnF writes
  * WC as "1" or "0.34" (parseAttributeValue is off, so it arrives as a string).
@@ -573,26 +591,19 @@ function parseWordConfidence(raw: unknown): number | null {
  * also allows ComposedBlock containers — we recurse defensively.
  */
 function collectLines(node: Record<string, unknown>, out: string[], stats: AltoStats): void {
-  const textBlocks = Array.isArray(node.TextBlock) ? (node.TextBlock as unknown[]) : [];
-  for (const tb of textBlocks) {
-    if (!tb || typeof tb !== "object") continue;
-    const tbObj = tb as Record<string, unknown>;
-    const textLines = Array.isArray(tbObj.TextLine) ? (tbObj.TextLine as unknown[]) : [];
-    for (const tl of textLines) {
-      if (!tl || typeof tl !== "object") continue;
-      const strings = Array.isArray((tl as Record<string, unknown>).String)
-        ? ((tl as Record<string, unknown>).String as unknown[])
-        : [];
+  for (const rawBlock of childList(node.TextBlock)) {
+    const block = elementOrEmpty(rawBlock, "<TextBlock>");
+    for (const rawLine of childList(block.TextLine)) {
+      const line = elementOrEmpty(rawLine, "<TextLine>");
       const words: string[] = [];
-      for (const s of strings) {
-        if (!s || typeof s !== "object") continue;
-        const attrs = s as Record<string, unknown>;
-        const content = attrs["@_CONTENT"];
+      for (const s of childList(line.String)) {
+        if (!isRecord(s)) continue; // <String/> carries no word
+        const content = s["@_CONTENT"];
         if (typeof content !== "string" || content.length === 0) continue;
         words.push(content);
         stats.words += 1;
         // A WC on an empty String never reaches here: only words carry a score.
-        const wc = attrs["@_WC"];
+        const wc = s["@_WC"];
         if (wc === undefined) continue;
         const confidence = parseWordConfidence(wc);
         if (confidence === null) {
@@ -605,20 +616,12 @@ function collectLines(node: Record<string, unknown>, out: string[], stats: AltoS
       if (words.length > 0) out.push(words.join(" "));
     }
     // ALTO can also nest ComposedBlock → TextBlock; recurse.
-    if (Array.isArray(tbObj.ComposedBlock)) {
-      for (const cb of tbObj.ComposedBlock as unknown[]) {
-        if (cb && typeof cb === "object") {
-          collectLines(cb as Record<string, unknown>, out, stats);
-        }
-      }
+    for (const cb of childList(block.ComposedBlock)) {
+      collectLines(elementOrEmpty(cb, "<ComposedBlock>"), out, stats);
     }
   }
   // PrintSpace might also host ComposedBlock at the top level.
-  if (Array.isArray(node.ComposedBlock)) {
-    for (const cb of node.ComposedBlock as unknown[]) {
-      if (cb && typeof cb === "object") {
-        collectLines(cb as Record<string, unknown>, out, stats);
-      }
-    }
+  for (const cb of childList(node.ComposedBlock)) {
+    collectLines(elementOrEmpty(cb, "<ComposedBlock>"), out, stats);
   }
 }

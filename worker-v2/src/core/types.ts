@@ -149,10 +149,12 @@ export interface StageContext {
 /** A rate gate (token bucket). The framework's only pacing primitive. */
 export interface RateGate {
   /**
-   * Resolve when a token is available; reject on shutdown, or with
+   * Resolve when a token is available. Reject with RateGateStoppedError on
+   * shutdown (a stopped gate never lets a waiter through ungated), or with
    * `signal.reason` when `signal` aborts first — the waiter then gives up its
-   * place and consumes no token (a caller's deadline, see ocr-quality-backfill).
+   * place and consumes no token. The signal is REQUIRED: every gated caller
+   * bounds its wait (acquireWithin, core/rate.ts).
    */
-  acquire(signal?: AbortSignal): Promise<void>;
+  acquire(signal: AbortSignal): Promise<void>;
   readonly ratePerMin: number;
 }

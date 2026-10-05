@@ -44,7 +44,12 @@ export interface FakeDocSpec {
   ark: string;
   ocrAvailable: boolean;
   docType: string | null;
-  pageCount: number;
+  /**
+   * The page count BnF publishes; `null` = it publishes none. The OAI path
+   * carries it as is (pageCount null); a manifest always has a canvas count,
+   * so the fake manifest of a `null` doc has no canvases.
+   */
+  pageCount: number | null;
   title?: string | null;
   /** Folios (ordre) that have no ALTO text — fetched ok but empty. */
   emptyFolios?: number[];
@@ -144,7 +149,8 @@ export class FakeBnfClient implements BnfClient {
     this.calls.manifest++;
     const s = this.spec(ark);
     this.faults.hit(`manifest:${ark}`, s.manifestFault);
-    const canvases = Array.from({ length: Math.min(s.pageCount, maxCanvases) }, (_, i) => ({
+    const canvasCount = s.pageCount ?? 0; // a manifest always has a canvas list (see FakeDocSpec.pageCount)
+    const canvases = Array.from({ length: Math.min(canvasCount, maxCanvases) }, (_, i) => ({
       ordre: i + 1,
       label: `f${i + 1}`,
       width: 1000,
@@ -159,7 +165,7 @@ export class FakeBnfClient implements BnfClient {
     const metadata: Array<{ label: string; value: string }> = [{ label: "langue", value: "fre" }];
     if (s.docType) metadata.push({ label: "type document", value: s.docType });
     if (s.ocrAvailable) metadata.push({ label: "taux ocr", value: s.tauxOcr ?? FAKE_DEFAULT_TAUX_OCR });
-    return { title: s.title ?? `Doc ${ark}`, metadata, totalPages: s.pageCount, canvases };
+    return { title: s.title ?? `Doc ${ark}`, metadata, totalPages: canvasCount, canvases };
   }
 
   async fetchAltoFolio(ark: string, ordre: number): Promise<AltoFolio> {

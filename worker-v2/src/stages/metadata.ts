@@ -32,23 +32,34 @@
  * idempotent counter). The resolved metadata JSON is persisted to S3 for reuse.
  */
 import { PipelineStage, type StageDeps } from "../core/stage.js";
+import { acquireWithin } from "../core/rate.js";
 import type { RateGate, StageContext, StageOutcome } from "../core/types.js";
 import { classifyLane } from "../bnf/classify.js";
 import { docInfoFromManifest } from "../bnf/client.js";
-import { CorruptDocInfoError, normalizeCachedDocInfo } from "../bnf/doc-info.js";
+import {
+  CorruptDocInfoError,
+  inspectCachedDocInfo,
+  isCachedManifest,
+  unusableTauxOcr,
+} from "../bnf/doc-info.js";
 import type { BnfClient, BnfDocInfo, Manifest } from "../bnf/types.js";
 import { PermanentBnfError } from "../bnf/errors.js";
-import {
-  ensureCanonicalArk,
-  isCatalogueNotice,
-  metadataValue,
-  parseOcrRate,
-  TAUX_OCR_LABELS,
-} from "../bnf/parse.js";
+import { ensureCanonicalArk, isCatalogueNotice, tauxOcrOf, type OcrRateParse } from "../bnf/parse.js";
 import type { DocStateStore } from "../domain/doc-state.js";
 import { keys } from "../domain/keys.js";
 import { Q, withFetchPriority } from "../domain/queues.js";
 import type { DocMeta, DocRef, FolioItem, ManifestReq } from "../domain/types.js";
+
+
+/** Why the metadata stage skips a document — the doc's recorded skipReason. */
+export const METADATA_SKIP_REASON = {
+  NOT_DIGITIZED: "not_digitized",
+  METADATA_UNAVAILABLE: "metadata_unavailable",
+  /** BnF publishes no page count for a text doc: unknown, not empty. */
+  PAGE_COUNT_UNKNOWN: "page_count_unknown",
+  /** BnF publishes a page count of zero. */
+  NO_PAGES: "no_pages",
+} as const;
 
 export interface MetadataOpts {
   /** Paid Mistral OCR enabled → sans_texte text docs route to the mistral lane. */
@@ -136,7 +147,10 @@ export class MetadataStage extends PipelineStage<DocRef, never> {
       if (!cached) await this.blob.putJson(keys.metadata(doc.ark), info);
     } catch (e) {
       if (e instanceof PermanentBnfError) {
-        const reason = e.cause === "not_digitized" ? "not_digitized" : "metadata_unavailable";
+        const reason =
+          e.cause === METADATA_SKIP_REASON.NOT_DIGITIZED
+            ? METADATA_SKIP_REASON.NOT_DIGITIZED
+            : METADATA_SKIP_REASON.METADATA_UNAVAILABLE;
         await this.docState.setStatus(doc.docJobId, "skipped", { skipReason: reason });
         return { kind: "skip", reason };
       }
@@ -162,13 +176,15 @@ export class MetadataStage extends PipelineStage<DocRef, never> {
       // An unknown count is not an empty document: say which one it is rather
       // than defaulting null to 0 and reporting "no pages".
       if (info.pageCount === null) {
-        await this.docState.setStatus(doc.docJobId, "skipped", { skipReason: "page_count_unknown" });
-        return { kind: "skip", reason: "page_count_unknown" };
+        const reason = METADATA_SKIP_REASON.PAGE_COUNT_UNKNOWN;
+        await this.docState.setStatus(doc.docJobId, "skipped", { skipReason: reason });
+        return { kind: "skip", reason };
       }
       const pageCount = info.pageCount;
       if (pageCount <= 0) {
-        await this.docState.setStatus(doc.docJobId, "skipped", { skipReason: "no_pages" });
-        return { kind: "skip", reason: "no_pages" };
+        const reason = METADATA_SKIP_REASON.NO_PAGES;
+        await this.docState.setStatus(doc.docJobId, "skipped", { skipReason: reason });
+        return { kind: "skip", reason };
       }
       const pages = Math.min(pageCount, this.maxPages);
       await this.docState.recordPlan(doc.docJobId, { lane: "text", pagesExpected: pages, meta });
@@ -201,7 +217,11 @@ export class MetadataStage extends PipelineStage<DocRef, never> {
     const rawCached = await this.blob.getJson<unknown>(keys.metadata(ark));
     if (rawCached === null) return null;
     try {
-      return normalizeCachedDocInfo(rawCached);
+      const cached = inspectCachedDocInfo(rawCached);
+      if (cached.unusableTauxOcr !== null) {
+        ctx.log.warn("taux_ocr_unusable", { ark, origin: "legacy_cache", ...cached.unusableTauxOcr });
+      }
+      return cached.info;
     } catch (e) {
       if (!(e instanceof CorruptDocInfoError)) throw e;
       ctx.log.warn("metadata_cache_corrupt", { ark, key: keys.metadata(ark), error: e.message });
@@ -226,14 +246,17 @@ export class MetadataStage extends PipelineStage<DocRef, never> {
     // getDocumentInfo — same check, same place in the flow, just moved here now
     // that this stage owns metadata resolution.
     if (isCatalogueNotice(canonicalArk)) {
-      throw new PermanentBnfError("not_digitized", {
+      throw new PermanentBnfError(METADATA_SKIP_REASON.NOT_DIGITIZED, {
         hint: `${canonicalArk}: catalogue notice (cb*), not a digitized document`,
       });
     }
     try {
       const manifest = await this.resolveManifest(canonicalArk);
-      logUnusableTauxOcr(ctx, canonicalArk, manifest);
-      return docInfoFromManifest(manifest, canonicalArk);
+      // The ONE Taux OCR lookup of this manifest: logged here if unusable,
+      // then handed to docInfoFromManifest — never parsed twice.
+      const tauxOcr = tauxOcrOf(manifest.metadata);
+      logUnusableTauxOcr(ctx, canonicalArk, tauxOcr);
+      return docInfoFromManifest(manifest, canonicalArk, tauxOcr);
     } catch (e) {
       // A permanently-unavailable manifest is rare (every digitized doc has one)
       // but possible for a few legacy/edge ARKs. Fall back to OAI so those still
@@ -254,9 +277,13 @@ export class MetadataStage extends PipelineStage<DocRef, never> {
    * ARK, gated once, no matter how many stages end up wanting the manifest.
    */
   private async resolveManifest(canonicalArk: string): Promise<Manifest> {
-    const cached = await this.blob.getJson<Manifest>(keys.manifest(canonicalArk));
-    if (cached) return cached;
-    if (this.manifestRate) await this.manifestRate.acquire();
+    const cached = await this.blob.getJson<unknown>(keys.manifest(canonicalArk));
+    if (cached !== null) {
+      if (isCachedManifest(cached)) return cached;
+      // Corrupt: repaired below from BnF (and overwritten), like a corrupt doc-info.
+      this.log.warn("manifest_cache_corrupt", { ark: canonicalArk, key: keys.manifest(canonicalArk) });
+    }
+    if (this.manifestRate) await acquireWithin(this.manifestRate, this.rateWaitMs);
     const manifest = await this.bnf.getManifest(canonicalArk, this.maxCanvases);
     await this.blob.putJson(keys.manifest(canonicalArk), manifest);
     return manifest;
@@ -269,10 +296,10 @@ export class MetadataStage extends PipelineStage<DocRef, never> {
  * is indistinguishable from "no OCR row". This is where the value first enters
  * the worker (a fresh manifest), so it is the one place it is logged.
  */
-function logUnusableTauxOcr(ctx: StageContext, ark: string, manifest: Manifest): void {
-  const parsed = parseOcrRate(metadataValue(manifest.metadata, TAUX_OCR_LABELS));
-  if (parsed.kind === "unparseable" || parsed.kind === "out_of_range") {
-    ctx.log.warn("taux_ocr_unusable", { ark, kind: parsed.kind, raw: parsed.raw });
+function logUnusableTauxOcr(ctx: StageContext, ark: string, parsed: OcrRateParse): void {
+  const unusable = unusableTauxOcr(parsed);
+  if (unusable !== null) {
+    ctx.log.warn("taux_ocr_unusable", { ark, origin: "manifest", ...unusable });
   }
 }
 

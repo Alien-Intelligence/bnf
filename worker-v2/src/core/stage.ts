@@ -24,6 +24,7 @@ import type {
   StageContext,
   StageOutcome,
 } from "./types.js";
+import { acquireWithin } from "./rate.js";
 
 /**
  * The generic per-delivery ceiling every stage inherits unless it declares its own
@@ -91,6 +92,17 @@ export abstract class PipelineStage<In, Out> {
    * the ceiling, an expired job's doc gets re-driven within a sweep interval.
    */
   readonly expireInSeconds: number = DEFAULT_EXPIRE_IN_SECONDS;
+
+  /**
+   * Longest wait for one rate-gate token (the base's `rate`, and a stage's own
+   * gate — acquireWithin): HALF the delivery ceiling, so a delivery that got
+   * its token still has the other half to do its work before pg-boss expires
+   * it. A wait past it throws RateGateTimeoutError — retried like any
+   * transient — instead of parking the handler until the expiry.
+   */
+  protected get rateWaitMs(): number {
+    return this.expireInSeconds * 500;
+  }
 
   protected readonly queue: QueueClient;
   protected readonly blob: BlobStore;
@@ -190,7 +202,7 @@ export abstract class PipelineStage<In, Out> {
         }
       }
 
-      if (this.rate) await this.rate.acquire();
+      if (this.rate) await acquireWithin(this.rate, this.rateWaitMs);
 
       let outcome: StageOutcome<Out>;
       try {

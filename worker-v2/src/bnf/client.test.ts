@@ -26,7 +26,7 @@ import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 
-import { TransientBnfError } from "./errors.js";
+import { PermanentBnfError, TransientBnfError } from "./errors.js";
 
 const SHORT_BUDGET_MS = "50"; // stands in for DEFAULT_TIMEOUT_MS (OAI)
 const LONG_BUDGET_MS = "300"; // stands in for PAGE_TIMEOUT_MS (manifest/folio)
@@ -35,8 +35,8 @@ const FAKE_BROKER_DELAY_MS = 150; // between the two — the whole point of the 
 process.env.BNF_META_TIMEOUT_MS = SHORT_BUDGET_MS;
 process.env.BNF_PAGE_TIMEOUT_MS = LONG_BUDGET_MS;
 
-const { LiveBnfClient, docInfoFromManifest, decodeBnfBytes } = await import("./client.js");
-const { createMemoryLogger } = await import("../core/logger.js");
+const { LiveBnfClient, docInfoFromManifest } = await import("./client.js");
+const { tauxOcrOf } = await import("./parse.js");
 
 /** A fake broker (POST /fetch) that waits `delayMs` then returns an empty JSON
  *  body — good enough for getManifest's parser (parseV3Manifest tolerates a
@@ -106,37 +106,31 @@ function manifestWith(metadata: Array<{ label: string; value: string }>) {
 }
 
 test("docInfoFromManifest: a Taux OCR row yields ocrRate as a fraction AND ocrAvailable true", () => {
-  const info = docInfoFromManifest(
-    manifestWith([
+  const manifest = manifestWith([
       { label: "Titre", value: "L'Auto-vélo" },
       { label: "Taux OCR", value: "78.21 %" },
-    ]),
-    ARK,
-  );
+    ]);
+  const info = docInfoFromManifest(manifest, ARK, tauxOcrOf(manifest.metadata));
   assert.equal(info.ocrRate, 0.7821);
   assert.equal(info.ocrAvailable, true);
 });
 
 test("docInfoFromManifest: no Taux OCR row → ocrRate null, ocrAvailable false", () => {
-  const info = docInfoFromManifest(
-    manifestWith([
+  const manifest = manifestWith([
       { label: "Titre", value: "Carte de Paris" },
       { label: "Type document", value: "Carte" },
-    ]),
-    ARK,
-  );
+    ]);
+  const info = docInfoFromManifest(manifest, ARK, tauxOcrOf(manifest.metadata));
   assert.equal(info.ocrRate, null);
   assert.equal(info.ocrAvailable, false);
 });
 
 test("docInfoFromManifest: a Taux OCR row with an unparsable value keeps ocrAvailable true (the label is present) but ocrRate null", () => {
-  const info = docInfoFromManifest(
-    manifestWith([
+  const manifest = manifestWith([
       { label: "Titre", value: "Un titre" },
       { label: "Taux OCR", value: "n/a" },
-    ]),
-    ARK,
-  );
+    ]);
+  const info = docInfoFromManifest(manifest, ARK, tauxOcrOf(manifest.metadata));
   assert.equal(info.ocrAvailable, true, "lane routing semantics are unchanged: the label is present");
   assert.equal(info.ocrRate, null);
 });
@@ -148,13 +142,14 @@ test("docInfoFromManifest: a Taux OCR row with an unparsable value keeps ocrAvai
 /** A fake broker answering every fetch with a fixed upstream status + body. */
 function startStaticBroker(
   status: number,
-  body: string,
+  body: string | Buffer,
+  contentType = "application/xml; charset=utf-8",
 ): Promise<{ url: string; close: () => Promise<void> }> {
   return new Promise((resolve) => {
     const server: Server = createServer((req, res) => {
       req.on("data", () => {});
       req.on("end", () => {
-        res.writeHead(status, { "content-type": "application/xml; charset=utf-8" });
+        res.writeHead(status, { "content-type": contentType });
         res.end(body);
       });
     });
@@ -168,8 +163,8 @@ function startStaticBroker(
   });
 }
 
-async function fetchAltoVia(status: number, body: string) {
-  const broker = await startStaticBroker(status, body);
+async function fetchAltoVia(status: number, body: string | Buffer, contentType?: string) {
+  const broker = await startStaticBroker(status, body, contentType);
   process.env.BNF_BROKER_URL = broker.url;
   try {
     return await new LiveBnfClient().fetchAltoFolio(ARK, 1);
@@ -211,21 +206,56 @@ test("fetchAltoFolio: a valid 200 ALTO maps text and word confidence", async () 
 });
 
 // ---------------------------------------------------------------------------
-// decodeBnfBytes — an unknown declared charset is logged, not silently ignored
+// Through the client: charsets, upstream statuses, truncated / HTML bodies
 // ---------------------------------------------------------------------------
 
-test("decodeBnfBytes: an unknown declared charset falls back to UTF-8 AND logs it", () => {
-  const { logger, lines } = createMemoryLogger();
-  const text = decodeBnfBytes(Buffer.from("abc", "utf8"), "text/xml; charset=x-bogus-9", logger);
-  assert.equal(text, "abc");
-  const line = lines.find((l) => l.event === "bnf_unknown_charset");
-  assert.ok(line, "the fallback is logged");
-  assert.equal(line.charset, "x-bogus-9");
+const ALTO_OK =
+  `<alto><Layout><Page><PrintSpace><TextBlock><TextLine><String CONTENT="Le" WC="1"/>` +
+  `<String CONTENT="vélo" WC="0.5"/></TextLine></TextBlock></PrintSpace></Page></Layout></alto>`;
+
+test("fetchAltoFolio: an unknown declared charset is a PERMANENT error, never a UTF-8 guess", async () => {
+  await assert.rejects(
+    () => fetchAltoVia(200, ALTO_OK, "application/xml; charset=x-bogus-9"),
+    (err: unknown) => err instanceof PermanentBnfError && err.cause === "unknown_charset" && /x-bogus-9/.test(err.message),
+  );
 });
 
-test("decodeBnfBytes: a known charset decodes without a log line", () => {
-  const { logger, lines } = createMemoryLogger();
-  assert.equal(decodeBnfBytes(Buffer.from([0xe9]), "text/xml; charset=iso-8859-1", logger), "é");
-  assert.equal(lines.length, 0);
+test("fetchAltoFolio: a declared iso-8859-1 body decodes its accents", async () => {
+  const latin1 = Buffer.from(ALTO_OK.replace("vélo", "THÉÂTRE"), "latin1");
+  const folio = await fetchAltoVia(200, latin1, "application/xml; charset=iso-8859-1");
+  assert.equal(folio.text, "Le THÉÂTRE");
 });
 
+test("fetchAltoFolio: a 500 is transient, a 403 permanent", async () => {
+  await assert.rejects(() => fetchAltoVia(500, "boom"), (err: unknown) => err instanceof TransientBnfError);
+  await assert.rejects(
+    () => fetchAltoVia(403, "forbidden"),
+    (err: unknown) => err instanceof PermanentBnfError && err.cause === "forbidden",
+  );
+});
+
+test("fetchAltoFolio: a body truncated between elements is a transient parse failure", async () => {
+  await assert.rejects(
+    () => fetchAltoVia(200, ALTO_OK.slice(0, ALTO_OK.indexOf("</TextLine>"))),
+    (err: unknown) => err instanceof TransientBnfError && err.cause === "alto_parse_failed",
+  );
+});
+
+test("fetchAltoFolio: a 200 MALFORMED HTML page is a transient parse failure", async () => {
+  await assert.rejects(
+    () => fetchAltoVia(200, "<html><body><p>Service Unavailable</body>"),
+    (err: unknown) => err instanceof TransientBnfError && err.cause === "alto_parse_failed",
+  );
+});
+
+test("docInfoFromManifest: an out-of-range Taux OCR keeps the label (text lane) but no rate", () => {
+  const manifest = manifestWith([
+    { label: "Titre", value: "Un titre" },
+    { label: "Taux OCR", value: "150 %" },
+  ]);
+  const taux = tauxOcrOf(manifest.metadata);
+  assert.equal(taux.kind, "out_of_range");
+  const info = docInfoFromManifest(manifest, ARK, taux);
+  assert.equal(info.ocrAvailable, true);
+  assert.equal(info.ocrRate, null);
+});

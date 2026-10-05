@@ -8,7 +8,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { RateLimiter } from "./rate.js";
+import { acquireWithin, RateGateStoppedError, RateGateTimeoutError, RateLimiter } from "./rate.js";
+
+/** A signal that never aborts — for the cases not about cancellation. */
+const LIVE = new AbortController().signal;
 
 test("starts full at burst capacity; tryAcquire consumes one; false when empty", () => {
   const t = 0; // clock never advances in this test
@@ -110,12 +113,12 @@ test("acquire resolves immediately when a token is free; empty acquires resolve 
   const limiter = new RateLimiter({ ratePerMin: 6000, burst: 1 });
 
   // One token in the bucket -> first acquire resolves immediately.
-  await limiter.acquire();
+  await limiter.acquire(LIVE);
 
   // Bucket now empty. Fire several acquires; record completion order.
   const order: number[] = [];
   const ps = [0, 1, 2, 3].map((i) =>
-    limiter.acquire().then(() => {
+    limiter.acquire(LIVE).then(() => {
       order.push(i);
     }),
   );
@@ -127,31 +130,19 @@ test("acquire resolves immediately when a token is free; empty acquires resolve 
   limiter.stop();
 });
 
-test("stop releases blocked acquirers and acquire after stop rejects", async () => {
+test("stop REJECTS blocked acquirers — never lets them through ungated — and acquire after stop rejects", async () => {
   // Very low rate so tokens won't naturally arrive during the test window.
   const limiter = new RateLimiter({ ratePerMin: 1, burst: 1 });
-
-  // Consume the single token.
-  await limiter.acquire();
-
-  // These block (bucket empty, ~60s until next token).
-  const blocked = [limiter.acquire(), limiter.acquire()];
-
-  // Settle each as fulfilled/rejected without hanging.
+  await limiter.acquire(LIVE); // consume the single token
+  const blocked = [limiter.acquire(LIVE), limiter.acquire(LIVE)];
   const settled = Promise.allSettled(blocked);
-
   limiter.stop();
-
   const results = await settled;
   for (const r of results) {
-    assert.ok(
-      r.status === "fulfilled" || r.status === "rejected",
-      "blocked acquirer settled (did not hang)",
-    );
+    assert.equal(r.status, "rejected", "a waiter is refused, never granted, on stop");
+    assert.ok(r.status === "rejected" && r.reason instanceof RateGateStoppedError);
   }
-
-  // acquire() after stop rejects.
-  await assert.rejects(() => limiter.acquire(), /stopped/i, "acquire after stop rejects");
+  await assert.rejects(() => limiter.acquire(LIVE), RateGateStoppedError, "acquire after stop rejects");
 });
 
 test("constructor rejects ratePerMin <= 0", () => {
@@ -161,7 +152,7 @@ test("constructor rejects ratePerMin <= 0", () => {
 
 test("acquire(signal): an aborted waiter rejects with the signal's reason and gives up its place", async () => {
   const limiter = new RateLimiter({ ratePerMin: 60, burst: 1 });
-  await limiter.acquire(); // empty the bucket
+  await limiter.acquire(LIVE); // empty the bucket
   const controller = new AbortController();
   const waiting = limiter.acquire(controller.signal);
   controller.abort(new Error("deadline"));
@@ -179,3 +170,42 @@ test("acquire(signal): an already-aborted signal rejects at once", async () => {
   limiter.stop();
 });
 
+
+test("acquire(signal): an abort mid-queue keeps FIFO order for the rest", async () => {
+  // 6000/min = one token per 10 ms; the bucket starts with one.
+  const limiter = new RateLimiter({ ratePerMin: 6000, burst: 1 });
+  await limiter.acquire(LIVE);
+  const order: string[] = [];
+  const middle = new AbortController();
+  const first = limiter.acquire(LIVE).then(() => order.push("first"));
+  const second = limiter.acquire(middle.signal).then(
+    () => order.push("second"),
+    () => order.push("second-aborted"),
+  );
+  const third = limiter.acquire(LIVE).then(() => order.push("third"));
+  middle.abort(new Error("gone"));
+  await Promise.all([first, second, third]);
+  assert.deepEqual(order, ["second-aborted", "first", "third"]);
+  assert.equal(limiter.pendingWaiters(), 0);
+  limiter.stop();
+});
+
+test("acquire(signal): an abort AFTER the grant changes nothing", async () => {
+  const limiter = new RateLimiter({ ratePerMin: 60, burst: 1 });
+  const controller = new AbortController();
+  await limiter.acquire(controller.signal);
+  controller.abort(new Error("late"));
+  assert.equal(limiter.pendingWaiters(), 0);
+  limiter.stop();
+});
+
+test("acquireWithin: a wait past its deadline rejects with RateGateTimeoutError and frees its place", async () => {
+  const limiter = new RateLimiter({ ratePerMin: 1, burst: 1 });
+  await limiter.acquire(LIVE);
+  await assert.rejects(
+    () => acquireWithin(limiter, 20),
+    (e: unknown) => e instanceof RateGateTimeoutError && e.waitedMs === 20,
+  );
+  assert.equal(limiter.pendingWaiters(), 0);
+  limiter.stop();
+});

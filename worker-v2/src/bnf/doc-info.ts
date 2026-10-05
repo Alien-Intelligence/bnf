@@ -8,6 +8,10 @@
  * `raw.metadata` (client.ts docInfoFromManifest), so the "Taux OCR" value is
  * recoverable WITHOUT a BnF call; an OAI-sourced blob never had one → null.
  *
+ * A pre-release blob whose Taux OCR row is present but unreadable yields
+ * `ocrRate: null` AND reports it (inspectCachedDocInfo) so the reader logs it
+ * — a null that is never silent.
+ *
  * Every field is validated structurally rather than cast. A missing field, a
  * value of the wrong type or out of range, an unknown `raw.source`, or a
  * malformed `raw.metadata` entry is a corrupt cache entry: it throws
@@ -18,8 +22,32 @@
 import {
   DOC_INFO_SOURCE,
   type BnfDocInfo,
+  type Manifest,
 } from "./types.js";
-import { metadataValue, ocrRateValue, parseOcrRate, TAUX_OCR_LABELS } from "./parse.js";
+import { metadataValue, ocrRateValue, parseOcrRate, TAUX_OCR_LABELS, type OcrRateParse } from "./parse.js";
+
+/** A "Taux OCR" value BnF published that the worker cannot read — to be logged, never silently null. */
+export interface UnusableTauxOcr {
+  kind: "unparseable" | "out_of_range";
+  raw: string;
+}
+
+/** The unusable part of a Taux OCR parse, or null for `ok` / `missing`. */
+export function unusableTauxOcr(p: OcrRateParse): UnusableTauxOcr | null {
+  if (p.kind === "unparseable" || p.kind === "out_of_range") return { kind: p.kind, raw: p.raw };
+  return null;
+}
+
+/** A cached doc-info, plus the unusable Taux OCR a pre-release blob's metadata held. */
+export interface CachedDocInfo {
+  info: BnfDocInfo;
+  /**
+   * Set only for a PRE-RELEASE manifest blob whose Taux OCR row exists but
+   * cannot be read: its `ocrRate` is null for that reason, and the reader logs
+   * it (the fresh-manifest path logs in MetadataStage).
+   */
+  unusableTauxOcr: UnusableTauxOcr | null;
+}
 
 /** A cached BnfDocInfo blob that does not have the shape the worker writes. */
 export class CorruptDocInfoError extends Error {
@@ -83,6 +111,11 @@ function recordedOcrRate(v: unknown, ark: string): number | null {
 }
 
 export function normalizeCachedDocInfo(raw: unknown): BnfDocInfo {
+  return inspectCachedDocInfo(raw).info;
+}
+
+/** normalizeCachedDocInfo, also reporting a pre-release blob's unusable Taux OCR (to log). */
+export function inspectCachedDocInfo(raw: unknown): CachedDocInfo {
   if (!isRecord(raw)) throw new CorruptDocInfoError(null, "not an object");
   const ark = raw.ark;
   if (typeof ark !== "string" || ark.length === 0) throw new CorruptDocInfoError(null, "missing ark");
@@ -98,20 +131,21 @@ export function normalizeCachedDocInfo(raw: unknown): BnfDocInfo {
   }
 
   let ocrRate: number | null;
+  let unusable: UnusableTauxOcr | null = null;
   if ("ocrRate" in raw) {
     // Written by this release: trust the recorded value, but only if it IS one.
     ocrRate = recordedOcrRate(raw.ocrRate, ark);
   } else if (source === DOC_INFO_SOURCE.IIIF_MANIFEST) {
     // Pre-release manifest blob: the Taux OCR row is still in raw.metadata.
-    ocrRate = ocrRateValue(
-      parseOcrRate(metadataValue(metadataPairs(rawBlob.metadata, ark), TAUX_OCR_LABELS)),
-    );
+    const parsed = parseOcrRate(metadataValue(metadataPairs(rawBlob.metadata, ark), TAUX_OCR_LABELS));
+    ocrRate = ocrRateValue(parsed);
+    unusable = unusableTauxOcr(parsed);
   } else {
     // Pre-release OAI blob: OAI-PMH publishes no Taux OCR.
     ocrRate = null;
   }
 
-  return {
+  const info: BnfDocInfo = {
     ark,
     title: nullableString(raw, "title", ark),
     creator: nullableString(raw, "creator", ark),
@@ -123,6 +157,35 @@ export function normalizeCachedDocInfo(raw: unknown): BnfDocInfo {
     pageCount: nullablePageCount(raw, ark),
     iiifManifestUrl: nullableString(raw, "iiifManifestUrl", ark),
     lang: nullableString(raw, "lang", ark),
-    raw: rawBlob,
+    raw: { ...rawBlob, source },
   };
+  return { info, unusableTauxOcr: unusable };
+}
+
+/**
+ * Whether a cached `manifest/<slug>.json` blob (keys.manifest) has the shape
+ * parseV3Manifest writes — checked, never cast. A blob that fails it is a
+ * corrupt cache entry: the reader logs it and repairs it from BnF, like a
+ * corrupt doc-info blob (MetadataStage / ManifestStage), instead of crashing
+ * on it and retrying to exhaustion as a transient error.
+ */
+export function isCachedManifest(v: unknown): v is Manifest {
+  if (!isRecord(v)) return false;
+  if (v.title !== null && typeof v.title !== "string") return false;
+  if (typeof v.totalPages !== "number" || !Number.isSafeInteger(v.totalPages) || v.totalPages < 0) return false;
+  if (!Array.isArray(v.metadata) || !Array.isArray(v.canvases)) return false;
+  const pairsOk = v.metadata.every(
+    (m) => isRecord(m) && typeof m.label === "string" && typeof m.value === "string",
+  );
+  const canvasesOk = v.canvases.every(
+    (c) =>
+      isRecord(c) &&
+      typeof c.ordre === "number" &&
+      Number.isSafeInteger(c.ordre) &&
+      c.ordre >= 1 &&
+      (c.label === null || typeof c.label === "string") &&
+      (c.width === null || typeof c.width === "number") &&
+      (c.height === null || typeof c.height === "number"),
+  );
+  return pairsOk && canvasesOk;
 }

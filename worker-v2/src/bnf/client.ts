@@ -33,8 +33,6 @@
  */
 import { DOC_INFO_SOURCE, type AltoFolio, type BnfClient, type BnfDocInfo, type Manifest } from "./types.js";
 import { PermanentBnfError, TransientBnfError } from "./errors.js";
-import { createLogger } from "../core/logger.js";
-import type { Logger } from "../core/types.js";
 import { brokerGet, brokerUrl } from "./broker-client.js";
 import {
   altoFolioFromParse,
@@ -48,12 +46,11 @@ import {
   oaiParser,
   ocrRateValue,
   parseAlto,
-  parseOcrRate,
+  type OcrRateParse,
   parseV3Manifest,
   pickDcType,
   pickFirstLanguage,
   pickTypedocFromHeader,
-  TAUX_OCR_LABELS,
   textOf,
   typedocSubtype,
 } from "./parse.js";
@@ -134,9 +131,6 @@ async function brokerFetch(
   }
 }
 
-/** The client holds no injected logger; its own diagnostics go to this one. */
-const clientLog = createLogger({ component: "bnf-client" });
-
 /**
  * Decode BnF response bytes using the DECLARED charset, not a blind UTF-8.
  *
@@ -147,7 +141,7 @@ const clientLog = createLogger({ component: "bnf-client" });
  * `Content-Type; charset=`, then the XML prolog `encoding="…"`, else UTF-8 (so
  * JSON manifests — no prolog, UTF-8 by spec — stay correct).
  */
-export function decodeBnfBytes(bytes: Buffer, contentType: string | undefined, log: Logger): string {
+function decodeBnfBytes(bytes: Buffer, contentType?: string): string {
   let charset: string | undefined;
   const ctMatch = contentType?.match(/charset=([^;]+)/i);
   if (ctMatch) charset = ctMatch[1]!.trim().toLowerCase();
@@ -165,10 +159,9 @@ export function decodeBnfBytes(bytes: Buffer, contentType: string | undefined, l
     // TextDecoder handles iso-8859-1 / latin1 / windows-1252 and many others.
     return new TextDecoder(charset).decode(bytes);
   } catch {
-    // Unknown label — UTF-8 is the least-surprising fallback, but never a
-    // silent one: a mis-decoded French OCR text is otherwise invisible.
-    log.warn("bnf_unknown_charset", { charset, contentType: contentType ?? null });
-    return bytes.toString("utf8");
+    // Unknown label: decoding as UTF-8 anyway would turn accents into U+FFFD
+    // in the indexed text. Permanent — the stage records it with ARK/folio.
+    throw new PermanentBnfError("unknown_charset", { hint: `charset "${charset}"` });
   }
 }
 
@@ -234,7 +227,6 @@ function classifyStatus(
  *   • ocr      — presence of the `Taux OCR` pair (absent on manuscripts/maps/
  *                scores/image-serials → image lane; present → text lane). The
  *                manifest-native equivalent of OAI's "Avec mode texte" flag.
- *                Its VALUE is kept as `ocrRate` (parseOcrRate).
  *   • docType  — `Type document` (Livre/Carte/Manuscrit/Musique notée…) joined
  *                with the generic `Type` ("publication en série imprimée" =
  *                press). Kept raw+lowercased: classifyLane substring-matches it.
@@ -244,7 +236,11 @@ function classifyStatus(
  *   • subtype  — null: the fine Gallica typedoc sub-category (fascicules/titres)
  *                lives only in OAI's setSpec, which the manifest does not carry.
  */
-export function docInfoFromManifest(manifest: Manifest, canonicalArk: string): BnfDocInfo {
+export function docInfoFromManifest(
+  manifest: Manifest,
+  canonicalArk: string,
+  tauxOcr: OcrRateParse,
+): BnfDocInfo {
   const title = metadataValue(manifest.metadata, ["titre", "title"]) ?? manifest.title;
   if (!title) {
     throw new PermanentBnfError("not_found", {
@@ -270,8 +266,7 @@ export function docInfoFromManifest(manifest: Manifest, canonicalArk: string): B
   const typeGeneric = metadataValue(manifest.metadata, ["type", "nature"]);
   const docType =
     [typeDocument, typeGeneric].filter(Boolean).join(" | ").toLowerCase() || null;
-  const ocrAvailable = metadataValue(manifest.metadata, TAUX_OCR_LABELS) !== null;
-  const ocrRate = ocrRateValue(parseOcrRate(metadataValue(manifest.metadata, TAUX_OCR_LABELS)));
+  const ocrAvailable = tauxOcr.kind !== "missing"; // tauxOcr: the caller's one tauxOcrOf(manifest) lookup
   const pageCount = manifest.totalPages || null;
 
   const slug = arkToSlug(canonicalArk);
@@ -285,7 +280,7 @@ export function docInfoFromManifest(manifest: Manifest, canonicalArk: string): B
     docType,
     subtype: null,
     ocrAvailable,
-    ocrRate,
+    ocrRate: ocrRateValue(tauxOcr),
     pageCount,
     iiifManifestUrl,
     lang,
@@ -325,7 +320,7 @@ export class LiveBnfClient implements BnfClient {
       "application/xml, text/xml, */*",
       DEFAULT_TIMEOUT_MS,
     );
-    const body = decodeBnfBytes(bytes, contentType, clientLog);
+    const body = decodeBnfBytes(bytes, contentType);
     const err = classifyStatus(status, body, url);
     if (err) throw err;
 
@@ -391,8 +386,7 @@ export class LiveBnfClient implements BnfClient {
       docType,
       subtype,
       ocrAvailable,
-      // OAI-PMH publishes no "Taux OCR" — only the presence flag above.
-      ocrRate: null,
+      ocrRate: null, // OAI-PMH publishes no "Taux OCR"
       pageCount,
       iiifManifestUrl,
       lang,
@@ -422,7 +416,7 @@ export class LiveBnfClient implements BnfClient {
       "application/json, application/ld+json",
       PAGE_TIMEOUT_MS,
     );
-    const body = decodeBnfBytes(bytes, contentType, clientLog);
+    const body = decodeBnfBytes(bytes, contentType);
     const err = classifyStatus(status, body, url);
     if (err) throw err;
 
@@ -441,10 +435,9 @@ export class LiveBnfClient implements BnfClient {
   // ---------------- fetchAltoFolio ----------------
 
   /**
-   * Fetch + parse ONE folio's ALTO text and word confidence. A 404 means this
-   * folio genuinely has no OCR (blank page, plate) — that is NOT an error: return
-   * the empty folio. Any other non-2xx is classified and thrown for the stage; a
-   * blank or unreadable 200 body is transient (see parseAlto).
+   * Fetch + parse ONE folio's ALTO text. A 404 means this folio genuinely has
+   * no OCR (blank page, plate) — that is NOT an error: return {text:"",
+   * empty:true}. Any other non-2xx is classified and thrown for the stage.
    */
   async fetchAltoFolio(ark: string, ordre: number): Promise<AltoFolio> {
     const canonicalArk = ensureCanonicalArk(ark);
@@ -457,7 +450,7 @@ export class LiveBnfClient implements BnfClient {
       PAGE_TIMEOUT_MS,
     );
     if (status === 404) return emptyAltoFolio();
-    const body = decodeBnfBytes(bytes, contentType, clientLog);
+    const body = decodeBnfBytes(bytes, contentType);
     const err = classifyStatus(status, body, url);
     if (err) throw err;
     if (!body || body.trim().length === 0) throw new TransientBnfError("alto_empty_body", { hint: url });
@@ -482,7 +475,7 @@ export class LiveBnfClient implements BnfClient {
     );
     if (status < 200 || status >= 300) {
       // Decode the (small) error body for classification context only.
-      const body = decodeBnfBytes(bytes, contentType, clientLog);
+      const body = decodeBnfBytes(bytes, contentType);
       const err = classifyStatus(status, body, url);
       if (err) throw err;
     }

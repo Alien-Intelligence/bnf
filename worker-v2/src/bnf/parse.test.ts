@@ -425,3 +425,39 @@ test("isCatalogueNotice flags cb* ARKs as notices", () => {
   assert.equal(isCatalogueNotice("ark:/12148/btv1b9015469h"), false);
   assert.equal(isCatalogueNotice("ark:/12148/bpt6k123456"), false);
 });
+
+// ---------------------------------------------------------------------------
+// Pass-2: text where ALTO structure belongs is a parse failure at every level
+// ---------------------------------------------------------------------------
+
+test("parseAlto: <Page>, <PrintSpace>, <TextBlock>, <TextLine> or <ComposedBlock> holding text is a transient parse failure, never a blank folio", () => {
+  for (const xml of [
+    `<alto><Layout><Page>hello world</Page></Layout></alto>`,
+    `<alto><Layout><Page><PrintSpace>hello world</PrintSpace></Page></Layout></alto>`,
+    `<alto><Layout><Page><PrintSpace><TextBlock>hello world</TextBlock></PrintSpace></Page></Layout></alto>`,
+    `<alto><Layout><Page><PrintSpace><TextBlock><TextLine>hello</TextLine></TextBlock></PrintSpace></Page></Layout></alto>`,
+    `<alto><Layout><Page><PrintSpace><ComposedBlock>hello</ComposedBlock></PrintSpace></Page></Layout></alto>`,
+  ]) {
+    assert.throws(
+      () => parseAlto(xml),
+      (e: unknown) => e instanceof TransientBnfError && e.cause === "alto_parse_failed",
+      xml,
+    );
+  }
+});
+
+test("parseAlto: empty structural elements are an empty page, not a failure", () => {
+  const parsed = parseAlto(`<alto><Layout><Page><PrintSpace/></Page></Layout></alto>`);
+  assert.equal(parsed.text, "");
+  assert.equal(parsed.wordCount, 0);
+});
+
+test("parseAlto: a lone ComposedBlock inside a TextBlock is walked", () => {
+  const parsed = parseAlto(
+    `<alto><Layout><Page><PrintSpace><TextBlock><ComposedBlock><TextBlock><TextLine>` +
+      `<String CONTENT="imbriqué" WC="0.8"/></TextLine></TextBlock></ComposedBlock></TextBlock>` +
+      `</PrintSpace></Page></Layout></alto>`,
+  );
+  assert.equal(parsed.text, "imbriqué");
+  assert.equal(parsed.meanWordConfidence, 0.8);
+});

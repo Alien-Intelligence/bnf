@@ -13,7 +13,6 @@
  * concrete stages translate Permanent into a terminal fail / skip.
  */
 
-/** Reduced catalogue metadata, from OAI-PMH (text lane) or the IIIF manifest (image fallback). */
 /**
  * Where a BnfDocInfo came from — `raw.source` of every cached `meta/<slug>.json`
  * blob. The IIIF manifest is the primary path; OAI-PMH the fallback for the rare
@@ -26,6 +25,7 @@ export const DOC_INFO_SOURCE = {
 } as const;
 export type DocInfoSource = (typeof DOC_INFO_SOURCE)[keyof typeof DOC_INFO_SOURCE];
 
+/** Reduced catalogue metadata, from the IIIF manifest (primary) or OAI-PMH (fallback). */
 export interface BnfDocInfo {
   ark: string;
   title: string | null;
@@ -39,14 +39,17 @@ export interface BnfDocInfo {
   /**
    * The manifest's "Taux OCR" / 100, in [0, 1] — the document-level OCR
    * quality BnF publishes. Null when BnF publishes none (the OAI-PMH fallback
-   * carries no Taux OCR; image documents have no OCR). Distinct from
+   * carries no Taux OCR; image documents have no OCR) OR when the published
+   * value cannot be read (unparseable or above 100 %) — that case is logged
+   * where the value enters the worker (`taux_ocr_unusable`). Distinct from
    * `ocrAvailable`, which is only the PRESENCE of the row (lane routing).
    */
   ocrRate: number | null;
   pageCount: number | null;
   iiifManifestUrl: string | null;
   lang: string | null;
-  raw: Record<string, unknown>;
+  /** The source record, as fetched; `source` says which one (DocInfoSource). */
+  raw: Record<string, unknown> & { source: DocInfoSource };
 }
 
 export interface ManifestCanvas {

@@ -9,7 +9,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { CorruptDocInfoError, normalizeCachedDocInfo } from "./doc-info.js";
+import { CorruptDocInfoError, inspectCachedDocInfo, normalizeCachedDocInfo } from "./doc-info.js";
 
 const ARK = "ark:/12148/bpt6k4625753w";
 
@@ -156,3 +156,17 @@ test("pageCount must be a non-negative integer or null", () => {
   assert.equal(normalizeCachedDocInfo({ ...legacyManifestBlob([]), pageCount: null }).pageCount, null);
 });
 
+
+test("legacy manifest blob with an UNUSABLE Taux OCR → ocrRate null AND reported for the log, never silent", () => {
+  for (const [value, kind] of [
+    ["n/a", "unparseable"],
+    ["150 %", "out_of_range"],
+  ] as const) {
+    const cached = inspectCachedDocInfo(legacyManifestBlob([{ label: "Taux OCR", value }]));
+    assert.equal(cached.info.ocrRate, null);
+    assert.deepEqual(cached.unusableTauxOcr, { kind, raw: value });
+  }
+  // A readable or absent value reports nothing.
+  assert.equal(inspectCachedDocInfo(legacyManifestBlob([{ label: "Taux OCR", value: "78.21 %" }])).unusableTauxOcr, null);
+  assert.equal(inspectCachedDocInfo(legacyManifestBlob([])).unusableTauxOcr, null);
+});

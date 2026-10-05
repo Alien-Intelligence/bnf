@@ -12,6 +12,8 @@
  * manifest fails the doc terminally (no retry) — V1's manifest-500 fix made cheap.
  */
 import { PipelineStage, type StageDeps } from "../core/stage.js";
+import { acquireWithin } from "../core/rate.js";
+import { isCachedManifest } from "../bnf/doc-info.js";
 import type { StageContext, StageOutcome } from "../core/types.js";
 import { PermanentBnfError } from "../bnf/errors.js";
 import type { BnfClient, Manifest } from "../bnf/types.js";
@@ -67,13 +69,18 @@ export class ManifestStage extends PipelineStage<ManifestReq, never> {
   async process(req: ManifestReq, ctx: StageContext): Promise<StageOutcome<never>> {
     let manifest: Manifest;
     try {
-      const cached = await this.blob.getJson<Manifest>(keys.manifest(req.ark));
-      if (cached) {
-        manifest = cached;
+      const cached = await this.blob.getJson<unknown>(keys.manifest(req.ark));
+      const usable = cached !== null && isCachedManifest(cached) ? cached : null;
+      if (cached !== null && usable === null) {
+        // Corrupt: repaired below from BnF (and overwritten).
+        ctx.log.warn("manifest_cache_corrupt", { ark: req.ark, key: keys.manifest(req.ark) });
+      }
+      if (usable !== null) {
+        manifest = usable;
       } else {
         // Cache miss — the only path that actually spends BnF quota, so the
         // only path that pays a gate token (see the constructor note).
-        if (this.manifestRate) await this.manifestRate.acquire();
+        if (this.manifestRate) await acquireWithin(this.manifestRate, this.rateWaitMs);
         manifest = await this.bnf.getManifest(req.ark, this.maxCanvases);
         await this.blob.putJson(keys.manifest(req.ark), manifest);
       }
