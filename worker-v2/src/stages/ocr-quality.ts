@@ -17,6 +17,16 @@
  * let a folio read as "not low" because it was never measured.
  *
  * Idempotent and overwriting: the artifact always reflects the current pages.
+ *
+ * VERSIONING: every artifact carries OCR_QUALITY_ARTIFACT_VERSION as `v`, and
+ * ANY change to what this module writes — shape, field, type, meaning, scale,
+ * one lane's folios — bumps it (the rule is spelled out on the constant in
+ * domain/types.ts). The app reads each artifact by its own `v`; an unbumped
+ * change makes correct artifacts look broken to it. A stored artifact of
+ * another version fails isDocOcrQuality here, so after a bump the sync
+ * endpoint treats it as corrupt and the backfill REBUILDS it (one ALTO call
+ * per text folio, as for a pre-release document) — budget a bump like a
+ * backfill.
  */
 import type { BlobStore } from "../core/types.js";
 import { CorruptDocInfoError, normalizeCachedDocInfo } from "../bnf/doc-info.js";
@@ -24,6 +34,7 @@ import { keys } from "../domain/keys.js";
 import type { Lane } from "../domain/queues.js";
 import {
   OCR_SOURCE,
+  OCR_QUALITY_ARTIFACT_VERSION,
   type DocOcrQuality,
   type FolioOcrQuality,
   type OcrSource,
@@ -107,7 +118,7 @@ function isFolioOcrQuality(v: unknown, source: OcrSource): v is FolioOcrQuality 
  * in [0, 1] with integer word counts, null quality and count otherwise.
  */
 export function isDocOcrQuality(v: unknown, ark: string): v is DocOcrQuality {
-  if (!isRecord(v) || v.v !== 1 || v.ark !== ark) return false;
+  if (!isRecord(v) || v.v !== OCR_QUALITY_ARTIFACT_VERSION || v.ark !== ark) return false;
   if (v.lane !== "text" && v.lane !== "vision" && v.lane !== "mistral") return false;
   const rate = v.ocrRate;
   if (rate !== null && !(typeof rate === "number" && Number.isFinite(rate) && rate >= 0 && rate <= 1)) {
@@ -169,7 +180,7 @@ export async function writeOcrQualityArtifact(
   }
 
   const artifact: DocOcrQuality = {
-    v: 1,
+    v: OCR_QUALITY_ARTIFACT_VERSION,
     ark: doc.ark,
     ocrRate,
     lane: doc.lane,

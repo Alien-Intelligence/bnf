@@ -130,8 +130,22 @@ export interface FolioOcrQuality {
   wordCount: number | null;
 }
 
+/**
+ * The version of the per-ARK OCR-quality artifact (DocOcrQuality.v). THE RULE:
+ * ANY change to the artifact's contract — a field added, removed, renamed or
+ * retyped, a value's meaning or scale (e.g. ocrRate as a fraction vs a
+ * percentage), the folio shape of ONE lane — bumps it. The app judges every
+ * artifact by its own `v` (bnf app lib/cluster/ocr-quality.ts): another
+ * version is a deploy mismatch it waits out (`incompatible`), while the
+ * expected version failing its schema is that document's artifact broken
+ * (rejected, then quarantined). A contract change WITHOUT a bump therefore
+ * gets correct artifacts quarantined as broken — or, worse, read with the old
+ * meaning when they still parse. helm/DEPLOY.md states the same rule.
+ */
+export const OCR_QUALITY_ARTIFACT_VERSION = 1;
+
 export interface DocOcrQuality {
-  v: 1;
+  v: typeof OCR_QUALITY_ARTIFACT_VERSION;
   ark: string;
   /** The manifest "Taux OCR" / 100; null when BnF publishes none. */
   ocrRate: number | null;
