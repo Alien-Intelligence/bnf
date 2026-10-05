@@ -128,7 +128,10 @@ Rules:
   write holds a per-(project, scope) advisory lock (`MemoryQueries.lockScope`,
   `pg_advisory_xact_lock`) for its transaction, so two concurrent writes (a
   parent agent and its sub-agents) can neither both miss the duplicate nor
-  take the same position.
+  take the same position. `update` (an edit or a move to another section),
+  `reorder` and `forget` take the same lock; an edit whose text is a
+  near-duplicate of another item of its target section merges into that item,
+  and a move appends at the end of its new section.
 - **Every mutation invalidates, atomically** ✅. `write`, `createUserItem`,
   `update`, `reorder` and `forget` each run the change and
   `SessionQueries.invalidatePrompts` in one `$transaction`. `forget` returns
@@ -262,6 +265,6 @@ await MemoryService.write({ scope: "corpus", section: "Système", text: "intro v
   and origin schemas with the `memory_write` / `memory_read` tool handlers via
   `models/memory/types.ts`.
 - [models.md](models.md): `models/memory/` follows the standard five-file
-  structure; `models/users/` owns the intro-seen flag.
+  structure; `models/onboarding/` (also five files) owns the intro-seen flag.
 - [i18n.md](i18n.md): the default section names and origin labels live in
   `memory.sections.*` and `memory.origin.*`.
