@@ -237,7 +237,7 @@ test("a row cleared mid-drain is skipped, and the rest of the batch is still wri
   assert.equal((await row(project.id, ARK(9))).title, "Titre", "the drain did not abort on the missing row")
 })
 
-test("a drain stops at its wall-clock ceiling and records the attempt", async () => {
+test("a drain stops at its wall-clock ceiling WITHOUT charging the rows an attempt", async () => {
   const project = await freshProject("enrich-ceiling")
   await stageBare(project.id, [ARK(11)])
   const hangs = (signal: AbortSignal): BufferEnrichClient => ({
@@ -248,6 +248,27 @@ test("a drain stops at its wall-clock ceiling and records the attempt", async ()
   })
   await enrichPendingForProject(project.id, { client: hangs, now: clock.now, maxDrainMs: 20 })
   const r = await row(project.id, ARK(11))
-  assert.equal(r.enrichAttempts, 1)
+  assert.equal(r.enrichAttempts, 0, "our own ceiling is not a BnF failure")
+  assert.equal(r.enrichStatus, BUFFER_ENRICH_STATUS.PENDING)
+  assert.equal(r.enrichNextAttemptAt, null, "no backoff: the next pass retakes it")
   assert.match(r.enrichError ?? "", /délai/)
+})
+
+test("per-ARK errors that land after the ceiling fired are not attempts either", async () => {
+  const project = await freshProject("enrich-ceiling-per-ark")
+  await stageBare(project.id, [ARK(12)])
+  const answersLate = (signal: AbortSignal): BufferEnrichClient => ({
+    resolveArksForStaging: (arks) =>
+      new Promise((resolve) => {
+        signal.addEventListener(
+          "abort",
+          () => resolve(arks.map((ark) => ({ ok: false as const, ark, error: new BnfMcpError("aborted") }))),
+          { once: true },
+        )
+      }),
+  })
+  await enrichPendingForProject(project.id, { client: answersLate, now: clock.now, maxDrainMs: 20 })
+  const r = await row(project.id, ARK(12))
+  assert.equal(r.enrichAttempts, 0)
+  assert.equal(r.enrichStatus, BUFFER_ENRICH_STATUS.PENDING)
 })

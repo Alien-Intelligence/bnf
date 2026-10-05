@@ -18,7 +18,9 @@
 //   3. A failure increments enrichAttempts and sets a doubling backoff
 //      (enrichNextAttemptAt); the row is failed at the ceiling, or at once when
 //      the BnF does not know the ARK. A failure of a whole batch (the client
-//      threw) is persisted on each of its rows the same way.
+//      threw) is persisted on each of its rows the same way. The drain's OWN
+//      ceiling is never an attempt: a row it cut off was not refused by
+//      anyone, so it stays pending, uncounted, for the next pass.
 //
 // Classification: the same rules as a search hit (bufferMetadataFromDocument →
 // bufferDocTypeFromRecord), so one ARK gets one docType and record kind
@@ -30,8 +32,10 @@
 // BUFFER_ENRICH_DRAIN_MAX_MS; a pass takes at most
 // BUFFER_ENRICH_BATCH_SIZE × BUFFER_ENRICH_DRAIN_MAX_BATCHES rows; rows are
 // written with a guarded update, so a row cleared mid-drain is skipped, not
-// fatal. There is no in-loop sleep — a transient failure waits out its backoff
-// and is retried by a later pass.
+// fatal. Every database await is bounded by the pool's statement and
+// connection timeouts (lib/db.ts), so the overlap guards below always clear.
+// There is no in-loop sleep — a transient failure waits out its backoff and is
+// retried by a later pass.
 import "server-only"
 
 import { after } from "next/server"
@@ -124,7 +128,18 @@ function failedAttemptData(
   }
 }
 
-type DrainTally = { fromDocuments: number; fromBnf: number; failed: number; retry: number; skipped: number }
+type DrainTally = {
+  fromDocuments: number
+  fromBnf: number
+  failed: number
+  retry: number
+  skipped: number
+  /** Cut off by the drain's own ceiling: left pending, no attempt counted. */
+  deferred: number
+}
+
+/** Noted on a row the drain's own ceiling cut off — not an attempt. */
+const DRAIN_CEILING_NOTE = "délai de la passe dépassé — reprise à la prochaine passe (non compté)"
 
 /**
  * Enrich every ready candidate row of a project. Re-entrant-safe: concurrent
@@ -172,7 +187,7 @@ async function drainOnce(
 
   log(`project ${projectId}: enriching ${pending.length} bare candidate(s)`)
   const attemptsByArk = new Map(pending.map((p) => [p.ark, p.enrichAttempts]))
-  const tally: DrainTally = { fromDocuments: 0, fromBnf: 0, failed: 0, retry: 0, skipped: 0 }
+  const tally: DrainTally = { fromDocuments: 0, fromBnf: 0, failed: 0, retry: 0, skipped: 0, deferred: 0 }
 
   const write = async (ark: string, data: Prisma.BufferItemUpdateManyMutationInput) => {
     if (!(await BufferQueries.writeEnrichment(projectId, ark, data))) tally.skipped += 1
@@ -189,6 +204,11 @@ async function drainOnce(
     if (terminal) tally.failed += 1
     else tally.retry += 1
     await write(ark, failedAttemptData(attempts, reason, terminal, now()))
+  }
+  /** A row our own ceiling cut off: explained, never counted, not backed off. */
+  const defer = async (ark: string) => {
+    tally.deferred += 1
+    await write(ark, { enrichError: DRAIN_CEILING_NOTE })
   }
 
   for (const batch of chunk(pending.map((p) => p.ark), BUFFER_ENRICH_BATCH_SIZE)) {
@@ -207,11 +227,15 @@ async function drainOnce(
     try {
       results = await client.resolveArksForStaging(rest)
     } catch (err) {
-      // The whole batch failed (broker down, the drain's ceiling): every row
-      // counts the attempt and backs off — never an uncounted, endless retry.
-      const reason = signal.aborted ? "délai de la passe dépassé" : describeError(err)
+      if (signal.aborted) {
+        // Our own ceiling, not a BnF failure: nothing refused these rows.
+        for (const ark of rest) await defer(ark)
+        break
+      }
+      // The whole batch failed (broker down): every row counts the attempt
+      // and backs off — never an uncounted, endless retry.
       console.error(`[buffer-enrich] project ${projectId}: batch of ${rest.length} failed:`, err)
-      for (const ark of rest) await fail(ark, reason, false)
+      for (const ark of rest) await fail(ark, describeError(err), false)
       continue
     }
     const normalised = normalizeMany(results.filter((r) => r.ok).map((r) => r.document))
@@ -236,6 +260,11 @@ async function drainOnce(
         tally.fromBnf += 1
         continue
       }
+      // A per-ARK failure once our ceiling fired is the ceiling's doing.
+      if (!r.ok && signal.aborted) {
+        await defer(r.ark)
+        continue
+      }
       // The call failed, or it succeeded with an unusable record (no title).
       const reason = r.ok ? "métadonnées incomplètes (titre manquant)" : describeError(r.error)
       await fail(r.ark, reason, !r.ok && r.error instanceof BnfMcpNotFoundError)
@@ -244,7 +273,8 @@ async function drainOnce(
 
   log(
     `project ${projectId}: drain done — from-documents=${tally.fromDocuments}, from-bnf=${tally.fromBnf}, ` +
-      `failed=${tally.failed}, still-pending=${tally.retry}, gone-meanwhile=${tally.skipped}`,
+      `failed=${tally.failed}, still-pending=${tally.retry}, deferred-by-ceiling=${tally.deferred}, ` +
+      `gone-meanwhile=${tally.skipped}`,
   )
 }
 
