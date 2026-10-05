@@ -3,7 +3,7 @@
  *
  *   DocRef → resolve BnfDocInfo → classify lane:
  *     text   → record plan (pagesExpected from the resolved info) + fan out N
- *              ALTO folio items to the fetch queue. Skips the manifest stage
+ *              ALTO folio items to the ALTO fetch queue. Skips the manifest stage
  *              entirely (the manifest is already cached from resolution, but
  *              the text lane doesn't need the canvas list, only the count).
  *     vision → emit a ManifestReq (manifest stage will count pages + fan out images)
@@ -47,7 +47,7 @@ import { PermanentBnfError } from "../bnf/errors.js";
 import { ensureCanonicalArk, isCatalogueNotice, tauxOcrOf, type OcrRateParse } from "../bnf/parse.js";
 import type { DocStateStore } from "../domain/doc-state.js";
 import { keys } from "../domain/keys.js";
-import { Q, withFetchPriority } from "../domain/queues.js";
+import { Q, sendFolios } from "../domain/queues.js";
 import type { DocMeta, DocRef, FolioItem, ManifestReq } from "../domain/types.js";
 
 
@@ -76,7 +76,7 @@ export interface MetadataOpts {
    */
   maxCanvases?: number;
   /** Doc-resolution concurrency. On a manifest-cache MISS this is bounded by the
-   *  shared manifest rate gate (40/min in prod), not this — so this just needs
+   *  shared manifest rate gate (BNF_MANIFEST_RPM), not this — so this just needs
    *  to be high enough to keep that rate fed once cache hits dominate. Default 6. */
   concurrency?: number;
 }
@@ -103,7 +103,7 @@ export class MetadataStage extends PipelineStage<DocRef, never> {
   // pg-boss's default 5s ladder just re-hits the still-closed window (F6).
   override readonly queueRetryDelayMs = 30_000;
   // 600s. Worst case for ONE delivery: a manifest-cache miss waits on the shared
-  // 40/min gate (up to a clock-minute window), then a 135s manifest fetch
+  // manifest gate (up to a clock-minute window), then a 135s manifest fetch
   // (BNF_PAGE_TIMEOUT_MS, deliberately above the broker's 120s), and if that comes
   // back permanent, a 45s OAI fallback (BNF_META_TIMEOUT_MS) — plus S3 round trips
   // and margin. This is the stage whose expiration wedged prod run efe5d747; it is
@@ -122,7 +122,7 @@ export class MetadataStage extends PipelineStage<DocRef, never> {
      *  (build.ts wires `rates.manifest` into both). Only acquired on a manifest
      *  cache MISS (see resolveManifest) — a metadata- or manifest-cache HIT costs
      *  zero tokens, which is what keeps this stage from starving ManifestStage's
-     *  fan-out under the shared 40/min budget. */
+     *  fan-out under the shared manifest budget. */
     private readonly manifestRate: RateGate | undefined,
     opts: MetadataOpts,
   ) {
@@ -197,7 +197,7 @@ export class MetadataStage extends PipelineStage<DocRef, never> {
         kind: "alto",
         lane: "text",
       }));
-      await this.queue.sendMany(Q.fetch, withFetchPriority(folios));
+      await sendFolios(this.queue, folios);
       ctx.log.info("metadata_text_fanout", { ark: doc.ark, folios: pages });
       return { kind: "done" };
     }

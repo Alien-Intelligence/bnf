@@ -8,7 +8,7 @@
  * D15 — a folio counts as cached only when BOTH keys exist. A pre-release
  * text-only entry is a miss, re-fetched exactly once, and complete thereafter.
  *
- * Shared by FetchStage (live ingest: the stage base already acquired its rate
+ * Shared by FetchAltoStage (live ingest: the stage base already acquired its rate
  * token, so no `beforeFetch`) and by OcrQualityBackfillStage (which acquires its
  * token in `beforeFetch`, so a cache hit costs no quota).
  */

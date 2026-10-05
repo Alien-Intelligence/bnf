@@ -8,7 +8,7 @@
  * ALWAYS surfaced and the doc totals ALWAYS reconcile —
  *   done + running + queued + failed + skipped + excluded = total.
  * A UI that shows only done/running/queued lies about completion; this model
- * refuses to. ETA = BnF-fetch bucket depth ÷ fetch rate + the one-time Mistral
+ * refuses to. ETA = BnF-fetch backlog ÷ fetch rate + the one-time Mistral
  * tail, so a long batch wait reads as "~Xh remaining", not a hang.
  */
 import type { DocStateStore, DocStatus } from "./domain/doc-state.js";
@@ -28,18 +28,24 @@ export interface ProgressReport {
   docsTotal: number;
   /** "Docs finished" headline — docs fully registered. */
   docsFinished: number;
-  /** Per-stage bucket counts, keyed by stage name. */
+  /**
+   * Per-stage bucket counts, keyed by stage name. `fetch` is the SUM of the two
+   * BnF fetch queues (`fetchAlto` + `fetchImage`, also listed), so the app's
+   * contract — one `fetch` headline row — is unchanged by the split.
+   */
   stages: Record<string, StageProgress>;
   /** Run-scoped BnF-fetch folio tally — the honest récupérés/total for the fetch
    *  headline (NOT the shared pg-boss bucket counts, which accumulate across runs). */
   folios: { expected: number; done: number; failed: number };
-  /** Folios from OTHER concurrent runs still pending in the shared BnF-fetch queue
-   *  (active + queued, run-excluded). The 300/1000-per-min cap is shared, so this is
-   *  the work "ahead of you" — surfaced so a contended run reads as "N en attente
-   *  devant vous", not as a stall. 0 when this run has the queue to itself. */
+  /** Folios from OTHER concurrent runs still pending in the shared BnF fetch queues
+   *  (ALTO + image, active + queued, run-excluded). The BnF quotas are shared, so
+   *  this is the work "ahead of you" — surfaced so a contended run reads as "N en
+   *  attente devant vous", not as a stall. 0 when this run has the queues to itself. */
   foliosAhead: number;
   /** The binding BnF fetch rate (folios/min) the ETA assumes — surfaced so the UI
-   *  can headline the constraint ("≈ 300/min"). */
+   *  can headline the constraint. The ALTO rate, min(global, presentation): ALTO
+   *  is ≥ 90 % of folios, so image-heavy runs keep an approximate ETA (their
+   *  Mistral or vision tail dominates anyway). */
   fetchRatePerMin: number;
   /** The IIIF manifest rate (manifests/min) — the binding cap on the metadata
    *  lane's image-doc sub-stage. Surfaced so the UI shows the rate, not just the
@@ -60,20 +66,24 @@ export interface ProgressOpts {
    *  shared pg-boss queues and are NOT run-scoped — fine for the prototype's
    *  one-run-at-a-time cadence; the headline doc reconciliation IS run-scoped. */
   runId?: string;
-  /** BnF fetch rate (folios/min) for the ETA — 300 today, 1000 if the raise lands. */
-  fetchRatePerMin?: number;
-  /** IIIF manifest rate (manifests/min) — surfaced on the metadata row (default 42). */
-  manifestRatePerMin?: number;
+  /** BnF fetch rate (folios/min) for the ETA — see ProgressReport.fetchRatePerMin. */
+  fetchRatePerMin: number;
+  /** IIIF manifest rate (manifests/min) — surfaced on the metadata row. */
+  manifestRatePerMin: number;
   /** One-time Mistral batch tail (seconds) added to the ETA when OCR work is queued. */
   mistralTailSeconds?: number;
   paidOcr?: { spentUsd: number; budgetUsd: number | null };
 }
 
+/** The two BnF fetch buckets, summed into the `fetch` row. */
+const FETCH_STAGE_KEYS = ["fetchAlto", "fetchImage"] as const;
+
 /** The buckets surfaced in the UI, in pipeline order. */
 const STAGE_QUEUES: Array<{ key: string; queue: string }> = [
   { key: "metadata", queue: Q.metadata },
   { key: "manifest", queue: Q.manifest },
-  { key: "fetch", queue: Q.fetch },
+  { key: "fetchAlto", queue: Q.fetchAlto },
+  { key: "fetchImage", queue: Q.fetchImage },
   { key: "assemble", queue: Q.assemble },
   { key: "describe", queue: Q.describe },
   { key: "ocrSubmit", queue: Q.ocrSubmit },
@@ -85,7 +95,7 @@ const STAGE_QUEUES: Array<{ key: string; queue: string }> = [
 export async function buildProgress(
   docState: DocStateStore,
   queue: QueueClient,
-  opts: ProgressOpts = {},
+  opts: ProgressOpts,
 ): Promise<ProgressReport> {
   const docs = await docState.statusCounts(
     opts.runId !== undefined
@@ -108,15 +118,20 @@ export async function buildProgress(
     const c = docJobIds ? await queue.countsForDocs(name, docJobIds) : await queue.counts(name);
     stages[key] = { done: c.completed, running: c.running, queued: c.queued, failed: c.failed };
   }
+  const fetchRow = sumStages(FETCH_STAGE_KEYS.map((k) => stages[k]));
+  stages.fetch = fetchRow;
 
-  // Folios from OTHER runs still pending in the shared fetch queue = global pending
-  // − this run's pending. The fetch rate cap is shared, so this is the work ahead of
-  // you. Only meaningful when run-scoped.
+  // Folios from OTHER runs still pending in the shared fetch queues = global
+  // pending − this run's pending. The BnF quotas are shared, so this is the work
+  // ahead of you. Only meaningful when run-scoped.
   let foliosAhead = 0;
   if (docJobIds) {
-    const globalFetch = await queue.counts(Q.fetch);
-    const globalPending = globalFetch.running + globalFetch.queued;
-    const runPending = (stages.fetch?.running ?? 0) + (stages.fetch?.queued ?? 0);
+    let globalPending = 0;
+    for (const name of [Q.fetchAlto, Q.fetchImage]) {
+      const c = await queue.counts(name);
+      globalPending += c.running + c.queued;
+    }
+    const runPending = fetchRow.running + fetchRow.queued;
     foliosAhead = Math.max(0, globalPending - runPending);
   }
 
@@ -134,14 +149,14 @@ export async function buildProgress(
   // Estimate the run's TOTAL folios by extrapolating the average folios/doc of the
   // already-planned docs across the docs still queued for planning, then subtract
   // what has already landed. Add the one-time Mistral tail while OCR is in flight.
-  const rate = opts.fetchRatePerMin ?? 300;
+  const rate = opts.fetchRatePerMin;
   const plannedDocs =
     docs.planned + docs.fetching + docs.ready + docs.processing + docs.done;
   const unplannedDocs = docs.queued; // still to be planned → folio count unknown
   let runRemainingFolios: number | null;
   if (docsTotal === 0) {
     // No doc-level state (synthetic / queue-only path): fall back to queue depth.
-    runRemainingFolios = (stages.fetch?.queued ?? 0) + (stages.fetch?.running ?? 0);
+    runRemainingFolios = fetchRow.queued + fetchRow.running;
   } else if (plannedDocs === 0) {
     // Docs exist but none planned yet → the total is genuinely unknown. Don't
     // fabricate a number: null makes the UI show "estimating…" rather than lie.
@@ -174,12 +189,25 @@ export async function buildProgress(
     folios,
     foliosAhead,
     fetchRatePerMin: rate,
-    manifestRatePerMin: opts.manifestRatePerMin ?? 42,
+    manifestRatePerMin: opts.manifestRatePerMin,
     etaSeconds,
     reconciles,
   };
   if (opts.paidOcr) report.paidOcr = opts.paidOcr;
   return report;
+}
+
+/** Element-wise sum of stage counts (a missing stage counts as zero). */
+function sumStages(parts: ReadonlyArray<StageProgress | undefined>): StageProgress {
+  const sum: StageProgress = { done: 0, running: 0, queued: 0, failed: 0 };
+  for (const p of parts) {
+    if (!p) continue;
+    sum.done += p.done;
+    sum.running += p.running;
+    sum.queued += p.queued;
+    sum.failed += p.failed;
+  }
+  return sum;
 }
 
 function sumStatuses(docs: Record<DocStatus, number>): number {

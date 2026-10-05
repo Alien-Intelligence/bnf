@@ -1,10 +1,12 @@
 /**
  * Manifest stage — image lanes only (vision + mistral). The scarcest external
- * budget (42/min per egress IP), so it is rate-gated and skips the HTTP call when
- * the manifest is already in S3.
+ * budget (the per-IP manifest limit, inside the Presentation quota and the
+ * global cap), so it is rate-gated and skips the HTTP call when the manifest is
+ * already in S3.
  *
  *   ManifestReq → IIIF manifest (S3-cached) → canvas list → record plan
- *     (pagesExpected = canvas count) → fan out N image folio items to the fetch queue.
+ *     (pagesExpected = canvas count) → fan out N image folio items, each with
+ *     its canvas dims (the image size is chosen from them), to the image queue.
  *
  * Like the metadata stage it has side effects (recordPlan, fan-out) so it does not
  * use the base outcome cache; idempotency comes from the explicit manifest S3 skip
@@ -19,7 +21,7 @@ import { PermanentBnfError } from "../bnf/errors.js";
 import type { BnfClient, Manifest } from "../bnf/types.js";
 import type { DocStateStore } from "../domain/doc-state.js";
 import { keys } from "../domain/keys.js";
-import { Q, withFetchPriority } from "../domain/queues.js";
+import { Q, sendFolios } from "../domain/queues.js";
 import type { FolioItem, ManifestReq } from "../domain/types.js";
 import type { RateGate } from "../core/types.js";
 
@@ -43,7 +45,7 @@ export class ManifestStage extends PipelineStage<ManifestReq, never> {
   // ladder just re-hits the still-closed window (F6).
   override readonly queueRetryDelayMs = 30_000;
   // 600s: same worst case as MetadataStage minus the OAI fallback — a cache miss
-  // waits on the shared 40/min manifest gate (up to a clock-minute window) and
+  // waits on the shared manifest gate (up to a clock-minute window) and
   // then spends up to 135s in the fetch itself.
   override readonly expireInSeconds = 600;
 
@@ -55,7 +57,7 @@ export class ManifestStage extends PipelineStage<ManifestReq, never> {
     private readonly docState: DocStateStore,
     /** The shared manifest RateGate — the SAME instance MetadataStage holds.
      *  Deliberately NOT exposed as the base class's `rate`: the base acquires
-     *  BEFORE process() runs, which would burn a scarce 40/min token on every
+     *  BEFORE process() runs, which would burn a scarce manifest token on every
      *  delivery — including the (now dominant, post-F2) case where the manifest
      *  is already cached by the metadata stage and no HTTP call happens at all.
      *  Instead the gate is acquired inside process(), only on a cache MISS. */
@@ -122,8 +124,9 @@ export class ManifestStage extends PipelineStage<ManifestReq, never> {
       ordre: c.ordre,
       kind: "image",
       lane: req.lane,
+      canvas: { width: c.width, height: c.height },
     }));
-    await this.queue.sendMany(Q.fetch, withFetchPriority(folios));
+    await sendFolios(this.queue, folios);
     ctx.log.info("manifest_fanout", { ark: req.ark, lane: req.lane, folios: canvases.length });
     return { kind: "done" };
   }

@@ -12,6 +12,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { buildPipeline } from "./build.js";
+import { buildProgress } from "./observability.js";
 import { MemoryQueue } from "./core/queue-memory.js";
 import { MemoryBlobStore } from "./core/blob.js";
 import { createMemoryLogger } from "./core/logger.js";
@@ -77,9 +78,9 @@ function harness(
     embedder: new FakeEmbedder(),
     cluster,
     ocrBackfill: backfill,
-    rates: { fetch: fetchGate },
+    rates: { fetchAlto: fetchGate },
     onOutcome: (e) => events.push({ stage: e.stage, kind: e.kind }),
-    config: { mistralEnabled: opts.mistralEnabled ?? true, maxPages: 200 },
+    config: { altoFetchConcurrency: 4, imageFetchConcurrency: 2, mistralEnabled: opts.mistralEnabled ?? true, maxPages: 200 },
   });
 
   return {
@@ -314,3 +315,27 @@ test("backfill round trip: a pre-release doc (no artifact, no sidecars) is synce
   assert.deepEqual(second.documents[0]?.folios.map((f) => [f.ordre, f.ocrQuality]), [[1, 0.5], [2, 1]]);
 });
 
+
+test("both fetch stages run end to end: newspaper-sized canvases are fetched capped per lane, small ones at max", async () => {
+  const NEWSPAPER = { width: 6955, height: 9894 };
+  const h = harness([
+    { ark: "ark:/12148/textdoc", ocrAvailable: true, docType: "texte", pageCount: 2 },
+    { ark: "ark:/12148/visiondoc", ocrAvailable: false, docType: "estampe", pageCount: 2, canvas: NEWSPAPER },
+    { ark: "ark:/12148/mistraldoc", ocrAvailable: false, docType: "texte", pageCount: 2, canvas: NEWSPAPER },
+    { ark: "ark:/12148/smallmaster", ocrAvailable: false, docType: "texte", pageCount: 1 },
+  ]);
+  await h.seed([ref("textdoc"), ref("visiondoc"), ref("mistraldoc"), ref("smallmaster")]);
+  await h.queue.idle();
+
+  assert.equal((await h.docState.statusCounts()).done, 4);
+  assert.equal(h.bnf.calls.alto, 2, "the ALTO stage fetched the text doc");
+  const sizes = (ark: string): string[] =>
+    h.bnf.imageFetches.filter((f) => f.ark === `ark:/12148/${ark}`).map((f) => f.size);
+  assert.deepEqual(sizes("visiondoc"), ["!2048,2048", "!2048,2048"]);
+  assert.deepEqual(sizes("mistraldoc"), ["!4096,4096", "!4096,4096"]);
+  assert.deepEqual(sizes("smallmaster"), ["max"], "a 1000×1400 canvas is within both edges");
+  const progress = await buildProgress(h.docState, h.queue, { fetchRatePerMin: 950, manifestRatePerMin: 38 });
+  assert.equal(progress.stages.fetchAlto?.done, 2);
+  assert.equal(progress.stages.fetchImage?.done, 5);
+  assert.equal(progress.stages.fetch?.done, 7, "the read-model sums both fetch queues");
+});

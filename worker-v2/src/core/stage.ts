@@ -119,7 +119,7 @@ export abstract class PipelineStage<In, Out> {
    *
    * This MUST be declared, not inherited from the transport, because an expired
    * job runs NO handler code — every last-attempt reconciliation idiom in this
-   * codebase (MetadataStage/FetchStage's in-process exhaustion branch,
+   * codebase (MetadataStage's and the fetch stages' in-process exhaustion branch,
    * `onExhausted` below) is bypassed, and the doc orphans in a non-terminal
    * status forever. That is exactly how prod run efe5d747 wedged at 464/465: a
    * mid-run redeploy orphaned an in-flight v2.metadata delivery, pg-boss expired

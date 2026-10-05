@@ -54,7 +54,7 @@ export const OCR_BACKFILL_MAX_ATTEMPTS = 5;
 
 /**
  * Wall-clock ceiling of ONE backfill delivery (the stage's expireInSeconds):
- * a 300-folio worst case, each folio waiting its turn on the shared fetch gate
+ * a 300-folio worst case, each folio waiting its turn on the shared ALTO fetch gate
  * behind live ingests, plus one ALTO fetch (≤ 135 s) each.
  */
 export const OCR_BACKFILL_DELIVERY_CEILING_S = 3600;

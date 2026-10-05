@@ -45,13 +45,21 @@ export interface ManifestReq extends DocRef {
   meta: DocMeta;
 }
 
-/** One folio fetch — the unit of the 300/min BnF fetch stage. */
+/** One folio fetch — the unit of the BnF fetch stages (ALTO and image). */
 export interface FolioItem {
   docJobId: string;
   ark: string;
   ordre: number;
   kind: FolioKind;
   lane: Lane;
+  /**
+   * The canvas's pixel dims from the manifest — the image size is chosen from
+   * them (bnf/image-size.ts). Present on every image folio produced by this
+   * release (manifest fan-out, sweep rebuild); absent on ALTO folios and on
+   * image messages enqueued before it, which fall back to `max` with an
+   * `image_dims_unknown` warning.
+   */
+  canvas?: { width: number | null; height: number | null };
 }
 
 /** Result of one folio fetch, sent to the Monitor for fan-in. */

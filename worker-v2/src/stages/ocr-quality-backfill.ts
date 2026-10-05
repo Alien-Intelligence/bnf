@@ -7,9 +7,10 @@
  *
  * Why a pipeline stage and not a script: a text document needs ONE fresh ALTO
  * call per indexed folio (the "alto" cache holds text, not XML — keys.ts), and
- * those calls must share the worker's in-process fetch rate gate FIFO with live
- * ingests. The gate is REQUIRED: an ungated backfill would compete blindly
- * through the broker's shared bucket and the shed 429s would land on live runs.
+ * those calls must share the worker's in-process ALTO fetch gate (presentation
+ * ∧ global) FIFO with live ingests. The gate is REQUIRED: an ungated backfill
+ * would compete blindly through the broker's buckets and the shed 429s would
+ * land on live runs.
  *
  * Bounded four ways: OCR_BACKFILL_CONCURRENCY (in-flight docs), one row per ARK
  * in the store, OCR_BACKFILL_RATE_WAIT_MS per token wait, and expireInSeconds
@@ -136,7 +137,7 @@ export class OcrQualityBackfillStage extends PipelineStage<OcrBackfillItem, neve
     deps: StageDeps,
     private readonly bnf: BnfClient,
     private readonly store: OcrBackfillStore,
-    /** The SAME fetch RateGate FetchStage holds (build.ts `rates.fetch`) —
+    /** The SAME ALTO RateGate FetchAltoStage holds (build.ts `rates.fetchAlto`) —
      *  required: the whole point of running this as a stage. Acquired per BnF
      *  call, never on a cache hit (ensureAltoFolio's `beforeFetch`). */
     private readonly fetchRate: RateGate,

@@ -3,10 +3,10 @@
  *
  * The ManifestStage reads the IIIF manifest (S3-cached, rate-gated in prod),
  * counts canvases, records the plan (pagesExpected = canvas count), and fans out
- * N image FolioItems to Q.fetch. A canvas-less or permanently-failing manifest
+ * N image FolioItems, each with its canvas dims, to Q.fetchImage. A canvas-less or permanently-failing manifest
  * fails the doc terminally — no retry storm.
  *
- * Harness note: Q.fetch has no real downstream here, so a capturing sink drains it
+ * Harness note: Q.fetchImage has no real downstream here, so a capturing sink drains it
  * (so `idle()` settles) and records the routed folios. The rate gate is undefined
  * (no pacing in unit tests). A ManifestReq is seeded onto Q.manifest.
  */
@@ -41,7 +41,7 @@ interface Harness {
   blob: MemoryBlobStore;
   ds: MemoryDocState;
   bnf: FakeBnfClient;
-  /** Image folios captured off Q.fetch, in arrival order. */
+  /** Image folios captured off Q.fetchImage, in arrival order. */
   fetched: FetchItem[];
   events: Array<{ kind: string }>;
   req: ManifestReq;
@@ -49,7 +49,7 @@ interface Harness {
   deliver: () => Promise<void>;
 }
 
-/** Wire a started ManifestStage over a doc spec + a capturing sink on Q.fetch. */
+/** Wire a started ManifestStage over a doc spec + a capturing sink on Q.fetchImage. */
 async function setup(args: {
   spec: FakeDocSpec;
   lane?: ManifestReq["lane"];
@@ -65,7 +65,7 @@ async function setup(args: {
 
   const fetched: FetchItem[] = [];
   const events: Array<{ kind: string }> = [];
-  await q.work<FetchItem>(Q.fetch, async (m) => { fetched.push(m.payload); }, { concurrency: 1 });
+  await q.work<FetchItem>(Q.fetchImage, async (m) => { fetched.push(m.payload); }, { concurrency: 1 });
 
   const stage = new ManifestStage(
     { queue: q, blob, log: logger, onOutcome: (e) => events.push({ kind: e.kind }) },
@@ -117,7 +117,8 @@ test("happy path records the plan, fans out image folios, and persists the manif
   assert.equal(row?.pagesExpected, 4);
   assert.equal(row?.meta?.docType, "estampe");
 
-  assert.equal(h.fetched.length, 4, "four image folios on Q.fetch");
+  assert.equal(h.fetched.length, 4, "four image folios on Q.fetchImage");
+  assert.equal(Q.fetchImage, "v2.fetch.image");
   const ordres = h.fetched.map((f) => f.ordre).sort((a, b) => a - b);
   assert.deepEqual(ordres, [1, 2, 3, 4]);
   for (const f of h.fetched) {
@@ -126,6 +127,7 @@ test("happy path records the plan, fans out image folios, and persists the manif
     assert.equal(f.ark, h.req.ark);
     assert.equal(f.docJobId, h.req.docJobId);
     assert.equal(f.priority, FETCH_PRIORITY.vision);
+    assert.deepEqual(f.canvas, { width: 1000, height: 1400 }, "the canvas dims ride with the folio");
   }
 
   // Manifest JSON persisted under the manifest key.

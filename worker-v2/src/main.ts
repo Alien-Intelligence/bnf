@@ -1,8 +1,9 @@
 /**
  * Worker V2 entrypoint — the production composition. Wires the durable transport
  * (pg-boss), the per-doc state (Postgres), the artifact store (S3), the live BnF
- * client + the four downstream live ports, and the two binding rate gates (BnF
- * fetch + IIIF manifest), then starts the pipeline. Long-running: every stage
+ * client + the four downstream live ports, and the BnF rate gates (mirroring the
+ * broker's buckets: global, Presentation, Image, manifest), then starts the
+ * pipeline. Long-running: every stage
  * long-polls its bucket forever; the process stays up until SIGINT/SIGTERM.
  *
  * This file does I/O only — all behaviour lives in the stages + buildPipeline,
@@ -10,12 +11,12 @@
  */
 import { Pool } from "pg";
 
-import { loadBrokerUrl, loadConfig, loadIiifBases, pgPoolConfig } from "./config.js";
+import { etaFetchRatePerMin, loadBrokerUrl, loadConfig, loadIiifBases, pgPoolConfig } from "./config.js";
 import { configureBrokerUrl } from "./bnf/broker-client.js";
 import { buildPipeline } from "./build.js";
 import { PgBossQueue } from "./core/queue-pgboss.js";
 import { S3BlobStore } from "./core/blob.js";
-import { RateLimiter } from "./core/rate.js";
+import { CompositeRateGate, RateLimiter } from "./core/rate.js";
 import { createLogger } from "./core/logger.js";
 import { PgDocState } from "./domain/doc-state-pg.js";
 import {
@@ -74,8 +75,20 @@ async function main(): Promise<void> {
 
   const blob = new S3BlobStore({ ...cfg.s3, prefix: cfg.s3Prefix });
 
-  const fetchRate = new RateLimiter({ ratePerMin: cfg.fetchRatePerMin });
-  const manifestRate = new RateLimiter({ ratePerMin: cfg.manifestRatePerMin });
+  // The broker's buckets, mirrored (same values, same chart keys): one
+  // limiter per quota, and one composite per kind of call, most specific
+  // first. The composites own nothing — the four limiters are what shutdown
+  // stops.
+  const globalRate = new RateLimiter({ ratePerMin: cfg.rates.globalRpm });
+  const presentationRate = new RateLimiter({ ratePerMin: cfg.rates.presentationRpm });
+  const imageRate = new RateLimiter({ ratePerMin: cfg.rates.imageRpm });
+  const manifestRate = new RateLimiter({ ratePerMin: cfg.rates.manifestRpm });
+  const gates = {
+    fetchAlto: new CompositeRateGate([presentationRate, globalRate]),
+    fetchImage: new CompositeRateGate([imageRate, globalRate]),
+    manifest: new CompositeRateGate([manifestRate, presentationRate, globalRate]),
+  };
+  const fetchRatePerMin = etaFetchRatePerMin(cfg.rates);
 
   // The terminal commit callback + the run-completion detector. The detector is
   // wired to the pipeline's onOutcome seam (below), so a doc reaching a terminal
@@ -97,17 +110,13 @@ async function main(): Promise<void> {
     cluster: new LiveClusterSink(),
     ocrBackfill,
     onOutcome: (e) => completion.noteOutcome({ kind: e.kind, payload: e.payload }),
-    rates: { fetch: fetchRate, manifest: manifestRate },
+    rates: gates,
     config: {
+      altoFetchConcurrency: cfg.altoFetchConcurrency,
+      imageFetchConcurrency: cfg.imageFetchConcurrency,
       mistralEnabled: cfg.mistralEnabled,
       maxPages: cfg.maxPages,
       maxCanvases: cfg.maxCanvases,
-      // FetchStage's `imageSize` opt is the mistral/text-lane size (fetch.ts
-      // defaults it to "max" itself); `visionImageSize` is the separate,
-      // already-downscaled vision-lane size. See config.ts's mistralImageSize doc.
-      imageSize: cfg.mistralImageSize,
-      visionImageSize: cfg.visionImageSize,
-      fetchConcurrency: cfg.fetchConcurrency,
       metadataConcurrency: cfg.metadataConcurrency,
       registerConcurrency: cfg.registerConcurrency,
       describeConcurrency: cfg.describeConcurrency,
@@ -139,8 +148,8 @@ async function main(): Promise<void> {
       queue,
       completion,
       log,
-      fetchRatePerMin: cfg.fetchRatePerMin,
-      manifestRatePerMin: cfg.manifestRatePerMin,
+      fetchRatePerMin,
+      manifestRatePerMin: cfg.rates.manifestRpm,
       blob,
       ocrBackfill,
       ocrSyncDeadlineMs: OCR_SYNC_DEADLINE_MS,
@@ -151,8 +160,10 @@ async function main(): Promise<void> {
 
   log.info("worker_v2_up", {
     httpPort: cfg.httpPort,
-    fetchRatePerMin: cfg.fetchRatePerMin,
-    manifestRatePerMin: cfg.manifestRatePerMin,
+    rates: cfg.rates,
+    altoFetchConcurrency: cfg.altoFetchConcurrency,
+    imageFetchConcurrency: cfg.imageFetchConcurrency,
+    iiif,
     mistralEnabled: cfg.mistralEnabled,
     reconcilerIntervalMs: cfg.reconcilerIntervalMs,
     ocrBackfillEnabled: cfg.ocrBackfill.enabled,
@@ -175,7 +186,7 @@ async function main(): Promise<void> {
           await new Promise<void>((r) => server.close(() => r()));
         },
         pipeline,
-        gates: [fetchRate, manifestRate],
+        gates: [globalRate, presentationRate, imageRate, manifestRate],
         closePools: () => pool.end(),
       },
       SHUTDOWN_BUDGETS,

@@ -57,6 +57,16 @@ test("malformed values throw", () => {
   }
 });
 
+/** The BnF rates and fetch concurrencies — required, no defaults (Track D). */
+const RATE_ENV = {
+  BNF_GLOBAL_RPM: "950",
+  BNF_PRESENTATION_RPM: "1425",
+  BNF_IMAGE_RPM: "285",
+  BNF_MANIFEST_RPM: "38",
+  BNF_ALTO_FETCH_CONCURRENCY: "96",
+  BNF_IMAGE_FETCH_CONCURRENCY: "32",
+};
+
 /** The minimal env loadConfigFrom accepts: the required vars only. */
 const REQUIRED_ENV = {
   DATABASE_URL: "postgresql://localhost/x",
@@ -65,12 +75,12 @@ const REQUIRED_ENV = {
   SCW_S3_REGION: "fr-par",
   SCW_S3_ACCESS_KEY: "k",
   SCW_S3_SECRET_KEY: "s",
+  ...RATE_ENV,
 };
 
 test("loadConfigFrom: every knob defaults when unset, and a required var missing throws", () => {
   const cfg = loadConfigFrom(REQUIRED_ENV);
   assert.equal(cfg.httpPort, 7777);
-  assert.equal(cfg.fetchConcurrency, 32);
   assert.equal(cfg.reconcilerIntervalMs, 60_000);
   assert.equal(cfg.failRatio, 0.25);
   assert.equal(cfg.s3Prefix, "v2/");
@@ -80,8 +90,11 @@ test("loadConfigFrom: every knob defaults when unset, and a required var missing
 
 test("loadConfigFrom: ONE rule for every numeric knob — zero, negative, fraction and typo throw", () => {
   for (const name of [
-    "BNF_FETCH_CONCURRENCY",
+    "BNF_ALTO_FETCH_CONCURRENCY",
+    "BNF_IMAGE_FETCH_CONCURRENCY",
     "BNF_GLOBAL_RPM",
+    "BNF_PRESENTATION_RPM",
+    "BNF_IMAGE_RPM",
     "BNF_MANIFEST_RPM",
     "MAX_OCR_PAGES",
     "DESCRIBE_CONCURRENCY",
@@ -100,9 +113,9 @@ test("loadConfigFrom: ONE rule for every numeric knob — zero, negative, fracti
 });
 
 test("loadConfigFrom: booleans and integers parse the same way everywhere (trimmed, case-insensitive booleans)", () => {
-  const cfg = loadConfigFrom({ ...REQUIRED_ENV, MISTRAL_OCR_ENABLED: " TRUE ", BNF_FETCH_CONCURRENCY: " 24 " });
+  const cfg = loadConfigFrom({ ...REQUIRED_ENV, MISTRAL_OCR_ENABLED: " TRUE ", BNF_ALTO_FETCH_CONCURRENCY: " 24 " });
   assert.equal(cfg.mistralEnabled, true);
-  assert.equal(cfg.fetchConcurrency, 24);
+  assert.equal(cfg.altoFetchConcurrency, 24);
 });
 
 test("pgPoolConfig: both timeouts on every pool", () => {
@@ -115,7 +128,7 @@ test("pgPoolConfig: both timeouts on every pool", () => {
 
 test("integers are plain digits: hex, binary, exponent and sign forms throw", () => {
   for (const bad of ["0x10", "0b11", "1e1", "+5", "6e4", "1_000"]) {
-    assert.throws(() => loadConfigFrom({ ...REQUIRED_ENV, BNF_FETCH_CONCURRENCY: bad }), /BNF_FETCH_CONCURRENCY/, bad);
+    assert.throws(() => loadConfigFrom({ ...REQUIRED_ENV, BNF_IMAGE_FETCH_CONCURRENCY: bad }), /BNF_IMAGE_FETCH_CONCURRENCY/, bad);
   }
   assert.throws(
     () => loadOcrBackfillConfig({ OCR_BACKFILL_RETRY_FAILED_AFTER_MS: "6e4" }),
@@ -157,4 +170,27 @@ test("a retired env var stops the worker, naming its replacement (BNF_API_BASE_U
     () => loadConfigFrom({ ...REQUIRED_ENV, BNF_API_BASE_URL: "https://openapiproext.bnf.fr" }),
     /BNF_API_BASE_URL is retired — use BNF_IIIF_PRESENTATION_BASE_URL and BNF_IIIF_IMAGE_BASE_URL/,
   );
+});
+
+test("the BnF rates and both fetch concurrencies are required — none has a default", () => {
+  const cfg = loadConfigFrom(REQUIRED_ENV);
+  assert.deepEqual(cfg.rates, { globalRpm: 950, presentationRpm: 1425, imageRpm: 285, manifestRpm: 38 });
+  assert.equal(cfg.altoFetchConcurrency, 96);
+  assert.equal(cfg.imageFetchConcurrency, 32);
+  for (const name of Object.keys(RATE_ENV)) {
+    const env = Object.fromEntries(Object.entries(REQUIRED_ENV).filter(([k]) => k !== name));
+    assert.throws(() => loadConfigFrom(env), new RegExp(`Missing required env var ${name}`), name);
+    assert.throws(() => loadConfigFrom({ ...REQUIRED_ENV, [name]: " " }), new RegExp(name), `${name} blank`);
+  }
+});
+
+test("the per-lane image knobs and the single fetch concurrency are retired, each naming its replacement", () => {
+  for (const [name, replacement] of [
+    ["BNF_FETCH_CONCURRENCY", /BNF_ALTO_FETCH_CONCURRENCY and BNF_IMAGE_FETCH_CONCURRENCY/],
+    ["MISTRAL_IMAGE_SIZE", /MISTRAL_MAX_EDGE_PX/],
+    ["VISION_IMAGE_SIZE", /VISION_MAX_EDGE_PX/],
+  ] as const) {
+    assert.throws(() => loadConfigFrom({ ...REQUIRED_ENV, [name]: "128" }), new RegExp(`${name} is retired`), name);
+    assert.throws(() => loadConfigFrom({ ...REQUIRED_ENV, [name]: "128" }), replacement, name);
+  }
 });
