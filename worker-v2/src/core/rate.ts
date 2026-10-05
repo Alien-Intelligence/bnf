@@ -1,7 +1,9 @@
 /**
  * Token-bucket rate gate — the pipeline's one pacing primitive (generalises the
- * V1 fetch-gate). Each stage that touches a capped external API owns one: the
- * IIIF manifest stage at 42/min, the BnF fetch stage at 300/min, etc.
+ * V1 fetch-gate). Each stage that touches a capped external API owns one; a
+ * BnF call that spends several nested quotas (an API's quota inside the
+ * subscription's global cap, a manifest inside both) holds a CompositeRateGate
+ * over the gates of those quotas, mirroring the broker's buckets.
  *
  * Pure concurrency/rate math, no I/O. The clock is injectable (`now`) so the
  * token arithmetic is unit-testable without real waiting; `tryAcquire()` is the
@@ -166,5 +168,31 @@ export class RateLimiter implements RateGate {
     // Refuse every blocked acquirer so shutdown doesn't hang — never grant
     // them: a waiter let through here would call BnF ungated.
     while (this.waiters.length > 0) this.waiters.shift()?.refuse(new RateGateStoppedError());
+  }
+}
+
+/**
+ * A gate that grants only when EVERY inner gate granted: one token from each,
+ * in order — the most specific quota first, the global one last, like the
+ * broker's plan (broker/src/plan.ts), so a call waiting on a scarce API quota
+ * holds no global token. `ratePerMin` is the binding (smallest) rate.
+ *
+ * The composite owns nothing: whoever built the inner gates stops them
+ * (main.ts), and a stopped inner gate rejects the composite with
+ * RateGateStoppedError like any gate. A wait aborted after an earlier inner
+ * gate granted leaves that token spent with no request sent — it errs low
+ * (under the quota), never over it.
+ */
+export class CompositeRateGate implements RateGate {
+  readonly ratePerMin: number;
+
+  constructor(private readonly gates: readonly RateGate[]) {
+    const first = gates[0];
+    if (first === undefined) throw new Error("CompositeRateGate needs at least one gate");
+    this.ratePerMin = gates.reduce((min, g) => Math.min(min, g.ratePerMin), first.ratePerMin);
+  }
+
+  async acquire(signal: AbortSignal): Promise<void> {
+    for (const gate of this.gates) await gate.acquire(signal);
   }
 }

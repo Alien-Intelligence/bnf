@@ -7,9 +7,9 @@
  * MemoryBlobStore + memory logger) with tiny concrete stages built by extending
  * PipelineStage:
  *
- *   - a HEAD stage on Q.metadata → Q.fetch that emits one item and records the
+ *   - a HEAD stage on Q.metadata → Q.fetchAlto that emits one item and records the
  *     ARK it processed;
- *   - a TAIL stage on Q.fetch (no output queue) that records what it received.
+ *   - a TAIL stage on Q.fetchAlto (no output queue) that records what it received.
  *
  * Data flows stage → stage only through the queues, so observing the tail stage's
  * record proves both stages were started and the runner wired them end to end.
@@ -28,12 +28,12 @@ import type { QueueMessage, QueuePolicyOpts, StageContext, StageOutcome } from "
 
 /**
  * HEAD stage: consumes the seeded DocRef off Q.metadata, records its ark, and
- * emits one FolioItem onto Q.fetch. Stands in for the metadata stage.
+ * emits one FolioItem onto Q.fetchAlto. Stands in for the metadata stage.
  */
 class HeadStage extends PipelineStage<DocRef, FolioItem> {
   readonly name = "head";
   readonly inputQueue = Q.metadata;
-  override readonly outputQueue = Q.fetch;
+  override readonly outputQueue = Q.fetchAlto;
   override readonly concurrency = 1;
 
   /** ARKs seen by process(), in arrival order. */
@@ -49,12 +49,12 @@ class HeadStage extends PipelineStage<DocRef, FolioItem> {
 }
 
 /**
- * TAIL stage: consumes FolioItems off Q.fetch and records them. No output queue —
+ * TAIL stage: consumes FolioItems off Q.fetchAlto and records them. No output queue —
  * it's the terminal stage. Its records prove data flowed all the way through.
  */
 class TailStage extends PipelineStage<FolioItem, never> {
   readonly name = "tail";
-  readonly inputQueue = Q.fetch;
+  readonly inputQueue = Q.fetchAlto;
   override readonly concurrency = 1;
 
   /** Every FolioItem this stage received. */
@@ -210,8 +210,8 @@ test("start() declares EVERY stage's input-queue policy before any stage starts 
   await new Pipeline(queue, [new HeadStage(base), new TailStage(base)], logger).start();
   assert.deepEqual(queue.calls, [
     `declare ${Q.metadata}`,
-    `declare ${Q.fetch}`,
+    `declare ${Q.fetchAlto}`,
     `work ${Q.metadata}`,
-    `work ${Q.fetch}`,
+    `work ${Q.fetchAlto}`,
   ]);
 });

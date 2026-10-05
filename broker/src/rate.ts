@@ -109,10 +109,29 @@ export class TokenBucket {
    * of serial sleeps).
    */
   acquire(maxWaitMs: number): Promise<void> {
-    const deadline = this.now() + maxWaitMs;
+    return this.acquireUntil(this.now() + maxWaitMs);
+  }
+
+  /**
+   * `acquire`, against an ABSOLUTE deadline on this bucket's monotonic clock —
+   * the form `acquireAll` uses so every bucket of one request shares ONE
+   * budget. The deadline is the caller's, fixed before it joins the chain (F3).
+   */
+  acquireUntil(deadline: number): Promise<void> {
     const next = this.chain.then(() => this.consumeOne(deadline));
     this.chain = next.catch(() => undefined); // never poison the queue
     return next;
+  }
+
+  /**
+   * Give back ONE token taken by `acquireUntil` for a request that was then
+   * shed before anything was sent (`acquireAll`). Never past `burst`: a refund
+   * restores capacity the bucket would otherwise have lost; it never creates
+   * capacity it did not have.
+   */
+  refund(): void {
+    this.refill();
+    this.tokens = Math.min(this.burst, this.tokens + 1);
   }
 
   /** Freeze the bucket until `epochMs` (absolute) — called on upstream 429/403. */
@@ -171,6 +190,50 @@ export class TokenBucket {
 function sleep(ms: number): Promise<void> {
   if (ms <= 0) return Promise.resolve();
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * A request was shed because ONE bucket of its plan could not grant a token
+ * within the request's single wait budget. `shedBy` names that bucket (the
+ * `shed_by` column of calls.csv).
+ */
+export class BucketShedError<Name extends string = string> extends RateWaitTimeoutError {
+  constructor(
+    neededMs: number,
+    readonly shedBy: Name,
+  ) {
+    super(neededMs);
+    this.name = "BucketShedError";
+  }
+}
+
+/**
+ * Take one token from EVERY bucket of `order`, in order, under ONE absolute
+ * deadline (`now() + maxWaitMs`). F-D5: acquiring each bucket with its own
+ * fresh `maxWaitMs` let a two-bucket plan wait twice the budget.
+ *
+ * If a bucket sheds, the tokens already taken from the earlier buckets are
+ * refunded (nothing was sent for them) and the shed surfaces as a
+ * `BucketShedError` naming the bucket. `now` MUST be the clock the buckets
+ * themselves run on: the deadline is compared against it.
+ */
+export async function acquireAll<Name extends string>(
+  order: ReadonlyArray<readonly [Name, TokenBucket]>,
+  maxWaitMs: number,
+  now: () => number,
+): Promise<void> {
+  const deadline = now() + maxWaitMs;
+  const taken: TokenBucket[] = [];
+  for (const [name, bucket] of order) {
+    try {
+      await bucket.acquireUntil(deadline);
+    } catch (e) {
+      for (const b of taken) b.refund();
+      if (e instanceof RateWaitTimeoutError) throw new BucketShedError(e.neededMs, name);
+      throw e;
+    }
+    taken.push(bucket);
+  }
 }
 
 /**

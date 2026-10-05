@@ -2,14 +2,17 @@
  * BnF broker — the single egress chokepoint for all BnF traffic.
  *
  * Generalises the demo `gallica-relay` into a real gateway: it owns the OAuth
- * token (single-flight), enforces the partner API's two SEPARATE budgets
- * (1000/min global + 40/min IIIF manifest) plus a politeness bucket for
- * ungated hosts, and centralises 429/Retry-After backoff. The BnF KEY/SECRET
- * live ONLY here — the app and worker hold no BnF credentials, they just POST
- * a fetch request and get the upstream status + bytes verbatim.
+ * token (single-flight), enforces the BnF ingestion subscription's rate model
+ * (a global cap, one quota per partner API, the per-IP manifest sub-limit —
+ * plan.ts) plus a politeness bucket for ungated hosts, and centralises
+ * 429/Retry-After backoff. The BnF KEY/SECRET live ONLY here — the app and
+ * worker hold no BnF credentials, they just POST a fetch request and get the
+ * upstream status + bytes verbatim.
  *
  * Contract (mirrors the relay so clients stay trivial):
  *   POST /fetch       {"url": "...", "accept": "..."}  -> upstream status + body verbatim
+ *                     (403 for a non-*.bnf.fr host or an unclassified partner path,
+ *                      429 when a bucket sheds the request)
  *   GET  /health      -> {"ok": true}
  *   GET  /calls.csv   -> CSV of every /fetch outcome (rate-limit analysis);
  *                        `?reset=1` clears the buffer after returning it.
@@ -23,12 +26,18 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 
 import { fetch as undiciFetch } from "undici";
 
-import { config, isAllowedUpstream, isManifest, isPartnerApi } from "./config.js";
+import { isAllowedUpstream } from "./config.js";
+import { config, partnerApiHost } from "./env.js";
 import { truncatedBodyError } from "./body.js";
-import { callCount, recordCall, resetCalls, toCsv } from "./calls.js";
-import { buckets, planFor } from "./plan.js";
-import { RateWaitTimeoutError, retryAfterToEpochMs } from "./rate.js";
+import { CallLog } from "./calls.js";
+import { BUCKET_NAMES, createBuckets, planFor, type BucketName } from "./plan.js";
+import { acquireAll, BucketShedError, retryAfterToEpochMs } from "./rate.js";
 import { getAuthHeader, invalidateToken } from "./token.js";
+
+/** The live buckets — every one on the default monotonic clock acquireAll uses. */
+const buckets = createBuckets(config.rates);
+const monotonicNow = (): number => performance.now();
+const calls = new CallLog(config.callsLogSize);
 
 function send(res: ServerResponse, status: number, contentType: string, body: Buffer | string): void {
   const buf = typeof body === "string" ? Buffer.from(body) : body;
@@ -115,23 +124,35 @@ async function handleFetch(req: IncomingMessage, res: ServerResponse): Promise<v
     return send(res, 403, "text/plain", `upstream not allowed (only *.bnf.fr): ${target.host}`);
   }
 
-  const plan = planFor(target);
-  // The rate bucket that governs this call (for the call log + analysis).
-  const bucketLabel = isManifest(target) ? "manifest" : isPartnerApi(target) ? "global" : "external";
-  const log = (status: number, note: string, waitMs: number, fetchMs: number, retryAfter: string | null): void => {
-    recordCall({ ts: Date.now(), host: target.host, path: target.pathname, status, bucket: bucketLabel, authed: plan.auth, waitMs: Math.round(waitMs), fetchMs: Math.round(fetchMs), retryAfter, note });
+  const plan = planFor(target, partnerApiHost);
+  if (plan.kind === "reject") {
+    // A partner-host path outside every known BnF API: never charged to a
+    // guessed bucket, never sent on `global` alone (it could breach a quota we
+    // do not model). Loud, because it means a client grew a new endpoint.
+    console.error(`[broker] unclassified partner-API path rejected: ${target.pathname}`);
+    calls.record({ ts: Date.now(), host: target.host, path: target.pathname, status: 403, bucket: null, authed: false, waitMs: 0, fetchMs: 0, retryAfter: null, note: "unclassified", acquired: [], shedBy: null });
+    return send(res, 403, "text/plain", `unclassified partner-API path: ${target.pathname}`);
+  }
+  const log = (status: number, note: string, waitMs: number, fetchMs: number, retryAfter: string | null, shedBy: BucketName | null = null): void => {
+    calls.record({ ts: Date.now(), host: target.host, path: target.pathname, status, bucket: plan.label, authed: plan.auth, waitMs: Math.round(waitMs), fetchMs: Math.round(fetchMs), retryAfter, note, acquired: plan.acquire, shedBy });
   };
 
   const tAcquireStart = Date.now();
   try {
-    for (const name of plan.acquire) await buckets[name].acquire(config.acquireMaxWaitMs);
+    await acquireAll(
+      plan.acquire.map((name) => [name, buckets[name]] as const),
+      config.acquireMaxWaitMs,
+      monotonicNow,
+    );
   } catch (e) {
-    if (e instanceof RateWaitTimeoutError) {
-      // Bucket contended/frozen beyond the wait budget — shed with 429 so the
-      // caller backs off (its retry policy treats 429 as transient) instead of
-      // us queueing it behind a multi-minute freeze.
-      log(429, "shed", Date.now() - tAcquireStart, 0, null);
-      return send(res, 429, "text/plain", `broker rate budget exhausted: ${e.message}`);
+    if (e instanceof BucketShedError) {
+      // One bucket of the plan is contended/frozen beyond the request's single
+      // wait budget — shed with 429 so the caller backs off (its retry policy
+      // treats 429 as transient) instead of us queueing it behind a freeze. The
+      // tokens the plan had already taken were refunded (acquireAll).
+      const shedBy = BUCKET_NAMES.find((b) => b === e.shedBy) ?? null;
+      log(429, "shed", Date.now() - tAcquireStart, 0, null, shedBy);
+      return send(res, 429, "text/plain", `broker rate budget exhausted (${e.shedBy}): ${e.message}`);
     }
     throw e;
   }
@@ -180,18 +201,19 @@ async function handleFetch(req: IncomingMessage, res: ServerResponse): Promise<v
   const retryAfter = upstream.headers.get("retry-after");
   let note = reminted ? "remint" : "ok";
   if (upstream.status === 429) {
+    // The most specific bucket only, never `global` (plan.ts planFor).
     const until = retryAfterToEpochMs(retryAfter ?? undefined, 60_000);
-    for (const name of plan.penalize) buckets[name].penalizeUntil(until);
-    console.warn(`[broker] 429 from ${target.host}${target.pathname} — bucket frozen until ${new Date(until).toISOString()}`);
+    buckets[plan.penalize].penalizeUntil(until);
+    console.warn(`[broker] 429 from ${target.host}${target.pathname} — bucket ${plan.penalize} frozen until ${new Date(until).toISOString()}`);
     note = "freeze";
-  } else if (upstream.status === 403 && !isPartnerApi(target)) {
+  } else if (upstream.status === 403 && !plan.auth) {
     // An ungated host (gallica/oai/catalogue/data) 403 is a Cloudflare/captcha
     // IP throttle (no Retry-After), NOT an auth failure — freeze the politeness
     // bucket a fixed window so we stop hammering the blocked egress IP.
     // (A 403 from the partner API IS an auth/scope failure; freezing wouldn't
     // help, so it's mirrored through untouched.) See bnf-gallica-ip-throttle.
     const until = Date.now() + config.forbiddenBackoffMs;
-    for (const name of plan.penalize) buckets[name].penalizeUntil(until);
+    buckets[plan.penalize].penalizeUntil(until);
     console.warn(`[broker] 403 (IP throttle) from ${target.host}${target.pathname} — bucket frozen ${config.forbiddenBackoffMs}ms`);
     note = "freeze_403";
   }
@@ -226,14 +248,14 @@ const server = createServer((req, res) => {
   // fetch, retry-after, note) for rate-limit analysis. `?reset=1` clears the
   // buffer AFTER returning the current snapshot, to start a fresh capture.
   if (req.method === "GET" && req.url?.startsWith("/calls.csv")) {
-    const csv = toCsv();
+    const csv = calls.toCsv();
     res.writeHead(200, {
       "content-type": "text/csv; charset=utf-8",
       "content-disposition": 'attachment; filename="broker-calls.csv"',
-      "x-call-count": String(callCount()),
+      "x-call-count": String(calls.size()),
     });
     res.end(csv);
-    if (req.url.includes("reset=1")) resetCalls();
+    if (req.url.includes("reset=1")) calls.reset();
     return;
   }
   if (req.method === "POST" && req.url === "/fetch") {
@@ -246,8 +268,6 @@ const server = createServer((req, res) => {
 });
 
 server.listen(config.port, () => {
-  console.error(
-    `[broker] listening on :${config.port} — api=${config.apiBaseUrl} ` +
-      `caps: global=${config.globalRpm}/min manifest=${config.manifestRpm}/min ext=${config.externalRpm}/min`,
-  );
+  const caps = BUCKET_NAMES.map((b) => `${b}=${config.rates[b].rpm}/${config.rates[b].burst}`).join(" ");
+  console.error(`[broker] listening on :${config.port} — api=${config.apiBaseUrl} caps (rpm/burst): ${caps}`);
 });

@@ -8,7 +8,7 @@
  */
 import { fetch as undiciFetch } from "undici";
 
-import { config } from "./config.js";
+import { config } from "./env.js";
 
 interface CachedToken {
   accessToken: string;

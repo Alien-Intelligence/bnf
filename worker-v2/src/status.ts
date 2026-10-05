@@ -8,7 +8,7 @@
  */
 import { Pool } from "pg";
 
-import { loadConfig, pgPoolConfig } from "./config.js";
+import { etaFetchRatePerMin, loadConfig, pgPoolConfig } from "./config.js";
 import { PgBossQueue } from "./core/queue-pgboss.js";
 import { PgDocState } from "./domain/doc-state-pg.js";
 import { PgOcrBackfillStore } from "./domain/ocr-backfill-pg.js";
@@ -24,7 +24,9 @@ async function main(): Promise<void> {
 
   const report = await buildProgress(docState, queue, {
     ...(projectId ? { projectId } : {}),
-    fetchRatePerMin: cfg.fetchRatePerMin,
+    // The same rates the worker's /progress reports (main.ts).
+    fetchRatePerMin: etaFetchRatePerMin(cfg.rates),
+    manifestRatePerMin: cfg.rates.manifestRpm,
   });
   const ocrBackfill = await new PgOcrBackfillStore(pool).counts();
   console.log(JSON.stringify({ ...report, ocrBackfill }, null, 2));

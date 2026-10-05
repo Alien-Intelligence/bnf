@@ -5,8 +5,8 @@
  * concrete client (src/bnf/client.ts) is the only thing that touches the broker.
  *
  * Everything here is per-document or per-folio — there is no whole-doc fetch. The
- * fetch stage pulls ONE folio at a time (the 300/min binding constraint), which
- * is the structural fix over V1's per-doc monolith.
+ * fetch stages pull ONE folio at a time (the BnF quotas are the binding
+ * constraint), which is the structural fix over V1's per-doc monolith.
  *
  * Methods throw `TransientBnfError` (retry) or `PermanentBnfError` (terminal) from
  * ./errors — the stage base coerces a throw into a non-terminal fail, and the
@@ -117,6 +117,11 @@ export interface BnfClient {
    * request itself still ends within its own timeout.
    */
   fetchAltoFolio(ark: string, ordre: number, signal?: AbortSignal): Promise<AltoFolio>;
-  /** Fetch ONE folio's IIIF image bytes (JPEG). */
-  fetchImageFolio(ark: string, ordre: number, size?: string): Promise<Buffer>;
+  /**
+   * Fetch ONE folio's IIIF image bytes (JPEG) at `size`, the IIIF size segment
+   * — required: the right size depends on the canvas (bnf/image-size.ts).
+   */
+  fetchImageFolio(ark: string, ordre: number, size: string): Promise<Buffer>;
+  /** The IIIF v3 manifest URL of a canonical ARK (BnfDocInfo.iiifManifestUrl). */
+  manifestUrl(canonicalArk: string): string;
 }

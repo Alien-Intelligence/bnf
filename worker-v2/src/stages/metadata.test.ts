@@ -6,13 +6,13 @@
  * ONE RateGate instance.
  *
  * The MetadataStage resolves BnfDocInfo, classifies a lane, and then:
- *   - text   → recordPlan + fan out N ALTO FolioItems to Q.fetch (no manifest
+ *   - text   → recordPlan + fan out N ALTO FolioItems to Q.fetchAlto (no manifest
  *              stage — the text lane only needed the page COUNT, already had it).
  *   - vision → emit ONE ManifestReq to Q.manifest (the manifest stage plans).
  *   - mistral→ emit ONE ManifestReq to Q.manifest.
  *   - skip   → setStatus "skipped"; nothing routed.
  *
- * Harness note: Q.fetch and Q.manifest have no real downstream in most tests
+ * Harness note: Q.fetchAlto and Q.manifest have no real downstream in most tests
  * here, so we attach capturing sinks to both — they drain the message (so
  * `idle()` settles) and record the routed payloads for assertions. A DocRef is
  * seeded onto Q.metadata and the started stage consumes it. The "one fetch per
@@ -51,7 +51,7 @@ interface Harness {
   blob: MemoryBlobStore;
   ds: MemoryDocState;
   bnf: FakeBnfClient;
-  /** Payloads captured off Q.fetch / Q.manifest, in arrival order. */
+  /** Payloads captured off Q.fetchAlto / Q.manifest, in arrival order. */
   fetched: FetchItem[];
   manifested: ManifestReq[];
   ref: DocRef;
@@ -78,7 +78,7 @@ async function setup(args: {
 
   const fetched: FetchItem[] = [];
   const manifested: ManifestReq[] = [];
-  await q.work<FetchItem>(Q.fetch, async (m) => { fetched.push(m.payload); }, { concurrency: 1 });
+  await q.work<FetchItem>(Q.fetchAlto, async (m) => { fetched.push(m.payload); }, { concurrency: 1 });
   await q.work<ManifestReq>(Q.manifest, async (m) => { manifested.push(m.payload); }, { concurrency: 1 });
 
   const stage = new MetadataStage(
@@ -110,7 +110,7 @@ async function setup(args: {
   };
 }
 
-// 1. Text lane — OCR available → recordPlan(text) + N ALTO folios on Q.fetch.
+// 1. Text lane — OCR available → recordPlan(text) + N ALTO folios on Q.fetchAlto.
 test("text lane fans out N ALTO folios and records a text plan", async () => {
   const h = await setup({
     spec: { ark: "ark:/12148/textdoc", ocrAvailable: true, docType: "texte", pageCount: 3 },
@@ -124,7 +124,7 @@ test("text lane fans out N ALTO folios and records a text plan", async () => {
   assert.equal(row?.lane, "text");
   assert.equal(row?.pagesExpected, 3);
 
-  assert.equal(h.fetched.length, 3, "three ALTO folios on Q.fetch");
+  assert.equal(h.fetched.length, 3, "three ALTO folios on Q.fetchAlto");
   assert.equal(h.manifested.length, 0, "nothing on Q.manifest for the text lane");
 
   const ordres = h.fetched.map((f) => f.ordre).sort((a, b) => a - b);
@@ -148,7 +148,7 @@ test("vision lane hands off one ManifestReq and does not plan or fetch", async (
   await h.q.idle();
 
   assert.equal(h.manifested.length, 1, "one ManifestReq on Q.manifest");
-  assert.equal(h.fetched.length, 0, "nothing on Q.fetch — the manifest stage fans out");
+  assert.equal(h.fetched.length, 0, "nothing on Q.fetchAlto — the manifest stage fans out");
 
   const req = h.manifested[0];
   assert.equal(req?.lane, "vision");
@@ -177,7 +177,7 @@ test("mistral lane hands off one ManifestReq when paid OCR is enabled", async ()
   await h.q.idle();
 
   assert.equal(h.manifested.length, 1, "one ManifestReq on Q.manifest");
-  assert.equal(h.fetched.length, 0, "nothing on Q.fetch");
+  assert.equal(h.fetched.length, 0, "nothing on Q.fetchAlto");
   assert.equal(h.manifested[0]?.lane, "mistral");
 });
 
@@ -219,7 +219,7 @@ test("a permanent manifest+OAI failure skips the doc and routes nothing", async 
 
   const fetched: FetchItem[] = [];
   const manifested: ManifestReq[] = [];
-  await q.work<FetchItem>(Q.fetch, async (m) => { fetched.push(m.payload); }, { concurrency: 1 });
+  await q.work<FetchItem>(Q.fetchAlto, async (m) => { fetched.push(m.payload); }, { concurrency: 1 });
   await q.work<ManifestReq>(Q.manifest, async (m) => { manifested.push(m.payload); }, { concurrency: 1 });
 
   const stage = new MetadataStage(
@@ -365,7 +365,8 @@ test("manifest cache MISS costs exactly one gate acquire + one getManifest, and 
   bnf.add({ ark: "ark:/12148/onefetch", ocrAvailable: false, docType: "estampe", pageCount: 4 });
 
   const fetched: FetchItem[] = [];
-  await q.work<FetchItem>(Q.fetch, async (m) => { fetched.push(m.payload); }, { concurrency: 1 });
+  // An image-lane doc: the manifest stage fans out onto the IMAGE queue.
+  await q.work<FetchItem>(Q.fetchImage, async (m) => { fetched.push(m.payload); }, { concurrency: 1 });
 
   const metadataStage = new MetadataStage(
     { queue: q, blob, log: logger },

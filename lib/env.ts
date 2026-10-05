@@ -5,7 +5,11 @@ import { z } from "zod"
 // Boot-time env — required for the server to start.
 // ---------------------------------------------------------------------------
 
-const bootEnvSchema = z.object({
+/**
+ * The boot env schema. Exported for lib/env.test.ts ONLY — the app reads the
+ * parsed `env` below, never this schema.
+ */
+export const bootEnvSchema = z.object({
   DATABASE_URL: z.string().url(),
   BETTER_AUTH_SECRET: z.string().min(32),
   BETTER_AUTH_URL: z.string().url(),
@@ -50,8 +54,8 @@ const bootEnvSchema = z.object({
   // resolver talks to Gallica directly (prod / once the BnF IP-allowlist lands).
   GALLICA_RELAY_URL: z.string().url().optional(),
   // BnF broker — OPTIONAL. The single egress chokepoint for BnF traffic: it
-  // owns the OAuth token + the shared 300/min global / 12-per-IP manifest /
-  // politeness rate caps + 429 backoff (broker/ service). When set, the
+  // owns the OAuth token + the ingestion subscription's per-API rate buckets +
+  // 429 backoff (broker/ service, broker/README.md). When set, the
   // metadata resolver (lib/bnf/direct.ts) routes ALL its BnF calls through it
   // (replacing the curl_cffi relay and the IPv4-direct path). Absent → the
   // resolver falls back to its direct/relay transport. The BnF KEY/SECRET live
@@ -65,6 +69,12 @@ const bootEnvSchema = z.object({
   // (helm: the app ConfigMap reuses broker.config.apiBaseUrl), and a default
   // pointing at prod would hide a dev or staging misconfiguration.
   BNF_API_BASE_URL: z.string().url(),
+  // BnF Presentation API (PRESENTATION_IIIF_GALLICA, its own quota since the
+  // Gallica-IIIF split of 2026-09-30) — the base the resolver fetches manifests
+  // from, version included (…/presentation/iiif/gallica/1.0.0). Optional at the
+  // schema level, REQUIRED whenever BNF_BROKER_URL is set (superRefine below):
+  // only the broker path fetches manifests. Helm: bnfIiif.presentationBaseUrl.
+  BNF_IIIF_PRESENTATION_BASE_URL: z.string().url().optional(),
   // Agent provider — which gateway drives the `claude` agent mode (@alien/chat-sdk
   // v0.7+). `anthropic` (default) calls Anthropic directly with ANTHROPIC_API_KEY;
   // `openrouter` routes the same turns + tools + MCP through the OpenRouter gateway
@@ -110,6 +120,18 @@ const bootEnvSchema = z.object({
         message:
           "OPENROUTER_API_KEY is required when AGENT_PROVIDER=openrouter " +
           "(set it in .env.local, sk-or-…).",
+      })
+    }
+    // The broker path resolves Gallica documents from their manifest, which
+    // lives on the Presentation API: a broker without that base would fail
+    // every resolution at runtime instead of at boot.
+    if (cfg.BNF_BROKER_URL !== undefined && cfg.BNF_IIIF_PRESENTATION_BASE_URL === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["BNF_IIIF_PRESENTATION_BASE_URL"],
+        message:
+          "BNF_IIIF_PRESENTATION_BASE_URL is required when BNF_BROKER_URL is set " +
+          "(the resolver fetches manifests from the BnF Presentation API)",
       })
     }
   })

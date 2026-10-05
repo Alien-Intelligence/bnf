@@ -64,7 +64,7 @@ function buildHarness(specs: FakeDocSpec[]) {
       policy: { retryFailedAfterMs: 60_000, maxAttempts: 5, startedStaleAfterMs: 90 * 60 * 1_000, unstartedStaleAfterMs: 14 * 24 * 60 * 60 * 1_000, unsentStaleAfterMs: 10 * 60 * 1_000 },
     },
     onOutcome: (e) => completion.noteOutcome({ kind: e.kind, payload: e.payload }),
-    config: { mistralEnabled: true, maxPages: 200 },
+    config: { altoFetchConcurrency: 4, imageFetchConcurrency: 2, mistralEnabled: true, maxPages: 200 },
   });
 
   return { queue, docState, runStore, completion, posts, pipeline };

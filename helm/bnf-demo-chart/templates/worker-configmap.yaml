@@ -1,4 +1,5 @@
 {{- if and .Values.worker.enabled (eq .Values.config.clusterMode "real") }}
+{{- include "bnf-demo.validateRates" . }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -46,9 +47,6 @@ data:
   MISTRAL_OCR_MAX_PAGES: {{ .Values.worker.config.mistralOcrMaxPages | quote }}
   MISTRAL_OCR_POLL_INTERVAL_MS: {{ .Values.worker.config.mistralOcrPollIntervalMs | quote }}
   MISTRAL_OCR_BATCH_TIMEOUT_MS: {{ .Values.worker.config.mistralOcrBatchTimeoutMs | quote }}
-  # OCR-lane folio image size — see values.yaml's comment (F13 sizing-experiment
-  # prep, ai-memories/tech/repos/bnf/ingest-hardening).
-  MISTRAL_IMAGE_SIZE: {{ .Values.worker.config.mistralImageSize | quote }}
 {{- end }}
 
   # --- RunPod embedder ---
@@ -81,8 +79,23 @@ data:
   GALLICA_BURST: {{ .Values.worker.config.gallicaBurst | quote }}
   GALLICA_GENERAL_RPS: {{ .Values.worker.config.gallicaGeneralRps | quote }}
   GALLICA_GENERAL_BURST: {{ .Values.worker.config.gallicaGeneralBurst | quote }}
-  VIEWER_OCR_CONCURRENCY: {{ .Values.worker.config.viewerOcrConcurrency | quote }}
-  VIEWER_OCR_DELAY_MS: {{ .Values.worker.config.viewerOcrDelayMs | quote }}
+
+  # --- BnF IIIF APIs (REQUIRED: the worker refuses to boot without them) ---
+  # Manifests + ALTO on the Presentation API, images on the Image API.
+  BNF_IIIF_PRESENTATION_BASE_URL: {{ required "bnfIiif.presentationBaseUrl is required" .Values.bnfIiif.presentationBaseUrl | quote }}
+  BNF_IIIF_IMAGE_BASE_URL: {{ required "bnfIiif.imageBaseUrl is required" .Values.bnfIiif.imageBaseUrl | quote }}
+
+  # --- The worker's BnF gates (REQUIRED) — the SAME values as the broker's
+  # buckets (broker.config.rates), so the two cannot drift. ALTO = presentation
+  # ∧ global, images = image ∧ global, manifests = manifest ∧ presentation ∧
+  # global (worker-v2/src/main.ts).
+  BNF_GLOBAL_RPM: {{ include "bnf-demo.rateField" (dict "root" . "bucket" "global" "field" "rpm") | quote }}
+  BNF_PRESENTATION_RPM: {{ include "bnf-demo.rateField" (dict "root" . "bucket" "presentation" "field" "rpm") | quote }}
+  BNF_IMAGE_RPM: {{ include "bnf-demo.rateField" (dict "root" . "bucket" "image" "field" "rpm") | quote }}
+  BNF_MANIFEST_RPM: {{ include "bnf-demo.rateField" (dict "root" . "bucket" "manifest" "field" "rpm") | quote }}
+  # In-flight fetches per stage (REQUIRED) — see values.yaml for the sizing.
+  BNF_ALTO_FETCH_CONCURRENCY: {{ required "worker.config.altoFetchConcurrency is required" .Values.worker.config.altoFetchConcurrency | quote }}
+  BNF_IMAGE_FETCH_CONCURRENCY: {{ required "worker.config.imageFetchConcurrency is required" .Values.worker.config.imageFetchConcurrency | quote }}
 
   # --- BnF fetch timeouts ---
   # Per-folio fetch budget. 135s sits just ABOVE the broker's 120s upstream timeout
@@ -100,20 +113,11 @@ data:
   # deliberately not env-tunable: each ceiling is derived from that stage's own
   # worst-case wall clock, not from an operator's guess.
   MAX_OCR_PAGES: {{ .Values.worker.config.maxOcrPages | quote }}
-  MAX_IMAGE_CANVASES: {{ .Values.worker.config.maxImageCanvases | quote }}
-  IMAGE_CONCURRENCY: {{ .Values.worker.config.imageConcurrency | quote }}
-  # The worker's OWN fetch rate gate — must equal the broker's globalRpm or the
-  # worker self-throttles below the provisioned quota (worker-v2 reads BNF_GLOBAL_RPM).
-  BNF_GLOBAL_RPM: {{ .Values.worker.config.bnfGlobalRpm | quote }}
-  # Process-global broker-fetch concurrency — the worker's single in-flight cap,
-  # held below the doc loop so the broker's rate bucket stays continuously fed.
-  BNF_FETCH_CONCURRENCY: {{ .Values.worker.config.bnfFetchConcurrency | quote }}
-  WORKER_CONCURRENCY: {{ .Values.worker.config.workerConcurrency | quote }}
 
   # --- OCR-quality backfill ---
   # Per-ARK OCR-quality artifacts for documents indexed before the feature. One
   # Presentation (ALTO) call per indexed text folio, once, behind the shared
-  # fetch gate. See values.yaml's comment and helm/DEPLOY.md "OCR quality backfill".
+  # ALTO gate. See values.yaml's comment and helm/DEPLOY.md "OCR quality backfill".
   OCR_BACKFILL_ENABLED: {{ .Values.worker.config.ocrBackfillEnabled | quote }}
   OCR_BACKFILL_CONCURRENCY: {{ .Values.worker.config.ocrBackfillConcurrency | quote }}
   OCR_BACKFILL_RETRY_FAILED_AFTER_MS: {{ .Values.worker.config.ocrBackfillRetryFailedAfterMs | quote }}

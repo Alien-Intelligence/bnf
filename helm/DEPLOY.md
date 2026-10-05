@@ -157,23 +157,31 @@ Property names are configurable in `values.yaml` under `secrets.*Property`.
 cd datastreaming-demos/bnf
 npx tsc --noEmit     # 0 errors
 npm run lint         # 0 errors
+# The chart's own checks (the BnF rate margin, required values) run in
+# `helm template`, NOT in `helm lint` — lint logs a template `fail` at INFO and
+# still exits 0.
+helm template t helm/bnf-demo-chart > /dev/null
 ```
 
 ### 2. Version bump
 
-Bump the same version in three places (keep them in sync):
+Bump the same version everywhere (keep them in sync):
 
 ```
 1. bnf/package.json                              — "version"
 2. bnf/helm/bnf-demo-chart/values.yaml           — image.tag
 3. bnf/helm/bnf-demo-chart/values.yaml           — worker.image.tag
-4. bnf/helm/bnf-demo-chart/Chart.yaml            — version + appVersion
+4. bnf/helm/bnf-demo-chart/values.yaml           — broker.image.tag
+5. bnf/helm/bnf-demo-chart/Chart.yaml            — version + appVersion
 ```
 
-### 3. Build and push BOTH images
+### 3. Build and push the images
 
-Unlike the other demos there are **two** images. There is no basePath to bake in
-— the app is served at root.
+Unlike the other demos there are **three** images: app, worker and broker.
+Build the broker whenever `broker/` changed — its ConfigMap and its code ship
+together (a new broker refuses to boot on an old ConfigMap's rates, and vice
+versa the old broker ignores the new rate vars). There is no basePath to bake
+in — the app is served at root.
 
 ```bash
 cd datastreaming-demos/bnf
@@ -186,6 +194,10 @@ docker push     rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo:<tag>
 docker build -f worker-v2/Dockerfile \
   -t rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo-worker:<tag> worker-v2
 docker push rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo-worker:<tag>
+
+# Broker image (context = ./broker, its own Dockerfile)
+docker build -t rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo-broker:<tag> broker
+docker push     rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo-broker:<tag>
 ```
 
 ### 4. Apply the ArgoCD application (first install only)
@@ -255,10 +267,10 @@ To rotate a credential later: edit the JSON, `scw secret version create` a new
 version (it becomes `latest`), then let the ExternalSecret refresh (`1h`) or
 force it by deleting the synced k8s Secret so ESO recreates it.
 
-### 2. Build + push both images
+### 2. Build + push the images
 
-Same as steps 1–3 of the Release Loop above (build app + worker, push to the
-Scaleway registry).
+Same as steps 1–3 of the Release Loop above (build app + worker + broker, push
+to the Scaleway registry).
 
 ### 3. Install / upgrade
 
@@ -356,6 +368,9 @@ truth to avoid churn.)
 | `worker.config.ocrBackfillEnabled` | Build missing OCR-quality artifacts (BnF spend; see below) | `"true"` |
 | `worker.config.ocrBackfillConcurrency` | In-flight backfill documents (positive integer) | `"2"` |
 | `worker.config.ocrBackfillRetryFailedAfterMs` | Base backoff before a transiently failed backfill build is retried (doubles per attempt, 5 attempts max) | `"86400000"` (24 h) |
+| `worker.config.altoFetchConcurrency` / `imageFetchConcurrency` | In-flight BnF fetches of the ALTO and image fetch stages (required; sizing in values.yaml) | `"96"` / `"32"` |
+| `bnfIiif.presentationBaseUrl` / `bnfIiif.imageBaseUrl` | BnF Presentation API (manifests, ALTO; worker + app resolver) and Image API (images; worker) bases, version included (required) | `…/presentation/iiif/gallica/1.0.0` / `…/image/iiif/gallica/1.0.0` |
+| `broker.config.rates.<bucket>.{quota,rpm,burst}` | THE BnF rates: every bucket of the ingestion subscription (global, presentation, image, iiifLegacy, catalogue, gallicaSru, grapheData, datePeriodique, documentTdm, manifest, external). The broker renders all of them, the worker its four gates from the same values. Required; the render fails unless `rpm + burst <= quota`. Raising a quota: `broker/README.md` | see values.yaml (global 1000/950/20) |
 | `istio.hosts[].gateway` | `own` (provision gateway+cert) or `shared` | `own` |
 | `postgres.persistence.size` | Postgres PVC size | `10Gi` |
 

@@ -30,9 +30,20 @@ DATABASE_URL=postgresql://…              # pg-boss buckets + sandbox_ingest_v2
 SCW_S3_BUCKET= SCW_S3_ENDPOINT_URL= SCW_S3_REGION= SCW_S3_ACCESS_KEY= SCW_S3_SECRET_KEY=
 V2_S3_PREFIX=v2/                         # isolates V2 artifacts from V1 in the shared bucket
 BNF_BROKER_URL=…                         # REQUIRED at boot: the egress chokepoint (owns OAuth + the rate caps)
-BNF_GLOBAL_RPM=300                       # fetch rate gate (→ 1000 only if the per-IP raise lands)
-BNF_FETCH_CONCURRENCY=12
-BNF_MANIFEST_RPM=42
+BNF_IIIF_PRESENTATION_BASE_URL=https://openapiproext.bnf.fr/presentation/iiif/gallica/1.0.0  # REQUIRED at boot: manifests + ALTO
+BNF_IIIF_IMAGE_BASE_URL=https://openapiproext.bnf.fr/image/iiif/gallica/1.0.0                # REQUIRED at boot: folio images
+# BNF_API_BASE_URL is RETIRED: set, the worker refuses to boot and names the two bases above.
+# The worker's own BnF gates — REQUIRED, no defaults, the SAME values as the
+# broker's buckets (helm broker.config.rates.<bucket>.rpm; broker/README.md):
+BNF_GLOBAL_RPM=950                       # the ingestion subscription's global cap
+BNF_PRESENTATION_RPM=1425                # Presentation API (manifests, ALTO)
+BNF_IMAGE_RPM=285                        # Image API (folio images)
+BNF_MANIFEST_RPM=38                      # per-IP manifest sub-limit
+# Fetch concurrency per stage — REQUIRED; permits ≈ rpm × latency_s / 60 + headroom:
+BNF_ALTO_FETCH_CONCURRENCY=96            # 1425 × ~3 s / 60 ≈ 71
+BNF_IMAGE_FETCH_CONCURRENCY=32           # 285 × ~4 s / 60 ≈ 19
+# RETIRED (set → the worker refuses to boot, naming the replacement):
+#   BNF_FETCH_CONCURRENCY, MISTRAL_IMAGE_SIZE, VISION_IMAGE_SIZE, BNF_API_BASE_URL
 MISTRAL_OCR_ENABLED=true                 # + MISTRAL_API_KEY … (mistral lane)
 # vision: SCW_API_KEY/SCW_GENAI_BASE_URL/HOLO_MODEL + GOOGLE_AI_API_KEY  (see src/live/*)
 # embed:  RunPod creds;  cluster: CLUSTER_* (mirrors V1 env.ts names)
@@ -46,8 +57,16 @@ OCR_BACKFILL_RETRY_FAILED_AFTER_MS=86400000  # base retry backoff in ms (≥ 600
 Every numeric knob above is a strict integer (≥ 1; a port ≤ 65535): a zero, a
 negative, a fraction or a typo throws at startup instead of being floored.
 
+The gates compose like the broker's buckets: ALTO fetches take presentation ∧
+global, image fetches image ∧ global, manifests manifest ∧ presentation ∧
+global. ALTO and images run as two stages on two queues (`v2.fetch`,
+`v2.fetch.image`) with their own concurrency, so images waiting on the scarce
+Image quota never hold ALTO's slots. Image sizes are chosen per canvas from the
+manifest's dims: Mistral `max` up to 4096 px on the long edge, else
+`!4096,4096`; vision the same at 2048 (`src/bnf/image-size.ts`).
+
 Each backfilled TEXT document costs one BnF ALTO call per indexed folio, once,
-through the same fetch gate as live ingests — the block above therefore sets
+through the same ALTO gate as live ingests — the block above therefore sets
 `OCR_BACKFILL_ENABLED=false`; turn it on only when you mean to spend that quota
 (see `helm/DEPLOY.md`, "OCR quality backfill").
 
@@ -102,13 +121,13 @@ This is accepted for the demo deployment — flagged for ISO 27001 work (F22,
 
 ## ⚠️ Safety constraints (do NOT skip)
 
-- **The BnF credential is shared (300/min via the broker).** Never run a gate
-  while anything else is ingesting against the same broker — a concurrent burst
-  trips the shared quota (freeze) and poisons both runs. Pick a quiet window.
-- **The 1000/min raise is per egress IP and unconfirmed for the run IP.** The dev
-  IP measured ~310/min with real freezes; the prod egress IP (`51.15.218.49`) is
-  the one Ludo may have raised. Confirm before tuning `BNF_GLOBAL_RPM` above 300,
-  or the 80-doc run will hit freezes (Open Question #2 in the design).
+- **The BnF ingestion quotas are shared by everything behind the broker.**
+  Never run a gate while anything else is ingesting against the same broker — a
+  concurrent burst trips a quota (freeze) and poisons both runs. Pick a quiet
+  window.
+- **The global cap is the binding one and is not yet measured** (1000/min, maybe
+  1500 since the API split — the Track D ramp test settles it). Do not raise
+  `BNF_GLOBAL_RPM` past the broker's `rates.global.rpm`.
 - **The broker is hard-pinned to one replica.** Never scale it (in-memory buckets
   + per-IP caps).
 - **Mistral is a paid, budget-capped operation.** `MISTRAL_OCR_ENABLED=true` runs
