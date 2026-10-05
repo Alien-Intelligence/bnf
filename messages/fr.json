@@ -616,7 +616,9 @@
       "subagentError": "Sous-agent en échec · {toolCalls} appels d'outils",
       "subagentTimeout": "Sous-agent arrêté (délai dépassé)",
       "subagentAborted": "Sous-agent annulé",
-      "subagentInterrupted": "Sous-agent interrompu (état final inconnu)"
+      "subagentInterrupted": "Sous-agent interrompu (état final inconnu)",
+      "subagentUnreadable": "Sous-agent : événement illisible",
+      "subagentStagedBeforeStop": "{buffered} candidats déposés dans le tampon avant l'arrêt"
     }
   },
   "memory": {

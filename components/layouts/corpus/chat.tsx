@@ -47,13 +47,15 @@ import { EventIngestRow } from "@/components/events/agent/ingest-event"
 import { EventSubagentRow } from "@/components/events/agent/subagent-event"
 import {
   reduceSubagentRuns,
-  subagentEventDataSchema,
-  type SubagentRunState,
+  SUBAGENT_RUN_STATUS,
+  type SubagentRun,
   type SubagentTurnInput,
 } from "@/lib/tools/subagent-runs"
 import { EventCompactionRow } from "@/components/events/agent/compaction-event"
 import { FeedbackButton } from "@/components/cards/feedback/feedback-button"
-import type { AgentProvider } from "@/lib/constants"
+import { ROUTES, type AgentProvider } from "@/lib/constants"
+import { AGENT_TOOLS } from "@/lib/agent/tools/constants"
+import { parseStreamDomainEvent, STREAM_DOMAIN_EVENT } from "@/lib/agent/stream-events"
 
 interface LayoutCorpusChatProps {
   /** Turn-stream handle (a thin adapter over the SDK's useChat). Lifted to the
@@ -169,7 +171,7 @@ function ToolPartView({ tool }: { tool: ToolPartEntry }) {
   // ask_user is not rendered inline — it takes over the composer slot (see
   // AskUserComposer in LayoutCorpusChat). The user's selections come back as a
   // normal user message bubble, so there's nothing to show here.
-  if (tool.toolName === "ask_user") return null
+  if (tool.toolName === AGENT_TOOLS.askUser) return null
   // A BnF-MCP soft failure (Gallica 403/429/…) comes back as a transport
   // success with `isError` unset — so derive the error state from the result
   // envelope too, not the SDK flag alone. See lib/tools/display.toolCallErrored.
@@ -240,7 +242,7 @@ function DomainPartView({
   event: StreamDomainEvent
   projectId: string
   locale: string
-  subagentRuns: ReadonlyMap<string, SubagentRunState>
+  subagentRuns: ReadonlyMap<string, SubagentRun>
 }) {
   // Corpus mutations render from their tool part (the +N/−N pill), so the
   // corpus_event row is suppressed to avoid doubling the count.
@@ -251,20 +253,20 @@ function DomainPartView({
   if (event.type === "ingest_event") {
     return (
       <EventIngestRow
-        status={event.data.status ?? event.data.kind}
+        status={event.data.status}
         jobId={event.data.jobId}
-        projectLocaleHref={`/${locale}/projects/${projectId}/ingerer`}
+        projectLocaleHref={`/${locale}${ROUTES.ingerer(projectId)}`}
       />
     )
   }
   if (event.type === "subagent_event") {
-    // One row per run, at its start event; the terminal event is folded into
-    // that row (reduceSubagentRuns) and renders nothing of its own. An event
-    // the schema rejects (an older server, no runId) renders nothing either.
-    const data = subagentEventDataSchema.safeParse(event.data)
-    if (!data.success || data.data.kind !== "start") return null
-    const run = subagentRuns.get(data.data.runId)
-    return run ? <EventSubagentRow run={run} /> : null
+    // One row per run, at its anchor: the start event, or the terminal of a
+    // run whose start never arrived. Any other event of the run is folded into
+    // that row (reduceSubagentRuns) and renders nothing of its own.
+    const run = subagentRuns.get(event.data.runId)
+    if (run === undefined) return null
+    const isAnchor = event.data.kind === "start" ? run.anchor === "start" : run.anchor === "terminal"
+    return isAnchor ? <EventSubagentRow run={run.state} /> : null
   }
   if (event.type === "compaction_event") {
     // Only surface a FRESH compaction; the per-turn cache-reuse is silent.
@@ -287,7 +289,7 @@ function PartView({
   active: boolean
   projectId: string
   locale: string
-  subagentRuns: ReadonlyMap<string, SubagentRunState>
+  subagentRuns: ReadonlyMap<string, SubagentRun>
 }) {
   if (part.kind === "text") {
     if (!part.text) return null
@@ -301,13 +303,18 @@ function PartView({
     return <ToolPartView tool={part.tool} />
   }
   if (part.kind === "domain") {
+    const parsed = parseStreamDomainEvent(part.event)
+    if (parsed.kind === "foreign") return null
+    if (parsed.kind === "invalid") {
+      // A payload that breaks the shared contract is a server bug: logged, and
+      // a sub-agent row still shows that something ran rather than vanishing.
+      console.error(`[chat] ${parsed.type} breaks the stream contract: ${parsed.issues}`)
+      return parsed.type === STREAM_DOMAIN_EVENT.SUBAGENT ? (
+        <EventSubagentRow run={{ status: SUBAGENT_RUN_STATUS.UNREADABLE }} />
+      ) : null
+    }
     return (
-      <DomainPartView
-        event={part.event as StreamDomainEvent}
-        projectId={projectId}
-        locale={locale}
-        subagentRuns={subagentRuns}
-      />
+      <DomainPartView event={parsed.event} projectId={projectId} locale={locale} subagentRuns={subagentRuns} />
     )
   }
   return null
@@ -326,7 +333,7 @@ function AssistantTurnView({
   locale: string
   thinkingLabel: string
   isLast: boolean
-  subagentRuns: ReadonlyMap<string, SubagentRunState>
+  subagentRuns: ReadonlyMap<string, SubagentRun>
 }) {
   const lastIndex = turn.parts.length - 1
   const hasText = turn.parts.some((p) => p.kind === "text" && p.text.trim().length > 0)
@@ -424,7 +431,7 @@ export function LayoutCorpusChat({
     for (const turn of chat.turns) {
       if (turn.role === "assistant") {
         for (const p of turn.parts) {
-          if (p.kind === "tool" && p.tool.toolName === "ask_user") {
+          if (p.kind === "tool" && p.tool.toolName === AGENT_TOOLS.askUser) {
             last = p.tool
             answered = false
           }

@@ -616,7 +616,9 @@
       "subagentError": "Sub-agent failed · {toolCalls} tool calls",
       "subagentTimeout": "Sub-agent stopped (time limit exceeded)",
       "subagentAborted": "Sub-agent cancelled",
-      "subagentInterrupted": "Sub-agent interrupted (final state unknown)"
+      "subagentInterrupted": "Sub-agent interrupted (final state unknown)",
+      "subagentUnreadable": "Sub-agent: unreadable event",
+      "subagentStagedBeforeStop": "{buffered} candidates staged in the buffer before it stopped"
     }
   },
   "memory": {
