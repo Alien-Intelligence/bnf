@@ -379,11 +379,12 @@ export const QUOTE_WARNING_EXCERPT_CHARS = 160
  * Unclosed « / “ marks the quote extractor recovers past in one Markdown
  * block. Each recovery rescans the rest of the block, so this bounds the work
  * a body full of stray marks can cost; past it, the rest of the block is not
- * scanned for quotes (the marks found are still reported).
+ * scanned: the marks found are reported, and the unscanned rest is reported
+ * once as `unscanned_rest_of_block` (the check is then `partial`).
  */
 export const QUOTE_UNBALANCED_MARKS_MAX_PER_BLOCK = 20
 
-/** Candidate alignment starts the matcher tries between two deadline checks. */
+/** Steps a synchronous quote-check loop (extraction, tokenisation, alignment) takes between two deadline checks. */
 export const QUOTE_MATCH_DEADLINE_STRIDE = 1_024
 
 // ---------------------------------------------------------------------------

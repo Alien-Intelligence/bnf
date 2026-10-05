@@ -5,11 +5,14 @@
 // failing ones.
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { extractQuotes } from "./quotes"
-import { QuoteMatchDeadlineError, tokenizeFolios, verifyQuote } from "./quote-match"
+import { QUOTE_WARNING_EXCERPT_CHARS } from "@/lib/constants"
+import { QuoteMatchDeadlineError, neverOutOfTime } from "./deadline"
+import { scanNoteQuotes, type ExtractedQuote } from "./quotes"
+import { tokenizeFolios, verifyQuote } from "./quote-match"
 import type { QuoteVerdict } from "./quote-match"
 import {
   OCR_CORRECTION_MARKING_MODE,
+  QUOTE_UNVERIFIABLE_CAUSE,
   QUOTE_WARNING_REASON,
   type OcrCorrectionMarking,
   type QuoteWarningReason,
@@ -33,8 +36,10 @@ const FOLIOS = new Map<number, string>([
   [5, "Première phrase du rapport. Deuxième phrase du rapport. Troisième phrase du rapport ici même."],
   [7, "Nous ne reviendrons pas sur les causes exactes de cet incendie dramatique."],
 ])
-/** A clock that never runs out, for tests where time is not the subject. */
-const neverOutOfTime = () => false
+function extractQuotes(md: string): ExtractedQuote[] {
+  return scanNoteQuotes(md, { outOfTime: neverOutOfTime, excerptChars: QUOTE_WARNING_EXCERPT_CHARS }).quotes
+}
+
 const DOC = tokenizeFolios(FOLIOS, neverOutOfTime)
 
 type Row = {
@@ -250,7 +255,10 @@ for (const row of ROWS) {
 }
 
 test("tokenizeFolios marks paragraph breaks and sentence ends, and joins printed hyphenation", () => {
-  const doc = tokenizeFolios(new Map([[1, "La répu-\nblique est une. Elle vit.\n\nNouveau paragraphe ici."]]), neverOutOfTime)
+  const { tokens: doc, folioRanges } = tokenizeFolios(
+    new Map([[1, "La répu-\nblique est une. Elle vit.\n\nNouveau paragraphe ici."]]),
+    neverOutOfTime,
+  )
   const norms = doc.map((t) => t.norm)
   assert.deepEqual(norms, ["la", "république", "est", "une", "elle", "vit", "nouveau", "paragraphe", "ici"])
   assert.equal(doc[3].sentenceEndAfter, true, "'une.' ends a sentence before 'Elle'")
@@ -258,6 +266,7 @@ test("tokenizeFolios marks paragraph breaks and sentence ends, and joins printed
   assert.equal(doc[6].paragraphBreakBefore, true, "a blank line precedes 'Nouveau'")
   assert.equal(doc[2].paragraphBreakBefore, false)
   assert.ok(doc.every((t) => t.folio === 1))
+  assert.deepEqual([...folioRanges], [[1, [0, 9]]])
 })
 
 test("verifyQuote returns every applicable reason in one run", () => {
@@ -275,9 +284,12 @@ test("verifyQuote returns every applicable reason in one run", () => {
   assert.ok(!reasons.includes("ok"))
 })
 
-test("the matcher stops at the deadline: tokenizing and aligning throw QuoteMatchDeadlineError", () => {
-  const outOfTime = () => true
-  assert.throws(() => tokenizeFolios(FOLIOS, outOfTime), QuoteMatchDeadlineError)
+test("the matcher stops at the deadline: tokenizing and aligning throw QuoteMatchDeadlineError with the reason", () => {
+  const outOfTime = () => QUOTE_UNVERIFIABLE_CAUSE.CANCELLED
+  assert.throws(
+    () => tokenizeFolios(FOLIOS, outOfTime),
+    (err) => err instanceof QuoteMatchDeadlineError && err.reason === QUOTE_UNVERIFIABLE_CAUSE.CANCELLED,
+  )
   const [q] = extractQuotes(`« Les premiers témoins accusent l'imprudence » ${CITE(1)}`)
   assert.throws(
     () =>
@@ -289,4 +301,61 @@ test("the matcher stops at the deadline: tokenizing and aligning throw QuoteMatc
       }),
     QuoteMatchDeadlineError,
   )
+})
+
+/** `count` words cycling through `vocabulary`. */
+function cycle(vocabulary: readonly string[], count: number): string[] {
+  return Array.from({ length: count }, (_, i) => vocabulary[i % vocabulary.length])
+}
+
+test("a 4 000-word quote aligns iteratively: no stack overflow, the right folio, no fuzzy token", () => {
+  const quoteWords = Array.from({ length: 4_000 }, (_, i) => `mot${i}`)
+  const folios = new Map<number, string>([
+    [1, "Un folio sans rapport."],
+    [2, `Avant le passage. ${quoteWords.join(" ")} Après le passage.`],
+  ])
+  const [q] = extractQuotes(`« ${quoteWords.join(" ")} » ${CITE(2)}`)
+  const verdicts = verifyQuote(q, tokenizeFolios(folios, neverOutOfTime), {
+    outOfTime: neverOutOfTime,
+    citedFolio: 2,
+    marking: OCR_CORRECTION_MARKING_MODE.BRACKETED_WORD,
+    lowOcrFolios: new Set(),
+  })
+  assert.deepEqual(verdicts, [{ ok: true, matchedFolio: 2, fuzzyTokens: 0 }])
+})
+
+test("alignment ticks the deadline inside one long alignment, not only between candidate starts", () => {
+  // Two candidate starts, each a 3 000-token near-match that fails at its
+  // last word: the stop has to come from inside alignAt.
+  const quoteWords = cycle(["alpha", "beta"], 3_000)
+  const nearMiss = [...quoteWords.slice(0, -1), "qqqqqqqq"].join(" ")
+  const doc = tokenizeFolios(new Map([[1, `${nearMiss} ${nearMiss}`]]), neverOutOfTime)
+  const [q] = extractQuotes(`« ${quoteWords.join(" ")} » ${CITE(1)}`)
+  let reads = 0
+  // Out of time from the fourth clock read on: the scan of starts alone reads
+  // it at most twice before the first alignment.
+  const outOfTime = () => (++reads > 3 ? QUOTE_UNVERIFIABLE_CAUSE.BUDGET_EXCEEDED : null)
+  assert.throws(
+    () =>
+      verifyQuote(q, doc, {
+        outOfTime,
+        citedFolio: 1,
+        marking: OCR_CORRECTION_MARKING_MODE.BRACKETED_WORD,
+        lowOcrFolios: null,
+      }),
+    (err) => err instanceof QuoteMatchDeadlineError && err.reason === QUOTE_UNVERIFIABLE_CAUSE.BUDGET_EXCEEDED,
+  )
+})
+
+test("fuzzy words: two long space-less tokens compare in banded time, and the edit bound still holds", () => {
+  const long = "a".repeat(50_000)
+  const folios = new Map<number, string>([[1, `début ${long}b fin du passage cité ici`]])
+  const [q] = extractQuotes(`« début ${long}c fin du passage cité ici » ${CITE(1)}`)
+  const verdicts = verifyQuote(q, tokenizeFolios(folios, neverOutOfTime), {
+    outOfTime: neverOutOfTime,
+    citedFolio: 1,
+    marking: OCR_CORRECTION_MARKING_MODE.SILENT,
+    lowOcrFolios: new Set(),
+  })
+  assert.deepEqual(verdicts, [{ ok: true, matchedFolio: 1, fuzzyTokens: 1 }])
 })

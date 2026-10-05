@@ -7,11 +7,14 @@
  *
  * Bounds (CLAUDE_ERROR_PATTERNS §14): at most QUOTE_CHECK_MAX_SOURCES distinct
  * ARKs per write, QUOTE_CHECK_CONCURRENCY fetches in flight, and one overall
- * budget (`budgetMs`, QUOTE_CHECK_BUDGET_MS in production). The budget is a
- * signal composed into the caller's for every await on the cluster, AND a
- * deadline checked between documents and between quotes for the synchronous
- * tokenize / align work; whatever is left when it passes is `unverifiable /
- * budget_exceeded`.
+ * budget (`budgetMs`, QUOTE_CHECK_BUDGET_MS in production), on ONE monotonic
+ * clock (`performance.now()`): the same start drives the abort signal
+ * composed into the caller's for every await on the cluster, and the
+ * deadline ticked inside every synchronous loop — the body scan
+ * (quotes.ts), tokenisation and alignment (quote-match.ts) — so neither a
+ * slow cluster nor a dense body or long quote runs past it. Whatever is left
+ * when it passes is `unverifiable / budget_exceeded` (or `cancelled`), with
+ * the reason carried by the error that stopped it, never a default.
  *
  * Errors, classified by which signal fired, never by an error's name:
  *   - the caller's signal (the turn was cancelled) → that ARK's quotes are
@@ -51,10 +54,11 @@ import {
   type QuoteWarning,
   type QuoteWarningReason,
 } from "@/models/notes/schema"
-import { extractQuotes, findUnbalancedQuoteMarks, isSameQuote } from "./quotes"
-import type { ExtractedQuote } from "./quotes"
-import { QuoteMatchDeadlineError, tokenizeFolios, verifyQuote } from "./quote-match"
-import type { SourceToken } from "./quote-match"
+import { QuoteMatchDeadlineError, type OutOfTime } from "./deadline"
+import { quoteIdentity, scanNoteQuotes } from "./quotes"
+import type { ExtractedQuote, QuoteScan } from "./quotes"
+import { tokenizeFolios, verifyQuote } from "./quote-match"
+import type { SourceDocument } from "./quote-match"
 
 /**
  * Per-folio OCR quality: which of the cited folios of a document are poorly
@@ -82,7 +86,7 @@ export type CheckNoteQuotesArgs = {
    * empty set.
    */
   lowOcrFolios: LowOcrFoliosLookup | null
-  /** Wall-clock ceiling of the whole check (QUOTE_CHECK_BUDGET_MS in production). */
+  /** Ceiling of the whole check, on the monotonic clock (QUOTE_CHECK_BUDGET_MS in production). */
   budgetMs: number
 }
 
@@ -199,33 +203,74 @@ export async function checkNoteQuotes(args: CheckNoteQuotesArgs): Promise<QuoteC
     // abort every fetch at once.
     throw new RangeError(`checkNoteQuotes: budgetMs must be a positive integer, got ${args.budgetMs}`)
   }
-  // ONE clock for the whole check: the abort signal that bounds the awaits
-  // and the deadline that bounds the synchronous work start together.
-  const budget = AbortSignal.timeout(args.budgetMs)
-  const deadline = Date.now() + args.budgetMs
-  const outOfTime = (): QuoteUnverifiableCause | null =>
+  const budget = monotonicBudget(args.budgetMs)
+  const outOfTime: OutOfTime = () =>
     args.signal.aborted
       ? QUOTE_UNVERIFIABLE_CAUSE.CANCELLED
-      : Date.now() >= deadline
+      : budget.expired()
         ? QUOTE_UNVERIFIABLE_CAUSE.BUDGET_EXCEEDED
         : null
-  const stopMatching = () => outOfTime() !== null
+  try {
+    return await runCheck(args, budget.signal, outOfTime)
+  } finally {
+    budget.dispose()
+  }
+}
 
-  const prior = args.priorBodyMd === null ? [] : extractQuotes(args.priorBodyMd)
-  const quotes = extractQuotes(args.bodyMd).filter(
-    (q) => q.words >= QUOTE_MIN_CHECKED_WORDS && !prior.some((p) => isSameQuote(p, q)),
-  )
+/**
+ * The check's budget on the monotonic clock: `expired()` for the synchronous
+ * loops and `signal` for the awaits, both from the same start, so they can
+ * never disagree about whether the budget is spent.
+ */
+function monotonicBudget(budgetMs: number): { signal: AbortSignal; expired: () => boolean; dispose: () => void } {
+  const deadline = performance.now() + budgetMs
+  const controller = new AbortController()
+  const expire = () => controller.abort(new DOMException(`the ${budgetMs} ms quote-check budget ran out`, "TimeoutError"))
+  // setTimeout may fire a hair early or late; re-arm until the clock agrees.
+  let timer: ReturnType<typeof setTimeout>
+  const arm = () => {
+    const left = deadline - performance.now()
+    if (left <= 0) expire()
+    else timer = setTimeout(arm, Math.ceil(left))
+  }
+  arm()
+  return {
+    signal: controller.signal,
+    expired: () => {
+      if (controller.signal.aborted) return true
+      if (performance.now() < deadline) return false
+      expire()
+      return true
+    },
+    dispose: () => clearTimeout(timer),
+  }
+}
+
+async function runCheck(args: CheckNoteQuotesArgs, budget: AbortSignal, outOfTime: OutOfTime): Promise<QuoteCheckResult> {
+  const scanOptions = { outOfTime, excerptChars: QUOTE_WARNING_EXCERPT_CHARS }
+  const body = scanNoteQuotes(args.bodyMd, scanOptions)
+  const prior: QuoteScan | null = args.priorBodyMd === null ? null : scanNoteQuotes(args.priorBodyMd, scanOptions)
+  const priorQuotes = new Set(prior?.quotes.map(quoteIdentity))
+  const quotes = body.quotes.filter((q) => q.words >= QUOTE_MIN_CHECKED_WORDS && !priorQuotes.has(quoteIdentity(q)))
   const warnings: Array<{ index: number; w: QuoteWarning }> = []
   const push = (index: number, w: QuoteWarning) => warnings.push({ index, w })
 
-  // An opening mark never closed: the text after it cannot be delimited.
-  const priorUnbalanced =
-    args.priorBodyMd === null
-      ? new Set<string>()
-      : new Set(findUnbalancedQuoteMarks(args.priorBodyMd, QUOTE_WARNING_EXCERPT_CHARS).map((u) => u.excerpt))
-  for (const u of findUnbalancedQuoteMarks(args.bodyMd, QUOTE_WARNING_EXCERPT_CHARS)) {
+  // An opening mark never closed: the text after it cannot be delimited. A
+  // block given up past the stray-mark cap: its rest was not looked at. Both
+  // are skipped when the prior body already had them (not written this turn).
+  const priorUnbalanced = new Set(prior?.unbalanced.map((u) => u.excerpt))
+  for (const u of body.unbalanced) {
     if (priorUnbalanced.has(u.excerpt)) continue
     push(u.index, warning(u.excerpt, null, QUOTE_WARNING_REASON.UNBALANCED_QUOTE_MARK))
+  }
+  const priorUnscanned = new Set(prior?.unscannedRestOfBlock.map((u) => u.excerpt))
+  for (const u of body.unscannedRestOfBlock) {
+    if (priorUnscanned.has(u.excerpt)) continue
+    push(u.index, warning(u.excerpt, null, QUOTE_WARNING_REASON.UNSCANNED_REST_OF_BLOCK))
+  }
+  // The deadline stopped the scan itself: the rest of the body is unchecked.
+  if (body.stopped !== null) {
+    push(body.stopped.index, warning(body.stopped.excerpt, null, QUOTE_WARNING_REASON.UNVERIFIABLE, { cause: body.stopped.reason }))
   }
 
   const byArk = new Map<string, Array<{ q: ExtractedQuote; citation: QuoteCitation }>>()
@@ -245,8 +290,8 @@ export async function checkNoteQuotes(args: CheckNoteQuotesArgs): Promise<QuoteC
   }
 
   const fetched = groups.slice(0, QUOTE_CHECK_MAX_SOURCES)
-  // Extraction is synchronous too: if it alone ran past the deadline, nothing
-  // is fetched and every grouped quote is reported as stopped.
+  // The scan is bounded by the same deadline: if it used the budget up,
+  // nothing is fetched and every grouped quote is reported as stopped.
   const stoppedEarly = outOfTime()
   if (stoppedEarly !== null) {
     for (const [, list] of fetched) for (const { q } of list) push(q.index, unverifiable(q, stoppedEarly))
@@ -268,7 +313,7 @@ export async function checkNoteQuotes(args: CheckNoteQuotesArgs): Promise<QuoteC
         for (const { q } of list) push(q.index, unverifiable(q, outcome.cause))
         continue
       }
-      for (const w of verifyDocument(list, outcome, stopMatching, outOfTime)) push(w.index, w.w)
+      for (const w of verifyDocument(list, outcome, outOfTime)) push(w.index, w.w)
     }
   }
 
@@ -279,9 +324,7 @@ export async function checkNoteQuotes(args: CheckNoteQuotesArgs): Promise<QuoteC
   // mark — means the result does not cover the whole body.
   const partial =
     unevaluated.length > 0 ||
-    ordered.some(
-      (w) => w.reason === QUOTE_WARNING_REASON.UNVERIFIABLE || w.reason === QUOTE_WARNING_REASON.UNBALANCED_QUOTE_MARK,
-    )
+    ordered.some((w) => PARTIAL_REASONS.has(w.reason))
   return {
     status: partial ? QUOTE_CHECK_STATUS.PARTIAL : QUOTE_CHECK_STATUS.COMPLETE,
     checked: quotes.length,
@@ -289,6 +332,13 @@ export async function checkNoteQuotes(args: CheckNoteQuotesArgs): Promise<QuoteC
     unevaluated_rules: unevaluated,
   }
 }
+
+/** Reasons that mean part of the body was not checked: the result is `partial`. */
+const PARTIAL_REASONS: ReadonlySet<QuoteWarningReason> = new Set([
+  QUOTE_WARNING_REASON.UNVERIFIABLE,
+  QUOTE_WARNING_REASON.UNBALANCED_QUOTE_MARK,
+  QUOTE_WARNING_REASON.UNSCANNED_REST_OF_BLOCK,
+])
 
 /**
  * Match one fetched document's quotes. The deadline is checked before the
@@ -298,19 +348,18 @@ export async function checkNoteQuotes(args: CheckNoteQuotesArgs): Promise<QuoteC
 function verifyDocument(
   list: ReadonlyArray<{ q: ExtractedQuote; citation: QuoteCitation }>,
   outcome: Extract<FetchOutcome, { kind: "found" }>,
-  stopMatching: () => boolean,
-  outOfTime: () => QuoteUnverifiableCause | null,
+  outOfTime: OutOfTime,
 ): Array<{ index: number; w: QuoteWarning }> {
   const out: Array<{ index: number; w: QuoteWarning }> = []
   const stopAll = (from: number, cause: QuoteUnverifiableCause) => {
     for (const { q } of list.slice(from)) out.push({ index: q.index, w: unverifiable(q, cause) })
   }
-  let doc: SourceToken[]
+  let doc: SourceDocument
   try {
-    doc = tokenizeFolios(outcome.folios, stopMatching)
+    doc = tokenizeFolios(outcome.folios, outOfTime)
   } catch (err) {
     if (!(err instanceof QuoteMatchDeadlineError)) throw err
-    stopAll(0, outOfTime() ?? QUOTE_UNVERIFIABLE_CAUSE.BUDGET_EXCEEDED)
+    stopAll(0, err.reason)
     return out
   }
   for (const [n, { q, citation }] of list.entries()) {
@@ -326,14 +375,14 @@ function verifyDocument(
     let verdicts
     try {
       verdicts = verifyQuote(q, doc, {
-        outOfTime: stopMatching,
+        outOfTime,
         citedFolio: citation.folio,
         marking: OCR_CORRECTION_MARKING,
         lowOcrFolios: outcome.low,
       })
     } catch (err) {
       if (!(err instanceof QuoteMatchDeadlineError)) throw err
-      stopAll(n, outOfTime() ?? QUOTE_UNVERIFIABLE_CAUSE.BUDGET_EXCEEDED)
+      stopAll(n, err.reason)
       return out
     }
     for (const v of verdicts) {

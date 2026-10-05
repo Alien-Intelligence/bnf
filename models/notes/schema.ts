@@ -48,6 +48,11 @@ export const QUOTE_WARNING_REASON = {
   CORRECTION_ON_LOW_OCR: "correction_on_low_ocr",
   /** An opening « or “ that is never closed: what follows cannot be delimited. */
   UNBALANCED_QUOTE_MARK: "unbalanced_quote_mark",
+  /**
+   * The rest of a block after QUOTE_UNBALANCED_MARKS_MAX_PER_BLOCK unclosed
+   * marks: the scan gave up there, so its quotes were not checked.
+   */
+  UNSCANNED_REST_OF_BLOCK: "unscanned_rest_of_block",
   UNVERIFIABLE: "unverifiable",
 } as const
 export type QuoteWarningReason =

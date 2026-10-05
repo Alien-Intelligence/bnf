@@ -23,6 +23,12 @@
  * A block is a paragraph, a list item, or a blockquote plus the attribution
  * line right after it.
  *
+ * Bounded work: scanNoteQuotes takes the caller's OutOfTime (deadline.ts) and
+ * ticks it inside every loop over the body (lines, characters of a block,
+ * spans), so a dense 200 KB paragraph cannot run past the check's budget.
+ * Attribution is indexed per block (spans and citations sorted once, binary
+ * search per quote), O(n log n) in the quotes of a block.
+ *
  * Normalisation is shared with the matcher through `normalizeToken`: NFC,
  * French lower-case, typographic apostrophes → `'`, Markdown emphasis markers
  * dropped, leading/trailing punctuation stripped per whitespace token. Inner
@@ -30,6 +36,7 @@
  */
 
 import { QUOTE_UNBALANCED_MARKS_MAX_PER_BLOCK } from "@/lib/constants"
+import { QuoteMatchDeadlineError, StopCheck, type OutOfTime, type StopReason } from "./deadline"
 import { QUOTE_FORM, type QuoteCitation, type QuoteForm } from "@/models/notes/schema"
 import { CITATION_REGEX, IMAGE_CITATION_REGEX, NOTELINK_REGEX, parseCitations } from "./syntax"
 
@@ -186,7 +193,7 @@ function isAttributionLine(line: string): boolean {
  * blockquote, and the first non-blank line after it joins it when it is an
  * attribution line (a citation, no quote of its own).
  */
-function splitBlocks(md: string): Block[] {
+function splitBlocks(md: string, stop: StopCheck): Block[] {
   const blocks: Block[] = []
   const lines = md.split("\n")
   let offset = 0
@@ -200,6 +207,7 @@ function splitBlocks(md: string): Block[] {
   }
 
   for (const line of lines) {
+    stop.tick()
     const start = offset
     const end = offset + line.length
     offset = end + 1
@@ -252,18 +260,26 @@ function splitBlocks(md: string): Block[] {
 type Span = { form: QuoteForm; open: number; close: number; innerStart: number; innerEnd: number }
 
 /**
- * Top-level « » and “ ” spans of a block (absolute offsets), and the offsets
- * of opening marks that are never closed.
+ * Top-level « » and “ ” spans of a block (absolute offsets, in source order),
+ * the offsets of opening marks that are never closed, and — when the scan
+ * gave up — where the unscanned rest of the block starts.
  *
  * Recovery is per quote: an unclosed « (or “) would otherwise swallow every
  * later quote of the block as its content. The scan records it as unbalanced
  * and restarts just after it, so the quotes that follow are still found — and
  * the caller reports the unclosed mark instead of silently checking nothing.
  * Each restart rescans the rest of the block, so at most
- * QUOTE_UNBALANCED_MARKS_MAX_PER_BLOCK restarts are made; past that, the rest
- * of the block is left unscanned and its marks stay reported.
+ * QUOTE_UNBALANCED_MARKS_MAX_PER_BLOCK restarts are made. The mark that
+ * reaches the cap is still reported as unbalanced; the text after it is NOT
+ * scanned (neither its quotes nor its marks), and `unscannedFrom` says where
+ * it starts so the caller reports it (`unscanned_rest_of_block`) instead of
+ * dropping it silently.
  */
-function scanSpans(text: string, base: number): { spans: Span[]; unbalanced: number[] } {
+function scanSpans(
+  text: string,
+  base: number,
+  stop: StopCheck,
+): { spans: Span[]; unbalanced: number[]; unscannedFrom: number | null } {
   const unbalanced: number[] = []
   let spans: Span[] = []
   let from = 0
@@ -273,6 +289,7 @@ function scanSpans(text: string, base: number): { spans: Span[]; unbalanced: num
     let open = -1
     let curlyOpen = -1
     for (let i = from; i < text.length; i++) {
+      stop.tick()
       const ch = text[i]
       if (ch === "«") {
         if (depth === 0 && curlyOpen === -1) open = i
@@ -295,13 +312,14 @@ function scanSpans(text: string, base: number): { spans: Span[]; unbalanced: num
     }
     // The earliest still-open mark is the one that swallowed the rest.
     const stuck = [open, curlyOpen].filter((o) => o !== -1)
-    if (stuck.length === 0) return { spans, unbalanced }
+    if (stuck.length === 0) return { spans, unbalanced, unscannedFrom: null }
     const at = Math.min(...stuck)
     unbalanced.push(base + at)
     if (unbalanced.length >= QUOTE_UNBALANCED_MARKS_MAX_PER_BLOCK) {
       // Each recovery rescans the rest of the block: bound the work. The
-      // quotes before this mark are kept; the rest of the block is not scanned.
-      return { spans: spans.filter((sp) => sp.open < base + at), unbalanced }
+      // quotes before this mark are kept; the rest is reported unscanned.
+      const unscannedFrom = at + 1 < text.length ? base + at + 1 : null
+      return { spans: spans.filter((sp) => sp.open < base + at), unbalanced, unscannedFrom }
     }
     from = at + 1
   }
@@ -309,31 +327,48 @@ function scanSpans(text: string, base: number): { spans: Span[]; unbalanced: num
 
 type Cite = { ark: string; folio: number; index: number; end: number }
 
+/** The block's citations, sorted by offset (they never overlap, so by end too). */
 function citationsIn(text: string, base: number): Cite[] {
-  return parseCitations(text).map((c) => ({
-    ark: c.ark,
-    folio: c.folio,
-    index: base + c.index,
-    end: base + c.index + c.length,
-  }))
+  return parseCitations(text)
+    .map((c) => ({ ark: c.ark, folio: c.folio, index: base + c.index, end: base + c.index + c.length }))
+    .sort((a, b) => a.index - b.index)
 }
 
-function attribute(span: Span, spans: Span[], cites: Cite[]): QuoteCitation | null {
-  const others = spans.filter((s) => s !== span)
-  const opensBetween = (a: number, b: number) => others.some((s) => s.open > a && s.open < b)
+/** First index in [0, length) whose value is > `bound`, by binary search (`length` when none). */
+function firstAbove(length: number, valueAt: (i: number) => number, bound: number): number {
+  let lo = 0
+  let hi = length
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if (valueAt(mid) > bound) hi = mid
+    else lo = mid + 1
+  }
+  return lo
+}
 
-  const after = cites
-    .filter((c) => c.index > span.close && !opensBetween(span.close, c.index))
-    .sort((a, b) => a.index - b.index)[0]
-  if (after) return { ark: after.ark, folio: after.folio }
+/**
+ * The citation of the `k`-th span of a block (rules in the module header).
+ * `spans` are the block's top-level spans and `cites` its citations, both
+ * sorted by offset. Top-level spans never overlap, so "no other quote opens
+ * in between" only ever concerns the NEXT span (after the quote) or the
+ * PREVIOUS one (before it): each rule is one binary search and one compare.
+ */
+function attribute(k: number, spans: readonly Span[], cites: readonly Cite[]): QuoteCitation | null {
+  const span = spans[k]
+  const nextOpen = spans[k + 1]?.open ?? Number.POSITIVE_INFINITY
+  const prevOpen = spans[k - 1]?.open ?? Number.NEGATIVE_INFINITY
 
-  const before = cites
-    .filter((c) => c.end <= span.open && !opensBetween(c.index, span.open))
-    .sort((a, b) => b.index - a.index)[0]
-  if (before) return { ark: before.ark, folio: before.folio }
+  // 1. The first citation after the closing mark, before the next quote opens.
+  const after = cites[firstAbove(cites.length, (i) => cites[i].index, span.close)]
+  if (after !== undefined && after.index < nextOpen) return { ark: after.ark, folio: after.folio }
 
-  const inside = cites.filter((c) => c.index > span.open && c.end <= span.close).at(-1)
-  if (inside) return { ark: inside.ark, folio: inside.folio }
+  // 2. The nearest citation ending before the quote, after the previous one opened.
+  const before = cites[firstAbove(cites.length, (i) => cites[i].end, span.open) - 1]
+  if (before !== undefined && before.index >= prevOpen) return { ark: before.ark, folio: before.folio }
+
+  // 3. The last citation written inside the quote marks.
+  const inside = cites[firstAbove(cites.length, (i) => cites[i].end, span.close) - 1]
+  if (inside !== undefined && inside.index > span.open) return { ark: inside.ark, folio: inside.folio }
 
   return null
 }
@@ -351,69 +386,16 @@ function squashWhitespace(s: string): string {
 }
 
 /**
- * Is `q` the same quotation as `p` — same text (whitespace aside), same kind
- * of marks, and the same citation? The prior-body rule of the quote check
- * skips a quote only when the prior body already held it in this sense: it
+ * The identity of a quotation for the prior-body rule: same text (whitespace
+ * aside), same kind of marks, and the same citation. The quote check skips a
+ * quote only when the prior body already held one with the same identity: it
  * was not written this turn. A quote that gained or changed its citation IS
  * new (the agent attributed it this turn), and so is a new quote that happens
- * to be a sub-phrase of an old one.
+ * to be a sub-phrase of an old one. A string, so the prior body's quotes go in
+ * a Set and the rule costs one lookup per quote.
  */
-export function isSameQuote(
-  p: Pick<ExtractedQuote, "raw" | "form" | "citation">,
-  q: Pick<ExtractedQuote, "raw" | "form" | "citation">,
-): boolean {
-  return (
-    p.form === q.form &&
-    squashWhitespace(p.raw) === squashWhitespace(q.raw) &&
-    p.citation?.ark === q.citation?.ark &&
-    p.citation?.folio === q.citation?.folio
-  )
-}
-
-/** Every quotation span of a note body, in source order. */
-export function extractQuotes(md: string): ExtractedQuote[] {
-  const masked = maskCode(md)
-  const out: ExtractedQuote[] = []
-
-  for (const block of splitBlocks(masked)) {
-    const text = masked.slice(block.start, block.end)
-    const { spans } = scanSpans(text, block.start)
-    const cites = citationsIn(text, block.start)
-    const inBlockquote = block.kind === BLOCK_KIND.BLOCKQUOTE
-
-    if (spans.length === 0 && inBlockquote) {
-      // Tokens come from the code-masked text; `raw` is the body verbatim, so
-      // the prior-body rule and the excerpt see what the agent actually wrote.
-      // The attribution line is part of the block, not of the quotation.
-      const quoted = masked.slice(block.start, block.quoteEnd)
-      const parts = segment(stripReferences(stripBlockquotePrefix(quoted)))
-      if (parts.segments.length === 0) continue
-      const cite = cites[0]
-      out.push({
-        raw: stripBlockquotePrefix(md.slice(block.start, block.quoteEnd)).trim(),
-        form: QUOTE_FORM.BLOCKQUOTE,
-        index: block.start,
-        citation: cite ? { ark: cite.ark, folio: cite.folio } : null,
-        ...parts,
-      })
-      continue
-    }
-
-    for (const span of spans) {
-      const unprefix = (s: string) => (inBlockquote ? stripBlockquotePrefix(s) : s)
-      const parts = segment(stripReferences(unprefix(masked.slice(span.innerStart, span.innerEnd))))
-      if (parts.segments.length === 0) continue
-      out.push({
-        raw: unprefix(md.slice(span.innerStart, span.innerEnd)).trim(),
-        form: span.form,
-        index: span.open,
-        citation: attribute(span, spans, cites),
-        ...parts,
-      })
-    }
-  }
-
-  return out.sort((a, b) => a.index - b.index)
+export function quoteIdentity(q: Pick<ExtractedQuote, "raw" | "form" | "citation">): string {
+  return JSON.stringify([q.form, squashWhitespace(q.raw), q.citation?.ark ?? null, q.citation?.folio ?? null])
 }
 
 /** An opening « or “ that is never closed in its block. */
@@ -424,20 +406,115 @@ export type UnbalancedQuoteMark = {
   excerpt: string
 }
 
-/**
- * Every opening quote mark of the body that is never closed in its block, in
- * source order. extractQuotes recovers past them; the quote check reports
- * them, because the text that follows one cannot be delimited and so cannot
- * be checked.
- */
-export function findUnbalancedQuoteMarks(md: string, excerptChars: number): UnbalancedQuoteMark[] {
-  const masked = maskCode(md)
-  const out: UnbalancedQuoteMark[] = []
-  for (const block of splitBlocks(masked)) {
-    const { unbalanced } = scanSpans(masked.slice(block.start, block.end), block.start)
-    for (const index of unbalanced) {
-      out.push({ index, excerpt: md.slice(index + 1, Math.min(block.end, index + 1 + excerptChars)).trim() })
+/** Text the scan did not look at; `index` is where it starts in the body. */
+export type UnscannedText = { index: number; excerpt: string }
+
+/** Everything one scan of a note body found. */
+export type QuoteScan = {
+  /** Every quotation span of the scanned text, in source order. */
+  quotes: ExtractedQuote[]
+  /**
+   * Every opening mark never closed in its block, in source order. The scan
+   * recovers past them; the quote check reports them, because
+   * the text that follows one cannot be delimited and so cannot be checked.
+   */
+  unbalanced: UnbalancedQuoteMark[]
+  /** The rest of each block given up past QUOTE_UNBALANCED_MARKS_MAX_PER_BLOCK stray marks. */
+  unscannedRestOfBlock: UnscannedText[]
+  /**
+   * Set when `outOfTime` stopped the scan: from `index` on, nothing was
+   * scanned (the block being scanned is dropped whole, so no half-attributed
+   * quote leaks out).
+   */
+  stopped: (UnscannedText & { reason: StopReason }) | null
+}
+
+export type ScanOptions = {
+  /** Ticked inside every loop over the body (deadline.ts). */
+  outOfTime: OutOfTime
+  /** Characters of text echoed in an unbalanced / unscanned excerpt. */
+  excerptChars: number
+}
+
+/** One block's quotes, unclosed marks and unscanned rest. Throws QuoteMatchDeadlineError. */
+function scanBlock(
+  md: string,
+  masked: string,
+  block: Block,
+  excerptChars: number,
+  stop: StopCheck,
+): Pick<QuoteScan, "quotes" | "unbalanced" | "unscannedRestOfBlock"> {
+  const excerpt = (from: number) => md.slice(from, Math.min(block.end, from + excerptChars)).trim()
+  const text = masked.slice(block.start, block.end)
+  const scanned = scanSpans(text, block.start, stop)
+  const spans = scanned.spans.sort((a, b) => a.open - b.open)
+  const cites = citationsIn(text, block.start)
+  const inBlockquote = block.kind === BLOCK_KIND.BLOCKQUOTE
+  const quotes: ExtractedQuote[] = []
+
+  if (spans.length === 0 && inBlockquote) {
+    // Tokens come from the code-masked text; `raw` is the body verbatim, so
+    // the prior-body rule and the excerpt see what the agent actually wrote.
+    // The attribution line is part of the block, not of the quotation.
+    const quoted = masked.slice(block.start, block.quoteEnd)
+    const parts = segment(stripReferences(stripBlockquotePrefix(quoted)))
+    const cite = cites[0]
+    if (parts.segments.length > 0) {
+      quotes.push({
+        raw: stripBlockquotePrefix(md.slice(block.start, block.quoteEnd)).trim(),
+        form: QUOTE_FORM.BLOCKQUOTE,
+        index: block.start,
+        citation: cite ? { ark: cite.ark, folio: cite.folio } : null,
+        ...parts,
+      })
     }
+  } else {
+    const unprefix = (s: string) => (inBlockquote ? stripBlockquotePrefix(s) : s)
+    for (const [k, span] of spans.entries()) {
+      stop.tick()
+      const parts = segment(stripReferences(unprefix(masked.slice(span.innerStart, span.innerEnd))))
+      if (parts.segments.length === 0) continue
+      quotes.push({
+        raw: unprefix(md.slice(span.innerStart, span.innerEnd)).trim(),
+        form: span.form,
+        index: span.open,
+        citation: attribute(k, spans, cites),
+        ...parts,
+      })
+    }
+  }
+
+  return {
+    quotes,
+    unbalanced: scanned.unbalanced.map((index) => ({ index, excerpt: excerpt(index + 1) })),
+    unscannedRestOfBlock:
+      scanned.unscannedFrom === null ? [] : [{ index: scanned.unscannedFrom, excerpt: excerpt(scanned.unscannedFrom) }],
+  }
+}
+
+/**
+ * Scan a note body for its quotations, its unclosed quote marks and the text
+ * it gave up on — one pass, bounded by `outOfTime`. Never throws for the
+ * deadline: a stopped scan returns what it found before the block it was in,
+ * and says where it stopped.
+ */
+export function scanNoteQuotes(md: string, opts: ScanOptions): QuoteScan {
+  const stop = new StopCheck(opts.outOfTime)
+  const out: QuoteScan = { quotes: [], unbalanced: [], unscannedRestOfBlock: [], stopped: null }
+  let resumeAt = 0
+  try {
+    const masked = maskCode(md)
+    for (const block of splitBlocks(masked, stop)) {
+      resumeAt = block.start
+      const found = scanBlock(md, masked, block, opts.excerptChars, stop)
+      // Not `push(...)`: a dense block holds thousands of quotes.
+      for (const q of found.quotes) out.quotes.push(q)
+      for (const u of found.unbalanced) out.unbalanced.push(u)
+      for (const u of found.unscannedRestOfBlock) out.unscannedRestOfBlock.push(u)
+    }
+  } catch (err) {
+    if (!(err instanceof QuoteMatchDeadlineError)) throw err
+    out.stopped = { index: resumeAt, excerpt: md.slice(resumeAt, resumeAt + opts.excerptChars).trim(), reason: err.reason }
   }
   return out
 }

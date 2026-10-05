@@ -40,6 +40,9 @@ export const QUOTE_WARNING_DETAIL: Record<QuoteWarningReason, string> = {
   [QUOTE_WARNING_REASON.UNBALANCED_QUOTE_MARK]:
     "Guillemet ouvrant sans guillemet fermant : ferme la citation (« … » ou “ … ”) ou retire " +
     "le guillemet, sinon elle ne peut pas être contrôlée.",
+  [QUOTE_WARNING_REASON.UNSCANNED_REST_OF_BLOCK]:
+    "Trop de guillemets ouvrants sans fermant dans ce paragraphe : la suite n'a pas été " +
+    "contrôlée. Ferme ou retire les guillemets orphelins, ou scinde le paragraphe.",
   [QUOTE_WARNING_REASON.UNVERIFIABLE]:
     `Contrôle impossible (cause indiquée) : relis le passage avec \`${AGENT_TOOLS.ragGetText}\` ` +
     "avant de conserver cette citation.",

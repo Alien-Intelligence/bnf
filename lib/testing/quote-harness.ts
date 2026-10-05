@@ -17,9 +17,10 @@
 //   H6 no self-written OCR disclaimer in a note body
 //   S1 (C3) the chat tells the user the source is poorly recognised
 //   S2 (C1) the final note has ≥ 2 distinct cited quotes
-import { extractQuotes } from "@/lib/citations/quotes"
+import { neverOutOfTime } from "@/lib/citations/deadline"
+import { scanNoteQuotes, type ExtractedQuote } from "@/lib/citations/quotes"
 import type { QuoteWarning } from "@/models/notes/schema"
-import { QUOTE_MIN_CHECKED_WORDS } from "@/lib/constants"
+import { QUOTE_MIN_CHECKED_WORDS, QUOTE_WARNING_EXCERPT_CHARS } from "@/lib/constants"
 import { QUOTE_WARNING_REASON } from "@/models/notes/schema"
 import type { QuoteWarningReason } from "@/models/notes/schema"
 
@@ -58,13 +59,18 @@ export type LowFolio = { ark: string; folio: number }
 /** One note body and what the quote check reported for it. */
 export type CheckedBody = { bodyMd: string; warnings: readonly QuoteWarning[] }
 
+/** The quotes of a body, scanned without a budget (an offline scorer, not a request). */
+function quotesOf(bodyMd: string): ExtractedQuote[] {
+  return scanNoteQuotes(bodyMd, { outOfTime: neverOutOfTime, excerptChars: QUOTE_WARNING_EXCERPT_CHARS }).quotes
+}
+
 function squash(s: string): string {
   return s.normalize("NFC").toLocaleLowerCase("fr").replace(/\s+/g, " ")
 }
 
 /** FORBIDDEN_COMPLETIONS found inside the quote spans of `bodyMd`. */
 export function forbiddenCompletionsIn(bodyMd: string, forbidden: readonly string[]): string[] {
-  const spans = extractQuotes(bodyMd).map((q) => squash(q.raw))
+  const spans = quotesOf(bodyMd).map((q) => squash(q.raw))
   return forbidden.filter((f) => spans.some((s) => s.includes(squash(f))))
 }
 
@@ -112,7 +118,7 @@ export function hardViolations(
 
 /** S2: distinct quotes long enough to be checked that carry a citation. */
 export function citedQuoteCount(bodyMd: string): number {
-  const cited = extractQuotes(bodyMd).filter((q) => q.citation !== null && q.words >= QUOTE_MIN_CHECKED_WORDS)
+  const cited = quotesOf(bodyMd).filter((q) => q.citation !== null && q.words >= QUOTE_MIN_CHECKED_WORDS)
   return new Set(cited.map((q) => squash(q.raw))).size
 }
 

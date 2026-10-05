@@ -21,7 +21,9 @@ import {
   QUOTE_FIXTURE_DOCUMENTS,
   QUOTE_FIXTURE_OCR,
 } from "./rag-fixtures-quotes"
-import { extractQuotes } from "@/lib/citations/quotes"
+import { QUOTE_WARNING_EXCERPT_CHARS } from "@/lib/constants"
+import { neverOutOfTime } from "@/lib/citations/deadline"
+import { scanNoteQuotes } from "@/lib/citations/quotes"
 import { tokenizeFolios, verifyQuote } from "@/lib/citations/quote-match"
 import { OCR_CORRECTION_MARKING_MODE, QUOTE_WARNING_REASON } from "@/models/notes/schema"
 import type { QuoteWarningReason } from "@/models/notes/schema"
@@ -92,12 +94,11 @@ for (const o of QUOTE_FIXTURE_OCR) {
 }
 
 async function reasonsFor(md: string): Promise<Array<QuoteWarningReason | "ok">> {
-  const [q] = extractQuotes(md)
+  const [q] = scanNoteQuotes(md, { outOfTime: neverOutOfTime, excerptChars: QUOTE_WARNING_EXCERPT_CHARS }).quotes
   assert.ok(q?.citation, "the row quotes one cited span")
   const doc = await FakeRagRunner.getDocumentFolios({ projectId: PROJECT, ark: q.citation.ark, signal: new AbortController().signal })
   assert.equal(doc.status, RAG_LOOKUP_STATUS.FOUND)
   if (doc.status !== RAG_LOOKUP_STATUS.FOUND) return []
-  const neverOutOfTime = () => false
   return verifyQuote(q, tokenizeFolios(doc.folios, neverOutOfTime), {
     outOfTime: neverOutOfTime,
     citedFolio: q.citation.folio,

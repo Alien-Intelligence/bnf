@@ -22,11 +22,16 @@
  *     French elided prefix (`qu'un` → `un`): a quote may open mid-token.
  * Candidate starts are the positions where the first token can match; the
  * earliest that aligns within the fuzzy budget wins, exact matches preferred.
+ *
+ * Bounded work (CLAUDE_ERROR_PATTERNS §14): tokenisation, the candidate scan
+ * and the alignment itself are loops that tick a StopCheck (deadline.ts), so
+ * a caller's deadline stops a long document or a long quote within one
+ * stride; the alignment is iterative (no recursion depth tied to the quote's
+ * length) and builds its result once, by following back-pointers.
  */
 
 import {
   ELISION_MAX_GAP_WORDS,
-  QUOTE_MATCH_DEADLINE_STRIDE,
   QUOTE_FUZZY_MAX_EDIT,
   QUOTE_FUZZY_WORD_RATIO,
   QUOTE_ILLEGIBLE_MAX_WORDS,
@@ -39,6 +44,7 @@ import {
   type OcrCorrectionMarking,
   type QuoteWarningReason,
 } from "@/models/notes/schema"
+import { StopCheck, stopIfOutOfTime, type OutOfTime } from "./deadline"
 import { normalizeToken } from "./quotes"
 import type { ExtractedQuote, QuoteSegment } from "./quotes"
 
@@ -51,28 +57,18 @@ export type SourceToken = {
   sentenceEndAfter: boolean
 }
 
+/** A document's tokens in reading order, and each folio's [lo, hi) token range. */
+export type SourceDocument = {
+  tokens: SourceToken[]
+  folioRanges: ReadonlyMap<number, readonly [number, number]>
+}
+
 export type QuoteVerdict =
   | { ok: true; matchedFolio: number; fuzzyTokens: number }
   | { ok: false; reason: QuoteWarningReason; foundOnFolio?: number }
 
-/**
- * Thrown from inside the matcher when the caller's deadline has passed: the
- * alignment of a long document is synchronous, so the deadline has to be
- * checked inside it, not only between quotes. The caller turns it into
- * `unverifiable / budget_exceeded`.
- */
-export class QuoteMatchDeadlineError extends Error {
-  constructor() {
-    super("quote matching passed its deadline")
-    this.name = "QuoteMatchDeadlineError"
-  }
-}
-
-/** `true` once the work must stop (a deadline passed, the turn was cancelled). */
-export type OutOfTime = () => boolean
-
 export type VerifyOptions = {
-  /** Checked every QUOTE_MATCH_DEADLINE_STRIDE candidate starts. */
+  /** Asked every QUOTE_MATCH_DEADLINE_STRIDE steps of the scan and of the alignment. */
   outOfTime: OutOfTime
   citedFolio: number
   marking: OcrCorrectionMarking
@@ -93,42 +89,55 @@ const SENTENCE_END = /[.!?]["»”')\]]*$/u
 const UPPER_START = /^["«“'(\[]*\p{Lu}/u
 const PARAGRAPH_GAP = /\n[ \t]*\n/
 
-/** One folio's page text → tokens in reading order (folio, breaks, sentence ends). */
-function tokenizeFolio(folio: number, text: string): SourceToken[] {
+/** One folio's page text → tokens in reading order (folio, breaks, sentence ends), appended to `out`. */
+function tokenizeFolio(folio: number, text: string, out: SourceToken[], stop: StopCheck): void {
   const joined = text.replace(PRINTED_HYPHENATION, "")
-  const raws: Array<{ raw: string; start: number; end: number }> = []
-  for (const m of joined.matchAll(/\S+/g)) {
-    raws.push({ raw: m[0], start: m.index, end: m.index + m[0].length })
-  }
-
-  const out: SourceToken[] = []
-  let first = true
-  for (const [i, r] of raws.entries()) {
-    const norm = normalizeToken(r.raw)
-    if (norm.length === 0) continue
-    const prev = raws[i - 1]
-    const next = raws[i + 1]
+  // One look-ahead token: a token's sentence end depends on the next one.
+  let pending: { raw: string; norm: string; paragraphBreakBefore: boolean } | null = null
+  let prevEnd = -1
+  const flush = (nextRaw: string | null) => {
+    if (pending === null) return
     out.push({
-      norm,
+      norm: pending.norm,
       folio,
-      paragraphBreakBefore: first || (prev !== undefined && PARAGRAPH_GAP.test(joined.slice(prev.end, r.start))),
-      sentenceEndAfter: SENTENCE_END.test(r.raw) && next !== undefined && UPPER_START.test(next.raw),
+      paragraphBreakBefore: pending.paragraphBreakBefore,
+      sentenceEndAfter: SENTENCE_END.test(pending.raw) && nextRaw !== null && UPPER_START.test(nextRaw),
     })
+    pending = null
+  }
+  let first = true
+  for (const m of joined.matchAll(/\S+/g)) {
+    stop.tick()
+    const raw = m[0]
+    const breakBefore = prevEnd !== -1 && PARAGRAPH_GAP.test(joined.slice(prevEnd, m.index))
+    prevEnd = m.index + raw.length
+    // The next raw token decides the previous token's sentence end, even
+    // when it normalises to nothing (a lone `—`), as before.
+    flush(raw)
+    const norm = normalizeToken(raw)
+    if (norm.length === 0) continue
+    pending = { raw, norm, paragraphBreakBefore: first || breakBefore }
     first = false
   }
-  return out
+  flush(null)
 }
 
-/** The whole document's tokens, folio by folio in map (document) order. */
-export function tokenizeFolios(folios: DocumentFolios, outOfTime: OutOfTime): SourceToken[] {
-  const out: SourceToken[] = []
+/**
+ * The whole document's tokens, folio by folio in map (document) order, with
+ * each folio's token range. Stops with QuoteMatchDeadlineError when
+ * `outOfTime` says so — checked inside each page, not only between pages.
+ */
+export function tokenizeFolios(folios: DocumentFolios, outOfTime: OutOfTime): SourceDocument {
+  const stop = new StopCheck(outOfTime)
+  const tokens: SourceToken[] = []
+  const folioRanges = new Map<number, readonly [number, number]>()
   for (const [folio, text] of folios) {
-    if (outOfTime()) throw new QuoteMatchDeadlineError()
-    // Not `push(...tokens)`: spreading a large page's tokens as arguments
-    // overflows the call stack (one 300 000-token page is enough).
-    for (const token of tokenizeFolio(folio, text)) out.push(token)
+    stopIfOutOfTime(outOfTime)
+    const lo = tokens.length
+    tokenizeFolio(folio, text, tokens, stop)
+    if (tokens.length > lo) folioRanges.set(folio, [lo, tokens.length])
   }
-  return out
+  return { tokens, folioRanges }
 }
 
 // ---------------------------------------------------------------------------
@@ -137,20 +146,36 @@ export function tokenizeFolios(folios: DocumentFolios, outOfTime: OutOfTime): So
 
 const FUZZY_MIN_LETTERS = 3
 
-/** Levenshtein distance, bounded: returns `max + 1` as soon as it is exceeded. */
+/**
+ * Levenshtein distance, bounded: returns `max + 1` as soon as it is exceeded.
+ * Banded — only cells within `max` of the diagonal can stay within `max` — so
+ * two long tokens (an 18 000-character "word" without spaces) cost
+ * O(length × max), not O(length²).
+ */
 function boundedLevenshtein(a: string, b: string, max: number): number {
   if (Math.abs(a.length - b.length) > max) return max + 1
-  let prev = Array.from({ length: b.length + 1 }, (_, j) => j)
+  const over = max + 1
+  // Two rows, allocated once; cells outside the band read as `over`.
+  let prev = new Uint32Array(b.length + 1).fill(over)
+  let cur = new Uint32Array(b.length + 1).fill(over)
+  for (let j = 0; j <= Math.min(b.length, max); j++) prev[j] = j
   for (let i = 1; i <= a.length; i++) {
-    const cur = [i]
-    let rowMin = i
-    for (let j = 1; j <= b.length; j++) {
+    const lo = Math.max(1, i - max)
+    const hi = Math.min(b.length, i + max)
+    cur[0] = i <= max ? i : over
+    if (lo > 1) cur[lo - 1] = over
+    let rowMin = cur[0]
+    for (let j = lo; j <= hi; j++) {
       const cost = a[i - 1] === b[j - 1] ? 0 : 1
-      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost, over)
       if (cur[j] < rowMin) rowMin = cur[j]
     }
-    if (rowMin > max) return max + 1
+    // The next row's band reaches one cell further right: it must read `over` there.
+    if (hi < b.length) cur[hi + 1] = over
+    if (rowMin > max) return over
+    const done = prev
     prev = cur
+    cur = done
   }
   return prev[b.length]
 }
@@ -193,58 +218,121 @@ function fuzzyBudget(seg: QuoteSegment): number {
   return Math.max(1, Math.ceil(QUOTE_FUZZY_WORD_RATIO * words))
 }
 
+/** One way quote token `i` can consume source tokens from document index `j`. */
+type Move = { consumed: number; fuzzy: boolean; bracketed: boolean }
+
 /**
- * Align `seg` starting exactly at document index `start`. Returns the
- * alignment with the fewest fuzzy tokens within `budget`, or null. Memoised
- * on (token index, doc index); the branching is only merges and illegibles.
+ * The moves of quote token `i` at document index `j`, in preference order (an
+ * earlier move wins a tie on fuzzy count): exact (or, for the first token, the
+ * part after an elided prefix); else a 2→1 merge, then a fuzzy word; an
+ * illegible stands for 1..QUOTE_ILLEGIBLE_MAX_WORDS words, fewest first.
  */
-function alignAt(seg: QuoteSegment, doc: SourceToken[], start: number, budget: number): Alignment | null {
+function movesAt(seg: QuoteSegment, doc: readonly SourceToken[], i: number, j: number): Move[] {
   const n = doc.length
-  const memo = new Map<number, Alignment | null>()
+  const q = seg.tokens[i]
+  if (q.kind === "illegible") {
+    const out: Move[] = []
+    for (let k = 1; k <= QUOTE_ILLEGIBLE_MAX_WORDS && j + k <= n; k++) out.push({ consumed: k, fuzzy: false, bracketed: false })
+    return out
+  }
+  const s = doc[j].norm
+  if (q.norm === s || (i === 0 && q.norm === afterElision(s))) return [{ consumed: 1, fuzzy: false, bracketed: q.bracketed }]
+  const out: Move[] = []
+  if (j + 1 < n && q.norm === s + doc[j + 1].norm) out.push({ consumed: 2, fuzzy: false, bracketed: q.bracketed })
+  if (isFuzzyMatch(q.norm, s)) out.push({ consumed: 1, fuzzy: true, bracketed: q.bracketed })
+  return out
+}
 
-  const go = (i: number, j: number): Alignment | null => {
-    if (i === seg.tokens.length) return { end: j, fuzzy: 0, tokens: [] }
-    if (j >= n) return null
-    const key = i * (n + 1) + j
-    const cached = memo.get(key)
-    if (cached !== undefined) return cached
+/** The best way to finish the segment from one state: its fuzzy count, end, and first move. */
+type Suffix = { fuzzy: number; end: number; move: Move | null }
 
-    let best: Alignment | null = null
-    const consider = (consumed: number, fuzzy: boolean, bracketed: boolean) => {
-      const rest = go(i + 1, j + consumed)
-      if (!rest) return
-      const total = rest.fuzzy + (fuzzy ? 1 : 0)
-      if (total > budget) return
-      if (!best || total < best.fuzzy) {
-        best = {
-          end: rest.end,
-          fuzzy: total,
-          tokens: [{ fuzzy, bracketed, folio: doc[j].folio }, ...rest.tokens],
-        }
+/**
+ * Align `seg` starting exactly at document index `start`: the alignment with
+ * the fewest fuzzy tokens within `budget`, or null.
+ *
+ * Iterative dynamic programming over states (quote token i, document index j):
+ *   1. forward, layer by layer, the states reachable from (0, start) by valid
+ *      moves, each with its fewest fuzzy tokens so far — a state already over
+ *      the budget is dropped (no path through it can fit), and an empty layer
+ *      ends the alignment early (a mismatch);
+ *   2. backward, each reachable state's best suffix — fewest fuzzy tokens to
+ *      the end of the segment, ties to the earlier move — exactly the choice a
+ *      depth-first search in move order would make;
+ *   3. the token matches, once, by following the chosen moves from the start.
+ * Every state visit ticks `stop`.
+ */
+function alignAt(
+  seg: QuoteSegment,
+  doc: readonly SourceToken[],
+  start: number,
+  budget: number,
+  stop: StopCheck,
+): Alignment | null {
+  const n = doc.length
+  const m = seg.tokens.length
+  // segment() never yields an empty segment; one built by hand is a bug.
+  if (m === 0) throw new Error("alignAt: a segment must have at least one token")
+
+  // 1. Forward: reachable states per layer, with their fewest fuzzy so far.
+  const layers: Array<Map<number, number>> = [new Map([[start, 0]])]
+  for (let i = 0; i < m; i++) {
+    const next = new Map<number, number>()
+    for (const [j, soFar] of layers[i]) {
+      stop.tick()
+      if (j >= n) continue
+      for (const mv of movesAt(seg, doc, i, j)) {
+        const fuzzy = soFar + (mv.fuzzy ? 1 : 0)
+        if (fuzzy > budget) continue
+        const to = j + mv.consumed
+        const known = next.get(to)
+        if (known === undefined || fuzzy < known) next.set(to, fuzzy)
       }
     }
-
-    const q = seg.tokens[i]
-    if (q.kind === "illegible") {
-      for (let k = 1; k <= QUOTE_ILLEGIBLE_MAX_WORDS && j + k <= n; k++) consider(k, false, false)
-    } else {
-      const s = doc[j].norm
-      if (q.norm === s || (i === 0 && q.norm === afterElision(s))) consider(1, false, q.bracketed)
-      else {
-        if (j + 1 < n && q.norm === s + doc[j + 1].norm) consider(2, false, q.bracketed)
-        if (isFuzzyMatch(q.norm, s)) consider(1, true, q.bracketed)
-      }
-    }
-
-    memo.set(key, best)
-    return best
+    if (next.size === 0) return null
+    layers.push(next)
   }
 
-  return go(0, start)
+  // 2. Backward: the best suffix of every reachable state.
+  let below = new Map<number, Suffix>()
+  for (const j of layers[m].keys()) below.set(j, { fuzzy: 0, end: j, move: null })
+  const chosen: Array<Map<number, Suffix>> = new Array(m)
+  for (let i = m - 1; i >= 0; i--) {
+    const here = new Map<number, Suffix>()
+    for (const j of layers[i].keys()) {
+      stop.tick()
+      if (j >= n) continue
+      let best: Suffix | null = null
+      for (const mv of movesAt(seg, doc, i, j)) {
+        const rest = below.get(j + mv.consumed)
+        if (rest === undefined) continue
+        const total = rest.fuzzy + (mv.fuzzy ? 1 : 0)
+        if (total > budget) continue
+        if (best === null || total < best.fuzzy) best = { fuzzy: total, end: rest.end, move: mv }
+      }
+      if (best !== null) here.set(j, best)
+    }
+    chosen[i] = here
+    below = here
+  }
+
+  // 3. Follow the chosen moves from the start.
+  const head = chosen[0].get(start)
+  if (head === undefined) return null
+  const tokens: TokenMatch[] = []
+  let j = start
+  for (let i = 0; i < m; i++) {
+    const step = chosen[i].get(j)
+    if (step === undefined || step.move === null) {
+      throw new Error(`alignAt: no chosen move at token ${i}, document index ${j} on a path that reached the end`)
+    }
+    tokens.push({ fuzzy: step.move.fuzzy, bracketed: step.move.bracketed, folio: doc[j].folio })
+    j += step.move.consumed
+  }
+  return { end: head.end, fuzzy: head.fuzzy, tokens }
 }
 
 /** Could the segment's first token match at `j`? (cheap pre-filter for starts) */
-function canStartAt(seg: QuoteSegment, doc: SourceToken[], j: number): boolean {
+function canStartAt(seg: QuoteSegment, doc: readonly SourceToken[], j: number): boolean {
   const q = seg.tokens[0]
   if (q.kind === "illegible") return true
   const s = doc[j].norm
@@ -256,31 +344,19 @@ function canStartAt(seg: QuoteSegment, doc: SourceToken[], j: number): boolean {
 /** Earliest alignment of `seg` whose start lies in [lo, hi). */
 function locate(
   seg: QuoteSegment,
-  doc: SourceToken[],
+  doc: readonly SourceToken[],
   lo: number,
   hi: number,
-  outOfTime: OutOfTime,
+  stop: StopCheck,
 ): SegmentMatch | null {
   const budget = fuzzyBudget(seg)
-  const from = Math.max(0, lo)
-  for (let j = from; j < Math.min(hi, doc.length); j++) {
-    if ((j - from) % QUOTE_MATCH_DEADLINE_STRIDE === 0 && outOfTime()) throw new QuoteMatchDeadlineError()
+  for (let j = Math.max(0, lo); j < Math.min(hi, doc.length); j++) {
+    stop.tick()
     if (!canStartAt(seg, doc, j)) continue
-    const a = alignAt(seg, doc, j, budget)
+    const a = alignAt(seg, doc, j, budget, stop)
     if (a) return { start: j, end: a.end, fuzzyTokens: a.fuzzy, tokens: a.tokens }
   }
   return null
-}
-
-/** [lo, hi) token range of each folio, in document order. */
-function folioRanges(doc: SourceToken[]): Map<number, [number, number]> {
-  const ranges = new Map<number, [number, number]>()
-  for (const [i, t] of doc.entries()) {
-    const r = ranges.get(t.folio)
-    if (r) r[1] = i + 1
-    else ranges.set(t.folio, [i, i + 1])
-  }
-  return ranges
 }
 
 // ---------------------------------------------------------------------------
@@ -293,7 +369,7 @@ function folioRanges(doc: SourceToken[]): Map<number, [number, number]> {
  * by the caller; here: ≤ ELISION_MAX_GAP_WORDS words, no paragraph break, at
  * most one sentence terminator (counted from the previous segment's last token).
  */
-function elisionWithinReach(doc: SourceToken[], prevEnd: number, start: number): boolean {
+function elisionWithinReach(doc: readonly SourceToken[], prevEnd: number, start: number): boolean {
   if (start - prevEnd > ELISION_MAX_GAP_WORDS) return false
   let sentenceEnds = 0
   for (let k = Math.max(prevEnd - 1, 0); k < start; k++) {
@@ -313,7 +389,9 @@ function elisionWithinReach(doc: SourceToken[], prevEnd: number, start: number):
  * order, or a single `ok` verdict. Returning them all at once lets the agent
  * fix a quote in one rewrite rather than one warning per turn.
  */
-export function verifyQuote(q: ExtractedQuote, doc: SourceToken[], opts: VerifyOptions): QuoteVerdict[] {
+export function verifyQuote(q: ExtractedQuote, source: SourceDocument, opts: VerifyOptions): QuoteVerdict[] {
+  const doc = source.tokens
+  const stop = new StopCheck(opts.outOfTime)
   const reasons = new Map<QuoteWarningReason, QuoteVerdict>()
   const flag = (reason: QuoteWarningReason, foundOnFolio?: number) => {
     if (!reasons.has(reason)) {
@@ -324,20 +402,19 @@ export function verifyQuote(q: ExtractedQuote, doc: SourceToken[], opts: VerifyO
   if (q.elisions > QUOTE_MAX_ELISIONS) flag(QUOTE_WARNING_REASON.TOO_MANY_ELISIONS)
   if (q.nonstandardMarkers > 0) flag(QUOTE_WARNING_REASON.NONSTANDARD_ELISION_MARKER)
 
-  const ranges = folioRanges(doc)
-  const cited = ranges.get(opts.citedFolio)
+  const cited = source.folioRanges.get(opts.citedFolio)
   const matches: SegmentMatch[] = []
 
   // Segment 1: on the cited folio, else anywhere in the document.
   const [first, ...rest] = q.segments
   if (!first) {
-    // extractQuotes never yields a quote without a segment; a caller that
+    // scanNoteQuotes never yields a quote without a segment; a caller that
     // builds one by hand has a bug, and a silent `ok` would hide it.
     throw new Error("verifyQuote: a quote must have at least one segment")
   }
-  let primary = cited ? locate(first, doc, cited[0], cited[1], opts.outOfTime) : null
+  let primary = cited ? locate(first, doc, cited[0], cited[1], stop) : null
   if (!primary) {
-    const elsewhere = locate(first, doc, 0, doc.length, opts.outOfTime)
+    const elsewhere = locate(first, doc, 0, doc.length, stop)
     if (elsewhere) flag(QUOTE_WARNING_REASON.FOUND_ON_OTHER_FOLIO, doc[elsewhere.start].folio)
     else flag(QUOTE_WARNING_REASON.NOT_IN_CITED_FOLIO)
     primary = elsewhere
@@ -348,7 +425,7 @@ export function verifyQuote(q: ExtractedQuote, doc: SourceToken[], opts: VerifyO
   // Later segments: only after the previous one, in reach, on the same folio.
   let prev = primary
   for (const seg of rest) {
-    const next = locate(seg, doc, prev.end, doc.length, opts.outOfTime)
+    const next = locate(seg, doc, prev.end, doc.length, stop)
     if (next) {
       const prevFolio = doc[prev.end - 1].folio
       if (doc[next.start].folio !== prevFolio) flag(QUOTE_WARNING_REASON.ELISION_ACROSS_FOLIOS)
@@ -357,7 +434,7 @@ export function verifyQuote(q: ExtractedQuote, doc: SourceToken[], opts: VerifyO
       prev = next
       continue
     }
-    const earlier = locate(seg, doc, 0, prev.start, opts.outOfTime)
+    const earlier = locate(seg, doc, 0, prev.start, stop)
     if (earlier) {
       flag(QUOTE_WARNING_REASON.ELISION_OUT_OF_ORDER)
       matches.push(earlier)

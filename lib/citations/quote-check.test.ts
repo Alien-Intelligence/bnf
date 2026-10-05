@@ -9,7 +9,7 @@ import { ClusterRagClient, RAG_LOOKUP_STATUS } from "@/lib/cluster/rag"
 import type { DocumentFoliosRequest, DocumentFoliosResult } from "@/lib/cluster/rag"
 import { DataclusterMcpError } from "@/lib/cluster/datacluster-mcp-client"
 import { FolioMapAmbiguousError } from "@/lib/cluster/folio-text"
-import { QUOTE_CHECK_MAX_SOURCES } from "@/lib/constants"
+import { QUOTE_CHECK_MAX_SOURCES, QUOTE_UNBALANCED_MARKS_MAX_PER_BLOCK } from "@/lib/constants"
 import { QUOTE_WARNING_DETAIL } from "@/lib/agent/prompts/quote-warnings"
 import {
   QUOTE_CHECK_STATUS,
@@ -290,20 +290,128 @@ test("budgetMs must be a positive integer (NaN would disable the deadline)", asy
   }
 })
 
-test("the deadline interrupts the alignment of a large document, not just the gaps between quotes", async () => {
+// ---------------------------------------------------------------------------
+// Bounded work: every synchronous loop stops within budget × 2 of the start
+// (one stride of work plus scheduling past the deadline), measured on the
+// same monotonic clock the check uses.
+// ---------------------------------------------------------------------------
+
+const TIGHT_BUDGET_MS = 200
+
+async function timed<T>(run: () => Promise<T>): Promise<{ res: T; elapsedMs: number }> {
+  const started = performance.now()
+  const res = await run()
+  return { res, elapsedMs: performance.now() - started }
+}
+
+test("the deadline interrupts the alignment of a large document within budget × 2", async () => {
   // ~300 000 source tokens, none of which match: aligning a quote against it
   // is long synchronous work that only an in-loop deadline check can stop.
   const huge = Array.from({ length: 300_000 }, (_, i) => `mot${i % 997}`).join(" ")
   const body = Array.from({ length: 20 }, (_, i) => `« quatre mots absents numero${i} ici » ${cite(arkN(1), 2)}`).join("\n\n")
-  const started = Date.now()
-  const res = await withFacade(
-    async () => found([[2, huge]]),
-    () => checkNoteQuotes(args({ bodyMd: body, budgetMs: 200 })),
+  const { res, elapsedMs } = await timed(() =>
+    withFacade(async () => found([[2, huge]]), () => checkNoteQuotes(args({ bodyMd: body, budgetMs: TIGHT_BUDGET_MS }))),
   )
-  assert.ok(Date.now() - started < 5_000, `stopped promptly (${Date.now() - started} ms)`)
+  assert.ok(elapsedMs <= TIGHT_BUDGET_MS * 2, `stopped within budget × 2 (${elapsedMs.toFixed(0)} ms)`)
   assert.ok(
     res.warnings.some((w) => w.cause === QUOTE_UNVERIFIABLE_CAUSE.BUDGET_EXCEEDED),
     "the quotes left when the deadline passed are budget_exceeded",
   )
   assert.equal(res.status, QUOTE_CHECK_STATUS.PARTIAL)
+})
+
+test("a 4 000-word quote that nearly matches everywhere stops within budget × 2, as budget_exceeded", async () => {
+  // Every other source token is a candidate start that aligns ~4 000 tokens
+  // before failing on the last word: the stop has to come from inside the
+  // alignment, which is also iterative (no stack overflow at this length).
+  const quoteWords = Array.from({ length: 4_000 }, (_, i) => (i % 2 === 0 ? "alpha" : "beta"))
+  const nearMiss = [...quoteWords.slice(0, -1), "qqqqqqqq"].join(" ")
+  const doc = Array.from({ length: 20 }, () => nearMiss).join(" ")
+  const { res, elapsedMs } = await timed(() =>
+    withFacade(
+      async () => found([[2, doc]]),
+      () => checkNoteQuotes(args({ bodyMd: `« ${quoteWords.join(" ")} » ${cite(arkN(1), 2)}`, budgetMs: TIGHT_BUDGET_MS })),
+    ),
+  )
+  assert.ok(elapsedMs <= TIGHT_BUDGET_MS * 2, `stopped within budget × 2 (${elapsedMs.toFixed(0)} ms)`)
+  assert.deepEqual(
+    res.warnings.map((w) => [w.reason, w.cause]),
+    [[QUOTE_WARNING_REASON.UNVERIFIABLE, QUOTE_UNVERIFIABLE_CAUSE.BUDGET_EXCEEDED]],
+  )
+  assert.equal(res.status, QUOTE_CHECK_STATUS.PARTIAL)
+})
+
+/** One paragraph of ~200 KB holding thousands of cited quotes. */
+function denseParagraph(): string {
+  const parts: string[] = []
+  let length = 0
+  for (let i = 0; length < 200_000; i++) {
+    const part = `« quatre mots présents numero${i} ici » ${cite(arkN(1), 2)} `
+    parts.push(part)
+    length += part.length
+  }
+  return parts.join("")
+}
+
+test("a dense 200 KB paragraph stops (or finishes) within budget × 2: scan, attribution and matching are bounded", async () => {
+  const body = denseParagraph()
+  const { res, elapsedMs } = await timed(() =>
+    withFacade(async () => found([[2, FOLIO_TEXT]]), () => checkNoteQuotes(args({ bodyMd: body, budgetMs: TIGHT_BUDGET_MS }))),
+  )
+  assert.ok(elapsedMs <= TIGHT_BUDGET_MS * 2, `stopped within budget × 2 (${elapsedMs.toFixed(0)} ms)`)
+  assert.ok(res.checked > 2_500, `the quotes were extracted (${res.checked})`)
+  // None of them is on the folio: each is either reported or, past the
+  // deadline, budget_exceeded — never silently passed.
+  assert.ok(
+    res.warnings.every(
+      (w) => w.reason === QUOTE_WARNING_REASON.NOT_IN_CITED_FOLIO || w.cause === QUOTE_UNVERIFIABLE_CAUSE.BUDGET_EXCEEDED,
+    ),
+  )
+})
+
+test("a dense 200 KB paragraph re-sent as its own prior body is filtered within budget × 2", async () => {
+  const body = denseParagraph()
+  let fetches = 0
+  const { res, elapsedMs } = await timed(() =>
+    withFacade(
+      async () => {
+        fetches++
+        return found([[2, FOLIO_TEXT]])
+      },
+      () => checkNoteQuotes(args({ bodyMd: body, priorBodyMd: body, budgetMs: TIGHT_BUDGET_MS })),
+    ),
+  )
+  assert.ok(elapsedMs <= TIGHT_BUDGET_MS * 2, `stopped within budget × 2 (${elapsedMs.toFixed(0)} ms)`)
+  // Every quote was already in the prior body: nothing is in scope, nothing fetched.
+  assert.equal(res.checked, 0)
+  assert.equal(fetches, 0)
+})
+
+test("past the stray-mark cap, the rest of the block is reported as unscanned and the result is partial", async () => {
+  const stray = Array.from({ length: QUOTE_UNBALANCED_MARKS_MAX_PER_BLOCK + 5 }, (_, i) => `« ouvert${i}`).join(" ")
+  const body = `« ${QUOTE} » ${cite(arkN(1), 2)} ${stray} « ${QUOTE} » ${cite(arkN(1), 2)}`
+  const res = await withFacade(async () => found([[2, FOLIO_TEXT]]), () => checkNoteQuotes(args({ bodyMd: body })))
+  const reasons = res.warnings.map((w) => w.reason)
+  assert.equal(reasons.filter((r) => r === QUOTE_WARNING_REASON.UNBALANCED_QUOTE_MARK).length, QUOTE_UNBALANCED_MARKS_MAX_PER_BLOCK)
+  assert.equal(reasons.filter((r) => r === QUOTE_WARNING_REASON.UNSCANNED_REST_OF_BLOCK).length, 1)
+  assert.equal(
+    res.warnings.find((w) => w.reason === QUOTE_WARNING_REASON.UNSCANNED_REST_OF_BLOCK)?.detail,
+    QUOTE_WARNING_DETAIL[QUOTE_WARNING_REASON.UNSCANNED_REST_OF_BLOCK],
+  )
+  assert.equal(res.checked, 1, "the quote before the cap is checked; the one after it was not scanned")
+  assert.equal(res.status, QUOTE_CHECK_STATUS.PARTIAL)
+})
+
+test("a stopped scan of the body is reported unverifiable with the reason, from where it stopped", async () => {
+  const controller = new AbortController()
+  controller.abort()
+  const res = await withFacade(
+    async () => found([[2, FOLIO_TEXT]]),
+    () => checkNoteQuotes(args({ bodyMd: `« ${QUOTE} » ${cite(arkN(1), 2)}`, signal: controller.signal })),
+  )
+  assert.equal(res.status, QUOTE_CHECK_STATUS.PARTIAL)
+  assert.deepEqual(
+    res.warnings.map((w) => [w.reason, w.cause, w.quote.slice(0, 1)]),
+    [[QUOTE_WARNING_REASON.UNVERIFIABLE, QUOTE_UNVERIFIABLE_CAUSE.CANCELLED, "«"]],
+  )
 })
