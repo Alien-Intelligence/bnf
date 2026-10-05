@@ -337,42 +337,77 @@ backfilled automatically — no manual step:
   `POST /ocr-quality/sync`. Each missing artifact is queued once on the worker's
   `ocr-quality-backfill` stage, which answers `building` until it is done.
 - **How to watch it:**
-  - app logs: `[ocr-sync] cycle (<trigger>): available=…, building=…, unavailable=…, rejected=…, outage=…, stop=…`
+  - app logs: `[ocr-sync] cycle (<trigger>): available=…, building=…, unavailable=…, incompatible=…, rejected=…, outage=…, struck=…, stop=…`
     — `trigger` is `boot`, `sweep` or `commit`; `stop` says why the cycle ended
     (`done` = nothing left to ask; `budget` / `deadline` = it will resume next
-    sweep; `worker_unavailable` = an outage, `exchange_paused` = the worker's
-    answers break the contract as a whole, `coalesced` = another drain ran).
-    Cycles ending `done` with `building=0` mean converged;
+    sweep; `worker_unavailable` = no request of the cycle was answered,
+    `exchange_paused` = the worker's answers break the contract as a whole,
+    `coalesced` = another drain ran). Cycles ending `done` with `building=0`
+    mean converged;
   - worker pod: `npm run status` prints `ocrBackfill: {queued, done, failed}`;
   - Postgres: `SELECT status, reason, count(*) FROM document_ocr GROUP BY 1, 2;`
-- **App-side sync state (persisted, nothing in memory):** a row is asked again
-  at `next_check_at` (building: next sweep; unavailable: 24 h). A re-ingest
-  commit sets `resync_requested_at` in its own transaction, so a re-OCR'd
-  document is re-pulled even after a restart. If the worker's answer for an ARK
-  breaks the contract (a 400, an invalid body), the app isolates that ARK by
-  splitting the batch, backs it off (3 min doubling, capped at 24 h) and, after
-  5 consecutive failures, marks it `quarantined` with `reason =
-  sync_rejected: …`; a quarantined ARK is asked again only after a re-ingest
-  requests a resync (a resync requested while the failing question was in
-  flight survives the quarantine and keeps the ARK due).
-  Blame is per ARK ONLY when at least one entry of the same kind in the same
-  answer passed. If no returned document passed — an incompatible worker
-  version (`v: 2`, a renamed field), a single-document answer included — or
-  the answer answers nothing it was asked, or the worker refuses the request
-  as a whole (401/413), no ARK is blamed: the sync pauses (backing off from 3
-  min to 1 h) and resumes by itself when the worker answers again. Pausing is
-  recoverable; quarantining is not.
-  An unreachable worker (timeout, 5xx, 404 from an old worker) ends that
-  corpus's turn only — other corpora are still asked: existing rows back off
-  30 min with their status untouched, a never-asked document stays pending
-  (shown "not yet"), and nothing counts as an attempt. When the same documents
-  fail an outage again, the app asks BOTH halves of the batch, down to single
-  documents (at most 16 requests per cycle): the others are served, and a
-  document the worker fails on alone sits out 30 min, then after 5 such
-  failures is quarantined with `reason = sync_isolated: …` (a re-ingest's
-  resync re-opens it). Corpora are drained in turn — each cycle resumes after
-  the last corpus served — with resync requests first. To list problems:
-  `SELECT ark, status, reason, sync_attempts FROM document_ocr WHERE status IN ('quarantined', 'unavailable') ORDER BY checked_at DESC;`
+- **App-side sync state (persisted):** what is due lives in `document_ocr`,
+  never in memory: a row is asked again at `next_check_at` (building: next
+  sweep; unavailable and incompatible: 24 h). A re-ingest commit sets
+  `resync_requested_at` in its own transaction, so a re-OCR'd document is
+  re-pulled even after a restart, with a fresh rejection, outage and strike
+  budget. Corpora are drained in turn, each cycle resuming after the last
+  corpus served; corpora with resync requests go first, but while other
+  corpora wait at most 5 of them (half the cycle's 10 batches) are started
+  per cycle, the next cycle resuming after the last one (a `building` row's
+  request does not count).
+- **Failures are told apart by evidence, nothing else:**
+  - *Transport* (no answer, a timeout, a 5xx, a 404 from an old worker, a body
+    that is not JSON) says nothing about any document and never counts against
+    one by itself. A batch that fails ends that corpus's turn and paces it (3
+    min doubling to 1 h); other corpora are still asked. Each of its documents
+    gets a `pending` row ("not yet") and its `outage_count` goes up. A
+    document whose batch failed twice (`outage_count` ≥ 2) is asked ALONE —
+    at most 10 such requests per cycle, its corpus asking no batch meanwhile.
+    A document asked alone that fails gets an **outage strike** only if the
+    worker answered another request in the same cycle (when none was answered
+    yet, the app asks one `available` document as the control); without that
+    proof it only backs off. After 5 strikes it is `quarantined` with
+    `reason = worker_fails_alone: …` — never an `available` document, which
+    keeps its quality and only backs off. A worker outage therefore strikes
+    and quarantines nobody: a cycle stops asking documents alone after two
+    transport failures in a row (at most 2 such requests per cycle). Measured
+    on the real tables at the 3-min cadence: 48 h of a down worker → 3
+    documents untouched (`pending`, 0 strikes); a poison document among 3 →
+    quarantined after 57 min, the 2 others served; a poison at position 0 of
+    a 100-document batch → the 99 served and the poison quarantined in 57 min.
+  - *Contract*, decided per document by the artifact's own version `v`. An
+    artifact of another `v` than the app reads → `incompatible` (`reason =
+    artifact_version: worker artifact v2, this app reads v1`): a deploy
+    mismatch, nobody blamed, asked again in 24 h, logged once per cycle at
+    error level with both versions (an `available` document keeps its stored
+    quality). An artifact of the expected `v` that fails its schema → that
+    document alone is rejected: it backs off (3 min doubling, capped at 24 h)
+    and after 5 rejections is `quarantined` with `reason = sync_rejected: …`;
+    the sync goes on (a lone broken artifact: quarantined in 48 min, nothing
+    paused). A 400 naming one document, or documents left out of an otherwise
+    answered batch, are rejected the same way and the rest asked again. Only
+    an answer that is not a sync answer at all (401/403/413, an envelope that
+    does not parse, an answer to nothing asked) pauses the whole sync (3 min
+    doubling to 1 h); the first answer resumes it.
+  - Every failure write is checked against the time its question was asked:
+    an answer recorded since wins (nothing is written), and a resync
+    requested since keeps the document due, a quarantine included.
+  - A quarantined document is asked again only after a re-ingest requests a
+    resync. To list problems:
+    `SELECT ark, status, reason, sync_attempts, outage_strikes FROM document_ocr WHERE status IN ('quarantined', 'unavailable', 'incompatible') ORDER BY checked_at DESC;`
+- **The artifact version rule (any contract change bumps `v`):** a change to
+  what the worker writes in `ocr-quality/<slug>.json` — a field, a type, a
+  meaning or scale (e.g. `ocrRate` as a percentage), one lane's folio shape —
+  MUST bump `OCR_QUALITY_ARTIFACT_VERSION` (worker-v2 `src/domain/types.ts`)
+  and ship with an app that reads the new `v`. Unbumped, correct artifacts are
+  rejected as broken and quarantined, or still parse and are read with the old
+  meaning. Bumped, the worker treats its stored artifacts of the old version
+  as corrupt and rebuilds them through the backfill (BnF cost as below); the
+  app shows those documents "waiting for a service update" until it reads the
+  new version. After deploying the matching app, re-ask the `incompatible`
+  rows at once instead of in 24 h:
+  `UPDATE document_ocr SET next_check_at = now() WHERE status = 'incompatible';`
 - **BnF cost:** one Presentation-API (ALTO) call per indexed **text** folio,
   once — the `alto` cache holds extracted text, not XML, so the word confidences
   must be re-fetched. Vision and Mistral documents cost nothing. The calls go
