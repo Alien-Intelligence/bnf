@@ -231,11 +231,15 @@ export abstract class PipelineStage<In, Out> {
   /**
    * A delivery whose rate gate was stopped (shutdown step 3, src/shutdown.ts:
    * the gates stop after the drain, while the transport is still alive) is
-   * HANDED BACK: a fresh copy is queued through `send` and this delivery
-   * completes — it never counts as an attempt and never fails a document.
+   * HANDED BACK: a copy is queued through `send` and this delivery completes.
+   * This delivery never counts as an attempt and never fails a document, but
+   * the ones BEFORE it do: the copy carries them (`attemptsSpent`), so its
+   * first delivery is attempt `msg.attempts` again, its retry budget is what
+   * was left, and `onExhausted` still fires after the real number of attempts
+   * — a deploy or a crash loop during a backlog never resets the history.
    */
   private async handBack(msg: QueueMessage<In>): Promise<void> {
-    await this.queue.send(this.inputQueue, msg.payload);
+    await this.queue.send(this.inputQueue, msg.payload, { attemptsSpent: msg.attempts - 1 });
     this.log.warn("delivery_handed_back", { msg: msg.id, attempt: msg.attempts });
   }
 

@@ -3,13 +3,17 @@
  * bounded concurrency and retry-on-throw (up to retryLimit), so the stage base
  * can be tested end-to-end without Postgres. Retry backoff is collapsed to
  * immediate re-delivery (tests assert attempts/outcomes, not wall-clock timing).
+ * `SendOpts.attemptsSpent` is modelled as pg-boss carries it (queue-pgboss.ts):
+ * the copy's deliveries count the spent ones and its retry budget shrinks.
  */
-import type { QueueClient, QueueCounts, QueueMessage } from "./types.js";
+import { assertAttemptsSpent } from "./queue-attempts.js";
+import type { QueueClient, QueueCounts, QueueMessage, SendOpts } from "./types.js";
 
 interface MemMsg {
   id: string;
   payload: unknown;
-  attempts: number; // deliveries so far
+  attempts: number; // deliveries of THIS copy so far
+  spent: number; // deliveries earlier copies spent (SendOpts.attemptsSpent)
   state: "queued" | "active" | "completed" | "failed";
 }
 
@@ -37,15 +41,17 @@ export class MemoryQueue implements QueueClient {
     return arr;
   }
 
-  async send<T>(queue: string, payload: T, _opts?: { startAfterMs?: number }): Promise<void> {
+  async send<T>(queue: string, payload: T, opts?: SendOpts): Promise<void> {
     // startAfterMs is a prod (pg-boss) concern; the test queue delivers immediately.
-    this.q(queue).push({ id: `m${++this.seq}`, payload, attempts: 0, state: "queued" });
+    const spent = opts?.attemptsSpent ?? 0;
+    assertAttemptsSpent(spent);
+    this.q(queue).push({ id: `m${++this.seq}`, payload, attempts: 0, spent, state: "queued" });
     queueMicrotask(() => this.pump(queue));
   }
 
   async sendMany<T>(queue: string, payloads: readonly T[]): Promise<void> {
     for (const p of payloads) {
-      this.q(queue).push({ id: `m${++this.seq}`, payload: p, attempts: 0, state: "queued" });
+      this.q(queue).push({ id: `m${++this.seq}`, payload: p, attempts: 0, spent: 0, state: "queued" });
     }
     queueMicrotask(() => this.pump(queue));
   }
@@ -81,11 +87,12 @@ export class MemoryQueue implements QueueClient {
 
   private async run(queue: string, w: Worker, msg: MemMsg): Promise<void> {
     try {
-      await w.handler({ id: msg.id, payload: msg.payload, attempts: msg.attempts });
+      await w.handler({ id: msg.id, payload: msg.payload, attempts: msg.spent + msg.attempts });
       msg.state = "completed";
     } catch {
-      // at-least-once: redeliver until retryLimit exhausted, then fail terminally.
-      if (msg.attempts <= w.retryLimit) {
+      // at-least-once: redeliver until retryLimit exhausted (the spent
+      // deliveries included), then fail terminally.
+      if (msg.spent + msg.attempts <= w.retryLimit) {
         msg.state = "queued";
       } else {
         msg.state = "failed";

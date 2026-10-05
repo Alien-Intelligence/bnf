@@ -12,7 +12,8 @@
 import PgBoss from "pg-boss";
 import { Pool, type PoolConfig } from "pg";
 
-import type { QueueClient, QueueCounts, QueueMessage } from "./types.js";
+import { takeAttemptsSpent, withAttemptsSpent } from "./queue-attempts.js";
+import type { QueueClient, QueueCounts, QueueMessage, SendOpts } from "./types.js";
 
 interface QueuePolicy {
   retryLimit: number;
@@ -139,9 +140,10 @@ export class PgBossQueue implements QueueClient {
     this.created.add(name);
   }
 
-  async send<T>(queue: string, payload: T, opts?: { startAfterMs?: number }): Promise<void> {
+  async send<T>(queue: string, payload: T, opts?: SendOpts): Promise<void> {
     await this.ensureQueue(queue);
     const p = this.policies.get(queue);
+    const spent = opts?.attemptsSpent ?? 0;
     // Job-level options override the queue row, so a job inserted before/while
     // the queue policy is being applied still carries the right ceiling.
     const sendOpts: Record<string, unknown> = p
@@ -156,7 +158,16 @@ export class PgBossQueue implements QueueClient {
     if (opts?.startAfterMs && opts.startAfterMs > 0) {
       sendOpts.startAfter = Math.max(1, Math.round(opts.startAfterMs / 1000));
     }
-    await this.b().send(queue, payload as object, sendOpts);
+    if (spent === 0) {
+      await this.b().send(queue, payload as object, sendOpts);
+      return;
+    }
+    // A hand-back's copy: what is left of the budget, and the count it rides on.
+    if (!p) {
+      throw new Error(`PgBossQueue.send(${queue}): attemptsSpent needs the queue's work() policy`);
+    }
+    sendOpts.retryLimit = Math.max(0, p.retryLimit - spent);
+    await this.b().send(queue, withAttemptsSpent(payload, spent), sendOpts);
   }
 
   async sendMany<T>(queue: string, payloads: readonly T[]): Promise<void> {
@@ -221,8 +232,10 @@ export class PgBossQueue implements QueueClient {
       inFlight++;
       this.inFlight++; // process-wide, so stop() can drain across all queues
       void (async () => {
-        const attempts = (job.retryCount ?? 0) + 1;
         try {
+          // A hand-back's copy counts the deliveries its predecessor spent.
+          const spent = takeAttemptsSpent(job.data);
+          const attempts = spent + (job.retryCount ?? 0) + 1;
           await handler({ id: job.id, payload: job.data, attempts });
           await this.settle(queue, job.id, { kind: "complete" });
         } catch (err) {

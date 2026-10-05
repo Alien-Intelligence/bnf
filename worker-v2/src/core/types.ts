@@ -12,8 +12,10 @@
 
 /**
  * A unit of work on a queue. `payload` is stage-specific (typed per stage);
- * the envelope is generic. `attempts` counts redeliveries (1 on first delivery)
- * so the base can apply the retry/terminal policy.
+ * the envelope is generic. `attempts` counts the item's deliveries, this one
+ * included (1 on first delivery) — ACROSS copies: a copy sent with
+ * `SendOpts.attemptsSpent` counts the deliveries its predecessor spent — so
+ * the base can apply the retry/terminal policy.
  */
 export interface QueueMessage<T = unknown> {
   readonly id: string;
@@ -75,6 +77,15 @@ export interface BlobStore {
  *  it; the in-memory queue ignores it and delivers immediately). */
 export interface SendOpts {
   startAfterMs?: number;
+  /**
+   * Deliveries of this item an earlier copy already spent (a hand-back,
+   * core/stage.ts). The copy's deliveries report `attempts` counting them, and
+   * its retry budget is reduced by them, so an item never gets more deliveries
+   * than its stage's policy allows — however many restarts hand it back — and
+   * the final one is still recognised as final (`onExhausted`). A
+   * non-negative integer; the queue must have a `work()` policy registered.
+   */
+  attemptsSpent?: number;
 }
 
 /** Queue transport. One queue == one bucket == one stage's input. */
