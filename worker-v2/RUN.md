@@ -30,6 +30,9 @@ DATABASE_URL=postgresql://…              # pg-boss buckets + sandbox_ingest_v2
 SCW_S3_BUCKET= SCW_S3_ENDPOINT_URL= SCW_S3_REGION= SCW_S3_ACCESS_KEY= SCW_S3_SECRET_KEY=
 V2_S3_PREFIX=v2/                         # isolates V2 artifacts from V1 in the shared bucket
 BNF_BROKER_URL=…                         # REQUIRED at boot: the egress chokepoint (owns OAuth + the rate caps)
+BNF_IIIF_PRESENTATION_BASE_URL=https://openapiproext.bnf.fr/presentation/iiif/gallica/1.0.0  # REQUIRED at boot: manifests + ALTO
+BNF_IIIF_IMAGE_BASE_URL=https://openapiproext.bnf.fr/image/iiif/gallica/1.0.0                # REQUIRED at boot: folio images
+# BNF_API_BASE_URL is RETIRED: set, the worker refuses to boot and names the two bases above.
 BNF_GLOBAL_RPM=300                       # fetch rate gate (→ 1000 only if the per-IP raise lands)
 BNF_FETCH_CONCURRENCY=12
 BNF_MANIFEST_RPM=42

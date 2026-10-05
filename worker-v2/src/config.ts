@@ -289,6 +289,21 @@ export function loadOcrBackfillConfig(env: NodeJS.ProcessEnv): OcrBackfillConfig
   };
 }
 
+/** A required http(s) URL; a trailing slash is dropped. */
+function requiredHttpUrlFrom(env: Env, name: string): string {
+  const raw = requiredFrom(env, name);
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error(`${name} must be an http(s) URL, got ${JSON.stringify(raw)}`);
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error(`${name} must be an http(s) URL, got ${JSON.stringify(raw)}`);
+  }
+  return raw.replace(/\/+$/, "");
+}
+
 /**
  * BNF_BROKER_URL — the egress chokepoint every BnF call goes through. Required
  * by the worker RUNTIME only (main.ts hands it to bnf/broker-client.ts once,
@@ -298,17 +313,47 @@ export function loadOcrBackfillConfig(env: NodeJS.ProcessEnv): OcrBackfillConfig
  * BnF call and do not need it. An http(s) URL; a trailing slash is dropped.
  */
 export function loadBrokerUrl(env: Env): string {
-  const raw = requiredFrom(env, "BNF_BROKER_URL");
-  let url: URL;
-  try {
-    url = new URL(raw);
-  } catch {
-    throw new Error(`BNF_BROKER_URL must be an http(s) URL, got ${JSON.stringify(raw)}`);
+  return requiredHttpUrlFrom(env, "BNF_BROKER_URL");
+}
+
+/** The two BnF IIIF APIs the ingestion reads (LiveBnfClient's constructor). */
+export interface IiifBases {
+  /** PRESENTATION_IIIF_GALLICA — manifests and ALTO. */
+  presentationBaseUrl: string;
+  /** IMAGE_IIIF_GALLICA — folio images. */
+  imageBaseUrl: string;
+}
+
+/**
+ * BNF_IIIF_PRESENTATION_BASE_URL / BNF_IIIF_IMAGE_BASE_URL — the BnF
+ * Presentation and Image APIs, each with its own quota (they replaced the
+ * combined Gallica-IIIF API, 2026-09-30). Both REQUIRED, no default: the base
+ * carries the API version (…/presentation/iiif/gallica/1.0.0), and a default
+ * would hide a chart that forgot the move. Like the broker URL, required by
+ * the worker RUNTIME and the scripts that call BnF — not by the read-only
+ * status/seed/requeue scripts. Helm: `bnfIiif.*`.
+ */
+export function loadIiifBases(env: Env): IiifBases {
+  return {
+    presentationBaseUrl: requiredHttpUrlFrom(env, "BNF_IIIF_PRESENTATION_BASE_URL"),
+    imageBaseUrl: requiredHttpUrlFrom(env, "BNF_IIIF_IMAGE_BASE_URL"),
+  };
+}
+
+/**
+ * Env vars a previous release read and this one does not, with what replaced
+ * each. Set, they mean a stale chart or .env: the worker refuses to boot
+ * rather than look configured by a value nothing reads (the F-D3 class).
+ */
+export const RETIRED_ENV: Readonly<Record<string, string>> = {
+  BNF_API_BASE_URL: "BNF_IIIF_PRESENTATION_BASE_URL and BNF_IIIF_IMAGE_BASE_URL",
+};
+
+/** Throw, naming the replacement, when a retired env var is set at all (an empty value included). */
+export function rejectRetiredEnv(env: Env): void {
+  for (const [name, replacement] of Object.entries(RETIRED_ENV)) {
+    if (env[name] !== undefined) throw new Error(`${name} is retired — use ${replacement}`);
   }
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new Error(`BNF_BROKER_URL must be an http(s) URL, got ${JSON.stringify(raw)}`);
-  }
-  return raw.replace(/\/+$/, "");
 }
 
 /** The highest TCP port. */
@@ -345,6 +390,7 @@ export const CONFIG_DEFAULTS = {
 
 /** The whole worker config from `env`, validated. Pure, so it is unit-tested. */
 export function loadConfigFrom(env: Env): WorkerConfig {
+  rejectRetiredEnv(env);
   return {
     databaseUrl: requiredFrom(env, "DATABASE_URL"),
     httpPort: positiveIntFrom(env, "WORKER_HTTP_PORT", CONFIG_DEFAULTS.httpPort, { max: MAX_PORT }),

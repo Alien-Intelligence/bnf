@@ -105,6 +105,9 @@ function xmlAttr(v: string): string {
   return v.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
 }
 
+/** The Presentation API base the fake's manifest URLs hang off. */
+export const FAKE_PRESENTATION_BASE = "https://presentation.fake.bnf.test/presentation/iiif/gallica/1.0.0";
+
 /** The Taux OCR a fake text document publishes unless its spec says otherwise. */
 const FAKE_DEFAULT_TAUX_OCR = "100%";
 
@@ -192,7 +195,11 @@ export class FakeBnfClient implements BnfClient {
     return altoFolioFromParse(parseAlto(xml));
   }
 
-  async fetchImageFolio(ark: string, ordre: number, _size?: string): Promise<Buffer> {
+  manifestUrl(canonicalArk: string): string {
+    return `${FAKE_PRESENTATION_BASE}/presentation/v3/${canonicalArk}/manifest.json`;
+  }
+
+  async fetchImageFolio(ark: string, ordre: number, _size: string): Promise<Buffer> {
     this.calls.image++;
     const s = this.spec(ark);
     this.faults.hit(`folio:${ark}:${ordre}`, s.folioFaults?.[ordre]);

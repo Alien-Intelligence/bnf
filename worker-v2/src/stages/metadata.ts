@@ -258,7 +258,7 @@ export class MetadataStage extends PipelineStage<DocRef, never> {
       // then handed to docInfoFromManifest — never parsed twice.
       const tauxOcr = tauxOcrOf(manifest.metadata);
       logUnusableTauxOcr(ctx, canonicalArk, tauxOcr);
-      return docInfoFromManifest(manifest, canonicalArk, tauxOcr);
+      return docInfoFromManifest(manifest, canonicalArk, tauxOcr, this.bnf.manifestUrl(canonicalArk));
     } catch (e) {
       // A permanently-unavailable manifest is rare (every digitized doc has one)
       // but possible for a few legacy/edge ARKs. Fall back to OAI so those still

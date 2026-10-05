@@ -13,6 +13,7 @@ import {
   DEFAULT_OCR_BACKFILL_RETRY_FAILED_AFTER_MS,
   loadBrokerUrl,
   loadConfigFrom,
+  loadIiifBases,
   loadOcrBackfillConfig,
   MIN_OCR_BACKFILL_RETRY_FAILED_AFTER_MS,
   pgPoolConfig,
@@ -133,4 +134,27 @@ test("loadBrokerUrl: required by the worker runtime, an http(s) URL, trailing sl
     assert.throws(() => loadBrokerUrl({ BNF_BROKER_URL: bad }), /BNF_BROKER_URL/, bad);
   }
   assert.equal(loadBrokerUrl({ BNF_BROKER_URL: "http://broker:8792/" }), "http://broker:8792");
+});
+
+test("loadIiifBases: both BnF IIIF API bases are required http(s) URLs, trailing slash dropped", () => {
+  const bases = {
+    BNF_IIIF_PRESENTATION_BASE_URL: "https://openapiproext.bnf.fr/presentation/iiif/gallica/1.0.0/",
+    BNF_IIIF_IMAGE_BASE_URL: "https://openapiproext.bnf.fr/image/iiif/gallica/1.0.0",
+  };
+  assert.deepEqual(loadIiifBases(bases), {
+    presentationBaseUrl: "https://openapiproext.bnf.fr/presentation/iiif/gallica/1.0.0",
+    imageBaseUrl: "https://openapiproext.bnf.fr/image/iiif/gallica/1.0.0",
+  });
+  for (const name of Object.keys(bases)) {
+    const rest = Object.fromEntries(Object.entries(bases).filter(([k]) => k !== name));
+    assert.throws(() => loadIiifBases(rest), new RegExp(`Missing required env var ${name}`), name);
+    assert.throws(() => loadIiifBases({ ...bases, [name]: "openapiproext.bnf.fr/x" }), new RegExp(name), `${name} not a URL`);
+  }
+});
+
+test("a retired env var stops the worker, naming its replacement (BNF_API_BASE_URL → the two IIIF bases)", () => {
+  assert.throws(
+    () => loadConfigFrom({ ...REQUIRED_ENV, BNF_API_BASE_URL: "https://openapiproext.bnf.fr" }),
+    /BNF_API_BASE_URL is retired — use BNF_IIIF_PRESENTATION_BASE_URL and BNF_IIIF_IMAGE_BASE_URL/,
+  );
 });

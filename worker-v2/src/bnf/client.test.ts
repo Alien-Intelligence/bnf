@@ -36,6 +36,13 @@ process.env.BNF_META_TIMEOUT_MS = SHORT_BUDGET_MS;
 process.env.BNF_PAGE_TIMEOUT_MS = LONG_BUDGET_MS;
 
 const { LiveBnfClient, docInfoFromManifest } = await import("./client.js");
+
+/** The two BnF IIIF APIs, as the chart's bnfIiif.* sets them. */
+const IIIF = {
+  presentationBaseUrl: "https://openapiproext.bnf.fr/presentation/iiif/gallica/1.0.0",
+  imageBaseUrl: "https://openapiproext.bnf.fr/image/iiif/gallica/1.0.0",
+};
+const MANIFEST_URL = `${IIIF.presentationBaseUrl}/presentation/v3/ark:/12148/bpt6k4625753w/manifest.json`;
 const { tauxOcrOf } = await import("./parse.js");
 const { configureBrokerUrl } = await import("./broker-client.js");
 
@@ -68,7 +75,7 @@ test("getManifest survives a delay that would trip the SHORT (OAI) budget — it
   const broker = await startFakeBroker(FAKE_BROKER_DELAY_MS);
   configureBrokerUrl(broker.url);
   try {
-    const client = new LiveBnfClient();
+    const client = new LiveBnfClient(IIIF);
     const manifest = await client.getManifest("ark:/12148/timeouttest", 5);
     assert.ok(
       manifest,
@@ -84,7 +91,7 @@ test("getDocumentInfoViaOai keeps the SHORT budget — the F4 fix is scoped to t
   const broker = await startFakeBroker(FAKE_BROKER_DELAY_MS);
   configureBrokerUrl(broker.url);
   try {
-    const client = new LiveBnfClient();
+    const client = new LiveBnfClient(IIIF);
     await assert.rejects(
       client.getDocumentInfoViaOai("ark:/12148/timeouttest"),
       (err: unknown) => err instanceof Error && /network/i.test(err.message),
@@ -111,7 +118,7 @@ test("docInfoFromManifest: a Taux OCR row yields ocrRate as a fraction AND ocrAv
       { label: "Titre", value: "L'Auto-vélo" },
       { label: "Taux OCR", value: "78.21 %" },
     ]);
-  const info = docInfoFromManifest(manifest, ARK, tauxOcrOf(manifest.metadata));
+  const info = docInfoFromManifest(manifest, ARK, tauxOcrOf(manifest.metadata), MANIFEST_URL);
   assert.equal(info.ocrRate, 0.7821);
   assert.equal(info.ocrAvailable, true);
 });
@@ -121,7 +128,7 @@ test("docInfoFromManifest: no Taux OCR row → ocrRate null, ocrAvailable false"
       { label: "Titre", value: "Carte de Paris" },
       { label: "Type document", value: "Carte" },
     ]);
-  const info = docInfoFromManifest(manifest, ARK, tauxOcrOf(manifest.metadata));
+  const info = docInfoFromManifest(manifest, ARK, tauxOcrOf(manifest.metadata), MANIFEST_URL);
   assert.equal(info.ocrRate, null);
   assert.equal(info.ocrAvailable, false);
 });
@@ -131,7 +138,7 @@ test("docInfoFromManifest: a Taux OCR row with an unparsable value keeps ocrAvai
       { label: "Titre", value: "Un titre" },
       { label: "Taux OCR", value: "n/a" },
     ]);
-  const info = docInfoFromManifest(manifest, ARK, tauxOcrOf(manifest.metadata));
+  const info = docInfoFromManifest(manifest, ARK, tauxOcrOf(manifest.metadata), MANIFEST_URL);
   assert.equal(info.ocrAvailable, true, "lane routing semantics are unchanged: the label is present");
   assert.equal(info.ocrRate, null);
 });
@@ -168,7 +175,7 @@ async function fetchAltoVia(status: number, body: string | Buffer, contentType?:
   const broker = await startStaticBroker(status, body, contentType);
   configureBrokerUrl(broker.url);
   try {
-    return await new LiveBnfClient().fetchAltoFolio(ARK, 1);
+    return await new LiveBnfClient(IIIF).fetchAltoFolio(ARK, 1);
   } finally {
     await broker.close();
   }
@@ -256,7 +263,7 @@ test("docInfoFromManifest: an out-of-range Taux OCR keeps the label (text lane) 
   ]);
   const taux = tauxOcrOf(manifest.metadata);
   assert.equal(taux.kind, "out_of_range");
-  const info = docInfoFromManifest(manifest, ARK, taux);
+  const info = docInfoFromManifest(manifest, ARK, taux, MANIFEST_URL);
   assert.equal(info.ocrAvailable, true);
   assert.equal(info.ocrRate, null);
 });
@@ -276,4 +283,92 @@ test("fetchAltoFolio: a QUOTED declared charset (RFC 9110) is honoured", async (
   const latin1 = Buffer.from(ALTO_OK.replace("vélo", "THÉÂTRE"), "latin1");
   const folio = await fetchAltoVia(200, latin1, 'application/xml; charset="iso-8859-1"');
   assert.equal(folio.text, "Le THÉÂTRE");
+});
+
+// ---------------------------------------------------------------------------
+// Which BnF API each call goes to (Track D): manifests and ALTO on the
+// Presentation API, images on the Image API — never the legacy combined
+// /iiif/ API, whose quota the ingestion no longer plans on.
+// ---------------------------------------------------------------------------
+
+/** A fake broker that records the upstream `url` of every POST /fetch and answers `body`. */
+function startRecordingBroker(
+  body: string | Buffer,
+  contentType: string,
+): Promise<{ url: string; posted: string[]; close: () => Promise<void> }> {
+  const posted: string[] = [];
+  return new Promise((resolve) => {
+    const server: Server = createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (c: Buffer) => chunks.push(c));
+      req.on("end", () => {
+        const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        if (typeof parsed === "object" && parsed !== null && "url" in parsed && typeof parsed.url === "string") {
+          posted.push(parsed.url);
+        }
+        res.writeHead(200, { "content-type": contentType });
+        res.end(body);
+      });
+    });
+    server.listen(0, "127.0.0.1", () => {
+      const { port } = server.address() as AddressInfo;
+      resolve({
+        url: `http://127.0.0.1:${port}`,
+        posted,
+        close: () => new Promise<void>((r) => server.close(() => r())),
+      });
+    });
+  });
+}
+
+test("getManifest posts the Presentation API manifest URL", async () => {
+  const broker = await startRecordingBroker("{}", "application/json");
+  configureBrokerUrl(broker.url);
+  try {
+    await new LiveBnfClient(IIIF).getManifest(ARK, 5);
+  } finally {
+    await broker.close();
+  }
+  assert.deepEqual(broker.posted, [
+    "https://openapiproext.bnf.fr/presentation/iiif/gallica/1.0.0/presentation/v3/ark:/12148/bpt6k4625753w/manifest.json",
+  ]);
+});
+
+test("fetchAltoFolio posts the Presentation API alto.xml URL", async () => {
+  const broker = await startRecordingBroker(
+    '<alto><Layout><Page><PrintSpace><TextBlock><TextLine><String CONTENT="x" WC="1"/></TextLine></TextBlock></PrintSpace></Page></Layout></alto>',
+    "application/xml; charset=utf-8",
+  );
+  configureBrokerUrl(broker.url);
+  try {
+    await new LiveBnfClient(IIIF).fetchAltoFolio(ARK, 3);
+  } finally {
+    await broker.close();
+  }
+  assert.deepEqual(broker.posted, [
+    "https://openapiproext.bnf.fr/presentation/iiif/gallica/1.0.0/presentation/v3/ark:/12148/bpt6k4625753w/f3/alto.xml",
+  ]);
+});
+
+test("fetchImageFolio posts the Image API URL with the size it was given", async () => {
+  const broker = await startRecordingBroker(Buffer.from([0xff, 0xd8, 0xff, 0xd9]), "image/jpeg");
+  configureBrokerUrl(broker.url);
+  try {
+    await new LiveBnfClient(IIIF).fetchImageFolio(ARK, 2, "!4096,4096");
+  } finally {
+    await broker.close();
+  }
+  assert.deepEqual(broker.posted, [
+    "https://openapiproext.bnf.fr/image/iiif/gallica/1.0.0/image/v3/ark:/12148/bpt6k4625753w/f2/full/!4096,4096/0/default.jpg",
+  ]);
+});
+
+test("manifestUrl and the doc-info's iiifManifestUrl are on the Presentation API", () => {
+  const client = new LiveBnfClient(IIIF);
+  assert.equal(client.manifestUrl(ARK), MANIFEST_URL);
+  const manifest = manifestWith([{ label: "Titre", value: "L'Auto-vélo" }]);
+  assert.equal(
+    docInfoFromManifest(manifest, ARK, tauxOcrOf(manifest.metadata), client.manifestUrl(ARK)).iiifManifestUrl,
+    MANIFEST_URL,
+  );
 });

@@ -12,13 +12,17 @@
  *     client throws Permanent("config") rather than silently degrading.
  *   - No withBnfRetry. Retry is the fetch stage's concern (pg-boss + RateGate);
  *     this client throws Transient/Permanent on the FIRST failure and lets the
- *     stage decide. Double-retrying would burn the shared 300/min budget.
+ *     stage decide. Double-retrying would burn the BnF quotas twice.
+ *   - Two IIIF APIs, bases from config (loadIiifBases): manifests and ALTO on
+ *     the Presentation API, images on the Image API — each with its own quota
+ *     under the ingestion subscription's global cap (broker/README.md). Every
+ *     URL is built from ARK + ordre; no URL inside a manifest is followed.
  *   - No metadata orchestration. Before the 2026-08-11 rate-collapse incident
  *     (ai-memories/tech/repos/bnf/ingest-hardening) this client owned
  *     getDocumentInfo(): try the manifest, fall back to OAI. That meant the
  *     metadata stage fetched a SECOND, ungated copy of the manifest that the
  *     manifest stage fetched again — the manifest budget (40/min, separate from
- *     the 1000/min global budget) collapsed under offered demand in the
+ *     the global budget) collapsed under offered demand in the
  *     thousands/min. The orchestration now lives in MetadataStage, which shares
  *     ONE cached manifest + ONE rate gate with ManifestStage. This client only
  *     exposes the two primitives that orchestration composes: getManifest
@@ -31,6 +35,7 @@
  * (permanent — it's an access decision, not throttling), 404→not_found, 400→
  * bad_ark, 429→transient(is429), 5xx→transient.
  */
+import type { IiifBases } from "../config.js";
 import { DOC_INFO_SOURCE, type AltoFolio, type BnfClient, type BnfDocInfo, type Manifest } from "./types.js";
 import { PermanentBnfError, TransientBnfError } from "./errors.js";
 import { brokerGet, brokerUrl } from "./broker-client.js";
@@ -84,17 +89,14 @@ function optionalIntEnv(name: string, fallback: number): number {
   return Math.floor(n);
 }
 
-// Partner-API endpoints (V2 is always partner mode — see file header):
-//   - metadata:  ungated OAI-PMH (oai.bnf.fr) — no auth, no Cloudflare, no quota.
-//   - IIIF v3:   openapiproext.bnf.fr via the broker (OAuth + shared rate caps).
-// IIIF MUST go to openapiproext.bnf.fr (the token'd host), NOT openapi.bnf.fr —
-// that public host serves IIIF from a no-token, anonymous-per-IP pool that does
-// not count against our 300/min quota and throttles behind the shared egress IP.
+// Endpoints (V2 is always partner mode — see file header):
+//   - metadata fallback: ungated OAI-PMH (oai.bnf.fr) — no auth, no quota.
+//   - IIIF v3: the Presentation and Image APIs on openapiproext.bnf.fr, via the
+//     broker (OAuth + the per-API buckets). The bases are the constructor's
+//     (loadIiifBases). They MUST be on openapiproext.bnf.fr (the token'd host),
+//     NOT openapi.bnf.fr — that public host serves IIIF from a no-token,
+//     anonymous-per-IP pool that is not our subscription.
 const OAI_PMH = "http://oai.bnf.fr/oai2/OAIHandler";
-const OPENAPI = (process.env.BNF_API_BASE_URL ?? "https://openapiproext.bnf.fr").replace(
-  /\/$/,
-  "",
-);
 
 interface FetchResult {
   status: number;
@@ -245,11 +247,14 @@ function classifyStatus(
  *                from the full canvas list, before slicing it to maxCanvases).
  *   • subtype  — null: the fine Gallica typedoc sub-category (fascicules/titres)
  *                lives only in OAI's setSpec, which the manifest does not carry.
+ *   • iiifManifestUrl — the caller's (BnfClient.manifestUrl), so this function
+ *                stays pure and the API base lives in the client alone.
  */
 export function docInfoFromManifest(
   manifest: Manifest,
   canonicalArk: string,
   tauxOcr: OcrRateParse,
+  iiifManifestUrl: string,
 ): BnfDocInfo {
   const title = metadataValue(manifest.metadata, ["titre", "title"]) ?? manifest.title;
   if (!title) {
@@ -279,9 +284,6 @@ export function docInfoFromManifest(
   const ocrAvailable = tauxOcr.kind !== "missing"; // tauxOcr: the caller's one tauxOcrOf(manifest) lookup
   const pageCount = manifest.totalPages || null;
 
-  const slug = arkToSlug(canonicalArk);
-  const iiifManifestUrl = `${OPENAPI}/iiif/presentation/v3/ark:/12148/${slug}/manifest.json`;
-
   return {
     ark: canonicalArk,
     title,
@@ -306,6 +308,18 @@ export function docInfoFromManifest(
 }
 
 export class LiveBnfClient implements BnfClient {
+  constructor(private readonly iiif: IiifBases) {}
+
+  /** The IIIF v3 manifest URL of a canonical ARK, on the Presentation API. */
+  manifestUrl(canonicalArk: string): string {
+    return `${this.presentationArkBase(canonicalArk)}/manifest.json`;
+  }
+
+  /** `<presentation base>/presentation/v3/ark:/12148/<slug>` — manifest and ALTO hang off it. */
+  private presentationArkBase(canonicalArk: string): string {
+    return `${this.iiif.presentationBaseUrl}/presentation/v3/ark:/12148/${arkToSlug(canonicalArk)}`;
+  }
+
   // ---------------- getDocumentInfoViaOai ----------------
 
   /**
@@ -384,9 +398,7 @@ export class LiveBnfClient implements BnfClient {
     const lang = pickFirstLanguage(dc["dc:language"]);
     const ocrAvailable = descriptionsHaveModeTexte(dc["dc:description"]);
     const pageCount = extractPageCountFromFormat(dc["dc:format"]);
-
-    const slug = arkToSlug(canonicalArk);
-    const iiifManifestUrl = `${OPENAPI}/iiif/presentation/v3/ark:/12148/${slug}/manifest.json`;
+    const iiifManifestUrl = this.manifestUrl(canonicalArk);
 
     return {
       ark: canonicalArk,
@@ -414,8 +426,7 @@ export class LiveBnfClient implements BnfClient {
 
   async getManifest(ark: string, maxCanvases: number): Promise<Manifest> {
     const canonicalArk = ensureCanonicalArk(ark);
-    const slug = arkToSlug(canonicalArk);
-    const url = `${OPENAPI}/iiif/presentation/v3/ark:/12148/${slug}/manifest.json`;
+    const url = this.manifestUrl(canonicalArk);
 
     // PAGE_TIMEOUT_MS, not DEFAULT_TIMEOUT_MS — this is a broker→openapiproext
     // call like ALTO/image, not the ungated OAI call. See the timeout-constants
@@ -451,8 +462,7 @@ export class LiveBnfClient implements BnfClient {
    */
   async fetchAltoFolio(ark: string, ordre: number, signal?: AbortSignal): Promise<AltoFolio> {
     const canonicalArk = ensureCanonicalArk(ark);
-    const slug = arkToSlug(canonicalArk);
-    const url = `${OPENAPI}/iiif/presentation/v3/ark:/12148/${slug}/f${ordre}/alto.xml`;
+    const url = `${this.presentationArkBase(canonicalArk)}/f${ordre}/alto.xml`;
 
     signal?.throwIfAborted();
     const { status, bytes, contentType } = await brokerFetch(
@@ -472,13 +482,15 @@ export class LiveBnfClient implements BnfClient {
   // ---------------- fetchImageFolio ----------------
 
   /**
-   * Fetch ONE folio's IIIF v3 image bytes (JPEG). Default size "max" (v3's
-   * native-size token). Returns the raw Buffer; non-2xx is classified+thrown.
+   * Fetch ONE folio's IIIF v3 image bytes (JPEG) from the Image API at `size`
+   * — the IIIF size segment, chosen per canvas by the caller (bnf/image-size.ts;
+   * BnF 400s a size that would upscale). Returns the raw Buffer; non-2xx is
+   * classified+thrown.
    */
-  async fetchImageFolio(ark: string, ordre: number, size = "max"): Promise<Buffer> {
+  async fetchImageFolio(ark: string, ordre: number, size: string): Promise<Buffer> {
     const canonicalArk = ensureCanonicalArk(ark);
     const slug = arkToSlug(canonicalArk);
-    const url = `${OPENAPI}/iiif/image/v3/ark:/12148/${slug}/f${ordre}/full/${size}/0/default.jpg`;
+    const url = `${this.iiif.imageBaseUrl}/image/v3/ark:/12148/${slug}/f${ordre}/full/${size}/0/default.jpg`;
 
     const { status, bytes, contentType } = await brokerFetch(
       url,

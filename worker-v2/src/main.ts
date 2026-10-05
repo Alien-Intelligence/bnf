@@ -10,7 +10,7 @@
  */
 import { Pool } from "pg";
 
-import { loadBrokerUrl, loadConfig, pgPoolConfig } from "./config.js";
+import { loadBrokerUrl, loadConfig, loadIiifBases, pgPoolConfig } from "./config.js";
 import { configureBrokerUrl } from "./bnf/broker-client.js";
 import { buildPipeline } from "./build.js";
 import { PgBossQueue } from "./core/queue-pgboss.js";
@@ -42,8 +42,10 @@ import { SHUTDOWN_BUDGETS, shutdownWorker } from "./shutdown.js";
 
 async function main(): Promise<void> {
   const cfg = loadConfig();
-  // The worker runtime — and only it — needs the broker: validated here, once.
+  // The worker runtime — and only it — needs the broker and the IIIF API
+  // bases: validated here, once, before anything starts.
   configureBrokerUrl(loadBrokerUrl(process.env));
+  const iiif = loadIiifBases(process.env);
   const log = createLogger({ worker: "bnf-ingest-v2" });
 
   const queue = new PgBossQueue(pgPoolConfig(cfg.databaseUrl));
@@ -87,7 +89,7 @@ async function main(): Promise<void> {
     queue,
     blob,
     log,
-    bnf: new LiveBnfClient(),
+    bnf: new LiveBnfClient(iiif),
     docState,
     describer: new LiveDescriber(),
     ocr: new LiveOcrEngine(),
