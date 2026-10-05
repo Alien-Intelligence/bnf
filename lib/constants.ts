@@ -4,6 +4,18 @@
 // See playbook/constants.md.
 
 // ---------------------------------------------------------------------------
+// Database pool bounds (lib/db.ts) — every query the app sends is bounded
+// (CLAUDE_ERROR_PATTERNS §14), so a hung statement or an exhausted pool fails
+// instead of wedging the caller and every guard it holds. Same names and
+// values as Track B's ingestion pipeline.
+// ---------------------------------------------------------------------------
+
+/** Server-side ceiling of one SQL statement (Postgres `statement_timeout`). */
+export const DB_STATEMENT_TIMEOUT_MS = 30_000
+/** Ceiling of the wait for a pooled connection (pg `connectionTimeoutMillis`). */
+export const DB_CONNECTION_TIMEOUT_MS = 10_000
+
+// ---------------------------------------------------------------------------
 // Routes — single source of truth for in-app navigation paths.
 // Locale prefix is handled by next-intl's <Link>; these are locale-agnostic.
 // ---------------------------------------------------------------------------

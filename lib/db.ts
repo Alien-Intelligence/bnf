@@ -1,14 +1,24 @@
 import "server-only"
 import { PrismaPg } from "@prisma/adapter-pg"
 import { PrismaClient } from "@/lib/generated/prisma/client"
+import { DB_CONNECTION_TIMEOUT_MS, DB_STATEMENT_TIMEOUT_MS } from "./constants"
 import { env } from "./env"
 
 // Prisma 7 uses the "client" engine type which requires a driver adapter.
 // PrismaPg creates a connection pool to the Postgres database identified by
 // DATABASE_URL. The singleton pattern prevents multiple pool instances during
 // Next.js hot-reload in development.
+//
+// Every statement is bounded server-side (statement_timeout) and every wait
+// for a pooled connection client-side (connectionTimeoutMillis): a hung query
+// or an exhausted pool throws instead of hanging its caller forever — the
+// background sweeps' overlap guards clear only when their awaits settle.
 function makePrismaClient(): PrismaClient {
-  const adapter = new PrismaPg({ connectionString: env.DATABASE_URL })
+  const adapter = new PrismaPg({
+    connectionString: env.DATABASE_URL,
+    statement_timeout: DB_STATEMENT_TIMEOUT_MS,
+    connectionTimeoutMillis: DB_CONNECTION_TIMEOUT_MS,
+  })
   return new PrismaClient({ adapter })
 }
 
