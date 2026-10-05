@@ -118,7 +118,16 @@ function isFolioOcrQuality(v: unknown, source: OcrSource): v is FolioOcrQuality 
  * in [0, 1] with integer word counts, null quality and count otherwise.
  */
 export function isDocOcrQuality(v: unknown, ark: string): v is DocOcrQuality {
-  if (!isRecord(v) || v.v !== OCR_QUALITY_ARTIFACT_VERSION || v.ark !== ark) return false;
+  return isDocOcrQualityAt(OCR_QUALITY_ARTIFACT_VERSION, v, ark);
+}
+
+/**
+ * isDocOcrQuality for an explicit artifact version: the version is a
+ * parameter, never a literal, so a test can prove the check follows the
+ * constant (a hard-coded `1` would accept v1 artifacts after a bump).
+ */
+export function isDocOcrQualityAt(version: number, v: unknown, ark: string): boolean {
+  if (!isRecord(v) || v.v !== version || v.ark !== ark) return false;
   if (v.lane !== "text" && v.lane !== "vision" && v.lane !== "mistral") return false;
   const rate = v.ocrRate;
   if (rate !== null && !(typeof rate === "number" && Number.isFinite(rate) && rate >= 0 && rate <= 1)) {
