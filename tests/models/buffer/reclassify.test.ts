@@ -51,6 +51,8 @@ function legacyRow(
     originTool?: string
     originQuery?: string | null
     status?: string
+    enrichStatus?: string | null
+    enrichAttempts?: number
   },
 ) {
   return prisma.bufferItem.create({
@@ -64,6 +66,8 @@ function legacyRow(
       originTool: data.originTool ?? "corpus_search",
       originQuery: data.originQuery ?? null,
       status: data.status ?? BUFFER_STATUS.CANDIDATE,
+      enrichStatus: data.enrichStatus ?? null,
+      enrichAttempts: data.enrichAttempts ?? 0,
       classifierVersion: 0,
     },
   })
@@ -200,4 +204,16 @@ test("a run stops at its time ceiling, reports it, and a later run finishes the 
   const resumed = await reclassifyBufferItems()
   assert.equal(resumed.complete, true)
   assert.ok(resumed.updated >= 1)
+})
+
+test("a bare candidate the drain already gave up on keeps its terminal status", async () => {
+  // A legacy bare row the drain failed past its attempt ceiling before the
+  // reclassifier reached it: re-queueing it would leave it pending forever
+  // (never retaken) and counted unresolved.
+  const ark = "ark:/12148/bpt6k9590002"
+  await legacyRow(ark, { originTool: "buffer_add", enrichStatus: BUFFER_ENRICH_STATUS.FAILED, enrichAttempts: 3 })
+  await reclassifyBufferItems()
+  const failed = await row(ark)
+  assert.equal(failed.classifierVersion, BUFFER_CLASSIFIER_VERSION, "still reclassified")
+  assert.equal(failed.enrichStatus, BUFFER_ENRICH_STATUS.FAILED, "never regressed to pending")
 })

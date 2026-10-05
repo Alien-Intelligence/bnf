@@ -42,12 +42,13 @@ async function resolvedDocumentsFor(bare: LegacyBufferItem[]): Promise<Map<strin
   return new Map(docs.map((d) => [`${d.projectId} ${d.ark}`, d]))
 }
 
-/** The v1 column values for one legacy row. */
+/** The v1 column values for one legacy row, and whether to queue it for the
+ *  enrichment drain (applied only while the row was never enriched). */
 function v1Data(
   row: LegacyBufferItem,
   doc: ResolvedDocumentFields | undefined,
   unknownLabels: Map<string, number>,
-): Prisma.BufferItemUpdateManyMutationInput {
+): { data: Prisma.BufferItemUpdateManyMutationInput; queueEnrich: boolean } {
   const countUnknown = (label: string) => unknownLabels.set(label, (unknownLabels.get(label) ?? 0) + 1)
   const classified = classifyLegacyRow(row)
   if (classified.unknownLabel !== null) countUnknown(classified.unknownLabel)
@@ -58,23 +59,23 @@ function v1Data(
     arkKind: classified.arkKind,
     classifierVersion: BUFFER_CLASSIFIER_VERSION,
   }
-  if (row.title !== null) return data
+  if (row.title !== null) return { data, queueEnrich: false }
 
   // A bare row (staged by ARK only). A resolved Document of the same project
   // holds its metadata already — copy all of it (raw label, links, year range
   // included) by the enricher's rules, no BnF call.
   if (doc !== undefined) {
     return {
-      ...data,
-      ...bufferMetadataFromDocument(doc, countUnknown),
-      enrichStatus: BUFFER_ENRICH_STATUS.RESOLVED,
+      data: { ...data, ...bufferMetadataFromDocument(doc, countUnknown), enrichStatus: BUFFER_ENRICH_STATUS.RESOLVED },
+      queueEnrich: false,
     }
   }
-  // Still curated → queue it for the enrichment drain (lib/buffer/enricher.ts).
-  // Committed or discarded bare rows are not curated anymore: spending BnF
-  // quota on them would be waste, so they stay unenriched.
-  if (row.status === BUFFER_STATUS.CANDIDATE) return { ...data, enrichStatus: BUFFER_ENRICH_STATUS.PENDING }
-  return data
+  // Still curated and never enriched → queue it for the enrichment drain
+  // (lib/buffer/enricher.ts). A row the drain already settled keeps its status:
+  // re-queueing a FAILED row past its attempt ceiling would leave it pending
+  // forever, never retaken. Committed or discarded bare rows are not curated
+  // anymore: spending BnF quota on them would be waste.
+  return { data, queueEnrich: row.status === BUFFER_STATUS.CANDIDATE && row.enrichStatus === null }
 }
 
 /**
@@ -101,7 +102,7 @@ export async function reclassifyBufferItems(
     const docs = await resolvedDocumentsFor(rows.filter((r) => r.title === null))
     updated += await BufferQueries.applyReclassification(
       BUFFER_CLASSIFIER_VERSION,
-      rows.map((r) => ({ id: r.id, data: v1Data(r, docs.get(`${r.projectId} ${r.ark}`), unknownLabels) })),
+      rows.map((r) => ({ id: r.id, ...v1Data(r, docs.get(`${r.projectId} ${r.ark}`), unknownLabels) })),
     )
     if (rows.length < BUFFER_RECLASSIFY_BATCH_SIZE) {
       complete = true

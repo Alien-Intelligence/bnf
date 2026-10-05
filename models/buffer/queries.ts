@@ -38,6 +38,7 @@ const legacyRowSelect = {
   originQuery: true,
   source: true,
   status: true,
+  enrichStatus: true,
 } satisfies Prisma.BufferItemSelect
 
 export type LegacyBufferItem = Prisma.BufferItemGetPayload<{ select: typeof legacyRowSelect }>
@@ -151,18 +152,36 @@ export class BufferQueries {
   /**
    * Apply one batch of reclassifications in one transaction, each guarded on
    * the version: a row a live search re-stamped between the read and the
-   * write is left as the search wrote it. Returns how many rows changed.
+   * write is left as the search wrote it. `queueEnrich` queues the row for the
+   * drain ONLY while it has never been enriched (enrichStatus NULL), checked
+   * in the same statement — so a terminal status (failed, resolved), even one
+   * the drain wrote after the batch was read, is never regressed to pending.
+   * Returns how many rows were reclassified.
    */
   static async applyReclassification(
     version: number,
-    updates: ReadonlyArray<{ id: string; data: Prisma.BufferItemUpdateManyMutationInput }>,
+    updates: ReadonlyArray<{ id: string; data: Prisma.BufferItemUpdateManyMutationInput; queueEnrich: boolean }>,
   ): Promise<number> {
-    const results = await prisma.$transaction(
-      updates.map((u) =>
-        prisma.bufferItem.updateMany({ where: { id: u.id, classifierVersion: { lt: version } }, data: u.data }),
-      ),
-    )
-    return results.reduce((n, r) => n + r.count, 0)
+    const statements = updates.flatMap((u) => [
+      ...(u.queueEnrich
+        ? [
+            prisma.bufferItem.updateMany({
+              where: { id: u.id, classifierVersion: { lt: version }, enrichStatus: null },
+              data: { enrichStatus: BUFFER_ENRICH_STATUS.PENDING },
+            }),
+          ]
+        : []),
+      prisma.bufferItem.updateMany({ where: { id: u.id, classifierVersion: { lt: version } }, data: u.data }),
+    ])
+    const results = await prisma.$transaction(statements)
+    // One classification write per update, always last of its group.
+    let reclassified = 0
+    let i = 0
+    for (const u of updates) {
+      i += u.queueEnrich ? 2 : 1
+      reclassified += results[i - 1].count
+    }
+    return reclassified
   }
 
   /** Count of rows matching `where`. */
