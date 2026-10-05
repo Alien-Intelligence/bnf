@@ -85,13 +85,38 @@ Usage: {{ include "bnf-demo.bnfRateShare" (dict "root" . "key" "catalogueRpm") }
 */}}
 {{- define "bnf-demo.bnfRateShare" -}}
 {{- $rate := required (printf "config.bnfMcpRate.%s is required" .key) (index .root.Values.config.bnfMcpRate .key) -}}
-{{- $replicas := required "replicaCount is required" .root.Values.replicaCount -}}
-{{- if lt (int $replicas) 1 -}}
-{{- fail (printf "replicaCount must be >= 1 (got %v)" $replicas) -}}
+{{- if not (or (kindIs "int" $rate) (kindIs "int64" $rate) (kindIs "float64" $rate)) -}}
+{{- fail (printf "config.bnfMcpRate.%s must be a number of requests per minute (got %q)" .key (toString $rate)) -}}
 {{- end -}}
-{{- $share := div $rate $replicas -}}
-{{- if lt (int $share) 1 -}}
+{{- if ne (float64 $rate) (floor (float64 $rate)) -}}
+{{- fail (printf "config.bnfMcpRate.%s must be a whole number of requests per minute (got %v)" .key $rate) -}}
+{{- end -}}
+{{- $replicas := required "replicaCount is required" .root.Values.replicaCount -}}
+{{- if not (or (kindIs "int" $replicas) (kindIs "int64" $replicas) (kindIs "float64" $replicas)) -}}
+{{- fail (printf "replicaCount must be a number (got %q)" (toString $replicas)) -}}
+{{- end -}}
+{{- if or (lt (float64 $replicas) 1.0) (ne (float64 $replicas) (floor (float64 $replicas))) -}}
+{{- fail (printf "replicaCount must be a whole number >= 1 (got %v)" $replicas) -}}
+{{- end -}}
+{{- $share := div (int64 $rate) (int64 $replicas) -}}
+{{- if lt (int64 $share) 1 -}}
 {{- fail (printf "config.bnfMcpRate.%s=%v split over %v replicas is below 1/min — lower replicaCount or move the limiter to a shared store" .key $rate $replicas) -}}
 {{- end -}}
 {{- $share -}}
+{{- end -}}
+
+{{/*
+config.bnfMcpRate.maxWaitMs, checked at render time against the app's boot
+rule (lib/env.ts: an integer in 1..BNF_MCP_RATE_MAX_WAIT_MS_CEILING = 60000),
+so a bad value fails `helm template` instead of crash-looping the pod.
+*/}}
+{{- define "bnf-demo.bnfMaxWaitMs" -}}
+{{- $wait := required "config.bnfMcpRate.maxWaitMs is required" .Values.config.bnfMcpRate.maxWaitMs -}}
+{{- if not (or (kindIs "int" $wait) (kindIs "int64" $wait) (kindIs "float64" $wait)) -}}
+{{- fail (printf "config.bnfMcpRate.maxWaitMs must be a number of milliseconds (got %q)" (toString $wait)) -}}
+{{- end -}}
+{{- if or (lt (float64 $wait) 1.0) (gt (float64 $wait) 60000.0) (ne (float64 $wait) (floor (float64 $wait))) -}}
+{{- fail (printf "config.bnfMcpRate.maxWaitMs must be a whole number of milliseconds in 1..60000 (got %v)" $wait) -}}
+{{- end -}}
+{{- int64 $wait -}}
 {{- end -}}

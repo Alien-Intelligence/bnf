@@ -23,7 +23,7 @@ data:
   BNF_MCP_RATE_IIIF_RPM: {{ include "bnf-demo.bnfRateShare" (dict "root" . "key" "iiifRpm") | quote }}
   BNF_MCP_RATE_ISSUES_RPM: {{ include "bnf-demo.bnfRateShare" (dict "root" . "key" "issuesRpm") | quote }}
   BNF_MCP_RATE_GRAPHE_RPM: {{ include "bnf-demo.bnfRateShare" (dict "root" . "key" "grapheRpm") | quote }}
-  BNF_MCP_RATE_MAX_WAIT_MS: {{ required "config.bnfMcpRate.maxWaitMs is required" .Values.config.bnfMcpRate.maxWaitMs | quote }}
+  BNF_MCP_RATE_MAX_WAIT_MS: {{ include "bnf-demo.bnfMaxWaitMs" . | quote }}
   DATACLUSTER_MCP_URL: {{ .Values.config.dataclusterMcpUrl | quote }}
   OTEL_SERVICE_NAME: {{ .Values.config.otelServiceName | quote }}
   {{- with .Values.config.agentProvider }}
