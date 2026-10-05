@@ -42,6 +42,7 @@ export const PUT = withAuth(async (req, _user, bouncer, ctx: RouteCtx) => {
   if (!existing || existing.projectId !== id) return notFound("Élément introuvable")
 
   const item = await MemoryService.update(item_id, parsed)
+  if (item === null) return notFound("Élément introuvable")
   return ok<MemoryItem>(item)
 })
 
@@ -58,5 +59,6 @@ export const PATCH = withAuth(async (req, _user, bouncer, ctx: RouteCtx) => {
   if (!existing || existing.projectId !== id) return notFound("Élément introuvable")
 
   const item = await MemoryService.reorder(item_id, parsed.position)
+  if (item === null) return notFound("Élément introuvable")
   return ok<MemoryItem>(item)
 })

@@ -12,7 +12,8 @@ import {
 import type { AppLocale } from "@/i18n/routing"
 import { renderCorpusPrompt } from "./corpus"
 import { renderResearchPrompt } from "./research"
-import type { AppSession, Prisma } from "@/lib/generated/prisma/client"
+import type { AppSession } from "@/lib/generated/prisma/client"
+import { SessionQueries } from "@/models/sessions/queries"
 
 /**
  * How many times `buildForSession` renders before giving up on caching. Each
@@ -20,10 +21,7 @@ import type { AppSession, Prisma } from "@/lib/generated/prisma/client"
  * means memory is being written continuously, and the last render is served
  * without being cached (the next turn rebuilds).
  */
-const PROMPT_CACHE_MAX_RENDERS = 3
-
-/** A Prisma client or an interactive-transaction client. */
-type PromptDb = Pick<Prisma.TransactionClient, "appSession">
+export const PROMPT_CACHE_MAX_RENDERS = 3
 
 export class PromptBuilder {
   /**
@@ -35,12 +33,17 @@ export class PromptBuilder {
    * their next turn — without the revision check a cached prompt was served
    * forever (found bug B5).
    *
-   * The write is a compare-and-set on `promptEpoch`, which every invalidation
-   * bumps: a memory change that lands between the render and the write makes
-   * the write miss, and the prompt is re-rendered from the new memory instead
-   * of an old-memory prompt being stamped as valid.
+   * The write is a compare-and-set on `promptEpoch` (SessionQueries.cachePrompt),
+   * which every invalidation bumps: a change that lands between the render and
+   * the write makes the write miss, and the prompt is re-rendered instead of a
+   * stale prompt being stamped as valid. `render` is injectable so a test can
+   * land a change mid-render; production uses PromptBuilder.render.
    */
-  static async buildForSession(session: AppSession, locale: AppLocale): Promise<string> {
+  static async buildForSession(
+    session: AppSession,
+    locale: AppLocale,
+    render: (session: AppSession, locale: AppLocale) => Promise<string> = (s, l) => PromptBuilder.render(s, l),
+  ): Promise<string> {
     let current = session
     let built = ""
     for (let attempt = 1; attempt <= PROMPT_CACHE_MAX_RENDERS; attempt++) {
@@ -51,15 +54,16 @@ export class PromptBuilder {
       ) {
         return current.systemPrompt
       }
-      built = await this.render(current, locale)
-      const { count } = await prisma.appSession.updateMany({
-        where: { id: current.id, promptEpoch: current.promptEpoch },
-        data: { systemPrompt: built, promptLocale: locale, promptRevision: PROMPT_REVISION },
+      built = await render(current, locale)
+      const cached = await SessionQueries.cachePrompt(current.id, current.promptEpoch, {
+        systemPrompt: built,
+        promptLocale: locale,
+        promptRevision: PROMPT_REVISION,
       })
-      if (count === 1) return built
+      if (cached) return built
       // Lost the race to an invalidation (or another turn cached first):
       // re-read the row and either serve its fresh cache or render again.
-      current = await prisma.appSession.findUniqueOrThrow({ where: { id: session.id } })
+      current = await SessionQueries.getOrThrow(session.id)
     }
     console.warn(
       `[prompt] session ${session.id}: memory changed during ${PROMPT_CACHE_MAX_RENDERS} ` +
@@ -68,19 +72,9 @@ export class PromptBuilder {
     return built
   }
 
-  /**
-   * Invalidate the cached system prompt of every session of the project, in
-   * BOTH scopes. Each prompt now embeds both memories (its own, and the other
-   * step's as a read-only section), so a memory change makes every one stale.
-   * Bumps `promptEpoch` so a render already in flight cannot cache itself.
-   * Called by MemoryService inside the SAME transaction as the memory change
-   * (pass that transaction as `db`), so the two commit or fail together.
-   */
-  static async invalidateProject(projectId: string, db: PromptDb = prisma): Promise<void> {
-    await db.appSession.updateMany({
-      where: { projectId },
-      data: { systemPrompt: null, promptRevision: null, promptEpoch: { increment: 1 } },
-    })
+  /** TEST SEAM: the default render, exposed so a test can wrap it. */
+  static renderForTests(session: AppSession, locale: AppLocale): Promise<string> {
+    return PromptBuilder.render(session, locale)
   }
 
   private static async render(

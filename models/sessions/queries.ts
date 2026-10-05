@@ -1,22 +1,65 @@
 import "server-only"
+// models/sessions/queries.ts
+// Pure database access for AppSession, including the ONE home of the system
+// prompt cache: its compare-and-set write and every invalidation. Each
+// invalidation takes the caller's transaction, so the change that makes a
+// prompt stale and the invalidation commit together or not at all.
 import { prisma } from "@/lib/db"
-import { SESSION_SCOPE } from "./schema"
-import type { AppSession } from "./schema"
+import type { Prisma } from "@/lib/generated/prisma/client"
+import { SESSION_STATUS, type AppSession, type SessionScope } from "./schema"
+
+/** The client a sessions query runs on: the app client or a transaction's. */
+export type SessionDb = Pick<Prisma.TransactionClient, "appSession">
+
+/** Whose cached prompts an invalidation drops. */
+export type PromptTarget = {
+  /** The project — and, with `withDerived`, every workspace deriving from it. */
+  projectId: string
+  /** Only this scope's sessions; both when absent. */
+  scope?: SessionScope
+  /** Also the workspaces reading this project's corpus (corpusSourceId). */
+  withDerived?: boolean
+}
 
 export class SessionQueries {
   /**
-   * Drops the cached system prompt on every research session of these projects,
-   * so the next turn rebuilds it. Only the research scope carries ingest
-   * status; a corpus prompt embeds the head snapshot, which an ingestion does
-   * not move. Bumps `promptEpoch` like every invalidation, so a render already
-   * in flight cannot cache a prompt from before the ingestion
-   * (PromptBuilder.buildForSession's compare-and-set).
+   * Drop the cached system prompt of the target's sessions: the prompt, the
+   * revision it was rendered at, and a bump of `promptEpoch`, so a render
+   * already in flight cannot cache itself (PromptBuilder.buildForSession's
+   * compare-and-set). Run it on the transaction of the change that made the
+   * prompt stale (`db`).
    */
-  static async clearResearchPrompts(projectIds: string[]): Promise<void> {
-    await prisma.appSession.updateMany({
-      where: { projectId: { in: projectIds }, scope: SESSION_SCOPE.RESEARCH },
-      data: { systemPrompt: null, promptEpoch: { increment: 1 } },
+  static invalidatePrompts(target: PromptTarget, db: SessionDb = prisma) {
+    const project: Prisma.ProjectWhereInput = target.withDerived
+      ? { OR: [{ id: target.projectId }, { corpusSourceId: target.projectId }] }
+      : { id: target.projectId }
+    return db.appSession.updateMany({
+      where: { project, ...(target.scope !== undefined ? { scope: target.scope } : {}) },
+      data: { systemPrompt: null, promptRevision: null, promptEpoch: { increment: 1 } },
     })
+  }
+
+  /** Drop the cached prompts of the sessions of the projects deriving from
+   *  `shareIds` — a revoked grant changes what their research prompt says. */
+  static invalidateDerivedThroughShares(shareIds: string[], db: SessionDb = prisma) {
+    return db.appSession.updateMany({
+      where: { project: { corpusSourceShareId: { in: shareIds } } },
+      data: { systemPrompt: null, promptRevision: null, promptEpoch: { increment: 1 } },
+    })
+  }
+
+  /**
+   * Cache a rendered prompt — only if no invalidation happened since the row
+   * was read at `epoch`. Returns false when it lost that race (the caller
+   * re-renders).
+   */
+  static async cachePrompt(
+    id: string,
+    epoch: number,
+    prompt: { systemPrompt: string; promptLocale: string; promptRevision: string },
+  ): Promise<boolean> {
+    const { count } = await prisma.appSession.updateMany({ where: { id, promptEpoch: epoch }, data: prompt })
+    return count === 1
   }
 
   /**
@@ -33,9 +76,9 @@ export class SessionQueries {
     return count === 1
   }
 
-  static async listForProject(projectId: string, scope: string): Promise<AppSession[]> {
+  static async listForProject(projectId: string, scope: SessionScope): Promise<AppSession[]> {
     return prisma.appSession.findMany({
-      where: { projectId, scope, status: { not: "archived" } },
+      where: { projectId, scope, status: { not: SESSION_STATUS.ARCHIVED } },
       orderBy: { updatedAt: "desc" },
     })
   }
@@ -43,4 +86,10 @@ export class SessionQueries {
   static async get(id: string): Promise<AppSession | null> {
     return prisma.appSession.findUnique({ where: { id } })
   }
+
+  /** The session row, or a throw — for callers holding a session id that must exist. */
+  static async getOrThrow(id: string): Promise<AppSession> {
+    return prisma.appSession.findUniqueOrThrow({ where: { id } })
+  }
 }
+

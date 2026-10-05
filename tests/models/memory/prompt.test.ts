@@ -20,6 +20,7 @@ import { memoryWriteTool } from "@/lib/agent/tools/memory"
 import type { TurnScopedCtx } from "@/lib/agent/tools/registry-factory"
 import { MEMORY_SCOPE } from "@/models/memory/schema"
 import { MemoryService } from "@/models/memory/service"
+import { SessionQueries } from "@/models/sessions/queries"
 import { SESSION_SCOPE } from "@/models/sessions/schema"
 import type { PolicyUser } from "@/models/users/schema"
 import { createTestUser, createTestProject, createTestSession, deleteTestUser } from "@/lib/testing/fixtures"
@@ -163,7 +164,7 @@ test("forget of an item that is not there reports it and invalidates nothing", a
 })
 
 test("a render that lost the race to a memory write is not cached; the new memory is", async () => {
-  await PromptBuilder.invalidateProject(project.id)
+  await SessionQueries.invalidatePrompts({ projectId: project.id })
   // The row as a turn read it BEFORE the write below (its epoch is now stale).
   const stale = await prisma.appSession.findUniqueOrThrow({ where: { id: corpusSession } })
   await MemoryService.write({
@@ -178,4 +179,37 @@ test("a render that lost the race to a memory write is not cached; the new memor
   assert.equal(row.promptEpoch, stale.promptEpoch + 1, "the write bumped the epoch")
   assert.equal(row.systemPrompt, prompt, "the prompt cached is the one rendered at the new epoch")
   assert.match(prompt, /fonds Bxx est incomplet/)
+})
+
+test("two concurrent writes of the same fact merge into one item (the scope lock)", async () => {
+  const write = () =>
+    MemoryService.write({
+      projectId: project.id,
+      scope: MEMORY_SCOPE.CORPUS,
+      section: "Concurrence",
+      text: "Le même fait écrit deux fois en parallèle.",
+    })
+  await Promise.all([write(), write(), write()])
+  const items = await prisma.memoryItem.findMany({
+    where: { projectId: project.id, scope: MEMORY_SCOPE.CORPUS, section: "Concurrence" },
+  })
+  assert.equal(items.length, 1, "deduped, not piled up")
+})
+
+test("concurrent writes of different facts take distinct positions", async () => {
+  await Promise.all(
+    ["Fait A", "Fait B tout à fait différent", "Fait C encore autre chose"].map((text) =>
+      MemoryService.write({ projectId: project.id, scope: MEMORY_SCOPE.CORPUS, section: "Positions", text }),
+    ),
+  )
+  const items = await prisma.memoryItem.findMany({
+    where: { projectId: project.id, scope: MEMORY_SCOPE.CORPUS, section: "Positions" },
+  })
+  assert.deepEqual(items.map((i) => i.position).sort(), [0, 1, 2])
+})
+
+test("update or reorder of a vanished item is null (the route's 404), never a throw", async () => {
+  const gone = "00000000-0000-4000-8000-0000000000aa"
+  assert.equal(await MemoryService.update(gone, { text: "x" }), null)
+  assert.equal(await MemoryService.reorder(gone, 1), null)
 })

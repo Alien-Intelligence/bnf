@@ -1,6 +1,8 @@
 import "server-only"
 import { prisma } from "@/lib/db"
-import { PromptBuilder } from "@/lib/agent/prompts/builder"
+import type { Prisma } from "@/lib/generated/prisma/client"
+import { SessionQueries } from "@/models/sessions/queries"
+import { MemoryQueries } from "./queries"
 import { MEMORY_NEAR_DUP_MAX_EDIT_DISTANCE } from "@/lib/constants"
 import { MEMORY_ORIGIN, type MemoryItem, type MemoryOrigin, type MemoryScope } from "@/models/memory/schema"
 
@@ -30,7 +32,8 @@ function levenshtein(a: string, b: string): number {
 /**
  * Every memory change goes through this service, and every one of them
  * invalidates the cached system prompts of ALL the project's sessions IN THE
- * SAME TRANSACTION: each prompt embeds both scopes' memory (Track E Phase 11),
+ * SAME TRANSACTION (SessionQueries.invalidatePrompts — the sessions model owns
+ * that write; this model never reaches into the agent runtime): each prompt embeds both scopes' memory (Track E Phase 11),
  * so the change and the invalidation commit together or not at all — a failed
  * invalidation can no longer leave a committed fact behind stale prompts. On
  * 0.18.1 memory_write invalidated through a dynamic import that never resolved,
@@ -53,6 +56,9 @@ export class MemoryService {
     origin?: MemoryOrigin | null
   }): Promise<MemoryItem> {
     return prisma.$transaction(async (tx) => {
+      // One writer per (project, scope) at a time: the dedupe read and the
+      // position below are only correct if no other write lands in between.
+      await MemoryQueries.lockScope(tx, args.projectId, args.scope)
       const existing = await tx.memoryItem.findMany({
         where: { projectId: args.projectId, scope: args.scope, section: args.section },
       })
@@ -77,7 +83,7 @@ export class MemoryService {
               position: existing.length,
             },
           })
-      await PromptBuilder.invalidateProject(args.projectId, tx)
+      await SessionQueries.invalidatePrompts({ projectId: args.projectId }, tx)
       return item
     })
   }
@@ -91,7 +97,7 @@ export class MemoryService {
     return prisma.$transaction(async (tx) => {
       const { count } = await tx.memoryItem.deleteMany({ where: { id: itemId, projectId, scope } })
       if (count === 0) return false
-      await PromptBuilder.invalidateProject(projectId, tx)
+      await SessionQueries.invalidatePrompts({ projectId }, tx)
       return true
     })
   }
@@ -111,34 +117,33 @@ export class MemoryService {
   }
 
   /**
-   * Update the text and/or section of an existing memory item.
+   * Update the text and/or section of an existing memory item. Returns null
+   * — and invalidates nothing — when the item no longer exists (a concurrent
+   * forget): the route answers 404, never a 500 on a missing row.
    * Caller must have already verified project ownership (via MemoryPolicy).
    */
-  static async update(
-    itemId: string,
-    args: { text?: string; section?: string },
-  ): Promise<MemoryItem> {
-    return prisma.$transaction(async (tx) => {
-      const item = await tx.memoryItem.update({
-        where: { id: itemId },
-        data: {
-          ...(args.text !== undefined ? { text: args.text } : {}),
-          ...(args.section !== undefined ? { section: args.section } : {}),
-        },
-      })
-      await PromptBuilder.invalidateProject(item.projectId, tx)
-      return item
+  static async update(itemId: string, args: { text?: string; section?: string }): Promise<MemoryItem | null> {
+    return MemoryService.mutateItem(itemId, {
+      ...(args.text !== undefined ? { text: args.text } : {}),
+      ...(args.section !== undefined ? { section: args.section } : {}),
     })
   }
 
   /**
-   * Move an item to an absolute position within its section.
-   * The caller computes the target position (e.g. current ± 1).
+   * Move an item to an absolute position within its section; null when the
+   * item no longer exists. The caller computes the target position.
    */
-  static async reorder(itemId: string, position: number): Promise<MemoryItem> {
+  static async reorder(itemId: string, position: number): Promise<MemoryItem | null> {
+    return MemoryService.mutateItem(itemId, { position })
+  }
+
+  /** Apply `data` to one item and invalidate in one transaction; null when it is gone. */
+  private static async mutateItem(itemId: string, data: Prisma.MemoryItemUpdateManyMutationInput): Promise<MemoryItem | null> {
     return prisma.$transaction(async (tx) => {
-      const item = await tx.memoryItem.update({ where: { id: itemId }, data: { position } })
-      await PromptBuilder.invalidateProject(item.projectId, tx)
+      const { count } = await tx.memoryItem.updateMany({ where: { id: itemId }, data })
+      if (count === 0) return null
+      const item = await tx.memoryItem.findUniqueOrThrow({ where: { id: itemId } })
+      await SessionQueries.invalidatePrompts({ projectId: item.projectId }, tx)
       return item
     })
   }

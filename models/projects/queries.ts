@@ -78,15 +78,6 @@ export class ProjectQueries {
     return new Map(counts.map((c) => [c.versionId, c._count.ark]))
   }
 
-  /** The ids of the projects reading this project's corpus. */
-  static async derivedIds(sourceProjectId: string): Promise<string[]> {
-    const rows = await prisma.project.findMany({
-      where: { corpusSourceId: sourceProjectId },
-      select: { id: true },
-    })
-    return rows.map((r) => r.id)
-  }
-
   /**
    * How many derived projects read this project's corpus. Non-zero blocks
    * deletion — see ProjectService.delete and the Restrict FK on

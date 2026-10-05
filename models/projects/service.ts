@@ -1,6 +1,7 @@
 import "server-only"
 
 import { prisma } from "@/lib/db"
+import { SessionQueries } from "@/models/sessions/queries"
 import {
   PROJECT_ACCESS_LEVEL,
   projectAccessLevel,
@@ -337,7 +338,18 @@ export class ProjectSharingService {
     projectId: string,
     groupId: string,
   ): Promise<ShareWithGroup[]> {
-    await prisma.projectShare.deleteMany({ where: { projectId, groupId } })
+    await prisma.$transaction(async (tx) => {
+      const shares = await tx.projectShare.findMany({ where: { projectId, groupId }, select: { id: true } })
+      // The workspaces derived through this grant flip to the revoked state:
+      // their cached prompts still say the corpus is readable, so they are
+      // dropped in the same transaction — before the delete, while
+      // corpus_source_share_id still names the share (onDelete: SetNull).
+      await SessionQueries.invalidateDerivedThroughShares(
+        shares.map((s) => s.id),
+        tx,
+      )
+      await tx.projectShare.deleteMany({ where: { projectId, groupId } })
+    })
     return this.list(projectId)
   }
 }
