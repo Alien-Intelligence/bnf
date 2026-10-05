@@ -18,7 +18,7 @@ and the shared rate caps):
    BnF calls. This is the one path that does **not** go through the broker.
 
 The ingest worker is a third egress (IIIF manifest/ALTO/image via
-`worker/src/prepare/bnf-api.ts`), also broker-routed — see
+`worker-v2/src/bnf/client.ts`), also broker-routed — see
 [ingestion-jobs.md](ingestion-jobs.md).
 
 > ⚠️ There is **no** `BnfMcpClient` and no `getBnfClient()` singleton anymore.
@@ -30,16 +30,20 @@ The ingest worker is a third egress (IIIF manifest/ALTO/image via
 
 | Need | Path | Through the broker? |
 |---|---|---|
-| Resolve ARK → metadata (corpus add) | `BnfDirectClient.resolveArks` → broker → `oai.bnf.fr` / `catalogue.bnf.fr` | ✅ |
+| Resolve ARK → metadata (corpus add) | `BnfDirectClient.resolveArks` → broker → the manifest on the Presentation API (`BNF_IIIF_PRESENTATION_BASE_URL`), catalogue SRU; dev without a broker: `oai.bnf.fr` / `catalogue.bnf.fr` | ✅ |
 | `cb…` notice → digitized `bpt6k…` ARK | `BnfDirectClient.canonicalizeArks` → broker → `data.bnf.fr` SPARQL + catalogue SRU | ✅ |
 | Stage bare ARK → metadata (buffer_add) | `BnfDirectClient.resolveArksForStaging` → broker → `oai.bnf.fr` / catalogue SRU (never the manifest: its bucket is ingestion's) | ✅ |
-| Worker ingest (manifest/ALTO/image) | `worker/src/prepare/bnf-api.ts` → broker → `openapiproext.bnf.fr` | ✅ |
+| Worker ingest (manifest/ALTO → Presentation API, images → Image API) | `worker-v2/src/bnf/client.ts` → broker → `openapiproext.bnf.fr/{presentation,image}/iiif/gallica/<version>` | ✅ |
 | Agent search / browse / read | chat-sdk `mcpServers` → **BnF MCP server** | ❌ (separate egress) |
 | User-facing Gallica links / `<img>` | derived URLs (`lib/constants.ts`) → public `gallica.bnf.fr`, in the browser | ❌ (by design) |
 
-The broker holds the BnF KEY/SECRET and enforces the shared 300/min global +
-40/min manifest caps. The app and worker hold **no** BnF credentials. See
-[ingestion-jobs.md](ingestion-jobs.md) and the broker service (`broker/`).
+The broker holds the BnF **ingestion** KEY/SECRET and enforces that
+subscription's rate model: a global cap, one quota per BnF API (Presentation,
+Image, legacy Gallica-IIIF, catalogue, SRU, graphe, date-périodique, TDM —
+classified by path prefix; an unknown partner path is refused), and the per-IP
+manifest limit. The bucket table, the required `BNF_*_RPM`/`_BURST` env and the
+margin rule are in `broker/README.md`. The app and worker hold **no** BnF
+credentials. See [ingestion-jobs.md](ingestion-jobs.md).
 
 ## Resolution: `BnfDirectClient` + the broker
 
@@ -85,10 +89,14 @@ Rules:
   agent just has no BnF search for that turn. Never crash the dev server.
 - The BnF MCP runs **stateless** (multi-replica); the `initialize` handshake may
   return no session id and one must not be required — see `lib/mcp/session.ts`.
-- These calls do **not** flow through the broker. If the MCP server shares the
-  BnF credential with the broker, the two contend for the same quota with no
-  coordination — a known seam. Don't add new BnF egress here; if you need a new
-  BnF capability in app code, add it to `BnfDirectClient` (broker-routed).
+- These calls do **not** flow through the broker. The two paths are meant to
+  hold two BnF keys: the broker the **ingestion** key, the MCP's platform
+  connectors (45–49) the separate **interface** key (global 500/min). The
+  connector re-key is an ops step (Track D Phase 6, gated on the app-side MCP
+  limiter below being live); until it is done, the connectors still hold the
+  ingestion key and the MCP traffic spends the broker's quota with no
+  coordination. Don't add new BnF egress here; if you need a new BnF capability
+  in app code, add it to `BnfDirectClient` (broker-routed).
 
 ## Normalization is a boundary funnel
 
@@ -155,8 +163,9 @@ User-facing links to BnF are computed from `ark + folio` via the helpers in
 ## Rate limits & backoff — the broker owns them ✅
 
 For the broker-routed paths, the broker is the rate authority: OAuth
-single-flight token, global + manifest token buckets, and 429/`Retry-After`
-handling (freezes the bucket to the next clock-minute boundary). Clients treat a
+single-flight token, the per-API + global + manifest token buckets, and
+429/`Retry-After` handling (freezes the request's most specific bucket — never
+the global one — to the next clock-minute boundary). Clients treat a
 broker 429 / transport error as **transient** and retry with backoff; they never
 manage BnF rate state themselves. Running at the provisioned ceiling means
 occasional 429s — that's expected and absorbed. See the broker service and
