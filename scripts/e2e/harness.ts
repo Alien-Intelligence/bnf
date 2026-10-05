@@ -118,7 +118,12 @@ export async function signInCookie(email: string, password: string, name: string
     if (!isEmailTaken(err)) throw err
   }
   const res = await auth.api.signInEmail({ body: { email, password }, asResponse: true })
-  const setCookie = res.headers.getSetCookie?.() ?? []
+  if (!res.ok) {
+    // A refused sign-in (wrong password for a pre-existing account, a locked
+    // user) must say so, not surface later as a cookie-less 401 on every turn.
+    throw new Error(`sign-in as ${email} failed: HTTP ${res.status} ${(await res.text()).slice(0, 200)}`)
+  }
+  const setCookie = res.headers.getSetCookie()
   if (setCookie.length === 0) throw new Error("sign-in returned no Set-Cookie")
   return setCookie.map((c) => c.split(";")[0]).join("; ")
 }
