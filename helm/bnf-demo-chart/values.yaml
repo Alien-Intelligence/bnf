@@ -117,6 +117,9 @@ worker:
     port: 7777
 
   config:
+    # BNF_BROKER_URL when broker.enabled is false (an external broker). Ignored
+    # when the chart runs its own broker. The worker refuses to boot without it.
+    bnfBrokerUrl: ""
     # Blob storage — "s3" (Scaleway Object Storage) for real, "local" for debug.
     blobStore: s3
     s3Bucket: bnf-corpus-demo
@@ -293,8 +296,10 @@ worker:
 # BnF broker — the single egress chokepoint for ALL BnF traffic (app metadata
 # resolver + ingest worker). Owns the OAuth token (BnF KEY/SECRET live ONLY
 # here) and enforces the shared rate caps. When enabled, BNF_BROKER_URL is wired
-# into both the app and the worker; both fall back to their direct/relay path if
-# it's ever disabled.
+# into both the app and the worker. The app falls back to its direct/relay path
+# if it is disabled; the WORKER does not — it refuses to boot without a broker,
+# so with broker.enabled=false set worker.config.bnfBrokerUrl (the render
+# requires it).
 #
 # ⚠️ The broker runs as EXACTLY ONE replica (hard-pinned in the Deployment, not
 # configurable here): its rate buckets + token are in-memory per pod, and the
