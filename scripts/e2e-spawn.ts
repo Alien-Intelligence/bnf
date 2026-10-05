@@ -49,6 +49,9 @@ import {
 const E2E_EMAIL = "e2e-spawn@bnf-e2e.local"
 const E2E_PASSWORD = "e2e-spawn-pw-42"
 
+/** Teardown run whatever happens, in reverse order, by main()'s finally. */
+const cleanups: Array<() => Promise<void>> = []
+
 async function main(): Promise<void> {
   console.log(`BnF spawn E2E\n  base=${BASE_URL}\n  model=${MODEL}\n  turnTimeout=${TURN_TIMEOUT_MS}ms`)
   await requireServer()
@@ -75,6 +78,12 @@ async function main(): Promise<void> {
     subtitle: "sous-agent — presse 1889",
     ownerId: user.id,
   })
+  if (CLEANUP) {
+    cleanups.push(async () => {
+      await cleanupProject(project.id)
+      console.log(`\ncleaned up project ${project.id} (+ sessions, buffer, corpus)`)
+    })
+  }
   const corpusSession = await prisma.appSession.create({
     data: {
       id: randomUUID(),
@@ -98,7 +107,7 @@ async function main(): Promise<void> {
   console.log(`\n> TURN 1: ${prompt}`)
   const t1 = await runTurn(corpusSession.id, cookie, history)
   console.log(`< (${Math.round(t1.elapsedMs / 1000)}s) ${t1.text.slice(0, 300)}`)
-  if (t1.errors.length) console.log(`  stream errors: ${t1.errors.join(" | ")}`)
+  check("t1: the stream ended without errors", t1.errors.length === 0, t1.errors.join(" | ") || "none")
 
   const parentCalls = await toolCalls(corpusSession.id)
   console.log(`  parent tools: ${trace(parentCalls)}`)
@@ -187,12 +196,7 @@ async function main(): Promise<void> {
 
   printVerdict({ project: project.id, corpusSession: corpusSession.id })
 
-  if (CLEANUP) {
-    await cleanupProject(project.id)
-    console.log(`\ncleaned up project ${project.id} (+ sessions, buffer, corpus)`)
-  } else {
-    console.log(`\nkept project ${project.id} for inspection (set E2E_CLEANUP=1 to remove)`)
-  }
+  if (!CLEANUP) console.log(`\nkept project ${project.id} for inspection (set E2E_CLEANUP=1 to remove)`)
 }
 
 main()
@@ -200,6 +204,12 @@ main()
     console.error("\nE2E ABORTED:", err instanceof Error ? err.stack : String(err))
     process.exitCode = 1
   })
-  .finally(() => {
-    void prisma.$disconnect()
+  .finally(async () => {
+    for (const cleanup of cleanups.reverse()) {
+      await cleanup().catch((err: unknown) => {
+        console.error("cleanup failed:", err)
+        process.exitCode = 1
+      })
+    }
+    await prisma.$disconnect()
   })

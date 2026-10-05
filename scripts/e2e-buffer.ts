@@ -59,6 +59,23 @@ import {
 const E2E_EMAIL = "e2e-buffer@bnf-e2e.local"
 const E2E_PASSWORD = "e2e-buffer-pw-42"
 
+/**
+ * Teardown run whatever happens — a failed check, a thrown error or a
+ * timeout — registered as soon as the thing to remove exists, run in reverse
+ * order by main()'s finally.
+ */
+const cleanups: Array<() => Promise<void>> = []
+
+/** A turn whose stream must end without errors: every turn is checked. */
+async function checkedTurn(
+  label: string,
+  ...args: Parameters<typeof runTurn>
+): Promise<Awaited<ReturnType<typeof runTurn>>> {
+  const turn = await runTurn(...args)
+  check(`${label}: the stream ended without errors`, turn.errors.length === 0, turn.errors.join(" | ") || "none")
+  return turn
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -122,6 +139,12 @@ async function main(): Promise<void> {
     subtitle: "presse française 1889",
     ownerId: user.id,
   })
+  if (CLEANUP) {
+    cleanups.push(async () => {
+      await cleanupProject(project.id)
+      console.log(`\ncleaned up project ${project.id} (+ sessions, buffer, corpus)`)
+    })
+  }
   const corpusSession = await prisma.appSession.create({
     data: {
       id: randomUUID(),
@@ -149,10 +172,9 @@ async function main(): Promise<void> {
     "N'énumère pas les numéros du périodique : je veux une recherche. Une seule page suffit."
   history.push({ role: "user", content: t1Prompt })
   console.log(`\n> TURN 1: ${t1Prompt}`)
-  const t1 = await runTurn(corpusSession.id, cookie, history)
+  const t1 = await checkedTurn("t1", corpusSession.id, cookie, history)
   history.push({ role: "assistant", content: t1.text })
   console.log(`< (${Math.round(t1.elapsedMs / 1000)}s) ${t1.text.slice(0, 300)}`)
-  if (t1.errors.length) console.log(`  stream errors: ${t1.errors.join(" | ")}`)
 
   const callsT1 = await toolCalls(corpusSession.id)
   console.log(`  tools: ${trace(callsT1)}`)
@@ -256,7 +278,7 @@ async function main(): Promise<void> {
   const t2Prompt = "Combien de candidats as-tu rassemblés, et de quels types et périodes sont-ils ?"
   history.push({ role: "user", content: t2Prompt })
   console.log(`\n> TURN 2: ${t2Prompt}`)
-  const t2 = await runTurn(corpusSession.id, cookie, history)
+  const t2 = await checkedTurn("t2", corpusSession.id, cookie, history)
   history.push({ role: "assistant", content: t2.text })
   console.log(`< (${Math.round(t2.elapsedMs / 1000)}s) ${t2.text.slice(0, 300)}`)
 
@@ -286,7 +308,7 @@ async function main(): Promise<void> {
     "puis applique ce filtrage pour ne garder que 1889."
   history.push({ role: "user", content: curatePrompt })
   console.log(`\n> TURN 2.5 (curate): ${curatePrompt}`)
-  const tCurate = await runTurn(corpusSession.id, cookie, history)
+  const tCurate = await checkedTurn("tCurate", corpusSession.id, cookie, history)
   history.push({ role: "assistant", content: tCurate.text })
   console.log(`< (${Math.round(tCurate.elapsedMs / 1000)}s) ${tCurate.text.slice(0, 300)}`)
 
@@ -335,7 +357,7 @@ async function main(): Promise<void> {
   const t3Prompt = "Parfait, ajoute maintenant ces documents au corpus."
   history.push({ role: "user", content: t3Prompt })
   console.log(`\n> TURN 3: ${t3Prompt}`)
-  const t3 = await runTurn(corpusSession.id, cookie, history)
+  const t3 = await checkedTurn("t3", corpusSession.id, cookie, history)
   history.push({ role: "assistant", content: t3.text })
   console.log(`< (${Math.round(t3.elapsedMs / 1000)}s) ${t3.text.slice(0, 300)}`)
 
@@ -419,7 +441,7 @@ async function main(): Promise<void> {
     "Ne vide pas le tampon et ne touche pas au corpus déjà constitué."
   history.push({ role: "user", content: restagePrompt })
   console.log(`\n> TURN 4a (re-stage): ${restagePrompt}`)
-  const t4a = await runTurn(corpusSession.id, cookie, history)
+  const t4a = await checkedTurn("t4a", corpusSession.id, cookie, history)
   history.push({ role: "assistant", content: t4a.text })
   console.log(`< (${Math.round(t4a.elapsedMs / 1000)}s) ${t4a.text.slice(0, 300)}`)
   console.log(`  tools: ${trace((await toolCalls(corpusSession.id)).slice(beforeRestage))}`)
@@ -452,7 +474,7 @@ async function main(): Promise<void> {
     const prompt = clearPrompts[attempt]
     history.push({ role: "user", content: prompt })
     console.log(`\n> TURN 4b (clear, attempt ${attempt + 1}): ${prompt}`)
-    const turn = await runTurn(corpusSession.id, cookie, history)
+    const turn = await checkedTurn(`t4b clear attempt ${attempt + 1}`, corpusSession.id, cookie, history)
     history.push({ role: "assistant", content: turn.text })
     console.log(`< (${Math.round(turn.elapsedMs / 1000)}s) ${turn.text.slice(0, 300)}`)
     const clearedSoFar = named(
@@ -546,7 +568,7 @@ async function main(): Promise<void> {
   const cPrompt =
     "Rédige une note de recherche intitulée « Le Figaro en 1889 » résumant ce que contient le corpus."
   console.log(`\n> RESEARCH TURN: ${cPrompt}`)
-  const c1 = await runTurn(researchSession.id, cookie, [{ role: "user", content: cPrompt }])
+  const c1 = await checkedTurn("c1", researchSession.id, cookie, [{ role: "user", content: cPrompt }])
   console.log(`< (${Math.round(c1.elapsedMs / 1000)}s) ${c1.text.slice(0, 300)}`)
 
   const researchCalls = await toolCalls(researchSession.id)
@@ -599,7 +621,7 @@ async function main(): Promise<void> {
     const before = (await toolCalls(pressSession.id)).length
     pressHistory.push({ role: "user", content: prompt })
     console.log(`\n> ${label}: ${prompt}`)
-    const turn = await runTurn(pressSession.id, cookie, pressHistory)
+    const turn = await checkedTurn(label, pressSession.id, cookie, pressHistory)
     pressHistory.push({ role: "assistant", content: turn.text })
     console.log(`< (${Math.round(turn.elapsedMs / 1000)}s) ${turn.text.slice(0, 300)}`)
     const calls = (await toolCalls(pressSession.id)).slice(before)
@@ -706,7 +728,13 @@ async function main(): Promise<void> {
   const reader = await prisma.user.create({
     data: { id: randomUUID(), email: readerEmail, name: "E2E reader", emailVerified: true },
   })
+  cleanups.push(async () => {
+    await prisma.user.deleteMany({ where: { id: reader.id } })
+  })
   const group = await GroupService.create(`E2E reader group ${randomUUID()}`)
+  cleanups.push(async () => {
+    await prisma.group.deleteMany({ where: { id: group.id } })
+  })
   const shared = await ProjectQueries.get(project.id)
   if (!shared) throw new Error(`project ${project.id} vanished mid-run`)
   await ProjectSharingService.share(shared, user.id, { groupId: group.id, access: PROJECT_ACCESS.READ })
@@ -729,8 +757,6 @@ async function main(): Promise<void> {
     refused["forbidden"] === true && refused["success"] === false && versionsAfterC4 === versionsBeforeC4,
     `result=${JSON.stringify(refused).slice(0, 160)} versions ${versionsBeforeC4}→${versionsAfterC4}`,
   )
-  await prisma.group.deleteMany({ where: { id: group.id } })
-  await prisma.user.deleteMany({ where: { id: reader.id } })
 
   printVerdict({
     project: project.id,
@@ -739,12 +765,7 @@ async function main(): Promise<void> {
     pressSession: pressSession.id,
   })
 
-  if (CLEANUP) {
-    await cleanupProject(project.id)
-    console.log(`\ncleaned up project ${project.id} (+ sessions, buffer, corpus)`)
-  } else {
-    console.log(`\nkept project ${project.id} for inspection (set E2E_CLEANUP=1 to remove)`)
-  }
+  if (!CLEANUP) console.log(`\nkept project ${project.id} for inspection (set E2E_CLEANUP=1 to remove)`)
 }
 
 main()
@@ -752,6 +773,12 @@ main()
     console.error("\nE2E ABORTED:", err instanceof Error ? err.stack : String(err))
     process.exitCode = 1
   })
-  .finally(() => {
-    void prisma.$disconnect()
+  .finally(async () => {
+    for (const cleanup of cleanups.reverse()) {
+      await cleanup().catch((err: unknown) => {
+        console.error("cleanup failed:", err)
+        process.exitCode = 1
+      })
+    }
+    await prisma.$disconnect()
   })
