@@ -31,9 +31,9 @@ import "server-only"
 // forever, never to have the final say on outcome. See the comment on
 // IngestService.applyProgress.
 import { CLUSTER_MODE, clusterMode } from "@/lib/cluster/mode"
-import { prisma } from "@/lib/db"
 import { INGEST_STATUS } from "@/models/ingest/schema"
 import { IngestQueries } from "@/models/ingest/queries"
+import { IngestService } from "@/models/ingest/service"
 import { ClusterRunner } from "@/lib/cluster/runner"
 import type { ClusterQueueProgress } from "@/lib/cluster/contracts"
 
@@ -219,25 +219,14 @@ async function applyToJob(job: WatchdogJobInput, now: Date): Promise<void> {
     case "none":
       return
     case "write_progress":
-      // Mirror of the read-model (F21) — guarded by `status: RUNNING` so a job
-      // that went terminal between the candidate scan and this write is left
-      // alone. A failed write is raised to the tick, which reports it after
+      // A failed write is raised to the tick, which reports it after
       // reconciling the other jobs; the next tick writes it again.
-      await prisma.ingestJob.updateMany({
-        where: { id: job.id, status: INGEST_STATUS.RUNNING },
-        data: { progress: action.progress, stats: action.stats },
-      })
+      await IngestService.mirrorWatchdogProgress(job.id, action.progress, action.stats)
       return
     case "fail":
-      // Guarded by `status: job.status` so a job that already went terminal
-      // (e.g. a genuine terminal callback landed between the candidate scan
-      // and this write) is never clobbered back to FAILED.
       // A failed write leaves the job non-terminal: it is raised, not dropped,
       // and the next tick finds the job again and retries.
-      await prisma.ingestJob.updateMany({
-        where: { id: job.id, status: job.status },
-        data: { status: INGEST_STATUS.FAILED, error: action.reason, finishedAt: now },
-      })
+      await IngestService.failStuckJob(job.id, job.status, action.reason, now)
       return
   }
 }
