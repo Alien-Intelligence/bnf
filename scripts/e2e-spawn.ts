@@ -28,9 +28,6 @@ import { TOOL_CALL_STATUS } from "@/models/messages/schema"
 import { ProjectService } from "@/models/projects/service"
 import {
   ARK_RE,
-  BASE_URL,
-  MODEL,
-  TURN_TIMEOUT_MS,
   check,
   named,
   outputData,
@@ -44,13 +41,15 @@ import {
   runCheckedTurn,
   runE2e,
   trackProject,
+  turnSettings,
 } from "./e2e/harness"
 
 const E2E_EMAIL = "e2e-spawn@bnf-e2e.local"
 const E2E_PASSWORD = "e2e-spawn-pw-42"
 
 async function main(): Promise<void> {
-  console.log(`BnF spawn E2E\n  base=${BASE_URL}\n  model=${MODEL}\n  turnTimeout=${TURN_TIMEOUT_MS}ms`)
+  const settings = turnSettings()
+  console.log(`BnF spawn E2E\n  base=${settings.baseUrl}\n  model=${settings.model}\n  turnTimeout=${settings.turnTimeoutMs}ms`)
   await requireServer()
 
   // =========================================================================

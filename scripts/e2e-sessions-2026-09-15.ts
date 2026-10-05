@@ -21,8 +21,6 @@ import { prisma } from "@/lib/db"
 import { SESSION_SCOPE, SESSION_STATUS } from "@/models/sessions/schema"
 import { ProjectService } from "@/models/projects/service"
 import {
-  BASE_URL,
-  MODEL,
   type ChatMessage,
   type CallRow,
   check,
@@ -36,6 +34,7 @@ import {
   runCheckedTurn,
   runE2e,
   trackProject,
+  turnSettings,
 } from "./e2e/harness"
 
 const EMAIL = "e2e-sessions@alien.club"
@@ -70,6 +69,8 @@ function totalsOf(calls: CallRow[]): number[] {
 }
 
 async function main(): Promise<void> {
+  // Every replay calls the model: a missing setting fails here, before any setup.
+  const settings = turnSettings()
   await requireServer()
 
   section("SETUP")
@@ -81,7 +82,7 @@ async function main(): Promise<void> {
     ownerId: user.id,
   })
   trackProject(project.id)
-  console.log(`  BASE_URL=${BASE_URL}  MODEL=${MODEL}`)
+  console.log(`  BASE_URL=${settings.baseUrl}  MODEL=${settings.model}`)
   console.log(`  project=${project.id}`)
 
   async function replay(
@@ -317,7 +318,7 @@ async function main(): Promise<void> {
     )
   }
 
-  printVerdict({ project: project.id, model: MODEL })
+  printVerdict({ project: project.id, model: settings.model })
 }
 
 runE2e(main)

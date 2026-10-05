@@ -69,8 +69,6 @@ import { DOCUMENT_RESOLVE_STATUS } from "@/models/documents/schema"
 import { ProjectService } from "@/models/projects/service"
 import { SESSION_SCOPE, SESSION_STATUS } from "@/models/sessions/schema"
 import {
-  BASE_URL,
-  MODEL,
   type CallRow,
   type ChatMessage,
   check,
@@ -85,6 +83,7 @@ import {
   trace,
   runE2e,
   trackProject,
+  turnSettings,
 } from "./e2e/harness"
 
 const EMAIL = "e2e-quotes@alien.club"
@@ -578,13 +577,15 @@ async function main(): Promise<void> {
   // The judgement reads the fixture folios through the same facade the guard
   // uses, so THIS process must be on the fake cluster whatever .env.local says.
   process.env.CLUSTER_MODE = CLUSTER_MODE.FAKE
+  // Every run calls the model: a missing setting fails here, before any setup.
+  const settings = turnSettings()
   await requireServer()
 
   section("SETUP")
   const cases = selectedCases()
   const cookie = await signInCookie(EMAIL, PASSWORD, "E2E Quotes")
   const user = await prisma.user.findUniqueOrThrow({ where: { email: EMAIL } })
-  console.log(`  BASE_URL=${BASE_URL}  MODEL=${MODEL}  REPEAT=${REPEAT}  CONCURRENCY=${CONCURRENCY}`)
+  console.log(`  BASE_URL=${settings.baseUrl}  MODEL=${settings.model}  REPEAT=${REPEAT}  CONCURRENCY=${CONCURRENCY}`)
   console.log(`  cases=${cases.map((c) => c.id).join(",")}  (one fresh project per run)`)
 
   const jobs = cases.flatMap((c) => Array.from({ length: REPEAT }, (_, i) => ({ c, run: i + 1 })))
@@ -612,11 +613,11 @@ async function main(): Promise<void> {
   } finally {
     // A paid run's evidence is written whatever failed above.
     if (OUT) {
-      await writeFile(OUT, JSON.stringify({ model: MODEL, repeat: REPEAT, reports, crashed }, null, 2))
+      await writeFile(OUT, JSON.stringify({ model: settings.model, repeat: REPEAT, reports, crashed }, null, 2))
       console.log(`  evidence written to ${OUT}`)
     }
   }
-  printVerdict({ model: MODEL, runs: `${reports.length} scored, ${crashed.length} crashed` })
+  printVerdict({ model: settings.model, runs: `${reports.length} scored, ${crashed.length} crashed` })
 }
 
 runE2e(main)

@@ -8,10 +8,14 @@
  * per-run and safe. Every script must call `requireServer()` first and
  * `printVerdict()` last.
  *
- * Required environment (no silent defaults — which server and which model a
- * paid run targets is the caller's call): E2E_BASE_URL (e.g.
- * http://localhost:3939) and E2E_MODEL (e.g. z-ai/glm-5.2, the app's shipped
- * default). Optional: E2E_TURN_TIMEOUT_MS (positive, default 300 000).
+ * Environment (no silent defaults — which server and which model a paid run
+ * targets is the caller's call), each read when a primitive needs it, never at
+ * import, so a script that only uses the verdict helpers requires nothing:
+ * E2E_BASE_URL (e.g. http://localhost:3939) for anything that reaches the
+ * server, E2E_MODEL (e.g. z-ai/glm-5.2, the app's shipped default) for
+ * anything that runs a turn, and the optional E2E_TURN_TIMEOUT_MS (positive,
+ * default 300 000). A script that calls the model resolves `turnSettings()`
+ * first, so a missing setting fails the run before any setup.
  */
 import { z } from "zod"
 import { auth } from "@/lib/auth"
@@ -22,9 +26,9 @@ import { routing, type AppLocale } from "@/i18n/routing"
 import { TOOL_CALL_STATUS } from "@/models/messages/schema"
 
 /**
- * A required setting. The harness drives a real server with a real model and
- * spends real money: which server and which model are the caller's decision,
- * stated explicitly, never a silent default.
+ * A required setting, read at the point of use. The harness drives a real
+ * server with a real model and spends real money: which server and which model
+ * are the caller's decision, stated explicitly, never a silent default.
  */
 function requiredEnv(name: string, example: string): string {
   const value = process.env[name]
@@ -37,7 +41,18 @@ function requiredEnv(name: string, example: string): string {
 /** Default per-turn wall-clock ceiling: a paginated sweep or a sub-agent legitimately takes a while. */
 const DEFAULT_TURN_TIMEOUT_MS = 300_000
 
-function turnTimeoutMs(): number {
+/** The dev server under test, e.g. `E2E_BASE_URL=http://localhost:3939`. Required by every call that reaches it. */
+export function baseUrl(): string {
+  return requiredEnv("E2E_BASE_URL", "http://localhost:3939").replace(/\/+$/, "")
+}
+
+/** Model id for the OpenRouter gateway, e.g. `E2E_MODEL=z-ai/glm-5.2` (the app's shipped default). Required by every turn. */
+export function turnModel(): string {
+  return requiredEnv("E2E_MODEL", "z-ai/glm-5.2")
+}
+
+/** Per-turn wall-clock ceiling: E2E_TURN_TIMEOUT_MS when set (validated), else the default. */
+export function turnTimeoutMs(): number {
   const raw = process.env["E2E_TURN_TIMEOUT_MS"]
   if (raw === undefined) return DEFAULT_TURN_TIMEOUT_MS
   const n = Number(raw)
@@ -47,12 +62,23 @@ function turnTimeoutMs(): number {
   return n
 }
 
-/** The dev server under test, e.g. `E2E_BASE_URL=http://localhost:3939`. */
-export const BASE_URL = requiredEnv("E2E_BASE_URL", "http://localhost:3939").replace(/\/+$/, "")
-/** Model id for the OpenRouter gateway, e.g. `E2E_MODEL=z-ai/glm-5.2` (the app's shipped default). */
-export const MODEL = requiredEnv("E2E_MODEL", "z-ai/glm-5.2")
-/** Per-turn wall-clock ceiling (E2E_TURN_TIMEOUT_MS, validated). */
-export const TURN_TIMEOUT_MS = turnTimeoutMs()
+/** Everything a real agent turn needs from the environment. */
+export interface TurnSettings {
+  baseUrl: string
+  model: string
+  turnTimeoutMs: number
+}
+
+/**
+ * Resolve every setting a turn needs, or throw naming the first one missing.
+ * runTurn resolves them before it sends anything; a script that calls the
+ * model resolves them first thing, so a missing E2E_MODEL fails the run before
+ * it signs in or creates a project.
+ */
+export function turnSettings(): TurnSettings {
+  return { baseUrl: baseUrl(), model: turnModel(), turnTimeoutMs: turnTimeoutMs() }
+}
+
 /** When set, the caller deletes its throwaway project after the run. */
 export const CLEANUP = process.env["E2E_CLEANUP"] === "1" || process.env["E2E_CLEANUP"] === "true"
 
@@ -93,9 +119,10 @@ export function printVerdict(context: Record<string, string> = {}): void {
 /** Fail fast if the dev server isn't reachable — otherwise every turn error
  *  looks like a bug. Any HTTP status counts as "up" (the route is auth-gated). */
 export async function requireServer(): Promise<void> {
-  const health = await fetch(`${BASE_URL}/api/health`, { method: "GET" }).catch(() => null)
+  const base = baseUrl()
+  const health = await fetch(`${base}/api/health`, { method: "GET" }).catch(() => null)
   if (health === null) {
-    throw new Error(`dev server unreachable at ${BASE_URL} — start it with: PORT=3939 npm run dev`)
+    throw new Error(`dev server unreachable at ${base} — start it with: PORT=3939 npm run dev`)
   }
 }
 
@@ -180,7 +207,7 @@ const cancelResponseSchema = z.object({ canceled: z.boolean() })
 
 /** Ask the server to cancel the session's active turn; true when it had one and cancelled it. */
 async function requestCancel(sessionId: string, cookie: string): Promise<boolean> {
-  const res = await fetch(`${BASE_URL}/api/sessions/${sessionId}/messages`, {
+  const res = await fetch(`${baseUrl()}/api/sessions/${sessionId}/messages`, {
     method: "DELETE",
     headers: { Cookie: cookie },
     signal: AbortSignal.timeout(CANCEL_TIMEOUT_MS),
@@ -258,10 +285,11 @@ export async function cancelTurn(sessionId: string, cookie: string): Promise<Can
 
 /**
  * One real agent turn over SSE. `locale` is the UI locale the turn is sent
- * under (the research prompt's language). Throws on a transport or protocol
+ * under (the research prompt's language). Throws before sending anything when
+ * a setting is missing (see turnSettings). Throws on a transport or protocol
  * failure — a non-JSON or untyped frame, an unterminated trailing frame, a
  * stream that does not end with the `closed` frame — or when the turn runs
- * past TURN_TIMEOUT_MS; in every such case the request is aborted, the stream
+ * past turnTimeoutMs(); in every such case the request is aborted, the stream
  * reader cancelled and the server-side turn cancelled before the error is
  * raised, so a broken turn is never left running nor scored as a quiet one.
  * An `error` frame, or a turn closed for any reason but `done`, is a
@@ -273,16 +301,22 @@ export async function runTurn(
   history: ChatMessage[],
   locale: AppLocale = routing.defaultLocale,
 ): Promise<TurnResult> {
+  // Resolved before anything is sent: a missing setting throws here, with no
+  // request in flight and no server-side turn to cancel.
+  const settings = turnSettings()
   const started = Date.now()
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(new Error(`turn timed out after ${TURN_TIMEOUT_MS} ms`)), TURN_TIMEOUT_MS)
+  const timer = setTimeout(
+    () => controller.abort(new Error(`turn timed out after ${settings.turnTimeoutMs} ms`)),
+    settings.turnTimeoutMs,
+  )
   let reader: ReadableStreamDefaultReader<Uint8Array> | null = null
 
   try {
-    const res = await fetch(`${BASE_URL}/api/sessions/${sessionId}/messages`, {
+    const res = await fetch(`${settings.baseUrl}/api/sessions/${sessionId}/messages`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: cookie, [LOCALE_HEADER]: locale },
-      body: JSON.stringify({ sessionId, mode: "claude", messages: history, model: MODEL }),
+      body: JSON.stringify({ sessionId, mode: "claude", messages: history, model: settings.model }),
       signal: controller.signal,
     })
 
