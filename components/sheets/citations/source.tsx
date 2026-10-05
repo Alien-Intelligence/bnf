@@ -292,6 +292,7 @@ function SectionCitationOcr({
 const STATUS_LINE_KEY: Record<Exclude<DocumentOcrStatus, typeof DOCUMENT_OCR_STATUS.AVAILABLE>, string> = {
   [DOCUMENT_OCR_STATUS.PENDING]: "statusPending",
   [DOCUMENT_OCR_STATUS.BUILDING]: "statusBuilding",
+  [DOCUMENT_OCR_STATUS.INCOMPATIBLE]: "statusIncompatible",
   [DOCUMENT_OCR_STATUS.UNAVAILABLE]: "statusUnavailable",
   [DOCUMENT_OCR_STATUS.QUARANTINED]: "statusQuarantined",
 }

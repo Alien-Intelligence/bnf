@@ -35,13 +35,15 @@ test("set but invalid throws instead of silently defaulting", () => {
 import { createServer, type Server } from "node:http"
 import type { AddressInfo } from "node:net"
 
-import { ClusterClient, culpritsOf } from "./client"
+import { ClusterClient, refusedArks } from "./client"
 import { CLUSTER_POLL } from "./contracts"
 import {
+  OCR_QUALITY_ARTIFACT_VERSION,
   OCR_SYNC_FAULT_SCOPE,
   OcrSyncContractError,
   OcrSyncUnavailableError,
-  workerOcrQualitySyncResponseSchema,
+  readWorkerSyncAnswer,
+  type WorkerSyncAnswer,
 } from "./ocr-quality"
 
 /** process.env stores strings: assigning undefined would store "undefined". */
@@ -87,6 +89,8 @@ test("ocrQualitySync: a valid answer is returned", async () => {
         documents: [],
         building: [ARK],
         unavailable: [],
+        incompatible: [],
+        broken: [],
       })
     },
   )
@@ -110,6 +114,12 @@ test("ocrQualitySync: no worker listening → OcrSyncUnavailableError", async ()
   }
 })
 
+test("ocrQualitySync: a 200 whose body is not JSON (truncated, a proxy page) → unavailable: the transport failed", async () => {
+  await withStubWorker({ status: 200, body: "<html>oops</html>" }, async () => {
+    await assert.rejects(ClusterClient.ocrQualitySync([ARK]), OcrSyncUnavailableError)
+  })
+})
+
 test("ocrQualitySync: a body that stalls after the headers times out → unavailable", async () => {
   await withStubWorker("stall-body", async () => {
     await assert.rejects(ClusterClient.ocrQualitySync([ARK]), OcrSyncUnavailableError)
@@ -121,11 +131,15 @@ for (const [label, reply, scope] of [
   ["a 400 that names no ARK (unknown key)", { status: 400, body: '{"error":"unknown keys: x"}' }, OCR_SYNC_FAULT_SCOPE.EXCHANGE],
   ["a 401", { status: 401, body: "no" }, OCR_SYNC_FAULT_SCOPE.EXCHANGE],
   ["a 413", { status: 413, body: '{"error":"body exceeds"}' }, OCR_SYNC_FAULT_SCOPE.EXCHANGE],
-  ["a non-JSON 200", { status: 200, body: "<html>oops</html>" }, OCR_SYNC_FAULT_SCOPE.EXCHANGE],
   ["a 200 missing a top-level key", { status: 200, body: '{"documents":[],"building":[]}' }, OCR_SYNC_FAULT_SCOPE.EXCHANGE],
   [
-    "a 200 whose only document is invalid (no document passed: skew)",
-    { status: 200, body: JSON.stringify({ documents: [{ v: 2, ark: ARK }], building: [], unavailable: [] }) },
+    "a 200 whose document has no integer `v` (the envelope does not parse)",
+    { status: 200, body: JSON.stringify({ documents: [{ v: "2", ark: ARK }], building: [], unavailable: [] }) },
+    OCR_SYNC_FAULT_SCOPE.EXCHANGE,
+  ],
+  [
+    "a 200 answering an ARK twice",
+    { status: 200, body: JSON.stringify({ documents: [], building: [ARK, ARK], unavailable: [] }) },
     OCR_SYNC_FAULT_SCOPE.EXCHANGE,
   ],
 ] as const) {
@@ -151,80 +165,114 @@ test("ocrQualitySync: a caller's abort cancels the request", async () => {
   })
 })
 
-test("culpritsOf: an invalid entry outside the asked ARKs is the exchange's fault", () => {
-  assert.deepEqual(
-    culpritsOf([ARK], {
-      kind: "invalid",
-      raw: { documents: [{ ark: "ark:/12148/other" }] },
-      issuePaths: [["documents", 0, "v"]],
-    }),
-    [],
-  )
+test("refusedArks: a 400 naming arks[i] pins that ARK; anything else pins none", () => {
+  assert.deepEqual(refusedArks([ARK], '{"error":"arks[0]: bad"}'), [ARK])
+  assert.deepEqual(refusedArks([ARK], '{"error":"arks[3]: bad"}'), [], "an index outside the request")
+  assert.deepEqual(refusedArks([ARK], '{"error":"unknown keys: x"}'), [])
+  assert.deepEqual(refusedArks([ARK], "not json"), [])
 })
 
-// Version skew (pass-4 probe cases A–E): if NO returned document passes, the
-// exchange is broken — pause, blame nobody; per-ARK only when one passed.
-const SKEW_ARKS = ["ark:/12148/bpt6k1", "ark:/12148/bpt6k2", "ark:/12148/bpt6k3"]
+// The two layers of an answer (readWorkerSyncAnswer): the envelope must parse;
+// each document is then judged ALONE by its own `v`. No counting across
+// documents: K1–K3 are the pass-5 probe's partial-skew cases.
+const ARKS3 = ["ark:/12148/bpt6k1", "ark:/12148/bpt6k2", "ark:/12148/bpt6k3"] as const
+const [K_A, K_B, K_C] = ARKS3
 const BUILT_AT = new Date().toISOString()
+const V = OCR_QUALITY_ARTIFACT_VERSION
 const okFolio = (ordre: number) => ({ ordre, ocrSource: "alto", ocrQuality: 0.9, wordCount: 10 })
-const okDoc = (ark: string) => ({ v: 1, ark, ocrRate: 0.9, lane: "text", folios: [okFolio(1)], builtAt: BUILT_AT })
+const okDoc = (ark: string, over: Record<string, unknown> = {}) => ({
+  v: V,
+  ark,
+  ocrRate: 0.9,
+  lane: "text",
+  folios: [okFolio(1), okFolio(2)],
+  builtAt: BUILT_AT,
+  ...over,
+})
+const mistralV2Folio = (ordre: number) => ({ ordre, ocrSource: "mistral", ocrQuality: null, wordCount: 120 })
 
-function culpritsFor(raw: Record<string, unknown>, asked: string[] = SKEW_ARKS): string[] {
-  const parsed = workerOcrQualitySyncResponseSchema.safeParse(raw)
-  assert.equal(parsed.success, false, "the probe answer must be invalid")
-  const issuePaths = parsed.success ? [] : parsed.error.issues.map((i) => i.path)
-  return culpritsOf(asked, { kind: "invalid", raw, issuePaths })
+function read(raw: unknown): WorkerSyncAnswer {
+  const result = readWorkerSyncAnswer(raw)
+  if (!result.ok) throw new Error(`the envelope should parse: ${result.message}`)
+  return result.answer
 }
 
-test("skew A: v:2 on every document → the exchange's fault", () => {
-  assert.deepEqual(
-    culpritsFor({ documents: SKEW_ARKS.map((ark) => ({ ...okDoc(ark), v: 2 })), building: [], unavailable: [] }),
-    [],
-  )
-})
-
-test("skew B: v:2 on the ONLY document of a mixed batch → the exchange's fault (no document passed)", () => {
-  assert.deepEqual(
-    culpritsFor({ documents: [{ ...okDoc(SKEW_ARKS[0]), v: 2 }], building: SKEW_ARKS.slice(1), unavailable: [] }),
-    [],
-  )
-})
-
-test("skew C: a renamed folio field on every folio of every document → the exchange's fault", () => {
-  const renamed = (ark: string) => ({
-    ...okDoc(ark),
-    folios: [1, 2].map((o) => {
-      const { wordCount, ...rest } = okFolio(o)
-      return { ...rest, words: wordCount }
-    }),
-  })
-  assert.deepEqual(culpritsFor({ documents: SKEW_ARKS.map(renamed), building: [], unavailable: [] }), [])
-})
-
-test("skew D: v:2 AND a renamed top-level field on every document → the exchange's fault", () => {
-  const skewed = (ark: string) => {
-    const { ocrRate, ...rest } = okDoc(ark)
-    return { ...rest, v: 2, rate: ocrRate }
+function verdicts(answer: WorkerSyncAnswer) {
+  return {
+    valid: answer.documents.map((d) => d.ark),
+    incompatible: answer.incompatible.map((i) => `${i.ark}@v${i.v}`),
+    broken: answer.broken.map((b) => b.ark),
   }
-  assert.deepEqual(culpritsFor({ documents: SKEW_ARKS.map(skewed), building: [], unavailable: [] }), [])
+}
+
+test("K1 partial rollout: a cached v1 artifact beside fresh v2 ones → v1 read, v2 incompatible, nobody broken", () => {
+  const answer = read({
+    documents: [okDoc(K_A), okDoc(K_B, { v: V + 1 }), okDoc(K_C, { v: V + 1 })],
+    building: [],
+    unavailable: [],
+  })
+  assert.deepEqual(verdicts(answer), {
+    valid: [K_A],
+    incompatible: [`${K_B}@v${V + 1}`, `${K_C}@v${V + 1}`],
+    broken: [],
+  })
 })
 
-test("skew E: a single-ARK batch whose one document fails → the exchange's fault", () => {
+test("K2 a contract change on the mistral lane only: the worker bumps `v` (the rule) → those ARKs incompatible, the text one read", () => {
+  const changed = (ark: string) => okDoc(ark, { v: V + 1, lane: "mistral", folios: [mistralV2Folio(1)] })
   assert.deepEqual(
-    culpritsFor({ documents: [{ ...okDoc(SKEW_ARKS[0]), v: 2 }], building: [], unavailable: [] }, [SKEW_ARKS[0]]),
-    [],
+    verdicts(read({ documents: [okDoc(K_A), changed(K_B), changed(K_C)], building: [], unavailable: [] })),
+    { valid: [K_A], incompatible: [`${K_B}@v${V + 1}`, `${K_C}@v${V + 1}`], broken: [] },
   )
 })
 
-test("one bad document while another in the same answer passed → that ARK blamed", () => {
+test("K2 without the bump (the rule broken): the same documents are BROKEN — each rejected on its own, the text one still read", () => {
+  const changed = (ark: string) => okDoc(ark, { lane: "mistral", folios: [mistralV2Folio(1)] })
   assert.deepEqual(
-    culpritsFor({
-      documents: [{ ...okDoc(SKEW_ARKS[0]), v: 2 }, okDoc(SKEW_ARKS[1])],
-      building: [SKEW_ARKS[2]],
-      unavailable: [],
-    }),
-    [SKEW_ARKS[0]],
+    verdicts(read({ documents: [okDoc(K_A), changed(K_B), changed(K_C)], building: [], unavailable: [] })),
+    { valid: [K_A], incompatible: [], broken: [K_B, K_C] },
   )
+})
+
+test("K3 ocrRate rescaled to a percentage: bumped `v` → every artifact of the new version is incompatible, the null-rate one included", () => {
+  const answer = read({
+    documents: [
+      okDoc(K_A, { v: V + 1, ocrRate: null }),
+      okDoc(K_B, { v: V + 1, ocrRate: 93 }),
+      okDoc(K_C, { v: V + 1, ocrRate: 88 }),
+    ],
+    building: [],
+    unavailable: [],
+  })
+  assert.deepEqual(verdicts(answer).incompatible, [`${K_A}@v${V + 1}`, `${K_B}@v${V + 1}`, `${K_C}@v${V + 1}`])
+  assert.deepEqual(answer.documents, [], "a null-rate document of the new version is NOT read with the old meaning")
+})
+
+test("a broken artifact of the expected version (a duplicate folio) is that ARK's alone, even as the only document", () => {
+  const answer = read({ documents: [okDoc(K_A, { folios: [okFolio(1), okFolio(1)] })], building: [], unavailable: [] })
+  assert.deepEqual(verdicts(answer), { valid: [], incompatible: [], broken: [K_A] })
+  assert.match(answer.broken[0]?.message ?? "", /duplicate folio/)
+})
+
+test("buildings and unavailables are read as they are beside an incompatible document", () => {
+  const answer = read({
+    documents: [okDoc(K_A, { v: V + 1 })],
+    building: [K_B],
+    unavailable: [{ ark: K_C, reason: "no_pages_artifact" }],
+  })
+  assert.deepEqual(answer.building, [K_B])
+  assert.deepEqual(answer.unavailable, [{ ark: K_C, reason: "no_pages_artifact" }])
+})
+
+test("the envelope: a missing bucket, an empty reason, an ARK in two buckets → not an answer", () => {
+  for (const raw of [
+    { documents: [], building: [] },
+    { documents: [], building: [], unavailable: [{ ark: K_A, reason: "" }] },
+    { documents: [okDoc(K_A)], building: [K_A], unavailable: [] },
+    { documents: [{ ark: K_A }], building: [], unavailable: [] },
+  ]) {
+    assert.equal(readWorkerSyncAnswer(raw).ok, false, JSON.stringify(raw))
+  }
 })
 
 // ---------------------------------------------------------------------------

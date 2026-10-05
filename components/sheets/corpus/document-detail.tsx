@@ -128,6 +128,7 @@ function ocrStatusLine(
 ): string {
   if (ocr.status === DOCUMENT_OCR_STATUS.PENDING) return t("pending")
   if (ocr.status === DOCUMENT_OCR_STATUS.BUILDING) return t("building")
+  if (ocr.status === DOCUMENT_OCR_STATUS.INCOMPATIBLE) return t("incompatible")
   if (ocr.status === DOCUMENT_OCR_STATUS.UNAVAILABLE) return t("unavailable")
   if (ocr.status === DOCUMENT_OCR_STATUS.QUARANTINED) return t("quarantined")
   if (ocr.ocrRate === null) return t("noRate")

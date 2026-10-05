@@ -503,8 +503,12 @@ export type OcrSource = (typeof OCR_SOURCE)[keyof typeof OCR_SOURCE]
  *                 until a re-ingest asks for a resync.
  */
 export const OCR_SYNC_STATUS = {
+  /** Asked, never answered yet (a transport failure stored its backoff). */
+  PENDING: "pending",
   AVAILABLE: "available",
   BUILDING: "building",
+  /** The worker's artifact is another version (`v`) than the app reads: a deploy problem, retried. */
+  INCOMPATIBLE: "incompatible",
   UNAVAILABLE: "unavailable",
   QUARANTINED: "quarantined",
 } as const
@@ -514,8 +518,14 @@ export type OcrSyncStatus = (typeof OCR_SYNC_STATUS)[keyof typeof OCR_SYNC_STATU
 export const OCR_SYNC_REASON = {
   /** The worker's answer for this ARK broke the contract (backoff, then quarantine). */
   REJECTED: "sync_rejected",
-  /** The worker reliably fails on this ARK ALONE (an outage on its singleton, repeatedly). */
-  ISOLATED: "sync_isolated",
+  /**
+   * The worker fails on this ARK ALONE: asked by itself it failed on the
+   * transport OCR_SYNC_MAX_ATTEMPTS times, each time while another request of
+   * the same drain succeeded.
+   */
+  WORKER_FAILS_ALONE: "worker_fails_alone",
+  /** The worker's artifact for this ARK is another version than the app reads. */
+  INCOMPATIBLE: "artifact_version",
 } as const
 
 /**
@@ -523,10 +533,7 @@ export const OCR_SYNC_REASON = {
  * — an ARK with NO DocumentOcr row yet (never stored: the absence of the row
  * is the state). Distinct from "not low".
  */
-export const DOCUMENT_OCR_STATUS = {
-  ...OCR_SYNC_STATUS,
-  PENDING: "pending",
-} as const
+export const DOCUMENT_OCR_STATUS = OCR_SYNC_STATUS
 export type DocumentOcrStatus = (typeof DOCUMENT_OCR_STATUS)[keyof typeof DOCUMENT_OCR_STATUS]
 
 /**
@@ -652,4 +659,12 @@ export type OcrSyncWritePlan = {
   }>
   building: string[]
   unavailable: Array<{ ark: string; reason: string }>
+  /** Artifacts of another version than the app reads: `v` is the worker's. */
+  incompatible: Array<{ ark: string; v: number }>
+}
+
+/** One sync batch as written: the plan, and the ARKs whose artifact is broken (for the drainer to reject). */
+export type OcrSyncBatchResult = {
+  plan: OcrSyncWritePlan
+  broken: Array<{ ark: string; message: string }>
 }

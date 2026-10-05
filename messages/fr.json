@@ -526,7 +526,8 @@
           "building": "Qualité OCR : calcul en cours",
           "unavailable": "Qualité OCR non disponible",
           "quarantined": "Qualité OCR non disponible (synchronisation suspendue)",
-          "loadError": "Impossible de charger la qualité OCR."
+          "loadError": "Impossible de charger la qualité OCR.",
+          "incompatible": "Qualité OCR : en attente d'une mise à jour du service"
         }
       },
       "indexation": {
@@ -849,7 +850,8 @@
       "statusUnavailable": "Qualité OCR non disponible pour ce document",
       "statusQuarantined": "Qualité OCR non disponible (synchronisation suspendue)",
       "corpusRevoked": "Qualité OCR non lue : l'accès au corpus partagé a été révoqué",
-      "noRate": "Taux OCR du document non publié par la BnF"
+      "noRate": "Taux OCR du document non publié par la BnF",
+      "statusIncompatible": "Qualité OCR : en attente d'une mise à jour du service"
     }
   },
   "ingest": {

@@ -9,6 +9,8 @@ CREATE TABLE "document_ocr" (
     "next_check_at" TIMESTAMP(3),
     "resync_requested_at" TIMESTAMP(3),
     "sync_attempts" INTEGER NOT NULL DEFAULT 0,
+    "outage_count" INTEGER NOT NULL DEFAULT 0,
+    "outage_strikes" INTEGER NOT NULL DEFAULT 0,
 
     CONSTRAINT "document_ocr_pkey" PRIMARY KEY ("ark")
 );
@@ -34,11 +36,15 @@ ALTER TABLE "document_folio" ADD CONSTRAINT "document_folio_ark_fkey" FOREIGN KE
 -- app's Zod wire schema (lib/cluster/ocr-quality.ts) and read-time checks
 -- (lib/ocr/quality.ts): a row the app cannot read is never written.
 ALTER TABLE "document_ocr" ADD CONSTRAINT "document_ocr_status_check"
-    CHECK ("status" IN ('available', 'building', 'unavailable', 'quarantined'));
+    CHECK ("status" IN ('pending', 'available', 'building', 'incompatible', 'unavailable', 'quarantined'));
 ALTER TABLE "document_ocr" ADD CONSTRAINT "document_ocr_ocr_rate_check"
     CHECK ("ocr_rate" IS NULL OR ("ocr_rate" >= 0 AND "ocr_rate" <= 1));
 ALTER TABLE "document_ocr" ADD CONSTRAINT "document_ocr_sync_attempts_check"
     CHECK ("sync_attempts" >= 0);
+ALTER TABLE "document_ocr" ADD CONSTRAINT "document_ocr_outage_count_check"
+    CHECK ("outage_count" >= 0);
+ALTER TABLE "document_ocr" ADD CONSTRAINT "document_ocr_outage_strikes_check"
+    CHECK ("outage_strikes" >= 0);
 ALTER TABLE "document_folio" ADD CONSTRAINT "document_folio_folio_check"
     CHECK ("folio" >= 1);
 ALTER TABLE "document_folio" ADD CONSTRAINT "document_folio_ocr_source_check"

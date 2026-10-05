@@ -8,7 +8,7 @@ import "server-only"
 //
 // All app code submits and cancels jobs through this facade; it never imports
 // ClusterClient or FakeClusterRunner directly.
-import type { WorkerOcrQualitySyncResponse } from "./ocr-quality"
+import type { WorkerSyncAnswer } from "./ocr-quality"
 import { CLUSTER_POLL, type ClusterIngestRequest, type ClusterProgressPoll } from "./contracts"
 import { ClusterClient } from "./client"
 import { FakeClusterRunner } from "./fake"
@@ -44,7 +44,7 @@ export const ClusterRunner = {
   async ocrQualitySync(
     arks: string[],
     signal: AbortSignal,
-  ): Promise<WorkerOcrQualitySyncResponse> {
+  ): Promise<WorkerSyncAnswer> {
     const mode = clusterMode()
     if (mode !== CLUSTER_MODE.REAL) {
       throw new Error(

@@ -154,6 +154,8 @@ export const DOCUMENT_OCR_STATUS_MEANING: Record<DocumentOcrStatus, string> = {
   [DOCUMENT_OCR_STATUS.AVAILABLE]: "qualité connue pour tout le document",
   [DOCUMENT_OCR_STATUS.PENDING]: "pas encore synchronisé : qualité pas encore disponible",
   [DOCUMENT_OCR_STATUS.BUILDING]: "synchronisation en cours : qualité pas encore disponible",
+  [DOCUMENT_OCR_STATUS.INCOMPATIBLE]:
+    "le service de qualité OCR et l'application ne sont pas à la même version : qualité pas encore disponible",
   [DOCUMENT_OCR_STATUS.UNAVAILABLE]:
     "qualité non obtenue (la BnF ne la fournit pas, ou la synchronisation échoue) : " +
     "elle peut ne jamais l'être",

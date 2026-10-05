@@ -446,19 +446,19 @@ export const OCR_SYNC_BUILDING_RECHECK_MS = OCR_SYNC_SWEEP_INTERVAL_MS
 export const OCR_SYNC_UNAVAILABLE_RECHECK_MS = 24 * 60 * 60 * 1_000
 
 /**
- * Consecutive contract failures (the worker refused the ARK or answered it
- * outside the contract) after which an ARK is `quarantined`: no automatic
- * recheck until a re-ingest requests a resync. One poison ARK must never
- * starve the sweep (CLAUDE_ERROR_PATTERNS §10).
+ * After this many consecutive rejections (a 400 naming the ARK, an artifact of
+ * the expected version failing its schema) OR outage strikes (failed ALONE
+ * while the worker answered other requests of the same drain), an ARK is
+ * `quarantined`: no automatic recheck until a re-ingest requests a resync. One
+ * poison ARK must never starve the sweep (CLAUDE_ERROR_PATTERNS §10).
  */
 export const OCR_SYNC_MAX_ATTEMPTS = 5
 
 /**
- * Backoff of the ARKs of a batch the worker could not answer (unreachable,
- * timeout, 5xx): long enough for the next sweeps to ask other ARKs first,
- * without counting against the ARKs' contract-failure budget.
+ * An artifact of another version than the app reads (`incompatible`, a deploy
+ * mismatch) is asked again after this long (24 h).
  */
-export const OCR_SYNC_OUTAGE_BACKOFF_MS = 30 * 60 * 1_000
+export const OCR_SYNC_INCOMPATIBLE_RECHECK_MS = 24 * 60 * 60 * 1_000
 
 /** Backoff of a contract-failing ARK: base × 2^(attempt − 1), capped. */
 export const OCR_SYNC_REJECT_BACKOFF_BASE_MS = OCR_SYNC_SWEEP_INTERVAL_MS
@@ -476,20 +476,28 @@ export const OCR_SYNC_DRAIN_DEADLINE_MS = 10 * 60 * 1_000
 export const OCR_SYNC_BATCH_WRITE_MARGIN_MS = 15_000
 
 /**
- * Backoff of the WHOLE sync after the worker's answer breaks the contract at
- * the exchange level (version skew, 401/403/413): base × 2^(failures − 1),
- * capped. No ARK is penalised; the first valid answer resumes it.
+ * The one exponential schedule of the sync's transport and exchange failures:
+ * base × 2^(failures − 1), capped (3, 6, 12, 24, 48 min, then 1 h). It paces
+ * the WHOLE sync after an exchange-level contract break (401/403/413, an
+ * envelope that does not parse), a CORPUS's turn after its batch failed on the
+ * transport, and an ARK asked alone after it failed on the transport.
  */
-export const OCR_SYNC_EXCHANGE_BACKOFF_BASE_MS = OCR_SYNC_SWEEP_INTERVAL_MS
-export const OCR_SYNC_EXCHANGE_BACKOFF_MAX_MS = 60 * 60 * 1_000
+export const OCR_SYNC_BACKOFF_BASE_MS = OCR_SYNC_SWEEP_INTERVAL_MS
+export const OCR_SYNC_BACKOFF_MAX_MS = 60 * 60 * 1_000
 
 /**
- * Extra requests one drain may spend bisecting a batch whose ARKs ALL failed
- * an outage before (lib/documents/ocr-sync.ts): enough to halve a 100-ARK
- * batch down to a lone poison ARK over a few drains, few enough that a real
- * worker outage costs a handful of extra requests per sweep.
+ * Requests one drain may spend asking ARKs ALONE (the ARKs of a batch that
+ * failed on the transport twice) plus the control request that proves the
+ * worker up (lib/documents/ocr-sync.ts). The ARKs of a 100-ARK batch are
+ * gone through in 100 / 10 = 10 drains (30 min at the 3-min sweep; a control
+ * is asked only in a drain where nothing was answered yet). Measured with a
+ * poison at position 0 (tests/models/documents/ocr-sync-pg.test.ts): the 99
+ * others served and the poison quarantined in 19 drains (57 min). A worker
+ * outage costs at most 2 of these requests per drain, since a drain stops
+ * asking ARKs alone after two transport failures in a row with no answer in
+ * between.
  */
-export const OCR_SYNC_OUTAGE_BISECT_BUDGET = 4
+export const OCR_SYNC_ISOLATION_BUDGET = 10
 
 /**
  * Ceiling on one database await in the OCR-quality paths (the drainer and the

@@ -349,7 +349,9 @@ model DocumentOcr {
   ocrRate           Float?    @map("ocr_rate")
   // Why the quality is not available (status unavailable / quarantined).
   reason            String?
-  // Last time the worker was asked about this ARK.
+  // When the last ANSWER about this ARK was recorded (for a `pending` row: when
+  // it was first asked). Transport failures never move it, so "checkedAt >
+  // askedAt" means a newer answer superseded a question still in flight.
   checkedAt         DateTime  @map("checked_at")
   // Last time the folios below were replaced from an artifact (status=available).
   syncedAt          DateTime? @map("synced_at")
@@ -357,11 +359,22 @@ model DocumentOcr {
   // (available, quarantined).
   nextCheckAt       DateTime? @map("next_check_at")
   // Set by a re-ingest commit: re-pull even though the row is available (the
-  // document may have been re-OCR'd). Cleared by the next successful answer.
+  // document may have been re-OCR'd). Cleared by the next `available` answer.
   resyncRequestedAt DateTime? @map("resync_requested_at")
-  // Consecutive contract failures of this ARK's sync; quarantined at
-  // OCR_SYNC_MAX_ATTEMPTS. Reset by any valid answer and by a resync request.
+  // Consecutive rejections of this ARK's answers (a 400 naming it, an artifact
+  // of the expected version that fails its schema); quarantined at
+  // OCR_SYNC_MAX_ATTEMPTS. Reset by any accepted answer and by a resync request.
   syncAttempts      Int       @default(0) @map("sync_attempts")
+  // Consecutive requests this ARK was part of that failed on the TRANSPORT
+  // (batch or alone). Evidence about no document on its own: at 2 the ARK is
+  // asked alone (lib/documents/ocr-sync.ts). Reset by any answer and by a
+  // resync request.
+  outageCount       Int       @default(0) @map("outage_count")
+  // Outage strikes: times this ARK, asked ALONE, failed on the transport while
+  // another request of the same drain succeeded (the control that proves the
+  // worker was up). Quarantined (worker_fails_alone) at OCR_SYNC_MAX_ATTEMPTS.
+  // Reset by any answer for the ARK and by a resync request.
+  outageStrikes     Int       @default(0) @map("outage_strikes")
   folios            DocumentFolio[]
 
   // Sweep lookup: rows due for a recheck.

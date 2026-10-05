@@ -182,7 +182,10 @@ export type FolioOcrState =
   | {
       kind: typeof FOLIO_OCR_STATE.PENDING
       /** "Not yet": no row, or a sync in flight. */
-      status: typeof DOCUMENT_OCR_STATUS.PENDING | typeof DOCUMENT_OCR_STATUS.BUILDING
+      status:
+        | typeof DOCUMENT_OCR_STATUS.PENDING
+        | typeof DOCUMENT_OCR_STATUS.BUILDING
+        | typeof DOCUMENT_OCR_STATUS.INCOMPATIBLE
     }
   | {
       kind: typeof FOLIO_OCR_STATE.UNAVAILABLE
@@ -203,7 +206,11 @@ export function folioOcrState(index: OcrIndex, ark: string, folio: number | null
   if (view !== undefined) return { kind: FOLIO_OCR_STATE.RECORDED, view }
   const status: DocumentOcrStatus = index.documents.get(ark) ?? DOCUMENT_OCR_STATUS.PENDING
   if (status === DOCUMENT_OCR_STATUS.AVAILABLE) return { kind: FOLIO_OCR_STATE.NOT_RECORDED }
-  if (status === DOCUMENT_OCR_STATUS.PENDING || status === DOCUMENT_OCR_STATUS.BUILDING) {
+  if (
+    status === DOCUMENT_OCR_STATUS.PENDING ||
+    status === DOCUMENT_OCR_STATUS.BUILDING ||
+    status === DOCUMENT_OCR_STATUS.INCOMPATIBLE
+  ) {
     return { kind: FOLIO_OCR_STATE.PENDING, status }
   }
   return { kind: FOLIO_OCR_STATE.UNAVAILABLE, status }

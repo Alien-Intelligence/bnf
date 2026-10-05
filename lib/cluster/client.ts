@@ -26,8 +26,8 @@ import {
   OCR_SYNC_FAULT_SCOPE,
   OcrSyncContractError,
   OcrSyncUnavailableError,
-  workerOcrQualitySyncResponseSchema,
-  type WorkerOcrQualitySyncResponse,
+  readWorkerSyncAnswer,
+  type WorkerSyncAnswer,
 } from "./ocr-quality"
 
 const DEFAULT_TIMEOUT_MS = 30_000
@@ -146,54 +146,16 @@ function tryJson(text: string): unknown {
 }
 
 /**
- * The ARKs a refused or invalid answer can be pinned on, or [] when the
- * fault is the exchange itself. Exported for the tests.
+ * The ARK a 400 refusal names (`arks[i]` …), or [] when the refusal is about
+ * the exchange itself. Exported for the tests.
  */
-export function culpritsOf(
-  asked: string[],
-  failure:
-    | { kind: "refusal"; body: string }
-    | { kind: "invalid"; raw: unknown; issuePaths: PropertyKey[][] },
-): string[] {
-  if (failure.kind === "refusal") {
-    const body = tryJson(failure.body)
-    if (!isRecord(body) || typeof body.error !== "string") return []
-    const m = ARK_REFUSAL.exec(body.error)
-    if (m === null) return []
-    const ark = asked[Number(m[1])]
-    return ark === undefined ? [] : [ark]
-  }
-  // An invalid answer. Each issue is pinned on the ARK of the entry it is in
-  // (an issue outside such an entry — a missing top-level key, a wrong type —
-  // is the exchange's fault). Then, per bucket (documents / building /
-  // unavailable): if NO entry of that bucket passed, the worker cannot speak
-  // this contract at all (a version skew: `v: 2`, a renamed field) and nobody
-  // is blamed — the sync pauses, which is recoverable, whereas blaming every
-  // ARK quarantines them, which is not. Per-ARK blame only when at least one
-  // entry of the same bucket in the same answer passed.
-  if (!isRecord(failure.raw)) return []
-  const askedSet = new Set(asked)
-  const failingByBucket = new Map<string, Map<number, string>>()
-  for (const path of failure.issuePaths) {
-    const [bucket, index] = path
-    if (typeof bucket !== "string" || typeof index !== "number") return []
-    const entries = failure.raw[bucket]
-    if (!Array.isArray(entries)) return []
-    const entry: unknown = entries[index]
-    const ark = typeof entry === "string" ? entry : isRecord(entry) ? entry.ark : undefined
-    if (typeof ark !== "string" || !askedSet.has(ark)) return []
-    const failing = failingByBucket.get(bucket) ?? new Map<number, string>()
-    failing.set(index, ark)
-    failingByBucket.set(bucket, failing)
-  }
-  const culprits = new Set<string>()
-  for (const [bucket, failing] of failingByBucket) {
-    const entries = failure.raw[bucket]
-    const entryCount = Array.isArray(entries) ? entries.length : 0
-    if (failing.size >= entryCount) return [] // no entry of this bucket passed
-    for (const ark of failing.values()) culprits.add(ark)
-  }
-  return [...culprits]
+export function refusedArks(asked: string[], body: string): string[] {
+  const parsed = tryJson(body)
+  if (!isRecord(parsed) || typeof parsed.error !== "string") return []
+  const m = ARK_REFUSAL.exec(parsed.error)
+  if (m === null) return []
+  const ark = asked[Number(m[1])]
+  return ark === undefined ? [] : [ark]
 }
 
 /** Parse a worker body as JSON, or say exactly why it is not. */
@@ -267,19 +229,20 @@ export class ClusterClient {
    * (lib/documents/ocr-sync.ts, plan D7). The worker returns the artifacts it
    * has and queues a rate-gated build for the others. `signal` (the drain's
    * deadline) cancels the request.
-   *   - no answer, a timeout, a 5xx, or a 404 (a worker older than the
-   *     endpoint) → OcrSyncUnavailableError;
+   *   - TRANSPORT (says nothing about any document) → OcrSyncUnavailableError:
+   *     no answer, a timeout, a 5xx, a 404 (a worker older than the endpoint),
+   *     a 2xx body that is not JSON;
    *   - a 400 naming `arks[i]` → OcrSyncContractError pinned on that ARK; any
-   *     other 4xx (401, 403, 413, an unknown key…) or a body that is not JSON
-   *     → OcrSyncContractError on the EXCHANGE;
-   *   - a body outside the schema → pinned on the ARKs of the invalid entries
-   *     when they can be named, else on the exchange.
+   *     other 4xx (401, 403, 413, an unknown key…) → OcrSyncContractError on
+   *     the EXCHANGE;
+   *   - a JSON body is read in two layers (readWorkerSyncAnswer): an envelope
+   *     that does not parse → OcrSyncContractError on the EXCHANGE; otherwise
+   *     each document is judged alone and comes back as valid, `incompatible`
+   *     (another artifact version) or `broken` (the expected version, failing
+   *     its schema) — the caller decides what each one means.
    * A contract break is never written to the app DB.
    */
-  static async ocrQualitySync(
-    arks: string[],
-    signal?: AbortSignal,
-  ): Promise<WorkerOcrQualitySyncResponse> {
+  static async ocrQualitySync(arks: string[], signal?: AbortSignal): Promise<WorkerSyncAnswer> {
     let res: WorkerResponse
     try {
       res = await postJson("/ocr-quality/sync", { arks }, signal)
@@ -295,7 +258,7 @@ export class ClusterClient {
       )
     }
     if (!res.ok) {
-      const culprits = res.status === 400 ? culpritsOf(arks, { kind: "refusal", body: res.text }) : []
+      const culprits = res.status === 400 ? refusedArks(arks, res.text) : []
       throw new OcrSyncContractError(
         `ClusterClient.ocrQualitySync: worker refused the batch (${res.status} ${res.statusText}): ${res.text}`,
         culprits.length > 0
@@ -307,27 +270,19 @@ export class ClusterClient {
     try {
       json = parseJsonBody("ClusterClient.ocrQualitySync", res.text)
     } catch (err) {
-      throw new OcrSyncContractError(
-        err instanceof Error ? err.message : String(err),
-        { scope: OCR_SYNC_FAULT_SCOPE.EXCHANGE, culprits: [] },
-        { cause: err },
-      )
-    }
-    const parsed = workerOcrQualitySyncResponseSchema.safeParse(json)
-    if (!parsed.success) {
-      const culprits = culpritsOf(arks, {
-        kind: "invalid",
-        raw: json,
-        issuePaths: parsed.error.issues.map((i) => i.path),
+      // A truncated or proxy-mangled body: the transport failed, not a document.
+      throw new OcrSyncUnavailableError(err instanceof Error ? err.message : String(err), {
+        cause: err,
       })
+    }
+    const read = readWorkerSyncAnswer(json)
+    if (!read.ok) {
       throw new OcrSyncContractError(
-        `ClusterClient.ocrQualitySync: invalid worker response: ${z.prettifyError(parsed.error)}`,
-        culprits.length > 0
-          ? { scope: OCR_SYNC_FAULT_SCOPE.ARKS, culprits }
-          : { scope: OCR_SYNC_FAULT_SCOPE.EXCHANGE, culprits: [] },
+        `ClusterClient.ocrQualitySync: the answer's envelope is not a sync response: ${read.message}`,
+        { scope: OCR_SYNC_FAULT_SCOPE.EXCHANGE, culprits: [] },
       )
     }
-    return parsed.data
+    return read.answer
   }
 
   static async cancel(clusterJobId: string): Promise<void> {

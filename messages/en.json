@@ -526,7 +526,8 @@
           "building": "OCR quality: being computed",
           "unavailable": "OCR quality not available",
           "quarantined": "OCR quality not available (synchronisation suspended)",
-          "loadError": "Could not load the OCR quality."
+          "loadError": "Could not load the OCR quality.",
+          "incompatible": "OCR quality: waiting for a service update"
         }
       },
       "indexation": {
@@ -849,7 +850,8 @@
       "statusUnavailable": "OCR quality not available for this document",
       "statusQuarantined": "OCR quality not available (synchronisation suspended)",
       "corpusRevoked": "OCR quality not read: access to the shared corpus was revoked",
-      "noRate": "No document OCR rate published by the BnF"
+      "noRate": "No document OCR rate published by the BnF",
+      "statusIncompatible": "OCR quality: waiting for a service update"
     }
   },
   "ingest": {

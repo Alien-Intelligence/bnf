@@ -4,8 +4,9 @@
 //   - lib/ocr/quality.ts — the ONE "low OCR" decision (strict < the
 //     threshold, unscored folios never low — plan D3/D10), the views, and the
 //     four per-folio states that keep "not synced" apart from "not low";
-//   - workerOcrQualitySyncResponseSchema — the worker↔app wire contract (D2
-//     invariants enforced in Zod, never trusted);
+//   - readWorkerSyncAnswer — the worker↔app wire contract (D2 invariants
+//     enforced in Zod, never trusted), read in two layers: the envelope, then
+//     each document alone;
 //   - planOcrSyncWrites / rejectionOutcome — what DocumentService writes;
 //   - lib/citations/ocr — the per-note citation classification (image embeds
 //     excluded, D11) and the folio headings of a rag_get_text slice (D12).
@@ -24,7 +25,7 @@ import {
   OCR_SYNC_REJECT_BACKOFF_MAX_MS,
 } from "@/lib/constants"
 import { citationOcrSummary, foliosInSlice } from "@/lib/citations/ocr"
-import { workerOcrQualitySyncResponseSchema } from "@/lib/cluster/ocr-quality"
+import { readWorkerSyncAnswer, type WorkerSyncAnswer } from "@/lib/cluster/ocr-quality"
 import {
   CorruptOcrRowError,
   OCR_INDEX_CHECK_FAILED,
@@ -52,6 +53,7 @@ import { planOcrSyncWrites, rejectionOutcome } from "@/models/documents/service"
 const ARK = "ark:/12148/bpt6k841545p"
 const ARK_VISION = "ark:/12148/btv1b100524476"
 const ARK_GOLDEN = "ark:/12148/bpt6k4625753w"
+const ARK_NONE = "ark:/12148/bpt6k1234567x"
 
 function folioRow(over: Partial<DocumentFolioRow> = {}): DocumentFolioRow {
   return {
@@ -162,79 +164,71 @@ function withFolio(folio: Record<string, unknown>, lane = "text") {
   }
 }
 
+/** The answer, which must have a valid envelope. */
+function answerOf(raw: unknown): WorkerSyncAnswer {
+  const read = readWorkerSyncAnswer(raw)
+  if (!read.ok) throw new Error(`envelope rejected: ${read.message}`)
+  return read.answer
+}
+
+/** A document the per-document schema rejects is `broken` (that ARK alone), never read. */
+function assertBroken(raw: unknown): void {
+  const answer = answerOf(raw)
+  assert.deepEqual(answer.documents, [])
+  assert.deepEqual(answer.broken.map((b) => b.ark), [ARK])
+}
+
 test("schema: accepts the real worker response", () => {
-  const parsed = workerOcrQualitySyncResponseSchema.safeParse(WORKER_RESPONSE_FIXTURE)
-  assert.equal(parsed.success, true, JSON.stringify(parsed.error?.issues))
+  const answer = answerOf(WORKER_RESPONSE_FIXTURE)
+  assert.deepEqual(answer.documents.map((d) => d.ark), [ARK_VISION, ARK])
+  assert.deepEqual([answer.broken, answer.incompatible], [[], []])
 })
 
 test("schema: rejects an alto folio with wordCount null", () => {
-  const r = workerOcrQualitySyncResponseSchema.safeParse(
-    withFolio({ ordre: 1, ocrSource: "alto", ocrQuality: 0.9, wordCount: null }),
-  )
-  assert.equal(r.success, false)
+  assertBroken(withFolio({ ordre: 1, ocrSource: "alto", ocrQuality: 0.9, wordCount: null }))
 })
 
 test("schema: rejects ocrQuality 1.2", () => {
-  const r = workerOcrQualitySyncResponseSchema.safeParse(
-    withFolio({ ordre: 1, ocrSource: "alto", ocrQuality: 1.2, wordCount: 10 }),
-  )
-  assert.equal(r.success, false)
+  assertBroken(withFolio({ ordre: 1, ocrSource: "alto", ocrQuality: 1.2, wordCount: 10 }))
 })
 
 test("schema: rejects a mistral folio with a quality", () => {
-  const r = workerOcrQualitySyncResponseSchema.safeParse(
-    withFolio({ ordre: 1, ocrSource: "mistral", ocrQuality: 0.5, wordCount: null }, "mistral"),
-  )
-  assert.equal(r.success, false)
+  assertBroken(withFolio({ ordre: 1, ocrSource: "mistral", ocrQuality: 0.5, wordCount: null }, "mistral"))
 })
 
 test("schema: rejects a vision folio with a word count", () => {
-  const r = workerOcrQualitySyncResponseSchema.safeParse(
-    withFolio({ ordre: 1, ocrSource: "vision", ocrQuality: null, wordCount: 3 }, "vision"),
-  )
-  assert.equal(r.success, false)
+  assertBroken(withFolio({ ordre: 1, ocrSource: "vision", ocrQuality: null, wordCount: 3 }, "vision"))
 })
 
 test("schema: rejects an ocrRate above 1", () => {
-  const r = workerOcrQualitySyncResponseSchema.safeParse({
+  assertBroken({
     ...WORKER_RESPONSE_FIXTURE,
     documents: [{ ...WORKER_RESPONSE_FIXTURE.documents[1], ocrRate: 78.21 }],
   })
-  assert.equal(r.success, false)
 })
 
 test("schema: rejects a folio whose source contradicts the lane", () => {
-  const r = workerOcrQualitySyncResponseSchema.safeParse(
-    withFolio({ ordre: 1, ocrSource: "vision", ocrQuality: null, wordCount: null }, "text"),
-  )
-  assert.equal(r.success, false)
+  assertBroken(withFolio({ ordre: 1, ocrSource: "vision", ocrQuality: null, wordCount: null }, "text"))
 })
 
 test("schema: rejects a duplicate folio", () => {
   const folio = { ordre: 2, ocrSource: "alto", ocrQuality: 0.5, wordCount: 3 }
-  const r = workerOcrQualitySyncResponseSchema.safeParse({
+  assertBroken({
     documents: [{ v: 1, ark: ARK, ocrRate: null, lane: "text", folios: [folio, folio], builtAt: "2026-10-01T13:49:53.149Z" }],
     building: [],
     unavailable: [],
   })
-  assert.equal(r.success, false)
 })
 
-test("schema: rejects an ARK reported in two buckets", () => {
-  const r = workerOcrQualitySyncResponseSchema.safeParse({
-    ...WORKER_RESPONSE_FIXTURE,
-    building: [ARK],
-  })
-  assert.equal(r.success, false)
+test("envelope: rejects an ARK reported in two buckets", () => {
+  assert.equal(readWorkerSyncAnswer({ ...WORKER_RESPONSE_FIXTURE, building: [ARK] }).ok, false)
 })
 
-test("schema: rejects an unavailable entry without a reason", () => {
-  const r = workerOcrQualitySyncResponseSchema.safeParse({
-    documents: [],
-    building: [],
-    unavailable: [{ ark: ARK, reason: "" }],
-  })
-  assert.equal(r.success, false)
+test("envelope: rejects an unavailable entry without a reason", () => {
+  assert.equal(
+    readWorkerSyncAnswer({ documents: [], building: [], unavailable: [{ ark: ARK, reason: "" }] }).ok,
+    false,
+  )
 })
 
 // ---------------------------------------------------------------------------
@@ -243,10 +237,10 @@ test("schema: rejects an unavailable entry without a reason", () => {
 
 test("planOcrSyncWrites: the exact replace / status plan", () => {
   const now = new Date("2026-10-02T09:00:00Z")
-  const response = workerOcrQualitySyncResponseSchema.parse({
-    documents: [WORKER_RESPONSE_FIXTURE.documents[1]],
+  const response = answerOf({
+    documents: [WORKER_RESPONSE_FIXTURE.documents[1], { ...WORKER_RESPONSE_FIXTURE.documents[0], v: 2 }],
     building: [ARK_GOLDEN],
-    unavailable: [{ ark: ARK_VISION, reason: "no_pages_artifact" }],
+    unavailable: [{ ark: ARK_NONE, reason: "no_pages_artifact" }],
   })
   assert.deepEqual(planOcrSyncWrites(response, now), {
     checkedAt: now,
@@ -262,15 +256,16 @@ test("planOcrSyncWrites: the exact replace / status plan", () => {
       },
     ],
     building: [ARK_GOLDEN],
-    unavailable: [{ ark: ARK_VISION, reason: "no_pages_artifact" }],
+    unavailable: [{ ark: ARK_NONE, reason: "no_pages_artifact" }],
+    incompatible: [{ ark: ARK_VISION, v: 2 }],
   })
 })
 
 test("planOcrSyncWrites: an empty response plans nothing", () => {
   const now = new Date("2026-10-02T09:00:00Z")
   assert.deepEqual(
-    planOcrSyncWrites({ documents: [], building: [], unavailable: [] }, now),
-    { checkedAt: now, available: [], building: [], unavailable: [] },
+    planOcrSyncWrites({ documents: [], building: [], unavailable: [], incompatible: [], broken: [] }, now),
+    { checkedAt: now, available: [], building: [], unavailable: [], incompatible: [] },
   )
 })
 
@@ -496,10 +491,7 @@ test("rejectionOutcome: a corrupt attempt count throws", () => {
   assert.throws(() => rejectionOutcome(1.5, new Date()))
 })
 
-test("schema: rejects more ARKs than one batch", () => {
+test("envelope: rejects more ARKs than one batch", () => {
   const building = Array.from({ length: OCR_SYNC_BATCH_SIZE + 1 }, (_, i) => `ark:/12148/bpt6k${String(i).padStart(6, "0")}`)
-  assert.equal(
-    workerOcrQualitySyncResponseSchema.safeParse({ documents: [], building, unavailable: [] }).success,
-    false,
-  )
+  assert.equal(readWorkerSyncAnswer({ documents: [], building, unavailable: [] }).ok, false)
 })

@@ -7,6 +7,17 @@
 // (OcrSyncResponse). Change both sides together. The worker's invariants are
 // re-checked here rather than trusted (plan D2): what is parsed is what gets
 // stored.
+//
+// THE VERSION RULE: every change to the artifact's shape or meaning bumps its
+// `v` (worker-v2/src/stages/ocr-quality.ts states the same rule). An answer is
+// read in two layers, by evidence:
+//   - the ENVELOPE ({documents, building, unavailable}, each document an object
+//     with an `ark` and an integer `v`) must parse, else the exchange itself is
+//     broken (OcrSyncContractError EXCHANGE: the sync pauses);
+//   - each DOCUMENT is judged on its own: another `v` than
+//     OCR_QUALITY_ARTIFACT_VERSION → `incompatible` (a deploy mismatch: nobody
+//     is blamed, retried later); the expected `v` but failing the schema →
+//     that artifact is broken (`broken`: that ARK alone is rejected).
 
 import { z } from "zod"
 
@@ -62,10 +73,13 @@ const workerFolioOcrSchema = z.discriminatedUnion("ocrSource", [
   }),
 ])
 
+/** The artifact version this app reads (worker DocOcrQuality `v`). */
+export const OCR_QUALITY_ARTIFACT_VERSION = 1
+
 /** One per-ARK artifact (worker DocOcrQuality). */
 const workerDocOcrQualitySchema = z
   .object({
-    v: z.literal(1),
+    v: z.literal(OCR_QUALITY_ARTIFACT_VERSION),
     ark: arkSchema,
     ocrRate: unitInterval.nullable(),
     lane: workerLaneSchema,
@@ -94,32 +108,68 @@ const workerDocOcrQualitySchema = z
     })
   })
 
-/** The whole answer: at most one batch of ARKs, each answered exactly once. */
-export const workerOcrQualitySyncResponseSchema = z
+/** Each ARK is answered exactly once across the buckets. */
+function uniqueArks(arks: string[], ctx: z.RefinementCtx): void {
+  const seen = new Set<string>()
+  for (const ark of arks) {
+    if (seen.has(ark)) ctx.addIssue({ code: "custom", message: `ARK ${ark} answered more than once` })
+    seen.add(ark)
+  }
+}
+
+export type WorkerDocOcrQuality = z.infer<typeof workerDocOcrQualitySchema>
+
+/** The envelope layer: what must parse for the answer to be an answer at all. */
+const workerSyncEnvelopeSchema = z
   .object({
-    documents: z.array(workerDocOcrQualitySchema).max(OCR_SYNC_BATCH_SIZE),
+    documents: z.array(z.looseObject({ ark: arkSchema, v: z.number().int() })).max(OCR_SYNC_BATCH_SIZE),
     building: z.array(arkSchema).max(OCR_SYNC_BATCH_SIZE),
     unavailable: z
       .array(z.object({ ark: arkSchema, reason: z.string().min(1) }))
       .max(OCR_SYNC_BATCH_SIZE),
   })
-  .superRefine((res, ctx) => {
-    // Each ARK is answered exactly once: an ARK in two buckets would make the
-    // write plan both replace and re-status it.
-    const seen = new Set<string>()
-    const arks = [
-      ...res.documents.map((d) => d.ark),
-      ...res.building,
-      ...res.unavailable.map((u) => u.ark),
-    ]
-    for (const ark of arks) {
-      if (seen.has(ark)) {
-        ctx.addIssue({ code: "custom", message: `ARK ${ark} answered more than once` })
-      }
-      seen.add(ark)
+  .superRefine((res, ctx) =>
+    uniqueArks(
+      [...res.documents.map((d) => d.ark), ...res.building, ...res.unavailable.map((u) => u.ark)],
+      ctx,
+    ),
+  )
+
+/** A sync answer read document by document (see the header). */
+export type WorkerSyncAnswer = {
+  documents: WorkerDocOcrQuality[]
+  building: string[]
+  unavailable: Array<{ ark: string; reason: string }>
+  /** Artifacts of another version: a deploy mismatch, nobody blamed. */
+  incompatible: Array<{ ark: string; v: number }>
+  /** Artifacts of the expected version that fail its schema: that ARK alone is at fault. */
+  broken: Array<{ ark: string; message: string }>
+}
+
+/** Read a worker answer: the envelope must parse; each document is then judged alone. */
+export function readWorkerSyncAnswer(
+  raw: unknown,
+): { ok: true; answer: WorkerSyncAnswer } | { ok: false; message: string } {
+  const envelope = workerSyncEnvelopeSchema.safeParse(raw)
+  if (!envelope.success) return { ok: false, message: z.prettifyError(envelope.error) }
+  const answer: WorkerSyncAnswer = {
+    documents: [],
+    building: envelope.data.building,
+    unavailable: envelope.data.unavailable,
+    incompatible: [],
+    broken: [],
+  }
+  for (const doc of envelope.data.documents) {
+    if (doc.v !== OCR_QUALITY_ARTIFACT_VERSION) {
+      answer.incompatible.push({ ark: doc.ark, v: doc.v })
+      continue
     }
-  })
-export type WorkerOcrQualitySyncResponse = z.infer<typeof workerOcrQualitySyncResponseSchema>
+    const parsed = workerDocOcrQualitySchema.safeParse(doc)
+    if (parsed.success) answer.documents.push(parsed.data)
+    else answer.broken.push({ ark: doc.ark, message: z.prettifyError(parsed.error) })
+  }
+  return { ok: true, answer }
+}
 
 // ---------------------------------------------------------------------------
 // Typed failures of a sync call — the drainer (lib/documents/ocr-sync.ts)
@@ -128,9 +178,9 @@ export type WorkerOcrQualitySyncResponse = z.infer<typeof workerOcrQualitySyncRe
 
 /**
  * The worker could not be asked: transport error, timeout, a 5xx, or a 404
- * from a worker older than the endpoint. Says nothing about the contract —
- * the drainer backs the batch's ARKs off (so the next sweep asks OTHER ARKs
- * first) without counting it against their contract-failure budget.
+ * from a worker older than the endpoint, a body that is not JSON. Says nothing
+ * about any document — see lib/documents/ocr-sync.ts for how an ARK can still
+ * earn an outage strike (alone, with a control).
  */
 export class OcrSyncUnavailableError extends Error {
   constructor(message: string, options?: { cause?: unknown }) {
@@ -141,10 +191,11 @@ export class OcrSyncUnavailableError extends Error {
 
 /** Who a contract break is about: the whole exchange, or named ARKs of the batch. */
 export const OCR_SYNC_FAULT_SCOPE = {
-  /** The exchange itself breaks the contract (version skew, 401/403/413, a
-   *  body that is not a sync response at all): no ARK is at fault. */
+  /** The exchange itself breaks the contract (401/403/413, an envelope that
+   *  does not parse, an answer that answers nothing asked): no ARK is at fault. */
   EXCHANGE: "exchange",
-  /** Some ARKs of the batch break it; `culprits` names them when known. */
+  /** Named ARKs of the batch break it (a 400 naming `arks[i]`, ARKs left
+   *  unanswered in an otherwise answered batch). */
   ARKS: "arks",
 } as const
 export type OcrSyncFaultScope = (typeof OCR_SYNC_FAULT_SCOPE)[keyof typeof OCR_SYNC_FAULT_SCOPE]
@@ -154,9 +205,8 @@ export type OcrSyncFaultScope = (typeof OCR_SYNC_FAULT_SCOPE)[keyof typeof OCR_S
  * what the drainer does (lib/documents/ocr-sync.ts):
  *   - EXCHANGE → the sync itself pauses (backoff) and resumes on its own when
  *     the worker answers validly again; no ARK is penalised;
- *   - ARKS with named `culprits` → those ARKs are rejected (backoff, then
- *     quarantine) and the rest of the batch is asked again;
- *   - ARKS without culprits → the batch is bisected to find them.
+ *   - ARKS → the named `culprits` are rejected (backoff, then quarantine) and
+ *     the rest of the batch is asked again.
  */
 export class OcrSyncContractError extends Error {
   readonly scope: OcrSyncFaultScope

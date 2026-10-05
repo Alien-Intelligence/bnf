@@ -9,6 +9,7 @@ import {
   documentFolioRow,
   documentOcrStatusRow,
   documentOcrWithFolios,
+  OCR_SYNC_STATUS,
   type DocumentFolioRow,
   type DocumentOcrStatusRow,
   type DocumentOcrWithFolios,
@@ -138,15 +139,20 @@ export class DocumentQueries {
    * counted in each; it is synced once, through whichever is drained first.
    *
    * Due = indexed in that corpus, and either no DocumentOcr row yet or a row
-   * whose `next_check_at` has passed (building, unavailable, backing off, or a
-   * re-ingest's resync request).
+   * whose `next_check_at` has passed (pending, building, unavailable,
+   * incompatible, backing off, or a re-ingest's resync request). `resync`
+   * counts the due rows with a resync request that is not merely waiting for
+   * a build (a `building` row keeps its request but never holds the drainer's
+   * resync tier).
    */
   static async ocrPendingByCorpus(
     now: Date,
   ): Promise<Array<{ corpusProjectId: string; pending: number; resync: number }>> {
     const rows = await prisma.$queryRaw<Array<{ project_id: string; n: bigint; resync: bigint }>>`
       SELECT d.project_id, count(*) AS n,
-             count(*) FILTER (WHERE o.resync_requested_at IS NOT NULL) AS resync
+             count(*) FILTER (
+               WHERE o.resync_requested_at IS NOT NULL AND o.status <> ${OCR_SYNC_STATUS.BUILDING}
+             ) AS resync
       FROM document d
       LEFT JOIN document_ocr o ON o.ark = d.ark
       WHERE d.indexed_at IS NOT NULL
@@ -162,9 +168,13 @@ export class DocumentQueries {
   }
 
   /**
-   * The due ARKs of ONE corpus (see ocrPendingByCorpus), never-asked and
-   * resync-requested first, then the ones a note already cites (the
-   * trust-critical documents), then the longest-due.
+   * The due ARKs of ONE corpus (see ocrPendingByCorpus) with their outage
+   * count: resync-requested first (not a `building` row), then never-answered
+   * — no row, or a `pending` one (asked, the transport failed) — then the
+   * ones a note already cites (the trust-critical documents), then the
+   * longest-due. Never-answered ARKs keep ONE stable order (their
+   * `next_check_at` is ignored) so a batch that failed on the transport is
+   * asked again as the same batch, never spread over fresh ARKs.
    *
    * Raw SQL because Prisma cannot anti-join `document` (keyed per project) to
    * `document_ocr` (keyed per ARK), which share no relation. The tagged
@@ -174,22 +184,39 @@ export class DocumentQueries {
     corpusProjectId: string
     limit: number
     now: Date
-  }): Promise<string[]> {
-    const rows = await prisma.$queryRaw<Array<{ ark: string }>>`
-      SELECT d.ark
+  }): Promise<Array<{ ark: string; outageCount: number }>> {
+    const rows = await prisma.$queryRaw<Array<{ ark: string; outage_count: number }>>`
+      SELECT d.ark, COALESCE(o.outage_count, 0)::int AS outage_count
       FROM document d
       LEFT JOIN document_ocr o ON o.ark = d.ark
       WHERE d.project_id = ${opts.corpusProjectId}
         AND d.indexed_at IS NOT NULL
         AND (o.ark IS NULL OR o.next_check_at <= ${opts.now})
-      ORDER BY (o.resync_requested_at IS NOT NULL) DESC,
-               (o.ark IS NULL) DESC,
+      ORDER BY COALESCE(o.resync_requested_at IS NOT NULL AND o.status <> ${OCR_SYNC_STATUS.BUILDING}, false) DESC,
+               (o.ark IS NULL OR o.status = ${OCR_SYNC_STATUS.PENDING}) DESC,
                EXISTS (SELECT 1 FROM citation c WHERE c.ark = d.ark) DESC,
-               o.next_check_at ASC NULLS FIRST,
+               CASE WHEN o.status = ${OCR_SYNC_STATUS.PENDING} THEN NULL ELSE o.next_check_at END
+                 ASC NULLS FIRST,
                d.ark
       LIMIT ${opts.limit}
     `
-    return rows.map((r) => r.ark)
+    return rows.map((r) => ({ ark: r.ark, outageCount: r.outage_count }))
+  }
+
+  /**
+   * An ARK the worker has answered `available` — the control the drainer
+   * asks to prove the worker up when an ARK asked alone failed on the
+   * transport (lib/documents/ocr-sync.ts). The most recently synced first (its
+   * artifact is the likeliest to be served from the worker's store); never
+   * one of `exclude`. A system read: the ARK is only re-asked, never shown.
+   */
+  static async ocrControlArk(exclude: string[]): Promise<string | null> {
+    const row = await prisma.documentOcr.findFirst({
+      where: { status: OCR_SYNC_STATUS.AVAILABLE, ark: { notIn: exclude } },
+      orderBy: [{ syncedAt: { sort: "desc", nulls: "last" } }, { ark: "asc" }],
+      select: { ark: true },
+    })
+    return row === null ? null : row.ark
   }
 
   /**
