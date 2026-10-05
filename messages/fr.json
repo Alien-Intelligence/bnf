@@ -334,6 +334,7 @@
       "subtitle": "Candidats rassemblés, à valider",
       "count": "{count} candidat(s)",
       "empty": "Le tampon est vide. Lance une recherche pour y rassembler des candidats.",
+      "emptyCta": "Revenir à la conversation",
       "emptyHint": "Aucun candidat pour l'instant",
       "error": "Impossible de charger le tampon.",
       "noTitle": "(sans titre)",
@@ -350,12 +351,12 @@
       "clearConfirmOk": "Vider",
       "foundBy": "Trouvé par la recherche : {query}",
       "kinds": {
-        "periodical_issue": "Numéro de périodique",
-        "periodical_collection": "Titre de périodique (collection)",
+        "periodicalIssue": "Numéro de périodique",
+        "periodicalCollection": "Titre de périodique (collection)",
         "monograph": "Monographie",
         "image": "Image",
-        "catalogue_notice": "Notice catalogue",
-        "other_document": "Autre document numérisé",
+        "catalogueNotice": "Notice catalogue",
+        "otherDocument": "Autre document numérisé",
         "unknown": "Nature indéterminée"
       },
       "enrichPending": "métadonnées en cours"
@@ -962,6 +963,8 @@
       },
       "coverage": {
         "eyebrow": "Votre sélection",
+        "empty": "Votre sélection est vide : aucun document à ingérer pour l'instant.",
+        "emptyCta": "Constituer le corpus",
         "headline": "{ingestable, plural, one {# document ingérable} other {# documents ingérables}} sur {total, number}",
         "notDigitized": "{count, plural, one {# notice sans numérisation à la BnF} other {# notices sans numérisation à la BnF}}",
         "noText": "{count, plural, one {# document numérisé sans texte lisible} other {# documents numérisés sans texte lisible}}",

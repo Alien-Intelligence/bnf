@@ -122,6 +122,18 @@ export function classifyArkKind(d: {
 }
 
 
+/** The i18n key of each kind under `corpus.buffer.kinds` (keys are camelCase,
+ *  codes are snake_case — next-intl keys never carry the domain code). */
+export const ARK_KIND_I18N_KEY = {
+  [ARK_KIND.PERIODICAL_ISSUE]: "periodicalIssue",
+  [ARK_KIND.PERIODICAL_COLLECTION]: "periodicalCollection",
+  [ARK_KIND.MONOGRAPH]: "monograph",
+  [ARK_KIND.IMAGE]: "image",
+  [ARK_KIND.CATALOGUE_NOTICE]: "catalogueNotice",
+  [ARK_KIND.OTHER_DOCUMENT]: "otherDocument",
+  [ARK_KIND.UNKNOWN]: "unknown",
+} as const satisfies Record<ArkKind, string>
+
 /** True for one of the seven record kinds (input validation). */
 export function isArkKind(value: string): value is ArkKind {
   return (ARK_KIND_VALUES as readonly string[]).includes(value)

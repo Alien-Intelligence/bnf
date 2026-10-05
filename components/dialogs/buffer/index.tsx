@@ -9,7 +9,7 @@
 // versioned corpus. Self-fetches via useBuffer; the Constituer client invalidates
 // the buffer query on buffer_event and on turn-finish so it never goes stale.
 
-import { useMemo, useState } from "react"
+import { useMemo, useState, type ReactNode } from "react"
 import { useTranslations } from "next-intl"
 import { AlertCircle, ArrowRight, Layers, Trash2, X } from "lucide-react"
 import {
@@ -30,6 +30,7 @@ import {
   useDiscardCandidates,
 } from "@/hooks/api/buffer"
 import { BUFFER_PANEL_LIMIT } from "@/lib/constants"
+import { ARK_KIND_I18N_KEY, isArkKind } from "@/lib/documents/ark-kind"
 import { BUFFER_ENRICH_STATUS, type BufferRow } from "@/models/buffer/schema"
 
 interface Props {
@@ -56,7 +57,8 @@ export function DialogBuffer({ open, onOpenChange, projectId }: Props) {
   // Canonical codes are labelled; a code the vocabulary does not know yet is
   // shown raw rather than hidden (the [vocab] warn on the server says why).
   const typeLabel = (code: string) => (tType.has(code) ? tType(code) : code)
-  const kindLabel = (kind: string) => (tKind.has(kind) ? tKind(kind) : kind)
+  // A stored kind the client does not know is shown raw rather than hidden.
+  const kindLabel = (kind: string) => (isArkKind(kind) ? tKind(ARK_KIND_I18N_KEY[kind]) : kind)
   const { data, isLoading, isError, refetch } = useBuffer(
     projectId,
     {},
@@ -102,51 +104,28 @@ export function DialogBuffer({ open, onOpenChange, projectId }: Props) {
         </DialogHeader>
 
         <div className="flex max-h-[55vh] flex-col gap-1 overflow-y-auto px-3 py-3">
-          {isLoading && (
-            <div className="space-y-2 px-1.5">
-              <Skeleton className="h-4 w-40" />
-              <Skeleton className="h-4 w-full" />
-              <Skeleton className="h-4 w-3/4" />
-            </div>
-          )}
-
-          {isError && (
-            <div className="flex flex-col items-center gap-3 py-8 text-destructive">
-              <AlertCircle className="size-5" />
-              <p className="text-sm">{t("error")}</p>
-              <Button variant="outline" size="sm" onClick={() => void refetch()}>
-                {tCommon("tryAgain")}
-              </Button>
-            </div>
-          )}
-
-          {!isLoading && !isError && data && total === 0 && (
-            <p className="py-8 text-center text-sm text-muted-foreground">{t("empty")}</p>
-          )}
-
-          {!isLoading && !isError && data && total > 0 && (
-            <>
-              {data.sample.map((row) => (
-                <CandidateRow
-                  key={row.id}
-                  row={row}
-                  typeLabel={typeLabel}
-                  kindLabel={kindLabel}
-                  pendingLabel={t("enrichPending")}
-                  noTitle={t("noTitle")}
-                  discardLabel={t("discard")}
-                  disabled={isBusy || discard.isPending}
-                  foundByLabel={(query) => t("foundBy", { query })}
-                  onDiscard={() => discard.mutate({ arks: [row.ark] })}
-                />
-              ))}
-              {total > data.sample.length ? (
-                <p className="pt-1 text-center text-xs text-muted-foreground">
-                  {t("more", { count: total - data.sample.length })}
-                </p>
-              ) : null}
-            </>
-          )}
+          <BufferDialogBody
+            isLoading={isLoading}
+            isError={isError}
+            onRetry={() => void refetch()}
+            onBackToChat={() => onOpenChange(false)}
+            total={total}
+            sample={data?.sample ?? []}
+            rowFor={(row) => (
+              <CandidateRow
+                key={row.id}
+                row={row}
+                typeLabel={typeLabel}
+                kindLabel={kindLabel}
+                pendingLabel={t("enrichPending")}
+                noTitle={t("noTitle")}
+                discardLabel={t("discard")}
+                disabled={isBusy || discard.isPending}
+                foundByLabel={(query) => t("foundBy", { query })}
+                onDiscard={() => discard.mutate({ arks: [row.ark] })}
+              />
+            )}
+          />
         </div>
 
         {/* Footer: commit / clear (with an inline confirm to avoid a nested dialog). */}
@@ -205,6 +184,68 @@ export function DialogBuffer({ open, onOpenChange, projectId }: Props) {
         </div>
       </DialogContent>
     </Dialog>
+  )
+}
+
+/** The candidate list's four states, in the fixed order: loading → error →
+ *  empty (with the way forward) → content (playbook/ui-states.md). */
+function BufferDialogBody({
+  isLoading,
+  isError,
+  onRetry,
+  onBackToChat,
+  total,
+  sample,
+  rowFor,
+}: {
+  isLoading: boolean
+  isError: boolean
+  onRetry: () => void
+  onBackToChat: () => void
+  total: number
+  sample: BufferRow[]
+  rowFor: (row: BufferRow) => ReactNode
+}) {
+  const t = useTranslations("corpus.buffer")
+  const tCommon = useTranslations("common")
+
+  if (isLoading) {
+    return (
+      <div className="space-y-2 px-1.5">
+        <Skeleton className="h-4 w-40" />
+        <Skeleton className="h-4 w-full" />
+        <Skeleton className="h-4 w-3/4" />
+      </div>
+    )
+  }
+  if (isError) {
+    return (
+      <div className="flex flex-col items-center gap-3 py-8 text-destructive">
+        <AlertCircle className="size-5" />
+        <p className="text-sm">{t("error")}</p>
+        <Button variant="outline" size="sm" onClick={onRetry}>
+          {tCommon("tryAgain")}
+        </Button>
+      </div>
+    )
+  }
+  if (total === 0) {
+    return (
+      <div className="flex flex-col items-center gap-3 py-8">
+        <p className="text-center text-sm text-muted-foreground">{t("empty")}</p>
+        <Button variant="outline" size="sm" onClick={onBackToChat}>
+          {t("emptyCta")}
+        </Button>
+      </div>
+    )
+  }
+  return (
+    <>
+      {sample.map(rowFor)}
+      {total > sample.length ? (
+        <p className="pt-1 text-center text-xs text-muted-foreground">{t("more", { count: total - sample.length })}</p>
+      ) : null}
+    </>
   )
 }
 

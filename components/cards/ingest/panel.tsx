@@ -185,7 +185,7 @@ export function CardIngestPanel({
         </section>
 
         {/* 1b — the selection by ingestability: "X ingérables sur Y". */}
-        <CoverageSection coverage={delta.coverage} />
+        <CoverageSection coverage={delta.coverage} projectId={projectId} />
 
         {/* 2 — what this action will do. */}
         {showAction && (
@@ -345,9 +345,26 @@ export function CardIngestPanel({
  * agent said 58, the list showed 44, ingestion showed 22, and nothing said
  * why). The breakdown lines sum, with the headline, to the selection total.
  */
-function CoverageSection({ coverage }: { coverage: IngestDeltaPreview["coverage"] }) {
+function CoverageSection({
+  coverage,
+  projectId,
+}: {
+  coverage: IngestDeltaPreview["coverage"]
+  projectId: string
+}) {
   const t = useTranslations("ingest.panel.coverage")
-  if (coverage.total === 0) return null
+  if (coverage.total === 0) {
+    // An empty selection is said, with the way to fill it — never a blank.
+    return (
+      <section className="rounded-lg border bg-card px-5 py-4">
+        <div className="mono-eyebrow">{t("eyebrow")}</div>
+        <p className="mt-2 text-sm text-neutral-200">{t("empty")}</p>
+        <Link href={ROUTES.constituer(projectId)} className={cn(buttonVariants({ variant: "outline", size: "sm" }), "mt-3")}>
+          {t("emptyCta")}
+        </Link>
+      </section>
+    )
+  }
   const lines: string[] = [
     ...(coverage.notDigitized > 0 ? [t("notDigitized", { count: coverage.notDigitized })] : []),
     ...(coverage.noText > 0 ? [t("noText", { count: coverage.noText })] : []),

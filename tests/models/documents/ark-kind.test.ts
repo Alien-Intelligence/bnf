@@ -76,3 +76,22 @@ test("every kind has a colour and the new doc types exist in the vocabulary", ()
 test("the buffer candidate schema accepts exactly the ARK_KIND values", () => {
   assert.deepEqual([...ARK_KIND_VALUES].sort(), Object.values(ARK_KIND).sort())
 })
+
+test("every record kind has its camelCase label in both locales", async () => {
+  const { ARK_KIND_I18N_KEY } = await import("@/lib/documents/ark-kind")
+  const { readFile } = await import("node:fs/promises")
+  for (const locale of ["fr", "en"]) {
+    const messages: unknown = JSON.parse(await readFile(`messages/${locale}.json`, "utf8"))
+    const kinds =
+      typeof messages === "object" && messages !== null && "corpus" in messages &&
+      typeof messages.corpus === "object" && messages.corpus !== null && "buffer" in messages.corpus &&
+      typeof messages.corpus.buffer === "object" && messages.corpus.buffer !== null && "kinds" in messages.corpus.buffer
+        ? messages.corpus.buffer.kinds
+        : null
+    assert.ok(typeof kinds === "object" && kinds !== null, `${locale}: corpus.buffer.kinds`)
+    for (const key of Object.values(ARK_KIND_I18N_KEY)) {
+      assert.ok(key in kinds, `${locale}: corpus.buffer.kinds.${key}`)
+      assert.match(key, /^[a-z][A-Za-z]*$/, "camelCase key")
+    }
+  }
+})
