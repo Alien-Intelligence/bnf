@@ -199,8 +199,12 @@ const CORPUS_NOT_PRESENCE: ReadonlyArray<{
   { dimension: "title", used: (f) => !!f.title?.length, known: { title: { not: null } }, unknown: { title: null } },
   { dimension: "creator", used: (f) => !!f.creator?.length, known: { author: { not: null } }, unknown: { author: null } },
   {
+    // With `undated: true` the year dimension is two-valued (range OR
+    // undated): an undated document is then MATCHED, not unknown — the
+    // buffer's rule (models/buffer/service.ts), so a saved set means the same
+    // before and after a commit.
     dimension: "year",
-    used: (f) => f.yearFrom !== undefined || f.yearTo !== undefined,
+    used: (f) => (f.yearFrom !== undefined || f.yearTo !== undefined) && f.undated !== true,
     known: { year: { not: null } },
     unknown: { year: null },
   },
@@ -238,8 +242,9 @@ export function corpusNotPresence(not: CorpusNotFilterSet) {
  * filter→SQL translation in the codebase. Pure: no I/O, deterministic in its
  * inputs.
  *
- * Year semantics: a yearFrom/yearTo range wins over `undated`; with neither,
- * `undated === true` matches `year IS NULL`. Full-text and ingest each carry
+ * Year semantics — the SAME as the buffer's: a yearFrom/yearTo range matches
+ * dated documents in it; `undated: true` WIDENS a range to also match undated
+ * documents (range OR year IS NULL), and alone matches only them. Full-text and ingest each carry
  * their own `OR`, so they are AND-ed via an explicit `AND` array rather than
  * spread (two `OR` keys at one object level would collide).
  */
@@ -250,16 +255,23 @@ export function buildCorpusWhere(
 ): CorpusWhere {
   const hasYearRange =
     filters?.yearFrom !== undefined || filters?.yearTo !== undefined
-  const yearWhere: Prisma.DocumentWhereInput = hasYearRange
-    ? {
-        year: {
-          ...(filters?.yearFrom !== undefined ? { gte: filters.yearFrom } : {}),
-          ...(filters?.yearTo !== undefined ? { lte: filters.yearTo } : {}),
-        },
-      }
-    : filters?.undated === true
-      ? { year: null }
-      : {}
+  // `not: null` beside the bounds: the arm is FALSE, never SQL NULL, on an
+  // undated row, so `not` stays two-valued.
+  const yearRange: Prisma.DocumentWhereInput = {
+    year: {
+      not: null,
+      ...(filters?.yearFrom !== undefined ? { gte: filters.yearFrom } : {}),
+      ...(filters?.yearTo !== undefined ? { lte: filters.yearTo } : {}),
+    },
+  }
+  const widenedToUndated = hasYearRange && filters?.undated === true
+  const yearWhere: Prisma.DocumentWhereInput = widenedToUndated
+    ? {} // an OR — goes in the AND clauses below
+    : hasYearRange
+      ? yearRange
+      : filters?.undated === true
+        ? { year: null }
+        : {}
 
   const typeWhere: Prisma.DocumentWhereInput =
     filters?.type && filters.type.length > 0
@@ -318,6 +330,7 @@ export function buildCorpusWhere(
     outcomePredicates.length > 0 ? { OR: outcomePredicates } : null
 
   const andClauses: Prisma.DocumentWhereInput[] = []
+  if (widenedToUndated) andClauses.push({ OR: [yearRange, { year: null }] })
   if (filters?.q && filters.q.trim().length > 0) andClauses.push(fullTextWhere)
   if (ingestWhere) andClauses.push(ingestWhere)
   if (outcomeFilterWhere) andClauses.push(outcomeFilterWhere)

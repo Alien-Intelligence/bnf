@@ -83,7 +83,11 @@ export const corpusFilterFieldsSchema = z.strictObject({
   undated: z
     .boolean()
     .optional()
-    .describe("Match only documents with an unknown date. Ignored when yearFrom/yearTo is set."),
+    .describe(
+      "With a year range: also match undated documents. Alone: match only undated documents. " +
+        "Inside `not` it means the same: undated documents are then MATCHED (excluded), not unknown. " +
+        "The buffer's `undated` means exactly this too.",
+    ),
   q: z
     .string()
     .trim()
