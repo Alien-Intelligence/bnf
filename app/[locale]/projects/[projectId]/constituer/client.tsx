@@ -225,7 +225,7 @@ export function ConstituerClient({
   const {
     snapshot,
     isLoading,
-    isError,
+    error: corpusError,
     isPlaceholderData,
     refetch,
     hasNextPage,
@@ -319,7 +319,7 @@ export function ConstituerClient({
               selectedArk={selectedArk}
               onSelectArk={onSelectArk}
               isLoading={isLoading}
-              isError={isError}
+              error={corpusError}
               onRetry={() => void refetch()}
               hasActiveFilters={filtersActive}
               hasNextPage={hasNextPage ?? false}

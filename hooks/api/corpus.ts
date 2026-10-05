@@ -12,7 +12,7 @@ import {
   useQueryClient,
   keepPreviousData,
 } from "@tanstack/react-query"
-import { apiFetch } from "@/lib/api-fetch"
+import { apiFetch, readQueryError, retryUnlessRefused } from "@/lib/api-fetch"
 import { CORPUS_RESOLVE_POLL_MS } from "@/lib/constants"
 import { corpusFilterQuery } from "@/lib/corpus/filter-query"
 import type {
@@ -60,9 +60,11 @@ export function useCorpus(
       const res = await apiFetch(
         `/api/projects/${projectId}/corpus?${params.toString()}`,
       )
-      if (!res.ok) throw new Error(`Failed to fetch corpus: ${res.status}`)
+      // A 400 (a filter the corpus refuses) carries its message to the page.
+      if (!res.ok) throw await readQueryError(res, "Failed to fetch corpus")
       return res.json() as Promise<CorpusSnapshot>
     },
+    retry: retryUnlessRefused,
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (last: CorpusSnapshot) => last.nextCursor,
     initialData: opts.initialSnapshot

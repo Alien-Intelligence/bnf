@@ -9,6 +9,7 @@
 // versioned corpus. Self-fetches via useBuffer; the Constituer client invalidates
 // the buffer query on buffer_event and on turn-finish so it never goes stale.
 
+import { RequestRefusedError } from "@/lib/api-fetch"
 import { useMemo, useState, type ReactNode } from "react"
 import { useTranslations } from "next-intl"
 import { AlertCircle, ArrowRight, Layers, Trash2, X } from "lucide-react"
@@ -60,7 +61,7 @@ export function DialogBuffer({ open, onOpenChange, projectId }: Props) {
   const typeLabel = (code: string) => (tType.has(code) ? tType(code) : code)
   // A stored kind the client does not know is shown raw rather than hidden.
   const kindLabel = (kind: string) => (isArkKind(kind) ? tKind(ARK_KIND_I18N_KEY[kind]) : kind)
-  const { data, isLoading, isError, refetch } = useBuffer(
+  const { data, isLoading, error, refetch } = useBuffer(
     projectId,
     {},
     { limit: BUFFER_PANEL_LIMIT },
@@ -107,7 +108,7 @@ export function DialogBuffer({ open, onOpenChange, projectId }: Props) {
         <div className="flex max-h-[55vh] flex-col gap-1 overflow-y-auto px-3 py-3">
           <BufferDialogBody
             isLoading={isLoading}
-            isError={isError}
+            error={error}
             onRetry={() => void refetch()}
             onBackToChat={() => onOpenChange(false)}
             total={total}
@@ -192,7 +193,7 @@ export function DialogBuffer({ open, onOpenChange, projectId }: Props) {
  *  empty (with the way forward) → content (playbook/ui-states.md). */
 function BufferDialogBody({
   isLoading,
-  isError,
+  error,
   onRetry,
   onBackToChat,
   total,
@@ -200,7 +201,8 @@ function BufferDialogBody({
   rowFor,
 }: {
   isLoading: boolean
-  isError: boolean
+  /** A refusal (RequestRefusedError) shows the server's message, no Retry. */
+  error: Error | null
   onRetry: () => void
   onBackToChat: () => void
   total: number
@@ -219,14 +221,17 @@ function BufferDialogBody({
       </div>
     )
   }
-  if (isError) {
+  if (error !== null) {
+    const refused = error instanceof RequestRefusedError
     return (
       <div className="flex flex-col items-center gap-3 py-8 text-destructive">
         <AlertCircle className="size-5" />
-        <p className="text-sm">{t("error")}</p>
-        <Button variant="outline" size="sm" onClick={onRetry}>
-          {tCommon("tryAgain")}
-        </Button>
+        <p className="text-sm">{refused ? error.message : t("error")}</p>
+        {!refused && (
+          <Button variant="outline" size="sm" onClick={onRetry}>
+            {tCommon("tryAgain")}
+          </Button>
+        )}
       </div>
     )
   }

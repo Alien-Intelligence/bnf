@@ -6,7 +6,7 @@
 // Query keys are defined once at the top; never inlined at the call site.
 
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tanstack/react-query"
-import { apiFetch } from "@/lib/api-fetch"
+import { apiFetch, readQueryError, retryUnlessRefused } from "@/lib/api-fetch"
 import { corpusKeys } from "./corpus"
 import { bufferFilterQuery } from "@/lib/buffer/filter-query"
 import type { BufferCommitCounts, BufferSnapshot } from "@/models/buffer/schema"
@@ -39,9 +39,11 @@ export function useBuffer(
       if (opts.limit !== undefined) params.set("limit", String(opts.limit))
       const qs = params.toString()
       const res = await apiFetch(`/api/projects/${projectId}/buffer${qs ? `?${qs}` : ""}`)
-      if (!res.ok) throw new Error(`Failed to fetch buffer: ${res.status}`)
+      // A 400 (a filter the buffer refuses) carries its message to the dialog.
+      if (!res.ok) throw await readQueryError(res, "Failed to fetch buffer")
       return res.json() as Promise<BufferSnapshot>
     },
+    retry: retryUnlessRefused,
     initialData: opts.initialSnapshot,
     // Keep the previous result visible across a filter change instead of a
     // skeleton flash; isPlaceholderData flags the transition.
