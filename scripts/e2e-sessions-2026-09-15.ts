@@ -13,28 +13,28 @@
  *
  * Run:
  *   1. PORT=3939 npm run dev
- *   2. npm run e2e:sessions
+ *   2. E2E_BASE_URL=http://localhost:3939 E2E_MODEL=z-ai/glm-5.2 npm run e2e:sessions
+ *      (both required — scripts/e2e/harness.ts has no default server or model)
  */
 import { randomUUID } from "node:crypto"
 import { prisma } from "@/lib/db"
-import { SESSION_SCOPE } from "@/models/sessions/schema"
+import { SESSION_SCOPE, SESSION_STATUS } from "@/models/sessions/schema"
 import { ProjectService } from "@/models/projects/service"
-import { cleanupProject } from "@/lib/testing/project-cleanup"
 import {
-  BASE_URL,
-  CLEANUP,
-  MODEL,
   type ChatMessage,
   type CallRow,
   check,
   named,
   printVerdict,
   requireServer,
-  runTurn,
   section,
   signInCookie,
   toolCalls,
   trace,
+  runCheckedTurn,
+  runE2e,
+  trackProject,
+  turnSettings,
 } from "./e2e/harness"
 
 const EMAIL = "e2e-sessions@alien.club"
@@ -69,6 +69,8 @@ function totalsOf(calls: CallRow[]): number[] {
 }
 
 async function main(): Promise<void> {
+  // Every replay calls the model: a missing setting fails here, before any setup.
+  const settings = turnSettings()
   await requireServer()
 
   section("SETUP")
@@ -79,7 +81,8 @@ async function main(): Promise<void> {
     subtitle: "replay of the 2026-09-15 BnF workshop",
     ownerId: user.id,
   })
-  console.log(`  BASE_URL=${BASE_URL}  MODEL=${MODEL}`)
+  trackProject(project.id)
+  console.log(`  BASE_URL=${settings.baseUrl}  MODEL=${settings.model}`)
   console.log(`  project=${project.id}`)
 
   async function replay(
@@ -92,17 +95,14 @@ async function main(): Promise<void> {
         projectId: project.id,
         scope: SESSION_SCOPE.CORPUS,
         title: label,
-        status: "active",
+        status: SESSION_STATUS.ACTIVE,
       },
     })
     const history: ChatMessage[] = []
     let text = ""
     for (const msg of messages) {
       history.push({ role: "user", content: msg })
-      const turn = await runTurn(session.id, cookie, history)
-      if (turn.errors.length > 0) {
-        console.log(`  ⚠ turn errors: ${turn.errors.join("; ").slice(0, 200)}`)
-      }
+      const turn = await runCheckedTurn(label, session.id, cookie, history)
       history.push({ role: "assistant", content: turn.text })
       text += `\n${turn.text}`
     }
@@ -318,14 +318,7 @@ async function main(): Promise<void> {
     )
   }
 
-  if (CLEANUP) await cleanupProject(project.id)
-  printVerdict({ project: project.id, model: MODEL })
+  printVerdict({ project: project.id, model: settings.model })
 }
 
-main()
-  .then(() => prisma.$disconnect())
-  .catch(async (err: unknown) => {
-    console.error(err)
-    await prisma.$disconnect()
-    process.exit(1)
-  })
+runE2e(main)

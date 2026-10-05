@@ -9,7 +9,7 @@
  *   - note_append — append Markdown to a note without resending the whole body
  *                   (cheaper than note_update for adding findings)
  *
- * note_create / note_update / note_append publish a `note_event` via `ctx.emit`
+ * note_create / note_update / note_append publish a `note_event` via `emitDomainEvent`
  * so connected SSE clients receive real-time feedback without polling.
  *
  * Citation syntax: [[<ark>|<short label>|<folio>]] — the folio is mandatory
@@ -33,7 +33,18 @@ import { noteOcrIndex, type OcrReader } from "@/lib/ocr/quality"
 import { OCR_ACCESS } from "@/models/documents/schema"
 import { NoteService } from "@/models/notes/service"
 import { NoteQueries } from "@/models/notes/queries"
-import type { NoteDetail, NoteWithCitations } from "@/models/notes/schema"
+import { checkNoteQuotes } from "@/lib/citations/quote-check"
+import { QUOTE_CHECK_BUDGET_MS } from "@/lib/constants"
+import {
+  NOTE_BODY_MAX_CHARS,
+  NOTE_TITLE_MAX_CHARS,
+  QUOTE_CHECK_STATUS,
+  type InvalidFolioCitationRef,
+  type NoteDetail,
+  type NoteToolResult,
+  type NoteWithCitations,
+  type QuoteCheckResult,
+} from "@/models/notes/schema"
 import type { TurnScopedCtx } from "./registry-factory"
 import { authorizeOnProject, authorizeProjectTool } from "./authorize"
 import { emitDomainEvent, NOTE_EVENT_KIND, STREAM_DOMAIN_EVENT } from "@/lib/agent/stream-events"
@@ -47,7 +58,7 @@ import {
   NOTE_OCR_READ_FAILED_NOTICE,
   NOTE_OCR_UNKNOWN_NOTICE,
 } from "./constants"
-import { toolFailure } from "./failure"
+import { toolFailure, type ToolFailure } from "./failure"
 import {
   loadOcrIndex,
   noteCitationRefs,
@@ -64,6 +75,16 @@ import { NOTE_NOT_INGESTED_ERROR, resolveIngestedCorpus } from "./ingestion-guar
  * (CLAUDE_ERROR_PATTERNS.md §15).
  */
 export const NOTE_NOT_FOUND_ERROR = "note_not_found"
+
+/** A written note's tool result: NoteToolResult plus what is known of its citations' OCR. */
+export type NoteWriteResultFields = NoteToolResult & ReturnType<typeof noteOcrFields>
+
+/** What a note write tool returns: the written note, or a structured failure. */
+export type NoteWriteOutcome = NoteWriteResultFields | ToolFailure
+
+const INVALID_FOLIO_MESSAGE =
+  "Ces citations n'ont pas de folio valide (absent, non entier, 0 ou trop long) : elles " +
+  "restent du texte, sans lien vers la page. Mets le folio que la recherche a donné."
 
 /**
  * What is known of a note's citations' OCR quality (feedback 2026-09-29 #7):
@@ -101,31 +122,82 @@ export function noteOcrFields(outcome: NoteOcrOutcome, failedNotice: string) {
 }
 
 /**
- * The tool result for a write, naming any citation the corpus could not vouch
- * for. A rejected ARK is not a failure — the note was written, and its body
- * still contains the text — but the agent must be told, or it will believe it
- * cited a source it actually invented (playbook/citations.md).
+ * The tool result for a write (NoteToolResult, models/notes/schema.ts), naming
+ * any citation the corpus could not vouch for — unknown ARK or invalid folio —
+ * and any quotation the cited folio does not bear out. Neither is a failure —
+ * the note was written, and its body still contains the text — but the agent
+ * must be told, or it will believe it cited a source it actually invented
+ * (playbook/citations.md) or quoted text the document never says.
  *
  * It also names the citations of low-OCR folios and those whose quality is
  * unknown, so the agent knows the BnF disclaimer is added BY CODE (and does
  * not write its own) and never presents an unknown quality as verified.
- * With nothing to say, the result is unchanged. Exported for the tests.
+ * Exported for the tests.
  */
 export function noteResult(
   note: { id: string; title: string; citationCount: number },
   rejected: string[],
+  invalidFolios: InvalidFolioCitationRef[],
   ocr: NoteOcrOutcome,
-) {
-  const base = {
+  quoteCheck?: QuoteCheckResult,
+): NoteWriteResultFields {
+  const base: NoteWriteResultFields = {
     note_id: note.id,
     title: note.title,
     citation_count: note.citationCount,
     ...noteOcrFields(ocr, NOTE_OCR_CHECK_FAILED_NOTICE),
   }
-  if (rejected.length === 0) return base
-  return {
-    ...base,
-    invalid_citation: { arks: rejected, message: NOTE_INVALID_CITATION_MESSAGE },
+  if (rejected.length > 0 || invalidFolios.length > 0) {
+    base.invalid_citation = {
+      arks: rejected,
+      folios: invalidFolios,
+      message: [rejected.length > 0 ? NOTE_INVALID_CITATION_MESSAGE : null, invalidFolios.length > 0 ? INVALID_FOLIO_MESSAGE : null]
+        .filter((m): m is string => m !== null)
+        .join(" "),
+    }
+  }
+  if (
+    quoteCheck &&
+    (quoteCheck.checked > 0 ||
+      quoteCheck.warnings.length > 0 ||
+      quoteCheck.status === QUOTE_CHECK_STATUS.FAILED)
+  ) {
+    base.quote_check = { status: quoteCheck.status, checked: quoteCheck.checked }
+    if (quoteCheck.unevaluated_rules.length > 0) {
+      base.quote_check.unevaluated_rules = quoteCheck.unevaluated_rules
+    }
+    if (quoteCheck.warnings.length > 0) base.quote_warnings = quoteCheck.warnings
+  }
+  return base
+}
+
+/**
+ * The quote check runs AFTER the write, against the corpus the note's
+ * citations point into. It must not decide whether the note exists: an
+ * unexpected failure here is logged and reported as `status: "failed"` rather
+ * than thrown, because a throw after a successful write would make the agent
+ * retry the create and duplicate the note (plan D5; CLAUDE_ERROR_PATTERNS §15).
+ * Expected cluster failures are already coerced per ARK inside the checker.
+ */
+async function runQuoteCheck(
+  ctx: TurnScopedCtx,
+  bodyMd: string,
+  priorBodyMd: string | null,
+): Promise<QuoteCheckResult> {
+  try {
+    return await checkNoteQuotes({
+      corpusProjectId: ctx.corpusProjectId,
+      bodyMd,
+      priorBodyMd,
+      signal: ctx.signal,
+      // Track B's per-folio quality index is not in this build: the check
+      // reports `correction_on_low_ocr` as unevaluated rather than pretending.
+      lowOcrFolios: null,
+      budgetMs: QUOTE_CHECK_BUDGET_MS,
+    })
+  } catch (err) {
+    console.error("[note quote check]", err)
+    return { status: QUOTE_CHECK_STATUS.FAILED, checked: 0, warnings: [], unevaluated_rules: [] }
   }
 }
 
@@ -262,13 +334,59 @@ export const noteGetTool = defineTool<
 // note_create
 // ---------------------------------------------------------------------------
 
-export const noteCreateTool = defineTool<
-  z.ZodObject<{
-    title: z.ZodString
-    body_md: z.ZodString
-  }>,
-  TurnScopedCtx
->({
+export const noteCreateInputSchema = z.object({
+  title: z
+    .string()
+    .trim()
+    .min(1)
+    .max(NOTE_TITLE_MAX_CHARS)
+    .describe(`A clear, specific note title (max ${NOTE_TITLE_MAX_CHARS} chars).`),
+  body_md: z
+    .string()
+    .min(1)
+    .max(NOTE_BODY_MAX_CHARS)
+    .describe(
+      "The note body in Markdown. Use [[ark|label|folio]] for inline citations, " +
+        "![[ark|caption|folio]] to embed a folio image, and [[note:<id>|<label>]] to link " +
+        "another note.",
+    ),
+})
+export type NoteCreateInput = z.infer<typeof noteCreateInputSchema>
+
+export async function handleNoteCreate(input: NoteCreateInput, ctx: TurnScopedCtx): Promise<NoteWriteOutcome> {
+  const gate = await authorizeProjectTool(ctx, NotePolicy, "create")
+  if (!gate.ok) return gate.result
+
+  // Structural guard: a note must rest on the ingested corpus, never on
+  // general knowledge before any retrieval exists (design item 4).
+  const corpus = await resolveIngestedCorpus(ctx, NOTE_NOT_INGESTED_ERROR)
+  if ("error" in corpus) return toolFailure(corpus.error)
+
+  // The note is the project's own; its citations belong to the corpus it
+  // reads, which is the source's when this is a derived workspace.
+  const { note, rejected, invalidFolios } = await NoteService.create({
+    projectId: ctx.projectId,
+    corpusProjectId: ctx.corpusProjectId,
+    appSessionId: ctx.appSessionId,
+    title: input.title,
+    bodyMd: input.body_md,
+  })
+
+  emitDomainEvent(ctx, {
+    type: STREAM_DOMAIN_EVENT.NOTE,
+    data: { kind: NOTE_EVENT_KIND.CREATED, noteId: note.id, title: note.title },
+  })
+
+  return noteResult(
+    note,
+    rejected,
+    invalidFolios,
+    await checkWrittenNoteOcr(note.body_md, rejected, ctx),
+    await runQuoteCheck(ctx, input.body_md, null),
+  )
+}
+
+export const noteCreateTool = defineTool<typeof noteCreateInputSchema, TurnScopedCtx>({
   name: AGENT_TOOLS.noteCreate,
   description:
     "Create a new Markdown research note. " +
@@ -280,63 +398,78 @@ export const noteCreateTool = defineTool<
     "Link to another note with [[note:<note_id>|<label>]] (ids from note_list/note_get) — " +
     "the pill opens that note. " +
     "Call note_list first to avoid near-duplicates.",
-  inputSchema: z.object({
-    title: z
-      .string()
-      .trim()
-      .min(1)
-      .max(200)
-      .describe("A clear, specific note title (max 200 chars)."),
-    body_md: z
-      .string()
-      .min(1)
-      .max(200_000)
-      .describe(
-        "The note body in Markdown. Use [[ark|label|folio]] for inline citations, " +
-          "![[ark|caption|folio]] to embed a folio image, and [[note:<id>|<label>]] to link " +
-          "another note.",
-      ),
-  }),
-  handler: async (input, ctx) => {
-    const gate = await authorizeProjectTool(ctx, NotePolicy, "create")
-    if (!gate.ok) return gate.result
-
-    // Structural guard: a note must rest on the ingested corpus, never on
-    // general knowledge before any retrieval exists (design item 4).
-    const corpus = await resolveIngestedCorpus(ctx, NOTE_NOT_INGESTED_ERROR)
-    if ("error" in corpus) return toolFailure(corpus.error)
-
-    // The note is the project's own; its citations belong to the corpus it
-    // reads, which is the source's when this is a derived workspace.
-    const { note, rejected } = await NoteService.create({
-      projectId: ctx.projectId,
-      corpusProjectId: ctx.corpusProjectId,
-      appSessionId: ctx.appSessionId,
-      title: input.title,
-      bodyMd: input.body_md,
-    })
-
-    emitDomainEvent(ctx, {
-      type: STREAM_DOMAIN_EVENT.NOTE,
-      data: { kind: NOTE_EVENT_KIND.CREATED, noteId: note.id, title: note.title },
-    })
-
-    return noteResult(note, rejected, await checkWrittenNoteOcr(note.body_md, rejected, ctx))
-  },
+  inputSchema: noteCreateInputSchema,
+  handler: handleNoteCreate,
 })
 
 // ---------------------------------------------------------------------------
 // note_update
 // ---------------------------------------------------------------------------
 
-export const noteUpdateTool = defineTool<
-  z.ZodObject<{
-    id: z.ZodString
-    title: z.ZodOptional<z.ZodString>
-    body_md: z.ZodOptional<z.ZodString>
-  }>,
-  TurnScopedCtx
->({
+export const noteUpdateInputSchema = z.object({
+  id: z.string().uuid().describe("The note's UUID."),
+  title: z
+    .string()
+    .trim()
+    .min(1)
+    .max(NOTE_TITLE_MAX_CHARS)
+    .optional()
+    .describe("New title, if changing it."),
+  body_md: z
+    .string()
+    .max(NOTE_BODY_MAX_CHARS)
+    .optional()
+    .describe(
+      "New body in Markdown, if replacing it. Use [[ark|label|folio]] citations and " +
+        "![[ark|caption|folio]] image embeds.",
+    ),
+})
+export type NoteUpdateInput = z.infer<typeof noteUpdateInputSchema>
+
+export async function handleNoteUpdate(input: NoteUpdateInput, ctx: TurnScopedCtx): Promise<NoteWriteOutcome> {
+  // The policy gate FIRST, as in note_create: a read-only member is refused
+  // before any lookup, so it can neither write nor learn which ids exist.
+  const gate = await authorizeProjectTool(ctx, NotePolicy, "write")
+  if (!gate.ok) return gate.result
+
+  const corpus = await resolveIngestedCorpus(ctx, NOTE_NOT_INGESTED_ERROR)
+  if ("error" in corpus) return toolFailure(corpus.error)
+
+  // Scope before mutating. `input.id` came from the model and names any note
+  // in the database, not necessarily one this project owns.
+  const target = await readNote(input.id, ctx)
+  if (!target) return toolFailure(NOTE_NOT_FOUND_ERROR)
+  const noteGate = authorizeOnProject(ctx, gate.project, NotePolicy, "update", target)
+  if (!noteGate.ok) return noteGate.result
+
+  const written = await NoteService.update(input.id, ctx.corpusProjectId, {
+    title: input.title,
+    bodyMd: input.body_md,
+  })
+  // Deleted between the scope check and the write — rare, but the honest
+  // answer is the same one the scope check gives.
+  if (!written) return toolFailure(NOTE_NOT_FOUND_ERROR)
+
+  emitDomainEvent(ctx, {
+    type: STREAM_DOMAIN_EVENT.NOTE,
+    data: { kind: NOTE_EVENT_KIND.UPDATED, noteId: written.note.id, title: written.note.title },
+  })
+
+  // Only quotes absent verbatim from the prior body were written this turn.
+  const quoteCheck =
+    input.body_md === undefined
+      ? undefined
+      : await runQuoteCheck(ctx, input.body_md, target.body_md)
+  return noteResult(
+    written.note,
+    written.rejected,
+    written.invalidFolios,
+    await checkWrittenNoteOcr(written.note.body_md, written.rejected, ctx),
+    quoteCheck,
+  )
+}
+
+export const noteUpdateTool = defineTool<typeof noteUpdateInputSchema, TurnScopedCtx>({
   name: AGENT_TOOLS.noteUpdate,
   description:
     "Update an existing note's title and/or body. " +
@@ -345,72 +478,65 @@ export const noteUpdateTool = defineTool<
     "Use this to extend a note with new findings rather than creating a near-duplicate. " +
     "Body supports [[ark|label|folio]] citations, ![[ark|caption|folio]] image embeds, and " +
     "[[note:<id>|<label>]] links to other notes.",
-  inputSchema: z.object({
-    id: z.string().uuid().describe("The note's UUID."),
-    title: z
-      .string()
-      .trim()
-      .min(1)
-      .max(200)
-      .optional()
-      .describe("New title, if changing it."),
-    body_md: z
-      .string()
-      .max(200_000)
-      .optional()
-      .describe(
-        "New body in Markdown, if replacing it. Use [[ark|label|folio]] citations and " +
-          "![[ark|caption|folio]] image embeds.",
-      ),
-  }),
-  handler: async (input, ctx) => {
-    // The policy gate FIRST, as in note_create: a read-only member is refused
-    // before any lookup, so it can neither write nor learn which ids exist.
-    const gate = await authorizeProjectTool(ctx, NotePolicy, "write")
-    if (!gate.ok) return gate.result
-
-    const corpus = await resolveIngestedCorpus(ctx, NOTE_NOT_INGESTED_ERROR)
-    if ("error" in corpus) return toolFailure(corpus.error)
-
-    // Scope before mutating. `input.id` came from the model and names any note
-    // in the database, not necessarily one this project owns.
-    const target = await readNote(input.id, ctx)
-    if (!target) return toolFailure(NOTE_NOT_FOUND_ERROR)
-    const noteGate = authorizeOnProject(ctx, gate.project, NotePolicy, "update", target)
-    if (!noteGate.ok) return noteGate.result
-
-    const written = await NoteService.update(input.id, ctx.corpusProjectId, {
-      title: input.title,
-      bodyMd: input.body_md,
-    })
-    // Deleted between the scope check and the write — rare, but the honest
-    // answer is the same one the scope check gives.
-    if (!written) return toolFailure(NOTE_NOT_FOUND_ERROR)
-
-    emitDomainEvent(ctx, {
-      type: STREAM_DOMAIN_EVENT.NOTE,
-      data: { kind: NOTE_EVENT_KIND.UPDATED, noteId: written.note.id, title: written.note.title },
-    })
-
-    return noteResult(
-      written.note,
-      written.rejected,
-      await checkWrittenNoteOcr(written.note.body_md, written.rejected, ctx),
-    )
-  },
+  inputSchema: noteUpdateInputSchema,
+  handler: handleNoteUpdate,
 })
 
 // ---------------------------------------------------------------------------
 // note_append
 // ---------------------------------------------------------------------------
 
-export const noteAppendTool = defineTool<
-  z.ZodObject<{
-    id: z.ZodString
-    body_md: z.ZodString
-  }>,
-  TurnScopedCtx
->({
+export const noteAppendInputSchema = z.object({
+  id: z.string().uuid().describe("The note's UUID."),
+  body_md: z
+    .string()
+    .trim()
+    .min(1)
+    .max(NOTE_BODY_MAX_CHARS)
+    .describe(
+      "Markdown to append at the end of the note. Include your own ## / ### headings; " +
+        "it is added after a blank line. Use [[ark|label|folio]] citations, " +
+        "![[ark|caption|folio]] image embeds, and [[note:<id>|<label>]] note links.",
+    ),
+})
+export type NoteAppendInput = z.infer<typeof noteAppendInputSchema>
+
+export async function handleNoteAppend(input: NoteAppendInput, ctx: TurnScopedCtx): Promise<NoteWriteOutcome> {
+  // The policy gate first — see note_update.
+  const gate = await authorizeProjectTool(ctx, NotePolicy, "write")
+  if (!gate.ok) return gate.result
+
+  const corpus = await resolveIngestedCorpus(ctx, NOTE_NOT_INGESTED_ERROR)
+  if ("error" in corpus) return toolFailure(corpus.error)
+
+  // Scope before mutating — see note_update.
+  const target = await readNote(input.id, ctx)
+  if (!target) return toolFailure(NOTE_NOT_FOUND_ERROR)
+  const noteGate = authorizeOnProject(ctx, gate.project, NotePolicy, "update", target)
+  if (!noteGate.ok) return noteGate.result
+
+  const written = await NoteService.append(input.id, ctx.corpusProjectId, {
+    bodyMd: input.body_md,
+  })
+  if (!written) return toolFailure(NOTE_NOT_FOUND_ERROR)
+
+  emitDomainEvent(ctx, {
+    type: STREAM_DOMAIN_EVENT.NOTE,
+    data: { kind: NOTE_EVENT_KIND.UPDATED, noteId: written.note.id, title: written.note.title },
+  })
+
+  // The appended text is what was written this turn; the prior body is the
+  // note as it stood, so a quote the agent repeats from it is not re-checked.
+  return noteResult(
+    written.note,
+    written.rejected,
+    written.invalidFolios,
+    await checkWrittenNoteOcr(written.note.body_md, written.rejected, ctx),
+    await runQuoteCheck(ctx, input.body_md, target.body_md),
+  )
+}
+
+export const noteAppendTool = defineTool<typeof noteAppendInputSchema, TurnScopedCtx>({
   name: AGENT_TOOLS.noteAppend,
   description:
     "Append Markdown to the END of an existing note WITHOUT resending the whole body. " +
@@ -421,49 +547,8 @@ export const noteAppendTool = defineTool<
     "Use [[<ark>|<short label>|<folio>]] citations, ![[<ark>|<caption>|<folio>]] image embeds, " +
     "and [[note:<id>|<label>]] links to other notes. " +
     "Use note_update only for surgical edits to existing text (fixing or removing).",
-  inputSchema: z.object({
-    id: z.string().uuid().describe("The note's UUID."),
-    body_md: z
-      .string()
-      .trim()
-      .min(1)
-      .max(200_000)
-      .describe(
-        "Markdown to append at the end of the note. Include your own ## / ### headings; " +
-          "it is added after a blank line. Use [[ark|label|folio]] citations, " +
-          "![[ark|caption|folio]] image embeds, and [[note:<id>|<label>]] note links.",
-      ),
-  }),
-  handler: async (input, ctx) => {
-    // The policy gate first — see note_update.
-    const gate = await authorizeProjectTool(ctx, NotePolicy, "write")
-    if (!gate.ok) return gate.result
-
-    const corpus = await resolveIngestedCorpus(ctx, NOTE_NOT_INGESTED_ERROR)
-    if ("error" in corpus) return toolFailure(corpus.error)
-
-    // Scope before mutating — see note_update.
-    const target = await readNote(input.id, ctx)
-    if (!target) return toolFailure(NOTE_NOT_FOUND_ERROR)
-    const noteGate = authorizeOnProject(ctx, gate.project, NotePolicy, "update", target)
-    if (!noteGate.ok) return noteGate.result
-
-    const written = await NoteService.append(input.id, ctx.corpusProjectId, {
-      bodyMd: input.body_md,
-    })
-    if (!written) return toolFailure(NOTE_NOT_FOUND_ERROR)
-
-    emitDomainEvent(ctx, {
-      type: STREAM_DOMAIN_EVENT.NOTE,
-      data: { kind: NOTE_EVENT_KIND.UPDATED, noteId: written.note.id, title: written.note.title },
-    })
-
-    return noteResult(
-      written.note,
-      written.rejected,
-      await checkWrittenNoteOcr(written.note.body_md, written.rejected, ctx),
-    )
-  },
+  inputSchema: noteAppendInputSchema,
+  handler: handleNoteAppend,
 })
 
 // Convenience array for the registry builder.

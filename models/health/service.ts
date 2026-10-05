@@ -15,15 +15,18 @@
 import "server-only"
 
 import { openMcpSession } from "@/lib/mcp/session"
-import { requireMcpEnv, requireClusterEnv } from "@/lib/env"
+import { mcpEnvState, requireClusterEnv } from "@/lib/env"
+import { CLUSTER_MODE, clusterMode } from "@/lib/cluster/mode"
 import { HEALTH_PROBE_TIMEOUT_MS, HEALTH_PROBE_TTL_MS } from "@/lib/constants"
 import { CLUSTER_MODE, clusterMode } from "@/lib/cluster/mode"
 import { HealthQueries } from "./queries"
 import type { HealthSnapshot } from "./schema"
 
 /** Outcome of the connectivity probe. `true` = the server is unreachable. A
- *  server that is simply NOT CONFIGURED (e.g. local dev without BnF MCP env) is
- *  `false` — we can't probe it, so we don't raise a false alarm. */
+ *  server that is simply NOT CONFIGURED (e.g. local dev without any BnF MCP
+ *  env) is `false` — we can't probe it, so we don't raise a false alarm. A
+ *  MISconfigured one (half the env, a malformed URL) is `true`: that
+ *  deployment cannot reach it. */
 type Connectivity = { bnfMcpDown: boolean; dataclusterDown: boolean }
 
 // Module-level probe cache: the header polls per tab every HEALTH_POLL_MS, so
@@ -32,12 +35,17 @@ type Connectivity = { bnfMcpDown: boolean; dataclusterDown: boolean }
 // MCP session each time. `injectedNow` keeps the TTL check testable.
 let probeCache: { at: number; value: Connectivity } | null = null
 
-/** Attempt an MCP `initialize` handshake; true when the server answers. */
-async function reachable(url: string, token: string): Promise<boolean> {
+/**
+ * Attempt an MCP `initialize` handshake; true when the server answers. A
+ * failed handshake is the answer "unreachable" — the lane goes red — and its
+ * cause is logged, so a red lane can be explained from the server logs.
+ */
+async function reachable(server: string, url: string, token: string): Promise<boolean> {
   try {
     await openMcpSession(url, token, AbortSignal.timeout(HEALTH_PROBE_TIMEOUT_MS))
     return true
-  } catch {
+  } catch (err) {
+    console.error(`[health] ${server} MCP handshake with ${url} failed:`, err instanceof Error ? err.message : err)
     return false
   }
 }
@@ -47,28 +55,35 @@ async function probeConnectivity(now: number): Promise<Connectivity> {
     return probeCache.value
   }
 
-  // BnF MCP — probe only when configured. Unconfigured ≠ down.
-  let bnfMcpDown = false
-  try {
-    const env = requireMcpEnv()
-    bnfMcpDown = !(await reachable(env.BNF_MCP_URL, env.BNF_MCP_TOKEN))
-  } catch {
-    bnfMcpDown = false
+  // BnF MCP — probe only when configured. Unconfigured ≠ down; misconfigured = down.
+  const mcp = mcpEnvState()
+  let bnfMcpDown: boolean
+  switch (mcp.kind) {
+    case "unconfigured":
+      bnfMcpDown = false
+      break
+    case "invalid":
+      console.error("[health] BnF MCP env is set but invalid:", mcp.reason)
+      bnfMcpDown = true
+      break
+    case "configured":
+      bnfMcpDown = !(await reachable("BnF", mcp.env.BNF_MCP_URL, mcp.env.BNF_MCP_TOKEN))
+      break
   }
 
   // Data-cluster MCP — only meaningful under CLUSTER_MODE=real (fake mode has no
   // real cluster, so it is healthy by definition).
   let dataclusterDown = false
   if (clusterMode() === CLUSTER_MODE.REAL) {
+    let env: ReturnType<typeof requireClusterEnv> | null = null
     try {
-      const env = requireClusterEnv()
-      dataclusterDown = !(await reachable(
-        env.DATACLUSTER_MCP_URL,
-        env.CLUSTER_BEARER_TOKEN,
-      ))
-    } catch {
-      dataclusterDown = false
+      env = requireClusterEnv()
+    } catch (err) {
+      // Real mode without the data-cluster env cannot reach the cluster: the
+      // lane is down (red), and the reason is logged — never a green lane.
+      console.error("[health] data-cluster env missing in real mode:", err instanceof Error ? err.message : err)
     }
+    dataclusterDown = env === null || !(await reachable("data-cluster", env.DATACLUSTER_MCP_URL, env.CLUSTER_BEARER_TOKEN))
   }
 
   const value: Connectivity = { bnfMcpDown, dataclusterDown }

@@ -7,17 +7,78 @@
  * Each e2e script owns its own process, so module-level verdict state here is
  * per-run and safe. Every script must call `requireServer()` first and
  * `printVerdict()` last.
+ *
+ * Environment (no silent defaults — which server and which model a paid run
+ * targets is the caller's call), each read when a primitive needs it, never at
+ * import, so a script that only uses the verdict helpers requires nothing:
+ * E2E_BASE_URL (e.g. http://localhost:3939) for anything that reaches the
+ * server, E2E_MODEL (e.g. z-ai/glm-5.2, the app's shipped default) for
+ * anything that runs a turn, and the optional E2E_TURN_TIMEOUT_MS (positive,
+ * default 300 000). A script that calls the model resolves `turnSettings()`
+ * first, so a missing setting fails the run before any setup.
  */
+import { z } from "zod"
 import { auth } from "@/lib/auth"
 import { prisma } from "@/lib/db"
+import { cleanupProject } from "@/lib/testing/project-cleanup"
 import { LOCALE_HEADER } from "@/lib/constants"
+import { routing, type AppLocale } from "@/i18n/routing"
+import { TOOL_CALL_STATUS } from "@/models/messages/schema"
 
-export const BASE_URL = (process.env["E2E_BASE_URL"] ?? "http://localhost:3939").replace(/\/+$/, "")
-/** Model id for the OpenRouter gateway. Defaults to the app's shipped default. */
-export const MODEL = process.env["E2E_MODEL"] ?? "z-ai/glm-5.2"
-/** Per-turn wall-clock ceiling — a paginated sweep / a sub-agent legitimately
- *  takes a while. */
-export const TURN_TIMEOUT_MS = Number(process.env["E2E_TURN_TIMEOUT_MS"] ?? 300_000)
+/**
+ * A required setting, read at the point of use. The harness drives a real
+ * server with a real model and spends real money: which server and which model
+ * are the caller's decision, stated explicitly, never a silent default.
+ */
+function requiredEnv(name: string, example: string): string {
+  const value = process.env[name]
+  if (value === undefined || value.trim() === "") {
+    throw new Error(`${name} is not set — e.g. ${name}=${example}`)
+  }
+  return value.trim()
+}
+
+/** Default per-turn wall-clock ceiling: a paginated sweep or a sub-agent legitimately takes a while. */
+const DEFAULT_TURN_TIMEOUT_MS = 300_000
+
+/** The dev server under test, e.g. `E2E_BASE_URL=http://localhost:3939`. Required by every call that reaches it. */
+export function baseUrl(): string {
+  return requiredEnv("E2E_BASE_URL", "http://localhost:3939").replace(/\/+$/, "")
+}
+
+/** Model id for the OpenRouter gateway, e.g. `E2E_MODEL=z-ai/glm-5.2` (the app's shipped default). Required by every turn. */
+export function turnModel(): string {
+  return requiredEnv("E2E_MODEL", "z-ai/glm-5.2")
+}
+
+/** Per-turn wall-clock ceiling: E2E_TURN_TIMEOUT_MS when set (validated), else the default. */
+export function turnTimeoutMs(): number {
+  const raw = process.env["E2E_TURN_TIMEOUT_MS"]
+  if (raw === undefined) return DEFAULT_TURN_TIMEOUT_MS
+  const n = Number(raw)
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new Error(`E2E_TURN_TIMEOUT_MS must be a positive number of milliseconds, got "${raw}"`)
+  }
+  return n
+}
+
+/** Everything a real agent turn needs from the environment. */
+export interface TurnSettings {
+  baseUrl: string
+  model: string
+  turnTimeoutMs: number
+}
+
+/**
+ * Resolve every setting a turn needs, or throw naming the first one missing.
+ * runTurn resolves them before it sends anything; a script that calls the
+ * model resolves them first thing, so a missing E2E_MODEL fails the run before
+ * it signs in or creates a project.
+ */
+export function turnSettings(): TurnSettings {
+  return { baseUrl: baseUrl(), model: turnModel(), turnTimeoutMs: turnTimeoutMs() }
+}
+
 /** When set, the caller deletes its throwaway project after the run. */
 export const CLEANUP = process.env["E2E_CLEANUP"] === "1" || process.env["E2E_CLEANUP"] === "true"
 
@@ -61,31 +122,33 @@ const HEALTH_PROBE_TIMEOUT_MS = 5_000
 /** Fail fast if the dev server isn't reachable — otherwise every turn error
  *  looks like a bug. Any HTTP status counts as "up" (the route is auth-gated).
  *  Scripts that target the app's own `APP_URL` (the auth e2e) pass their base
- *  explicitly; the agent e2es keep the 3939 default. The remediation names the
+ *  explicitly; the agent e2es read E2E_BASE_URL. The remediation names the
  *  port of the base actually probed, and the network error rides as `cause`. */
-export async function requireServer(baseUrl: string = BASE_URL): Promise<void> {
+export async function requireServer(base: string = baseUrl()): Promise<void> {
   // Parsed before the probe: a malformed base fails here with its own error,
   // not inside the catch where it would replace the network error.
-  const { port } = new URL(baseUrl)
+  const { port } = new URL(base)
   const start = port ? `npm run dev -- -p ${port}` : "npm run dev"
   try {
-    await fetch(`${baseUrl}/api/health`, {
+    await fetch(`${base}/api/health`, {
       method: "GET",
       signal: AbortSignal.timeout(HEALTH_PROBE_TIMEOUT_MS),
     })
   } catch (e) {
-    throw new Error(`dev server unreachable at ${baseUrl} — start it with: ${start}`, { cause: e })
+    throw new Error(`dev server unreachable at ${base} — start it with: ${start}`, { cause: e })
   }
 }
 
 // ---------------------------------------------------------------------------
 // Auth — better-auth round trip, returns the Cookie header for the HTTP calls
 // ---------------------------------------------------------------------------
+/** better-auth's error for a sign-up on an existing email, and nothing else. */
+const emailTakenErrorSchema = z.object({
+  body: z.object({ code: z.literal("USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL") }),
+})
+
 function isEmailTaken(err: unknown): boolean {
-  if (err === null || typeof err !== "object") return false
-  const e = err as Record<string, unknown>
-  const body = e["body"] as Record<string, unknown> | undefined
-  return body?.["code"] === "USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL" || e["status"] === "UNPROCESSABLE_ENTITY"
+  return emailTakenErrorSchema.safeParse(err).success
 }
 
 export async function signInCookie(email: string, password: string, name: string): Promise<string> {
@@ -95,7 +158,12 @@ export async function signInCookie(email: string, password: string, name: string
     if (!isEmailTaken(err)) throw err
   }
   const res = await auth.api.signInEmail({ body: { email, password }, asResponse: true })
-  const setCookie = res.headers.getSetCookie?.() ?? []
+  if (!res.ok) {
+    // A refused sign-in (wrong password for a pre-existing account, a locked
+    // user) must say so, not surface later as a cookie-less 401 on every turn.
+    throw new Error(`sign-in as ${email} failed: HTTP ${res.status} ${(await res.text()).slice(0, 200)}`)
+  }
+  const setCookie = res.headers.getSetCookie()
   if (setCookie.length === 0) throw new Error("sign-in returned no Set-Cookie")
   return setCookie.map((c) => c.split(";")[0]).join("; ")
 }
@@ -115,68 +183,318 @@ export interface TurnResult {
   elapsedMs: number
 }
 
+/**
+ * The frame that ends every turn's stream: chat-sdk publishes
+ * `{ type: "closed", reason }` once the turn is over (after its `message-end`),
+ * with reason `done`, `error` or `canceled`.
+ */
+const CLOSED_FRAME = "closed"
+const CLOSED_REASON_DONE = "done"
+
+/** An SSE frame: a JSON object with a string `type`. */
+const frameSchema = z.object({ type: z.string() }).loose()
+type Frame = z.infer<typeof frameSchema>
+
+/** Parse one `data:` payload; anything but a typed JSON object is a protocol failure. */
+function parseFrame(raw: string): Frame {
+  let json: unknown
+  try {
+    json = JSON.parse(raw)
+  } catch (err) {
+    throw new Error(`SSE frame is not JSON: ${raw.slice(0, 200)}`, { cause: err })
+  }
+  const frame = frameSchema.safeParse(json)
+  if (!frame.success) throw new Error(`SSE frame is not a typed object: ${raw.slice(0, 200)}`)
+  return frame.data
+}
+
+/** Ceiling on the cancel request sent when a turn is abandoned. */
+const CANCEL_TIMEOUT_MS = 10_000
+/** Ceiling on waiting for a cancelled turn to settle (its tools stop, its session lets go). */
+const SETTLE_TIMEOUT_MS = 60_000
+/** Interval between two reads of the session's turn state while waiting for it to settle. */
+const SETTLE_POLL_MS = 250
+
+/** The messages route's DELETE answer: whether it found an active turn to cancel. */
+const cancelResponseSchema = z.object({ canceled: z.boolean() })
+
+/** Ask the server to cancel the session's active turn; true when it had one and cancelled it. */
+async function requestCancel(sessionId: string, cookie: string): Promise<boolean> {
+  const res = await fetch(`${baseUrl()}/api/sessions/${sessionId}/messages`, {
+    method: "DELETE",
+    headers: { Cookie: cookie },
+    signal: AbortSignal.timeout(CANCEL_TIMEOUT_MS),
+  })
+  const body = await res.text()
+  if (!res.ok) {
+    throw new Error(`cancelling the turn of session ${sessionId} failed: HTTP ${res.status} ${body.slice(0, 200)}`)
+  }
+  let json: unknown
+  try {
+    json = JSON.parse(body)
+  } catch (err) {
+    throw new Error(`cancelling the turn of session ${sessionId}: the answer is not JSON: ${body.slice(0, 200)}`, { cause: err })
+  }
+  const parsed = cancelResponseSchema.safeParse(json)
+  if (!parsed.success) {
+    throw new Error(`cancelling the turn of session ${sessionId}: expected { canceled: boolean }, got ${body.slice(0, 200)}`)
+  }
+  return parsed.data.canceled
+}
+
+/** The session's turn state, from the database the server writes it to. */
+async function turnActivity(sessionId: string): Promise<{ activeTurnId: string | null; runningTool: string | null }> {
+  const session = await prisma.appSession.findUnique({ where: { id: sessionId }, select: { activeMessageId: true } })
+  if (session === null) throw new Error(`session ${sessionId} does not exist`)
+  const last = await prisma.toolCall.findFirst({
+    where: { message: { appSessionId: sessionId } },
+    orderBy: { createdAt: "desc" },
+    select: { id: true, tool: true, status: true },
+  })
+  return {
+    activeTurnId: session.activeMessageId,
+    runningTool: last !== null && last.status === TOOL_CALL_STATUS.RUNNING ? `${last.tool} (${last.id})` : null,
+  }
+}
+
+/** What cancelling a turn found: whether the server had a turn to cancel. */
+export type CancelOutcome = { canceled: boolean }
+
+/**
+ * Cancel the session's active turn on the server (the messages route's
+ * DELETE) and wait until it has SETTLED: no active turn on the session and
+ * its last tool call no longer running. The agent turn runs detached from the
+ * SSE request, so dropping the stream does not stop it, and the cancel itself
+ * is asynchronous: without the wait, an abandoned turn keeps writing while the
+ * caller moves on (or deletes its project under it).
+ *
+ * `{ canceled: false }` is taken at its word — the server had no active turn
+ * at that moment — and NOT as "stopped": a turn whose POST was cut short may
+ * register only afterwards, so the wait still runs, and a turn that becomes
+ * active during it is cancelled too. Settling past SETTLE_TIMEOUT_MS is an
+ * error naming what is still running.
+ */
+export async function cancelTurn(sessionId: string, cookie: string): Promise<CancelOutcome> {
+  let canceled = await requestCancel(sessionId, cookie)
+  const cancelledTurns = new Set<string>()
+  const deadline = performance.now() + SETTLE_TIMEOUT_MS
+  for (;;) {
+    const activity = await turnActivity(sessionId)
+    if (activity.activeTurnId === null && activity.runningTool === null) return { canceled }
+    if (activity.activeTurnId !== null && !cancelledTurns.has(activity.activeTurnId)) {
+      // A turn the first DELETE did not see (or one still being torn down): ask once per turn.
+      cancelledTurns.add(activity.activeTurnId)
+      canceled = (await requestCancel(sessionId, cookie)) || canceled
+    }
+    if (performance.now() >= deadline) {
+      throw new Error(
+        `the turn of session ${sessionId} did not settle within ${SETTLE_TIMEOUT_MS} ms after cancelling ` +
+          `(active turn: ${activity.activeTurnId ?? "none"}, running tool: ${activity.runningTool ?? "none"})`,
+      )
+    }
+    await new Promise((resolve) => setTimeout(resolve, SETTLE_POLL_MS))
+  }
+}
+
+/**
+ * One real agent turn over SSE. `locale` is the UI locale the turn is sent
+ * under (the research prompt's language). Throws before sending anything when
+ * a setting is missing (see turnSettings). Throws on a transport or protocol
+ * failure — a non-JSON or untyped frame, an unterminated trailing frame, a
+ * stream that does not end with the `closed` frame — or when the turn runs
+ * past turnTimeoutMs(); in every such case the request is aborted, the stream
+ * reader cancelled and the server-side turn cancelled before the error is
+ * raised, so a broken turn is never left running nor scored as a quiet one.
+ * An `error` frame, or a turn closed for any reason but `done`, is a
+ * turn-level failure reported in `errors` for the caller to assert on.
+ */
 export async function runTurn(
   sessionId: string,
   cookie: string,
   history: ChatMessage[],
+  locale: AppLocale = routing.defaultLocale,
 ): Promise<TurnResult> {
+  // Resolved before anything is sent: a missing setting throws here, with no
+  // request in flight and no server-side turn to cancel.
+  const settings = turnSettings()
   const started = Date.now()
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), TURN_TIMEOUT_MS)
+  const timer = setTimeout(
+    () => controller.abort(new Error(`turn timed out after ${settings.turnTimeoutMs} ms`)),
+    settings.turnTimeoutMs,
+  )
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null
 
-  const res = await fetch(`${BASE_URL}/api/sessions/${sessionId}/messages`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Cookie: cookie, [LOCALE_HEADER]: "fr" },
-    body: JSON.stringify({ sessionId, mode: "claude", messages: history, model: MODEL }),
-    signal: controller.signal,
-  }).catch((err: unknown) => {
-    clearTimeout(timer)
-    throw new Error(`turn POST failed: ${err instanceof Error ? err.message : String(err)}`)
-  })
-
-  if (!res.ok || !res.body) {
-    clearTimeout(timer)
-    const body = await res.text().catch(() => "")
-    throw new Error(`turn POST ${res.status}: ${body.slice(0, 300)}`)
-  }
-
-  const frames: Record<string, unknown>[] = []
-  const domainEvents: { type: string; data: unknown }[] = []
-  const errors: string[] = []
-  let text = ""
-  let buf = ""
-
-  const decoder = new TextDecoder()
   try {
-    for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
-      buf += decoder.decode(chunk, { stream: true })
-      let sep: number
-      while ((sep = buf.indexOf("\n\n")) !== -1) {
-        const block = buf.slice(0, sep)
-        buf = buf.slice(sep + 2)
-        for (const line of block.split("\n")) {
-          if (!line.startsWith("data:")) continue
-          const raw = line.slice(5).trim()
-          if (!raw || raw === "[DONE]") continue
-          let frame: Record<string, unknown>
-          try {
-            frame = JSON.parse(raw) as Record<string, unknown>
-          } catch {
-            continue
-          }
-          frames.push(frame)
-          const type = String(frame["type"] ?? "")
-          if (type === "text-delta" && typeof frame["text"] === "string") text += frame["text"]
-          else if (type === "error") errors.push(String(frame["message"] ?? "unknown error"))
-          else if (type.endsWith("_event")) domainEvents.push({ type, data: frame["data"] })
+    const res = await fetch(`${settings.baseUrl}/api/sessions/${sessionId}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: cookie, [LOCALE_HEADER]: locale },
+      body: JSON.stringify({ sessionId, mode: "claude", messages: history, model: settings.model }),
+      signal: controller.signal,
+    })
+
+    if (!res.ok || !res.body) {
+      const body = await res.text()
+      throw new Error(`turn POST ${res.status}: ${body.slice(0, 300)}`)
+    }
+
+    const frames: Frame[] = []
+    const domainEvents: { type: string; data: unknown }[] = []
+    const errors: string[] = []
+    let text = ""
+    let buf = ""
+
+    const handleBlock = (block: string) => {
+      for (const line of block.split("\n")) {
+        if (!line.startsWith("data:")) continue
+        const raw = line.slice(5).trim()
+        if (!raw || raw === "[DONE]") continue
+        const frame = parseFrame(raw)
+        frames.push(frame)
+        if (frame.type === "text-delta") {
+          if (typeof frame["text"] !== "string") throw new Error(`text-delta frame without text: ${raw.slice(0, 200)}`)
+          text += frame["text"]
+        } else if (frame.type === "error") {
+          const message = frame["message"]
+          errors.push(typeof message === "string" ? message : `error frame without a message: ${raw.slice(0, 200)}`)
+        } else if (frame.type.endsWith("_event")) {
+          domainEvents.push({ type: frame.type, data: frame["data"] })
         }
       }
     }
+
+    const decoder = new TextDecoder()
+    reader = res.body.getReader()
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      let sep: number
+      while ((sep = buf.indexOf("\n\n")) !== -1) {
+        handleBlock(buf.slice(0, sep))
+        buf = buf.slice(sep + 2)
+      }
+    }
+    buf += decoder.decode()
+    if (buf.trim() !== "") {
+      throw new Error(`turn stream ended inside an unterminated frame: ${buf.slice(0, 200)}`)
+    }
+
+    const last = frames.at(-1)
+    if (last?.type !== CLOSED_FRAME) {
+      throw new Error(`turn stream ended without a ${CLOSED_FRAME} frame (last: ${last?.type ?? "no frame at all"})`)
+    }
+    if (last["reason"] !== CLOSED_REASON_DONE) {
+      errors.push(`turn closed with reason ${JSON.stringify(last["reason"])}`)
+    }
+    return { text, frames, domainEvents, errors, elapsedMs: Date.now() - started }
+  } catch (err) {
+    // Stop everything this turn started before reporting why it failed.
+    const failure = controller.signal.aborted && controller.signal.reason instanceof Error ? controller.signal.reason : err
+    controller.abort(failure)
+    const cleanup: unknown[] = []
+    if (reader !== null) await reader.cancel(failure).catch((e: unknown) => cleanup.push(e))
+    const cancel = await cancelTurn(sessionId, cookie).catch((e: unknown) => {
+      cleanup.push(e)
+      return null
+    })
+    if (cancel !== null) {
+      console.warn(
+        `[e2e] turn of session ${sessionId} abandoned (${String(failure)}); ` +
+          (cancel.canceled ? "the server cancelled it" : "the server had no active turn left to cancel") +
+          ", and it has settled",
+      )
+    }
+    if (cleanup.length > 0) {
+      throw new AggregateError([failure, ...cleanup], `turn failed and could not be fully cancelled: ${String(failure)}`)
+    }
+    throw failure
   } finally {
     clearTimeout(timer)
   }
+}
 
-  return { text, frames, domainEvents, errors, elapsedMs: Date.now() - started }
+/**
+ * runTurn, plus a check that the turn ended cleanly (no error frame, closed
+ * with reason `done`). Every turn of a scenario goes through it, so a turn
+ * that broke is a failed assertion, not a log line under turn 1.
+ */
+export async function runCheckedTurn(
+  label: string,
+  sessionId: string,
+  cookie: string,
+  history: ChatMessage[],
+  locale: AppLocale = routing.defaultLocale,
+): Promise<TurnResult> {
+  const turn = await runTurn(sessionId, cookie, history, locale)
+  check(
+    `${label}: the turn ended without an error`,
+    turn.errors.length === 0,
+    turn.errors.length === 0 ? `${Math.round(turn.elapsedMs / 1000)} s` : turn.errors.join(" | ").slice(0, 300),
+  )
+  return turn
+}
+
+// ---------------------------------------------------------------------------
+// Throwaway projects and the run lifecycle
+// ---------------------------------------------------------------------------
+
+const trackedProjects: string[] = []
+const teardowns: Array<{ label: string; run: () => Promise<void> }> = []
+
+/** Register a throwaway project for the end-of-run cleanup (see runE2e). */
+export function trackProject(projectId: string): void {
+  trackedProjects.push(projectId)
+}
+
+/**
+ * Register a teardown that ALWAYS runs at the end of the run (see runE2e),
+ * E2E_CLEANUP or not: fixtures that must never outlive a run, such as a
+ * throwaway account or group. Registered as soon as the thing exists; run in
+ * reverse order, before the tracked projects are cleaned up.
+ */
+export function onTeardown(label: string, run: () => Promise<void>): void {
+  teardowns.push({ label, run })
+}
+
+/**
+ * Run an e2e's main, then — whatever it did — run every registered teardown,
+ * clean up every tracked project (when E2E_CLEANUP is set; otherwise say what
+ * was kept), then disconnect.
+ * Runs only after main has settled: every turn has returned or been cancelled
+ * by runTurn, so nothing is deleted under a live turn. One project's cleanup
+ * failing does not skip the others; failures are reported and fail the run.
+ */
+export function runE2e(main: () => Promise<void>): void {
+  void (async () => {
+    try {
+      await main()
+    } catch (err) {
+      console.error(err)
+      process.exitCode = 1
+    }
+    for (const { label, run } of [...teardowns].reverse()) {
+      try {
+        await run()
+      } catch (err) {
+        console.error(`teardown "${label}" failed:`, err)
+        process.exitCode = 1
+      }
+    }
+    if (CLEANUP) {
+      for (const id of trackedProjects) {
+        try {
+          await cleanupProject(id)
+        } catch (err) {
+          console.error(`cleanup of project ${id} failed:`, err)
+          process.exitCode = 1
+        }
+      }
+    } else if (trackedProjects.length > 0) {
+      console.log(`\nkept project(s) ${trackedProjects.join(", ")} for inspection (set E2E_CLEANUP=1 to remove)`)
+    }
+    await prisma.$disconnect()
+  })()
 }
 
 // ---------------------------------------------------------------------------
@@ -191,12 +509,11 @@ export interface CallRow {
 }
 
 export async function toolCalls(sessionId: string): Promise<CallRow[]> {
-  const rows = await prisma.toolCall.findMany({
+  return prisma.toolCall.findMany({
     where: { message: { appSessionId: sessionId } },
     orderBy: { createdAt: "asc" },
     select: { tool: true, status: true, input: true, output: true, error: true },
   })
-  return rows as CallRow[]
 }
 
 export function named(calls: CallRow[], tool: string): CallRow[] {
@@ -206,33 +523,48 @@ export function named(calls: CallRow[], tool: string): CallRow[] {
 /** Compact one-line trace of the tool sequence, for the report. */
 export function trace(calls: CallRow[]): string {
   if (calls.length === 0) return "(no tool calls)"
-  return calls.map((c) => `${c.tool}${c.status === "ok" ? "" : `!${c.status}`}`).join(" → ")
+  return calls.map((c) => `${c.tool}${c.status === TOOL_CALL_STATUS.OK ? "" : `!${c.status}`}`).join(" → ")
 }
 
-export function outputText(row: CallRow | undefined): string {
-  if (!row) return ""
-  return typeof row.output === "string" ? row.output : JSON.stringify(row.output ?? {})
+/** A call's stored output as text, for messages. A call without output says so. */
+export function outputText(row: CallRow): string {
+  if (row.output === null || row.output === undefined) return `(${row.tool} stored no output)`
+  return typeof row.output === "string" ? row.output : JSON.stringify(row.output)
 }
+
+/** How the runtime persists a tool result: the stringified result under `content`. */
+const storedOutputSchema = z.object({ content: z.string() })
+const toolResultObjectSchema = z.record(z.string(), z.unknown())
 
 /**
  * The real tool result as an object. The runtime persists tool output as
  * `{ content: "<stringified result>" }` — a JSON string nested inside a JSON
  * column — so a naive regex over the stringified row sees escaped quotes and
  * silently never matches. Unwrap both layers so assertions read actual fields.
+ *
+ * Throws when the row has no output, when the content is not JSON, or when it
+ * is not an object (a failed tool's text, say): an empty object would make a
+ * missing or unreadable result look like a result with no fields. Callers read
+ * successful calls, or say what they expect of a failed one.
  */
-export function outputData(row: CallRow | undefined): Record<string, unknown> {
-  if (!row) return {}
-  const out = row.output
-  const inner =
-    out !== null && typeof out === "object" && "content" in out
-      ? (out as { content?: unknown }).content
-      : out
-  if (typeof inner === "string") {
+export function outputData(row: CallRow): Record<string, unknown> {
+  if (row.output === null || row.output === undefined) {
+    throw new Error(`${row.tool} (${row.status}) has no stored output`)
+  }
+  const stored = storedOutputSchema.safeParse(row.output)
+  let inner: unknown = row.output
+  if (stored.success) {
     try {
-      return JSON.parse(inner) as Record<string, unknown>
-    } catch {
-      return {}
+      inner = JSON.parse(stored.data.content)
+    } catch (err) {
+      throw new Error(`${row.tool} (${row.status}) output is not JSON: ${stored.data.content.slice(0, 200)}`, {
+        cause: err,
+      })
     }
   }
-  return inner !== null && typeof inner === "object" ? (inner as Record<string, unknown>) : {}
+  const data = toolResultObjectSchema.safeParse(inner)
+  if (!data.success) {
+    throw new Error(`${row.tool} (${row.status}) output is not a JSON object: ${JSON.stringify(inner).slice(0, 200)}`)
+  }
+  return data.data
 }

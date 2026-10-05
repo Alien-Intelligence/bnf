@@ -15,7 +15,8 @@
  *
  * Run:
  *   1. PORT=3939 npm run dev
- *   2. npm run e2e:spawn        (E2E_CLEANUP=1 to drop the throwaway project)
+ *   2. E2E_BASE_URL=http://localhost:3939 E2E_MODEL=z-ai/glm-5.2 npm run e2e:spawn
+ *      (both required; E2E_CLEANUP=1 to drop the throwaway project)
  *
  * Exits 0 only if every assertion passes. Each run creates a FRESH project.
  */
@@ -23,37 +24,36 @@ import { randomUUID } from "node:crypto"
 import { prisma } from "@/lib/db"
 import { toolsForScope } from "@/lib/agent/tools"
 import { AGENT_TOOLS } from "@/lib/agent/tools/constants"
-import { SESSION_SCOPE } from "@/models/sessions/schema"
+import { SESSION_SCOPE, SESSION_STATUS } from "@/models/sessions/schema"
+import { TOOL_CALL_STATUS } from "@/models/messages/schema"
 import { ProjectService } from "@/models/projects/service"
-import { cleanupProject } from "@/lib/testing/project-cleanup"
 import { subagentEventDataSchema } from "@/lib/tools/subagent-runs"
 import {
   ARK_RE,
-  BASE_URL,
-  CLEANUP,
-  MODEL,
-  TURN_TIMEOUT_MS,
   check,
   named,
   outputData,
   printVerdict,
   requireServer,
-  runTurn,
   section,
   signInCookie,
   toolCalls,
   trace,
   type ChatMessage,
+  runCheckedTurn,
+  runE2e,
+  trackProject,
+  turnSettings,
 } from "./e2e/harness"
 
 const E2E_EMAIL = "e2e-spawn@bnf-e2e.local"
 const E2E_PASSWORD = "e2e-spawn-pw-42"
 
 /** Teardown run whatever happens, in reverse order, by main()'s finally. */
-const cleanups: Array<() => Promise<void>> = []
 
 async function main(): Promise<void> {
-  console.log(`BnF spawn E2E\n  base=${BASE_URL}\n  model=${MODEL}\n  turnTimeout=${TURN_TIMEOUT_MS}ms`)
+  const settings = turnSettings()
+  console.log(`BnF spawn E2E\n  base=${settings.baseUrl}\n  model=${settings.model}\n  turnTimeout=${settings.turnTimeoutMs}ms`)
   await requireServer()
 
   // =========================================================================
@@ -78,19 +78,14 @@ async function main(): Promise<void> {
     subtitle: "sous-agent — presse 1889",
     ownerId: user.id,
   })
-  if (CLEANUP) {
-    cleanups.push(async () => {
-      await cleanupProject(project.id)
-      console.log(`\ncleaned up project ${project.id} (+ sessions, buffer, corpus)`)
-    })
-  }
+  trackProject(project.id)
   const corpusSession = await prisma.appSession.create({
     data: {
       id: randomUUID(),
       projectId: project.id,
       scope: SESSION_SCOPE.CORPUS,
       title: "E2E spawn corpus session",
-      status: "active",
+      status: SESSION_STATUS.ACTIVE,
     },
   })
   console.log(`  user=${user.id}\n  project=${project.id}\n  corpusSession=${corpusSession.id}`)
@@ -105,7 +100,7 @@ async function main(): Promise<void> {
     "sa synthèse. Ne fais pas la recherche toi-même — délègue-la."
   const history: ChatMessage[] = [{ role: "user", content: prompt }]
   console.log(`\n> TURN 1: ${prompt}`)
-  const t1 = await runTurn(corpusSession.id, cookie, history)
+  const t1 = await runCheckedTurn("T1", corpusSession.id, cookie, history)
   console.log(`< (${Math.round(t1.elapsedMs / 1000)}s) ${t1.text.slice(0, 300)}`)
   check("t1: the stream ended without errors", t1.errors.length === 0, t1.errors.join(" | ") || "none")
 
@@ -115,7 +110,7 @@ async function main(): Promise<void> {
   const spawnCalls = named(parentCalls, AGENT_TOOLS.spawnResearch)
   check(
     "S1 parent delegated via spawn_research",
-    spawnCalls.some((c) => c.status === "ok"),
+    spawnCalls.some((c) => c.status === TOOL_CALL_STATUS.OK),
     spawnCalls.length === 0
       ? `never delegated; parent used: ${trace(parentCalls)}`
       : `${spawnCalls.length} call(s), statuses: ${spawnCalls.map((c) => c.status).join(",")}`,
@@ -159,15 +154,19 @@ async function main(): Promise<void> {
   )
 
   // The spawn result the parent received is a DISTILLED summary, not a transcript.
-  const okSpawn = spawnCalls.find((c) => c.status === "ok")
-  const spawnOut = outputData(okSpawn)
-  check(
-    "S5 spawn_research returned a distilled result (summary + counts)",
-    typeof spawnOut["summary"] === "string" && String(spawnOut["summary"]).length > 0,
-    `keys: ${Object.keys(spawnOut).join(", ") || "none"}; buffered_added=${String(
-      spawnOut["buffered_added"] ?? "?",
-    )}`,
-  )
+  const okSpawn = spawnCalls.find((c) => c.status === TOOL_CALL_STATUS.OK)
+  if (okSpawn === undefined) {
+    check("S5 spawn_research returned a distilled result (summary + counts)", false, "no successful spawn_research call")
+  } else {
+    const spawnOut = outputData(okSpawn)
+    check(
+      "S5 spawn_research returned a distilled result (summary + counts)",
+      typeof spawnOut["summary"] === "string" && String(spawnOut["summary"]).length > 0,
+      `keys: ${Object.keys(spawnOut).join(", ") || "none"}; buffered_added=${String(
+        spawnOut["buffered_added"] ?? "?",
+      )}`,
+    )
+  }
 
   check(
     "S6 a subagent_event reached the live stream",
@@ -196,20 +195,6 @@ async function main(): Promise<void> {
 
   printVerdict({ project: project.id, corpusSession: corpusSession.id })
 
-  if (!CLEANUP) console.log(`\nkept project ${project.id} for inspection (set E2E_CLEANUP=1 to remove)`)
 }
 
-main()
-  .catch((err: unknown) => {
-    console.error("\nE2E ABORTED:", err instanceof Error ? err.stack : String(err))
-    process.exitCode = 1
-  })
-  .finally(async () => {
-    for (const cleanup of cleanups.reverse()) {
-      await cleanup().catch((err: unknown) => {
-        console.error("cleanup failed:", err)
-        process.exitCode = 1
-      })
-    }
-    await prisma.$disconnect()
-  })
+runE2e(main)

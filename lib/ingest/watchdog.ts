@@ -30,9 +30,10 @@ import "server-only"
 // watchdog's only job is to stop a stuck row from blocking the dedup guard
 // forever, never to have the final say on outcome. See the comment on
 // IngestService.applyProgress.
-import { prisma } from "@/lib/db"
+import { CLUSTER_MODE, clusterMode } from "@/lib/cluster/mode"
 import { INGEST_STATUS } from "@/models/ingest/schema"
 import { IngestQueries } from "@/models/ingest/queries"
+import { IngestService } from "@/models/ingest/service"
 import { ClusterRunner } from "@/lib/cluster/runner"
 import { CLUSTER_MODE, clusterMode } from "@/lib/cluster/mode"
 import { CLUSTER_POLL, type ClusterProgressPoll } from "@/lib/cluster/contracts"
@@ -55,7 +56,7 @@ export interface WatchdogJobInput {
 
 export type WatchdogAction =
   | { kind: "none" }
-  | { kind: "write_progress"; progress: number; stats: Record<string, unknown> }
+  | { kind: "write_progress"; progress: number; stats: Record<string, number> }
   | { kind: "fail"; reason: string }
 
 export interface WatchdogDecision {
@@ -187,12 +188,28 @@ async function runWatchdogTick(): Promise<void> {
   const queuedCutoff = new Date(now.getTime() - WATCHDOG_QUEUED_STALE_MS)
   const candidates = await IngestQueries.watchdogCandidates(queuedCutoff)
 
+  // One job's failure must not stop the others from being reconciled, nor be
+  // swallowed: every job is tried, then the failures are raised together (the
+  // interval's catch logs them, and the next tick retries those jobs).
+  const failures: unknown[] = []
   for (const job of candidates) {
-    await applyToJob(job, now)
+    try {
+      await reconcileWatchdogJob(job, now)
+    } catch (err) {
+      failures.push(err)
+    }
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(failures, `[ingest-watchdog] ${failures.length} job(s) could not be reconciled`)
   }
 }
 
-async function applyToJob(job: WatchdogJobInput, now: Date): Promise<void> {
+/**
+ * Reconcile one candidate job at `now`: poll, decide, apply. Exported for the
+ * tests of its state handling (the staleness clock across ticks and failed
+ * writes); the interval tick is its only production caller.
+ */
+export async function reconcileWatchdogJob(job: WatchdogJobInput, now: Date): Promise<void> {
   const poll =
     job.status === INGEST_STATUS.RUNNING && job.clusterJobId
       ? await ClusterRunner.progress(job.clusterJobId)
@@ -206,6 +223,17 @@ async function applyToJob(job: WatchdogJobInput, now: Date): Promise<void> {
     nullSince,
   )
 
+  if (action.kind === "fail") {
+    // The staleness clock is kept until the FAILED write has succeeded: if
+    // the write throws, the next tick must still see how long the worker has
+    // been gone and fail the job again at once — not start a fresh 30 min.
+    // A failed write leaves the job non-terminal: it is raised, not dropped,
+    // and the next tick finds the job again and retries.
+    await IngestService.failStuckJob(job.id, job.status, action.reason, now)
+    nullSinceByJob.delete(job.id)
+    return
+  }
+
   if (nextNullSince) nullSinceByJob.set(job.id, nextNullSince)
   else nullSinceByJob.delete(job.id)
 
@@ -213,37 +241,9 @@ async function applyToJob(job: WatchdogJobInput, now: Date): Promise<void> {
     case "none":
       return
     case "write_progress":
-      // Best-effort mirror of the read-model (F21) — guarded by `status:
-      // RUNNING` so a job that went terminal between the candidate scan and
-      // this write is left alone, and never throws (a failed write here must
-      // not fail the tick or the job; it's presentation, not the commit path).
-      await prisma.ingestJob
-        .updateMany({
-          where: { id: job.id, status: INGEST_STATUS.RUNNING },
-          data: { progress: action.progress, stats: action.stats as never },
-        })
-        .catch((err) => {
-          console.error("[ingest-watchdog] progress write-through failed:", {
-            jobId: job.id,
-            error: err instanceof Error ? err.message : String(err),
-          })
-        })
-      return
-    case "fail":
-      // Guarded by `status: job.status` so a job that already went terminal
-      // (e.g. a genuine terminal callback landed between the candidate scan
-      // and this write) is never clobbered back to FAILED.
-      await prisma.ingestJob
-        .updateMany({
-          where: { id: job.id, status: job.status },
-          data: { status: INGEST_STATUS.FAILED, error: action.reason, finishedAt: now },
-        })
-        .catch((err) => {
-          console.error("[ingest-watchdog] terminal fail write failed:", {
-            jobId: job.id,
-            error: err instanceof Error ? err.message : String(err),
-          })
-        })
+      // A failed write is raised to the tick, which reports it after
+      // reconciling the other jobs; the next tick writes it again.
+      await IngestService.mirrorWatchdogProgress(job.id, action.progress, action.stats)
       return
   }
 }

@@ -36,14 +36,33 @@
  * hand-rolled scan.
  */
 
+// The parts of a citation, defined ONCE and composed into every regex below.
+//
+// The folio is the one definition of a valid folio, shared by everything that
+// scans with these regexes (the parser, note-body.tsx, the exporter): a
+// positive integer — an optional `f` and leading zeros tolerated, never 0 — of
+// at most 15 significant digits, so `Number()` of it is always a safe integer.
+const ARK_PART = String.raw`(ark:\/\d+\/[A-Za-z0-9]+)`
+const LABEL_PART = String.raw`((?:[^|\]]|\\\||\\\])+)`
+const FOLIO_PART = String.raw`f?(0*[1-9]\d{0,14})`
+const STRICT_BODY = String.raw`\[\[${ARK_PART}\|${LABEL_PART}\|${FOLIO_PART}\]\]`
+
 // The `(?<!!)` lookbehind makes a text citation NOT match the `[[…]]` inside an
 // image embed `![[…]]` — the two constructs stay disjoint.
-export const CITATION_REGEX =
-  /(?<!!)\[\[(ark:\/\d+\/[A-Za-z0-9]+)\|((?:[^|\]]|\\\||\\\])+)\|f?(\d+)\]\]/g
+export const CITATION_REGEX = new RegExp(String.raw`(?<!!)${STRICT_BODY}`, "g")
 
 /** Image embed: a citation prefixed with `!`, mirroring markdown image syntax. */
-export const IMAGE_CITATION_REGEX =
-  /!\[\[(ark:\/\d+\/[A-Za-z0-9]+)\|((?:[^|\]]|\\\||\\\])+)\|f?(\d+)\]\]/g
+export const IMAGE_CITATION_REGEX = new RegExp(String.raw`!${STRICT_BODY}`, "g")
+
+/** A whole string that is exactly one valid citation or image embed. */
+const STRICT_CITATION_EXACT = new RegExp(String.raw`^!?${STRICT_BODY}$`)
+
+/**
+ * Anything shaped like a citation of an ARK — `[[ark:…` up to `]]`, with or
+ * without the `!` — whatever follows the ARK: only for finding the ones the
+ * strict syntax rejects (no folio, a non-integer or zero folio, a range…).
+ */
+const CITATION_SHAPE_REGEX = new RegExp(String.raw`!?\[\[${ARK_PART}((?:\\\]|[^\]])*)\]\]`, "g")
 
 // A note-to-note link: `[[note:<uuid>|<label>]]`. The `note:` prefix and the
 // canonical UUID shape make it disjoint from CITATION_REGEX (which requires
@@ -104,9 +123,38 @@ function parseWith(md: string, regex: RegExp): ParsedCitation[] {
       label: unescapeCitationText(m[2]),
       folio: Number(m[3]),
       raw: m[0],
-      index: m.index ?? 0,
+      index: m.index,
       length: m[0].length,
     })
+  }
+  return out
+}
+
+/** A citation-shaped `[[ark|…]]` whose folio is missing or not a valid page. */
+export type InvalidFolioCitation = {
+  ark: string
+  /** What stood where the folio belongs, as written ("" when there was none). */
+  folio: string
+  raw: string
+}
+
+/**
+ * Citations (or image embeds) of an ARK that the strict syntax rejects for
+ * their folio — missing (`[[ark|Le Figaro]]`), not an integer (`|abc`, `|1-2`,
+ * `|1.5`, `|p. 3`), negative, `0`, or too long to be a page. They render as
+ * plain text and are not projected, so the agent must be told
+ * (`invalid_citation`, playbook/citations.md) instead of the text silently not
+ * being a citation.
+ */
+export function findInvalidFolioCitations(md: string): InvalidFolioCitation[] {
+  const out: InvalidFolioCitation[] = []
+  for (const m of md.matchAll(CITATION_SHAPE_REGEX)) {
+    if (STRICT_CITATION_EXACT.test(m[0])) continue
+    // The folio is what follows the last unescaped `|`; with a single field
+    // (only a label, or nothing), there is no folio at all.
+    const fields = m[2].split(/(?<!\\)\|/)
+    const folio = fields.length >= 3 ? (fields.at(-1) ?? "") : ""
+    out.push({ ark: m[1], folio, raw: m[0] })
   }
   return out
 }
@@ -138,7 +186,7 @@ export function parseNoteLinks(md: string): ParsedNoteLink[] {
       noteId: m[1],
       label: unescapeCitationText(m[2]),
       raw: m[0],
-      index: m.index ?? 0,
+      index: m.index,
       length: m[0].length,
     })
   }

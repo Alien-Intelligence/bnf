@@ -3,8 +3,9 @@ import "server-only"
 // Facade that routes to the real ClusterClient or the FakeClusterRunner
 // based on CLUSTER_MODE (lib/cluster/mode.ts — unset fails, never defaults):
 //
-// CLUSTER_MODE=fake → FakeClusterRunner (in-process, no real HTTP)
-// CLUSTER_MODE=real → ClusterClient (real cluster API)
+// CLUSTER_MODE=fake            → FakeClusterRunner (in-process, no real HTTP)
+// CLUSTER_MODE=real             → ClusterClient (real cluster API)
+// unset or any other value      → throws (lib/cluster/mode.ts)
 //
 // All app code submits and cancels jobs through this facade; it never imports
 // ClusterClient or FakeClusterRunner directly.

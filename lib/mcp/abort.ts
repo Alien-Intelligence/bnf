@@ -20,3 +20,30 @@ export function withTimeout(
   const timeout = AbortSignal.timeout(timeoutMs)
   return signal ? AbortSignal.any([signal, timeout]) : timeout
 }
+
+/**
+ * Resolve with `p`, or reject with the signal's reason the moment it aborts.
+ * For awaits that cannot take a signal themselves (a Prisma query, an
+ * injected lookup): the caller stops waiting at once; the abandoned promise
+ * settles on its own and its rejection is handled here, never unhandled.
+ */
+export function raceAbort<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    p.catch(() => undefined)
+    return Promise.reject(signal.reason)
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason)
+    signal.addEventListener("abort", onAbort, { once: true })
+    p.then(
+      (v) => {
+        signal.removeEventListener("abort", onAbort)
+        resolve(v)
+      },
+      (e: unknown) => {
+        signal.removeEventListener("abort", onAbort)
+        reject(e)
+      },
+    )
+  })
+}

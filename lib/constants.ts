@@ -17,17 +17,8 @@ export const DB_STATEMENT_TIMEOUT_MS = 30_000
 /** Ceiling of the wait for a pooled connection (pg `connectionTimeoutMillis`). */
 export const DB_CONNECTION_TIMEOUT_MS = 10_000
 
-// ---------------------------------------------------------------------------
-// Database pool bounds (lib/db.ts) — every query the app sends is bounded
-// (CLAUDE_ERROR_PATTERNS §14), so a hung statement or an exhausted pool fails
-// instead of wedging the caller and every guard it holds. Same names and
-// values as Track B's ingestion pipeline.
-// ---------------------------------------------------------------------------
-
-/** Server-side ceiling of one SQL statement (Postgres `statement_timeout`). */
-export const DB_STATEMENT_TIMEOUT_MS = 30_000
-/** Ceiling of the wait for a pooled connection (pg `connectionTimeoutMillis`). */
-export const DB_CONNECTION_TIMEOUT_MS = 10_000
+import { OCR_CORRECTION_MARKING_MODE } from "@/models/notes/schema"
+import type { OcrCorrectionMarking } from "@/models/notes/schema"
 
 // ---------------------------------------------------------------------------
 // Routes — single source of truth for in-app navigation paths.
@@ -496,6 +487,98 @@ export const DATACLUSTER_LIST_PAGE_SIZE = 100
 
 /** Default number of passages requested per RAG query when the agent omits k. */
 export const RAG_DEFAULT_K = 12
+
+/**
+ * `modelVersion` the fake cluster (CLUSTER_MODE=fake) reports on every
+ * rag_query. The quote harness refuses to score a run whose rag_query answered
+ * with anything else: a real cluster would make its fixtures meaningless.
+ */
+export const FAKE_RAG_MODEL_VERSION = "fake-rag-v1"
+
+/**
+ * A folio is badly recognised (`ocrLow`) when its mean ALTO word confidence
+ * is below this. Leo's decision of 2026-10-01 (feedback-2026-09-29 #7). Track B
+ * computes it for real passages; the quote harness fixtures derive it here.
+ */
+export const OCR_LOW_QUALITY_THRESHOLD = 0.8
+
+/**
+ * Characters `rag_get_text` returns when the agent omits `charLimit`. The
+ * upstream MCP's own default is the opposite (0 = the whole document), so the
+ * app applies its documented default itself rather than inherit a whole
+ * multi-hundred-folio volume into the turn.
+ */
+export const RAG_GET_TEXT_DEFAULT_CHAR_LIMIT = 4_000
+
+/** Longest slice rag_get_text serves in one call (a few thousand is the advice). */
+export const RAG_GET_TEXT_MAX_CHAR_LIMIT = 20_000
+
+/** Shortest / longest query text the rag tools accept. */
+export const RAG_QUERY_MIN_CHARS = 3
+export const RAG_QUERY_MAX_CHARS = 500
+
+/** Most passages one rag_query may ask for. */
+export const RAG_QUERY_MAX_K = 50
+
+/** Entry hits rag_keyword_search returns when the agent does not say, and at most. */
+export const RAG_KEYWORD_DEFAULT_LIMIT = 20
+export const RAG_KEYWORD_MAX_LIMIT = 100
+
+// ---------------------------------------------------------------------------
+// Quote integrity — the note-write quote check (lib/citations/quote-check.ts)
+// and the prompt rules it backs (feedback-2026-09-29 #7 / #8).
+// ---------------------------------------------------------------------------
+
+/**
+ * How the agent marks an OCR word it corrected inside a quote. **BnF-confirmable
+ * house convention** (feedback-2026-09-29 #8): brackets by default because a
+ * reader cannot otherwise tell what the agent touched; `SILENT` is the one-line
+ * alternative. The prompt text, the tool hint and the guard all render from it.
+ */
+export const OCR_CORRECTION_MARKING: OcrCorrectionMarking =
+  OCR_CORRECTION_MARKING_MODE.BRACKETED_WORD
+
+/** At most this many `[…]` per quote — the upper end of BnF's "one or two". */
+export const QUOTE_MAX_ELISIONS = 2
+
+/** Spans shorter than this are terms and titles (« Le Figaro »), not quotes. */
+export const QUOTE_MIN_CHECKED_WORDS = 4
+
+/** Source words a `[…]` may skip — about one sentence (D7). */
+export const ELISION_MAX_GAP_WORDS = 40
+
+/** Character edits allowed between a quote word and its source word (D14). */
+export const QUOTE_FUZZY_MAX_EDIT = 2
+
+/** Share of a segment's words that may be fuzzy matches, floor 1 (D14). */
+export const QUOTE_FUZZY_WORD_RATIO = 0.2
+
+/** Source words one `[illisible]` may stand for (1 to this many). */
+export const QUOTE_ILLEGIBLE_MAX_WORDS = 6
+
+/** Distinct cited ARKs fetched per note write; the rest are `unverifiable`. */
+export const QUOTE_CHECK_MAX_SOURCES = 12
+
+/** Parallel document fetches during one check. */
+export const QUOTE_CHECK_CONCURRENCY = 4
+
+/** Wall-clock ceiling of one check; past it, pending quotes are `unverifiable`. */
+export const QUOTE_CHECK_BUDGET_MS = 20_000
+
+/** Characters of a flagged quote echoed back to the agent in a warning. */
+export const QUOTE_WARNING_EXCERPT_CHARS = 160
+
+/**
+ * Unclosed « / “ marks the quote extractor recovers past in one Markdown
+ * block. Each recovery rescans the rest of the block, so this bounds the work
+ * a body full of stray marks can cost; past it, the rest of the block is not
+ * scanned: the marks found are reported, and the unscanned rest is reported
+ * once as `unscanned_rest_of_block` (the check is then `partial`).
+ */
+export const QUOTE_UNBALANCED_MARKS_MAX_PER_BLOCK = 20
+
+/** Steps a synchronous quote-check loop (extraction, tokenisation, alignment) takes between two deadline checks. */
+export const QUOTE_MATCH_DEADLINE_STRIDE = 1_024
 
 // ---------------------------------------------------------------------------
 // Background document metadata resolution (the Document table is the queue)

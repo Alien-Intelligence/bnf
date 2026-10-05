@@ -17,8 +17,20 @@ function applyJitter(ms: number): number {
   return ms + (Math.random() * 2 - 1) * delta
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
+/** Wait `ms`, or reject with the signal's reason the moment it aborts. */
+function delay(ms: number, signal: AbortSignal | undefined): Promise<void> {
+  if (signal?.aborted) return Promise.reject(signal.reason)
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(signal?.reason)
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort)
+      resolve()
+    }, ms)
+    signal?.addEventListener("abort", onAbort, { once: true })
+  })
 }
 
 export interface RetryOptions {
@@ -35,6 +47,12 @@ export interface RetryOptions {
    * on their own error classes so they can reuse this backoff loop verbatim.
    */
   isTerminal?: (err: unknown) => boolean
+  /**
+   * The caller's signal. Once it aborts, nothing is retried: the failure that
+   * follows is re-thrown at once, a pending backoff wait rejects with the
+   * signal's reason, and no new attempt starts with an aborted signal.
+   */
+  signal?: AbortSignal
 }
 
 /** Default terminal classification: BnF MCP auth (401/403) and not-found (404). */
@@ -48,8 +66,8 @@ function defaultIsTerminal(err: unknown): boolean {
  * Terminal errors (no retry) are decided by `opts.isTerminal`; the default
  * treats BnfMcpAuthError (401/403) and BnfMcpNotFoundError (404) as terminal.
  *
- * BnfMcpRateLimitError honours `retryAfterMs` when present, otherwise falls
- * back to the computed exponential delay.
+ * BnfMcpRateLimitError honours `retryAfterMs` when present (capped at
+ * `capMs`), otherwise falls back to the computed exponential delay.
  *
  * Delay formula: min(baseMs * 2^attempt + jitter(±20%), capMs)
  * where `attempt` is 0-indexed (so first retry uses baseMs * 2^0 = baseMs).
@@ -63,18 +81,27 @@ export async function withRetry<T>(
   const maxAttempts = opts.attempts ?? BNF_MCP_RETRY_ATTEMPTS
   const baseMs = opts.baseMs ?? BNF_MCP_RETRY_BASE_MS
   const capMs = opts.capMs ?? BNF_MCP_RETRY_CAP_MS
+  if (!Number.isFinite(baseMs) || baseMs < 0 || !Number.isFinite(capMs) || capMs < baseMs) {
+    // NaN or a negative delay would retry at once, with no backoff at all.
+    throw new RangeError(`withRetry: need 0 ≤ baseMs ≤ capMs (finite), got baseMs=${baseMs} capMs=${capMs}`)
+  }
+  if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1) {
+    // 0 attempts would "fail" without ever calling fn, throwing `undefined`.
+    throw new RangeError(`withRetry: attempts must be a positive integer, got ${maxAttempts}`)
+  }
   const isTerminal = opts.isTerminal ?? defaultIsTerminal
 
   let lastError: unknown
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    opts.signal?.throwIfAborted()
     try {
       return await fn()
     } catch (err) {
       lastError = err
 
-      // Terminal — never retry these.
-      if (isTerminal(err)) {
+      // Terminal — never retry these, nor anything once the caller aborted.
+      if (isTerminal(err) || opts.signal?.aborted) {
         throw err
       }
 
@@ -84,13 +111,15 @@ export async function withRetry<T>(
       // Compute delay: honour Retry-After header for rate-limit errors.
       let waitMs: number
       if (err instanceof BnfMcpRateLimitError && err.retryAfterMs !== undefined) {
-        waitMs = err.retryAfterMs
+        // Honour the server's Retry-After, but never past the cap: a huge or
+        // hostile value must not park the caller for minutes.
+        waitMs = Math.min(err.retryAfterMs, capMs)
       } else {
         const exponential = baseMs * Math.pow(2, attempt)
         waitMs = applyJitter(Math.min(exponential, capMs))
       }
 
-      await delay(waitMs)
+      await delay(waitMs, opts.signal)
     }
   }
 
@@ -122,6 +151,10 @@ export async function withConcurrency<I, T>(
   worker: (input: I) => Promise<T>,
   concurrency: number,
 ): Promise<Settled<T>[]> {
+  if (!Number.isSafeInteger(concurrency) || concurrency < 1) {
+    // 0 slots would return a sparse array of never-run inputs.
+    throw new RangeError(`withConcurrency: concurrency must be a positive integer, got ${concurrency}`)
+  }
   const results: Settled<T>[] = new Array(inputs.length)
   let nextIndex = 0
 

@@ -474,6 +474,34 @@ export class IngestService {
   }
 
   /**
+   * Watchdog write-through (lib/ingest/watchdog.ts, F21): mirror the worker's
+   * read-model — the docs' terminal fraction and per-status counts — onto a
+   * RUNNING job's row, so the row stops lying while worker-v2 (which sends
+   * only the terminal callback) runs. Guarded by `status: RUNNING`: a job that
+   * went terminal since the watchdog's scan is left alone.
+   */
+  static async mirrorWatchdogProgress(jobId: string, progress: number, stats: Record<string, number>): Promise<void> {
+    await prisma.ingestJob.updateMany({
+      where: { id: jobId, status: INGEST_STATUS.RUNNING },
+      data: { progress, stats },
+    })
+  }
+
+  /**
+   * Watchdog give-up (lib/ingest/watchdog.ts, F18): mark a job the lifecycle
+   * lost track of FAILED with the watchdog's reason. Guarded by
+   * `status: expectedStatus`, so a job that went terminal since the scan (a
+   * genuine terminal callback landing in between) is never clobbered back to
+   * FAILED. A late terminal callback still overwrites this (applyProgress).
+   */
+  static async failStuckJob(jobId: string, expectedStatus: string, reason: string, at: Date): Promise<void> {
+    await prisma.ingestJob.updateMany({
+      where: { id: jobId, status: expectedStatus },
+      data: { status: INGEST_STATUS.FAILED, error: reason, finishedAt: at },
+    })
+  }
+
+  /**
    * Apply a progress event posted by the cluster to the job row.
    *
    * - Running stages: update status, stage, progress, stats.

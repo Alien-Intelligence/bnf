@@ -1,22 +1,26 @@
+import "server-only"
 // lib/cluster/mode.ts
-// CLUSTER_MODE — which cluster the app drives: `real` (the worker-v2 HTTP API
-// and the data-cluster RAG) or `fake` (in-process fixtures). Every reader goes
-// through this one function (runner, OCR sync, ingest watchdog, health probe;
-// lib/cluster/rag.ts moves to it with Track C) so an unset or misspelt value
-// fails loudly as "not set" instead of silently running the fake runner in
-// production (CLAUDE_ERROR_PATTERNS §10: no default for environment).
+// Which cluster this process talks to: the in-process fake or the real data
+// cluster. Read from CLUSTER_MODE on every call (tests and the e2e harness
+// switch it at runtime). The ONE place that interprets the variable, for both
+// facades (lib/cluster/runner.ts for ingestion, lib/cluster/rag.ts for RAG).
 
-export const CLUSTER_MODE = {
-  REAL: "real",
-  FAKE: "fake",
-} as const
+export const CLUSTER_MODE = { FAKE: "fake", REAL: "real" } as const
 export type ClusterMode = (typeof CLUSTER_MODE)[keyof typeof CLUSTER_MODE]
 
+/**
+ * CLUSTER_MODE, validated. It is REQUIRED: `fake` or `real`, nothing else, and
+ * unset throws (CLAUDE_ERROR_PATTERNS §9 — no default for environment;
+ * playbook/mcp-client.md — required variables throw). `.env.example` sets
+ * `fake` explicitly and the Helm chart sets `real`, so no deployment relies on
+ * a default; a missing or mistyped value must never quietly serve fixture
+ * passages and fake ingests in place of the corpus.
+ */
 export function clusterMode(): ClusterMode {
   const raw = process.env.CLUSTER_MODE
-  if (raw === undefined || raw.trim() === "") {
-    throw new Error(`CLUSTER_MODE is not set (expected "${CLUSTER_MODE.REAL}" or "${CLUSTER_MODE.FAKE}")`)
-  }
-  if (raw === CLUSTER_MODE.REAL || raw === CLUSTER_MODE.FAKE) return raw
-  throw new Error(`CLUSTER_MODE must be "${CLUSTER_MODE.REAL}" or "${CLUSTER_MODE.FAKE}", got "${raw}"`)
+  if (raw === CLUSTER_MODE.FAKE || raw === CLUSTER_MODE.REAL) return raw
+  throw new Error(
+    `CLUSTER_MODE must be set to "${CLUSTER_MODE.FAKE}" or "${CLUSTER_MODE.REAL}", got ` +
+      (raw === undefined ? "nothing (unset)" : `"${raw}"`),
+  )
 }

@@ -4,7 +4,7 @@
   "type": "module",
   "description": "BnF ingest worker V2 — staged dataflow pipeline of durable buckets.",
   "scripts": {
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.scripts.json",
     "test": "node --import tsx --test --test-timeout=120000 \"src/**/*.test.ts\"",
     "test:pg": "WORKER_TEST_REQUIRE_PG=1 node --import tsx --test --test-timeout=120000 src/domain/ocr-backfill.test.ts src/core/queue-pgboss.test.ts",
     "test:one": "node --import tsx --test",

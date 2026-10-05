@@ -11,8 +11,10 @@
  *      exit with the e2e's own exit code.
  *
  * Run:
- *   npm run e2e:buffer:ci
- *   # honours E2E_PORT (default 3940), E2E_MODEL, E2E_TURN_TIMEOUT_MS.
+ *   E2E_MODEL=z-ai/glm-5.2 npm run e2e:buffer:ci
+ *   # E2E_MODEL is required (the harness has no default model — a paid run
+ *   # names its model); honours E2E_PORT (default 3940), E2E_TURN_TIMEOUT_MS.
+ *   # E2E_BASE_URL is set for the child from the server this wrapper uses.
  *
  * The dev DB + BnF MCP + LLM gateway env still come from .env.local (loaded by
  * the npm script's --env-file-if-exists, inherited by both children).
@@ -83,6 +85,10 @@ function runE2e(): Promise<number> {
 }
 
 async function main(): Promise<void> {
+  // Fail here, before booting a server, rather than in the child at import.
+  if (process.env["E2E_MODEL"] === undefined || process.env["E2E_MODEL"].trim() === "") {
+    throw new Error("E2E_MODEL is not set — e.g. E2E_MODEL=z-ai/glm-5.2 npm run e2e:buffer:ci")
+  }
   let server: ChildProcess | null = null
 
   if (await reachable()) {
