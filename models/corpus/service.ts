@@ -25,8 +25,18 @@ import { DOCUMENT_CANONICAL_STATUS } from "@/models/documents/schema"
 import { DocumentService } from "@/models/documents/service"
 import type { Project } from "@/models/projects/schema"
 import type { User } from "@/models/users/schema"
-import { CorpusQueries, type CorpusFilterSet } from "./queries"
-import { type CorpusSnapshot } from "./schema"
+import { buildCorpusWhere, notUnknownWheres, numerisationOf } from "@/lib/corpus/filter-where"
+import { CORPUS_SAMPLE_SIZE } from "@/lib/constants"
+import { DocumentQueries } from "@/models/documents/queries"
+import { CorpusQueries } from "./queries"
+import type {
+  CorpusCrossFacets,
+  CorpusFacetDimension,
+  CorpusListPage,
+  CorpusSnapshot,
+  DocumentRow,
+} from "./schema"
+import type { CorpusFilterSet } from "./types"
 import { advanceVersion } from "./versioning"
 import type { AddToCorpusInput, RemoveFromCorpusInput } from "./types"
 
@@ -116,7 +126,135 @@ export type CorpusRemoveByFilterResult =
       total: number
     }
 
+/** A corpus version: the head, the ingested one, or a sequence number. */
+export type CorpusVersionRef = "head" | "ingested" | { seq: number }
+
 export class CorpusService {
+  // -------------------------------------------------------------------------
+  // Filtered reads. The filter semantics are built here (lib/corpus/
+  // filter-where.ts) and CorpusQueries runs the predicates — one translation
+  // shared by every read, the removal and the dry run.
+  // -------------------------------------------------------------------------
+
+  /** The version a ref names, its project's paid-OCR flag, and the predicates. */
+  private static async plan(projectId: string, ref: CorpusVersionRef, filters: CorpusFilterSet | undefined) {
+    const [version, paidOcr] = await Promise.all([
+      CorpusQueries.resolveVersion(projectId, ref),
+      CorpusQueries.paidOcrEnabled(projectId),
+    ])
+    return { version, paidOcr, where: buildCorpusWhere(version.id, paidOcr, filters) }
+  }
+
+  /**
+   * The corpus comprehension snapshot (total, facets, numérisation, outcomes,
+   * a cursor-paginated sample) of a version under `filters`. `limit` defaults
+   * to CORPUS_SAMPLE_SIZE; 0 skips the sample. Always use `total`, never
+   * `sample.length`.
+   */
+  static async snapshot(
+    projectId: string,
+    ref: CorpusVersionRef,
+    opts: { filters?: CorpusFilterSet; cursor?: string; limit?: number } = {},
+  ): Promise<CorpusSnapshot> {
+    const { version, paidOcr, where } = await CorpusService.plan(projectId, ref, opts.filters)
+    const [{ classRows, ...read }, notUnknown] = await Promise.all([
+      CorpusQueries.snapshot(projectId, version, paidOcr, where, {
+        cursor: opts.cursor,
+        limit: opts.limit ?? CORPUS_SAMPLE_SIZE,
+      }),
+      CorpusService.notUnknownIn(version.id, paidOcr, opts.filters),
+    ])
+    return { ...read, numerisation: numerisationOf(classRows), ...notUnknown }
+  }
+
+  /** One cursor-paginated page of documents (no facets) — the enumeration path. */
+  static async list(
+    projectId: string,
+    ref: CorpusVersionRef,
+    opts: { filters?: CorpusFilterSet; cursor?: string; limit?: number } = {},
+  ): Promise<CorpusListPage> {
+    const { version, paidOcr, where } = await CorpusService.plan(projectId, ref, opts.filters)
+    const [page, notUnknown] = await Promise.all([
+      CorpusQueries.list(version, paidOcr, where.sharedWhere, {
+        cursor: opts.cursor,
+        limit: opts.limit ?? CORPUS_SAMPLE_SIZE,
+      }),
+      CorpusService.notUnknownIn(version.id, paidOcr, opts.filters),
+    ])
+    return { ...page, ...notUnknown }
+  }
+
+  /** Every document of a version under `filters` — the CSV export's read. */
+  static async exportRows(
+    projectId: string,
+    ref: CorpusVersionRef,
+    filters?: CorpusFilterSet,
+  ): Promise<{ versionSeq: number; rows: DocumentRow[]; paidOcrEnabled: boolean }> {
+    const { version, paidOcr, where } = await CorpusService.plan(projectId, ref, filters)
+    return CorpusQueries.exportRows(version, paidOcr, where.sharedWhere)
+  }
+
+  /** Two facet dimensions crossed over the filtered, resolved documents. */
+  static async crossFacets(
+    projectId: string,
+    ref: CorpusVersionRef,
+    dims: [CorpusFacetDimension, CorpusFacetDimension],
+    filters?: CorpusFilterSet,
+  ): Promise<CorpusCrossFacets> {
+    const { where } = await CorpusService.plan(projectId, ref, filters)
+    return CorpusQueries.crossFacets(where.resolvedWhere, dims)
+  }
+
+  /** The ARKs of a version matching `filters` — what a read lists and a removal removes. */
+  static async arksMatchingFilters(
+    projectId: string,
+    ref: CorpusVersionRef,
+    filters: CorpusFilterSet,
+  ): Promise<string[]> {
+    const { where } = await CorpusService.plan(projectId, ref, filters)
+    return CorpusQueries.arks(where.sharedWhere)
+  }
+
+  /**
+   * With a `not`: per dimension it names, how many documents matching the
+   * positive filters `not` left out because their value is unknown
+   * (Decision 4). Every read and the dry run report it. Empty without `not`.
+   */
+  static async notUnknownCounts(
+    projectId: string,
+    ref: CorpusVersionRef,
+    filters: CorpusFilterSet | undefined,
+  ): Promise<Record<string, number>> {
+    if (filters?.not === undefined) return {}
+    const [version, paidOcr] = await Promise.all([
+      CorpusQueries.resolveVersion(projectId, ref),
+      CorpusQueries.paidOcrEnabled(projectId),
+    ])
+    return (await CorpusService.notUnknownIn(version.id, paidOcr, filters)).notUnknown ?? {}
+  }
+
+  /** `{ notUnknown }` for a read with a `not`, `{}` without one. */
+  private static async notUnknownIn(
+    versionId: string,
+    paidOcr: boolean,
+    filters: CorpusFilterSet | undefined,
+  ): Promise<{ notUnknown?: Record<string, number> }> {
+    if (filters?.not === undefined) return {}
+    const unknown = notUnknownWheres(versionId, paidOcr, filters)
+    const counts = await CorpusQueries.counts(unknown.map((u) => u.where))
+    return { notUnknown: Object.fromEntries(unknown.map((u, i) => [u.dimension, counts[i]])) }
+  }
+
+  /**
+   * Head members still waiting for cb→Gallica canonicalisation: catalogue
+   * notices the background canonicaliser may yet REPLACE with their digitized
+   * document — the head total is provisional while this is above zero.
+   */
+  static async pendingCanonicalCount(projectId: string): Promise<number> {
+    const head = await CorpusQueries.headVersion(projectId)
+    return DocumentQueries.pendingCanonicalInVersion(head.id)
+  }
+
   /**
    * Adds ARKs to the project's corpus INSTANTLY — no MCP round-trip.
    *
@@ -247,7 +385,7 @@ export class CorpusService {
     }
 
     // --- Build the comprehension snapshot from the committed head -------------
-    const snapshot = await CorpusQueries.snapshot(projectId, "head")
+    const snapshot = await CorpusService.snapshot(projectId, "head")
 
     // Flag added ARKs with no digitized full text → not ingestable later. The
     // real filter runs at ingestion; gallica is the only source with a derived
@@ -413,7 +551,7 @@ export class CorpusService {
 
     // Build the comprehension snapshot from the committed head; override the
     // counters with the tx-captured values.
-    const snapshot = await CorpusQueries.snapshot(projectId, "head")
+    const snapshot = await CorpusService.snapshot(projectId, "head")
 
     return {
       ...snapshot,
@@ -451,12 +589,12 @@ export class CorpusService {
       return { status: "empty_filter" }
     }
 
-    const arks = await CorpusQueries.arksToRemoveByFilter(project.id, "head", input.filters)
+    const arks = await CorpusService.arksMatchingFilters(project.id, "head", input.filters)
 
     if (input.dryRun) {
       const notUnknown =
         input.filters.not !== undefined
-          ? await CorpusQueries.notUnknownCounts(project.id, "head", input.filters)
+          ? await CorpusService.notUnknownCounts(project.id, "head", input.filters)
           : null
       return {
         status: "dry_run",

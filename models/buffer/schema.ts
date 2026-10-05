@@ -1,11 +1,10 @@
 // models/buffer/schema.ts
 // Domain constants + derived types for the research buffer ("tampon").
 // No `import "server-only"` — schema is referenced by both client and server.
-// No imports from other model directories — schema.ts is the foundation layer;
-// the record kind comes from lib/documents/ark-kind.ts, shared with the corpus.
+// No imports from other model directories — schema.ts is the foundation layer.
+// The filter types are inferred from their zod schema in types.ts.
 // See playbook/models.md import diagram.
 import type { BufferItem } from "@/lib/generated/prisma/client"
-import type { ArkKind } from "@/lib/documents/ark-kind"
 
 export type { BufferItem }
 
@@ -41,43 +40,12 @@ export const BUFFER_ENRICH_STATUS = {
 export type BufferEnrichStatus = (typeof BUFFER_ENRICH_STATUS)[keyof typeof BUFFER_ENRICH_STATUS]
 
 /**
- * One level of buffer filter criteria. Multi-selects and the text arrays are
- * OR-within / AND-across dimensions; `title` / `creator` / `subject` match a
- * candidate containing ANY of the strings (case-insensitive, accent-sensitive).
- * Year bounds match by OVERLAP with [year, yearEnd ?? year], so a periodical
- * collection running 1861–1946 matches 1937. All fields optional; absent means
- * "no constraint on this dimension".
+ * "Unresolved" — the ONE definition the counts and the `unresolved` filter
+ * share: a candidate WITHOUT its metadata, still being resolved (pending) or
+ * given up on (failed). A NULL status (the row came with its metadata) and
+ * `resolved` are resolved. `unresolvedFailed` reports the failed part of it.
  */
-export type BufferFilterFields = {
-  type?: string[]
-  kind?: ArkKind[]
-  lang?: string[]
-  source?: string[]
-  title?: string[]
-  creator?: string[]
-  subject?: string[]
-  yearFrom?: number
-  yearTo?: number
-  /** Include candidates with no date. Widens a year range; alone, selects them. */
-  undated?: boolean
-  /** true: candidates still waiting for background metadata (pending/failed);
-   *  false: only resolved ones. */
-  unresolved?: boolean
-  /** Free text over title, creator, snippet and subjects. */
-  q?: string
-}
-
-/**
- * The canonical (array-based) buffer filter set — the buffer's counterpart to
- * CorpusFilterSet. Queries, BufferService and the agent tools speak it; the
- * CSV `BufferFilters` (types.ts) is only the REST/UI boundary form, converted
- * by bufferFiltersToSet. `not` is a ONE-level exclusion: match = positive
- * clauses AND NOT(all `not` clauses). A candidate whose field is unknown (NULL)
- * for a dimension used in `not` is never matched by `not` — so "remove
- * everything not French" never deletes rows of unknown language; a dry run
- * reports how many were left out (`notUnknown`).
- */
-export type BufferFilterSet = BufferFilterFields & { not?: BufferFilterFields }
+export const BUFFER_UNRESOLVED_ENRICH_STATUSES = [BUFFER_ENRICH_STATUS.PENDING, BUFFER_ENRICH_STATUS.FAILED] as const
 
 /** DELETE /api/projects/:id/buffer — how many candidates were discarded. */
 export type BufferDiscardResult = { discarded: number }

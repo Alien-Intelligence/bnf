@@ -58,7 +58,12 @@ import { classifyArkKind } from "@/lib/documents/ark-kind"
 import { BufferPolicy } from "@/models/buffer/policy"
 import { BufferQueries } from "@/models/buffer/queries"
 import { BufferService, explainRegistration, type BufferRegisterResult } from "@/models/buffer/service"
-import { arkSchema, bufferFilterSetSchema as bufferFilterSchema, type BufferCandidateInput } from "@/models/buffer/types"
+import {
+  arkSchema,
+  bufferFilterSetSchema as bufferFilterSchema,
+  type BufferCandidateInput,
+  type BufferFilterSet,
+} from "@/models/buffer/types"
 import type { TurnScopedCtx } from "./registry-factory"
 import { authorizeProjectTool } from "./authorize"
 import { EMPTY_FILTER_REFUSAL, toolRefusal } from "./failure"
@@ -137,13 +142,27 @@ export const bufferListTool = defineTool<
       .describe(`Page size (1–${BUFFER_LIST_MAX_LIMIT}, default ${BUFFER_SAMPLE_SIZE}).`),
   }),
   handler: async (input, ctx) => {
-    const [{ total, rows }, enrich] = await Promise.all([
+    const [{ total, rows }, enrich, notUnknown] = await Promise.all([
       BufferService.list(ctx.projectId, input.filters, input.limit ?? BUFFER_SAMPLE_SIZE),
       BufferQueries.enrichCounts(ctx.projectId),
+      notUnknownFor(ctx.projectId, input.filters),
     ])
-    return { total, ...enrich, candidates: rows }
+    return { total, ...enrich, ...notUnknown, candidates: rows }
   },
 })
+
+/**
+ * With a `not`: per named dimension, the candidates it left out because their
+ * value is unknown (Decision 4) — every read reports them, as a dry run does,
+ * so nothing disappears silently.
+ */
+async function notUnknownFor(
+  projectId: string,
+  filters: BufferFilterSet | undefined,
+): Promise<{ notUnknown?: Record<string, number> }> {
+  if (filters?.not === undefined) return {}
+  return { notUnknown: await BufferService.notUnknownCounts(projectId, filters) }
+}
 
 // ---------------------------------------------------------------------------
 // buffer_stats
@@ -179,11 +198,12 @@ export const bufferStatsTool = defineTool<
   handler: async (input, ctx) => {
     const projectId = ctx.projectId
     const filters = input.filters
-    const [snapshot, enrich] = await Promise.all([
+    const [snapshot, enrich, notUnknown] = await Promise.all([
       BufferService.snapshot(projectId, filters, 0),
       BufferQueries.enrichCounts(projectId),
+      notUnknownFor(projectId, filters),
     ])
-    const stats = { total: snapshot.total, ...enrich, facets: snapshot.facets }
+    const stats = { total: snapshot.total, ...enrich, ...notUnknown, facets: snapshot.facets }
 
     if (!input.cross_facets) return stats
 

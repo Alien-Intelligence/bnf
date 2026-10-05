@@ -184,6 +184,8 @@ export const BUFFER_LIST_MAX_LIMIT = 200
  */
 export const TEXT_FILTER_MIN_CHARS = 2
 export const TEXT_FILTER_MAX_VALUES = 20
+/** Values per coded filter list (`type`, `lang`, `source`, `kind`). */
+export const FILTER_LIST_MAX_VALUES = 20
 
 /** Candidate rows the Constituer buffer panel requests (a curation buffer is
  *  bounded, so one page comfortably shows the working set). */
@@ -820,4 +822,4 @@ export const MEMORY_NEAR_DUP_MAX_EDIT_DISTANCE = 4
  * where the seal is content-addressed from the rendered prompts, so a prompt
  * change cannot be recorded without a new revision.
  */
-export const PROMPT_REVISION = "2026-10-02.corpus-buffer-v2.6afc4a2fa3c7"
+export const PROMPT_REVISION = "2026-10-05.corpus-buffer-v2-not-rule.076905ddf460"

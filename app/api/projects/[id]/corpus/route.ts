@@ -37,16 +37,14 @@ import { z } from "zod"
 import { ProjectQueries } from "@/models/projects/queries"
 import { resolveCorpusProject } from "@/app/api/_corpus-source"
 import { CorpusPolicy } from "@/models/corpus/policy"
-import { CorpusQueries } from "@/models/corpus/queries"
-import { corpusFiltersSchema } from "@/models/corpus/types"
-import { corpusFiltersToFilterSet } from "@/app/api/_corpus-filters"
+import { CorpusService } from "@/models/corpus/service"
+import { parseCorpusFilters } from "@/app/api/_corpus-filters"
 import type { CorpusSnapshot } from "@/models/corpus/schema"
 
-// Extends the shared filter schema rather than restating it: `corpusFiltersSchema`
-// (models/corpus/types.ts) is the one definition of what a corpus filter is, and
-// the client serialises against it. The export route does the same. Only the
-// params that are NOT filters — version selection and pagination — are added here.
-const corpusQuerySchema = corpusFiltersSchema.extend({
+// The route's own params — version selection and pagination. The filters go
+// through the ONE corpus filter schema (models/corpus/types.ts), decoded from
+// the query string by lib/corpus/filter-query.ts; the export route does the same.
+const corpusQuerySchema = z.object({
   version: z
     .union([
       z.literal("head"),
@@ -62,6 +60,7 @@ const corpusQuerySchema = corpusFiltersSchema.extend({
 
 
 type RouteCtx = { params: Promise<{ id: string }> }
+
 
 export const GET = withAuth(async (req, user, bouncer, ctx: RouteCtx) => {
   const { id: projectId } = await ctx.params
@@ -79,9 +78,10 @@ export const GET = withAuth(async (req, user, bouncer, ctx: RouteCtx) => {
 
   const versionRef = parsed.version ?? "head"
 
-  const filters = corpusFiltersToFilterSet(parsed)
+  const filters = parseCorpusFilters(req)
+  if (filters instanceof Response) return filters
 
-  const snapshot = await CorpusQueries.snapshot(
+  const snapshot = await CorpusService.snapshot(
     corpusId,
     typeof versionRef === "number" ? { seq: versionRef } : versionRef,
     { filters, cursor: parsed.cursor, limit: parsed.limit },

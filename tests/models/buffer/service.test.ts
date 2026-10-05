@@ -11,6 +11,7 @@ import assert from "node:assert/strict"
 import { prisma } from "@/lib/db"
 import type { Project, User } from "@/lib/generated/prisma/client"
 import { BufferService, explainRegistration } from "@/models/buffer/service"
+import { BufferQueries } from "@/models/buffer/queries"
 import { CorpusService } from "@/models/corpus/service"
 import { BUFFER_STATUS } from "@/models/buffer/schema"
 import { createTestUser, createTestProject, deleteTestUser } from "@/lib/testing/fixtures"
@@ -519,16 +520,50 @@ test("not.lang never matches a row whose language is unknown; the dry run says h
   assert.equal(await BufferService.count(project.id), 7, "a dry run never mutates")
 })
 
-test("not.lang in a READ keeps the rows of unknown language visible", async () => {
+test("not.lang — ONE rule: buffer_list returns exactly what buffer_remove_by_filter removes", async () => {
   const project = await filterFixture("f-not-lang-read")
-  const shown = await BufferService.candidateArks(project.id, { not: { lang: ["fr"] } })
-  // The German monograph, plus the three rows whose language is unknown — a
-  // read never hides a row the exclusion cannot judge (Decision 4).
-  assert.equal(shown.length, 4)
-  assert.ok(shown.includes(ARK(2_004)))
-  const removed = await BufferService.removeByFilter(project.id, { filters: { not: { lang: ["fr"] } }, dryRun: false })
+  const filters = { not: { lang: ["fr"] } }
+  const shown = await BufferService.candidateArks(project.id, filters)
+  assert.deepEqual(shown, [ARK(2_004)], "rows of unknown language are not listed by `not`")
+  assert.deepEqual(await BufferService.notUnknownCounts(project.id, filters), { lang: 3 }, "and the read reports them")
+  const removed = await BufferService.removeByFilter(project.id, { filters, dryRun: false })
   assert.equal(removed.status, "removed")
-  if (removed.status === "removed") assert.equal(removed.removed, 1, "a removal only takes the known non-French row")
+  if (removed.status === "removed") assert.equal(removed.removed, shown.length)
+})
+
+test("not.yearFrom judges single-year rows (yearEnd NULL), leaves only undated ones out", async () => {
+  const project = await filterFixture("f-not-year")
+  const filters = { not: { yearFrom: 1940 } }
+  const shown = (await BufferService.candidateArks(project.id, filters)).sort()
+  // 1937 issues and the 1900 book are before 1940; the 1997 book and the
+  // 1861–1946 run overlap it; the bare row has no year.
+  assert.deepEqual(shown, [ARK(2_001), ARK(2_002), ARK(2_003), ARK(2_006)].sort())
+  assert.deepEqual(await BufferService.notUnknownCounts(project.id, filters), { year: 1 })
+  const preview = await BufferService.removeByFilter(project.id, { filters, dryRun: true })
+  assert.equal(preview.status, "dry_run")
+  if (preview.status === "dry_run") assert.equal(preview.matched, shown.length, "the removal matches the read")
+})
+
+test("not.unresolved: a NULL enrich status is resolved (KNOWN), never hidden", async () => {
+  const project = await filterFixture("f-not-unresolved")
+  const filters = { not: { unresolved: true } }
+  const shown = (await BufferService.candidateArks(project.id, filters)).sort()
+  assert.deepEqual(shown, [ARK(2_001), ARK(2_002), ARK(2_003), ARK(2_004), ARK(2_005), ARK(2_006)].sort())
+  assert.deepEqual(await BufferService.notUnknownCounts(project.id, filters), {}, "nothing is unknown")
+  const preview = await BufferService.removeByFilter(project.id, { filters, dryRun: true })
+  if (preview.status === "dry_run") assert.equal(preview.matched, 6)
+})
+
+test("the unresolved count and the unresolved filter are the same set", async () => {
+  const project = await filterFixture("f-unresolved-one-set")
+  await prisma.bufferItem.update({
+    where: { projectId_ark: { projectId: project.id, ark: ARK(2_006) } },
+    data: { enrichStatus: "failed" },
+  })
+  const { unresolved, unresolvedFailed } = await BufferQueries.enrichCounts(project.id)
+  const filtered = await BufferService.candidateArks(project.id, { unresolved: true })
+  assert.equal(unresolved, filtered.length)
+  assert.equal(unresolvedFailed, 1)
 })
 
 test("year ranges match by overlap: a 1861–1946 collection matches 1937", async () => {

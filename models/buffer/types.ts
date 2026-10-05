@@ -7,9 +7,7 @@
 // is redefined here rather than imported from models/corpus (the import diagram
 // forbids sideways model imports in types.ts).
 import { z } from "zod"
-import { ARK_KIND_VALUES } from "@/lib/documents/ark-kind"
-import { textAnySchema } from "@/lib/filters"
-import type { BufferFilterFields, BufferFilterSet } from "./schema"
+import { arkKindListSchema, docTypeListSchema, langListSchema, sourceListSchema, textAnySchema } from "@/lib/filters"
 
 // ---------------------------------------------------------------------------
 // ARK validation (opaque identifier — never constructed, never mutated)
@@ -20,35 +18,33 @@ export const arkSchema = z.string().regex(/^ark:\/\d+\/[A-Za-z0-9]+$/, "ARK inva
 
 // ---------------------------------------------------------------------------
 // Buffer filters — ONE definition for the agent tools AND the REST route
-// (GET /api/projects/:id/buffer decodes its query string into this shape and
-// validates it with this schema; the client hook encodes the same shape).
-// Array-based, like the corpus filters.
+// (GET /api/projects/:id/buffer decodes its query string into this shape with
+// lib/buffer/filter-query.ts and validates it with this schema; the client
+// hook encodes the same shape). Array-based, like the corpus filters.
 // ---------------------------------------------------------------------------
 
+/** What a `not` means — the one rule (Decision 4), said the same everywhere. */
+export const NOT_FILTER_RULE =
+  "EXCLUDE candidates matching ALL these criteria. A candidate whose value is UNKNOWN for a " +
+  "criterion used here is never matched by `not`: it is neither listed nor removed, and every " +
+  "read and dry run reports how many such candidates were left out, per criterion, as `notUnknown`."
+
 export const bufferFilterFieldsSchema = z.object({
-  type: z
-    .array(z.string())
+  type: docTypeListSchema
     .optional()
     .describe(
       "Canonical doc-type codes to match: book | press | image | map | manuscript | score | " +
         "audio | video | object | poster | estampe | enlum | charte | other | text (« texte " +
         'imprimé, nature indéterminée »), e.g. ["press","book"].',
     ),
-  kind: z
-    .array(z.enum(ARK_KIND_VALUES))
+  kind: arkKindListSchema
     .optional()
     .describe(
       "Record kinds to match: periodical_issue | periodical_collection | monograph | image | " +
         "catalogue_notice | other_document | unknown.",
     ),
-  lang: z
-    .array(z.string())
-    .optional()
-    .describe('Language codes to match (ISO 639-1, e.g. ["fr","la","de"]).'),
-  source: z
-    .array(z.string())
-    .optional()
-    .describe('Sources to match: "gallica" | "catalogue" | "other".'),
+  lang: langListSchema.optional().describe('Language codes to match (ISO 639, lowercase: ["fr","la","de"]).'),
+  source: sourceListSchema.optional().describe('Sources to match: "gallica" | "catalogue" | "databnf" | "other".'),
   title: textAnySchema
     .optional()
     .describe(
@@ -75,8 +71,9 @@ export const bufferFilterFieldsSchema = z.object({
     .boolean()
     .optional()
     .describe(
-      "true: candidates whose metadata is still being resolved in the background (filters on " +
-        "title/type/date cannot see them yet); false: only resolved ones.",
+      "true: candidates WITHOUT their metadata — still being resolved in the background, or given " +
+        "up on (filters on title/type/date cannot see them; this is the `unresolved` count every " +
+        "buffer read returns); false: only candidates with their metadata.",
     ),
   q: z
     .string()
@@ -87,118 +84,13 @@ export const bufferFilterFieldsSchema = z.object({
 })
 
 export const bufferFilterSetSchema = bufferFilterFieldsSchema
-  .extend({
-    not: bufferFilterFieldsSchema
-      .optional()
-      .describe(
-        "EXCLUDE candidates matching ALL these criteria. A candidate whose field is unknown for a " +
-          "criterion used here is never excluded (reported as notUnknown on a dry run).",
-      ),
-  })
-  .describe(
-    "Metadata filters over the buffer candidates, to MATCH. Omit a field to leave it unconstrained.",
-  )
+  .extend({ not: bufferFilterFieldsSchema.optional().describe(NOT_FILTER_RULE) })
+  .describe("Metadata filters over the buffer candidates, to MATCH. Omit a field to leave it unconstrained.")
 
-
-/** How each filter field travels in a query string. Keyed by the schema's own
- *  keys (a field added to the schema without a codec is a type error). */
-const BUFFER_FILTER_PARAM_CODEC = {
-  type: "list",
-  kind: "list",
-  lang: "list",
-  source: "list",
-  title: "list",
-  creator: "list",
-  subject: "list",
-  yearFrom: "number",
-  yearTo: "number",
-  undated: "boolean",
-  unresolved: "boolean",
-  q: "text",
-} as const satisfies Record<keyof z.infer<typeof bufferFilterFieldsSchema>, "list" | "number" | "boolean" | "text">
-
-type BufferFilterField = keyof typeof BUFFER_FILTER_PARAM_CODEC
-
-/** The `not` fields travel as `not.<field>` query parameters. */
-const NOT_PARAM_PREFIX = "not."
-
-/** Split a CSV query value into a trimmed, non-empty array, or undefined. */
-function splitCsv(value: string): string[] | undefined {
-  const parts = value
-    .split(",")
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0)
-  return parts.length > 0 ? parts : undefined
-}
-
-/**
- * One query value → its field's shape, or the raw string when it does not
- * decode, so the schema rejects it with a message (never a silent drop). A
- * boolean is "true"/"1" or "false"/"0" — `z.coerce.boolean()` turned the
- * STRING "false" into `true`, the found bug that made `?undated=false` return
- * the undated candidates.
- */
-function decodeParam(field: BufferFilterField, raw: string): unknown {
-  switch (BUFFER_FILTER_PARAM_CODEC[field]) {
-    case "list":
-      return splitCsv(raw)
-    case "number":
-      return raw.trim() === "" ? raw : Number(raw)
-    case "boolean":
-      if (raw === "true" || raw === "1") return true
-      if (raw === "false" || raw === "0") return false
-      return raw
-    case "text":
-      return raw.trim() === "" ? undefined : raw
-  }
-}
-
-function isBufferFilterField(key: string): key is BufferFilterField {
-  return key in BUFFER_FILTER_PARAM_CODEC
-}
-
-/**
- * Decode a buffer query string into the canonical filter shape, ready for
- * `bufferFilterSetSchema`. Unknown parameters are left out (the route parses
- * its own, e.g. `limit`).
- */
-export function bufferFilterInputFromParams(params: URLSearchParams): Record<string, unknown> {
-  const positive: Record<string, unknown> = {}
-  const not: Record<string, unknown> = {}
-  for (const [key, raw] of params.entries()) {
-    const isNot = key.startsWith(NOT_PARAM_PREFIX)
-    const field = isNot ? key.slice(NOT_PARAM_PREFIX.length) : key
-    if (!isBufferFilterField(field)) continue
-    const value = decodeParam(field, raw)
-    if (value === undefined) continue
-    if (isNot) not[field] = value
-    else positive[field] = value
-  }
-  return Object.keys(not).length > 0 ? { ...positive, not } : positive
-}
-
-/** Encode one level of filters into query parameters (inverse of decodeParam). */
-function encodeLevel(fields: BufferFilterFields, prefix: string, out: URLSearchParams): void {
-  for (const [field, value] of Object.entries(fields)) {
-    if (!isBufferFilterField(field) || value === undefined) continue
-    if (Array.isArray(value)) {
-      if (value.length > 0) out.set(prefix + field, value.join(","))
-    } else if (typeof value === "string") {
-      if (value.trim().length > 0) out.set(prefix + field, value.trim())
-    } else {
-      out.set(prefix + field, String(value))
-    }
-  }
-}
-
-/** Serialise a filter set into URLSearchParams (lists CSV, `not.<field>`). */
-export function bufferFiltersToParams(filters: BufferFilterSet): URLSearchParams {
-  const out = new URLSearchParams()
-  const { not, ...positive } = filters
-  encodeLevel(positive, "", out)
-  if (not !== undefined) encodeLevel(not, NOT_PARAM_PREFIX, out)
-  return out
-}
+/** One level of buffer filter criteria (OR within a dimension, AND across). */
+export type BufferFilterFields = z.infer<typeof bufferFilterFieldsSchema>
+/** The buffer filter set: the criteria, plus a one-level `not`. */
+export type BufferFilterSet = z.infer<typeof bufferFilterSetSchema>
 
 // ---------------------------------------------------------------------------
 // Mutation inputs
@@ -216,7 +108,7 @@ export const bufferCandidateSchema = z.object({
   year: z.number().int().optional(),
   docType: z.string().trim().min(1).max(80).optional(),
   docTypeRaw: z.string().trim().min(1).max(200).optional(),
-  arkKind: z.enum(ARK_KIND_VALUES).optional(),
+  arkKind: arkKindListSchema.element.optional(),
   lang: z.string().trim().min(1).max(20).optional(),
   source: z.string().trim().min(1).max(80).optional(),
   snippet: z.string().trim().min(1).max(2_000).optional(),

@@ -110,6 +110,9 @@ export type CorpusSnapshot = {
   versionSeq: number
   versionStatus: CorpusVersionStatus
   total: number
+  /** With a `not` filter: per named dimension, the documents it left out
+   *  because their value is unknown (Decision 4) — never silently. */
+  notUnknown?: Record<string, number>
   undatedCount: number
   /** Members still resolving metadata in the background (counted in `total`). */
   pendingCount: number
@@ -191,7 +194,7 @@ export type CorpusSnapshot = {
 
 /**
  * A flat, cursor-paginated page of corpus documents — the result of
- * `CorpusQueries.list()`. Unlike `CorpusSnapshot` it computes NO facets (it is
+ * `CorpusService.list()`. Unlike `CorpusSnapshot` it computes NO facets (it is
  * the cheap exhaustive-listing path); `total` is the count within the active
  * filters, `documents` is one keyset page, and `nextCursor` is present iff more
  * pages exist. The agent tool may trim `documents` to a requested field subset
@@ -204,6 +207,8 @@ export type CorpusListPage = {
   paidOcrEnabled: boolean
   documents: DocumentRow[]
   nextCursor?: string
+  /** See CorpusSnapshot.notUnknown. */
+  notUnknown?: Record<string, number>
 }
 
 /**
@@ -214,7 +219,7 @@ export type CorpusListPage = {
 export type CorpusFacetDimension = "period" | "type" | "lang" | "source"
 
 /**
- * A crossed-facet table — the result of `CorpusQueries.crossFacets()`. `cells`
+ * A crossed-facet table — the result of `CorpusService.crossFacets()`. `cells`
  * is sparse (only non-zero combinations), sorted by `count` descending, so
  * "1970s × book = 10" is the kind of single-call insight the corpus agent needs
  * to locate a sub-population without probing ARKs one by one.
@@ -235,4 +240,31 @@ export type CorpusDiff = {
   removed: string[]
   addedCount: number
   removedCount: number
+}
+
+/**
+ * The predicates a filtered corpus read runs, built once per read from the
+ * filters by CorpusService (lib/corpus/filter-where.ts holds the translation;
+ * see its CorpusWhere for what each one selects). The query layer only
+ * executes them.
+ */
+export type CorpusWherePredicates = {
+  sharedWhere: Prisma.DocumentWhereInput
+  resolvedWhere: Prisma.DocumentWhereInput
+  sharedWhereWithoutOutcome: Prisma.DocumentWhereInput
+  undatedWhere: Prisma.DocumentWhereInput
+  pendingWhere: Prisma.DocumentWhereInput
+  failedWhere: Prisma.DocumentWhereInput
+  outcomeWheres: {
+    indexed: Prisma.DocumentWhereInput
+    failed: Prisma.DocumentWhereInput
+    excluded: Prisma.DocumentWhereInput
+    not_ingested: Prisma.DocumentWhereInput
+  }
+}
+
+/** What CorpusQueries.snapshot reads: the snapshot without the numérisation
+ *  buckets, plus the resolved rows the service classifies them from. */
+export type CorpusSnapshotRead = Omit<CorpusSnapshot, "numerisation" | "notUnknown"> & {
+  classRows: Array<{ docType: string | null; ocrAvailable: boolean | null; iiifManifestUrl: string | null }>
 }

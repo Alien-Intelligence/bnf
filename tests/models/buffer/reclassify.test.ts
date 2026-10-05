@@ -19,7 +19,7 @@ import type { Project, User } from "@/lib/generated/prisma/client"
 import { BUFFER_CLASSIFIER_VERSION } from "@/lib/constants"
 import { reclassifyBufferItems } from "@/lib/buffer/reclassify"
 import { BUFFER_ENRICH_STATUS, BUFFER_STATUS } from "@/models/buffer/schema"
-import { ARK_KIND } from "@/lib/documents/ark-kind"
+import { ARK_KIND } from "@/models/documents/schema"
 import { createTestUser, createTestProject, deleteTestUser } from "@/lib/testing/fixtures"
 import { cleanupProject } from "@/lib/testing/project-cleanup"
 

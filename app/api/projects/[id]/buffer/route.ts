@@ -26,7 +26,8 @@ import { BUFFER_LIST_MAX_LIMIT, BUFFER_SAMPLE_SIZE } from "@/lib/constants"
 import { ProjectQueries } from "@/models/projects/queries"
 import { BufferPolicy } from "@/models/buffer/policy"
 import { BufferService } from "@/models/buffer/service"
-import { bufferDiscardSchema, bufferFilterInputFromParams, bufferFilterSetSchema } from "@/models/buffer/types"
+import { bufferFilterInputFromParams } from "@/lib/buffer/filter-query"
+import { bufferDiscardSchema, bufferFilterSetSchema } from "@/models/buffer/types"
 import type { BufferDiscardResult, BufferSnapshot } from "@/models/buffer/schema"
 
 /** The route's own parameter; the filters go through the shared schema. */

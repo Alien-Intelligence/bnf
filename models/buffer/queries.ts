@@ -5,12 +5,14 @@ import "server-only"
 // the filter→SQL translation lives in one place, in the service.
 import type { Prisma } from "@/lib/generated/prisma/client"
 import { prisma } from "@/lib/db"
-import { BUFFER_SAMPLE_SIZE } from "@/lib/constants"
-import { BUFFER_ENRICH_STATUS, BUFFER_STATUS } from "./schema"
+import { BUFFER_ENRICH_STATUS, BUFFER_STATUS, BUFFER_UNRESOLVED_ENRICH_STATUSES } from "./schema"
 import type { BufferCrossFacets, BufferFacetDimension, BufferFacets, BufferRow, BufferSnapshot } from "./schema"
 
-/** A candidate still waiting for its background metadata — the ONE
- *  definition every "unresolved" count uses. */
+/** A candidate without its metadata (BUFFER_UNRESOLVED_ENRICH_STATUSES) —
+ *  every "unresolved" count, and the `unresolved` filter, read this set. */
+const UNRESOLVED: Prisma.BufferItemWhereInput = { enrichStatus: { in: [...BUFFER_UNRESOLVED_ENRICH_STATUSES] } }
+
+/** A candidate the drain may still take: pending (a failed one is final). */
 const PENDING_ENRICH: Prisma.BufferItemWhereInput = { enrichStatus: BUFFER_ENRICH_STATUS.PENDING }
 
 /** A pending candidate the enrichment drain may take now: under the attempt
@@ -72,24 +74,24 @@ export class BufferQueries {
 
   /**
    * The whole candidate set's enrichment state, whatever the filters: how many
-   * candidates are still waiting for background metadata (`unresolved`, which
-   * no filter on title/type/date can see yet) and how many the drain gave up on
-   * (`unresolvedFailed`). Every buffer read returns it, so the agent checks it
-   * before filtering.
+   * candidates are without their metadata (`unresolved` — the same set the
+   * `unresolved: true` filter selects; no filter on title/type/date can see
+   * them) and, of those, how many the drain gave up on (`unresolvedFailed`).
+   * Every buffer read returns it, so the agent checks it before filtering.
    */
   static async enrichCounts(projectId: string): Promise<{ unresolved: number; unresolvedFailed: number }> {
     const where = BufferQueries.candidateScope(projectId)
     const [unresolved, unresolvedFailed] = await Promise.all([
-      prisma.bufferItem.count({ where: { ...where, ...PENDING_ENRICH } }),
+      prisma.bufferItem.count({ where: { ...where, ...UNRESOLVED } }),
       prisma.bufferItem.count({ where: { ...where, enrichStatus: BUFFER_ENRICH_STATUS.FAILED } }),
     ])
     return { unresolved, unresolvedFailed }
   }
 
-  /** Of the given ARKs, how many are candidates still waiting for metadata. */
-  static async pendingEnrichAmong(projectId: string, arks: string[]): Promise<number> {
+  /** Of the given ARKs, how many are candidates without their metadata. */
+  static async unresolvedAmong(projectId: string, arks: string[]): Promise<number> {
     return prisma.bufferItem.count({
-      where: { ...BufferQueries.candidateScope(projectId), ark: { in: arks }, ...PENDING_ENRICH },
+      where: { ...BufferQueries.candidateScope(projectId), ark: { in: arks }, ...UNRESOLVED },
     })
   }
 
@@ -171,7 +173,7 @@ export class BufferQueries {
   /** One page of rows (newest first), plus the total match count. */
   static async list(
     where: Prisma.BufferItemWhereInput,
-    limit: number = BUFFER_SAMPLE_SIZE,
+    limit: number,
   ): Promise<{ total: number; rows: BufferRow[] }> {
     const [total, rows] = await Promise.all([
       prisma.bufferItem.count({ where }),
@@ -194,7 +196,7 @@ export class BufferQueries {
   /** total + facets + a bounded sample — the buffer comprehension shape. */
   static async snapshot(
     where: Prisma.BufferItemWhereInput,
-    sampleSize: number = BUFFER_SAMPLE_SIZE,
+    sampleSize: number,
   ): Promise<BufferSnapshot> {
     const [total, facets, sample] = await Promise.all([
       prisma.bufferItem.count({ where }),
@@ -233,7 +235,7 @@ export class BufferQueries {
         _count: { _all: true },
       }),
       prisma.bufferItem.findMany({ where, select: { year: true } }),
-      prisma.bufferItem.count({ where: { ...where, ...PENDING_ENRICH } }),
+      prisma.bufferItem.count({ where: { ...where, ...UNRESOLVED } }),
     ])
 
     const toRecord = <K extends string>(

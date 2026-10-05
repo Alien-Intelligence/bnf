@@ -7,7 +7,8 @@
 // models/.
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { ARK_KIND, ARK_KIND_VALUES, classifyArkKind } from "@/lib/documents/ark-kind"
+import { classifyArkKind } from "@/lib/documents/ark-kind"
+import { ARK_KIND, ARK_KIND_VALUES } from "@/models/documents/schema"
 import { ARK_KIND_COLOR, DOC_TYPE } from "@/models/documents/schema"
 
 test("rule 1: a collection entry (cb…/date before toFullArk) is a periodical collection", () => {
@@ -78,7 +79,7 @@ test("the buffer candidate schema accepts exactly the ARK_KIND values", () => {
 })
 
 test("every record kind has its camelCase label in both locales", async () => {
-  const { ARK_KIND_I18N_KEY } = await import("@/lib/documents/ark-kind")
+  const { ARK_KIND_I18N_KEY } = await import("@/models/documents/schema")
   const { readFile } = await import("node:fs/promises")
   for (const locale of ["fr", "en"]) {
     const messages: unknown = JSON.parse(await readFile(`messages/${locale}.json`, "utf8"))

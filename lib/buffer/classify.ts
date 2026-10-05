@@ -15,7 +15,8 @@ import {
   mapGallicaTypedoc,
 } from "@/lib/mcp/vocab"
 import { AGENT_TOOLS } from "@/lib/agent/tools/constants"
-import { classifyArkKind, type ArkKind } from "@/lib/documents/ark-kind"
+import { classifyArkKind } from "@/lib/documents/ark-kind"
+import type { ArkKind } from "@/models/documents/schema"
 import { DOCUMENT_SOURCE } from "@/models/documents/schema"
 
 export type GallicaSearchDocType = (typeof GALLICA_SEARCHABLE_DOC_TYPE)[number]

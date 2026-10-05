@@ -15,9 +15,10 @@ import { prisma } from "@/lib/db"
 import type { Project, User } from "@/lib/generated/prisma/client"
 import { createTestUser, createTestProject, deleteTestUser } from "@/lib/testing/fixtures"
 import { cleanupProject } from "@/lib/testing/project-cleanup"
-import { CorpusQueries, type CorpusFilterSet } from "@/models/corpus/queries"
+import type { CorpusFilterSet } from "@/models/corpus/types"
 import { CorpusService } from "@/models/corpus/service"
-import { ARK_KIND, arkKindWhere, classifyArkKind, type ArkKind } from "@/lib/documents/ark-kind"
+import { arkKindWhere, classifyArkKind } from "@/lib/documents/ark-kind"
+import { ARK_KIND, type ArkKind } from "@/models/documents/schema"
 import { DOCUMENT_RESOLVE_STATUS } from "@/models/documents/schema"
 
 let user: User
@@ -81,12 +82,12 @@ after(async () => {
 
 /** What a READ (list, snapshot, export) shows under `filters`. */
 async function arksFor(filters: CorpusFilterSet): Promise<string[]> {
-  return (await CorpusQueries.exportRows(project.id, "head", filters)).rows.map((r) => r.ark).sort()
+  return (await CorpusService.exportRows(project.id, "head", filters)).rows.map((r) => r.ark).sort()
 }
 
 /** What a remove-by-filter would remove under `filters`. */
 async function arksRemovedBy(filters: CorpusFilterSet): Promise<string[]> {
-  return (await CorpusQueries.arksToRemoveByFilter(project.id, "head", filters)).sort()
+  return (await CorpusService.arksMatchingFilters(project.id, "head", filters)).sort()
 }
 
 test("arkKindWhere is the SQL mirror of classifyArkKind", async () => {
@@ -116,15 +117,15 @@ test("title / creator are contains-any; kind selects record kinds", async () => 
   ])
 })
 
-test("not.lang: a read keeps documents of unknown language; a removal never removes them", async () => {
-  // Read: everything except the KNOWN French documents.
-  assert.deepEqual(await arksFor({ not: { lang: ["fr"] } }), [
-    "ark:/12148/bpt6k9200003",
-    "ark:/12148/bpt6k9200007",
-    "ark:/12148/btv1b9200004",
-  ])
-  // Removal of "everything not French": the German book only.
+test("not.lang — ONE rule: unknown language is neither listed nor removed, and the read reports it", async () => {
+  // Everything not French: the German book only — the two language-less
+  // documents are never matched by `not`.
+  assert.deepEqual(await arksFor({ not: { lang: ["fr"] } }), ["ark:/12148/bpt6k9200003"])
   assert.deepEqual(await arksRemovedBy({ not: { lang: ["fr"] } }), ["ark:/12148/bpt6k9200003"])
+  const snapshot = await CorpusService.snapshot(project.id, "head", { filters: { not: { lang: ["fr"] } }, limit: 0 })
+  assert.deepEqual(snapshot.notUnknown, { lang: 2 }, "the read says what it left out")
+  const page = await CorpusService.list(project.id, "head", { filters: { not: { lang: ["fr"] } } })
+  assert.deepEqual(page.notUnknown, { lang: 2 })
   // Press issues except the colonial titles.
   assert.deepEqual(await arksFor({ kind: ["periodical_issue"], not: { title: ["Oran"] } }), [
     "ark:/12148/bd6t9200011",
@@ -149,11 +150,21 @@ test("not.kind agrees with classifyArkKind, NULL docType included", async () => 
   }
 })
 
-test("not.ingest: an unresolved stub's class is unknown — kept by a read, never removed", async () => {
+test("not.ingest: an unresolved stub's class is unknown — neither listed nor removed", async () => {
   // The fixtures carry no IIIF manifest: every RESOLVED one is non_numerise.
-  assert.deepEqual(await arksFor({ not: { ingest: ["non_numerise"] } }), ["ark:/12148/bpt6k9200012"])
-  assert.deepEqual(await arksRemovedBy({ not: { ingest: ["non_numerise"] } }), [])
+  assert.deepEqual(await arksFor({ not: { ingest: ["non_numerise"] } }), [])
   assert.deepEqual(await arksRemovedBy({ not: { ingest: ["ocr"] } }), except("ark:/12148/bpt6k9200012"))
+  assert.deepEqual(await arksFor({ not: { ingest: ["ocr"] } }), except("ark:/12148/bpt6k9200012"))
+})
+
+test("not.yearFrom: single-year rows are KNOWN and judged; undated ones are left out and reported", async () => {
+  // year 1900 < 1940 → not in [1940, …] → kept by `not`, i.e. listed.
+  const listed = await arksFor({ not: { yearFrom: 1940 } })
+  assert.ok(listed.includes("ark:/12148/bpt6k9200006"), "the 1900 text is listed")
+  assert.ok(!listed.includes("ark:/12148/bpt6k9200003"), "the 1997 book is excluded")
+  assert.deepEqual(await arksRemovedBy({ not: { yearFrom: 1940 } }), listed)
+  const snapshot = await CorpusService.snapshot(project.id, "head", { filters: { not: { yearFrom: 1940 } }, limit: 0 })
+  assert.deepEqual(snapshot.notUnknown, { year: 2 }, "the two undated documents are reported")
 })
 
 test("not.outcome is always known: it partitions the corpus", async () => {

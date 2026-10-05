@@ -1,163 +1,12 @@
 // models/corpus/queries.ts
 // Pure database access for the corpus model. No business logic, no external
-// calls, no transforms beyond what Prisma returns.
-// Imports only from @/lib/db and ./schema.
+// calls, no transforms beyond what Prisma returns. The filtered reads run the
+// predicates CorpusService built (lib/corpus/filter-where.ts); no filter
+// semantics live here. Imports only from @/lib/db and ./schema.
 import "server-only"
 
 import { prisma } from "@/lib/db"
 import type { Prisma } from "@/lib/generated/prisma/client"
-import { CORPUS_SAMPLE_SIZE } from "@/lib/constants"
-import { arkKindWhere, type ArkKind } from "@/lib/documents/ark-kind"
-import {
-  DOCUMENT_CANONICAL_STATUS,
-  DOCUMENT_RESOLVE_STATUS,
-  INDEXATION_OUTCOME,
-  INGESTION_CLASS,
-  INGESTION_IMAGE_LIKE_TYPES,
-  NON_LATIN_SCRIPT_LANG_CODES,
-  classifyIngestion,
-} from "@/models/documents/schema"
-
-// Prisma WHERE fragment matching one ingestion class — the SQL mirror of
-// classifyIngestion(). digitized ⇔ iiifManifestUrl is set (Gallica-only);
-// "no OCR" is false OR null (unknown counts as none, as in the classifier).
-// Returns null for an unrecognised class so callers can filter it out.
-function ingestClassWhere(cls: string): Prisma.DocumentWhereInput | null {
-  const imageLike = [...INGESTION_IMAGE_LIKE_TYPES]
-  const noOcr: Prisma.DocumentWhereInput["OR"] = [
-    { ocrAvailable: false },
-    { ocrAvailable: null },
-  ]
-  switch (cls) {
-    // Every arm is two-valued (never SQL NULL): `ocr_available = true` and
-    // `doc_type IN (…)` are NULL on a NULL column, which `NOT(…)` keeps NULL
-    // and so drops the row from BOTH sides of a `not` (Decision 4). The
-    // explicit `not: null` makes them FALSE instead — the classifier's reading
-    // (a null OCR flag is "no OCR", a null type is not image-like).
-    case INGESTION_CLASS.OCR:
-      return { iiifManifestUrl: { not: null }, ocrAvailable: { not: null, equals: true } }
-    case INGESTION_CLASS.VISION:
-      return { iiifManifestUrl: { not: null }, docType: { not: null, in: imageLike }, OR: noOcr }
-    case INGESTION_CLASS.SANS_TEXTE:
-      // `notIn` compiles to SQL NOT IN, which is null-hostile: a row with a
-      // NULL doc_type does not satisfy it. classifyIngestion() reads that same
-      // row as sans_texte — a null type is not image-like — so the two
-      // disagreed, and the filter quietly omitted documents the card counted.
-      // Verified against the dev database: `notIn` returns only non-null rows.
-      // Spell the null arm out. `in` (VISION, below) needs no such care: it
-      // excludes nulls, and so does the classifier.
-      return {
-        iiifManifestUrl: { not: null },
-        AND: [
-          { OR: [{ docType: null }, { docType: { notIn: imageLike } }] },
-          { OR: noOcr },
-        ],
-      }
-    case INGESTION_CLASS.NON_NUMERISE:
-      return { iiifManifestUrl: null }
-    default:
-      return null
-  }
-}
-
-// The set a document must fall in to read as `excluded` — never sent to the
-// index because there was nothing in it to index. The SQL mirror of the
-// `!isIngestableClass(cls) && confident` arm of classifyOutcome(), which is
-// itself a mirror of IngestService._partitionByIngestability(). All three move
-// together.
-//
-// `non_numerise` is always confident (nothing to resolve — there is no scan).
-// `sans_texte` is a verdict about a digitized document, so it only counts once
-// the row is RESOLVED: an unresolved stub may still turn out to carry OCR, and
-// calling it excluded would assert a permanent absence from a pending lookup.
-function excludedClassWhere(paidOcrEnabled: boolean): Prisma.DocumentWhereInput {
-  const sansTexte = ingestClassWhere(INGESTION_CLASS.SANS_TEXTE)
-  const nonNumerise = ingestClassWhere(INGESTION_CLASS.NON_NUMERISE)
-  // Both classes are literals of INGESTION_CLASS, so ingestClassWhere never
-  // returns null here; the guard keeps that a type fact rather than a comment.
-  if (sansTexte === null || nonNumerise === null) {
-    throw new Error("excludedClassWhere: unknown ingestion class")
-  }
-  // The paid-OCR carve-out, mirroring _partitionByIngestability: with paid OCR
-  // on, a Latin-script sans_texte document is NOT excluded — it goes to the
-  // paidOcr bucket and is sent once the spend is confirmed. Only the non-Latin
-  // ones (which Mistral mangles, see isLatinScriptLang) stay excluded. A null
-  // lang is presumed Latin, exactly as the classifier presumes it, so it must
-  // NOT match here — `in` already excludes nulls, which is the behaviour we
-  // want for once.
-  // `lang IS NOT NULL` before `lang IN (…)`, and it is load-bearing: IN yields
-  // NULL for a null lang, so the whole arm would be NULL, `NOT(arm)` would be
-  // NULL too, and the row would match NEITHER `excluded` nor `not_ingested` —
-  // silently dropping it out of a partition the header count depends on. The
-  // guard makes the arm FALSE instead, which is also the right answer: a null
-  // lang is presumed Latin (isLatinScriptLang), hence paid-OCR eligible, hence
-  // not excluded. Measured: 11 documents across two dev projects fell through
-  // this gap before the guard.
-  // NOTE the AND is MERGED, not replaced: `sansTexte` already carries its own
-  // AND array (the docType and no-OCR arms), and spreading then re-declaring
-  // `AND` would silently drop both, leaving "any resolved digitized document in
-  // a non-Latin language" — a much larger set that still partitions cleanly, so
-  // the sum check would not catch it.
-  const sansTexteAnd = Array.isArray(sansTexte.AND) ? sansTexte.AND : []
-  const sansTexteExcluded: Prisma.DocumentWhereInput = paidOcrEnabled
-    ? {
-        ...sansTexte,
-        resolveStatus: DOCUMENT_RESOLVE_STATUS.RESOLVED,
-        AND: [
-          ...sansTexteAnd,
-          // `lang IS NOT NULL` before `lang IN (…)`, and it is load-bearing: IN
-          // yields NULL for a null lang, so the arm would be NULL, `NOT(arm)`
-          // NULL too, and the row would match NEITHER `excluded` nor
-          // `not_ingested` — dropping out of a partition the header count
-          // depends on. FALSE is also the right answer: a null lang is presumed
-          // Latin (isLatinScriptLang), hence paid-OCR eligible, hence not
-          // excluded. Measured: 11 documents across two dev projects fell
-          // through this gap before the guard.
-          { lang: { not: null } },
-          { lang: { in: [...NON_LATIN_SCRIPT_LANG_CODES] } },
-        ],
-      }
-    : { ...sansTexte, resolveStatus: DOCUMENT_RESOLVE_STATUS.RESOLVED }
-
-  return { OR: [nonNumerise, sansTexteExcluded] }
-}
-
-/**
- * Prisma WHERE fragment matching one indexation outcome — the SQL mirror of
- * classifyOutcome(). Returns null for an unrecognised state so callers can
- * filter it out, exactly as ingestClassWhere() does.
- *
- * The four fragments are mutually exclusive and cover the table, so OR-ing all
- * four is the same set as no filter at all. That is what makes the outcome
- * counts in snapshot() sum to `total`.
- */
-function outcomeWhere(
-  state: string,
-  paidOcrEnabled: boolean,
-): Prisma.DocumentWhereInput | null {
-  switch (state) {
-    case INDEXATION_OUTCOME.INDEXED:
-      // indexError may be set alongside — that is a warning on an indexed doc,
-      // not a failure. See indexationWarning().
-      return { indexedAt: { not: null } }
-    case INDEXATION_OUTCOME.FAILED:
-      return { indexedAt: null, indexError: { not: null } }
-    case INDEXATION_OUTCOME.EXCLUDED:
-      return {
-        indexedAt: null,
-        indexError: null,
-        ...excludedClassWhere(paidOcrEnabled),
-      }
-    case INDEXATION_OUTCOME.NOT_INGESTED:
-      return {
-        indexedAt: null,
-        indexError: null,
-        NOT: excludedClassWhere(paidOcrEnabled),
-      }
-    default:
-      return null
-  }
-}
 import {
   corpusVersionWithArks,
   documentRow,
@@ -166,302 +15,11 @@ import {
   type CorpusFacetDimension,
   type CorpusListPage,
   type DocumentRow,
-  type CorpusSnapshot,
   type CorpusVersionStatus,
   type CorpusVersionWithArks,
+  type CorpusSnapshotRead,
+  type CorpusWherePredicates,
 } from "./schema"
-
-/**
- * The structured filter set shared by every corpus read path (snapshot, list,
- * crossFacets) and by remove-by-filter. Mirrors the query params of
- * `GET /api/projects/:id/corpus` and the agent-tool filter schema. Multi-select
- * dimensions arrive pre-split into arrays (the route splits the CSV form).
- */
-export type CorpusFilterSet = {
-  type?: string[]
-  lang?: string[]
-  source?: string[]
-  /** AppSession ids — keep only docs contributed by one of these sessions. */
-  session?: string[]
-  /** Ingestion classes: ocr | vision | sans_texte | non_numerise. */
-  ingest?: string[]
-  /**
-   * Indexation outcomes: indexed | failed | excluded | not_ingested. What
-   * BECAME of each document at ingestion — distinct from `ingest`, which is the
-   * pre-flight ingestability class. See classifyOutcome().
-   */
-  outcome?: string[]
-  yearFrom?: number
-  yearTo?: number
-  undated?: boolean
-  q?: string
-  /** Contains-ANY over the title (case-insensitive, accent-sensitive). */
-  title?: string[]
-  /** Contains-ANY over the author (the agent's `creator`, as in the buffer). */
-  creator?: string[]
-  /** Record kinds — ARK_KIND values, through arkKindWhere (lib/documents/ark-kind.ts). */
-  kind?: ArkKind[]
-  /**
-   * One-level exclusion: documents matching ALL these criteria are left out.
-   * A document whose field is unknown (NULL) for a dimension named here is
-   * never matched by `not`, exactly as in the buffer (Decision 4).
-   */
-  not?: Omit<CorpusFilterSet, "not" | "session">
-}
-
-/** Contains-ANY over a Document text column. */
-function documentContainsAny(column: "title" | "author", values: string[]): Prisma.DocumentWhereInput {
-  return { OR: values.map((v) => documentContains(column, v)) }
-}
-
-/** ILIKE over one nullable text column, FALSE (not NULL) on a NULL column. */
-function documentContains(column: "title" | "author" | "excerpt", value: string): Prisma.DocumentWhereInput {
-  const filter = { not: null, contains: value, mode: "insensitive" as const }
-  switch (column) {
-    case "title":
-      return { title: filter }
-    case "author":
-      return { author: filter }
-    case "excerpt":
-      return { excerpt: filter }
-  }
-}
-
-/** The fields a corpus `not` may carry. */
-export type CorpusNotFilterSet = Omit<CorpusFilterSet, "not" | "session">
-
-/**
- * Per dimension a corpus `not` can name: when it is used, what makes a
- * document's value KNOWN for it, and the unknown complement (Decision 4). A
- * document whose value is unknown for a dimension the exclusion names is never
- * matched by the exclusion: a read keeps it, a removal leaves it in place, and
- * the dry run reports it (`notUnknown`). `kind` and `outcome` are always known
- * (every document has a record kind and an indexation outcome), so they have
- * no entry; `q` is unknown only when the document has no text at all; the
- * ingestion class is unknown until the document is resolved.
- */
-const CORPUS_NOT_PRESENCE: ReadonlyArray<{
-  dimension: keyof CorpusNotFilterSet | "year" | "q"
-  used: (f: CorpusNotFilterSet) => boolean
-  known: Prisma.DocumentWhereInput
-  unknown: Prisma.DocumentWhereInput
-}> = [
-  { dimension: "type", used: (f) => !!f.type?.length, known: { docType: { not: null } }, unknown: { docType: null } },
-  { dimension: "lang", used: (f) => !!f.lang?.length, known: { lang: { not: null } }, unknown: { lang: null } },
-  { dimension: "source", used: (f) => !!f.source?.length, known: { source: { not: null } }, unknown: { source: null } },
-  { dimension: "title", used: (f) => !!f.title?.length, known: { title: { not: null } }, unknown: { title: null } },
-  { dimension: "creator", used: (f) => !!f.creator?.length, known: { author: { not: null } }, unknown: { author: null } },
-  {
-    dimension: "year",
-    used: (f) => f.yearFrom !== undefined || f.yearTo !== undefined,
-    known: { year: { not: null } },
-    unknown: { year: null },
-  },
-  {
-    dimension: "q",
-    used: (f) => !!f.q && f.q.trim().length > 0,
-    known: { OR: [{ title: { not: null } }, { author: { not: null } }, { excerpt: { not: null } }] },
-    unknown: { title: null, author: null, excerpt: null },
-  },
-  {
-    dimension: "ingest",
-    used: (f) => !!f.ingest?.length,
-    known: { resolveStatus: DOCUMENT_RESOLVE_STATUS.RESOLVED },
-    unknown: { resolveStatus: { not: DOCUMENT_RESOLVE_STATUS.RESOLVED } },
-  },
-]
-
-/** The presence entries a `not` filter set uses. */
-function corpusNotPresence(not: CorpusNotFilterSet) {
-  return CORPUS_NOT_PRESENCE.filter((p) => p.used(not))
-}
-
-/**
- * How a `not` reads (Decision 4):
- *   - `read`   — list, snapshot, facets, export: the exclusion removes only
- *                documents KNOWN to match it; a document with an unknown value
- *                stays visible. NOT(known AND inner), the presence INSIDE.
- *   - `remove` — remove-by-filter: additionally requires every named value to
- *                be known, so "remove everything not French" never deletes a
- *                document of unknown language. The dry run reports those as
- *                `notUnknown`.
- */
-export const CORPUS_NOT_MODE = { READ: "read", REMOVE: "remove" } as const
-export type CorpusNotMode = (typeof CORPUS_NOT_MODE)[keyof typeof CORPUS_NOT_MODE]
-
-/**
- * Translate a CorpusFilterSet into the two Prisma WHERE predicates every corpus
- * read shares:
- *   - `sharedWhere`   — version membership AND all active filter clauses. Spans
- *                       all members (including pending/failed stubs) except
- *                       where a type/lang/year/q filter naturally excludes them.
- *   - `resolvedWhere` — `sharedWhere` further constrained to RESOLVED documents.
- *                       Used for the type/lang/period facets and the period
- *                       histogram, which are meaningless for unresolved stubs.
- *
- * Extracted from `snapshot()` so `list()`, `crossFacets()`, and
- * `removeByFilter()` resolve membership identically — there is exactly one
- * filter→SQL translation in the codebase. Pure: no I/O, deterministic in its
- * inputs.
- *
- * Year semantics: a yearFrom/yearTo range wins over `undated`; with neither,
- * `undated === true` matches `year IS NULL`. Full-text and ingest each carry
- * their own `OR`, so they are AND-ed via an explicit `AND` array rather than
- * spread (two `OR` keys at one object level would collide).
- */
-function buildCorpusWhere(
-  versionId: string,
-  paidOcrEnabled: boolean,
-  filters?: CorpusFilterSet,
-  notMode: CorpusNotMode = CORPUS_NOT_MODE.READ,
-): {
-  sharedWhere: Prisma.DocumentWhereInput
-  resolvedWhere: Prisma.DocumentWhereInput
-  /**
-   * `sharedWhere` with the indexation-outcome clause dropped. The per-outcome
-   * counts in `snapshot()` are computed against this so they stay informative
-   * while an outcome filter is active — selecting "non indexés" must not
-   * collapse every other bucket to zero, exactly as `undatedCount` ignores the
-   * year range. Every OTHER filter still applies: the counts describe the set
-   * the librarian is looking at.
-   */
-  sharedWhereWithoutOutcome: Prisma.DocumentWhereInput
-  /**
-   * The individual filter clauses, exposed for the few snapshot counts that
-   * apply a deliberately different subset (e.g. `undatedCount` ignores the year
-   * range; `pendingCount`/`failedCount` honour only `source`). Keeping these
-   * here means the filter→SQL translation lives in exactly one place.
-   */
-  parts: {
-    typeWhere: Prisma.DocumentWhereInput
-    langWhere: Prisma.DocumentWhereInput
-    sourceWhere: Prisma.DocumentWhereInput
-    fullTextWhere: Prisma.DocumentWhereInput
-  }
-} {
-  const hasYearRange =
-    filters?.yearFrom !== undefined || filters?.yearTo !== undefined
-  const yearWhere: Prisma.DocumentWhereInput = hasYearRange
-    ? {
-        year: {
-          ...(filters?.yearFrom !== undefined ? { gte: filters.yearFrom } : {}),
-          ...(filters?.yearTo !== undefined ? { lte: filters.yearTo } : {}),
-        },
-      }
-    : filters?.undated === true
-      ? { year: null }
-      : {}
-
-  const typeWhere: Prisma.DocumentWhereInput =
-    filters?.type && filters.type.length > 0
-      ? { docType: { in: filters.type } }
-      : {}
-
-  const langWhere: Prisma.DocumentWhereInput =
-    filters?.lang && filters.lang.length > 0 ? { lang: { in: filters.lang } } : {}
-
-  const sourceWhere: Prisma.DocumentWhereInput =
-    filters?.source && filters.source.length > 0
-      ? { source: { in: filters.source } }
-      : {}
-
-  // Session filter: keep only documents at least one of the selected sessions
-  // contributed. `some` over the CorpusContribution relation gives exactly that.
-  const sessionWhere: Prisma.DocumentWhereInput =
-    filters?.session && filters.session.length > 0
-      ? { contributions: { some: { sessionId: { in: filters.session } } } }
-      : {}
-
-  // Full-text: Prisma OR over contains (ILIKE on Postgres, mode-insensitive),
-  // matching title, author, and excerpt (null columns are skipped automatically).
-  const q = filters?.q
-  const fullTextWhere: Prisma.DocumentWhereInput =
-    q && q.trim().length > 0
-      ? { OR: [documentContains("title", q), documentContains("author", q), documentContains("excerpt", q)] }
-      : {}
-
-  // Ingestion-class filter: an OR over the selected classes, each a SQL mirror
-  // of classifyIngestion(). Constrained to resolved rows (the class is unknown
-  // for stubs). null when no class is selected.
-  const ingestPredicates =
-    filters?.ingest && filters.ingest.length > 0
-      ? filters.ingest
-          .map(ingestClassWhere)
-          .filter((w): w is Prisma.DocumentWhereInput => w !== null)
-      : []
-  const ingestWhere: Prisma.DocumentWhereInput | null =
-    ingestPredicates.length > 0
-      ? { resolveStatus: DOCUMENT_RESOLVE_STATUS.RESOLVED, OR: ingestPredicates }
-      : null
-
-  // Indexation-outcome filter: an OR over the selected outcomes, each a SQL
-  // mirror of classifyOutcome(). Unlike the ingestion class this is NOT
-  // constrained to resolved rows — a stub that no ingest run has covered is
-  // legitimately `not_ingested`, and hiding it would under-report exactly the
-  // gap this filter exists to show.
-  const outcomePredicates =
-    filters?.outcome && filters.outcome.length > 0
-      ? filters.outcome
-          .map((state) => outcomeWhere(state, paidOcrEnabled))
-          .filter((w): w is Prisma.DocumentWhereInput => w !== null)
-      : []
-  const outcomeFilterWhere: Prisma.DocumentWhereInput | null =
-    outcomePredicates.length > 0 ? { OR: outcomePredicates } : null
-
-  const andClauses: Prisma.DocumentWhereInput[] = []
-  if (filters?.q && filters.q.trim().length > 0) andClauses.push(fullTextWhere)
-  if (ingestWhere) andClauses.push(ingestWhere)
-  if (outcomeFilterWhere) andClauses.push(outcomeFilterWhere)
-  if (filters?.title && filters.title.length > 0) andClauses.push(documentContainsAny("title", filters.title))
-  if (filters?.creator && filters.creator.length > 0) {
-    andClauses.push(documentContainsAny("author", filters.creator))
-  }
-  if (filters?.kind && filters.kind.length > 0) andClauses.push({ OR: filters.kind.map(arkKindWhere) })
-  // `not` reuses THIS translation for its inside, so an exclusion means
-  // exactly what the same filter means positively. The inner predicate carries
-  // the membership clause too; under the outer membership clause NOT(member
-  // AND inner) reduces to NOT(inner). Every inner arm is two-valued, and the
-  // presence of each named value sits INSIDE the NOT, so a document with an
-  // unknown value is never excluded by it (CORPUS_NOT_MODE).
-  if (filters?.not) {
-    const inner = buildCorpusWhere(versionId, paidOcrEnabled, filters.not).sharedWhere
-    const known = corpusNotPresence(filters.not).map((p) => p.known)
-    andClauses.push({ NOT: { AND: [...known, inner] } })
-    if (notMode === CORPUS_NOT_MODE.REMOVE) andClauses.push(...known)
-  }
-
-  const base: Prisma.DocumentWhereInput = {
-    membership: { some: { versionId } },
-    ...typeWhere,
-    ...langWhere,
-    ...sourceWhere,
-    ...sessionWhere,
-    ...yearWhere,
-  }
-
-  const sharedWhere: Prisma.DocumentWhereInput = {
-    ...base,
-    ...(andClauses.length > 0 ? { AND: andClauses } : {}),
-  }
-
-  const withoutOutcome = andClauses.filter((c) => c !== outcomeFilterWhere)
-  const sharedWhereWithoutOutcome: Prisma.DocumentWhereInput = {
-    ...base,
-    ...(withoutOutcome.length > 0 ? { AND: withoutOutcome } : {}),
-  }
-
-  const resolvedWhere: Prisma.DocumentWhereInput = {
-    ...sharedWhere,
-    resolveStatus: DOCUMENT_RESOLVE_STATUS.RESOLVED,
-  }
-
-  return {
-    sharedWhere,
-    resolvedWhere,
-    sharedWhereWithoutOutcome,
-    parts: { typeWhere, langWhere, sourceWhere, fullTextWhere },
-  }
-}
 
 export class CorpusQueries {
   /**
@@ -471,7 +29,7 @@ export class CorpusQueries {
    * A missing project throws: reading the corpus of a project that does not
    * exist is a caller bug, not a reason to guess the flag.
    */
-  private static async paidOcrEnabled(projectId: string): Promise<boolean> {
+  static async paidOcrEnabled(projectId: string): Promise<boolean> {
     const project = await prisma.project.findUniqueOrThrow({
       where: { id: projectId },
       select: { paidOcrEnabled: true },
@@ -578,28 +136,6 @@ export class CorpusQueries {
   }
 
   /**
-   * Head members still waiting for cb→Gallica canonicalisation: catalogue
-   * notices the background canonicaliser may yet REPLACE with their digitized
-   * document, merging duplicates — so the head total is provisional while this
-   * is above zero (lib/documents/canonicalizer.ts).
-   */
-  static async pendingCanonicalCount(projectId: string): Promise<number> {
-    const project = await prisma.project.findUniqueOrThrow({
-      where: { id: projectId },
-      select: { headVersionId: true },
-    })
-    if (!project.headVersionId) {
-      throw new Error(`Project ${projectId} has no headVersionId — invariant 1 violated`)
-    }
-    return prisma.corpusMembership.count({
-      where: {
-        versionId: project.headVersionId,
-        document: { canonicalStatus: DOCUMENT_CANONICAL_STATUS.PENDING },
-      },
-    })
-  }
-
-  /**
    * Returns the ARKs currently IN THE INDEX for a project (Document.indexedAt is
    * set). This is the per-document ground truth the ingestion delta is computed
    * against — NOT the coarse ingestedVersionId pointer, which can't express a
@@ -646,29 +182,13 @@ export class CorpusQueries {
    */
   static async snapshot(
     projectId: string,
-    ref: "head" | "ingested" | { seq: number },
-    opts?: {
-      filters?: CorpusFilterSet
-      cursor?: string
-      limit?: number
-    },
-  ): Promise<CorpusSnapshot> {
-    // --- Resolve the version --------------------------------------------------
-    const version = await CorpusQueries.resolveVersion(projectId, ref)
-    const paidOcr = await CorpusQueries.paidOcrEnabled(projectId)
-    const versionId = version.id
-    const filters = opts?.filters
-    const limit = opts?.limit ?? CORPUS_SAMPLE_SIZE
-
-    // --- Build the shared filter WHERE clause --------------------------------
-    // All facet queries and the sample query share this exact WHERE predicate
-    // so that facets always reflect counts within the active filtered set.
-    // `parts` exposes the individual clauses for the few counts below that apply
-    // a deliberately different subset (undatedCount ignores the year range;
-    // pending/failed honour only source).
-    const { sharedWhere, resolvedWhere, sharedWhereWithoutOutcome, parts } =
-      buildCorpusWhere(versionId, paidOcr, filters)
-    const { typeWhere, langWhere, sourceWhere, fullTextWhere } = parts
+    version: CorpusVersionWithArks,
+    paidOcr: boolean,
+    where: CorpusWherePredicates,
+    opts: { cursor?: string; limit: number },
+  ): Promise<CorpusSnapshotRead> {
+    const limit = opts.limit
+    const { sharedWhere, resolvedWhere, outcomeWheres } = where
 
     // --- Decode cursor -------------------------------------------------------
     // Cursor format: "<versionSeq>:<lastArk>" — we only use lastArk here.
@@ -677,7 +197,7 @@ export class CorpusQueries {
     // the Prisma WHERE clause naturally returns an empty page if the ARK is
     // gone, which is safe.
     let cursorArk: string | undefined
-    if (opts?.cursor) {
+    if (opts.cursor) {
       const colonIdx = opts.cursor.indexOf(":")
       if (colonIdx !== -1) {
         cursorArk = opts.cursor.slice(colonIdx + 1)
@@ -704,37 +224,9 @@ export class CorpusQueries {
       // Total within filtered set (includes pending/failed members when no
       // type/lang/year/q filter excludes them).
       prisma.document.count({ where: sharedWhere }),
-      // Undated count: RESOLVED docs with no year (genuinely undated, not
-      // merely unresolved). Year filter intentionally not applied so the
-      // "Période non datée" tile stays informative under an active year range.
-      prisma.document.count({
-        where: {
-          membership: { some: { versionId } },
-          ...typeWhere,
-          ...langWhere,
-          ...sourceWhere,
-          ...fullTextWhere,
-          resolveStatus: DOCUMENT_RESOLVE_STATUS.RESOLVED,
-          year: null,
-        },
-      }),
-      // Pending / failed: respect only the source filter (type/lang/year/q
-      // cannot describe an unresolved doc). source is derived from the ARK so
-      // it is known even for stubs.
-      prisma.document.count({
-        where: {
-          membership: { some: { versionId } },
-          ...sourceWhere,
-          resolveStatus: DOCUMENT_RESOLVE_STATUS.PENDING,
-        },
-      }),
-      prisma.document.count({
-        where: {
-          membership: { some: { versionId } },
-          ...sourceWhere,
-          resolveStatus: DOCUMENT_RESOLVE_STATUS.FAILED,
-        },
-      }),
+      prisma.document.count({ where: where.undatedWhere }),
+      prisma.document.count({ where: where.pendingWhere }),
+      prisma.document.count({ where: where.failedWhere }),
 
       // --- Facets -----------------------------------------------------------
       // type / lang / period reflect RESOLVED docs only. source spans all
@@ -783,25 +275,11 @@ export class CorpusQueries {
         },
       }),
 
-      // --- Indexation outcome counts ----------------------------------------
-      // Four counts rather than one grouped pass: the outcome is a derived
-      // predicate over two nullable columns plus the ingestability class, not a
-      // stored column, so there is nothing to GROUP BY. They run against
-      // sharedWhereWithoutOutcome so an active outcome filter does not collapse
-      // the other three buckets to zero (see buildCorpusWhere). Mutually
-      // exclusive and total, so they sum to the unfiltered-by-outcome count.
-      ...(
-        [
-          INDEXATION_OUTCOME.INDEXED,
-          INDEXATION_OUTCOME.FAILED,
-          INDEXATION_OUTCOME.EXCLUDED,
-          INDEXATION_OUTCOME.NOT_INGESTED,
-        ] as const
-      ).map((state) =>
-        prisma.document.count({
-          where: { ...sharedWhereWithoutOutcome, ...outcomeWhere(state, paidOcr) },
-        }),
-      ),
+      // --- Indexation outcome counts (CorpusWherePredicates.outcomeWheres) ---
+      prisma.document.count({ where: outcomeWheres.indexed }),
+      prisma.document.count({ where: outcomeWheres.failed }),
+      prisma.document.count({ where: outcomeWheres.excluded }),
+      prisma.document.count({ where: outcomeWheres.not_ingested }),
     ])
 
     // --- Fold facet rows into Record<string, number> -------------------------
@@ -851,49 +329,15 @@ export class CorpusQueries {
       }))
       .sort((a, b) => b.count - a.count)
 
-    // Bin years into decade buckets ("1880s", "1890s", …) AND classify each
-    // resolved row into a numérisation/ingestion bucket — both from the single
-    // resolvedRows pass.
+    // Bin years into decade buckets ("1880s", "1890s", …). The numérisation
+    // buckets are classified from the same rows by the service.
     const periodFacet: Record<string, number> = {}
-    const numerisation = {
-      resolved: resolvedRows.length,
-      digitized: 0,
-      ingestable: 0,
-      ocr: 0,
-      vision: 0,
-      sansTexte: 0,
-      nonNumerise: 0,
-    }
     for (const r of resolvedRows) {
       if (r.year !== null) {
-        const decade = Math.floor(r.year / 10) * 10
-        const bucket = `${decade}s`
+        const bucket = `${Math.floor(r.year / 10) * 10}s`
         periodFacet[bucket] = (periodFacet[bucket] ?? 0) + 1
       }
-
-      const cls = classifyIngestion({
-        docType: r.docType,
-        ocrAvailable: r.ocrAvailable,
-        digitized: Boolean(r.iiifManifestUrl),
-      })
-      switch (cls) {
-        case INGESTION_CLASS.OCR:
-          numerisation.ocr++
-          break
-        case INGESTION_CLASS.VISION:
-          numerisation.vision++
-          break
-        case INGESTION_CLASS.SANS_TEXTE:
-          numerisation.sansTexte++
-          break
-        case INGESTION_CLASS.NON_NUMERISE:
-          numerisation.nonNumerise++
-          break
-      }
     }
-    numerisation.digitized =
-      numerisation.ocr + numerisation.vision + numerisation.sansTexte
-    numerisation.ingestable = numerisation.ocr + numerisation.vision
 
     // NOTE: pending stubs are NOT injected into the facet records — that would
     // corrupt the summary's derived values (period range, type/lang counts).
@@ -947,7 +391,7 @@ export class CorpusQueries {
         period: periodFacet,
       },
       sessions,
-      numerisation,
+      classRows: resolvedRows,
       paidOcrEnabled: paidOcr,
       indexation: {
         indexed: indexedCount,
@@ -966,7 +410,7 @@ export class CorpusQueries {
    * what "head" means. Throws if an "ingested" ref is requested before any
    * ingestion, or if a seq does not exist.
    */
-  private static async resolveVersion(
+  static async resolveVersion(
     projectId: string,
     ref: "head" | "ingested" | { seq: number },
   ): Promise<CorpusVersionWithArks> {
@@ -1002,19 +446,16 @@ export class CorpusQueries {
    * fully typed.
    */
   static async list(
-    projectId: string,
-    ref: "head" | "ingested" | { seq: number },
-    opts?: { filters?: CorpusFilterSet; cursor?: string; limit?: number },
+    version: CorpusVersionWithArks,
+    paidOcr: boolean,
+    sharedWhere: Prisma.DocumentWhereInput,
+    opts: { cursor?: string; limit: number },
   ): Promise<CorpusListPage> {
-    const version = await CorpusQueries.resolveVersion(projectId, ref)
-    const paidOcr = await CorpusQueries.paidOcrEnabled(projectId)
-    const versionId = version.id
-    const limit = opts?.limit ?? CORPUS_SAMPLE_SIZE
-    const { sharedWhere } = buildCorpusWhere(versionId, paidOcr, opts?.filters)
+    const limit = opts.limit
 
     // Decode cursor: "<versionSeq>:<lastArk>" — only lastArk is used here.
     let cursorArk: string | undefined
-    if (opts?.cursor) {
+    if (opts.cursor) {
       const colonIdx = opts.cursor.indexOf(":")
       if (colonIdx !== -1) cursorArk = opts.cursor.slice(colonIdx + 1)
     }
@@ -1060,13 +501,10 @@ export class CorpusQueries {
    * their `resolveStatus` column tells the consumer they are not yet resolved.
    */
   static async exportRows(
-    projectId: string,
-    ref: "head" | "ingested" | { seq: number },
-    filters?: CorpusFilterSet,
+    version: CorpusVersionWithArks,
+    paidOcr: boolean,
+    sharedWhere: Prisma.DocumentWhereInput,
   ): Promise<{ versionSeq: number; rows: DocumentRow[]; paidOcrEnabled: boolean }> {
-    const version = await CorpusQueries.resolveVersion(projectId, ref)
-    const paidOcr = await CorpusQueries.paidOcrEnabled(projectId)
-    const { sharedWhere } = buildCorpusWhere(version.id, paidOcr, filters)
     const rows = await prisma.document.findMany({
       where: sharedWhere,
       orderBy: { ark: "asc" },
@@ -1091,15 +529,9 @@ export class CorpusQueries {
    * sparse and sorted by count descending.
    */
   static async crossFacets(
-    projectId: string,
-    ref: "head" | "ingested" | { seq: number },
+    resolvedWhere: Prisma.DocumentWhereInput,
     dims: [CorpusFacetDimension, CorpusFacetDimension],
-    filters?: CorpusFilterSet,
   ): Promise<CorpusCrossFacets> {
-    const version = await CorpusQueries.resolveVersion(projectId, ref)
-    const paidOcr = await CorpusQueries.paidOcrEnabled(projectId)
-    const { resolvedWhere } = buildCorpusWhere(version.id, paidOcr, filters)
-
     const rows = await prisma.document.findMany({
       where: resolvedWhere,
       select: { year: true, docType: true, lang: true, source: true },
@@ -1144,52 +576,16 @@ export class CorpusQueries {
     return { dims, cells }
   }
 
-  /**
-   * Resolve the ARKs in a version a remove-by-filter would remove. The `not`
-   * reads in REMOVE mode (CORPUS_NOT_MODE): a document whose value is unknown
-   * for a dimension the exclusion names is never removed. The service either
-   * previews these (dry run) or hands them to `removeArks()`. Returns the ARKs
-   * in stable ascending order so a preview is reproducible.
-   */
-  static async arksToRemoveByFilter(
-    projectId: string,
-    ref: "head" | "ingested" | { seq: number },
-    filters: CorpusFilterSet,
-  ): Promise<string[]> {
-    const version = await CorpusQueries.resolveVersion(projectId, ref)
-    const paidOcr = await CorpusQueries.paidOcrEnabled(projectId)
-    const { sharedWhere } = buildCorpusWhere(version.id, paidOcr, filters, CORPUS_NOT_MODE.REMOVE)
-    const rows = await prisma.document.findMany({
-      where: sharedWhere,
-      select: { ark: true },
-      orderBy: { ark: "asc" },
-    })
+  /** The ARKs matching `where`, in stable ascending order (a reproducible preview). */
+  static async arks(where: Prisma.DocumentWhereInput): Promise<string[]> {
+    const rows = await prisma.document.findMany({ where, select: { ark: true }, orderBy: { ark: "asc" } })
     return rows.map((r) => r.ark)
   }
 
-  /**
-   * For a filter set with `not`: per dimension the exclusion names, how many
-   * documents of the version match the POSITIVE filters but have no value for
-   * that dimension — the documents a removal leaves in place. The dry run
-   * reports them, so "remove everything not French" says how many documents of
-   * unknown language it kept. Empty when there is no `not`. One transaction,
-   * so the counts describe one state of the corpus.
-   */
-  static async notUnknownCounts(
-    projectId: string,
-    ref: "head" | "ingested" | { seq: number },
-    filters: CorpusFilterSet,
-  ): Promise<Record<string, number>> {
-    const { not, ...positive } = filters
-    if (not === undefined) return {}
-    const version = await CorpusQueries.resolveVersion(projectId, ref)
-    const paidOcr = await CorpusQueries.paidOcrEnabled(projectId)
-    const { sharedWhere } = buildCorpusWhere(version.id, paidOcr, positive)
-    const used = corpusNotPresence(not)
-    const counts = await prisma.$transaction(
-      used.map((p) => prisma.document.count({ where: { AND: [sharedWhere, p.unknown] } })),
-    )
-    return Object.fromEntries(used.map((p, i) => [p.dimension, counts[i]]))
+  /** One count per predicate, in one transaction (one state of the corpus). */
+  static async counts(wheres: ReadonlyArray<Prisma.DocumentWhereInput>): Promise<number[]> {
+    if (wheres.length === 0) return []
+    return prisma.$transaction(wheres.map((where) => prisma.document.count({ where })))
   }
 
   /**

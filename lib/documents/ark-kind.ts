@@ -1,12 +1,10 @@
 // lib/documents/ark-kind.ts
-// The record kind of a BnF ARK — the ONE definition of ARK_KIND, its
-// classifier (classifyArkKind) and that classifier's SQL mirror over Document
-// (arkKindWhere), side by side so they cannot drift. The buffer stores the
-// kind (BufferItem.arkKind); the corpus derives it in SQL. Both models import
-// it from here, because a model's schema.ts cannot import another model's.
+// The record-kind LOGIC: the classifier (classifyArkKind) and its SQL mirror
+// over Document (arkKindWhere), side by side so they cannot drift. The
+// vocabulary itself (ARK_KIND and the prefix/type lists both read) is a domain
+// constant of models/documents/schema.ts.
 //
-// Pure — no server-only import; Prisma and the docType vocabulary are type
-// imports only.
+// Pure — no server-only import.
 //
 // WHAT a BnF record is, as opposed to what its content is (docType).
 //
@@ -33,55 +31,16 @@
 // ---------------------------------------------------------------------------
 
 import type { Prisma } from "@/lib/generated/prisma/client"
-import type { DocTypeCode } from "@/models/documents/schema"
-
-/** The docType codes the kinds read (checked against the vocabulary). */
-const PRESS = "press" satisfies DocTypeCode
-const BOOK = "book" satisfies DocTypeCode
-
-/** The `cb…` id prefix of a BnF catalogue notice. */
-export const CATALOGUE_ARK_PREFIX = "cb"
-
-export const ARK_KIND = {
-  PERIODICAL_ISSUE: "periodical_issue",
-  PERIODICAL_COLLECTION: "periodical_collection",
-  MONOGRAPH: "monograph",
-  IMAGE: "image",
-  CATALOGUE_NOTICE: "catalogue_notice",
-  OTHER_DOCUMENT: "other_document",
-  UNKNOWN: "unknown",
-} as const
-export type ArkKind = (typeof ARK_KIND)[keyof typeof ARK_KIND]
-/** ARK_KIND's values as a tuple, for z.enum. */
-export const ARK_KIND_VALUES = [
-  ARK_KIND.PERIODICAL_ISSUE,
-  ARK_KIND.PERIODICAL_COLLECTION,
-  ARK_KIND.MONOGRAPH,
-  ARK_KIND.IMAGE,
-  ARK_KIND.CATALOGUE_NOTICE,
-  ARK_KIND.OTHER_DOCUMENT,
-  ARK_KIND.UNKNOWN,
-] as const satisfies readonly ArkKind[]
-
-/** Canonical docTypes whose digitized document is an image. */
-export const ARK_KIND_IMAGE_TYPES = [
-  "image",
-  "poster",
-  "estampe",
-  "enlum",
-] as const satisfies readonly DocTypeCode[]
-/** Canonical docTypes whose digitized document is neither text nor image. */
-export const ARK_KIND_OTHER_DOCUMENT_TYPES = [
-  "map",
-  "manuscript",
-  "score",
-  "audio",
-  "video",
-  "object",
-  "charte",
-] as const satisfies readonly DocTypeCode[]
-/** Gallica digitized-document ARK prefixes (the complement of `cb`). */
-export const GALLICA_ARK_PREFIXES = ["bpt6k", "btv1b", "bd6t"] as const
+import {
+  ARK_KIND,
+  ARK_KIND_IMAGE_TYPES,
+  ARK_KIND_OTHER_DOCUMENT_TYPES,
+  ARK_KIND_VALUES,
+  CATALOGUE_ARK_PREFIX,
+  DOC_TYPE_CODE,
+  GALLICA_ARK_PREFIXES,
+  type ArkKind,
+} from "@/models/documents/schema"
 
 const IMAGE_TYPES = new Set<string>(ARK_KIND_IMAGE_TYPES)
 const OTHER_DOCUMENT_TYPES = new Set<string>(ARK_KIND_OTHER_DOCUMENT_TYPES)
@@ -109,11 +68,11 @@ export function classifyArkKind(d: {
   if (d.collectionEntry) return ARK_KIND.PERIODICAL_COLLECTION
   const id = d.ark.replace(/^ark:\/\d+\//, "")
   if (id.startsWith(CATALOGUE_ARK_PREFIX)) {
-    return d.docType === PRESS ? ARK_KIND.PERIODICAL_COLLECTION : ARK_KIND.CATALOGUE_NOTICE
+    return d.docType === DOC_TYPE_CODE.PRESS ? ARK_KIND.PERIODICAL_COLLECTION : ARK_KIND.CATALOGUE_NOTICE
   }
   if (GALLICA_ARK_PREFIXES.some((p) => id.startsWith(p))) {
-    if (d.docType === PRESS) return ARK_KIND.PERIODICAL_ISSUE
-    if (d.docType === BOOK) return ARK_KIND.MONOGRAPH
+    if (d.docType === DOC_TYPE_CODE.PRESS) return ARK_KIND.PERIODICAL_ISSUE
+    if (d.docType === DOC_TYPE_CODE.BOOK) return ARK_KIND.MONOGRAPH
     if (d.docType !== null && IMAGE_TYPES.has(d.docType)) return ARK_KIND.IMAGE
     if (d.docType !== null && OTHER_DOCUMENT_TYPES.has(d.docType)) return ARK_KIND.OTHER_DOCUMENT
     return ARK_KIND.UNKNOWN
@@ -121,18 +80,6 @@ export function classifyArkKind(d: {
   return ARK_KIND.UNKNOWN
 }
 
-
-/** The i18n key of each kind under `corpus.buffer.kinds` (keys are camelCase,
- *  codes are snake_case — next-intl keys never carry the domain code). */
-export const ARK_KIND_I18N_KEY = {
-  [ARK_KIND.PERIODICAL_ISSUE]: "periodicalIssue",
-  [ARK_KIND.PERIODICAL_COLLECTION]: "periodicalCollection",
-  [ARK_KIND.MONOGRAPH]: "monograph",
-  [ARK_KIND.IMAGE]: "image",
-  [ARK_KIND.CATALOGUE_NOTICE]: "catalogueNotice",
-  [ARK_KIND.OTHER_DOCUMENT]: "otherDocument",
-  [ARK_KIND.UNKNOWN]: "unknown",
-} as const satisfies Record<ArkKind, string>
 
 /** True for one of the seven record kinds (input validation). */
 export function isArkKind(value: string): value is ArkKind {
@@ -159,17 +106,17 @@ function arkIdStartsWith(prefix: string): Prisma.DocumentWhereInput {
 export function arkKindWhere(kind: ArkKind): Prisma.DocumentWhereInput {
   const cb = arkIdStartsWith(CATALOGUE_ARK_PREFIX)
   const digitized: Prisma.DocumentWhereInput = { OR: GALLICA_ARK_PREFIXES.map(arkIdStartsWith) }
-  const known: string[] = [PRESS, BOOK, ...ARK_KIND_IMAGE_TYPES, ...ARK_KIND_OTHER_DOCUMENT_TYPES]
+  const known: string[] = [DOC_TYPE_CODE.PRESS, DOC_TYPE_CODE.BOOK, ...ARK_KIND_IMAGE_TYPES, ...ARK_KIND_OTHER_DOCUMENT_TYPES]
   const typeIs = (types: readonly string[]): Prisma.DocumentWhereInput => ({ docType: { not: null, in: [...types] } })
   switch (kind) {
     case ARK_KIND.PERIODICAL_COLLECTION:
-      return { AND: [cb, typeIs([PRESS])] }
+      return { AND: [cb, typeIs([DOC_TYPE_CODE.PRESS])] }
     case ARK_KIND.CATALOGUE_NOTICE:
-      return { AND: [cb, { OR: [{ docType: null }, { docType: { not: PRESS } }] }] }
+      return { AND: [cb, { OR: [{ docType: null }, { docType: { not: DOC_TYPE_CODE.PRESS } }] }] }
     case ARK_KIND.PERIODICAL_ISSUE:
-      return { AND: [digitized, typeIs([PRESS])] }
+      return { AND: [digitized, typeIs([DOC_TYPE_CODE.PRESS])] }
     case ARK_KIND.MONOGRAPH:
-      return { AND: [digitized, typeIs([BOOK])] }
+      return { AND: [digitized, typeIs([DOC_TYPE_CODE.BOOK])] }
     case ARK_KIND.IMAGE:
       return { AND: [digitized, typeIs(ARK_KIND_IMAGE_TYPES)] }
     case ARK_KIND.OTHER_DOCUMENT:

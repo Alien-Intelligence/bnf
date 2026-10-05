@@ -30,7 +30,8 @@ import {
   useDiscardCandidates,
 } from "@/hooks/api/buffer"
 import { BUFFER_PANEL_LIMIT } from "@/lib/constants"
-import { ARK_KIND_I18N_KEY, isArkKind } from "@/lib/documents/ark-kind"
+import { isArkKind } from "@/lib/documents/ark-kind"
+import { ARK_KIND_I18N_KEY } from "@/models/documents/schema"
 import { BUFFER_ENRICH_STATUS, type BufferRow } from "@/models/buffer/schema"
 
 interface Props {

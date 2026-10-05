@@ -9,8 +9,9 @@ import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tansta
 import { apiFetch } from "@/lib/api-fetch"
 import { corpusKeys } from "./corpus"
 import type { BufferCommitResult } from "@/models/buffer/service"
-import type { BufferFilterSet, BufferSnapshot } from "@/models/buffer/schema"
-import { bufferFiltersToParams, type BufferCommitInput, type BufferDiscardInput } from "@/models/buffer/types"
+import { bufferFiltersToParams } from "@/lib/buffer/filter-query"
+import type { BufferSnapshot } from "@/models/buffer/schema"
+import type { BufferCommitInput, BufferDiscardInput, BufferFilterSet } from "@/models/buffer/types"
 
 // ── Query keys ────────────────────────────────────────────────────────────────
 

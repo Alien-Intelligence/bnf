@@ -6,6 +6,118 @@
 // schema.ts, not here — per playbook/models.md.
 
 import { z } from "zod"
+import {
+  arkKindListSchema,
+  docTypeListSchema,
+  ingestClassListSchema,
+  langListSchema,
+  outcomeListSchema,
+  sessionIdListSchema,
+  sourceListSchema,
+  textAnySchema,
+} from "@/lib/filters"
+
+// ---------------------------------------------------------------------------
+// Corpus filters — ONE definition for the agent tools AND the REST routes
+// (GET /corpus and /corpus/export decode their query string into this shape
+// with lib/corpus/filter-query.ts and validate it with this schema).
+//
+// Found bug: every description used to say "to KEEP", while
+// corpus_remove_by_filter removes what MATCHES — an agent in prod reasoned
+// "the 'to keep' description is a copy-paste error" mid-turn. Every criterion
+// now says what it matches; the tools say what they do with the match.
+// ---------------------------------------------------------------------------
+
+export const corpusFilterFieldsSchema = z.object({
+  type: docTypeListSchema.optional().describe('Doc-type codes to match, e.g. ["book","press"].'),
+  lang: langListSchema.optional().describe('Language codes to match (ISO 639, lowercase), e.g. ["fr","la","de"].'),
+  source: sourceListSchema.optional().describe('Sources to match: "gallica" | "catalogue" | "databnf" | "other".'),
+  session: sessionIdListSchema
+    .optional()
+    .describe("Sessions (ids) whose contributions to keep — the panel's attribution facet."),
+  title: textAnySchema
+    .optional()
+    .describe(
+      "Contains ANY of these strings in the title (case-insensitive, accent-sensitive — pass " +
+        'variants: ["Algérie","Algerie"]).',
+    ),
+  creator: textAnySchema
+    .optional()
+    .describe("Contains ANY of these strings in the author (case-insensitive, accent-sensitive)."),
+  kind: arkKindListSchema
+    .optional()
+    .describe(
+      "Record kinds to match: periodical_issue | periodical_collection | monograph | image | " +
+        "catalogue_notice | other_document | unknown.",
+    ),
+  ingest: ingestClassListSchema
+    .optional()
+    .describe("Numérisation classes to match: ocr | vision | sans_texte | non_numerise."),
+  outcome: outcomeListSchema
+    .optional()
+    .describe(
+      "Indexation outcome to match — what became of the document when the " +
+        "corpus was last ingested. `indexed`: in the search index, you can " +
+        "retrieve it. `failed`: sent for indexing and broke (throttling, bad " +
+        "transcription); it is IN the corpus but NOT searchable. `excluded`: " +
+        "never sent because it has no text to index (a catalogue notice, an " +
+        "undigitized work). `not_ingested`: added since the last ingestion. " +
+        "Use this when a search over the corpus returns less than the corpus " +
+        "visibly contains: documents that are not `indexed` exist but cannot " +
+        "be found by rag_* tools, and saying they are absent would be wrong. " +
+        "This describes the past, not a judgement — never use it to decide " +
+        "which documents belong in a corpus.",
+    ),
+  yearFrom: z
+    .number()
+    .int()
+    .optional()
+    .describe("Year lower bound, inclusive (e.g. 1970)."),
+  yearTo: z
+    .number()
+    .int()
+    .optional()
+    .describe("Year upper bound, inclusive (e.g. 2025)."),
+  undated: z
+    .boolean()
+    .optional()
+    .describe("Match only documents with an unknown date. Ignored when yearFrom/yearTo is set."),
+  q: z
+    .string()
+    .trim()
+    .min(1)
+    .optional()
+    .describe("Free-text match over title, author, and excerpt."),
+})
+
+export const corpusFilterSetSchema = corpusFilterFieldsSchema
+  .extend({
+    not: corpusFilterFieldsSchema
+      .omit({ session: true })
+      .optional()
+      .describe(
+        "EXCLUDE documents matching ALL these criteria. A document whose value is UNKNOWN for a " +
+          "criterion used here is never matched by `not`: it is neither listed nor removed, and " +
+          "every read and dry run reports how many such documents were left out, per criterion, " +
+          "as `notUnknown`.",
+      ),
+  })
+  .describe(
+    "Metadata filters, to MATCH. In corpus_remove_by_filter, documents MATCHING the filter are " +
+      "removed; in the read tools they are kept in view. Omit a field to leave that dimension " +
+      "unconstrained.",
+  )
+
+/** One level of corpus filter criteria (OR within a dimension, AND across). */
+export type CorpusFilterFields = z.infer<typeof corpusFilterFieldsSchema>
+/** The corpus filter set: the criteria plus a one-level `not` (no `session` inside). */
+export type CorpusFilterSet = z.infer<typeof corpusFilterSetSchema>
+/** The fields a corpus `not` may carry. */
+export type CorpusNotFilterSet = NonNullable<CorpusFilterSet["not"]>
+
+/** The agent's filter schema: the same definition, minus the UI-only session facet. */
+export const corpusAgentFilterSetSchema = corpusFilterSetSchema.omit({ session: true })
+
 
 // ---------------------------------------------------------------------------
 // Client-side filter state
@@ -43,8 +155,11 @@ export const corpusFiltersSchema = z.object({
   yearFrom: z.coerce.number().int().optional(),
   /** Decade end (inclusive), e.g. 1889 */
   yearTo: z.coerce.number().int().optional(),
-  /** When true, include documents with no date in the result set */
-  undated: z.coerce.boolean().optional(),
+  /** "true"/"1" or "false"/"0" — `z.coerce.boolean()` read the STRING "false" as true. */
+  undated: z
+    .enum(["true", "false", "1", "0"])
+    .transform((v) => v === "true" || v === "1")
+    .optional(),
   /** Free-text query; empty string is treated as absent */
   q: z.string().trim().min(1).optional(),
 })

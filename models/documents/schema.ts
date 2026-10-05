@@ -18,7 +18,6 @@
 //   Do not restore without a concrete ARK example that maps to them.
 //
 // No imports from other model directories — schema.ts is the foundation layer.
-import { ARK_KIND, type ArkKind } from "@/lib/documents/ark-kind"
 
 /** One entry in a facet vocabulary map. */
 export type VocabEntry = {
@@ -136,10 +135,67 @@ export const DOC_TYPE_CODE = {
   OTHER: "other",
 } as const satisfies Record<string, DocTypeCode>
 
-// Record kind: ARK_KIND, its classifier and its SQL mirror live in
-// lib/documents/ark-kind.ts — the ONE definition the buffer and the corpus
-// share (a model's schema.ts cannot import another model's).
+// Record kind (BufferItem.arkKind, and the SQL mirror arkKindWhere over
+// Document) — WHAT a BnF record is, as opposed to what its content is
+// (docType). The classifier and its SQL mirror are in lib/documents/ark-kind.ts.
 // ---------------------------------------------------------------------------
+
+/** The `cb…` id prefix of a BnF catalogue notice. */
+export const CATALOGUE_ARK_PREFIX = "cb"
+
+export const ARK_KIND = {
+  PERIODICAL_ISSUE: "periodical_issue",
+  PERIODICAL_COLLECTION: "periodical_collection",
+  MONOGRAPH: "monograph",
+  IMAGE: "image",
+  CATALOGUE_NOTICE: "catalogue_notice",
+  OTHER_DOCUMENT: "other_document",
+  UNKNOWN: "unknown",
+} as const
+export type ArkKind = (typeof ARK_KIND)[keyof typeof ARK_KIND]
+/** ARK_KIND's values as a tuple, for z.enum. */
+export const ARK_KIND_VALUES = [
+  ARK_KIND.PERIODICAL_ISSUE,
+  ARK_KIND.PERIODICAL_COLLECTION,
+  ARK_KIND.MONOGRAPH,
+  ARK_KIND.IMAGE,
+  ARK_KIND.CATALOGUE_NOTICE,
+  ARK_KIND.OTHER_DOCUMENT,
+  ARK_KIND.UNKNOWN,
+] as const satisfies readonly ArkKind[]
+
+/** Canonical docTypes whose digitized document is an image. */
+export const ARK_KIND_IMAGE_TYPES = [
+  DOC_TYPE_CODE.IMAGE,
+  DOC_TYPE_CODE.POSTER,
+  DOC_TYPE_CODE.ESTAMPE,
+  DOC_TYPE_CODE.ENLUM,
+] as const satisfies readonly DocTypeCode[]
+/** Canonical docTypes whose digitized document is neither text nor image. */
+export const ARK_KIND_OTHER_DOCUMENT_TYPES = [
+  DOC_TYPE_CODE.MAP,
+  DOC_TYPE_CODE.MANUSCRIPT,
+  DOC_TYPE_CODE.SCORE,
+  DOC_TYPE_CODE.AUDIO,
+  DOC_TYPE_CODE.VIDEO,
+  DOC_TYPE_CODE.OBJECT,
+  DOC_TYPE_CODE.CHARTE,
+] as const satisfies readonly DocTypeCode[]
+/** Gallica digitized-document ARK prefixes (the complement of `cb`). */
+export const GALLICA_ARK_PREFIXES = ["bpt6k", "btv1b", "bd6t"] as const
+
+/** The i18n key of each kind under `corpus.buffer.kinds` (keys are camelCase,
+ *  codes are snake_case — next-intl keys never carry the domain code). */
+export const ARK_KIND_I18N_KEY = {
+  [ARK_KIND.PERIODICAL_ISSUE]: "periodicalIssue",
+  [ARK_KIND.PERIODICAL_COLLECTION]: "periodicalCollection",
+  [ARK_KIND.MONOGRAPH]: "monograph",
+  [ARK_KIND.IMAGE]: "image",
+  [ARK_KIND.CATALOGUE_NOTICE]: "catalogueNotice",
+  [ARK_KIND.OTHER_DOCUMENT]: "otherDocument",
+  [ARK_KIND.UNKNOWN]: "unknown",
+} as const satisfies Record<ArkKind, string>
+
 
 /**
  * Kind → hue for the buffer's kind facet. `satisfies` binds the map to the

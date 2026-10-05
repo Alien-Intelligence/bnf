@@ -5,7 +5,7 @@ import "server-only"
 
 import { prisma } from "@/lib/db"
 import type { Document, Prisma } from "@/lib/generated/prisma/client"
-import { DOCUMENT_RESOLVE_STATUS } from "./schema"
+import { DOCUMENT_CANONICAL_STATUS, DOCUMENT_RESOLVE_STATUS } from "./schema"
 
 /** The fields of a resolved Document a bare buffer row copies. */
 const resolvedDocumentSelect = {
@@ -23,6 +23,13 @@ const resolvedDocumentSelect = {
 export type ResolvedDocumentRow = Prisma.DocumentGetPayload<{ select: typeof resolvedDocumentSelect }>
 
 export class DocumentQueries {
+  /** Members of a corpus version still waiting for cb→Gallica canonicalisation. */
+  static async pendingCanonicalInVersion(versionId: string): Promise<number> {
+    return prisma.corpusMembership.count({
+      where: { versionId, document: { canonicalStatus: DOCUMENT_CANONICAL_STATUS.PENDING } },
+    })
+  }
+
   /** Every distinct non-null `lang` value stored (a few dozen at most). */
   static async distinctLangs(): Promise<string[]> {
     const rows = await prisma.document.findMany({

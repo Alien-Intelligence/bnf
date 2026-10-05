@@ -31,9 +31,7 @@ import { sourceFromArk } from "@/lib/mcp/vocab"
 import { CorpusPolicy } from "@/models/corpus/policy"
 import { CorpusQueries } from "@/models/corpus/queries"
 import { CorpusService } from "@/models/corpus/service"
-import { arkSchema } from "@/models/corpus/types"
-import { ARK_KIND_VALUES } from "@/lib/documents/ark-kind"
-import { textAnySchema } from "@/lib/filters"
+import { arkSchema, corpusAgentFilterSetSchema } from "@/models/corpus/types"
 import { INDEXATION_OUTCOME, classifyOutcome } from "@/models/documents/schema"
 import type { DocumentRow } from "@/models/corpus/schema"
 import type { TurnScopedCtx } from "./registry-factory"
@@ -45,12 +43,10 @@ import { AGENT_TOOLS } from "./constants"
 import { provisionalTotal } from "./provisional-total"
 
 // ---------------------------------------------------------------------------
-// Shared filter schema (corpus_get_state, corpus_list, corpus_stats,
-// corpus_remove_by_filter all accept the same metadata filter set)
+// Shared filter schema: models/corpus/types.ts (one definition with REST)
 // ---------------------------------------------------------------------------
 
-/** Numérisation / ingestion classes — the derived ingestability buckets. */
-const ingestClassEnum = z.enum(["ocr", "vision", "sans_texte", "non_numerise"])
+const corpusFiltersSchema = corpusAgentFilterSetSchema
 
 /**
  * The corpus a read tool reads, or the refusal when the derived workspace's
@@ -60,117 +56,6 @@ function corpusReadTarget(ctx: TurnScopedCtx): { ok: true; projectId: string } |
   if (!ctx.corpusReachable) return { ok: false, result: toolFailure(CORPUS_ACCESS_REVOKED_ERROR) }
   return { ok: true, projectId: ctx.corpusProjectId }
 }
-
-/**
- * Indexation outcomes — what BECAME of a document at ingestion. Distinct from
- * `ingestClassEnum`, which is the pre-flight expectation. This is the dimension
- * that lets the agent tell "the corpus holds nothing on this subject" apart from
- * "the corpus holds four documents on it that failed to index", which it
- * previously could not and so reported as absence.
- */
-const outcomeEnum = z.enum(["indexed", "failed", "excluded", "not_ingested"])
-
-
-/**
- * One level of the metadata filter set the corpus agent passes to narrow a
- * read or a bulk removal. Mirrors `CorpusFilterSet` (models/corpus/queries.ts)
- * minus `session` (a UI-only attribution facet the agent has no use for). All
- * fields optional; absent means "no constraint on this dimension".
- * Multi-select dimensions are arrays (pass one or several values).
- *
- * Found bug: every description used to say "to KEEP", while
- * corpus_remove_by_filter removes what MATCHES — an agent in prod reasoned
- * "the 'to keep' description is a copy-paste error" mid-turn. Every criterion
- * now says what it matches; the tools say what they do with the match.
- */
-const corpusFilterFieldsSchema = z.object({
-  type: z
-    .array(z.string())
-    .optional()
-    .describe('Doc-type codes to match, e.g. ["book","press"].'),
-  lang: z
-    .array(z.string())
-    .optional()
-    .describe('Language codes to match (ISO 639-1), e.g. ["fr","la","de"].'),
-  source: z
-    .array(z.string())
-    .optional()
-    .describe('Sources to match: "gallica" | "catalogue" | "other".'),
-  title: textAnySchema
-    .optional()
-    .describe(
-      "Contains ANY of these strings in the title (case-insensitive, accent-sensitive — pass " +
-        'variants: ["Algérie","Algerie"]).',
-    ),
-  creator: textAnySchema
-    .optional()
-    .describe("Contains ANY of these strings in the author (case-insensitive, accent-sensitive)."),
-  kind: z
-    .array(z.enum(ARK_KIND_VALUES))
-    .optional()
-    .describe(
-      "Record kinds to match: periodical_issue | periodical_collection | monograph | image | " +
-        "catalogue_notice | other_document | unknown.",
-    ),
-  ingest: z
-    .array(ingestClassEnum)
-    .optional()
-    .describe("Numérisation classes to match: ocr | vision | sans_texte | non_numerise."),
-  outcome: z
-    .array(outcomeEnum)
-    .optional()
-    .describe(
-      "Indexation outcome to match — what became of the document when the " +
-        "corpus was last ingested. `indexed`: in the search index, you can " +
-        "retrieve it. `failed`: sent for indexing and broke (throttling, bad " +
-        "transcription); it is IN the corpus but NOT searchable. `excluded`: " +
-        "never sent because it has no text to index (a catalogue notice, an " +
-        "undigitized work). `not_ingested`: added since the last ingestion. " +
-        "Use this when a search over the corpus returns less than the corpus " +
-        "visibly contains: documents that are not `indexed` exist but cannot " +
-        "be found by rag_* tools, and saying they are absent would be wrong. " +
-        "This describes the past, not a judgement — never use it to decide " +
-        "which documents belong in a corpus.",
-    ),
-  yearFrom: z
-    .number()
-    .int()
-    .optional()
-    .describe("Year lower bound, inclusive (e.g. 1970)."),
-  yearTo: z
-    .number()
-    .int()
-    .optional()
-    .describe("Year upper bound, inclusive (e.g. 2025)."),
-  undated: z
-    .boolean()
-    .optional()
-    .describe(
-      "Match only documents with an unknown date. Ignored when yearFrom/yearTo is set.",
-    ),
-  q: z
-    .string()
-    .trim()
-    .min(1)
-    .optional()
-    .describe("Free-text match over title, author, and excerpt."),
-})
-
-const corpusFiltersSchema = corpusFilterFieldsSchema
-  .extend({
-    not: corpusFilterFieldsSchema
-      .optional()
-      .describe(
-        "EXCLUDE documents matching ALL these criteria. A document whose field is unknown for a " +
-          "criterion used here is never excluded: a read keeps it in view, and " +
-          "corpus_remove_by_filter never removes it (the dry run reports how many as `notUnknown`).",
-      ),
-  })
-  .describe(
-    "Metadata filters, to MATCH. In corpus_remove_by_filter, documents MATCHING the filter are " +
-      "removed; in the read tools they are kept in view. Omit a field to leave that dimension " +
-      "unconstrained.",
-  )
 
 /** The document fields corpus_list may project. `ark` is always returned. */
 const corpusListFieldEnum = z.enum([
@@ -263,7 +148,7 @@ export const corpusGetStateTool = defineTool<
     const target = corpusReadTarget(ctx)
     if (!target.ok) return target.result
     const projectId = target.projectId
-    const snapshot = await CorpusQueries.snapshot(
+    const snapshot = await CorpusService.snapshot(
       projectId,
       "head",
       includeSample ? { filters, limit: sampleLimit } : { filters, limit: 0 },
@@ -331,7 +216,7 @@ export const corpusListTool = defineTool<
     const filters = input.filters
     const target = corpusReadTarget(ctx)
     if (!target.ok) return target.result
-    const page = await CorpusQueries.list(target.projectId, "head", {
+    const page = await CorpusService.list(target.projectId, "head", {
       filters,
       cursor: input.cursor,
       limit: input.limit,
@@ -359,6 +244,7 @@ export const corpusListTool = defineTool<
       total: page.total,
       documents,
       ...(page.nextCursor !== undefined ? { nextCursor: page.nextCursor } : {}),
+      ...(page.notUnknown !== undefined ? { notUnknown: page.notUnknown } : {}),
     }
   },
 })
@@ -468,7 +354,7 @@ export const corpusAddTool = defineTool<
     // filter or warn on it here.
     // The total is provisional while catalogue notices may still be replaced
     // by their digitized document (feedback #10c) — say so, with what to do.
-    const canonicalizationPending = await CorpusQueries.pendingCanonicalCount(projectId)
+    const canonicalizationPending = await CorpusService.pendingCanonicalCount(projectId)
     return {
       requested: result.requested,
       added: result.lastDeltaAdded,
@@ -668,7 +554,7 @@ export const corpusStatsTool = defineTool<
     const target = corpusReadTarget(ctx)
     if (!target.ok) return target.result
     const projectId = target.projectId
-    const snapshot = await CorpusQueries.snapshot(projectId, "head", {
+    const snapshot = await CorpusService.snapshot(projectId, "head", {
       filters,
       limit: 0,
     })
@@ -676,7 +562,7 @@ export const corpusStatsTool = defineTool<
 
     if (!input.cross_facets) return stats
 
-    const cross = await CorpusQueries.crossFacets(
+    const cross = await CorpusService.crossFacets(
       projectId,
       "head",
       [input.cross_facets[0], input.cross_facets[1]],

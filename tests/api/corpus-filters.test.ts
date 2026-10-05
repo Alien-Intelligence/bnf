@@ -1,76 +1,87 @@
-// app/api/_corpus-filters.test.ts
-// corpusFiltersToFilterSet — the single wire-form → query-layer conversion, now
-// shared by GET /corpus and GET /corpus/export.
-//
-// It is tested because both routes depend on it agreeing with itself: the CSV
-// export exists to hand a librarian exactly the set on screen, so a conversion
-// that behaved differently per route would produce an export that silently
-// disagreed with the panel it was taken from. Pure function, no Prisma.
+// tests/api/corpus-filters.test.ts
+// The corpus filters' REST boundary: GET /corpus and GET /corpus/export decode
+// their query string (lib/corpus/filter-query.ts) into the ONE corpus filter
+// schema the agent tools use (models/corpus/types.ts). Pinned here: whatever
+// the Constituer panel writes into the URL reads back the same; `undated` is
+// parsed strictly (the coerced "false" used to filter TO undated documents);
+// the full agent vocabulary (not, title, creator, kind) is accepted; and an
+// invalid value is refused, never dropped.
 import "server-only"
 
 import { test } from "node:test"
 import assert from "node:assert/strict"
+import { corpusFilterInputFromParams } from "@/lib/corpus/filter-query"
+import { corpusFilterSetSchema, corpusFiltersToParams } from "@/models/corpus/types"
 
-import { corpusFiltersToFilterSet } from "@/app/api/_corpus-filters"
-import { corpusFiltersToParams } from "@/models/corpus/types"
+const parse = (params: URLSearchParams) => {
+  const input = corpusFilterInputFromParams(params)
+  return input === undefined ? undefined : corpusFilterSetSchema.safeParse(input)
+}
 
-test("no filter set → undefined, not an empty object", () => {
-  // The query layer treats undefined as "no filter" and an object as "these
-  // filters"; returning {} for an unfiltered request would still be correct
-  // today but states something the caller did not ask for.
-  assert.equal(corpusFiltersToFilterSet({}), undefined)
+test("no filter parameter → undefined (an unfiltered read), not an empty object", () => {
+  assert.equal(corpusFilterInputFromParams(new URLSearchParams("version=head&limit=5")), undefined)
 })
 
-test("CSV multi-selects become arrays, whitespace and empties dropped", () => {
-  const set = corpusFiltersToFilterSet({ type: " book , press ,, " })
-  assert.deepEqual(set?.type, ["book", "press"])
+test("the panel's comma-joined multi-selects become arrays; whitespace and empties dropped", () => {
+  const parsed = parse(new URLSearchParams("type=%20book%20,%20press%20,,%20"))
+  assert.ok(parsed?.success)
+  assert.deepEqual(parsed.data.type, ["book", "press"])
+  assert.equal(corpusFilterInputFromParams(new URLSearchParams("type=%20,%20,%20")), undefined)
 })
 
-test("a whitespace-only value is no filter, never an empty match", () => {
-  // `{ type: [] }` would reach Prisma as "in []" and match nothing, turning a
-  // malformed query string into an empty corpus.
-  assert.equal(corpusFiltersToFilterSet({ type: " , , " }), undefined)
-})
-
-test("every dimension survives the round trip", () => {
-  // Guards the two routes drifting from the client: whatever
-  // corpusFiltersToParams writes into the URL, this must read back out.
-  const filters = {
+test("every dimension the panel writes reads back the same", () => {
+  const ui = {
     type: "book",
     lang: "fr",
     source: "gallica",
-    session: "s1",
-    ingest: "ocr",
-    outcome: "failed,not_ingested",
+    session: "11111111-1111-4111-8111-111111111111",
+    ingest: "ocr,vision",
+    outcome: "failed",
     yearFrom: 1880,
-    yearTo: 1889,
+    yearTo: 1890,
     undated: false,
-    q: "perfumery",
+    q: "incendie",
   }
-  const params = corpusFiltersToParams(filters)
-  for (const key of Object.keys(filters)) {
-    assert.ok(params.has(key), `${key} is not serialised into the query string`)
-  }
-
-  const set = corpusFiltersToFilterSet(filters)
-  assert.deepEqual(set, {
+  const parsed = parse(corpusFiltersToParams(ui))
+  assert.ok(parsed?.success)
+  assert.deepEqual(parsed.data, {
     type: ["book"],
     lang: ["fr"],
     source: ["gallica"],
-    session: ["s1"],
-    ingest: ["ocr"],
-    outcome: ["failed", "not_ingested"],
+    session: ["11111111-1111-4111-8111-111111111111"],
+    ingest: ["ocr", "vision"],
+    outcome: ["failed"],
     yearFrom: 1880,
-    yearTo: 1889,
+    yearTo: 1890,
     undated: false,
-    q: "perfumery",
+    q: "incendie",
   })
 })
 
-test("a lone outcome filter is active on its own", () => {
-  // The regression to avoid: a new dimension added to the schema but forgotten
-  // in the conversion reads as "no filters at all", so the route quietly
-  // returns the whole corpus instead of the failures the librarian asked for.
-  const set = corpusFiltersToFilterSet({ outcome: "failed" })
-  assert.deepEqual(set?.outcome, ["failed"])
+test("undated is strict: false is false, garbage is refused", () => {
+  assert.equal(parse(new URLSearchParams("undated=false"))?.success && parse(new URLSearchParams("undated=false"))?.data?.undated, false)
+  assert.equal(parse(new URLSearchParams("undated=1"))?.data?.undated, true)
+  assert.equal(parse(new URLSearchParams("undated=yes"))?.success, false)
+})
+
+test("the agent's vocabulary is accepted at REST too; free-text keeps its commas", () => {
+  const params = new URLSearchParams()
+  params.append("creator", "Hugo, Victor")
+  params.append("title", "Oran")
+  params.append("kind", "periodical_issue")
+  params.append("not.lang", "fr")
+  const parsed = parse(params)
+  assert.ok(parsed?.success)
+  assert.deepEqual(parsed.data, {
+    creator: ["Hugo, Victor"],
+    title: ["Oran"],
+    kind: ["periodical_issue"],
+    not: { lang: ["fr"] },
+  })
+})
+
+test("values outside the vocabulary are refused, not dropped", () => {
+  for (const qs of ["type=presse", "lang=ger", "source=bnf", "kind=pamphlet", "ingest=scan", "yearFrom=abc"]) {
+    assert.equal(parse(new URLSearchParams(qs))?.success, false, qs)
+  }
 })
