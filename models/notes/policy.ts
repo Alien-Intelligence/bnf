@@ -22,6 +22,12 @@ export class NotePolicy {
     return canWriteProject(this.user, project)
   }
 
+  /** Any note write on the project — the gate a tool checks BEFORE it looks a
+   *  note up, so a reader can neither write nor probe which ids exist. */
+  write(project: ProjectWithShares): boolean {
+    return canWriteProject(this.user, project)
+  }
+
   update(project: ProjectWithShares, _note: Note): boolean {
     return canWriteProject(this.user, project)
   }

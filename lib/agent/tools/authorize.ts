@@ -30,6 +30,11 @@ export const TOOL_FORBIDDEN_ERROR =
   "ou projet dérivé qui lit le corpus d'un autre projet). Explique-le au bibliothécaire ; " +
   "ne réessaie pas autrement."
 
+/** The structured refusal, for a check a handler makes after the gate. */
+export function toolForbidden(): ToolForbidden {
+  return { success: false, forbidden: true, error: TOOL_FORBIDDEN_ERROR }
+}
+
 /**
  * A policy whose `action` takes the project first (and, for a note, the note).
  * Typed structurally so a policy method that does not take a ProjectWithShares
@@ -59,5 +64,5 @@ export async function authorizeProjectTool<A extends string, R extends unknown[]
   }
   const policy = new PolicyClass(ctx.user)
   if (policy[action](project, ...rest)) return { ok: true, project }
-  return { ok: false, result: { success: false, forbidden: true, error: TOOL_FORBIDDEN_ERROR } }
+  return { ok: false, result: toolForbidden() }
 }

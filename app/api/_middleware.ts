@@ -30,22 +30,36 @@ type AuthedHandler<C = unknown> = (
   ctx: C,
 ) => Promise<Response>
 
+/**
+ * The ONE assembly of a request's PolicyUser: the session, then the full
+ * Prisma User (all application fields — better-auth session.user only carries
+ * BaseUser) and the user's group ids, resolved once so policies stay I/O-free
+ * (every project-access decision reads `groupIds` off the PolicyUser).
+ * `no_session` / `no_user` say why there is none; the caller decides the
+ * response. withAuth uses it, and so does the chat route's tool-context
+ * callback, which the SDK hands a bare Request (the documented exemption in
+ * app/api/sessions/[sid]/messages/route.ts).
+ */
+export async function resolvePolicyUser(
+  req: Request,
+): Promise<{ ok: true; user: PolicyUser } | { ok: false; reason: "no_session" | "no_user" }> {
+  const session = await auth.api.getSession({ headers: req.headers })
+  if (!session) return { ok: false, reason: "no_session" }
+  const [row, groupIds] = await Promise.all([
+    UserQueries.get(session.user.id),
+    GroupQueries.groupIdsForUser(session.user.id),
+  ])
+  if (!row) return { ok: false, reason: "no_user" }
+  return { ok: true, user: { ...row, groupIds } }
+}
+
 export function withAuth<C = unknown>(handler: AuthedHandler<C>) {
   return async (req: Request, ctx: C): Promise<Response> => {
-    const session = await auth.api.getSession({ headers: req.headers })
-    if (!session) return unauthorized()
-
-    // Refetch the full Prisma User to ensure all application fields (role,
-    // etc.) are present — better-auth session.user only carries BaseUser.
-    // Group membership is resolved here, once, so policies stay I/O-free:
-    // every project-access decision reads `groupIds` off the PolicyUser.
-    const [row, groupIds] = await Promise.all([
-      UserQueries.get(session.user.id),
-      GroupQueries.groupIdsForUser(session.user.id),
-    ])
-    if (!row) return notFound("Utilisateur introuvable")
-
-    const user: PolicyUser = { ...row, groupIds }
+    const resolved = await resolvePolicyUser(req)
+    if (!resolved.ok) {
+      return resolved.reason === "no_session" ? unauthorized() : notFound("Utilisateur introuvable")
+    }
+    const user = resolved.user
 
     try {
       return await handler(req, user, bouncer(user), ctx)

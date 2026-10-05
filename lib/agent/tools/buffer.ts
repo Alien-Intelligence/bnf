@@ -1272,6 +1272,8 @@ export const corpusSearchTool = defineTool<
     let collapsing: boolean | undefined
     let diagnostics: BnfDiagnostic[] = []
     let typeAmbiguous = 0
+    // Every hit the BnF returned for this page, before identifier mapping.
+    let hitCount = 0
     try {
       if (input.source === "gallica") {
         const payload = await callBnfTool<GallicaPayload>(
@@ -1299,6 +1301,7 @@ export const corpusSearchTool = defineTool<
           docTypeFilter: gallicaSearchDocType(input.doc_type, executedCql ?? input.cql),
           collapsing: collapsing ?? input.collapsing ?? GALLICA_COLLAPSING_DEFAULT,
         }
+        hitCount = payload.data.results.length
         const mapped = payload.data.results.flatMap((h) => {
           const c = candidateFromGallicaHit(h, search)
           return c === null ? [] : [c]
@@ -1323,6 +1326,7 @@ export const corpusSearchTool = defineTool<
         if (!Array.isArray(payload.data?.records)) {
           throw new BnfMcpError(`${BNF_SEARCH_TOOL.catalogue}: payload carried no records array`)
         }
+        hitCount = payload.data.records.length
         candidates = payload.data.records.flatMap((h) => {
           const c = candidateFromCatalogueHit(h)
           return c === null ? [] : [c]
@@ -1384,6 +1388,13 @@ export const corpusSearchTool = defineTool<
       candidates,
     })
 
+    // Every hit the BnF returned is accounted for: those whose identifier is
+    // not a document ARK were dropped before registration and count with the
+    // registration's own skips, so `found` is the true hit count and the
+    // explanation covers every hit that did not become a candidate.
+    const unaddressable = hitCount - candidates.length
+    const accounted: BufferRegisterResult = { ...registered, skipped: registered.skipped + unaddressable }
+
     // A spawn_research child reports what IT staged (never a project-wide delta).
     if (ctx.stagingTally) ctx.stagingTally.added += registered.added
     const buffered = await emitBuffer(ctx, projectId, "added", registered.added)
@@ -1416,12 +1427,12 @@ export const corpusSearchTool = defineTool<
       ...(diagnostics.length > 0 ? { diagnostics } : {}),
       total: pagination.total,
       ...(zeroResult !== null ? { zero_result: zeroResult } : {}),
-      found: candidates.length,
-      ...stagingCounts(candidates.length, registered),
-      // Hits dropped because they are not addressable documents (e.g. a
+      found: hitCount,
+      ...stagingCounts(hitCount, accounted),
+      // Hits dropped because their identifier is not a document ARK (e.g. a
       // periodical COLLECTION entry): enumerate its issues with
       // bnf__bnf_get_periodical_issues, then stage those with buffer_add.
-      ...(registered.skipped > 0 ? { skipped_not_a_document: registered.skipped } : {}),
+      ...(accounted.skipped > 0 ? { skipped_not_a_document: accounted.skipped } : {}),
       buffered,
       has_more: pagination.has_more,
       ...(pagination.next_start_record !== undefined

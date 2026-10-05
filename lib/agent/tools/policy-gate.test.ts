@@ -251,7 +251,16 @@ test("positive control: the owner's same calls go through the gate", async () =>
       })
     }
     const result = await call(asOwner(scope))
-    assert.ok(!isForbidden(result), `${name} must let the owner through, got ${JSON.stringify(result)}`)
+    const shown = JSON.stringify(result)
+    assert.ok(!isForbidden(result), `${name} must let the owner through, got ${shown}`)
+    if (name === AGENT_TOOLS.corpusSearch) {
+      // No BnF egress in tests: the owner's search stops PAST the gate, at the
+      // missing MCP configuration — the only failure it may report.
+      assert.match(shown, /MCP BnF n'est pas configuré/, `${name} reached the search, got ${shown}`)
+      continue
+    }
+    const failed = typeof result === "object" && result !== null && "success" in result && result.success === false
+    assert.ok(!failed, `${name} must SUCCEED for the owner, got ${shown}`)
   }
 
   // The owner's calls really mutated: versions advanced, a memory item and a
@@ -272,4 +281,15 @@ test("MUTATING_AGENT_TOOLS is exactly the gate table, and every entry is a regis
   )
   const registered = new Set([...toolsForScope("corpus"), ...toolsForScope("research")].map((t) => t.name))
   for (const name of MUTATING_AGENT_TOOLS) assert.ok(registered.has(name), `${name} is registered`)
+})
+
+test("a read-only member cannot probe note ids: an unknown id is refused, not 'not found'", async () => {
+  const unknownId = randomUUID()
+  for (const call of [
+    () => noteUpdateTool.handler({ id: unknownId, body_md: "x" }, ctx(reader, project, researchSession, "research")),
+    () => noteAppendTool.handler({ id: unknownId, body_md: "x" }, ctx(reader, project, researchSession, "research")),
+  ]) {
+    const result = await call()
+    assert.ok(isForbidden(result), `the gate runs before the lookup, got ${JSON.stringify(result)}`)
+  }
 })

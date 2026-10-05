@@ -11,8 +11,10 @@
  * Every mutating tool publishes a `corpus_event` via `ctx.emit` so connected
  * SSE clients receive real-time feedback without polling.
  *
- * Project resolution: the read tools use `ctx.projectId`, which the chat route
- * resolved from the session row once per turn. The mutating tools authorise
+ * Project resolution: the read tools read the corpus this turn reads —
+ * `ctx.corpusProjectId`, the source's when the workspace is derived
+ * (playbook/sharing.md) — and refuse when that grant was revoked
+ * (`ctx.corpusReachable`). Both were resolved by the chat route once per turn. The mutating tools authorise
  * through CorpusPolicy first (lib/agent/tools/authorize.ts) and act on the
  * project it returns, loaded WITH its shares — never a bare
  * `prisma.project.findUniqueOrThrow`, which would make every shared member's
@@ -36,7 +38,8 @@ import { INDEXATION_OUTCOME, classifyOutcome } from "@/models/documents/schema"
 import type { DocumentRow } from "@/models/corpus/schema"
 import type { TurnScopedCtx } from "./registry-factory"
 import { authorizeProjectTool } from "./authorize"
-import { EMPTY_FILTER_REFUSAL, toolRefusal } from "./failure"
+import { EMPTY_FILTER_REFUSAL, toolFailure, toolRefusal, type ToolFailure } from "./failure"
+import { CORPUS_ACCESS_REVOKED_ERROR } from "./ingestion-guard"
 import { emitDomainEvent } from "@/lib/agent/stream-events"
 import { AGENT_TOOLS } from "./constants"
 import { provisionalTotal } from "./provisional-total"
@@ -48,6 +51,15 @@ import { provisionalTotal } from "./provisional-total"
 
 /** Numérisation / ingestion classes — the derived ingestability buckets. */
 const ingestClassEnum = z.enum(["ocr", "vision", "sans_texte", "non_numerise"])
+
+/**
+ * The corpus a read tool reads, or the refusal when the derived workspace's
+ * grant was revoked — never the workspace's own (empty) project id.
+ */
+function corpusReadTarget(ctx: TurnScopedCtx): { ok: true; projectId: string } | { ok: false; result: ToolFailure } {
+  if (!ctx.corpusReachable) return { ok: false, result: toolFailure(CORPUS_ACCESS_REVOKED_ERROR) }
+  return { ok: true, projectId: ctx.corpusProjectId }
+}
 
 /**
  * Indexation outcomes — what BECAME of a document at ingestion. Distinct from
@@ -248,7 +260,9 @@ export const corpusGetStateTool = defineTool<
     const includeSample = input.include_sample ?? true
     const sampleLimit = input.sample_limit
     const filters = input.filters
-    const projectId = ctx.projectId
+    const target = corpusReadTarget(ctx)
+    if (!target.ok) return target.result
+    const projectId = target.projectId
     const snapshot = await CorpusQueries.snapshot(
       projectId,
       "head",
@@ -315,7 +329,9 @@ export const corpusListTool = defineTool<
   }),
   handler: async (input, ctx) => {
     const filters = input.filters
-    const page = await CorpusQueries.list(ctx.projectId, "head", {
+    const target = corpusReadTarget(ctx)
+    if (!target.ok) return target.result
+    const page = await CorpusQueries.list(target.projectId, "head", {
       filters,
       cursor: input.cursor,
       limit: input.limit,
@@ -649,7 +665,9 @@ export const corpusStatsTool = defineTool<
   }),
   handler: async (input, ctx) => {
     const filters = input.filters
-    const projectId = ctx.projectId
+    const target = corpusReadTarget(ctx)
+    if (!target.ok) return target.result
+    const projectId = target.projectId
     const snapshot = await CorpusQueries.snapshot(projectId, "head", {
       filters,
       limit: 0,
@@ -696,7 +714,9 @@ export const corpusDiffTool = defineTool<
       .describe("The later version sequence number (to)."),
   }),
   handler: async (input, ctx) => {
-    return CorpusQueries.diff(ctx.projectId, input.from_seq, input.to_seq)
+    const target = corpusReadTarget(ctx)
+    if (!target.ok) return target.result
+    return CorpusQueries.diff(target.projectId, input.from_seq, input.to_seq)
   },
 })
 

@@ -18,9 +18,8 @@
 // before delegating to the SDK handler, which returns the SSE stream.
 
 import { createChatHandler } from "@alien/chat-sdk/next"
-import { withAuth } from "@/app/api/_middleware"
+import { resolvePolicyUser, withAuth } from "@/app/api/_middleware"
 import { ok, notFound } from "@/lib/api-response"
-import { auth } from "@/lib/auth"
 import { env } from "@/lib/env"
 import {
   AGENT_MODEL,
@@ -42,9 +41,7 @@ import {
   sessionWithProject,
   sessionWithProjectOrThrow,
 } from "@/models/agents/service"
-import { UserQueries } from "@/models/users/queries"
 import type { PolicyUser } from "@/models/users/schema"
-import { GroupQueries } from "@/models/groups/queries"
 import { resolveRequestLocale } from "@/lib/locale"
 import { canReachCorpus, corpusProjectId } from "@/lib/authz/corpus-source"
 import { createPrismaChatAdapter } from "@/lib/agent/persistence/prisma-adapter"
@@ -80,17 +77,15 @@ function sidFromUrl(req: Request): string {
  * Prisma row the tool handlers need.
  */
 async function resolveUser(req: Request): Promise<PolicyUser> {
-  const session = await auth.api.getSession({ headers: req.headers })
-  if (!session) throw new Error("No authenticated session on chat request")
-  // Group membership resolved here, once, exactly as withAuth does: the
-  // mutating tools authorise through their Policy (lib/agent/tools/authorize.ts),
-  // and a policy decides a shared member's access from `groupIds`.
-  const [user, groupIds] = await Promise.all([
-    UserQueries.get(session.user.id),
-    GroupQueries.groupIdsForUser(session.user.id),
-  ])
-  if (!user) throw new Error("Authenticated user not found")
-  return { ...user, groupIds }
+  // The same assembly as withAuth (session → full user row + group ids): the
+  // mutating tools authorise through their Policy, which reads `groupIds`.
+  const resolved = await resolvePolicyUser(req)
+  if (!resolved.ok) {
+    throw new Error(
+      resolved.reason === "no_session" ? "No authenticated session on chat request" : "Authenticated user not found",
+    )
+  }
+  return resolved.user
 }
 
 // Module-scoped singleton: the runtime must be shared across POST (start) and

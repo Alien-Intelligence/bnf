@@ -83,7 +83,7 @@ export function explainRegistration(found: number, r: BufferRegisterResult): str
     )
   }
   if (r.skipped > 0) {
-    parts.push(`${r.skipped} ${r.skipped <= 1 ? "n'est" : "ne sont"} pas un document (entrée de collection)`)
+    parts.push(`${r.skipped} ${r.skipped <= 1 ? "n'est" : "ne sont"} pas un document (entrée de collection ou identifiant inexploitable)`)
   }
   const detail = parts.length > 0 ? `, ${parts.join(", ")}` : ""
   const tail =

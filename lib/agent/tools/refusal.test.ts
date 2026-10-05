@@ -16,7 +16,8 @@ import { corpusRemoveByFilterView, toolCallErrored } from "@/lib/tools/display"
 import { SESSION_SCOPE } from "@/models/sessions/schema"
 import type { PolicyUser } from "@/models/users/schema"
 import { bufferRemoveByFilterTool } from "./buffer"
-import { corpusRemoveByFilterTool } from "./corpus"
+import { corpusDiffTool, corpusGetStateTool, corpusListTool, corpusRemoveByFilterTool, corpusStatsTool } from "./corpus"
+import { CORPUS_ACCESS_REVOKED_ERROR } from "./ingestion-guard"
 import { EMPTY_FILTER_REFUSAL } from "./failure"
 import { noteGetTool } from "./note"
 import type { TurnScopedCtx } from "./registry-factory"
@@ -72,4 +73,29 @@ for (const [name, call] of [
 test("note_get on an unknown id fails with success:false", async () => {
   const result = await noteGetTool.handler({ id: "00000000-0000-4000-8000-000000000000" }, ctx())
   assert.equal(toolCallErrored(false, JSON.stringify(result)), true)
+})
+
+test("the corpus read tools refuse when the derived workspace's grant was revoked", async () => {
+  const revoked: TurnScopedCtx = { ...ctx(), corpusReachable: false }
+  for (const call of [
+    () => corpusGetStateTool.handler({}, revoked),
+    () => corpusListTool.handler({}, revoked),
+    () => corpusStatsTool.handler({}, revoked),
+    () => corpusDiffTool.handler({ from_seq: 1, to_seq: 1 }, revoked),
+  ]) {
+    const result = await call()
+    assert.equal(toolCallErrored(false, JSON.stringify(result)), true)
+    assert.match(JSON.stringify(result), new RegExp(CORPUS_ACCESS_REVOKED_ERROR.slice(0, 30)))
+  }
+})
+
+test("the corpus read tools read the corpus the turn reads (corpusProjectId), not the workspace", async () => {
+  const source = await createTestProject(ownerRow.id, "refusal-source")
+  try {
+    const derived: TurnScopedCtx = { ...ctx(), corpusProjectId: source.id }
+    const result = await corpusGetStateTool.handler({ include_sample: false }, derived)
+    assert.ok(typeof result === "object" && result !== null && "versionSeq" in result, JSON.stringify(result))
+  } finally {
+    await cleanupProject(source.id)
+  }
 })
