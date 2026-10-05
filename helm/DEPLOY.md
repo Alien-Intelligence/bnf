@@ -49,7 +49,10 @@ Deployment  <release>-worker  replicas=1   ◄── THE DIFFERENCE FROM THE OTH
 worker**: it pulls doc-ingest jobs from a pg-boss queue (in the bundled
 Postgres), runs prepare → embed → register, and serves the HTTP submit API the
 app calls. It is **internal only** — never fronted by Istio. pg-boss row-locks
-make `worker.replicaCount > 1` safe (one shared queue, no double-processing). A
+make `worker.replicaCount > 1` safe (one shared queue, no double-processing);
+a replica that is up but broken makes the app's OCR sync see a partly failing
+worker — it quarantines nobody for it but slows down (see "OCR quality
+backfill"), so fix or remove such a replica. A
 `wait-for-postgres` init-container gates the worker on the bundled Postgres so
 it doesn't crash-loop on boot (the worker connects to pg-boss immediately and
 has no in-process retry/wait of its own).
@@ -363,51 +366,73 @@ backfilled automatically — no manual step:
     min doubling to 1 h); other corpora are still asked. Each of its documents
     gets a `pending` row ("not yet") and its `outage_count` goes up. A
     document whose batch failed twice (`outage_count` ≥ 2) is asked ALONE —
-    at most 10 such requests per cycle, its corpus asking no batch meanwhile.
-    A document asked alone that fails gets an **outage strike** only if the
-    worker answered another request in the same cycle (when none was answered
-    yet, the app asks one `available` document as the control); without that
-    proof it only backs off. After 5 strikes it is `quarantined` with
-    `reason = worker_fails_alone: …` — never an `available` document, which
-    keeps its quality and only backs off. A worker outage therefore strikes
-    and quarantines nobody: a cycle stops asking documents alone after two
-    transport failures in a row (at most 2 such requests per cycle). Measured
-    on the real tables at the 3-min cadence: 48 h of a down worker → 3
-    documents untouched (`pending`, 0 strikes); a poison document among 3 →
-    quarantined after 57 min, the 2 others served; a poison at position 0 of
-    a 100-document batch → the 99 served and the poison quarantined in 57 min.
+    at most 10 such requests per cycle, controls included — while the rest of
+    its corpus goes on in batches without it.
+  - A document asked alone gets an **outage strike** only inside a bracket of
+    evidence, in one cycle: an answered request → it fails → two **control**
+    documents answered back to back → it fails again. Controls rotate among
+    the 10 most recently synced `available` documents that have no outage on
+    record; a control that fails is recorded like any document's lone failure
+    and ends the isolation for that cycle. Anything short of the bracket only
+    backs the document off. After 5 strikes it is `quarantined` with `reason
+    = worker_fails_alone: …` — never an `available` document, which keeps its
+    quality and only backs off. Strikes are logged at **warn**.
+  - Measured on the real tables, production limits, 3-min cadence
+    (tests/models/documents/ocr-sync-pg.test.ts): 48 h of a down worker → 0
+    strikes, 152 requests over 960 cycles, all served 13 cycles after it
+    returns; a poison document among 3 → quarantined in 69 min, the others
+    served; a poison at position 0 of a 100-document batch → 99 served and the
+    poison quarantined in 69 min; a lone broken artifact → quarantined in 48
+    min, nothing paused. A **partly failing worker** strikes no innocent into
+    quarantine: over 6 h on 1 200 documents, a worker answering every other
+    request, a worker dying after the first request of each cycle, and two
+    replicas of which one always fails (50 % random, 8 seeds) → 0 quarantines,
+    0 to 6 warn-level strike lines per run. It is slow, though: the 50 % case
+    served 410–1 139 of the 1 200 in those 6 h. A broken worker replica is
+    therefore worth fixing or removing even though it quarantines nothing.
   - *Contract*, decided per document by the artifact's own version `v`. An
     artifact of another `v` than the app reads → `incompatible` (`reason =
-    artifact_version: worker artifact v2, this app reads v1`): a deploy
-    mismatch, nobody blamed, asked again in 24 h, logged once per cycle at
-    error level with both versions (an `available` document keeps its stored
-    quality). An artifact of the expected `v` that fails its schema → that
-    document alone is rejected: it backs off (3 min doubling, capped at 24 h)
-    and after 5 rejections is `quarantined` with `reason = sync_rejected: …`;
-    the sync goes on (a lone broken artifact: quarantined in 48 min, nothing
-    paused). A 400 naming one document, or documents left out of an otherwise
-    answered batch, are rejected the same way and the rest asked again. Only
-    an answer that is not a sync answer at all (401/403/413, an envelope that
-    does not parse, an answer to nothing asked) pauses the whole sync (3 min
-    doubling to 1 h); the first answer resumes it.
-  - Every failure write is checked against the time its question was asked:
-    an answer recorded since wins (nothing is written), and a resync
-    requested since keeps the document due, a quarantine included.
-  - A quarantined document is asked again only after a re-ingest requests a
-    resync. To list problems:
-    `SELECT ark, status, reason, sync_attempts, outage_strikes FROM document_ocr WHERE status IN ('quarantined', 'unavailable', 'incompatible') ORDER BY checked_at DESC;`
+    artifact_version: worker artifact v2, this app reads v1`, the expected
+    version stored beside it): a deploy mismatch, nobody blamed, shown as
+    "waiting for a service update", asked again in 24 h — and at once when an
+    app reading another version boots — logged once per cycle at error level
+    with both versions. An artifact of the expected `v` that fails its schema
+    → that document alone is rejected: it backs off (3 min doubling, capped at
+    24 h) and after 5 rejections is `quarantined` with `reason =
+    sync_rejected: …`; the sync goes on. A 400 naming one document, or
+    documents left out of an otherwise answered batch, are rejected the same
+    way and the rest asked again. Only an answer that is not a sync answer at
+    all (401/403/413, an envelope that does not parse, an answer to nothing
+    asked) pauses the whole sync (3 min doubling to 1 h); the first answer
+    resumes it.
+  - An `available` document keeps its stored quality through `building` and
+    `unavailable` answers (what a worker deployed first answers while it
+    rebuilds its artifacts after a version bump); only a new `available`
+    answer replaces it, and an `incompatible` one hides it.
+  - Every failure write is a compare-and-set checked against the time its
+    question was asked: an answer or failure recorded since wins (nothing is
+    written), several app replicas or a rolling update record one failure
+    once, and a resync requested since keeps the document due.
+  - **Quarantine is never terminal:** a quarantined document is asked again
+    after 24 h, doubling to a 7-day cap, at once after a re-ingest's resync,
+    and any answer restores it fully — so a mistaken quarantine heals itself.
+    Only `unavailable` (BnF does not provide the quality) is shown as "may
+    never be available". To list problems:
+    `SELECT ark, status, reason, sync_attempts, outage_strikes, next_check_at FROM document_ocr WHERE status IN ('quarantined', 'unavailable', 'incompatible') ORDER BY checked_at DESC;`
 - **The artifact version rule (any contract change bumps `v`):** a change to
   what the worker writes in `ocr-quality/<slug>.json` — a field, a type, a
   meaning or scale (e.g. `ocrRate` as a percentage), one lane's folio shape —
-  MUST bump `OCR_QUALITY_ARTIFACT_VERSION` (worker-v2 `src/domain/types.ts`)
-  and ship with an app that reads the new `v`. Unbumped, correct artifacts are
-  rejected as broken and quarantined, or still parse and are read with the old
-  meaning. Bumped, the worker treats its stored artifacts of the old version
-  as corrupt and rebuilds them through the backfill (BnF cost as below); the
-  app shows those documents "waiting for a service update" until it reads the
-  new version. After deploying the matching app, re-ask the `incompatible`
-  rows at once instead of in 24 h:
-  `UPDATE document_ocr SET next_check_at = now() WHERE status = 'incompatible';`
+  MUST bump `OCR_QUALITY_ARTIFACT_VERSION` in worker-v2 `src/domain/types.ts`
+  AND in the app's `lib/cluster/ocr-quality.ts`. The app enforces it: a test
+  (`lib/cluster/ocr-quality-contract.test.ts`) fingerprints the artifact
+  schema per version, so a schema change without a bump fails CI. Unbumped,
+  correct artifacts are rejected as broken, or still parse and are read with
+  the old meaning. Bumped, deploy the worker first: it treats its stored
+  artifacts of the old version as corrupt and rebuilds them through the
+  backfill (BnF cost as below) — the app keeps showing their stored quality
+  while it does, then "waiting for a service update" for each rebuilt one
+  until the matching app is deployed, whose boot re-asks those documents at
+  once.
 - **BnF cost:** one Presentation-API (ALTO) call per indexed **text** folio,
   once — the `alto` cache holds extracted text, not XML, so the word confidences
   must be re-fetched. Vision and Mistral documents cost nothing. The calls go
