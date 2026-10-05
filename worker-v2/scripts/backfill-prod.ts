@@ -53,6 +53,7 @@ import { ClusterHttp } from "../src/live/cluster-http.js";
 import {
   assembleMarkdown,
   buildIndexChunks,
+  entryListPageUrl,
   type IndexChunk,
   type IndexChunkMetadata,
 } from "../src/live/cluster.js";
@@ -200,27 +201,33 @@ function saveState(): void {
 // ---------------------------------------------------------------------------
 // Catalog helpers
 // ---------------------------------------------------------------------------
+/** Datasets per request: the datasets endpoint pages by `limit` (1..1000) and `offset`, and reports `total`. */
+const DATASET_PAGE_LIMIT = 100;
+
 async function listDatasets(http: ClusterHttp): Promise<DatasetView[]> {
   const out: DatasetView[] = [];
-  for (let page = 1; page <= 200; page++) {
-    const res = await http.getJson<{ datasets: DatasetView[]; total_pages?: number }>(
-      `/api/v1/datasets?page=${page}&page_size=100`,
+  for (let offset = 0; ; offset += DATASET_PAGE_LIMIT) {
+    const res = await http.getJson<{ datasets: DatasetView[]; total: number }>(
+      `/api/v1/datasets?limit=${DATASET_PAGE_LIMIT}&offset=${offset}`,
     );
-    out.push(...(res.datasets ?? []));
-    if (page >= (res.total_pages ?? 1)) break;
+    if (!Array.isArray(res.datasets) || typeof res.total !== "number") {
+      throw new Error(`dataset list: expected { datasets, total }, got ${JSON.stringify(res).slice(0, 200)}`);
+    }
+    for (const d of res.datasets) out.push(d);
+    if (res.datasets.length === 0 || offset + res.datasets.length >= res.total) return out;
   }
-  return out;
 }
+/** Every entry of a dataset, walked to the last page (the endpoint pages by `page` + `limit`). */
 async function listEntries(http: ClusterHttp, datasetId: number): Promise<EntryView[]> {
   const out: EntryView[] = [];
-  for (let page = 1; page <= 1000; page++) {
-    const res = await http.getJson<{ entries: EntryView[]; total_pages?: number }>(
-      `/api/v1/entries?dataset_id=${datasetId}&page=${page}&page_size=100`,
-    );
-    out.push(...(res.entries ?? []));
-    if (page >= (res.total_pages ?? 1)) break;
+  for (let page = 1; ; page++) {
+    const res = await http.getJson<{ entries: EntryView[]; total_pages: number }>(entryListPageUrl(datasetId, page));
+    if (!Array.isArray(res.entries) || typeof res.total_pages !== "number") {
+      throw new Error(`entry list: expected { entries, total_pages }, got ${JSON.stringify(res).slice(0, 200)}`);
+    }
+    for (const e of res.entries) out.push(e);
+    if (res.entries.length === 0 || page >= res.total_pages) return out;
   }
-  return out;
 }
 function sigOf(e: EntryView): string {
   return e.updated_at ?? e.created_at ?? (e.version != null ? `v${e.version}` : "0");

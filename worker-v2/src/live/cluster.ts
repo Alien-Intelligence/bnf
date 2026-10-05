@@ -22,7 +22,8 @@
  * edit V1 (out of bounds) or `as any` the cast, we reuse the lower transport
  * (`ClusterHttp`, which typechecks cleanly under both configs) and re-express the
  * thin REST calls here with a correctly-typed `Uint8Array` multipart body. The
- * pagination/shape-tolerance logic mirrors V1's `ClusterClient` exactly.
+ * shape-tolerance logic mirrors V1's `ClusterClient`; the slug lookup does not
+ * (see findEntryBySlug).
  *
  * One chunk per page is the V2 contract: pages already carry the folio `ordre`,
  * which is the citation key. The chunk metadata mirrors V1's snake_case filter
@@ -52,9 +53,11 @@ const CHUNK_COLLECTION = "entry_chunks";
 const ENTRY_DESCRIPTION_CHARS = 200;
 /** Characters of an unexpected response quoted in an error. */
 const ERROR_EXCERPT_CHARS = 200;
-/** Entry-list paging used to find an entry by slug. */
+/**
+ * Entries per page when walking a dataset for a slug: the list endpoint's
+ * maximum (`limit`, 1..100; outside that it silently falls back to 20).
+ */
 const ENTRY_LIST_PAGE_SIZE = 100;
-const ENTRY_LIST_MAX_PAGES = 50;
 
 interface DatasetView {
   id: number;
@@ -62,7 +65,7 @@ interface DatasetView {
   slug?: string;
 }
 
-interface EntryView {
+export interface EntryView {
   id: number;
   slug?: string;
 }
@@ -258,7 +261,7 @@ export class LiveClusterSink implements ClusterSink {
     const slug = arkSlug(ark);
     // Idempotent re-ingest: tombstone a stale entry so a fresh insert lands
     // cleanly (the cluster DELETE cascades through MinIO + Qdrant + Meilisearch).
-    const existing = await this.findEntryBySlug(datasetId, slug);
+    const existing = await findEntryBySlug((path) => this.http.getJson<unknown>(path), datasetId, slug);
     if (existing) await this.http.deleteJson(`/api/v1/entries/${existing.id}`);
 
     const markdown = assembleMarkdown(pages);
@@ -295,31 +298,6 @@ export class LiveClusterSink implements ClusterSink {
     });
 
     return { entryId: entry.id };
-  }
-
-  /**
-   * Find an entry by (datasetId, slug). The cluster's list endpoint doesn't
-   * honor a `slug` query param — it returns all entries — so we page and filter
-   * client-side, exactly as V1's ClusterClient does (page_size=100, max 50
-   * pages). Returns null when not found.
-   */
-  private async findEntryBySlug(datasetId: number, slug: string): Promise<EntryView | null> {
-    for (let page = 1; page <= ENTRY_LIST_MAX_PAGES; page++) {
-      const res = parseEntryListPage(
-        await this.http.getJson<unknown>(
-          `/api/v1/entries?dataset_id=${datasetId}&page=${page}&limit=${ENTRY_LIST_PAGE_SIZE}`,
-        ),
-      );
-      const hit = res.entries.find((e) => e.slug === slug);
-      if (hit) return hit;
-      if (page >= res.totalPages) return null;
-    }
-    // Not "not found": the slug may sit past the pages walked. Answering null
-    // here would make upsert create a SECOND entry for the ARK.
-    throw new Error(
-      `findEntryBySlug: gave up after ${ENTRY_LIST_MAX_PAGES} pages of ${ENTRY_LIST_PAGE_SIZE} entries ` +
-        `in dataset ${datasetId} without reaching the end; refusing to guess that ${slug} is absent`,
-    );
   }
 
   /** Create an entry, accepting both `{ entry: {...} }` and bare `{...}` shapes. */
@@ -378,6 +356,45 @@ function isEntryView(value: unknown): value is EntryView {
     value.id > 0 &&
     (value.slug === undefined || typeof value.slug === "string")
   );
+}
+
+/** The URL of one page of a dataset's entries (`page` is 1-based; the endpoint takes `limit`, not `page_size`). */
+export function entryListPageUrl(datasetId: number, page: number): string {
+  return `/api/v1/entries?dataset_id=${datasetId}&page=${page}&limit=${ENTRY_LIST_PAGE_SIZE}`;
+}
+
+/**
+ * Find an entry of a dataset by slug, or null when the dataset has none.
+ *
+ * The cluster has no lookup by slug over HTTP (its entries list takes no
+ * `slug` filter; `get_by_slug` exists only inside the create route), so this
+ * walks the list until its last page — every page, no cap: answering null
+ * for a slug past a cap would make upsert create a SECOND entry for the ARK.
+ *
+ * The list is ordered by `created_at DESC` with no tie-breaker, and the
+ * client cannot ask for another order. So one walk can miss an entry that is
+ * there: an entry deleted during the walk shifts later pages up by one, and
+ * entries with equal timestamps may swap across a page boundary. A miss is
+ * therefore confirmed by a second full walk before it is believed. (The
+ * create route's own 409 on a duplicate slug is the last line behind it.) A
+ * server-side lookup is the real fix — see the ticket text in the Track C
+ * implementation log.
+ */
+export async function findEntryBySlug(
+  getPage: (path: string) => Promise<unknown>,
+  datasetId: number,
+  slug: string,
+): Promise<EntryView | null> {
+  const walk = async (): Promise<EntryView | null> => {
+    for (let page = 1; ; page++) {
+      const res = parseEntryListPage(await getPage(entryListPageUrl(datasetId, page)));
+      const hit = res.entries.find((e) => e.slug === slug);
+      if (hit) return hit;
+      // total_pages is re-read on every page: the list may grow during the walk.
+      if (page >= res.totalPages || res.entries.length === 0) return null;
+    }
+  };
+  return (await walk()) ?? (await walk());
 }
 
 /** One page of `GET /api/v1/entries`: its entries and the page count, both required. */

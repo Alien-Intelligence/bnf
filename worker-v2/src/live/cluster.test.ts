@@ -14,7 +14,9 @@ import {
   assembleMarkdown,
   buildIndexChunks,
   codePointLength,
+  entryListPageUrl,
   escapeFolioHeadings,
+  findEntryBySlug,
   parseEntryListPage,
 } from "./cluster.js";
 
@@ -146,4 +148,51 @@ test("escapeFolioHeadings adds exactly one backslash to heading-shaped lines", (
   assert.equal(escapeFolioHeadings("a\n## Folio 4\nb"), "a\n\\## Folio 4\nb");
   assert.equal(escapeFolioHeadings("\\## Folio 4"), "\\\\## Folio 4");
   assert.equal(escapeFolioHeadings("## Folio x\n### Folio 4\ntexte ## Folio 4"), "## Folio x\n### Folio 4\ntexte ## Folio 4");
+});
+
+test("entryListPageUrl asks the entries endpoint for `limit`, its page-size parameter", () => {
+  assert.equal(entryListPageUrl(7, 3), "/api/v1/entries?dataset_id=7&page=3&limit=100");
+});
+
+/** A dataset of `count` entries `e0..e<count-1>`, served 100 per page; records each page asked. */
+function pagedDataset(count: number, slugAt: (i: number, walk: number) => string = (i) => `e${i}`) {
+  const asked: number[] = [];
+  let walk = 0;
+  const totalPages = Math.ceil(count / 100);
+  const getPage = async (path: string): Promise<unknown> => {
+    const page = Number(new URL(path, "http://cluster.invalid").searchParams.get("page"));
+    if (page === 1) walk++;
+    asked.push(page);
+    const ids = Array.from({ length: 100 }, (_, k) => (page - 1) * 100 + k).filter((i) => i < count);
+    return { entries: ids.map((i) => ({ id: i + 1, slug: slugAt(i, walk) })), total_pages: totalPages };
+  };
+  return { asked, getPage };
+}
+
+test("findEntryBySlug walks past the old 50-page cap to the last page", async () => {
+  const ds = pagedDataset(12_000);
+  assert.deepEqual(await findEntryBySlug(ds.getPage, 7, "e11999"), { id: 12_000, slug: "e11999" });
+  assert.equal(ds.asked.length, 120);
+});
+
+test("findEntryBySlug confirms a miss with a second full walk, then answers null", async () => {
+  const ds = pagedDataset(250);
+  assert.equal(await findEntryBySlug(ds.getPage, 7, "absent"), null);
+  assert.deepEqual(ds.asked, [1, 2, 3, 1, 2, 3]);
+});
+
+test("findEntryBySlug finds on the re-walk an entry the first walk missed (pages shifted under it)", async () => {
+  // The entry is at a page boundary that the first walk skipped over.
+  const ds = pagedDataset(250, (i, walk) => (i === 100 && walk === 2 ? "wanted" : `e${i}`));
+  assert.deepEqual(await findEntryBySlug(ds.getPage, 7, "wanted"), { id: 101, slug: "wanted" });
+});
+
+test("findEntryBySlug stops on an empty page even when total_pages says more", async () => {
+  const asked: number[] = [];
+  const getPage = async (path: string): Promise<unknown> => {
+    asked.push(Number(new URL(path, "http://cluster.invalid").searchParams.get("page")));
+    return { entries: [], total_pages: 1_000_000 };
+  };
+  assert.equal(await findEntryBySlug(getPage, 7, "x"), null);
+  assert.deepEqual(asked, [1, 1]);
 });

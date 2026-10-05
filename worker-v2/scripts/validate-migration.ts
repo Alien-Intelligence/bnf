@@ -25,15 +25,19 @@ const prod = new ClusterHttp({
 });
 
 interface DS { id: number; slug: string; entry_count?: number }
+/** Datasets per request: the datasets endpoint pages by `limit` (1..1000) and `offset`, and reports `total`. */
+const DATASET_PAGE_LIMIT = 100;
 async function datasets(http: ClusterHttp): Promise<Map<string, DS>> {
   const out = new Map<string, DS>();
-  for (let page = 1; page <= 200; page++) {
-    const r = await http.getJson<{ datasets: DS[]; total_pages?: number }>(
-      `/api/v1/datasets?page=${page}&page_size=100`);
-    for (const d of r.datasets ?? []) out.set(d.slug, d);
-    if (page >= (r.total_pages ?? 1)) break;
+  for (let offset = 0; ; offset += DATASET_PAGE_LIMIT) {
+    const r = await http.getJson<{ datasets: DS[]; total: number }>(
+      `/api/v1/datasets?limit=${DATASET_PAGE_LIMIT}&offset=${offset}`);
+    if (!Array.isArray(r.datasets) || typeof r.total !== "number") {
+      throw new Error(`dataset list: expected { datasets, total }, got ${JSON.stringify(r).slice(0, 200)}`);
+    }
+    for (const d of r.datasets) out.set(d.slug, d);
+    if (r.datasets.length === 0 || offset + r.datasets.length >= r.total) return out;
   }
-  return out;
 }
 
 const allow = new Set<string>(
