@@ -135,6 +135,30 @@ export function requireMcpEnv(): z.infer<typeof mcpEnvSchema> {
   return _mcpEnv
 }
 
+/** Whether the BnF MCP is configured at all, configured correctly, or misconfigured. */
+export type McpEnvState =
+  | { kind: "unconfigured" }
+  | { kind: "configured"; env: z.infer<typeof mcpEnvSchema> }
+  | { kind: "invalid"; reason: string }
+
+/**
+ * The BnF MCP env as a health probe needs to see it: NEITHER variable set is
+ * a deployment without the BnF MCP (local dev) — "unconfigured", nothing to
+ * probe; anything else that does not validate (one of the two missing, a
+ * malformed URL, an empty token) is a broken deployment — "invalid", with
+ * the reason; otherwise the validated env.
+ */
+export function mcpEnvState(): McpEnvState {
+  const blank = (v: string | undefined) => v === undefined || v.trim() === ""
+  if (blank(process.env.BNF_MCP_URL) && blank(process.env.BNF_MCP_TOKEN)) return { kind: "unconfigured" }
+  try {
+    return { kind: "configured", env: requireMcpEnv() }
+  } catch (err) {
+    if (!(err instanceof Error)) throw err
+    return { kind: "invalid", reason: err.message }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Lazy data-cluster MCP env — only required when real RAG (CLUSTER_MODE=real)
 // queries the datacluster MCP. Same throw-on-missing contract as requireMcpEnv:
