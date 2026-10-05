@@ -155,10 +155,13 @@ export const FakeRagRunner = {
     req: RagEntryContentRequest,
   ): Promise<RagEntryContent> {
     const ark = ENTRY_ID_TO_ARK.get(req.entryId)
-    // Concatenate this ARK's fixture snippets into a single "document body".
+    // Concatenate this ARK's fixture snippets into a single "document body",
+    // each under the `## Folio N` heading worker-v2's processed text carries
+    // (PROCESSED_TEXT_FOLIO_HEADING) — so rag_get_text's per-folio OCR
+    // annotation runs on the fake as it does on the real cluster.
     const body = ark
       ? fixturesForArk(ark)
-          .map((f) => f.snippet)
+          .map((f) => (f.folio === null ? f.snippet : `## Folio ${f.folio}\n\n${f.snippet}`))
           .join("\n\n")
       : ""
 

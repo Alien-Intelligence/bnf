@@ -194,9 +194,8 @@ export const ragKeywordSearchTool = defineTool<
     })
     // Hits come from this corpus' own dataset; the read is gated on it too.
     const docIndex = await loadDocOcrIndex(
-      ctx.corpusProjectId,
+      ctx,
       result.hits.map((h) => h.ark),
-      ctx.signal,
     )
     return { ...result, ...annotateKeywordHits(result.hits, docIndex) }
   },

@@ -55,7 +55,7 @@ import {
 } from "./constants"
 import { docGetTool } from "./doc"
 import { CORPUS_ACCESS_REVOKED_ERROR } from "./ingestion-guard"
-import { noteCreateTool, noteGetTool, noteListTool } from "./note"
+import { NOTE_NOT_FOUND_ERROR, noteCreateTool, noteGetTool, noteListTool } from "./note"
 import { ragGetTextTool, ragKeywordSearchTool, ragQueryTool } from "./rag"
 import type { TurnScopedCtx } from "./registry-factory"
 
@@ -295,6 +295,39 @@ test("note_create on the derived workspace reports the source folio's low qualit
   })
 })
 
+test("note_get and note_list on the derived workspace (live share) carry the source folio's quality", async () => {
+  const ctx = await ctxOf(workspaceId, member)
+  const note = await prisma.note.findFirstOrThrow({ where: { projectId: workspaceId, title: "Note OCR gate" } })
+  const got = (await noteGetTool.handler({ id: note.id }, ctx)) as Record<string, unknown>
+  assert.deepEqual(got["low_ocr_citations"], {
+    citations: [{ ark: ARK_SOURCE, folio: 2, ocr_quality: 0.661 }],
+    message: NOTE_LOW_OCR_NOTICE,
+  })
+  assert.equal(got["ocr_check"], undefined)
+  const listed = (await noteListTool.handler({}, ctx)) as {
+    notes: Array<{ id: string; low_ocr_citation_count: number | null; ocr_unknown_citation_count: number | null }>
+    ocr_check?: unknown
+  }
+  const row = listed.notes.find((n) => n.id === note.id)
+  assert.deepEqual([row?.low_ocr_citation_count, row?.ocr_unknown_citation_count], [1, 0])
+  assert.equal(listed.ocr_check, undefined)
+})
+
+test("rag_get_text on the derived workspace annotates each folio of the slice with the source's quality", async () => {
+  const ctx = await ctxOf(workspaceId, member)
+  const query = (await ragQueryTool.handler({ query: FIXTURE_QUERY }, ctx)) as {
+    passages: Array<{ ark: string; entryId: number }>
+  }
+  const passage = query.passages.find((p) => p.ark === ARK_FIXTURE)
+  assert.ok(passage, "the fake cluster returns the fixture passage")
+  const text = (await ragGetTextTool.handler({ entryId: passage.entryId, ark: ARK_FIXTURE, charLimit: 0 }, ctx)) as {
+    ocr?: { folios: Array<{ folio: number; ocrState: string; ocrLow: boolean }> }
+  }
+  const folio = text.ocr?.folios.find((f) => f.folio === FIXTURE_FOLIO)
+  assert.ok(folio, "the slice's folio heading is annotated")
+  assert.deepEqual([folio.ocrState, folio.ocrLow], [FOLIO_OCR_STATE.RECORDED, true])
+})
+
 // ---------------------------------------------------------------------------
 // An account granted nothing reads none of the source's rows
 // ---------------------------------------------------------------------------
@@ -347,6 +380,17 @@ test("granted nothing: a note citing the source ARK is rejected and never report
     listed.notes.map((n) => [n.low_ocr_citation_count, n.ocr_unknown_citation_count]),
     [[0, 0]],
   )
+})
+
+test("granted nothing: note_get reads its own note without any OCR of the source, and never the workspace's note", async () => {
+  const ctx = await ctxOf(strangerProjectId, stranger)
+  const own = await prisma.note.findFirstOrThrow({ where: { projectId: strangerProjectId } })
+  const got = (await noteGetTool.handler({ id: own.id }, ctx)) as Record<string, unknown>
+  assert.ok(got["note"])
+  assert.equal(got["low_ocr_citations"], undefined, "the rejected source citation has no Citation row")
+  assert.equal(got["ocr_unknown_citations"], undefined)
+  const theirs = await prisma.note.findFirstOrThrow({ where: { projectId: workspaceId } })
+  assert.deepEqual(await noteGetTool.handler({ id: theirs.id }, ctx), { error: NOTE_NOT_FOUND_ERROR })
 })
 
 // ---------------------------------------------------------------------------

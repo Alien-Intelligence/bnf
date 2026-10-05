@@ -72,8 +72,12 @@ function withoutOcr(
  * must not, or a fabricated ARK would enter the citation index looking exactly
  * like a real one. `rejected` is what lets the tool handler tell the agent
  * which citation it invented, so it can correct itself within the turn.
+ *
+ * `note` is read back WITH its citations inside the write's own transaction,
+ * so a caller never needs a second read after the commit (a failed re-read
+ * used to turn a saved note into a 500, inviting a duplicate retry).
  */
-export type NoteWriteResult = { note: Note; rejected: string[] }
+export type NoteWriteResult = { note: NoteWithCitations; rejected: string[] }
 
 export class NoteService {
   /**
@@ -152,7 +156,7 @@ export class NoteService {
           })),
         })
       }
-      return created
+      return tx.note.findUniqueOrThrow({ where: { id: created.id }, include: { citations: true } })
     })
 
     return { note, rejected }
@@ -203,7 +207,7 @@ export class NoteService {
     const known = await NoteService.knownArks(corpusProjectId)
 
     return prisma.$transaction(async (tx) => {
-      const current = await tx.note.findUnique({ where: { id } })
+      const current = await tx.note.findUnique({ where: { id }, include: { citations: true } })
       if (!current) return null
       const addition = args.bodyMd.trim()
       if (addition.length === 0) return { note: current, rejected: [] }
@@ -285,6 +289,7 @@ export class NoteService {
         citationCount,
         updatedAt: new Date(),
       },
+      include: { citations: true },
     })
 
     return { note, rejected }

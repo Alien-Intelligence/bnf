@@ -67,7 +67,7 @@ export const docGetTool = defineTool<
     }
 
     // Gated by the corpus Document lookup above and, again, inside the read (D8).
-    const ocr = await loadDocOcrSummary(ctx.corpusProjectId, input.ark, ctx.signal)
+    const ocr = await loadDocOcrSummary(ctx, input.ark)
     return { document: doc, ocr }
   },
 })

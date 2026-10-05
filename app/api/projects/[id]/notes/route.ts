@@ -51,12 +51,9 @@ export const POST = withAuth(async (req, _user, bouncer, ctx: RouteCtx) => {
     bodyMd: parsed.bodyMd,
   })
 
-  // Return the full note (citations + their folios' OCR quality) so the client
-  // can prime the detail cache with the same shape GET /api/notes/:nid answers.
-  // The note is committed: a failed OCR read is answered as check_failed
-  // inside the NoteDetail (NoteService.details), never as a failed create.
-  const full = await NoteQueries.get(note.id)
-  // Deleted between the write and the re-read.
-  if (!full) return notFound("Note introuvable")
-  return ok<NoteDetail>(await NoteService.detail(full, noteOcrReader(project, req.signal)), 201)
+  // The created note already carries its citations (read in the write's own
+  // transaction): no re-read after the commit, so a saved note is never
+  // answered as a 500 (and retried into a duplicate). Its OCR is enriched
+  // best-effort — a failed read answers check_failed inside the NoteDetail.
+  return ok<NoteDetail>(await NoteService.detail(note, noteOcrReader(project, req.signal)), 201)
 })

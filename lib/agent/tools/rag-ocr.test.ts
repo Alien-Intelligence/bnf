@@ -36,7 +36,10 @@ import {
   annotateKeywordHits,
   annotatePassages,
   annotateTextSlice,
+  CorpusRevokedReadError,
   docOcrSummary,
+  loadDocOcrIndex,
+  loadDocOcrSummary,
   noteOcrReport,
 } from "./rag-ocr"
 
@@ -339,4 +342,10 @@ test("not_recorded is said to be permanent, and only pending/building are 'not y
   for (const kind of [FOLIO_OCR_STATE.PENDING, FOLIO_OCR_STATE.UNAVAILABLE, FOLIO_OCR_STATE.NOT_RECORDED]) {
     assert.ok(NOTE_OCR_UNKNOWN_NOTICE.includes(`\`${kind}\``), kind)
   }
+})
+
+test("the document-level loaders refuse a revoked reader before any read", async () => {
+  const revoked = { corpusProjectId: "no-such-project", corpusReachable: false, signal: AbortSignal.abort() }
+  await assert.rejects(loadDocOcrIndex(revoked, [ARK]), CorpusRevokedReadError)
+  await assert.rejects(loadDocOcrSummary(revoked, ARK), CorpusRevokedReadError)
 })

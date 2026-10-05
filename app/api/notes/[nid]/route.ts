@@ -63,13 +63,10 @@ export const PUT = withAuth(async (req, _user, bouncer, ctx: RouteCtx) => {
   // Deleted between the authorize() above and the write.
   if (!updated) return notFound("Note introuvable")
 
-  // Re-fetch to include fresh citations (and their folios' OCR quality). The
-  // write is committed: a failed OCR read is answered as check_failed inside
-  // the NoteDetail (NoteService.details), never as a failed update.
-  const full = await NoteQueries.get(updated.note.id)
-  // Deleted between the write and the re-read.
-  if (!full) return notFound("Note introuvable")
-  return ok<NoteDetail>(await NoteService.detail(full, noteOcrReader(project, req.signal)))
+  // The written note already carries its citations (read in the write's own
+  // transaction): no re-read after the commit. Its OCR is enriched
+  // best-effort — a failed read answers check_failed, never a failed update.
+  return ok<NoteDetail>(await NoteService.detail(updated.note, noteOcrReader(project, req.signal)))
 })
 
 export const DELETE = withAuth(async (req, _user, bouncer, ctx: RouteCtx) => {

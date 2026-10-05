@@ -269,30 +269,37 @@ export async function loadOcrIndex(reader: OcrReader, refs: FolioRef[]): Promise
   return buildOcrIndex(rows.folios, rows.documents)
 }
 
+/**
+ * A document-level OCR read was attempted for a reader whose corpus grant was
+ * revoked. The handlers answer the revocation BEFORE any read
+ * (resolveIngestedCorpus / doc_get's check); this is the loaders' own guard,
+ * so a new caller cannot forget it.
+ */
+export class CorpusRevokedReadError extends Error {
+  constructor(readonly corpusProjectId: string) {
+    super(`OCR read on corpus ${corpusProjectId} through a revoked grant`)
+    this.name = "CorpusRevokedReadError"
+  }
+}
+
 /** The OCR summaries of the given corpus ARKs, indexed by ARK (absent = pending). */
-export async function loadDocOcrIndex(
-  corpusProjectId: string,
-  arks: string[],
-  signal: AbortSignal,
-): Promise<Map<string, DocumentOcrView>> {
-  const rows = await withDeadline(DocumentQueries.ocrForArks(corpusProjectId, arks), {
+export async function loadDocOcrIndex(reader: OcrReader, arks: string[]): Promise<Map<string, DocumentOcrView>> {
+  if (!reader.corpusReachable) throw new CorpusRevokedReadError(reader.corpusProjectId)
+  const rows = await withDeadline(DocumentQueries.ocrForArks(reader.corpusProjectId, arks), {
     label: "OCR quality read",
     ms: OCR_DB_TIMEOUT_MS,
-    signal,
+    signal: reader.signal,
   })
   return new Map(rows.map((r) => [r.ark, toDocumentOcrView(r.ark, r)]))
 }
 
 /** One corpus document's OCR summary (pending when no row). */
-export async function loadDocOcrSummary(
-  corpusProjectId: string,
-  ark: string,
-  signal: AbortSignal,
-): Promise<DocOcrSummary> {
-  const row = await withDeadline(DocumentQueries.ocrForArk(corpusProjectId, ark), {
+export async function loadDocOcrSummary(reader: OcrReader, ark: string): Promise<DocOcrSummary> {
+  if (!reader.corpusReachable) throw new CorpusRevokedReadError(reader.corpusProjectId)
+  const row = await withDeadline(DocumentQueries.ocrForArk(reader.corpusProjectId, ark), {
     label: "OCR quality read",
     ms: OCR_DB_TIMEOUT_MS,
-    signal,
+    signal: reader.signal,
   })
   return docOcrSummary(toDocumentOcrView(ark, row))
 }
