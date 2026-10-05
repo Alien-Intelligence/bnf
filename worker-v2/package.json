@@ -4,7 +4,7 @@
   "type": "module",
   "description": "BnF ingest worker V2 — staged dataflow pipeline of durable buckets.",
   "scripts": {
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.scripts.json",
     "test": "node --import tsx --test \"src/**/*.test.ts\"",
     "test:one": "node --import tsx --test",
     "start": "node --import tsx src/main.ts",

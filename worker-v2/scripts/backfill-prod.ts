@@ -50,7 +50,12 @@ import { FormData } from "undici";
 import { S3BlobStore } from "../src/core/blob.js";
 import { keys, arkSlug } from "../src/domain/keys.js";
 import { ClusterHttp } from "../src/live/cluster-http.js";
-import { assembleMarkdown, buildIndexChunks, type IndexChunk } from "../src/live/cluster.js";
+import {
+  assembleMarkdown,
+  buildIndexChunks,
+  type IndexChunk,
+  type IndexChunkMetadata,
+} from "../src/live/cluster.js";
 import { bnfDatasetSchema } from "../src/live/vendor/dataset.js";
 import type { DocMeta, PreparedPage } from "../src/domain/types.js";
 import type { BnfDocInfo } from "../src/bnf/types.js";
@@ -148,9 +153,16 @@ interface V1Vectors {
   vectors: number[][];
 }
 /** A doc reduced to the exact inputs the cluster upsert needs. */
+/**
+ * A chunk of a V1 doc: V1 chunked by character windows, not by page, so it has
+ * no folio. Kept apart from the worker's IndexChunk, whose folio is the
+ * citation key and always present.
+ */
+type V1IndexChunk = Omit<IndexChunk, "metadata"> & { metadata: Omit<IndexChunkMetadata, "folio"> & { folio: null } };
+
 interface LoadedDoc {
   markdown: string;
-  chunks: IndexChunk[];
+  chunks: IndexChunk[] | V1IndexChunk[];
   meta: DocMeta;
 }
 interface StateEntry {
@@ -351,7 +363,7 @@ async function loadV1(projectId: string, ark: string): Promise<LoadedDoc | null>
     subtype: m.subtype ?? null, lang: m.lang, pageCount: m.pageCount, ocrAvailable: m.ocrAvailable,
   };
   const slug = arkSlug(ark);
-  const chunks: IndexChunk[] = v1Chunks.map((c, i) => ({
+  const chunks: V1IndexChunk[] = v1Chunks.map((c, i) => ({
     chunk_text: c.text,
     chunk_index: c.chunkIndex ?? i,
     embedding: vectors[i]!,
