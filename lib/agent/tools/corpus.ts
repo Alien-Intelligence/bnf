@@ -128,7 +128,7 @@ export const corpusGetStateTool = defineTool<
     '`{"filters":{"yearFrom":1970}}` to see only documents from 1970 onward) — ' +
     "every count shrinks to the filtered set. For exhaustively enumerating a " +
     "filtered subset page by page, prefer corpus_list.",
-  inputSchema: z.object({
+  inputSchema: z.strictObject({
     include_sample: z
       .boolean()
       .optional()
@@ -193,7 +193,7 @@ export const corpusListTool = defineTool<
     "request only the columns you need (ark is always included) to keep responses " +
     "compact. This is the right tool for 'show me every document from 1970 onward' " +
     "or 'which catalogue notices are in the corpus' — filter, then page through.",
-  inputSchema: z.object({
+  inputSchema: z.strictObject({
     filters: corpusToolFiltersSchema.optional(),
     cursor: z
       .string()
@@ -291,7 +291,7 @@ export const corpusAddTool = defineTool<
     "document (`bpt6k…`/`btv1b…`) in the BACKGROUND, shortly after this returns — " +
     "so just add the `cb…` ARK as-is; you do NOT need to resolve it to its " +
     "Gallica form yourself, and you do NOT need to wait for the upgrade.",
-  inputSchema: z.object({
+  inputSchema: z.strictObject({
     arks: z
       .array(arkSchema)
       .min(1)
@@ -389,7 +389,7 @@ export const corpusRemoveTool = defineTool<
     "Creates a new immutable corpus version. Documents not currently in the corpus " +
     "are silently ignored. Removing a document does NOT delete it from the database — " +
     "it only removes its membership in the current version.",
-  inputSchema: z.object({
+  inputSchema: z.strictObject({
     arks: z
       .array(arkSchema)
       .min(1)
@@ -463,7 +463,7 @@ export const corpusRemoveByFilterTool = defineTool<
     "filter is refused (`success: false, refused: \"empty_filter\"`) — it would match the whole " +
     "corpus; narrow it instead. Removing a document drops its membership only; " +
     "it is never deleted from the database.",
-  inputSchema: z.object({
+  inputSchema: z.strictObject({
     filters: corpusToolFiltersSchema,
     reason: z
       .string()
@@ -540,7 +540,7 @@ export const corpusStatsTool = defineTool<
     "1970s books vs. 1970s periodicals). Crossing period × type or period × source is " +
     "the fastest way to locate a sub-population (\"the recent documents are catalogue " +
     "books\") without inspecting documents one by one.",
-  inputSchema: z.object({
+  inputSchema: z.strictObject({
     filters: corpusToolFiltersSchema.optional(),
     // A fixed-length ARRAY, not a z.tuple: a tuple serialises to the positional
     // `items: [A, B]` JSON-schema form, which Google's function-declaration
@@ -596,7 +596,7 @@ export const corpusDiffTool = defineTool<
   description:
     "Compare two corpus versions and return the list of ARKs added and removed " +
     "between them. Useful for explaining to the librarian what changed across sessions.",
-  inputSchema: z.object({
+  inputSchema: z.strictObject({
     from_seq: z
       .number()
       .int()

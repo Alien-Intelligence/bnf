@@ -99,3 +99,25 @@ test("encoding then decoding returns the same filter set", () => {
   assert.ok(r.ok)
   assert.deepEqual(r.filters, filters)
 })
+
+test("integers are read RAW: no trim, no leading zero, no -0, no + (decoded to a space)", () => {
+  for (const qs of ["yearFrom=%2B5", "yearFrom=+5", "yearFrom=%207", "yearFrom=7%20", "yearFrom=007", "yearFrom=-0"]) {
+    assert.equal(readQs(qs).ok, false, qs)
+  }
+  assert.equal(ok("yearFrom=0")?.yearFrom, 0)
+  assert.equal(ok("yearTo=1937")?.yearTo, 1937)
+})
+
+test("a scalar parameter given twice is refused, naming it — never last-wins", () => {
+  for (const [qs, name] of [
+    ["yearFrom=abc&yearFrom=1", "yearFrom"],
+    ["undated=garbage&undated=true", "undated"],
+    ["q=a&q=b", "q"],
+    ["not.yearTo=1900&not.yearTo=1950", "not.yearTo"],
+  ] as const) {
+    const r = readQs(qs)
+    assert.equal(r.ok, false, qs)
+    assert.ok(!r.ok && r.error.includes(`« ${name} »`) && /répété/.test(r.error), `${qs}: ${!r.ok ? r.error : ""}`)
+  }
+  assert.deepEqual(ok("type=press&type=book")?.type, ["press", "book"], "lists still repeat")
+})

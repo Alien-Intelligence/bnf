@@ -147,7 +147,7 @@ export const bufferListTool = defineTool<
     "librarian what has been gathered before committing to the corpus. To ENUMERATE " +
     "a large buffer, raise `limit`; to CHARACTERISE it (counts by type/period), " +
     "prefer buffer_stats.",
-  inputSchema: z.object({
+  inputSchema: z.strictObject({
     filters: bufferFilterSchema.optional(),
     limit: z
       .number()
@@ -202,7 +202,7 @@ export const bufferStatsTool = defineTool<
     "`cross_facets` (a pair of dimensions, e.g. [\"period\",\"type\"]) to ALSO get a " +
     "crossed breakdown — the count for each combination, ideal for locating a " +
     "sub-population to keep or drop.",
-  inputSchema: z.object({
+  inputSchema: z.strictObject({
     filters: bufferFilterSchema.optional(),
     // A fixed-length ARRAY, not a z.tuple: a tuple serialises to the positional
     // `items: [A, B]` JSON-schema form Google's function-declaration schema
@@ -268,7 +268,7 @@ export const bufferRemoveByFilterTool = defineTool<
     "removal. An empty filter is refused (`success: false, refused: \"empty_filter\"`) — it would drop " +
     "the whole buffer; use buffer_clear for that, explicitly. Removed candidates " +
     "are discarded from the buffer, NOT the corpus (the buffer is pre-commit).",
-  inputSchema: z.object({
+  inputSchema: z.strictObject({
     filters: bufferFilterSchema,
     dry_run: z
       .boolean()
@@ -320,7 +320,7 @@ export const bufferAddTool = defineTool<
     "`doc_type: \"fascicule\"` + `collapsing: false`): it stages them WITH their metadata " +
     "at once. A previously discarded ARK named here is staged again. Returns `added`, " +
     "`alreadyInCorpus`, `unresolved` and `total` (buffer size).",
-  inputSchema: z.object({
+  inputSchema: z.strictObject({
     arks: z
       .array(arkSchema)
       .min(1)
@@ -376,7 +376,7 @@ export const bufferDiscardTool = defineTool<
     "buffer_remove_by_filter. Discarded candidates leave the buffer but are NOT " +
     "removed from the corpus (they were never committed). Returns `discarded` " +
     "(how many were dropped) and `total` (buffer size).",
-  inputSchema: z.object({
+  inputSchema: z.strictObject({
     arks: z
       .array(arkSchema)
       .min(1)
@@ -416,7 +416,7 @@ export const bufferCommitTool = defineTool<
     "that may still be replaced by their digitized document) and `totalIsProvisional`. " +
     "When `totalIsProvisional` is true the total WILL move: call corpus_get_state and " +
     "quote that number, never this one.",
-  inputSchema: z.object({
+  inputSchema: z.strictObject({
     reason: z
       .string()
       .trim()
@@ -487,7 +487,7 @@ export const bufferClearTool = defineTool<z.ZodObject<Record<string, never>>, Tu
     "candidate); once it is removed from the corpus, a search stages it again. So " +
     "clearing never makes `added` go up for documents already in the corpus — do " +
     "not clear to 'retry' a search that returned `alreadyInCorpus`.",
-  inputSchema: z.object({}),
+  inputSchema: z.strictObject({}),
   handler: async (_input, ctx) => {
     const gate = await authorizeProjectTool(ctx, BufferPolicy, "mutate")
     if (!gate.ok) return gate.result
@@ -1167,7 +1167,7 @@ export const corpusSearchTool = defineTool<
     "`found` (read it: `alreadyInCorpus` is not a malfunction) — plus `kinds` (record " +
     "kinds in this page) and `type_ambiguous` when Gallica could not tell press from " +
     "books. Curate with buffer_remove_by_filter, then buffer_commit to add them to the corpus.",
-  inputSchema: z.object({
+  inputSchema: z.strictObject({
     source: searchSourceEnum.describe(
       'Which BnF index: "gallica" (digitised full text) or "catalogue" (bibliographic).',
     ),

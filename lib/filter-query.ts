@@ -15,11 +15,14 @@
 //   - codes: repeated and/or comma-separated — codes never contain a comma
 //     (the Constituer panel sends its multi-selects comma-joined);
 //   - texts: REPEATED only, never split, so a value with a comma survives;
-//   - integer: digits only, an optional leading minus (`0x10`, `1e3`, `12.5`
-//     are refused, not read as 16 / 1000 / 12);
+//   - integer: the RAW value, untrimmed: `0`, or an optional minus and digits
+//     with no leading zero (`0x10`, `1e3`, `12.5`, `007`, `-0`, `+5` — which
+//     the query string decodes to " 5" — and `%207` are refused, not read);
 //   - boolean: "true"/"1" or "false"/"0" (`z.coerce.boolean()` read the STRING
 //     "false" as true — the found bug behind `?undated=false`);
 //   - text: one value.
+// A scalar field (integer, boolean, text) given MORE THAN ONCE is refused,
+// naming it — never last-wins, which would silently drop the other values.
 // The exclusion travels as `not.<field>`, one level deep. Pure.
 
 export type FilterFieldCodec = "codes" | "texts" | "integer" | "boolean" | "text"
@@ -27,7 +30,8 @@ export type FilterFieldCodec = "codes" | "texts" | "integer" | "boolean" | "text
 /** The exclusion's fields travel as `not.<field>`. */
 export const NOT_PARAM_PREFIX = "not."
 
-const INTEGER = /^-?\d+$/
+/** `0`, or an optional minus and digits without a leading zero (`-0` refused). */
+const INTEGER = /^(0|-?[1-9][0-9]*)$/
 
 export type FilterQueryDecode =
   | { ok: true; input: Record<string, unknown> | undefined }
@@ -57,7 +61,8 @@ export function createFilterQueryCodec<F extends string>(
   /** The values of one field → its shape, or the raw string when it does not
    *  decode, so the schema rejects it with a message. */
   const decodeField = (field: F, values: string[]): unknown => {
-    const last = values[values.length - 1]
+    // A scalar field arrives exactly once (decode refuses a repeat).
+    const single = values[0]
     switch (fields[field]) {
       case "codes": {
         const kept = values.flatMap((v) => v.split(",")).map((v) => v.trim()).filter((v) => v.length > 0)
@@ -68,13 +73,13 @@ export function createFilterQueryCodec<F extends string>(
         return kept.length > 0 ? kept : undefined
       }
       case "integer":
-        return INTEGER.test(last.trim()) ? Number(last.trim()) : last
+        return INTEGER.test(single) ? Number(single) : single
       case "boolean":
-        if (last === "true" || last === "1") return true
-        if (last === "false" || last === "0") return false
-        return last
+        if (single === "true" || single === "1") return true
+        if (single === "false" || single === "0") return false
+        return single
       case "text":
-        return last.trim() === "" ? undefined : last
+        return single.trim() === "" ? undefined : single
     }
   }
 
@@ -106,7 +111,12 @@ export function createFilterQueryCodec<F extends string>(
         if (!isField(field) || (isNot && !allowedInNot.has(field))) {
           return { ok: false, error: `Paramètre de filtre inconnu : « ${key} ». Paramètres reconnus : ${known()}.` }
         }
-        const value = decodeField(field, params.getAll(key))
+        const values = params.getAll(key)
+        const kind = fields[field]
+        if (values.length > 1 && kind !== "codes" && kind !== "texts") {
+          return { ok: false, error: `Paramètre de filtre « ${key} » répété : une seule valeur attendue.` }
+        }
+        const value = decodeField(field, values)
         if (value === undefined) continue
         if (isNot) not[field] = value
         else positive[field] = value
