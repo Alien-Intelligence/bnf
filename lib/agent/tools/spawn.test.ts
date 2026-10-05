@@ -100,12 +100,13 @@ test("corpus child default can search + stage; research child default can read R
 // ---------------------------------------------------------------------------
 
 import { before, after } from "node:test"
+import { randomUUID } from "node:crypto"
 import type { ChatEvent } from "@alien/chat-sdk/events"
 import { prisma } from "@/lib/db"
 import type { Project, User } from "@/lib/generated/prisma/client"
 import { SPAWN_MAX_CONCURRENT_PER_TURN, SPAWN_MAX_PER_SESSION } from "@/lib/constants"
 import { SESSION_SCOPE } from "@/models/sessions/schema"
-import { SessionQueries } from "@/models/sessions/queries"
+import { SessionQueries, type SpawnClaim } from "@/models/sessions/queries"
 import {
   createTestProject,
   createTestSession,
@@ -160,6 +161,7 @@ function deps(runner: SpawnRunner, timeoutMs = 5_000, overrides: Partial<SpawnDe
     buildSystem: async () => "SYSTEM",
     resolveMcpServers: async () => [],
     claimRun: (appSessionId) => SessionQueries.claimSpawnRun(appSessionId, SPAWN_MAX_PER_SESSION),
+    releaseRun: (appSessionId) => SessionQueries.releaseSpawnRun(appSessionId),
     ...overrides,
   }
 }
@@ -242,7 +244,7 @@ test("a hung session cap check is bounded: it ends at the ceiling, emits nothing
   const result = await runSpawn(
     { task: "balaie" },
     makeCtx(sid, emitted),
-    deps(waitsForAbort, 20, { claimRun: () => hang<boolean>() }),
+    deps(waitsForAbort, 20, { claimRun: () => hang<SpawnClaim>() }),
   )
   assert.ok("success" in result && result.success === false)
   assert.match(String("error" in result ? result.error : ""), /délai/)
@@ -430,4 +432,36 @@ test("buffer_add adds its exact `added` to the child's staging tally", async () 
   const ctx: TurnScopedCtx = { ...makeCtx(sid, []), stagingTally: tally }
   await bufferAddTool.handler({ arks: [ark] }, ctx)
   assert.equal(tally.added, 1)
+})
+
+test("an already-cancelled launch claims nothing", async () => {
+  const sid = await createTestSession(project.id, SESSION_SCOPE.CORPUS)
+  const controller = new AbortController()
+  controller.abort()
+  const ctx: TurnScopedCtx = { ...makeCtx(sid, []), signal: controller.signal }
+  const result = await runSpawn({ task: "balaie" }, ctx, deps(waitsForAbort))
+  assert.ok("success" in result && result.success === false)
+  assert.equal(await spawnRuns(sid), 0, "no run was spent")
+})
+
+test("a claim that commits after the launch gave up is given back", async () => {
+  const sid = await createTestSession(project.id, SESSION_SCOPE.CORPUS)
+  const { promise: gate, resolve: open } = Promise.withResolvers<void>()
+  const slowClaim = async (id: string): Promise<SpawnClaim> => {
+    await gate
+    return SessionQueries.claimSpawnRun(id, SPAWN_MAX_PER_SESSION)
+  }
+  const result = await runSpawn({ task: "balaie" }, makeCtx(sid, []), deps(waitsForAbort, 20, { claimRun: slowClaim }))
+  assert.ok("success" in result && result.success === false, "the launch timed out waiting for its claim")
+  open()
+  for (let i = 0; i < 50 && (await spawnRuns(sid)) !== 0; i++) await new Promise((r) => setTimeout(r, 10))
+  await new Promise((r) => setTimeout(r, 50))
+  assert.equal(await spawnRuns(sid), 0, "the late claim was released")
+})
+
+test("a missing session is a fault, not the quota refusal", async () => {
+  const result = await runSpawn({ task: "balaie" }, makeCtx(randomUUID(), []), deps(waitsForAbort))
+  assert.ok("success" in result && result.success === false)
+  assert.ok(!("refused" in result), "not reported as spawn_limit")
+  assert.match(result.error, /session de cette conversation est introuvable/)
 })

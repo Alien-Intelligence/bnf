@@ -59,7 +59,7 @@ import { SUBAGENT_EVENT_KIND, type SubagentEventData, type SubagentTerminalData 
 import { AgentQueries } from "@/models/agents/queries"
 import { AgentService } from "@/models/agents/service"
 import { SESSION_SCOPE, type SessionScope } from "@/models/sessions/schema"
-import { SessionQueries } from "@/models/sessions/queries"
+import { SPAWN_CLAIM, SessionQueries, type SpawnClaim } from "@/models/sessions/queries"
 import { buildSubagentDirective } from "@/lib/agent/prompts/subagent"
 import { corpusTools } from "./corpus"
 import { bufferTools } from "./buffer"
@@ -152,8 +152,10 @@ export interface SpawnDeps {
   buildSystem: (ctx: TurnScopedCtx, task: string) => Promise<string>
   /** The BnF MCP server entry for the child, or [] (research scope / no MCP). */
   resolveMcpServers: (signal: AbortSignal) => Promise<McpServerEntry[]>
-  /** Claim one of the session's runs; false when SPAWN_MAX_PER_SESSION are used. */
-  claimRun: (appSessionId: string) => Promise<boolean>
+  /** Claim one of the session's runs (SessionQueries.claimSpawnRun). */
+  claimRun: (appSessionId: string) => Promise<SpawnClaim>
+  /** Give back a claim the launch abandoned before running. */
+  releaseRun: (appSessionId: string) => Promise<void>
 }
 
 /** A refusal or failure the parent sees plainly. `success: false` is what makes
@@ -298,14 +300,37 @@ export async function runSpawn(
     // Durable per-session cap: one atomic claim per RUN. A refusal (here or
     // above) never counts, and the count does not depend on the SDK having
     // persisted this call's tool_call row first.
-    let admitted: boolean
+    // A launch whose turn is already gone never claims a run.
+    if (bounds.signal.aborted) return stoppedOutcome(bounds, deps.timeoutMs, 0, undefined).result
+    const claim = deps.claimRun(ctx.appSessionId)
+    let claimed: SpawnClaim
     try {
-      admitted = await bounds.race(deps.claimRun(ctx.appSessionId), "the session cap check")
+      claimed = await bounds.race(claim, "the session cap check")
     } catch (err) {
-      if (bounds.signal.aborted) return stoppedOutcome(bounds, deps.timeoutMs, 0, undefined).result
-      throw err
+      if (!bounds.signal.aborted) throw err
+      // The race gave up; a claim that still commits afterwards is given back,
+      // so a cancelled turn never burns the session's run budget.
+      claim.then(
+        (late) => {
+          if (late === SPAWN_CLAIM.CLAIMED) {
+            void deps.releaseRun(ctx.appSessionId).catch((releaseErr: unknown) => {
+              console.error("[spawn_research] could not release an abandoned run claim:", releaseErr)
+            })
+          }
+        },
+        () => undefined, // its failure was already reported by bounds.race
+      )
+      return stoppedOutcome(bounds, deps.timeoutMs, 0, undefined).result
     }
-    if (!admitted) {
+    if (claimed === SPAWN_CLAIM.NO_SESSION) {
+      // A fault, not the quota: the turn's session row is gone.
+      console.error(`[spawn_research] session ${ctx.appSessionId} not found when claiming a run`)
+      return {
+        success: false,
+        error: "Le sous-agent n'a pas pu démarrer : la session de cette conversation est introuvable.",
+      }
+    }
+    if (claimed === SPAWN_CLAIM.CAP_REACHED) {
       return spawnLimitRefusal(
         `Limite de ${SPAWN_MAX_PER_SESSION} sous-agents par session atteinte : termine ce travail ` +
           "avec les outils directs, ou ouvre une nouvelle session pour un nouveau périmètre.",
@@ -514,6 +539,7 @@ const realDeps: SpawnDeps = {
   buildSystem: realBuildSystem,
   resolveMcpServers,
   claimRun: (appSessionId) => SessionQueries.claimSpawnRun(appSessionId, SPAWN_MAX_PER_SESSION),
+  releaseRun: (appSessionId) => SessionQueries.releaseSpawnRun(appSessionId),
 }
 
 export const spawnResearchTool = defineTool<
