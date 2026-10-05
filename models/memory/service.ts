@@ -4,7 +4,14 @@ import type { Prisma } from "@/lib/generated/prisma/client"
 import { SessionQueries } from "@/models/sessions/queries"
 import { MemoryQueries } from "./queries"
 import { MEMORY_NEAR_DUP_MAX_EDIT_DISTANCE } from "@/lib/constants"
-import { MEMORY_ORIGIN, type MemoryItem, type MemoryOrigin, type MemoryScope } from "@/models/memory/schema"
+import {
+  MEMORY_ORIGIN,
+  MEMORY_UPDATE_STATUS,
+  type MemoryItem,
+  type MemoryOrigin,
+  type MemoryScope,
+  type MemoryUpdateResult,
+} from "@/models/memory/schema"
 
 function norm(s: string): string {
   return s.trim().toLowerCase().replace(/\s+/g, " ")
@@ -87,8 +94,10 @@ export class MemoryService {
               position: existing.length,
             },
           })
+      // Dense positions, whatever an older row left behind.
+      await MemoryQueries.renumber(tx, await MemoryQueries.sectionOrder(tx, args.projectId, args.scope, args.section))
       await SessionQueries.invalidatePrompts({ projectId: args.projectId }, tx)
-      return item
+      return tx.memoryItem.findUniqueOrThrow({ where: { id: item.id } })
     })
   }
 
@@ -100,8 +109,11 @@ export class MemoryService {
   static async forget(projectId: string, scope: MemoryScope, itemId: string): Promise<boolean> {
     return prisma.$transaction(async (tx) => {
       await MemoryQueries.lockScope(tx, projectId, scope)
-      const { count } = await tx.memoryItem.deleteMany({ where: { id: itemId, projectId, scope } })
-      if (count === 0) return false
+      const item = await tx.memoryItem.findFirst({ where: { id: itemId, projectId, scope } })
+      if (item === null) return false
+      await tx.memoryItem.delete({ where: { id: item.id } })
+      // Close the gap: the section's positions stay dense.
+      await MemoryQueries.renumber(tx, await MemoryQueries.sectionOrder(tx, projectId, scope, item.section))
       await SessionQueries.invalidatePrompts({ projectId }, tx)
       return true
     })
@@ -122,44 +134,58 @@ export class MemoryService {
   }
 
   /**
-   * Update the text and/or section of an existing memory item, under the same
-   * per-scope lock and dedupe as `write`: when the edited text (in its target
-   * section) is a near-duplicate of another item there, the two MERGE — the
-   * other item takes the new text, this one is deleted, the merged item is
-   * returned — instead of leaving two identical rows. A move to another
-   * section appends at its end. Returns null — and invalidates nothing — when
-   * the item no longer exists (a concurrent forget): the route answers 404.
-   * Caller must have already verified project ownership (via MemoryPolicy).
+   * A user's explicit edit of an item's text and/or section, under the same
+   * per-scope lock as `write`. An edit NEVER merges into or deletes another
+   * item — near-duplicate merging is `write`'s rule only (an edit from
+   * « Inclure » to « Exclure la presse » is a different fact, a few letters
+   * apart). Text EQUAL to another item of the target section (after
+   * normalisation) is refused, naming that item. A move appends at the end of
+   * its new section; both sections stay densely numbered. Returns null — and
+   * invalidates nothing — when the item no longer exists (a concurrent
+   * forget): the route answers 404. Caller must have already verified project
+   * ownership (via MemoryPolicy).
    */
-  static async update(itemId: string, args: { text?: string; section?: string }): Promise<MemoryItem | null> {
-    return MemoryService.underScopeLock(itemId, async (tx, item) => {
+  static async update(itemId: string, args: { text?: string; section?: string }): Promise<MemoryUpdateResult | null> {
+    return MemoryService.underScopeLock(itemId, async (tx, item): Promise<MemoryUpdateResult> => {
       const section = args.section ?? item.section
       const text = args.text ?? item.text
       const siblings = await tx.memoryItem.findMany({
         where: { projectId: item.projectId, scope: item.scope, section, id: { not: item.id } },
-        orderBy: { position: "asc" },
       })
-      const duplicate = nearDuplicate(siblings, text)
-      if (duplicate !== undefined) {
-        await tx.memoryItem.delete({ where: { id: item.id } })
-        return tx.memoryItem.update({ where: { id: duplicate.id }, data: { text } })
+      const same = siblings.find((e) => norm(e.text) === norm(text))
+      if (same !== undefined) {
+        return { status: MEMORY_UPDATE_STATUS.DUPLICATE, duplicateOf: { id: same.id, text: same.text } }
       }
       const moved = section !== item.section
-      return tx.memoryItem.update({
+      await tx.memoryItem.update({
         where: { id: item.id },
         data: { text, section, ...(moved ? { position: siblings.length } : {}) },
       })
+      if (moved) {
+        await MemoryQueries.renumber(tx, await MemoryQueries.sectionOrder(tx, item.projectId, item.scope, item.section))
+        const target = (await MemoryQueries.sectionOrder(tx, item.projectId, item.scope, section)).filter(
+          (id) => id !== item.id,
+        )
+        await MemoryQueries.renumber(tx, [...target, item.id])
+      }
+      return { status: MEMORY_UPDATE_STATUS.UPDATED, item: await tx.memoryItem.findUniqueOrThrow({ where: { id: item.id } }) }
     })
   }
 
   /**
-   * Move an item to an absolute position within its section; null when the
-   * item no longer exists. The caller computes the target position.
+   * Move an item to index `position` of its section (clamped to the section's
+   * bounds); every sibling shifts, so the section stays densely numbered and
+   * no two items share a position. Null when the item no longer exists.
    */
   static async reorder(itemId: string, position: number): Promise<MemoryItem | null> {
-    return MemoryService.underScopeLock(itemId, (tx, item) =>
-      tx.memoryItem.update({ where: { id: item.id }, data: { position } }),
-    )
+    return MemoryService.underScopeLock(itemId, async (tx, item) => {
+      const others = (await MemoryQueries.sectionOrder(tx, item.projectId, item.scope, item.section)).filter(
+        (id) => id !== item.id,
+      )
+      const at = Math.max(0, Math.min(position, others.length))
+      await MemoryQueries.renumber(tx, [...others.slice(0, at), item.id, ...others.slice(at)])
+      return tx.memoryItem.findUniqueOrThrow({ where: { id: item.id } })
+    })
   }
 
   /**
@@ -168,10 +194,10 @@ export class MemoryService {
    * prompt of the project. Null when the item is gone (read again under the
    * lock, so a forget that won the race is seen).
    */
-  private static async underScopeLock(
+  private static async underScopeLock<T>(
     itemId: string,
-    change: (tx: Prisma.TransactionClient, item: MemoryItem) => Promise<MemoryItem>,
-  ): Promise<MemoryItem | null> {
+    change: (tx: Prisma.TransactionClient, item: MemoryItem) => Promise<T>,
+  ): Promise<T | null> {
     return prisma.$transaction(async (tx) => {
       const before = await tx.memoryItem.findUnique({ where: { id: itemId } })
       if (before === null) return null

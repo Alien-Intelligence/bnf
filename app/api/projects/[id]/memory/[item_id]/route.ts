@@ -5,13 +5,13 @@
 
 import { withAuth } from "@/app/api/_middleware"
 import { parseBody, parseQuery } from "@/app/api/_helpers"
-import { ok, notFound } from "@/lib/api-response"
+import { badRequest, ok, notFound } from "@/lib/api-response"
 import { ProjectQueries } from "@/models/projects/queries"
 import { MemoryPolicy } from "@/models/memory/policy"
 import { MemoryQueries } from "@/models/memory/queries"
 import { MemoryService } from "@/models/memory/service"
 import { memoryQuerySchema, updateMemoryItemSchema, reorderMemoryItemSchema } from "@/models/memory/types"
-import type { MemoryItem } from "@/models/memory/schema"
+import { MEMORY_UPDATE_STATUS, type MemoryItem } from "@/models/memory/schema"
 
 type RouteCtx = { params: Promise<{ id: string; item_id: string }> }
 
@@ -41,9 +41,15 @@ export const PUT = withAuth(async (req, _user, bouncer, ctx: RouteCtx) => {
   const existing = await MemoryQueries.get(item_id)
   if (!existing || existing.projectId !== id) return notFound("Élément introuvable")
 
-  const item = await MemoryService.update(item_id, parsed)
-  if (item === null) return notFound("Élément introuvable")
-  return ok<MemoryItem>(item)
+  const result = await MemoryService.update(item_id, parsed)
+  if (result === null) return notFound("Élément introuvable")
+  if (result.status === MEMORY_UPDATE_STATUS.DUPLICATE) {
+    // An edit never merges or deletes another item: the user decides.
+    return badRequest(`Cette section contient déjà ce fait : « ${result.duplicateOf.text} ».`, {
+      duplicateOf: result.duplicateOf.id,
+    })
+  }
+  return ok<MemoryItem>(result.item)
 })
 
 export const PATCH = withAuth(async (req, _user, bouncer, ctx: RouteCtx) => {

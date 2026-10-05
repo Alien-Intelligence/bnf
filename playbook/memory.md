@@ -129,9 +129,17 @@ Rules:
   `pg_advisory_xact_lock`) for its transaction, so two concurrent writes (a
   parent agent and its sub-agents) can neither both miss the duplicate nor
   take the same position. `update` (an edit or a move to another section),
-  `reorder` and `forget` take the same lock; an edit whose text is a
-  near-duplicate of another item of its target section merges into that item,
-  and a move appends at the end of its new section.
+  `reorder` and `forget` take the same lock.
+- **Dedupe is `write`'s rule, never an edit's** ✅. A user's explicit `update`
+  never merges into or deletes another item — « Inclure la presse » edited to
+  « Exclure la presse » is a different fact, a few letters apart. Text EQUAL
+  to another item of the target section (after normalisation) is refused,
+  naming that item (`MEMORY_UPDATE_STATUS.DUPLICATE`; the route answers 400).
+- **Positions are dense** ✅. After every write, forget, move and reorder the
+  section is renumbered 0..n-1 inside the locked transaction
+  (`MemoryQueries.renumber`): a move appends at the end of its new section, a
+  reorder shifts its siblings, and no two items of a section ever share a
+  position.
 - **Every mutation invalidates, atomically** ✅. `write`, `createUserItem`,
   `update`, `reorder` and `forget` each run the change and
   `SessionQueries.invalidatePrompts` in one `$transaction`. `forget` returns

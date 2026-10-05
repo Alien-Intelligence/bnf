@@ -18,7 +18,7 @@ import { MEMORY_CROSS_SCOPE_MAX_ITEMS } from "@/lib/constants"
 import { PromptBuilder } from "@/lib/agent/prompts/builder"
 import { memoryWriteTool } from "@/lib/agent/tools/memory"
 import type { TurnScopedCtx } from "@/lib/agent/tools/registry-factory"
-import { MEMORY_SCOPE } from "@/models/memory/schema"
+import { MEMORY_SCOPE, MEMORY_UPDATE_STATUS } from "@/models/memory/schema"
 import { MemoryService } from "@/models/memory/service"
 import { SessionQueries } from "@/models/sessions/queries"
 import { SESSION_SCOPE } from "@/models/sessions/schema"
@@ -214,14 +214,51 @@ test("update or reorder of a vanished item is null (the route's 404), never a th
   assert.equal(await MemoryService.reorder(gone, 1), null)
 })
 
-test("moving an item onto its exact duplicate MERGES it, like write — never two identical rows", async () => {
+test("a user's edit NEVER merges into or deletes another item; text equal to another item is refused", async () => {
   const scope = MEMORY_SCOPE.CORPUS
-  const keep = await MemoryService.write({ projectId: project.id, scope, section: "Cible", text: "Doublon exact à fusionner" })
-  const moved = await MemoryService.write({ projectId: project.id, scope, section: "Origine", text: "Doublon exact à fusionner" })
-  const result = await MemoryService.update(moved.id, { section: "Cible" })
-  assert.equal(result?.id, keep.id, "the item already in the section is the merged one")
-  const rows = await prisma.memoryItem.findMany({ where: { projectId: project.id, scope, text: "Doublon exact à fusionner" } })
-  assert.equal(rows.length, 1)
+  const include = await MemoryService.write({ projectId: project.id, scope, section: "Édition", text: "Inclure la presse quotidienne" })
+  const other = await MemoryService.write({ projectId: project.id, scope, section: "Édition", text: "Période : 1930" })
+  // A near-duplicate edit is a DIFFERENT fact: both items survive, untouched but the edited one.
+  const near = await MemoryService.update(other.id, { text: "Exclure la presse quotidienne" })
+  assert.equal(near?.status, MEMORY_UPDATE_STATUS.UPDATED)
+  const rows = await prisma.memoryItem.findMany({ where: { projectId: project.id, scope, section: "Édition" } })
+  assert.equal(rows.length, 2, "nothing was deleted")
+  assert.equal(rows.find((r) => r.id === include.id)?.text, "Inclure la presse quotidienne", "the other item is untouched")
+  // An EXACT duplicate (after normalisation) is refused, naming the existing item.
+  const exact = await MemoryService.update(other.id, { text: "  inclure la PRESSE quotidienne " })
+  assert.deepEqual(exact, {
+    status: MEMORY_UPDATE_STATUS.DUPLICATE,
+    duplicateOf: { id: include.id, text: "Inclure la presse quotidienne" },
+  })
+  assert.equal((await prisma.memoryItem.findUniqueOrThrow({ where: { id: other.id } })).text, "Exclure la presse quotidienne")
+})
+
+test("positions stay dense: a move after a forget, and a reorder, never share a position", async () => {
+  const scope = MEMORY_SCOPE.CORPUS
+  const section = "Densité"
+  const items: Array<{ id: string }> = []
+  for (const text of ["Premier fait dense", "Deuxième, autre sujet", "Troisième, encore autre"]) {
+    items.push(await MemoryService.write({ projectId: project.id, scope, section, text }))
+  }
+  await MemoryService.forget(project.id, scope, items[1].id) // [0, 2] before the fix
+  const mover = await MemoryService.write({ projectId: project.id, scope, section: "Ailleurs", text: "Fait qui arrive" })
+  await MemoryService.update(mover.id, { section })
+  const positions = async () =>
+    (await prisma.memoryItem.findMany({ where: { projectId: project.id, scope, section }, orderBy: { position: "asc" } })).map(
+      (r) => [r.text, r.position] as const,
+    )
+  assert.deepEqual(await positions(), [
+    ["Premier fait dense", 0],
+    ["Troisième, encore autre", 1],
+    ["Fait qui arrive", 2],
+  ])
+  // Reorder to the front: every sibling shifts, none shares position 0.
+  await MemoryService.reorder(mover.id, 0)
+  assert.deepEqual(await positions(), [
+    ["Fait qui arrive", 0],
+    ["Premier fait dense", 1],
+    ["Troisième, encore autre", 2],
+  ])
 })
 
 test("a move to another section appends at its end, and concurrent moves take distinct positions", async () => {
