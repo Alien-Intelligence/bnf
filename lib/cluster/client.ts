@@ -196,6 +196,25 @@ export class ClusterClient {
    * → worker_unreachable; any other non-2xx → worker_error (logged). A 2xx body
    * that is not a valid read-model is a contract break and throws.
    */
+  /**
+   * GET /health: whether the worker process answers at all — the OCR sync's
+   * control of last resort, when no document is `available` to ask instead.
+   * true on 2xx; false when it is unreachable, times out or answers non-2xx
+   * (that IS the answer, logged). A caller's cancellation throws.
+   */
+  static async workerHealthy(signal: AbortSignal): Promise<boolean> {
+    try {
+      const res = await requestWorker("/health", { method: "GET" }, signal)
+      if (!res.ok) console.warn(`[cluster] worker health: ${res.status} ${res.statusText}`)
+      return res.ok
+    } catch (err) {
+      if (!(err instanceof WorkerTransportError)) throw err
+      if (signal.aborted) throw err
+      console.warn("[cluster] worker health: unreachable —", err.message)
+      return false
+    }
+  }
+
   static async progress(clusterJobId: string): Promise<ClusterProgressPoll> {
     const path = `/progress/${encodeURIComponent(clusterJobId)}`
     let res: WorkerResponse

@@ -149,6 +149,13 @@ function simulate(projectIds: string[], mine: string[], worker: { current: Worke
     pendingArks: (corpusProjectId, limit, now) => DocumentQueries.pendingOcrArks({ corpusProjectId, limit, now }),
     controlArks: async (exclude, limit) =>
       (await DocumentQueries.ocrControlArks(exclude, 100_000)).filter(keep).slice(0, limit),
+    // The health check is a request to the same simulated worker: a flapping
+    // worker flaps on it too.
+    workerHealthy: async () => {
+      sim.ctx.req += 1
+      sim.ctx.reqInDrain += 1
+      return worker.current([], sim.ctx) !== "down"
+    },
     syncBatch: async (arks, signal) => {
       sim.ctx.req += 1
       sim.ctx.reqInDrain += 1
@@ -349,6 +356,22 @@ test("FAIL 1 worker dying after the first request of every drain, 6 h: 0 innocen
   assert.equal(r.quarantined, 0)
   assert.equal(r.strikeErrorLines, 0)
   assert.ok(r.strikeLines <= FALSE_STRIKE_LINES_MAX, `false strike lines: ${r.strikeLines}`)
+})
+
+test("a fresh install (nothing available anywhere): a lone poison is quarantined by the health-check bracket, never retried for ever", async () => {
+  const { projectId, arks } = await corpus("fresh", 1)
+  const poison = arks[0] ?? ""
+  const worker: { current: Worker } = { current: (asked) => (asked.includes(poison) ? "down" : answerAll(asked)) }
+  const sim = simulate([projectId], arks, worker)
+  const drainer = sim.drainer()
+  let drains = 0
+  while ((await rows([poison]))[0]?.status !== OCR_SYNC_STATUS.QUARANTINED) {
+    assert.ok(drains < 3 * HOUR_OF_DRAINS, `quarantined within three hours (drain ${drains})`)
+    await sim.sweep(drainer)
+    drains += 1
+  }
+  assert.equal((await rows([poison]))[0]?.outageStrikes, OCR_SYNC_MAX_ATTEMPTS)
+  console.log(`[ocr-sync-pg] fresh install, lone poison: quarantined after ${drains} drains (${(drains * OCR_SYNC_SWEEP_INTERVAL_MS) / 60_000} min)`)
 })
 
 test("FAIL 2 three drainers sharing the database (replicas, a rolling update) — a poison's strikes equal the strikes recorded, never more", async () => {

@@ -121,6 +121,8 @@ export type OcrSyncPorts = {
   ): Promise<Array<{ ark: string; outageCount: number }>>
   /** Up to `limit` `available` ARKs outside `exclude` to rotate as controls (most recent first). */
   controlArks(exclude: string[], limit: number, signal: AbortSignal): Promise<string[]>
+  /** The worker's health check: the control when no ARK is `available` to ask (a fresh install). */
+  workerHealthy(signal: AbortSignal): Promise<boolean>
   syncBatch(arks: string[], signal: AbortSignal): Promise<OcrSyncBatchResult>
   /** `askedAt`: when the rejected question was asked; resolves false when nothing was written. */
   recordRejection(ark: string, message: string, now: Date, askedAt: Date, signal: AbortSignal): Promise<boolean>
@@ -306,10 +308,10 @@ export function createOcrSyncDrainer(ports: OcrSyncPorts, limits: OcrSyncLimits)
    * period-2 failure pattern cannot answer two consecutive requests. A
    * failure without a full bracket only backs X off. A control that fails is
    * recorded as an ordinary lone failure of that ARK and ends the isolation
-   * for this drain (the worker is not proven up). With no control to ask
-   * (nothing `available` yet), ARKs are still asked alone — their answers
-   * serve the corpus and become the openers — but two transport failures in a
-   * row end the isolation.
+   * for this drain (the worker is not proven up). With no `available` ARK to
+   * ask (a fresh install), the worker's health check is the control, so a
+   * document that always fails alone is still struck and quarantined — never
+   * retried for ever. Two transport failures in a row end the isolation.
    */
   async function isolate(alone: string[], d: Drain): Promise<void> {
     let controls: string[] | null = null
@@ -320,7 +322,13 @@ export function createOcrSyncDrainer(ports: OcrSyncPorts, limits: OcrSyncLimits)
       if (d.isolation <= 0) return "none"
       if (controls === null) controls = await ports.controlArks(alone, limits.controlPool, d.signal)
       const pick = controls[cursor.control % Math.max(1, controls.length)]
-      if (pick === undefined) return "none"
+      if (pick === undefined) {
+        // Nothing `available` to ask (a fresh install, or every control
+        // failed): the worker's health check is the control. Without it a
+        // document that always fails alone would be retried for ever.
+        d.isolation -= 1
+        return (await ports.workerHealthy(d.signal)) ? "answered" : "failed"
+      }
       cursor.control += 1
       d.isolation -= 1
       const result = await ask([pick], d)
@@ -600,6 +608,7 @@ const realPorts: OcrSyncPorts = {
     ),
   controlArks: (exclude, limit, signal) =>
     boundedRead("control ARKs", DocumentQueries.ocrControlArks(exclude, limit), signal),
+  workerHealthy: (signal) => DocumentService.ocrWorkerHealthy(signal),
   syncBatch: (arks, signal) => DocumentService.syncOcrBatch(arks, signal),
   recordRejection: (ark, message, now, askedAt, signal) =>
     DocumentService.recordOcrRejection(ark, message, now, askedAt, signal),

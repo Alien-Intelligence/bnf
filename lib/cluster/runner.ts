@@ -55,6 +55,15 @@ export const ClusterRunner = {
     return ClusterClient.ocrQualitySync(arks, signal)
   },
 
+  /** The worker's liveness (real mode only, like the OCR sync that asks it). */
+  async workerHealthy(signal: AbortSignal): Promise<boolean> {
+    const mode = clusterMode()
+    if (mode !== CLUSTER_MODE.REAL) {
+      throw new Error(`ClusterRunner.workerHealthy: no worker in CLUSTER_MODE=${mode}`)
+    }
+    return ClusterClient.workerHealthy(signal)
+  },
+
   async cancel(clusterJobId: string): Promise<void> {
     return clusterMode() === CLUSTER_MODE.REAL
       ? ClusterClient.cancel(clusterJobId)

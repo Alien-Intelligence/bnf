@@ -439,14 +439,18 @@ backfilled automatically — no manual step:
     documents answered back to back → it fails again. Controls rotate among
     the 10 most recently synced `available` documents that have no outage on
     record; a control that fails is recorded like any document's lone failure
-    and ends the isolation for that cycle. Anything short of the bracket only
+    and ends the isolation for that cycle. When no document is `available` to
+    serve as a control (a fresh install), the worker's `GET /health` is the
+    control, so a document that always fails alone is still struck and
+    quarantined — nothing is retried for ever. Anything short of the bracket only
     backs the document off. After 5 strikes it is `quarantined` with `reason
     = worker_fails_alone: …` — never an `available` document, which keeps its
     quality and only backs off. Strikes are logged at **warn**.
   - Measured on the real tables, production limits, 3-min cadence
     (tests/models/documents/ocr-sync-pg.test.ts): 48 h of a down worker → 0
-    strikes, 152 requests over 960 cycles, all served 13 cycles after it
-    returns; a poison document among 3 → quarantined in 69 min, the others
+    strikes, about one health check per cycle while nothing is `available`,
+    all served after it returns; a lone poison on a fresh install → quarantined
+    in 57 min; a poison document among 3 → quarantined in 69 min, the others
     served; a poison at position 0 of a 100-document batch → 99 served and the
     poison quarantined in 69 min; a lone broken artifact → quarantined in 48
     min, nothing paused. A **partly failing worker** strikes no innocent into

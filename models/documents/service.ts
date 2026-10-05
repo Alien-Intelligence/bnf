@@ -292,6 +292,11 @@ export class DocumentService {
    * OcrSyncContractError (the exchange, or named ARKs, break the contract —
    * nothing of the answer is written); a DB failure throws as is.
    */
+  /** Whether the OCR worker answers its health check (the sync's last-resort control). */
+  static ocrWorkerHealthy(signal: AbortSignal): Promise<boolean> {
+    return ClusterRunner.workerHealthy(signal)
+  }
+
   static async syncOcrBatch(arks: string[], signal: AbortSignal): Promise<OcrSyncBatchResult> {
     // Stamped BEFORE the question: a resync a commit requests while the
     // question is in flight is newer than the answer and stays due.

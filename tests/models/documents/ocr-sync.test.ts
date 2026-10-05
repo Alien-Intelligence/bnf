@@ -120,6 +120,8 @@ type Fake = {
   due: Map<string, string[]>
   /** The persisted outage count the fake models (recordBatchOutage). */
   outageCount: Map<string, number>
+  /** asked.length at each health check — where in the request sequence it ran. */
+  healthChecks: number[]
 }
 
 /**
@@ -134,6 +136,8 @@ function fakePorts(opts: {
   sync?: (arks: string[], signal: AbortSignal) => Promise<OcrSyncBatchResult>
   /** The `available` ARKs the drainer may rotate as controls. */
   controls?: string[]
+  /** What the worker's health check answers (the control when no ARK is available); default: up. */
+  healthy?: boolean
   outageCount?: Record<string, number>
   batchCostMs?: number
 }): Fake {
@@ -141,6 +145,7 @@ function fakePorts(opts: {
   const rejected: string[] = []
   const batchOutages: string[][] = []
   const alone: AloneCall[] = []
+  const healthChecks: number[] = []
   const errors: string[] = []
   const warnings: string[] = []
   const clock = { now: 1_000_000 }
@@ -164,6 +169,10 @@ function fakePorts(opts: {
     },
     controlArks: async (exclude, limit) =>
       (opts.controls ?? []).filter((c) => !exclude.includes(c)).slice(0, limit),
+    workerHealthy: async () => {
+      healthChecks.push(asked.length)
+      return opts.healthy ?? true
+    },
     syncBatch: async (arks, signal) => {
       asked.push(arks)
       const result = opts.sync ? await opts.sync(arks, signal) : built(arks)
@@ -194,7 +203,7 @@ function fakePorts(opts: {
       errors.push(message)
     },
   }
-  return { ports, asked, rejected, batchOutages, alone, errors, warnings, clock, due, outageCount }
+  return { ports, asked, rejected, batchOutages, alone, healthChecks, errors, warnings, clock, due, outageCount }
 }
 
 const LIMITS: OcrSyncLimits = {
@@ -450,31 +459,38 @@ test("A FAIL 3: the control rotates across drains among the available ARKs", asy
   assert.deepEqual(controlsAsked, [C1, C2, C1, C2, C1, C2])
 })
 
-test("A: with no control at all (nothing available yet), ARKs are asked alone unbracketed — served, never struck", async () => {
+test("A: with nothing available (a fresh install), the worker's health check is the control — a document failing alone is struck, never retried for ever", async () => {
   const lone = [ark(1), ark(2), ark(3)]
   const fake = fakePorts({
     due: { p1: lone },
     outageCount: Object.fromEntries(lone.map((a) => [a, 2])),
+    healthy: true,
     sync: async (arks) => {
       if (arks.includes(ark(1))) throw new OcrSyncUnavailableError("502")
       return built(arks)
     },
   })
   const report = await createOcrSyncDrainer(fake.ports, LIMITS).drain(ALIVE)
-  assert.deepEqual(fake.asked, [[ark(1)], [ark(2)], [ark(3)]])
-  assert.deepEqual(fake.alone, [{ ark: ark(1), bracketed: false }])
-  assert.equal(report.tally.struck, 0)
+  // health → ark1 fails → health, health → ark1 fails again: a full bracket.
+  assert.deepEqual(fake.asked, [[ark(1)], [ark(1)], [ark(2)], [ark(3)]])
+  // …and ark2's opener is a health check again (ark1 ended unanswered).
+  assert.deepEqual(fake.healthChecks, [0, 1, 1, 2])
+  assert.deepEqual(fake.alone, [{ ark: ark(1), bracketed: true }])
+  assert.equal(report.tally.struck, 1)
 })
 
-test("A: with no control and a down worker, two ARKs alone failing in a row end the isolation", async () => {
+test("A: with nothing available and the worker's health check failing, nobody is struck and the isolation ends", async () => {
   const lone = [ark(1), ark(2), ark(3)]
   const fake = fakePorts({
     due: { p1: lone },
     outageCount: Object.fromEntries(lone.map((a) => [a, 2])),
+    healthy: false,
     sync: DOWN,
   })
-  await createOcrSyncDrainer(fake.ports, LIMITS).drain(ALIVE)
-  assert.deepEqual(fake.asked, [[ark(1)], [ark(2)]])
+  const report = await createOcrSyncDrainer(fake.ports, LIMITS).drain(ALIVE)
+  assert.deepEqual(fake.asked, [])
+  assert.equal(fake.healthChecks.length, 1)
+  assert.equal(report.tally.struck, 0)
 })
 
 test("A: the isolation budget caps the requests asked alone per drain, controls included", async () => {

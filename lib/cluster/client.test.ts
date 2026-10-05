@@ -291,6 +291,27 @@ const READ_MODEL = {
   reconciles: true,
 }
 
+test("workerHealthy: 2xx → true; non-2xx, unreachable or stalled → false; a cancelled caller throws", async () => {
+  const alive = new AbortController().signal
+  await withStubWorker({ status: 200, body: '{"ok":true}' }, async () => {
+    assert.equal(await ClusterClient.workerHealthy(alive), true)
+  })
+  await withStubWorker({ status: 503, body: "busy" }, async () => {
+    assert.equal(await ClusterClient.workerHealthy(alive), false)
+  })
+  await withStubWorker("stall-body", async () => {
+    assert.equal(await ClusterClient.workerHealthy(alive), false)
+  })
+  const saved = process.env.WORKER_RUNNER_URL
+  process.env.WORKER_RUNNER_URL = "http://127.0.0.1:1"
+  try {
+    assert.equal(await ClusterClient.workerHealthy(alive), false)
+    await assert.rejects(ClusterClient.workerHealthy(AbortSignal.abort()), /cancelled by the caller/)
+  } finally {
+    restoreEnv("WORKER_RUNNER_URL", saved)
+  }
+})
+
 test("progress: a read-model → progress", async () => {
   await withStubWorker({ status: 200, body: JSON.stringify(READ_MODEL) }, async () => {
     const poll = await ClusterClient.progress("run-1")
