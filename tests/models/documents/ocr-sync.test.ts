@@ -120,6 +120,9 @@ type Fake = {
   synced: string[][]
   rejected: string[]
   outage: string[][]
+  isolated: string[]
+  /** Every request the drainer made (batches and sub-batches). */
+  asked: string[][]
   clock: { now: number }
   /** ARKs still due, per corpus — a synced/rejected/backed-off ARK leaves the list. */
   due: Map<string, string[]>
@@ -135,6 +138,8 @@ function fakePorts(opts: {
   const synced: string[][] = []
   const rejected: string[] = []
   const outage: string[][] = []
+  const isolated: string[] = []
+  const asked: string[][] = []
   const clock = { now: 1_000_000 }
   const due = new Map(Object.entries(opts.due))
   const settle = (arks: string[]) => {
@@ -153,6 +158,7 @@ function fakePorts(opts: {
       return list.slice(0, limit)
     },
     syncBatch: async (arks, signal) => {
+      asked.push(arks)
       const result = opts.sync ? await opts.sync(arks, signal) : plan(arks)
       synced.push(arks)
       settle(arks)
@@ -162,19 +168,31 @@ function fakePorts(opts: {
       rejected.push(a)
       settle([a])
     },
+    // Never-asked ARKs (the fake's model) have no row to back off: an outage
+    // leaves them due, exactly as in production.
     recordOutage: async (arks) => {
       outage.push(arks)
-      settle(arks)
+    },
+    recordIsolation: async (a) => {
+      isolated.push(a)
+      settle([a])
     },
     batchCostMs: () => opts.batchCostMs ?? 0,
     now: () => clock.now,
     log: () => {},
     error: () => {},
   }
-  return { ports, synced, rejected, outage, clock, due }
+  return { ports, synced, rejected, outage, isolated, asked, clock, due }
 }
 
-const LIMITS = { drainDeadlineMs: 60_000, batchSize: BATCH, maxBatches: 10, outageBisectBudget: 4 }
+const LIMITS = {
+  drainDeadlineMs: 60_000,
+  batchSize: BATCH,
+  maxBatches: 10,
+  outageBisectBudget: 16,
+  maxAttempts: 3,
+  outageBackoffMs: 30 * 60 * 1_000,
+}
 const ALIVE = new AbortController().signal
 
 test("drain: syncs every due ARK of every corpus, round-robin, one batch per corpus per round", async () => {
@@ -255,23 +273,30 @@ test("drain: an exchange-level break pauses the sync without penalising any ARK,
   assert.deepEqual(fake.synced, [[ark(1), ark(2)]])
 })
 
-test("drain: an unreachable worker backs the batch off and stops; others are asked next time", async () => {
-  let down = true
+test("drain: an outage ends that corpus's turn only — other corpora are still served", async () => {
   const fake = fakePorts({
-    due: { p1: [ark(1), ark(2), ark(3), ark(4), ark(5)] },
+    due: { a: [ark(1), ark(2)], b: [ark(3)] },
     sync: async (arks) => {
-      if (down) throw new OcrSyncUnavailableError("ECONNREFUSED")
+      if (arks.includes(ark(1))) throw new OcrSyncUnavailableError("502")
       return plan(arks)
     },
   })
-  const drainer = createOcrSyncDrainer(fake.ports, LIMITS)
-  const first = await drainer.drain(ALIVE)
-  assert.equal(first.stop, OCR_SYNC_STOP.WORKER_UNAVAILABLE)
-  assert.deepEqual(fake.outage, [[ark(1), ark(2), ark(3), ark(4)]])
+  const report = await createOcrSyncDrainer(fake.ports, LIMITS).drain(ALIVE)
+  assert.deepEqual(fake.outage, [[ark(1), ark(2)]])
+  assert.deepEqual(fake.synced, [[ark(3)]], "corpus b is served despite a's outage")
   assert.deepEqual(fake.rejected, [], "an outage never counts against an ARK's contract budget")
-  down = false
-  await drainer.drain(ALIVE)
-  assert.deepEqual(fake.synced, [[ark(5)]], "the backed-off batch no longer heads the sweep")
+  assert.equal(report.stop, OCR_SYNC_STOP.DONE)
+})
+
+test("drain: a whole-worker outage reports worker_unavailable", async () => {
+  const fake = fakePorts({
+    due: { a: [ark(1)], b: [ark(2)] },
+    sync: async () => {
+      throw new OcrSyncUnavailableError("ECONNREFUSED")
+    },
+  })
+  const report = await createOcrSyncDrainer(fake.ports, LIMITS).drain(ALIVE)
+  assert.equal(report.stop, OCR_SYNC_STOP.WORKER_UNAVAILABLE)
 })
 
 test("drain: no batch starts when its worst-case cost no longer fits the deadline", async () => {
@@ -321,37 +346,81 @@ test("drain: a trigger during a drain is folded into it (one drain at a time)", 
   assert.equal(calls, 1)
 })
 
-test("drain: a batch that keeps failing an outage is bisected, isolating the poison ARK and releasing its batch-mates", async () => {
-  const poison = ark(3)
+test("drain: a poison ARK at position 0 of 300 is isolated within a few drains and the other 299 are served", async () => {
+  const arks = Array.from({ length: 300 }, (_, i) => ark(1000 + i))
+  const poison = arks[0]
   const fake = fakePorts({
-    due: { p1: [ark(1), ark(2), poison, ark(4)] },
-    sync: async (arks) => {
-      if (arks.includes(poison)) throw new OcrSyncUnavailableError("worker 502")
-      return plan(arks)
+    due: { p1: [...arks] },
+    sync: async (batch) => {
+      if (batch.includes(poison)) throw new OcrSyncUnavailableError("worker 502 on this ARK")
+      return plan(batch)
     },
   })
-  const drainer = createOcrSyncDrainer(fake.ports, LIMITS)
-  // First outage: the whole batch backs off (an outage looks like an outage).
-  await drainer.drain(ALIVE)
-  assert.deepEqual(fake.outage, [[ark(1), ark(2), poison, ark(4)]])
-  // The same ARKs fail again: bisected within the budget.
-  fake.due.set("p1", [ark(1), ark(2), poison, ark(4)])
-  await drainer.drain(ALIVE)
-  assert.deepEqual(fake.synced, [[ark(1), ark(2)]], "the healthy half is released")
-  assert.deepEqual(fake.outage.at(-1), [poison], "halved down to the lone poison ARK")
+  const limits = { ...LIMITS, batchSize: 100, maxBatches: 10 }
+  const drainer = createOcrSyncDrainer(fake.ports, limits)
+  let drains = 0
+  while (drains < 12 && (fake.due.get("p1")?.length ?? 0) > 0) {
+    await drainer.drain(ALIVE)
+    drains += 1
+    fake.clock.now += limits.outageBackoffMs // the benched poison is due again next drain
+  }
+  assert.deepEqual(fake.isolated, [poison], "the poison ARK is isolated")
+  assert.equal(fake.synced.flat().length, 299, "every other ARK is served")
+  assert.ok(drains <= 6, `isolated within ${drains} drains`)
 })
 
-test("drain: bisection never exceeds its budget", async () => {
+test("drain: bisection asks BOTH halves and never exceeds its per-drain request budget", async () => {
   const fake = fakePorts({
     due: { p1: [ark(1), ark(2), ark(3), ark(4)] },
     sync: async () => {
       throw new OcrSyncUnavailableError("down")
     },
   })
-  const drainer = createOcrSyncDrainer(fake.ports, { ...LIMITS, outageBisectBudget: 1 })
+  const drainer = createOcrSyncDrainer(fake.ports, { ...LIMITS, outageBisectBudget: 2 })
   await drainer.drain(ALIVE)
-  fake.due.set("p1", [ark(1), ark(2), ark(3), ark(4)])
-  const calls = fake.outage.length
+  const before = fake.asked.length
   await drainer.drain(ALIVE)
-  assert.equal(fake.outage.length - calls, 1, "one bisect, then the half backs off and the drain stops")
+  assert.deepEqual(
+    fake.asked.slice(before),
+    [[ark(1), ark(2), ark(3), ark(4)], [ark(1), ark(2)], [ark(3), ark(4)]],
+    "one split (budget 2): both halves asked, no deeper",
+  )
+})
+
+test("drain: every request, bisected sub-batches included, passes the batch-cost check", async () => {
+  let cost = 0
+  const fake = fakePorts({
+    due: { p1: [ark(1), ark(2), ark(3), ark(4)] },
+    sync: async () => {
+      cost = LIMITS.drainDeadlineMs + 1 // after the first request, nothing more fits
+      throw new OcrSyncUnavailableError("down")
+    },
+  })
+  fake.ports.batchCostMs = () => cost
+  const drainer = createOcrSyncDrainer(fake.ports, LIMITS)
+  await drainer.drain(ALIVE) // first outage, counted
+  cost = 0
+  const before = fake.asked.length
+  const report = await drainer.drain(ALIVE)
+  assert.equal(fake.asked.length - before, 1, "the sub-batches did not start")
+  assert.equal(report.stop, OCR_SYNC_STOP.BUDGET)
+})
+
+test("drain: the rotation resumes after the last corpus served, so a cycle cap starves nobody", async () => {
+  const corpora: Record<string, string[]> = {}
+  for (let c = 0; c < 12; c++) {
+    corpora[`c${String(c).padStart(2, "0")}`] = Array.from({ length: BATCH * 3 }, (_, i) => ark(c * 100 + i))
+  }
+  const fake = fakePorts({ due: corpora })
+  const drainer = createOcrSyncDrainer(fake.ports, { ...LIMITS, maxBatches: 10 })
+  await drainer.drain(ALIVE)
+  await drainer.drain(ALIVE)
+  const served = new Set(fake.synced.map((b) => Math.floor(Number(b[0]?.slice(-6)) / 100)))
+  assert.equal(served.size, 12, "all twelve corpora served within two cycles")
+})
+
+test("drain: resync-requested corpora still go first, whatever the cursor", async () => {
+  const fake = fakePorts({ due: { a: [ark(1)], b: [ark(2)], z: [ark(3)] }, resync: { z: 1 } })
+  await createOcrSyncDrainer(fake.ports, LIMITS).drain(ALIVE)
+  assert.deepEqual(fake.synced[0], [ark(3)])
 })

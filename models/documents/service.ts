@@ -342,14 +342,20 @@ export class DocumentService {
     ark: string,
     message: string,
     now: Date,
+    askedAt: Date,
     signal: AbortSignal,
   ): Promise<void> {
     signal.throwIfAborted()
     await prisma.$transaction(async (tx) => {
       const row = await tx.documentOcr.findUnique({
         where: { ark },
-        select: { status: true, syncAttempts: true },
+        select: { status: true, syncAttempts: true, resyncRequestedAt: true },
       })
+      // A resync beats a quarantine: one requested while this question was in
+      // flight (after `askedAt`) keeps the ARK due whatever the rejection says
+      // — the re-ingest may have fixed what the worker refused.
+      const resyncInFlight =
+        row !== null && row.resyncRequestedAt !== null && row.resyncRequestedAt > askedAt
       const prior = row === null ? 0 : row.syncAttempts
       const outcome = rejectionOutcome(prior, now)
       const reason = syncRejectedReason(message)
@@ -368,8 +374,8 @@ export class DocumentService {
             status: OCR_SYNC_STATUS.QUARANTINED,
             reason,
             checkedAt: now,
-            nextCheckAt: null,
-            resyncRequestedAt: null,
+            // Quarantine never erases a resync request.
+            nextCheckAt: resyncInFlight ? askedAt : null,
             syncAttempts: outcome.attempts,
           },
         })
@@ -393,21 +399,13 @@ export class DocumentService {
         data: {
           ...(row.status === OCR_SYNC_STATUS.AVAILABLE ? {} : { reason }),
           checkedAt: now,
-          nextCheckAt: outcome.nextCheckAt,
+          nextCheckAt: resyncInFlight ? askedAt : outcome.nextCheckAt,
           syncAttempts: outcome.attempts,
         },
       })
     })
   }
 
-  /**
-   * Record that the worker could not be ASKED about these ARKs (unreachable,
-   * timeout, a 5xx): rows back off for OCR_SYNC_OUTAGE_BACKOFF_MS and keep
-   * their status, folios and contract-failure budget (an outage says nothing
-   * about the documents). A never-asked ARK gets NO row: it stays pending
-   * ("not yet"), never `unavailable` ("maybe never"); the drainer stops on an
-   * outage, so it is asked again at most once per sweep.
-   */
   /**
    * The worker's request timeout — the drainer's worst-case cost of one batch
    * comes through the service, so the drainer does not reach the cluster client.
@@ -416,10 +414,35 @@ export class DocumentService {
     return workerRequestTimeoutMs()
   }
 
+  /**
+   * Record that the worker could not be ASKED about these ARKs (unreachable,
+   * timeout, a 5xx): rows back off for OCR_SYNC_OUTAGE_BACKOFF_MS and keep
+   * their status, folios and contract-failure budget (an outage says nothing
+   * about the documents). A never-asked ARK gets NO row: it stays pending
+   * ("not yet"), never `unavailable` ("maybe never"); the drainer keeps its
+   * own per-ARK outage count for those (lib/documents/ocr-sync.ts).
+   */
   static async recordOcrOutage(arks: string[], now: Date, signal: AbortSignal): Promise<void> {
     signal.throwIfAborted()
     const nextCheckAt = new Date(now.getTime() + OCR_SYNC_OUTAGE_BACKOFF_MS)
     await prisma.documentOcr.updateMany({ where: { ark: { in: arks } }, data: { nextCheckAt } })
+  }
+
+  /**
+   * Take out of the rotation an ARK the worker reliably fails on ALONE (the
+   * drainer cornered it by asking both halves of a batch down to one ARK, and
+   * its singleton failed OCR_SYNC_MAX_ATTEMPTS outages): quarantined with
+   * `sync_isolated: …`, no automatic recheck — a re-ingest's resync request
+   * re-opens it (ocrResyncOp). A row's folios are kept.
+   */
+  static async recordOcrIsolation(ark: string, message: string, now: Date, signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted()
+    const reason = `${OCR_SYNC_REASON.ISOLATED}: ${message}`
+    await prisma.documentOcr.upsert({
+      where: { ark },
+      create: { ark, status: OCR_SYNC_STATUS.QUARANTINED, reason, checkedAt: now, nextCheckAt: null },
+      update: { status: OCR_SYNC_STATUS.QUARANTINED, reason, checkedAt: now, nextCheckAt: null },
+    })
   }
 
   /**

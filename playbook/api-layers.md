@@ -253,7 +253,7 @@ same change.
 
 | Drainer | Imports (exactly) | Nudged by |
 |---|---|---|
-| `lib/documents/ocr-sync.ts` (OCR-quality sync) | `DocumentService` (writes, the worker call and its timeout), `DocumentQueries` (reads), `lib/async/deadline` (bounded reads), `lib/cluster/mode` (enabled?), `lib/cluster/ocr-quality` (the typed fault classes it switches on), `lib/constants`, its signal | `lib/documents/ocr-sync-signal.ts` |
+| `lib/documents/ocr-sync.ts` (OCR-quality sync) | `@/models/documents/service` (writes, the worker call and its timeout), `@/models/documents/queries` (reads), `@/models/documents/schema` (type `OcrSyncWritePlan`), `@/lib/async/deadline` (bounded reads), `@/lib/cluster/mode` (enabled?), `@/lib/cluster/ocr-quality` (the typed fault classes it switches on), `@/lib/constants`, `./ocr-sync-signal` | `lib/documents/ocr-sync-signal.ts` |
 
 Rules:
 - A drainer reads through `queries.ts` and writes through `service.ts`; it never

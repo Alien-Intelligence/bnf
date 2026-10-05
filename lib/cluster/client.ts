@@ -163,37 +163,35 @@ export function culpritsOf(
     const ark = asked[Number(m[1])]
     return ark === undefined ? [] : [ark]
   }
-  // An invalid answer: pin each issue on the ARK of the entry it is in, when
-  // that entry names an ARK we asked about. An issue outside such an entry
-  // (a missing top-level key, a wrong type) is the exchange's fault.
+  // An invalid answer. Each issue is pinned on the ARK of the entry it is in
+  // (an issue outside such an entry — a missing top-level key, a wrong type —
+  // is the exchange's fault). Then, per bucket (documents / building /
+  // unavailable): if NO entry of that bucket passed, the worker cannot speak
+  // this contract at all (a version skew: `v: 2`, a renamed field) and nobody
+  // is blamed — the sync pauses, which is recoverable, whereas blaming every
+  // ARK quarantines them, which is not. Per-ARK blame only when at least one
+  // entry of the same bucket in the same answer passed.
   if (!isRecord(failure.raw)) return []
   const askedSet = new Set(asked)
-  const culprits = new Set<string>()
-  // Per bucket: the entries with issues, and the schema paths (inside an
-  // entry) they fail on.
-  const failing = new Map<string, { entries: Set<number>; paths: Set<string> }>()
+  const failingByBucket = new Map<string, Map<number, string>>()
   for (const path of failure.issuePaths) {
-    const [bucket, index, ...inside] = path
+    const [bucket, index] = path
     if (typeof bucket !== "string" || typeof index !== "number") return []
     const entries = failure.raw[bucket]
     if (!Array.isArray(entries)) return []
     const entry: unknown = entries[index]
     const ark = typeof entry === "string" ? entry : isRecord(entry) ? entry.ark : undefined
     if (typeof ark !== "string" || !askedSet.has(ark)) return []
-    culprits.add(ark)
-    const seen = failing.get(bucket) ?? { entries: new Set<number>(), paths: new Set<string>() }
-    seen.entries.add(index)
-    seen.paths.add(inside.map(String).join("."))
-    failing.set(bucket, seen)
+    const failing = failingByBucket.get(bucket) ?? new Map<number, string>()
+    failing.set(index, ark)
+    failingByBucket.set(bucket, failing)
   }
-  // Every returned entry of a bucket (at least two) failing on ONE schema path
-  // is a contract change (a worker version skew: `v: 2`, a renamed field), not
-  // N bad documents: the exchange's fault, no ARK blamed.
-  for (const [bucket, seen] of failing) {
+  const culprits = new Set<string>()
+  for (const [bucket, failing] of failingByBucket) {
     const entries = failure.raw[bucket]
-    if (Array.isArray(entries) && entries.length >= 2 && seen.entries.size === entries.length && seen.paths.size === 1) {
-      return []
-    }
+    const entryCount = Array.isArray(entries) ? entries.length : 0
+    if (failing.size >= entryCount) return [] // no entry of this bucket passed
+    for (const ark of failing.values()) culprits.add(ark)
   }
   return [...culprits]
 }

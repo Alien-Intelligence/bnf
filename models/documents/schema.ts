@@ -514,6 +514,8 @@ export type OcrSyncStatus = (typeof OCR_SYNC_STATUS)[keyof typeof OCR_SYNC_STATU
 export const OCR_SYNC_REASON = {
   /** The worker's answer for this ARK broke the contract (backoff, then quarantine). */
   REJECTED: "sync_rejected",
+  /** The worker reliably fails on this ARK ALONE (an outage on its singleton, repeatedly). */
+  ISOLATED: "sync_isolated",
 } as const
 
 /**

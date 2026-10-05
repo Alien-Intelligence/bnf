@@ -205,14 +205,14 @@ test("recordOcrSync: unavailable records the reason and keeps existing folios", 
 test("recordOcrRejection: backs off, then quarantines after OCR_SYNC_MAX_ATTEMPTS", async () => {
   await prisma.documentOcr.deleteMany({ where: { ark: ARK_B } })
   for (let i = 1; i < OCR_SYNC_MAX_ATTEMPTS; i += 1) {
-    await DocumentService.recordOcrRejection(ARK_B, "worker refused", new Date(), ALIVE)
+    await DocumentService.recordOcrRejection(ARK_B, "worker refused", new Date(), new Date(), ALIVE)
     const row = await prisma.documentOcr.findUniqueOrThrow({ where: { ark: ARK_B } })
     assert.equal(row.syncAttempts, i)
     assert.equal(row.status, OCR_SYNC_STATUS.UNAVAILABLE)
     assert.ok(row.nextCheckAt !== null && row.nextCheckAt > new Date(), "backs off into the future")
     assert.ok(!(await pendingAt(new Date())).includes(ARK_B), "not offered while backing off")
   }
-  await DocumentService.recordOcrRejection(ARK_B, "worker refused", new Date(), ALIVE)
+  await DocumentService.recordOcrRejection(ARK_B, "worker refused", new Date(), new Date(), ALIVE)
   const row = await prisma.documentOcr.findUniqueOrThrow({ where: { ark: ARK_B } })
   assert.equal(row.status, OCR_SYNC_STATUS.QUARANTINED)
   assert.equal(row.nextCheckAt, null)
@@ -236,7 +236,7 @@ test("recordOcrRejection: an available row keeps its status and folios while bac
         },
       ],
     }), ALIVE)
-  await DocumentService.recordOcrRejection(ARK_A, "bad answer", new Date(), ALIVE)
+  await DocumentService.recordOcrRejection(ARK_A, "bad answer", new Date(), new Date(), ALIVE)
   const a = await DocumentQueries.ocrForArk(projectId, ARK_A)
   assert.equal(a?.status, OCR_SYNC_STATUS.AVAILABLE)
   assert.equal(a?.reason, null)
@@ -332,3 +332,36 @@ test("recordOcrSync stops between ARKs once the drain is aborted", async () => {
   )
 })
 
+
+test("a resync beats a quarantine: one requested mid-flight survives the quarantining rejection, and a resync re-opens a quarantined ARK", async () => {
+  await prisma.documentOcr.deleteMany({ where: { ark: ARK_B } })
+  await prisma.documentOcr.create({
+    data: { ark: ARK_B, status: OCR_SYNC_STATUS.UNAVAILABLE, checkedAt: new Date(0), syncAttempts: OCR_SYNC_MAX_ATTEMPTS - 1 },
+  })
+  const askedAt = new Date(Date.now() - 1_000)
+  await DocumentService.ocrResyncOp([ARK_B], new Date()) // requested while in flight
+  await prisma.documentOcr.update({ where: { ark: ARK_B }, data: { syncAttempts: OCR_SYNC_MAX_ATTEMPTS - 1 } })
+  await DocumentService.recordOcrRejection(ARK_B, "worker refused", new Date(), askedAt, ALIVE)
+  let row = await prisma.documentOcr.findUniqueOrThrow({ where: { ark: ARK_B } })
+  assert.equal(row.status, OCR_SYNC_STATUS.QUARANTINED)
+  assert.ok(row.resyncRequestedAt !== null, "quarantine never erases a resync request")
+  assert.ok((await pendingAt(new Date())).includes(ARK_B), "and the ARK stays due")
+
+  // A quarantine with no pending resync is out of the rotation…
+  await prisma.documentOcr.update({ where: { ark: ARK_B }, data: { resyncRequestedAt: null, nextCheckAt: null } })
+  assert.ok(!(await pendingAt(new Date())).includes(ARK_B))
+  // …until a re-ingest's resync re-opens it with a fresh budget.
+  await DocumentService.ocrResyncOp([ARK_B], new Date())
+  row = await prisma.documentOcr.findUniqueOrThrow({ where: { ark: ARK_B } })
+  assert.equal(row.syncAttempts, 0)
+  assert.ok((await pendingAt(new Date())).includes(ARK_B))
+})
+
+test("recordOcrIsolation: quarantines with sync_isolated, creating the row for a never-asked ARK", async () => {
+  await prisma.documentOcr.deleteMany({ where: { ark: ARK_B } })
+  await DocumentService.recordOcrIsolation(ARK_B, "worker 502", new Date(), ALIVE)
+  const row = await prisma.documentOcr.findUniqueOrThrow({ where: { ark: ARK_B } })
+  assert.equal(row.status, OCR_SYNC_STATUS.QUARANTINED)
+  assert.match(row.reason ?? "", /^sync_isolated: /)
+  assert.ok(!(await pendingAt(new Date())).includes(ARK_B))
+})

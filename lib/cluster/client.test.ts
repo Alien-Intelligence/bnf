@@ -37,7 +37,12 @@ import type { AddressInfo } from "node:net"
 
 import { ClusterClient, culpritsOf } from "./client"
 import { CLUSTER_POLL } from "./contracts"
-import { OCR_SYNC_FAULT_SCOPE, OcrSyncContractError, OcrSyncUnavailableError } from "./ocr-quality"
+import {
+  OCR_SYNC_FAULT_SCOPE,
+  OcrSyncContractError,
+  OcrSyncUnavailableError,
+  workerOcrQualitySyncResponseSchema,
+} from "./ocr-quality"
 
 /** process.env stores strings: assigning undefined would store "undefined". */
 function restoreEnv(name: string, value: string | undefined): void {
@@ -119,9 +124,9 @@ for (const [label, reply, scope] of [
   ["a non-JSON 200", { status: 200, body: "<html>oops</html>" }, OCR_SYNC_FAULT_SCOPE.EXCHANGE],
   ["a 200 missing a top-level key", { status: 200, body: '{"documents":[],"building":[]}' }, OCR_SYNC_FAULT_SCOPE.EXCHANGE],
   [
-    "a 200 with one invalid document",
+    "a 200 whose only document is invalid (no document passed: skew)",
     { status: 200, body: JSON.stringify({ documents: [{ v: 2, ark: ARK }], building: [], unavailable: [] }) },
-    OCR_SYNC_FAULT_SCOPE.ARKS,
+    OCR_SYNC_FAULT_SCOPE.EXCHANGE,
   ],
 ] as const) {
   test(`ocrQualitySync: ${label} → OcrSyncContractError on ${scope}`, async () => {
@@ -157,34 +162,68 @@ test("culpritsOf: an invalid entry outside the asked ARKs is the exchange's faul
   )
 })
 
-test("culpritsOf: every returned document failing ONE schema path is version skew — the exchange's fault", () => {
-  const A = "ark:/12148/aaa"
-  const B = "ark:/12148/bbb"
+// Version skew (pass-4 probe cases A–E): if NO returned document passes, the
+// exchange is broken — pause, blame nobody; per-ARK only when one passed.
+const SKEW_ARKS = ["ark:/12148/bpt6k1", "ark:/12148/bpt6k2", "ark:/12148/bpt6k3"]
+const BUILT_AT = new Date().toISOString()
+const okFolio = (ordre: number) => ({ ordre, ocrSource: "alto", ocrQuality: 0.9, wordCount: 10 })
+const okDoc = (ark: string) => ({ v: 1, ark, ocrRate: 0.9, lane: "text", folios: [okFolio(1)], builtAt: BUILT_AT })
+
+function culpritsFor(raw: Record<string, unknown>, asked: string[] = SKEW_ARKS): string[] {
+  const parsed = workerOcrQualitySyncResponseSchema.safeParse(raw)
+  assert.equal(parsed.success, false, "the probe answer must be invalid")
+  const issuePaths = parsed.success ? [] : parsed.error.issues.map((i) => i.path)
+  return culpritsOf(asked, { kind: "invalid", raw, issuePaths })
+}
+
+test("skew A: v:2 on every document → the exchange's fault", () => {
   assert.deepEqual(
-    culpritsOf([A, B], {
-      kind: "invalid",
-      raw: { documents: [{ ark: A, v: 2 }, { ark: B, v: 2 }] },
-      issuePaths: [["documents", 0, "v"], ["documents", 1, "v"]],
-    }),
+    culpritsFor({ documents: SKEW_ARKS.map((ark) => ({ ...okDoc(ark), v: 2 })), building: [], unavailable: [] }),
     [],
   )
-  // One bad document among good ones is that document's fault.
+})
+
+test("skew B: v:2 on the ONLY document of a mixed batch → the exchange's fault (no document passed)", () => {
   assert.deepEqual(
-    culpritsOf([A, B], {
-      kind: "invalid",
-      raw: { documents: [{ ark: A, v: 2 }, { ark: B, v: 1 }] },
-      issuePaths: [["documents", 0, "v"]],
-    }),
-    [A],
+    culpritsFor({ documents: [{ ...okDoc(SKEW_ARKS[0]), v: 2 }], building: SKEW_ARKS.slice(1), unavailable: [] }),
+    [],
   )
-  // Different paths on different documents stay per-document.
+})
+
+test("skew C: a renamed folio field on every folio of every document → the exchange's fault", () => {
+  const renamed = (ark: string) => ({
+    ...okDoc(ark),
+    folios: [1, 2].map((o) => {
+      const { wordCount, ...rest } = okFolio(o)
+      return { ...rest, words: wordCount }
+    }),
+  })
+  assert.deepEqual(culpritsFor({ documents: SKEW_ARKS.map(renamed), building: [], unavailable: [] }), [])
+})
+
+test("skew D: v:2 AND a renamed top-level field on every document → the exchange's fault", () => {
+  const skewed = (ark: string) => {
+    const { ocrRate, ...rest } = okDoc(ark)
+    return { ...rest, v: 2, rate: ocrRate }
+  }
+  assert.deepEqual(culpritsFor({ documents: SKEW_ARKS.map(skewed), building: [], unavailable: [] }), [])
+})
+
+test("skew E: a single-ARK batch whose one document fails → the exchange's fault", () => {
   assert.deepEqual(
-    culpritsOf([A, B], {
-      kind: "invalid",
-      raw: { documents: [{ ark: A }, { ark: B }] },
-      issuePaths: [["documents", 0, "v"], ["documents", 1, "lane"]],
-    }).sort(),
-    [A, B],
+    culpritsFor({ documents: [{ ...okDoc(SKEW_ARKS[0]), v: 2 }], building: [], unavailable: [] }, [SKEW_ARKS[0]]),
+    [],
+  )
+})
+
+test("one bad document while another in the same answer passed → that ARK blamed", () => {
+  assert.deepEqual(
+    culpritsFor({
+      documents: [{ ...okDoc(SKEW_ARKS[0]), v: 2 }, okDoc(SKEW_ARKS[1])],
+      building: [SKEW_ARKS[2]],
+      unavailable: [],
+    }),
+    [SKEW_ARKS[0]],
   )
 })
 
