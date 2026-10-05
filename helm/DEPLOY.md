@@ -352,17 +352,26 @@ backfilled automatically — no manual step:
   breaks the contract (a 400, an invalid body), the app isolates that ARK by
   splitting the batch, backs it off (3 min doubling, capped at 24 h) and, after
   5 consecutive failures, marks it `quarantined` with `reason =
-  sync_rejected: …`; a quarantined ARK is only asked again after a re-ingest.
-  If the whole exchange is broken (an incompatible worker version, a 401/413),
-  no ARK is blamed: the sync pauses (backing off from 3 min to 1 h) and
-  resumes by itself when the worker answers again (a worker whose answers all
-  fail the same field, or that answers nothing it was asked, counts as such a
-  break). An unreachable worker (timeout, 5xx, 404 from an old worker) stops
-  the cycle: existing rows back off 30 min with their status untouched, a
-  never-asked document stays pending (shown "not yet"), and nothing counts as
-  an attempt. A batch that fails an outage twice in a row is split, so one
-  document that makes the worker fail cannot hold back the others. Corpora are
-  drained in turn, resync requests first. To list problems:
+  sync_rejected: …`; a quarantined ARK is asked again only after a re-ingest
+  requests a resync (a resync requested while the failing question was in
+  flight survives the quarantine and keeps the ARK due).
+  Blame is per ARK ONLY when at least one entry of the same kind in the same
+  answer passed. If no returned document passed — an incompatible worker
+  version (`v: 2`, a renamed field), a single-document answer included — or
+  the answer answers nothing it was asked, or the worker refuses the request
+  as a whole (401/413), no ARK is blamed: the sync pauses (backing off from 3
+  min to 1 h) and resumes by itself when the worker answers again. Pausing is
+  recoverable; quarantining is not.
+  An unreachable worker (timeout, 5xx, 404 from an old worker) ends that
+  corpus's turn only — other corpora are still asked: existing rows back off
+  30 min with their status untouched, a never-asked document stays pending
+  (shown "not yet"), and nothing counts as an attempt. When the same documents
+  fail an outage again, the app asks BOTH halves of the batch, down to single
+  documents (at most 16 requests per cycle): the others are served, and a
+  document the worker fails on alone sits out 30 min, then after 5 such
+  failures is quarantined with `reason = sync_isolated: …` (a re-ingest's
+  resync re-opens it). Corpora are drained in turn — each cycle resumes after
+  the last corpus served — with resync requests first. To list problems:
   `SELECT ark, status, reason, sync_attempts FROM document_ocr WHERE status IN ('quarantined', 'unavailable') ORDER BY checked_at DESC;`
 - **BnF cost:** one Presentation-API (ALTO) call per indexed **text** folio,
   once — the `alto` cache holds extracted text, not XML, so the word confidences
@@ -373,12 +382,21 @@ backfilled automatically — no manual step:
   120 s) is retried with a backoff of `ocrBackfillRetryFailedAfterMs` doubling
   per attempt, at most 5 attempts; a permanent failure (no metadata, no pages
   artifact, unclassifiable, a permanent BnF error) is never retried and is
-  reported `unavailable` with its reason. A build pg-boss expired (one
-  delivery ran past 1 h) is re-queued 1 h 30 after its last delivery STARTED,
+  reported `unavailable` with its reason, with the folio when one folio
+  caused it (`build_failed: f12: …`). A delivery stops at its 1 h ceiling (the
+  worker aborts its gate waits and folio walk; an ALTO fetch already sent ends
+  within its 135 s timeout and its answer is discarded — nothing is written
+  after the ceiling) and is redelivered after 150 s. A build whose deliveries
+  never report back is re-queued 1 h 30 after its last delivery STARTED,
   as one attempt — a build still waiting in the backlog is never counted as
   expired; after 5 attempts it is `build_expired`. An artifact that keeps
   vanishing after being built ends as `artifact_lost` the same way. The base
   backoff `ocrBackfillRetryFailedAfterMs` must be at least 60000 ms.
+- **First deploy of the claim token:** backfill messages queued before it
+  carry no `generation`; they are read as generation 0 — the value every
+  pre-existing row gets from the new column's default — so they still build
+  the row they were sent for, at no attempt cost. A message whose row was
+  re-opened since (generation ≥ 1) builds nothing and completes.
 - **How to speed it up:** raise `worker.config.ocrBackfillConcurrency` off-hours
   (default 2 ≈ 60–120 folios/min).
 - **How to stop the spend without a rollback:** set
@@ -386,6 +404,10 @@ backfilled automatically — no manual step:
   missing ARKs answer `unavailable: backfill_disabled` (a stored failure keeps
   its own reason; a corrupt artifact answers `artifact_corrupt`); the app
   rechecks them after 24 h. Existing artifacts are still served.
+- **`BNF_BROKER_URL` is required by the worker:** it refuses to boot without a
+  valid http(s) URL (never a per-document failure later). The chart always sets
+  it — its own broker's service URL, or `worker.config.bnfBrokerUrl` when
+  `broker.enabled` is false (the render fails if that is empty).
 - **All knobs are validated at startup:** a malformed `OCR_BACKFILL_*` value
   stops the worker with the variable's name rather than running on a guess.
 - **Rollout order:** the worker must be at least as new as the app (an old worker

@@ -2,6 +2,7 @@ import "server-only"
 import { prisma } from "@/lib/db"
 import type { Prisma } from "@/lib/generated/prisma/client"
 import {
+  noteWithCitations,
   type CitationUsage,
   type NoteWithCitations,
   type NoteListItem,
@@ -36,7 +37,7 @@ export class NoteQueries {
   static async get(id: string): Promise<NoteWithCitations | null> {
     return prisma.note.findUnique({
       where: { id },
-      include: { citations: true },
+      ...noteWithCitations,
     })
   }
 
@@ -49,7 +50,7 @@ export class NoteQueries {
     return prisma.note.findMany({
       where: { projectId },
       orderBy: NOTE_LIST_ORDER,
-      include: { citations: true },
+      ...noteWithCitations,
     })
   }
 
@@ -70,7 +71,7 @@ export class NoteQueries {
   ): Promise<NoteWithCitations | null> {
     return prisma.note.findFirst({
       where: { id, projectId },
-      include: { citations: true },
+      ...noteWithCitations,
     })
   }
 

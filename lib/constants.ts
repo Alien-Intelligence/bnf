@@ -4,6 +4,18 @@
 // See playbook/constants.md.
 
 // ---------------------------------------------------------------------------
+// Database pool bounds (lib/db.ts) — every query the app sends is bounded
+// (CLAUDE_ERROR_PATTERNS §14), so a hung statement or an exhausted pool fails
+// instead of wedging the caller and every guard it holds. Same names and
+// values as Track B's ingestion pipeline.
+// ---------------------------------------------------------------------------
+
+/** Server-side ceiling of one SQL statement (Postgres `statement_timeout`). */
+export const DB_STATEMENT_TIMEOUT_MS = 30_000
+/** Ceiling of the wait for a pooled connection (pg `connectionTimeoutMillis`). */
+export const DB_CONNECTION_TIMEOUT_MS = 10_000
+
+// ---------------------------------------------------------------------------
 // Routes — single source of truth for in-app navigation paths.
 // Locale prefix is handled by next-intl's <Link>; these are locale-agnostic.
 // ---------------------------------------------------------------------------
@@ -493,20 +505,6 @@ export const OCR_DB_TIMEOUT_MS = 10_000
  */
 export const TOOL_DB_TIMEOUT_MS = 10_000
 
-/**
- * statement_timeout of the app's pg pool (lib/db.ts): Postgres has none by
- * default, so a lock wait or a bad plan parked whatever awaited it — a request,
- * a tool call, or the OCR drainer (whose running guard then stayed set until a
- * restart). It bounds EVERY query at once; withDeadline stays where a caller
- * needs a tighter, signal-tied bound. 30 s is far above any OLTP query here.
- */
-export const DB_STATEMENT_TIMEOUT_MS = 30_000
-
-/**
- * connectionTimeoutMillis of the app's pg pool: by default pg waits forever for
- * a client when the pool is exhausted or the server unreachable.
- */
-export const DB_CONNECTION_TIMEOUT_MS = 10_000
 
 /**
  * Largest progress-callback body the unauthenticated route reads and HMACs.
@@ -514,6 +512,13 @@ export const DB_CONNECTION_TIMEOUT_MS = 10_000
  * of them. Above it the route answers the uniform rejection without reading.
  */
 export const PROGRESS_CALLBACK_MAX_BODY_BYTES = 4 * 1024 * 1024
+
+/**
+ * How long the progress route waits for a callback body: a trickling body is
+ * refused (the uniform 401) instead of being held up to Node's 300 s
+ * requestTimeout. The worker posts a few KiB at once; 15 s is generous.
+ */
+export const PROGRESS_CALLBACK_BODY_READ_MS = 15_000
 
 /**
  * Sanity cap on the folios one worker artifact may carry — above any worker

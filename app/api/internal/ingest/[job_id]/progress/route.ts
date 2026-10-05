@@ -29,8 +29,9 @@
  *    caller knows when the job has none — verifyJobCallback) and all three
  *    answer the same 401 message, so the endpoint reveals neither which job
  *    ids exist nor how they were submitted, by its answer or its timing.
- *  - A body over PROGRESS_CALLBACK_MAX_BODY_BYTES is refused with that same
- *    answer before it is buffered or hashed.
+ *  - A body over PROGRESS_CALLBACK_MAX_BODY_BYTES, or not received within
+ *    PROGRESS_CALLBACK_BODY_READ_MS, is refused with that same answer before
+ *    it is buffered whole or hashed.
  *  - Malformed JSON after a valid HMAC is rejected with 400; the cluster must fix its payload.
  *  - So is a well-formed body that is not a ClusterProgressEvent
  *    (clusterProgressEventSchema, found bug B2): 400 with the Zod issues. The
@@ -46,29 +47,42 @@ import {
   type ProgressCallbackAck,
 } from "@/models/ingest/types"
 import { CALLBACK_REJECTED_MESSAGE, verifyJobCallback } from "@/lib/cluster/callback-auth"
-import { PROGRESS_CALLBACK_MAX_BODY_BYTES } from "@/lib/constants"
+import { PROGRESS_CALLBACK_BODY_READ_MS, PROGRESS_CALLBACK_MAX_BODY_BYTES } from "@/lib/constants"
 
 /**
- * The request body as text, or null when it is larger than `max` bytes —
- * checked on the declared Content-Length first, then while reading, so an
- * oversize body is never buffered whole (or hashed).
+ * The request body as text, or null when it is larger than `max` bytes or
+ * not fully received within `deadlineMs` — the size is checked on the declared
+ * Content-Length first, then while reading, so an oversize body is never
+ * buffered whole (or hashed), and a trickling one is cut off at the deadline.
  */
-async function readCappedText(req: Request, max: number): Promise<string | null> {
+async function readCappedText(req: Request, max: number, deadlineMs: number): Promise<string | null> {
   const declared = req.headers.get("content-length")
   if (declared !== null && (!/^[0-9]+$/.test(declared) || Number(declared) > max)) return null
   if (req.body === null) return ""
   const reader = req.body.getReader()
+  const deadline = AbortSignal.any([AbortSignal.timeout(deadlineMs), req.signal])
+  const onDeadline = (): void => {
+    void reader.cancel(deadline.reason).catch((err: unknown) => {
+      console.warn("[progress] body reader cancel failed:", err)
+    })
+  }
+  deadline.addEventListener("abort", onDeadline, { once: true })
   const chunks: Uint8Array[] = []
   let size = 0
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (done) break
-    size += value.byteLength
-    if (size > max) {
-      await reader.cancel()
-      return null
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (deadline.aborted) return null
+      if (done) break
+      size += value.byteLength
+      if (size > max) {
+        await reader.cancel()
+        return null
+      }
+      chunks.push(value)
     }
-    chunks.push(value)
+  } finally {
+    deadline.removeEventListener("abort", onDeadline)
   }
   return Buffer.concat(chunks).toString("utf8")
 }
@@ -86,7 +100,7 @@ export async function POST(
   // attacks. Read and verified whatever the job: an unknown job or one without
   // a callbackSecret (never submitted through IngestService.submit, or
   // corrupted) takes the same path and gets the same answer as a bad signature.
-  const bodyText = await readCappedText(req, PROGRESS_CALLBACK_MAX_BODY_BYTES)
+  const bodyText = await readCappedText(req, PROGRESS_CALLBACK_MAX_BODY_BYTES, PROGRESS_CALLBACK_BODY_READ_MS)
   if (bodyText === null) return unauthorized(CALLBACK_REJECTED_MESSAGE)
   const signature = req.headers.get("x-callback-signature")
   const verified = verifyJobCallback(bodyText, signature, job === null ? null : job.callbackSecret)

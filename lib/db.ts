@@ -7,8 +7,12 @@ import { env } from "./env"
 // Prisma 7 uses the "client" engine type which requires a driver adapter.
 // PrismaPg creates a connection pool to the Postgres database identified by
 // DATABASE_URL. The singleton pattern prevents multiple pool instances during
-// Next.js hot-reload in development. Both timeouts bound every query and every
-// client checkout at once (lib/constants.ts DB_*_TIMEOUT_MS).
+// Next.js hot-reload in development.
+//
+// Every statement is bounded server-side (statement_timeout) and every wait
+// for a pooled connection client-side (connectionTimeoutMillis): a hung query
+// or an exhausted pool throws instead of hanging its caller forever — the
+// background sweeps' overlap guards clear only when their awaits settle.
 function makePrismaClient(): PrismaClient {
   const adapter = new PrismaPg({
     connectionString: env.DATABASE_URL,

@@ -8,7 +8,11 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 
 import { POST } from "@/app/api/internal/ingest/[job_id]/progress/route"
-import { PROGRESS_CALLBACK_MAX_BODY_BYTES } from "@/lib/constants"
+import { PROGRESS_CALLBACK_BODY_READ_MS, PROGRESS_CALLBACK_MAX_BODY_BYTES } from "@/lib/constants"
+import { prisma } from "@/lib/db"
+import { createTestProject, createTestUser, deleteTestUser } from "@/lib/testing/fixtures"
+import { cleanupProject } from "@/lib/testing/project-cleanup"
+import { INGEST_STATUS } from "@/models/ingest/schema"
 
 import { CALLBACK_REJECTED_MESSAGE, signCallback, verifyCallback, verifyJobCallback } from "./callback-auth"
 
@@ -43,18 +47,84 @@ test("progress route: an unknown job reads the body and answers the bad-signatur
   assert.deepEqual(await res.json(), { error: CALLBACK_REJECTED_MESSAGE })
 })
 
-test("progress route: an oversize body is refused with the same answer, before it is read", async () => {
-  const big = "x".repeat(PROGRESS_CALLBACK_MAX_BODY_BYTES + 1)
-  for (const req of [
-    new Request("http://localhost/api/internal/ingest/x/progress", { method: "POST", body: big }),
-    new Request("http://localhost/api/internal/ingest/x/progress", {
+/** A real ingest job with a known callback secret, torn down by the caller. */
+async function knownJob(): Promise<{ jobId: string; secret: string; cleanup: () => Promise<void> }> {
+  const user = await createTestUser()
+  const project = await createTestProject(user.id, "progress-cap")
+  if (project.headVersionId === null) throw new Error("fixture project has no head version")
+  const secret = "s".repeat(64)
+  const job = await prisma.ingestJob.create({
+    data: {
+      projectId: project.id,
+      targetVersionId: project.headVersionId,
+      status: INGEST_STATUS.RUNNING,
+      callbackSecret: secret,
+    },
+  })
+  return {
+    jobId: job.id,
+    secret,
+    cleanup: async () => {
+      await prisma.ingestJob.deleteMany({ where: { id: job.id } })
+      await cleanupProject(project.id)
+      await deleteTestUser(user.id)
+    },
+  }
+}
+
+test("progress route: an oversize body with a VALID signature for a KNOWN job is still refused, uniformly", async () => {
+  const job = await knownJob()
+  try {
+    // A well-formed running event padded past the cap and correctly signed:
+    // without the cap this would be applied (200).
+    const body = JSON.stringify({
+      stage: "extract",
+      fraction: 0.5,
+      counters: { n: 1 },
+      padding: "x".repeat(PROGRESS_CALLBACK_MAX_BODY_BYTES),
+    })
+    const req = new Request(`http://localhost/api/internal/ingest/${job.jobId}/progress`, {
       method: "POST",
-      headers: { "content-length": String(PROGRESS_CALLBACK_MAX_BODY_BYTES + 1) },
-      body: "{}",
-    }),
-  ]) {
-    const res = await POST(req, { params: Promise.resolve({ job_id: "00000000-0000-4000-8000-00000000dead" }) })
+      headers: { "x-callback-signature": signCallback(body, job.secret) },
+      body,
+    })
+    const res = await POST(req, { params: Promise.resolve({ job_id: job.jobId }) })
     assert.equal(res.status, 401)
     assert.deepEqual(await res.json(), { error: CALLBACK_REJECTED_MESSAGE })
+    // The same event under the cap is accepted — the refusal was the size.
+    const small = JSON.stringify({ stage: "extract", fraction: 0.5, counters: { n: 1 } })
+    const ok = await POST(
+      new Request(`http://localhost/api/internal/ingest/${job.jobId}/progress`, {
+        method: "POST",
+        headers: { "x-callback-signature": signCallback(small, job.secret) },
+        body: small,
+      }),
+      { params: Promise.resolve({ job_id: job.jobId }) },
+    )
+    assert.equal(ok.status, 200)
+  } finally {
+    await job.cleanup()
+  }
+})
+
+test("progress route: a body that never finishes arriving is cut off at the read deadline", { timeout: PROGRESS_CALLBACK_BODY_READ_MS + 10_000 }, async () => {
+  const job = await knownJob()
+  try {
+    const trickle = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"stage":'))
+        // …and nothing more, ever.
+      },
+    })
+    // Node needs `duplex: "half"` for a streamed request body; the DOM
+    // RequestInit type does not declare it.
+    const init: RequestInit & { duplex: "half" } = { method: "POST", body: trickle, duplex: "half" }
+    const req = new Request(`http://localhost/api/internal/ingest/${job.jobId}/progress`, init)
+    const started = Date.now()
+    const res = await POST(req, { params: Promise.resolve({ job_id: job.jobId }) })
+    assert.equal(res.status, 401)
+    assert.ok(Date.now() - started < PROGRESS_CALLBACK_BODY_READ_MS + 5_000)
+  } finally {
+    await job.cleanup()
   }
 })

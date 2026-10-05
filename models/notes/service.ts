@@ -14,7 +14,7 @@ import {
   type FolioRef,
   type NoteOcrRows,
 } from "@/models/documents/schema"
-import type { Citation, NoteDetail, NoteWithCitations } from "./schema"
+import { noteWithCitations, type Citation, type NoteDetail, type NoteWithCitations } from "./schema"
 
 /**
  * The cited (ark, folio) pairs of some Citation rows, deduped, in first-seen
@@ -156,7 +156,7 @@ export class NoteService {
           })),
         })
       }
-      return tx.note.findUniqueOrThrow({ where: { id: created.id }, include: { citations: true } })
+      return tx.note.findUniqueOrThrow({ where: { id: created.id }, ...noteWithCitations })
     })
 
     return { note, rejected }
@@ -207,7 +207,7 @@ export class NoteService {
     const known = await NoteService.knownArks(corpusProjectId)
 
     return prisma.$transaction(async (tx) => {
-      const current = await tx.note.findUnique({ where: { id }, include: { citations: true } })
+      const current = await tx.note.findUnique({ where: { id }, ...noteWithCitations })
       if (!current) return null
       const addition = args.bodyMd.trim()
       if (addition.length === 0) return { note: current, rejected: [] }
@@ -289,7 +289,7 @@ export class NoteService {
         citationCount,
         updatedAt: new Date(),
       },
-      include: { citations: true },
+      ...noteWithCitations,
     })
 
     return { note, rejected }

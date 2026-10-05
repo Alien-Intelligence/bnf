@@ -1,16 +1,19 @@
 // models/notes/schema.ts
 // Re-exported Prisma types + composite shapes for Note, NoteVersion, and Citation.
 // No `import "server-only"` — schema is referenced by both client and server.
-import type { Note, NoteVersion, Citation } from "@/lib/generated/prisma/client"
-// Type-only, and the one sideways import of this schema: a NoteDetail carries
-// the documents model's OCR row shapes, defined once there (models.md "define
-// once" outranks "schema.ts imports no other model" for a composed response
-// shape — recorded as a deviation in the Track B implementation log).
+import type { Note, NoteVersion, Citation, Prisma } from "@/lib/generated/prisma/client"
+// Type-only import of another model's schema.ts for a composed response type
+// (NoteDetail carries the documents model's OCR rows) — the narrow exception
+// playbook/models.md allows.
 import type { NoteOcrRows } from "@/models/documents/schema"
 
 export type { Note, NoteVersion, Citation }
 
-export type NoteWithCitations = Note & { citations: Citation[] }
+/** A note with its Citation rows — the one include shape every note read and write uses. */
+export const noteWithCitations = {
+  include: { citations: true },
+} satisfies Prisma.NoteDefaultArgs
+export type NoteWithCitations = Prisma.NoteGetPayload<typeof noteWithCitations>
 export type NoteListItem = Pick<Note, "id" | "title" | "updatedAt" | "citationCount" | "pinned" | "createdAt">
 
 /** Lightweight row returned by GET /api/notes/:nid/versions */
