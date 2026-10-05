@@ -137,3 +137,67 @@ numeric string ("60000") is a number.
 {{- end -}}
 {{- int64 $wait -}}
 {{- end -}}
+
+{{/*
+The BnF rate buckets of the ingestion subscription, as a JSON list (the broker's
+BUCKET_NAMES, broker/src/plan.ts). Every one is REQUIRED in
+broker.config.rates; a key that is not one of them fails the render (a typo
+would otherwise leave its bucket unset and stop the broker at boot).
+*/}}
+{{- define "bnf-demo.rateBuckets" -}}
+{{- list "global" "manifest" "external" "presentation" "image" "iiifLegacy" "catalogue" "gallicaSru" "grapheData" "datePeriodique" "documentTdm" | toJson -}}
+{{- end -}}
+
+{{/*
+The env stem of a rate bucket: BNF_<STEM>_RPM / BNF_<STEM>_BURST (the broker's
+RATE_ENV_STEM, broker/src/config.ts).
+Usage: {{ include "bnf-demo.rateEnvStem" "iiifLegacy" }} → IIIF_LEGACY
+*/}}
+{{- define "bnf-demo.rateEnvStem" -}}
+{{- $stems := dict "global" "GLOBAL" "manifest" "MANIFEST" "external" "EXTERNAL" "presentation" "PRESENTATION" "image" "IMAGE" "iiifLegacy" "IIIF_LEGACY" "catalogue" "CATALOGUE" "gallicaSru" "GALLICA_SRU" "grapheData" "GRAPHE_DATA" "datePeriodique" "DATE_PERIODIQUE" "documentTdm" "DOCUMENT_TDM" -}}
+{{- required (printf "no env stem for rate bucket %q" .) (get $stems .) -}}
+{{- end -}}
+
+{{/*
+One field (quota, rpm or burst) of one rate bucket, REQUIRED and a whole
+number >= 1 (a YAML number or a numeric string), rendered as an integer.
+Usage: {{ include "bnf-demo.rateField" (dict "root" . "bucket" "image" "field" "rpm") }}
+*/}}
+{{- define "bnf-demo.rateField" -}}
+{{- $rates := required "broker.config.rates is required (every BnF rate bucket is required config)" .root.Values.broker.config.rates -}}
+{{- $bucket := required (printf "broker.config.rates.%s is required (every BnF rate bucket is required config)" .bucket) (get $rates .bucket) -}}
+{{- $name := printf "broker.config.rates.%s.%s" .bucket .field -}}
+{{- $what := "a whole number >= 1" -}}
+{{- $raw := required (printf "%s is required" $name) (get $bucket .field) -}}
+{{- $v := float64 (include "bnf-demo.numberValue" (dict "value" $raw "name" $name "what" $what)) -}}
+{{- if or (lt $v 1.0) (ne $v (floor $v)) -}}
+{{- fail (printf "%s must be %s (got %v)" $name $what $v) -}}
+{{- end -}}
+{{- int64 $v -}}
+{{- end -}}
+
+{{/*
+Render-time check of broker.config.rates: only known buckets, all of them
+present, and rpm + burst <= quota for each. BnF counts fixed clock-minute
+windows and a token bucket can emit rpm + burst inside one, so a bucket over
+that line can breach the quota in a single minute. Renders nothing; fails the
+render with the bucket and the numbers. Included by both ConfigMaps that read
+the rates (broker, worker).
+*/}}
+{{- define "bnf-demo.validateRates" -}}
+{{- $names := include "bnf-demo.rateBuckets" . | fromJsonArray -}}
+{{- $rates := required "broker.config.rates is required (every BnF rate bucket is required config)" .Values.broker.config.rates -}}
+{{- range $key, $_ := $rates -}}
+{{- if not (has $key $names) -}}
+{{- fail (printf "broker.config.rates.%s is not a BnF rate bucket (known: %s)" $key (join ", " $names)) -}}
+{{- end -}}
+{{- end -}}
+{{- range $b := $names -}}
+{{- $quota := int64 (include "bnf-demo.rateField" (dict "root" $ "bucket" $b "field" "quota")) -}}
+{{- $rpm := int64 (include "bnf-demo.rateField" (dict "root" $ "bucket" $b "field" "rpm")) -}}
+{{- $burst := int64 (include "bnf-demo.rateField" (dict "root" $ "bucket" $b "field" "burst")) -}}
+{{- if gt (add $rpm $burst) $quota -}}
+{{- fail (printf "rates.%s: rpm+burst (%d) exceeds quota (%d)" $b (add $rpm $burst) $quota) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}

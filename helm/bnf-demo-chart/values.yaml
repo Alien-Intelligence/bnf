@@ -125,6 +125,18 @@ config:
   agentProvider: openrouter
 
 # ===========================================================================
+# BnF IIIF APIs — the Presentation API (manifests, ALTO) and the Image API
+# (folio images), split out of the combined Gallica-IIIF API with their own
+# quotas (Swaggers 2026-09-30). The version is part of the base. Consumed by
+# the worker (BNF_IIIF_PRESENTATION_BASE_URL / BNF_IIIF_IMAGE_BASE_URL, both
+# required) and by the app resolver (the Presentation base, rendered when the
+# broker is enabled — the app refuses to boot with a broker and no base).
+# ===========================================================================
+bnfIiif:
+  presentationBaseUrl: https://openapiproext.bnf.fr/presentation/iiif/gallica/1.0.0
+  imageBaseUrl: https://openapiproext.bnf.fr/image/iiif/gallica/1.0.0
+
+# ===========================================================================
 # Ingest worker — the major difference from the other demos.
 #
 # A long-running consumer: it pulls doc-ingest jobs from a pg-boss queue (in
@@ -207,13 +219,9 @@ worker:
     # stuck batch fails the doc itself instead of being killed by an expiration
     # (which runs no handler code and orphans the doc).
     mistralOcrBatchTimeoutMs: "1800000"
-    # IIIF size requested for OCR-lane folio images. "max" is today's behaviour.
-    # F13 sizing-experiment prep (ai-memories/tech/repos/bnf/ingest-hardening):
-    # full-res dense 1949 broadsheets are the hypothesized cause of Mistral OCR
-    # hallucinating on the Nice-Matin corpus. The live max/pct:50/tiling A-B
-    # test runs in the validation phase, not via this default — change it only
-    # once that experiment names a winner.
-    mistralImageSize: "max"
+    # (No image-size knobs: the worker picks the IIIF size per canvas from the
+    # manifest's dims — Mistral up to 4096 px, vision up to 2048 px on the long
+    # edge — worker-v2/src/bnf/image-size.ts.)
 
     # RunPod bge-m3 embedder. Key is a secret.
     runpodEndpointId: pngrbp0y1aj28i
@@ -230,8 +238,6 @@ worker:
     gallicaBurst: "5"
     gallicaGeneralRps: "8"
     gallicaGeneralBurst: "16"
-    viewerOcrConcurrency: "10"
-    viewerOcrDelayMs: "40"
 
     # Ingest reliability. The old ingestJobExpireSeconds / ingestRetryLimit /
     # ingestRetryDelaySeconds lived here and were read by NOTHING in worker-v2 (V1
@@ -264,26 +270,24 @@ worker:
     # Metadata (OAI) is fast; a shorter budget is fine.
     bnfMetaTimeoutMs: "45000"
     maxOcrPages: "1000"
-    maxImageCanvases: "40"
-    imageConcurrency: "3"
-    # bnfFetchConcurrency: the worker's single in-flight cap for ALL broker traffic
-    # (ALTO/OAI/manifest/images), held below the doc loop so it stays full during
-    # embed/index — keeping the broker's rate bucket continuously fed. The broker
-    # remains the RATE authority; concurrency is sized ~latency × rate/60 to feed
-    # the bucket without over-fetching. BnF's provisioned partner quota is 1000/min
-    # (Ludovic, 2026-06-26); broker.config.globalRpm, bnfFetchConcurrency, and
-    # bnfGlobalRpm all track that ceiling. To change the quota, bump those together
-    # and verify via the broker's /calls.csv (freeze≈0/shed≈0). The worker's own
-    # rate gate (bnfGlobalRpm) MUST equal broker globalRpm or it self-throttles.
-    bnfGlobalRpm: "1000"
-    bnfFetchConcurrency: "128"
+    # BnF fetch concurrency, per stage. ALTO and images are two stages on two
+    # queues, each behind its own gate (worker-v2/src/stages/fetch.ts); the
+    # gates' RATES are not here — the worker renders them from
+    # broker.config.rates (the same values the broker enforces). Sizing rule:
+    # permits ≈ rpm × latency_s / 60, with headroom.
+    #   ALTO:   1425 × ~3 s under load / 60 ≈ 71 → 96
+    #   images:  285 × ~4 s at ≤ 4096 px / 60 ≈ 19 → 32
+    # The total stays at the previous single stage's 128, so the S3 socket pool
+    # sees no more concurrent writes than before. Both REQUIRED.
+    altoFetchConcurrency: "96"
+    imageFetchConcurrency: "32"
     # OCR-quality backfill (ai-memories/tech/repos/bnf/feedback-2026-09-29, Track B).
     # The app's periodic [ocr-sync] sweep asks the worker for every indexed ARK's
     # ocr-quality artifact; the ones S3 lacks are built by this stage. A text
     # document costs ONE Presentation-API (ALTO) call per indexed folio, once —
     # the "alto" cache holds extracted text, not XML, so the word confidences
     # cannot be recovered without a re-fetch. Image lanes cost nothing. The stage
-    # shares the worker's fetch rate gate (bnfGlobalRpm) FIFO with live ingests,
+    # shares the worker's ALTO gate (presentation ∧ global) FIFO with live ingests,
     # so live runs keep their share. Raise the concurrency off-hours to drain the
     # backlog faster; set enabled "false" to stop the BnF spend without a
     # rollback (existing artifacts stay served). Progress: `npm run status` in
@@ -296,24 +300,17 @@ worker:
     # per attempt, up to 5 attempts. Permanent failures (no metadata, no pages)
     # are never retried. 86400000 = 24 h.
     ocrBackfillRetryFailedAfterMs: "86400000"
-    # In-flight doc-jobs. This is the knob that keeps the fetch gate FED: each job
-    # runs fetch→embed→index serially in its slot, so at a low value the docs move
-    # as a synchronized cohort — fetch bursts to the rate cap, then every job
-    # embeds/indexes together (remote RunPod+cluster I/O, ~2-3 min) with fetch idle
-    # → sawtooth throughput. 16 desynchronizes the convoy: while some docs
-    # embed/index others fetch, so the gate stays fed and throughput holds near the
-    # cap. CANNOT over-fetch BnF — bnfFetchConcurrency still caps in-flight fetches
-    # regardless. Bound is worker RAM (docs × pages in memory); watch RSS.
-    workerConcurrency: "16"
 
   resources:
     requests:
       cpu: 250m
-      # At bnfFetchConcurrency=128 the fetch stage holds up to 128 image Buffers at
-      # once (full-res "max" cartes ~10MB) + the vision base64 describe lane. 2Gi
-      # OOMKilled. RAM is cheap and the nodes have ~30Gi — provision generously so
-      # a full 255-doc run at 128-wide never approaches the ceiling, rather than
-      # trimming concurrency to save memory.
+      # The image fetch stage holds up to imageFetchConcurrency (32) image
+      # Buffers at once — now capped at 4096 px (Mistral, ~3 MB) or 2048 px
+      # (vision) per canvas, where the old single 128-wide stage held full-res
+      # "max" images (~10 MB, up to ~13 MB for a newspaper). Images already in
+      # S3 from before the cap can still be full-res. Plus the vision base64
+      # describe lane. 2Gi OOMKilled under the old shape; RAM is cheap and the
+      # nodes have ~30Gi, so the limit stays generous rather than trimmed.
       memory: 2Gi
     limits:
       cpu: "2"
@@ -356,13 +353,36 @@ broker:
     oauthTokenUrl: https://apimauthproext.bnf.fr/oauth2/token
     apiBaseUrl: https://openapiproext.bnf.fr
 
-    # Rate caps (requests/min) — bump here, redeploy the broker only (no
-    # app/worker rebuild). global=1000: the REAL provisioned quota (Ludovic raised
-    # it 300→1000 on 2026-06-26). The worker's own gate (worker.config.bnfGlobalRpm)
-    # must match or it self-throttles below this. manifest raised 12→40/min/IP by BnF.
-    globalRpm: "1000"
-    manifestRpm: "40"
-    externalRpm: "120"
+    # THE BnF rates — the one place they live. The ingestion subscription
+    # (the broker's key): `quota` is BnF's per-minute allowance, `rpm`/`burst`
+    # what we send. The broker renders BNF_<BUCKET>_RPM/_BURST from every
+    # bucket (all required), and the worker its own gates (global,
+    # presentation, image, manifest rpm) from the SAME values.
+    #
+    # Invariant, checked at render (bnf-demo.validateRates): rpm + burst <= quota
+    # — BnF counts fixed clock-minute windows and a token bucket can emit
+    # rpm + burst in one. Margin rule: rpm = floor(0.95 q), burst =
+    # max(1, floor(0.02 q)); the slack absorbs the app resolver, which shares
+    # these buckets with the worker.
+    #
+    # global is 1000 until the Track D ramp test measures the real cap (maybe
+    # 1500). manifest is the per-IP manifest limit BnF confirmed at 40/min on the
+    # legacy API; whether it still applies on the Presentation API is asked of
+    # the DSI and measured by the ramp test. external is politeness for the
+    # ungated hosts (oai/catalogue/data.bnf.fr), not a BnF quota.
+    # Raising a quota: edit its line, `helm upgrade` (broker/README.md).
+    rates:
+      global:         { quota: "1000", rpm: "950",  burst: "20" }
+      presentation:   { quota: "1500", rpm: "1425", burst: "30" }
+      image:          { quota: "300",  rpm: "285",  burst: "6" }
+      iiifLegacy:     { quota: "1000", rpm: "950",  burst: "20" }
+      catalogue:      { quota: "100",  rpm: "95",   burst: "2" }
+      gallicaSru:     { quota: "100",  rpm: "95",   burst: "2" }
+      grapheData:     { quota: "50",   rpm: "47",   burst: "1" }
+      datePeriodique: { quota: "100",  rpm: "95",   burst: "2" }
+      documentTdm:    { quota: "100",  rpm: "95",   burst: "2" }
+      manifest:       { quota: "40",   rpm: "38",   burst: "2" }
+      external:       { quota: "140",  rpm: "120",  burst: "20" }
 
     # Per-attempt upstream timeout to BnF (ms). 120s, not 30s: under ingest load
     # BnF is slow to serve folio images, and a tight abort was the bulk of the
@@ -382,12 +402,13 @@ broker:
     limits:
       cpu: 500m
       # The broker buffers each upstream response WHOLE in memory (server.ts:
-      # `Buffer.from(await upstream.arrayBuffer())`) before mirroring it. At
-      # worker bnfFetchConcurrency=128 × full-res "max" folio images (~10MB) that
-      # is >1GB of concurrent buffers, so 256Mi OOMKilled under ingest load and
-      # took the single-replica broker down → every in-flight fetch got
-      # ECONNREFUSED. Sized to hold a full 128-wide burst with headroom; drop it
-      # only alongside streaming the proxy body instead of buffering it.
+      # `Buffer.from(await upstream.arrayBuffer())`) before mirroring it. At the
+      # old single 128-wide fetch stage × full-res "max" folio images (~10MB)
+      # that was >1GB of concurrent buffers, so 256Mi OOMKilled under ingest load
+      # and took the single-replica broker down → every in-flight fetch got
+      # ECONNREFUSED. Images are now 32-wide and capped at 4096 px, but ALTO is
+      # 96-wide (~1 MB each); kept at 2Gi. Drop it only alongside streaming the
+      # proxy body instead of buffering it.
       memory: 2Gi
 
 # ===========================================================================

@@ -40,6 +40,9 @@ data:
   # the IPv4-direct/relay path. Corpus building is always real BnF, so this is
   # wired independently of CLUSTER_MODE.
   BNF_BROKER_URL: {{ include "bnf-demo.brokerInternalUrl" . | quote }}
+  # The resolver fetches Gallica manifests from the BnF Presentation API through
+  # the broker. Required by the app whenever BNF_BROKER_URL is set (lib/env.ts).
+  BNF_IIIF_PRESENTATION_BASE_URL: {{ required "bnfIiif.presentationBaseUrl is required when broker.enabled" .Values.bnfIiif.presentationBaseUrl | quote }}
   {{- end }}
   {{- if eq .Values.config.clusterMode "real" }}
   # App → worker job submit (lib/cluster/client.ts).
