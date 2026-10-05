@@ -18,6 +18,12 @@ export class ProjectQueries {
     return prisma.project.findUnique({ where: { id }, ...projectWithShares })
   }
 
+  /** The project row (no shares) — for readers that authorise nothing, such as
+   *  the prompt builder. Throws when it does not exist. */
+  static async rowOrThrow(id: string): Promise<Project> {
+    return prisma.project.findUniqueOrThrow({ where: { id } })
+  }
+
   static async listForOwner(ownerId: string): Promise<Project[]> {
     return prisma.project.findMany({
       where: { ownerId },

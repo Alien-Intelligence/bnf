@@ -57,7 +57,7 @@ test("a cached prompt at the current revision and locale is served as is", async
 
 test("an invalidation clears the prompt and its revision, and bumps the epoch", async () => {
   const before = await prisma.appSession.findUniqueOrThrow({ where: { id: sessionId } })
-  await SessionQueries.invalidatePrompts({ projectId })
+  await SessionQueries.invalidatePrompts({ projectId }, prisma)
   const after = await prisma.appSession.findUniqueOrThrow({ where: { id: sessionId } })
   assert.equal(after.systemPrompt, null)
   assert.equal(after.promptRevision, null)
@@ -65,14 +65,14 @@ test("an invalidation clears the prompt and its revision, and bumps the epoch", 
 })
 
 test("a change landing BETWEEN render and save is never cached: the prompt is re-rendered", async () => {
-  await SessionQueries.invalidatePrompts({ projectId })
+  await SessionQueries.invalidatePrompts({ projectId }, prisma)
   const session = await prisma.appSession.findUniqueOrThrow({ where: { id: sessionId } })
   let renders = 0
   const prompt = await PromptBuilder.buildForSession(session, "fr", async (s, l) => {
     renders += 1
     const rendered = `RENDER ${renders} ` + (await PromptBuilder.renderForTests(s, l))
     // The first render races a change that lands after it read its inputs.
-    if (renders === 1) await SessionQueries.invalidatePrompts({ projectId })
+    if (renders === 1) await SessionQueries.invalidatePrompts({ projectId }, prisma)
     return rendered
   })
   assert.equal(renders, 2, "the stale render lost the compare-and-set and was redone")
@@ -82,12 +82,12 @@ test("a change landing BETWEEN render and save is never cached: the prompt is re
 })
 
 test("a change landing on every render stops at the ceiling and caches nothing", async () => {
-  await SessionQueries.invalidatePrompts({ projectId })
+  await SessionQueries.invalidatePrompts({ projectId }, prisma)
   const session = await prisma.appSession.findUniqueOrThrow({ where: { id: sessionId } })
   let renders = 0
   const prompt = await PromptBuilder.buildForSession(session, "fr", async () => {
     renders += 1
-    await SessionQueries.invalidatePrompts({ projectId })
+    await SessionQueries.invalidatePrompts({ projectId }, prisma)
     return `RENDER ${renders}`
   })
   assert.equal(renders, PROMPT_CACHE_MAX_RENDERS)

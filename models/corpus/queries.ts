@@ -576,6 +576,53 @@ export class CorpusQueries {
     return { dims, cells }
   }
 
+  /**
+   * The ingested version of a project for the research prompt: its sequence
+   * number and size, or null when it was never ingested.
+   */
+  static async ingestedSummary(projectId: string): Promise<{ seq: number; total: number } | null> {
+    const project = await prisma.project.findUniqueOrThrow({ where: { id: projectId }, select: { ingestedVersionId: true } })
+    if (project.ingestedVersionId === null) return null
+    const versionId = project.ingestedVersionId
+    const [version, total] = await Promise.all([
+      prisma.corpusVersion.findUniqueOrThrow({ where: { id: versionId }, select: { seq: true } }),
+      prisma.corpusMembership.count({ where: { versionId } }),
+    ])
+    return { seq: version.seq, total }
+  }
+
+  /**
+   * The head version's aggregate counts for the corpus prompt — total and the
+   * type / lang / year groupings of its RESOLVED documents (a stub has none of
+   * them), via groupBy, never the membership. Null when there is no head.
+   */
+  static async headFacetCounts(projectId: string): Promise<{
+    seq: number
+    total: number
+    type: Array<{ value: string; count: number }>
+    lang: Array<{ value: string; count: number }>
+    year: Array<{ value: number; count: number }>
+  } | null> {
+    const project = await prisma.project.findUniqueOrThrow({ where: { id: projectId }, select: { headVersionId: true } })
+    if (project.headVersionId === null) return null
+    const versionId = project.headVersionId
+    const memberOf = { membership: { some: { versionId } } }
+    const [version, total, typeRows, langRows, yearRows] = await Promise.all([
+      prisma.corpusVersion.findUniqueOrThrow({ where: { id: versionId }, select: { seq: true } }),
+      prisma.corpusMembership.count({ where: { versionId } }),
+      prisma.document.groupBy({ by: ["docType"], where: { ...memberOf, docType: { not: null } }, _count: { ark: true } }),
+      prisma.document.groupBy({ by: ["lang"], where: { ...memberOf, lang: { not: null } }, _count: { ark: true } }),
+      prisma.document.groupBy({ by: ["year"], where: { ...memberOf, year: { not: null } }, _count: { ark: true } }),
+    ])
+    return {
+      seq: version.seq,
+      total,
+      type: typeRows.flatMap((r) => (r.docType !== null ? [{ value: r.docType, count: r._count.ark }] : [])),
+      lang: langRows.flatMap((r) => (r.lang !== null ? [{ value: r.lang, count: r._count.ark }] : [])),
+      year: yearRows.flatMap((r) => (r.year !== null ? [{ value: r.year, count: r._count.ark }] : [])),
+    }
+  }
+
   /** The languages a version's documents hold — what the language facet shows. */
   static async langsInVersion(versionId: string): Promise<string[]> {
     const rows = await prisma.document.findMany({

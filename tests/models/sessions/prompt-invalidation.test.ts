@@ -4,7 +4,9 @@
 // corpus_add, a removal — they all advance the version) drops the corpus
 // prompts, which embed "Version N — X document(s)"; an ingestion drops the
 // research prompts, which embed ÉTAT DU CORPUS; revoking a grant drops the
-// derived workspace's prompts, which must now say the access is gone.
+// derived workspace's prompts, which must now say the access is gone; and
+// resolving a stub drops the corpus prompts, which embed the head's type /
+// lang / period counts (a stub has none).
 import "server-only"
 
 import { test, before, after } from "node:test"
@@ -16,6 +18,7 @@ import { PROJECT_ACCESS } from "@/lib/authz/project-access"
 import { createTestUser, createTestProject, createTestSession, deleteTestUser } from "@/lib/testing/fixtures"
 import { markHeadIngested } from "@/lib/testing/mark-ingested"
 import { cleanupProject } from "@/lib/testing/project-cleanup"
+import { resolvePendingForProject } from "@/lib/documents/resolver"
 import { CorpusService } from "@/models/corpus/service"
 import { IngestService } from "@/models/ingest/service"
 import { ProjectQueries } from "@/models/projects/queries"
@@ -96,4 +99,36 @@ test("revoking a grant drops the derived workspace's prompts", async () => {
   await cache(derivedSession)
   await ProjectSharingService.unshare(source.id, groupId)
   assert.equal(await cached(derivedSession), null, "its cached prompt still said the corpus was readable")
+})
+
+test("resolving a stub drops the corpus prompts (their facet counts changed); a failed resolve does not", async () => {
+  const project: Project = await createTestProject(owner.id, "resolve-facets")
+  projects.push(project.id)
+  const corpusSession = await createTestSession(project.id, SESSION_SCOPE.CORPUS)
+  const researchSession = await createTestSession(project.id, SESSION_SCOPE.RESEARCH)
+  const ok = "ark:/12148/bpt6k9810011"
+  const ko = "ark:/12148/bpt6k9810012"
+  // Two bare stubs in the head (corpus_add creates them pending).
+  await CorpusService.addArks(project, owner, { arks: [ok, ko], reason: "test" })
+
+  // A batch where nothing resolves leaves the prompts alone.
+  await cache(corpusSession, researchSession)
+  await resolvePendingForProject(project.id, {
+    client: { resolveArks: async (arks) => arks.map((ark) => ({ ark, ok: false as const, error: new Error("BnF down") })) },
+  })
+  assert.equal(await cached(corpusSession), CACHED, "no facet changed")
+
+  // A batch where one resolves drops the corpus prompts in the same transaction.
+  await resolvePendingForProject(project.id, {
+    client: {
+      resolveArks: async (arks) =>
+        arks.map((ark) =>
+          ark === ok
+            ? { ark, ok: true as const, document: { ark: "bpt6k9810011", title: "Résolu", date: "1937", doc_type: "texte", language: "fre" } }
+            : { ark, ok: false as const, error: new Error("BnF down") },
+        ),
+    },
+  })
+  assert.equal(await cached(corpusSession), null, "the corpus prompt's counts changed")
+  assert.equal(await cached(researchSession), CACHED, "a resolve says nothing new to research")
 })

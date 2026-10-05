@@ -35,10 +35,12 @@ export class SessionQueries {
    * Drop the cached system prompt of the target's sessions: the prompt, the
    * revision it was rendered at, and a bump of `promptEpoch`, so a render
    * already in flight cannot cache itself (PromptBuilder.buildForSession's
-   * compare-and-set). Run it on the transaction of the change that made the
-   * prompt stale (`db`).
+   * compare-and-set). `db` is REQUIRED — the transaction of the change that
+   * made the prompt stale, or the app client when the statement is one of a
+   * batch `$transaction([...])` — so no caller can invalidate outside its
+   * change by omission.
    */
-  static invalidatePrompts(target: PromptTarget, db: SessionDb = prisma) {
+  static invalidatePrompts(target: PromptTarget, db: SessionDb) {
     const project: Prisma.ProjectWhereInput = target.withDerived
       ? { OR: [{ id: target.projectId }, { corpusSourceId: target.projectId }] }
       : { id: target.projectId }
@@ -50,7 +52,7 @@ export class SessionQueries {
 
   /** Drop the cached prompts of the sessions of the projects deriving from
    *  `shareIds` — a revoked grant changes what their research prompt says. */
-  static invalidateDerivedThroughShares(shareIds: string[], db: SessionDb = prisma) {
+  static invalidateDerivedThroughShares(shareIds: string[], db: SessionDb) {
     return db.appSession.updateMany({
       where: { project: { corpusSourceShareId: { in: shareIds } } },
       data: { systemPrompt: null, promptRevision: null, promptEpoch: { increment: 1 } },

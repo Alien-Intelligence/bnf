@@ -627,7 +627,8 @@ export class IngestService {
     // refuses to search. Derived workspaces reading this corpus are affected by
     // an ingestion they did not run, so they are invalidated too — in the same
     // transaction as the state change.
-    ops.push(SessionQueries.invalidatePrompts(researchPromptsOf(job.projectId)))
+    // A statement of the batch $transaction(ops) below: built on the app client.
+    ops.push(SessionQueries.invalidatePrompts(researchPromptsOf(job.projectId), prisma))
     await prisma.$transaction(ops)
   }
 
@@ -742,7 +743,8 @@ export class IngestService {
     // refuses to search. Derived workspaces reading this corpus are affected by
     // an ingestion they did not run, so they are invalidated too — in the same
     // transaction as the state change.
-    ops.push(SessionQueries.invalidatePrompts(researchPromptsOf(job.projectId)))
+    // A statement of the batch $transaction(ops) below: built on the app client.
+    ops.push(SessionQueries.invalidatePrompts(researchPromptsOf(job.projectId), prisma))
     await prisma.$transaction(ops)
   }
 

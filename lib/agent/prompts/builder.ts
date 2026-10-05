@@ -1,6 +1,7 @@
 import "server-only"
 import { PROMPT_REVISION } from "@/lib/constants"
-import { prisma } from "@/lib/db"
+import { CorpusQueries } from "@/models/corpus/queries"
+import { ProjectQueries } from "@/models/projects/queries"
 import { MemoryQueries } from "@/models/memory/queries"
 import { SESSION_SCOPE } from "@/models/sessions/schema"
 import {
@@ -81,9 +82,7 @@ export class PromptBuilder {
     session: AppSession,
     locale: AppLocale,
   ): Promise<string> {
-    const project = await prisma.project.findUniqueOrThrow({
-      where: { id: session.projectId },
-    })
+    const project = await ProjectQueries.rowOrThrow(session.projectId)
     // Memory is the project's own; the corpus belongs to the source when this
     // project is derived. Conflating the two is the modelling error this whole
     // feature is built to avoid — see lib/authz/corpus-source.ts.
@@ -105,7 +104,7 @@ export class PromptBuilder {
     const source = isDerived(project)
       ? {
           // The source cannot be missing: the FK is onDelete: Restrict.
-          name: (await prisma.project.findUniqueOrThrow({ where: { id: corpusId }, select: { name: true } })).name,
+          name: (await ProjectQueries.rowOrThrow(corpusId)).name,
           state: corpusSourceState(project),
         }
       : null
@@ -121,82 +120,30 @@ export class PromptBuilder {
   }
 
   private static async loadIngestStatus(projectId: string) {
-    const project = await prisma.project.findUniqueOrThrow({
-      where: { id: projectId },
-      select: { ingestedVersionId: true },
-    })
-
-    if (!project.ingestedVersionId) {
-      return { ingested: false as const }
-    }
-
-    const [ingestedVersion, total] = await Promise.all([
-      prisma.corpusVersion.findUniqueOrThrow({
-        where: { id: project.ingestedVersionId },
-        select: { seq: true },
-      }),
-      prisma.corpusMembership.count({
-        where: { versionId: project.ingestedVersionId },
-      }),
-    ])
-
-    return {
-      ingested: true as const,
-      seq: ingestedVersion.seq,
-      total,
-    }
+    const ingested = await CorpusQueries.ingestedSummary(projectId)
+    return ingested === null ? { ingested: false as const } : { ingested: true as const, ...ingested }
   }
 
   // Aggregate-only corpus snapshot for the system prompt: total + facet counts,
   // NO per-document list. The agent inspects specific documents on demand via the
   // corpus.get_state tool, so the prompt stays a fixed small size regardless of
   // corpus size (a 5k-doc corpus produces the same prompt as a 50-doc one).
-  // Computed with groupBy aggregates — never loads the full membership.
+  // Resolving a stub changes these counts, so the resolver invalidates the
+  // corpus prompts in the same transaction (lib/documents/resolver.ts).
   private static async loadCorpusSnapshot(projectId: string) {
-    const project = await prisma.project.findUniqueOrThrow({
-      where: { id: projectId },
-      select: { headVersionId: true },
-    })
-    if (!project.headVersionId) {
+    const counts = await CorpusQueries.headFacetCounts(projectId)
+    if (counts === null) {
       return { versionSeq: 0, total: 0, facets: { type: {}, lang: {}, period: {} } }
     }
-    const versionId = project.headVersionId
-    const memberOf = { membership: { some: { versionId } } }
-
-    const [headVersion, total, typeRows, langRows, yearRows] = await Promise.all([
-      prisma.corpusVersion.findUniqueOrThrow({
-        where: { id: versionId },
-        select: { seq: true },
-      }),
-      prisma.corpusMembership.count({ where: { versionId } }),
-      prisma.document.groupBy({
-        by: ["docType"],
-        where: { ...memberOf, docType: { not: null } },
-        _count: { ark: true },
-      }),
-      prisma.document.groupBy({
-        by: ["lang"],
-        where: { ...memberOf, lang: { not: null } },
-        _count: { ark: true },
-      }),
-      prisma.document.groupBy({
-        by: ["year"],
-        where: { ...memberOf, year: { not: null } },
-        _count: { ark: true },
-      }),
-    ])
-
     const type: Record<string, number> = {}
-    for (const r of typeRows) if (r.docType) type[r.docType] = r._count.ark
+    for (const r of counts.type) type[r.value] = r.count
     const lang: Record<string, number> = {}
-    for (const r of langRows) if (r.lang) lang[r.lang] = r._count.ark
+    for (const r of counts.lang) lang[r.value] = r.count
     const period: Record<string, number> = {}
-    for (const r of yearRows) {
-      if (r.year === null) continue
-      const dec = `${Math.floor(r.year / 10) * 10}s`
-      period[dec] = (period[dec] ?? 0) + r._count.ark
+    for (const r of counts.year) {
+      const dec = `${Math.floor(r.value / 10) * 10}s`
+      period[dec] = (period[dec] ?? 0) + r.count
     }
-
-    return { versionSeq: headVersion.seq, total, facets: { type, lang, period } }
+    return { versionSeq: counts.seq, total: counts.total, facets: { type, lang, period } }
   }
 }
