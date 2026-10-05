@@ -96,6 +96,25 @@ function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+/** How deep `causedByOwnCeiling` follows an error's `cause` chain. */
+const MAX_CAUSE_DEPTH = 5
+
+/**
+ * True when `error` IS the drain's own abort — the signal's reason, or an
+ * AbortError — directly or through its `cause` chain. Classified by CAUSE, not
+ * by the signal's state: a 404 that happens to land after the ceiling fired is
+ * still the BnF's answer, and counts.
+ */
+function causedByOwnCeiling(error: unknown, signal: AbortSignal): boolean {
+  let current: unknown = error
+  for (let depth = 0; depth < MAX_CAUSE_DEPTH && current !== undefined && current !== null; depth++) {
+    if (signal.aborted && current === signal.reason) return true
+    if (current instanceof Error && current.name === "AbortError") return true
+    current = current instanceof Error ? current.cause : undefined
+  }
+  return false
+}
+
 /** The backoff after the `attempts`-th failure: base × 2^(attempts − 1). */
 function retryAt(now: Date, attempts: number): Date {
   return new Date(now.getTime() + BUFFER_ENRICH_RETRY_BASE_MS * 2 ** Math.max(0, attempts - 1))
@@ -227,7 +246,7 @@ async function drainOnce(
     try {
       results = await client.resolveArksForStaging(rest)
     } catch (err) {
-      if (signal.aborted) {
+      if (causedByOwnCeiling(err, signal)) {
         // Our own ceiling, not a BnF failure: nothing refused these rows.
         for (const ark of rest) await defer(ark)
         break
@@ -260,8 +279,8 @@ async function drainOnce(
         tally.fromBnf += 1
         continue
       }
-      // A per-ARK failure once our ceiling fired is the ceiling's doing.
-      if (!r.ok && signal.aborted) {
+      // A per-ARK failure caused by our own ceiling is not an attempt.
+      if (!r.ok && causedByOwnCeiling(r.error, signal)) {
         await defer(r.ark)
         continue
       }

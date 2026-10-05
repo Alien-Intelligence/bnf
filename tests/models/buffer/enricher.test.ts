@@ -243,7 +243,7 @@ test("a drain stops at its wall-clock ceiling WITHOUT charging the rows an attem
   const hangs = (signal: AbortSignal): BufferEnrichClient => ({
     resolveArksForStaging: () =>
       new Promise((_, reject) => {
-        signal.addEventListener("abort", () => reject(new BnfMcpError("aborted")), { once: true })
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true })
       }),
   })
   await enrichPendingForProject(project.id, { client: hangs, now: clock.now, maxDrainMs: 20 })
@@ -262,7 +262,8 @@ test("per-ARK errors that land after the ceiling fired are not attempts either",
       new Promise((resolve) => {
         signal.addEventListener(
           "abort",
-          () => resolve(arks.map((ark) => ({ ok: false as const, ark, error: new BnfMcpError("aborted") }))),
+          // The transport's error wraps the abort as its cause.
+          () => resolve(arks.map((ark) => ({ ok: false as const, ark, error: new BnfMcpError("aborted", signal.reason) }))),
           { once: true },
         )
       }),
@@ -271,4 +272,23 @@ test("per-ARK errors that land after the ceiling fired are not attempts either",
   const r = await row(project.id, ARK(12))
   assert.equal(r.enrichAttempts, 0)
   assert.equal(r.enrichStatus, BUFFER_ENRICH_STATUS.PENDING)
+})
+
+test("a BnF 404 that lands after the ceiling fired is still the BnF's answer: it counts", async () => {
+  const project = await freshProject("enrich-ceiling-404")
+  await stageBare(project.id, [ARK(13)])
+  const notFoundLate = (signal: AbortSignal): BufferEnrichClient => ({
+    resolveArksForStaging: (arks) =>
+      new Promise((resolve) => {
+        signal.addEventListener(
+          "abort",
+          () => resolve(arks.map((ark) => ({ ok: false as const, ark, error: new BnfMcpNotFoundError("BnF HTTP 404") }))),
+          { once: true },
+        )
+      }),
+  })
+  await enrichPendingForProject(project.id, { client: notFoundLate, now: clock.now, maxDrainMs: 20 })
+  const r = await row(project.id, ARK(13))
+  assert.equal(r.enrichStatus, BUFFER_ENRICH_STATUS.FAILED, "classified by cause, not by the signal's state")
+  assert.equal(r.enrichAttempts, 1)
 })
