@@ -38,13 +38,23 @@ export class Pipeline {
     }
   }
 
+  /**
+   * Register every stage's input-queue policy with the transport, without
+   * starting any worker loop. start() runs it first; a process that only SENDS
+   * into the pipeline (the requeue-stranded CLI) runs it alone, so what it
+   * sends carries the same policy a live worker would.
+   */
+  declareQueues(): void {
+    for (const s of this.stages) s.declareQueue();
+  }
+
   /** Start every stage's worker loop. Idempotent guard so a double-start throws. */
   async start(): Promise<void> {
     if (this.started) throw new Error("pipeline already started");
     this.started = true;
     // Every policy first: a stage that starts emits to the NEXT stage's queue
     // before that stage's work() runs, and those jobs must carry its policy.
-    for (const s of this.stages) s.declareQueue();
+    this.declareQueues();
     for (const s of this.stages) {
       await s.start();
     }

@@ -215,3 +215,11 @@ test("start() declares EVERY stage's input-queue policy before any stage starts 
     `work ${Q.fetchAlto}`,
   ]);
 });
+
+test("declareQueues() registers every stage's policy and starts no worker", async () => {
+  const { logger } = createMemoryLogger();
+  const queue = new OrderQueue();
+  const base = { queue, blob: new MemoryBlobStore(), log: logger };
+  new Pipeline(queue, [new HeadStage(base), new TailStage(base)], logger).declareQueues();
+  assert.deepEqual(queue.calls, [`declare ${Q.metadata}`, `declare ${Q.fetchAlto}`]);
+});

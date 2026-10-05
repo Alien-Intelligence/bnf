@@ -11,30 +11,15 @@
  */
 import { Pool } from "pg";
 
-import { etaFetchRatePerMin, loadBrokerUrl, loadConfig, loadIiifBases, pgPoolConfig } from "./config.js";
+import { loadBrokerUrl, loadConfig, loadIiifBases, pgPoolConfig } from "./config.js";
 import { configureBrokerUrl } from "./bnf/broker-client.js";
-import { buildPipeline } from "./build.js";
+import { buildLivePipeline } from "./live-pipeline.js";
 import { PgBossQueue } from "./core/queue-pgboss.js";
 import { S3BlobStore } from "./core/blob.js";
-import { CompositeRateGate, RateLimiter } from "./core/rate.js";
 import { createLogger } from "./core/logger.js";
 import { PgDocState } from "./domain/doc-state-pg.js";
-import {
-  OCR_BACKFILL_MAX_ATTEMPTS,
-  OCR_BACKFILL_STARTED_STALE_MS,
-  OCR_BACKFILL_UNSENT_STALE_MS,
-  OCR_BACKFILL_UNSTARTED_STALE_MS,
-  validateOcrBackfillPolicy,
-  type OcrBackfillWiring,
-} from "./domain/ocr-backfill.js";
-import { PgOcrBackfillStore } from "./domain/ocr-backfill-pg.js";
 import { OCR_SYNC_BODY_READ_MS, OCR_SYNC_DEADLINE_MS } from "./live/ocr-quality-sync.js";
 import { PgRunStore } from "./domain/run-store-pg.js";
-import { LiveBnfClient } from "./bnf/client.js";
-import { LiveDescriber } from "./live/describer.js";
-import { LiveOcrEngine } from "./live/ocr.js";
-import { LiveEmbedder } from "./live/embedder.js";
-import { LiveClusterSink } from "./live/cluster.js";
 import { TerminalEmitter } from "./live/progress-callback.js";
 import { CompletionMonitor } from "./live/completion-monitor.js";
 import { Reconciler } from "./live/reconciler.js";
@@ -58,74 +43,26 @@ async function main(): Promise<void> {
   const docState = new PgDocState(pool);
   await docState.migrate();
   const runStore = new PgRunStore(pool);
-  // ONE wiring object for the backfill, handed to both the pipeline (stage) and
-  // the server (endpoint) so their enable decision cannot diverge.
-  const ocrBackfill: OcrBackfillWiring = {
-    store: new PgOcrBackfillStore(pool),
-    enabled: cfg.ocrBackfill.enabled,
-    concurrency: cfg.ocrBackfill.concurrency,
-    policy: validateOcrBackfillPolicy({
-      retryFailedAfterMs: cfg.ocrBackfill.retryFailedAfterMs,
-      maxAttempts: OCR_BACKFILL_MAX_ATTEMPTS,
-      startedStaleAfterMs: OCR_BACKFILL_STARTED_STALE_MS,
-      unstartedStaleAfterMs: OCR_BACKFILL_UNSTARTED_STALE_MS,
-      unsentStaleAfterMs: OCR_BACKFILL_UNSENT_STALE_MS,
-    }),
-  };
-
   const blob = new S3BlobStore({ ...cfg.s3, prefix: cfg.s3Prefix });
 
-  // The broker's buckets, mirrored (same values, same chart keys): one
-  // limiter per quota, and one composite per kind of call, most specific
-  // first. The composites own nothing — the four limiters are what shutdown
-  // stops.
-  const globalRate = new RateLimiter({ ratePerMin: cfg.rates.globalRpm });
-  const presentationRate = new RateLimiter({ ratePerMin: cfg.rates.presentationRpm });
-  const imageRate = new RateLimiter({ ratePerMin: cfg.rates.imageRpm });
-  const manifestRate = new RateLimiter({ ratePerMin: cfg.rates.manifestRpm });
-  const gates = {
-    fetchAlto: new CompositeRateGate([presentationRate, globalRate]),
-    fetchImage: new CompositeRateGate([imageRate, globalRate]),
-    manifest: new CompositeRateGate([manifestRate, presentationRate, globalRate]),
-  };
-  const fetchRatePerMin = etaFetchRatePerMin(cfg.rates);
-
   // The terminal commit callback + the run-completion detector. The detector is
-  // wired to the pipeline's onOutcome seam (below), so a doc reaching a terminal
-  // status triggers a run-completeness check → one HMAC-signed terminal event.
+  // wired to the pipeline's onOutcome seam (in buildLivePipeline), so a doc
+  // reaching a terminal status triggers a run-completeness check → one
+  // HMAC-signed terminal event.
   const emitter = new TerminalEmitter(docState, runStore, log, {
     maxCallbackFailures: cfg.reconcilerMaxCallbackFailures,
   });
   const completion = new CompletionMonitor(docState, runStore, emitter, log);
 
-  const pipeline = buildPipeline({
+  const { pipeline, ocrBackfill, limiters, fetchRatePerMin } = buildLivePipeline({
+    cfg,
+    iiif,
     queue,
+    pool,
+    docState,
     blob,
     log,
-    bnf: new LiveBnfClient(iiif),
-    docState,
-    describer: new LiveDescriber(),
-    ocr: new LiveOcrEngine(),
-    embedder: new LiveEmbedder(),
-    cluster: new LiveClusterSink(),
-    ocrBackfill,
-    onOutcome: (e) => completion.noteOutcome({ kind: e.kind, payload: e.payload }),
-    rates: gates,
-    config: {
-      altoFetchConcurrency: cfg.altoFetchConcurrency,
-      imageFetchConcurrency: cfg.imageFetchConcurrency,
-      mistralEnabled: cfg.mistralEnabled,
-      maxPages: cfg.maxPages,
-      maxCanvases: cfg.maxCanvases,
-      metadataConcurrency: cfg.metadataConcurrency,
-      registerConcurrency: cfg.registerConcurrency,
-      describeConcurrency: cfg.describeConcurrency,
-      describeCallConcurrency: cfg.describeCallConcurrency,
-      embedConcurrency: cfg.embedConcurrency,
-      ocrSubmitConcurrency: cfg.ocrSubmitConcurrency,
-      ocrPollConcurrency: cfg.ocrPollConcurrency,
-      failRatio: cfg.failRatio,
-    },
+    completion,
   });
 
   await pipeline.start();
@@ -186,7 +123,7 @@ async function main(): Promise<void> {
           await new Promise<void>((r) => server.close(() => r()));
         },
         pipeline,
-        gates: [globalRate, presentationRate, imageRate, manifestRate],
+        gates: limiters,
         closePools: () => pool.end(),
       },
       SHUTDOWN_BUDGETS,

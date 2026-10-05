@@ -22,7 +22,7 @@
  */
 import { Pool } from "pg";
 
-import { loadConfig, pgPoolConfig } from "./config.js";
+import { loadConfig, loadIiifBases, pgPoolConfig } from "./config.js";
 import { PgBossQueue } from "./core/queue-pgboss.js";
 import { S3BlobStore } from "./core/blob.js";
 import { createLogger } from "./core/logger.js";
@@ -31,6 +31,7 @@ import { PgRunStore } from "./domain/run-store-pg.js";
 import { TerminalEmitter } from "./live/progress-callback.js";
 import { CompletionMonitor } from "./live/completion-monitor.js";
 import { Reconciler } from "./live/reconciler.js";
+import { buildLivePipeline } from "./live-pipeline.js";
 
 async function main(): Promise<void> {
   const runId = process.argv[2];
@@ -65,6 +66,20 @@ async function main(): Promise<void> {
         `(terminalEmitted=${run.terminalEmitted}, canceled=${run.canceled}) — nothing to do`,
     );
   } else {
+    // A re-drive SENDS into the stages' queues: every queue's policy must be
+    // declared first (PgBossQueue refuses a send to an undeclared queue), and
+    // it must be the policy the live worker uses — so it comes from the same
+    // wiring, declared without starting a single worker loop.
+    buildLivePipeline({
+      cfg,
+      iiif: loadIiifBases(process.env),
+      queue,
+      pool,
+      docState,
+      blob,
+      log,
+      completion,
+    }).pipeline.declareQueues();
     const reconciler = new Reconciler(
       { runStore, docState, queue, blob, completion, log },
       { maxRequeues: cfg.reconcilerMaxRequeues },
