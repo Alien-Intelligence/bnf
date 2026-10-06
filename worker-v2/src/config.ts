@@ -247,7 +247,9 @@ export function etaFetchRatePerMin(rates: WorkerConfig["rates"]): number {
  * canonicalizer and the buffer enricher): at 100 % the two
  * oversubscribed it and the broker shed the worker's metadata lookups until
  * documents failed for good (2026-10-06, 0.19.0: 3 804 manifest sheds, 55
- * documents failed in 3 h). The rest is the app's.
+ * documents failed in 3 h). The rest is LEFT for the app, which does not pace
+ * itself: a sustained app burst above it can still shed the worker. Holding
+ * the app to its share needs an app-side manifest limiter (follow-up).
  */
 export const WORKER_MANIFEST_SHARE = 0.75;
 

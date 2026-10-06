@@ -50,6 +50,35 @@ export type LivePipeline = {
   fetchRatePerMin: number;
 };
 
+/**
+ * The worker's BnF gates. Limiters over the broker's buckets (same chart
+ * keys): the global, Presentation and Image quotas as the broker enforces
+ * them, and two the worker derives below them — BULK, shared by ALTO and
+ * image fetches so a large ingest always leaves global room for its own
+ * metadata lookups, and the worker's manifest share (config.ts gateRates,
+ * the 2026-10-06 starvation). One composite per kind of call, most specific
+ * first; the composites own nothing — the five limiters are what shutdown
+ * stops. Pure: no I/O, exported for the test that pins the composition.
+ */
+export function buildRateGates(rates: WorkerConfig["rates"]): {
+  gates: { fetchAlto: CompositeRateGate; fetchImage: CompositeRateGate; manifest: CompositeRateGate };
+  limiters: RateLimiter[];
+} {
+  const globalRate = new RateLimiter({ ratePerMin: rates.globalRpm });
+  const bulkRate = new RateLimiter({ ratePerMin: rates.bulkRpm });
+  const presentationRate = new RateLimiter({ ratePerMin: rates.presentationRpm });
+  const imageRate = new RateLimiter({ ratePerMin: rates.imageRpm });
+  const manifestRate = new RateLimiter({ ratePerMin: rates.workerManifestRpm });
+  return {
+    gates: {
+      fetchAlto: new CompositeRateGate([presentationRate, bulkRate, globalRate]),
+      fetchImage: new CompositeRateGate([imageRate, bulkRate, globalRate]),
+      manifest: new CompositeRateGate([manifestRate, presentationRate, globalRate]),
+    },
+    limiters: [globalRate, bulkRate, presentationRate, imageRate, manifestRate],
+  };
+}
+
 export function buildLivePipeline(deps: LivePipelineDeps): LivePipeline {
   const { cfg, iiif, queue, pool, docState, blob, log, completion } = deps;
   // ONE wiring object for the backfill, handed to both the pipeline (stage) and
@@ -67,25 +96,7 @@ export function buildLivePipeline(deps: LivePipelineDeps): LivePipeline {
     }),
   };
 
-  // Limiters over the broker's buckets (same chart keys): the global,
-  // Presentation and Image quotas as the broker enforces them, and two the
-  // worker derives below them (bulk, its manifest share). One composite per
-  // kind of call, most specific first. ALTO and image fetches also share a BULK limiter that keeps
-  // global room for the metadata lookups of the same ingest, and the manifest
-  // gate takes only the worker's share of the manifest bucket (both derived
-  // and validated at config load, config.ts gateRates — the 2026-10-06
-  // starvation). The composites own nothing — the
-  // five limiters are what shutdown stops.
-  const globalRate = new RateLimiter({ ratePerMin: cfg.rates.globalRpm });
-  const bulkRate = new RateLimiter({ ratePerMin: cfg.rates.bulkRpm });
-  const presentationRate = new RateLimiter({ ratePerMin: cfg.rates.presentationRpm });
-  const imageRate = new RateLimiter({ ratePerMin: cfg.rates.imageRpm });
-  const manifestRate = new RateLimiter({ ratePerMin: cfg.rates.workerManifestRpm });
-  const gates = {
-    fetchAlto: new CompositeRateGate([presentationRate, bulkRate, globalRate]),
-    fetchImage: new CompositeRateGate([imageRate, bulkRate, globalRate]),
-    manifest: new CompositeRateGate([manifestRate, presentationRate, globalRate]),
-  };
+  const { gates, limiters } = buildRateGates(cfg.rates);
   const fetchRatePerMin = etaFetchRatePerMin(cfg.rates);
 
   const pipeline = buildPipeline({
@@ -121,7 +132,7 @@ export function buildLivePipeline(deps: LivePipelineDeps): LivePipeline {
   return {
     pipeline,
     ocrBackfill,
-    limiters: [globalRate, bulkRate, presentationRate, imageRate, manifestRate],
+    limiters,
     fetchRatePerMin,
   };
 }
