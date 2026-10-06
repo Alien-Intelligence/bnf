@@ -20,23 +20,26 @@ async function main(): Promise<void> {
   const queue = new PgBossQueue(pgPoolConfig(cfg.databaseUrl));
   await queue.start();
   const pool = new Pool(pgPoolConfig(cfg.databaseUrl));
-  const docState = new PgDocState(pool);
-
-  const report = await buildProgress(docState, queue, {
-    ...(projectId ? { projectId } : {}),
-    // The same rates the worker's /progress reports (main.ts).
-    fetchRatePerMin: etaFetchRatePerMin(cfg.rates),
-    manifestRatePerMin: cfg.rates.workerManifestRpm,
-  });
-  const ocrBackfill = await new PgOcrBackfillStore(pool).counts();
-  console.log(JSON.stringify({ ...report, ocrBackfill }, null, 2));
-  if (!report.reconciles) {
-    console.error("WARNING: doc totals do not reconcile");
-    process.exitCode = 1;
+  // Both are closed whatever happens: a failed read (a statement_timeout)
+  // must not leave pg-boss started and the pool open (CLAUDE_ERROR_PATTERNS §12).
+  try {
+    const docState = new PgDocState(pool);
+    const report = await buildProgress(docState, queue, {
+      ...(projectId ? { projectId } : {}),
+      // The same rates the worker's /progress reports (main.ts).
+      fetchRatePerMin: etaFetchRatePerMin(cfg.rates),
+      manifestRatePerMin: cfg.rates.workerManifestRpm,
+    });
+    const ocrBackfill = await new PgOcrBackfillStore(pool).counts();
+    console.log(JSON.stringify({ ...report, ocrBackfill }, null, 2));
+    if (!report.reconciles) {
+      console.error("WARNING: doc totals do not reconcile");
+      process.exitCode = 1;
+    }
+  } finally {
+    await queue.stop();
+    await pool.end();
   }
-
-  await queue.stop();
-  await pool.end();
 }
 
 main().catch((err) => {

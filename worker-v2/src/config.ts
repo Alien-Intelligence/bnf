@@ -131,8 +131,11 @@ export interface WorkerConfig {
    * authority; these keep the worker from offering far more than it grants
    * (every broker shed is a wasted round trip). ALL REQUIRED, no defaults: a
    * rate is a BnF quota decision (CLAUDE_ERROR_PATTERNS §9/§10).
-   * main.ts composes them: ALTO = presentation ∧ global, images = image ∧
-   * global, manifests = manifest ∧ presentation ∧ global.
+   * live-pipeline.ts composes them: ALTO = presentation ∧ bulk ∧ global,
+   * images = image ∧ bulk ∧ global, manifests = the worker's manifest share ∧
+   * presentation ∧ global. bulkRpm and workerManifestRpm are derived and
+   * checked at load (gateRates): the worker never takes the whole global or
+   * manifest budget.
    */
   rates: {
     /** BNF_RATES.global.rpm — the subscription's cap over every partner API. */
@@ -226,7 +229,7 @@ export interface WorkerConfig {
 
 /**
  * The fetch rate the progress read-model's ETA assumes: ALTO's binding rate,
- * min(global, presentation). ALTO is ≥ 90 % of folios (2.2 M ALTO against
+ * min(bulk, presentation). ALTO is ≥ 90 % of folios (2.2 M ALTO against
  * 172 k images in the DSI log), so image-heavy runs keep an approximate ETA —
  * their Mistral or vision tail dominates anyway. One definition, used by the
  * worker's /progress (main.ts) and the status CLI.
@@ -428,10 +431,12 @@ export function loadIiifBases(env: Env): IiifBases {
 /**
  * BNF_RATES: the broker's whole bucket table as one JSON object (helm
  * `broker.config.rates`, the SAME object the broker reads), of which the
- * worker's gates use four buckets' rpm. REQUIRED. The other buckets are the
- * broker's business and are not read here; the four this worker needs must be
- * present with an rpm that is a whole number ≥ 1 (a JSON number, never a
- * string), or the worker refuses to boot naming each one.
+ * worker reads six buckets' rpm: global, presentation, image and manifest for
+ * its gates, catalogue and grapheData for the global room it leaves them
+ * (gateRates). REQUIRED. The other buckets are the broker's business and are
+ * not read here; the six this worker needs must be present with an rpm that is
+ * a whole number ≥ 1 (a JSON number, never a string), or the worker refuses to
+ * boot naming each one.
  */
 export const RATES_ENV = "BNF_RATES";
 

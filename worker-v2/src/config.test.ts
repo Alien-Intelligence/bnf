@@ -115,7 +115,7 @@ test("loadConfigFrom: ONE rule for every numeric knob — zero, negative, fracti
   assert.throws(() => loadConfigFrom({ ...REQUIRED_ENV, MISTRAL_OCR_ENABLED: "yes" }), /MISTRAL_OCR_ENABLED/);
 });
 
-test("BNF_RATES: the worker reads its four gates from the broker's one rate object", () => {
+test("BNF_RATES: the worker reads its six buckets from the broker's one rate object", () => {
   const cfg = loadConfigFrom(REQUIRED_ENV);
   assert.deepEqual(cfg.rates, {
     globalRpm: 950,
