@@ -164,7 +164,8 @@ would otherwise leave its bucket unset and stop the broker at boot).
 
 {{/*
 BNF_RATES: every rate bucket's {rpm, burst} as one JSON object of integers,
-read by the broker (all buckets) and the worker (its four gates). Each field
+read by the broker (all buckets) and the worker (six, from which it derives
+its gates). Each field
 goes through bnf-demo.rateField, so a missing or malformed one fails the
 render; validateRates checks the buckets and the quota margin.
 */}}

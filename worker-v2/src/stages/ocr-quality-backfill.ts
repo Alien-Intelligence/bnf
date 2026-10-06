@@ -8,7 +8,7 @@
  * Why a pipeline stage and not a script: a text document needs ONE fresh ALTO
  * call per indexed folio (the "alto" cache holds text, not XML — keys.ts), and
  * those calls must share the worker's in-process ALTO fetch gate (presentation
- * ∧ global) FIFO with live ingests. The gate is REQUIRED: an ungated backfill
+ * ∧ bulk ∧ global) FIFO with live ingests. The gate is REQUIRED: an ungated backfill
  * would compete blindly through the broker's buckets and the shed 429s would
  * land on live runs.
  *

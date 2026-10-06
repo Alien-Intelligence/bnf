@@ -146,7 +146,8 @@ export interface WorkerConfig {
     /** BNF_RATES.image.rpm — the Image API (folio images). */
     imageRpm: number;
     /**
-     * BNF_RATES.manifest.rpm — the per-IP manifest sub-limit. Shared by MetadataStage
+     * BNF_RATES.manifest.rpm — the broker's per-IP manifest sub-limit. The
+     * worker's gate runs at workerManifestRpm (its share), shared by MetadataStage
      * and ManifestStage through ONE gate (build.ts `rates.manifest`) — see F1/F2
      * in ai-memories/tech/repos/bnf/ingest-hardening for what happens when it
      * isn't (the 2026-08-11 broker queue collapse).

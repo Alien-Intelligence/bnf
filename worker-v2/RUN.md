@@ -57,9 +57,12 @@ OCR_BACKFILL_RETRY_FAILED_AFTER_MS=86400000  # base retry backoff in ms (≥ 600
 Every numeric knob above is a strict integer (≥ 1; a port ≤ 65535): a zero, a
 negative, a fraction or a typo throws at startup instead of being floored.
 
-The gates compose like the broker's buckets: ALTO fetches take presentation ∧
-global, image fetches image ∧ global, manifests manifest ∧ presentation ∧
-global. ALTO and images run as two stages on two queues (`v2.fetch`,
+The gates are derived from the broker's buckets (`config.ts` `gateRates`,
+checked at startup): ALTO fetches take presentation ∧ bulk ∧ global, image
+fetches image ∧ bulk ∧ global, manifests the worker's manifest share ∧
+presentation ∧ global. Bulk is global minus the manifest, catalogue and graphe
+rpm, so a large ingest's fetches always leave global room for its own metadata
+lookups; the manifest share is 75 % of the bucket, the rest being the app's. ALTO and images run as two stages on two queues (`v2.fetch`,
 `v2.fetch.image`) with their own concurrency, so images waiting on the scarce
 Image quota never hold ALTO's slots. Image sizes are chosen per canvas from the
 manifest's dims: Mistral `max` up to 4096 px on the long edge, else

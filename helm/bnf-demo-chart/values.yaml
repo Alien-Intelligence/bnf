@@ -273,7 +273,8 @@ worker:
     # BnF fetch concurrency, per stage. ALTO and images are two stages on two
     # queues, each behind its own gate (worker-v2/src/stages/fetch.ts); the
     # gates' RATES are not here — the worker renders them from
-    # broker.config.rates (the same values the broker enforces). Sizing rule:
+    # broker.config.rates (ALTO + images share a bulk limit below global — see
+    # the rates block). Sizing rule:
     # permits ≈ rpm × latency_s / 60, with headroom.
     #   ALTO:   1425 × ~3 s under load / 60 ≈ 71 → 96
     #   images:  285 × ~4 s at ≤ 4096 px / 60 ≈ 19 → 32

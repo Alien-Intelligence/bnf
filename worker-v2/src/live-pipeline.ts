@@ -1,6 +1,6 @@
 /**
  * The live pipeline, wired once: the OCR-backfill wiring, the BnF rate gates
- * (mirroring the broker's buckets) and the stages with their live ports. The
+ * (derived from the broker's buckets, config.ts gateRates) and the stages with their live ports. The
  * worker entrypoint (main.ts) starts it; the requeue-stranded CLI only declares
  * its queue policies, so a message it re-sends carries exactly the policy a
  * live worker would give it. No I/O here: constructing ports and gates opens
@@ -67,9 +67,10 @@ export function buildLivePipeline(deps: LivePipelineDeps): LivePipeline {
     }),
   };
 
-  // The broker's buckets, mirrored (same values, same chart keys): one
-  // limiter per quota, and one composite per kind of call, most specific
-  // first. ALTO and image fetches also share a BULK limiter that keeps
+  // Limiters over the broker's buckets (same chart keys): the global,
+  // Presentation and Image quotas as the broker enforces them, and two the
+  // worker derives below them (bulk, its manifest share). One composite per
+  // kind of call, most specific first. ALTO and image fetches also share a BULK limiter that keeps
   // global room for the metadata lookups of the same ingest, and the manifest
   // gate takes only the worker's share of the manifest bucket (both derived
   // and validated at config load, config.ts gateRates — the 2026-10-06

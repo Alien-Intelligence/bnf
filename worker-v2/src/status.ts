@@ -37,8 +37,12 @@ async function main(): Promise<void> {
       process.exitCode = 1;
     }
   } finally {
-    await queue.stop();
-    await pool.end();
+    // Both close whatever happens, and a close failure never hides the error
+    // that got us here: allSettled runs both, and its outcome is only logged.
+    const closed = await Promise.allSettled([queue.stop(), pool.end()]);
+    for (const c of closed) {
+      if (c.status === "rejected") console.error("[status] close failed:", c.reason);
+    }
   }
 }
 
