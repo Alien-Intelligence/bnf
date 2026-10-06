@@ -8,7 +8,7 @@
  */
 import type { Pool } from "pg";
 
-import { etaFetchRatePerMin, gateRates, type IiifBases, type WorkerConfig } from "./config.js";
+import { etaFetchRatePerMin, type IiifBases, type WorkerConfig } from "./config.js";
 import { buildPipeline } from "./build.js";
 import type { S3BlobStore } from "./core/blob.js";
 import type { Pipeline } from "./core/pipeline.js";
@@ -71,15 +71,15 @@ export function buildLivePipeline(deps: LivePipelineDeps): LivePipeline {
   // limiter per quota, and one composite per kind of call, most specific
   // first. ALTO and image fetches also share a BULK limiter that keeps
   // global room for the metadata lookups of the same ingest, and the manifest
-  // gate takes only the worker's share of the manifest bucket (gateRates,
-  // config.ts — the 2026-10-06 starvation). The composites own nothing — the
+  // gate takes only the worker's share of the manifest bucket (both derived
+  // and validated at config load, config.ts gateRates — the 2026-10-06
+  // starvation). The composites own nothing — the
   // five limiters are what shutdown stops.
-  const shares = gateRates(cfg.rates);
   const globalRate = new RateLimiter({ ratePerMin: cfg.rates.globalRpm });
-  const bulkRate = new RateLimiter({ ratePerMin: shares.bulkRpm });
+  const bulkRate = new RateLimiter({ ratePerMin: cfg.rates.bulkRpm });
   const presentationRate = new RateLimiter({ ratePerMin: cfg.rates.presentationRpm });
   const imageRate = new RateLimiter({ ratePerMin: cfg.rates.imageRpm });
-  const manifestRate = new RateLimiter({ ratePerMin: shares.manifestRpm });
+  const manifestRate = new RateLimiter({ ratePerMin: cfg.rates.workerManifestRpm });
   const gates = {
     fetchAlto: new CompositeRateGate([presentationRate, bulkRate, globalRate]),
     fetchImage: new CompositeRateGate([imageRate, bulkRate, globalRate]),
