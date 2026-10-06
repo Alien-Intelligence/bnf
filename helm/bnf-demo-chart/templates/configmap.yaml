@@ -12,8 +12,17 @@ data:
   APP_URL: {{ .Values.config.publicUrl | quote }}
   CLUSTER_MODE: {{ .Values.config.clusterMode | quote }}
   BNF_MCP_URL: {{ .Values.config.bnfMcpUrl | quote }}
+  # App-side BnF MCP rate limiter (lib/mcp/rate-limit.ts). The buckets are
+  # per-process, so each replica gets an integer share of the configured rate
+  # and the fleet stays under the BnF quota by construction; a share below 1
+  # fails the render (bnf-demo.bnfRateShare). The wait budget is per call and
+  # is not divided; the app bounds it at boot (lib/env.ts).
+  BNF_MCP_RATES: {{ include "bnf-demo.bnfMcpRatesJson" . | quote }}
   DATACLUSTER_MCP_URL: {{ .Values.config.dataclusterMcpUrl | quote }}
   OTEL_SERVICE_NAME: {{ .Values.config.otelServiceName | quote }}
+  # BnF partner API host (lib/bnf/direct.ts). Required by the app's boot schema;
+  # the same value the broker mints tokens for, so the two cannot drift.
+  BNF_API_BASE_URL: {{ .Values.broker.config.apiBaseUrl | quote }}
   {{- with .Values.config.agentProvider }}
   # Agent gateway toggle. OPENROUTER_API_KEY (required when "openrouter") arrives
   # via the -app-creds ExternalSecret.
@@ -25,6 +34,9 @@ data:
   # the IPv4-direct/relay path. Corpus building is always real BnF, so this is
   # wired independently of CLUSTER_MODE.
   BNF_BROKER_URL: {{ include "bnf-demo.brokerInternalUrl" . | quote }}
+  # The resolver fetches Gallica manifests from the BnF Presentation API through
+  # the broker. Required by the app whenever BNF_BROKER_URL is set (lib/env.ts).
+  BNF_IIIF_PRESENTATION_BASE_URL: {{ required "bnfIiif.presentationBaseUrl is required when broker.enabled" .Values.bnfIiif.presentationBaseUrl | quote }}
   {{- end }}
   {{- if eq .Values.config.clusterMode "real" }}
   # App → worker job submit (lib/cluster/client.ts).
@@ -44,8 +56,9 @@ data:
   {{- end }}
   {{- with .Values.config.authentikBaseUrl }}
   # Alien Auth (Authentik) SSO — non-secret half. The client id/secret arrive
-  # via the -app-creds ExternalSecret. The app enables SSO only when all three
-  # are present (lib/env.ssoEnabled).
+  # via the -authentik ExternalSecret (externalsecret.yaml, from the shared
+  # authentik-prod Scaleway secret). The app requires all four AUTHENTIK_*
+  # or none (lib/env.ts superRefine): a partial set refuses to boot.
   AUTHENTIK_BASE_URL: {{ . | quote }}
   AUTHENTIK_APP_SLUG: {{ $.Values.config.authentikAppSlug | quote }}
   {{- end }}

@@ -15,8 +15,8 @@
  *
  * Sizing: permits = cap × target-acquire-wait-seconds / 60, with headroom. At the
  * 300/min cap, 8–12 holds ~1s broker acquire-wait with freeze≈0/shed≈0. Scaling
- * to a 3000/min quota is a config flip only: broker BNF_GLOBAL_RPM=3000 + worker
- * BNF_FETCH_CONCURRENCY≈48. See ai-memories bnf-fetch-saturation.
+ * to a 3000/min quota is a config flip only: BNF_RATES.global.rpm=3000 + the
+ * worker's fetch concurrencies. See ai-memories bnf-fetch-saturation.
  */
 
 /** Default in-flight permit count when BNF_FETCH_CONCURRENCY is unset (300/min cap). */

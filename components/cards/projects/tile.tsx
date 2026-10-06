@@ -18,7 +18,7 @@
 // no Constituer or Ingérer step to offer at all.
 
 import { ArrowRight, Database, Share2, Sparkles, User } from "lucide-react"
-import { useTranslations } from "next-intl"
+import { useLocale, useTranslations } from "next-intl"
 import { Link } from "@/i18n/navigation"
 import {
   Card,
@@ -33,8 +33,8 @@ import { Badge } from "@/components/ui/badge"
 import { Button, buttonVariants } from "@/components/ui/button"
 import { BadgeProjectAccess } from "@/components/badges/projects/access"
 import { BadgeProjectSharedCorpus } from "@/components/badges/projects/shared-corpus"
-import { ROUTES } from "@/lib/constants"
-import { PROJECT_ACCESS_LEVEL } from "@/lib/authz/project-access"
+import { ROUTES, WORKSPACE_STEP } from "@/lib/constants"
+import { PROJECT_RELATION } from "@/models/projects/schema"
 import {
   CORPUS_SOURCE_STATE,
   corpusSourceState,
@@ -44,15 +44,12 @@ import type { ProjectListItem } from "@/models/projects/schema"
 
 interface CardProjectTileProps {
   project: ProjectListItem
-  /** The viewing user, to tell "I own this" from "I may act as an owner". */
-  currentUserId: string
   onShare?: () => void
   onDerive?: () => void
 }
 
 export function CardProjectTile({
   project,
-  currentUserId,
   onShare,
   onDerive,
 }: CardProjectTileProps) {
@@ -62,24 +59,20 @@ export function CardProjectTile({
   // through a shared parent namespace.
   const tList = useTranslations("projects.list")
 
-  // Two different questions, deliberately kept apart. `isMine` is a fact about
-  // the row; `mayShare` is a permission, and an admin holds it on every project
-  // without owning any of them.
-  const isMine = project.ownerId === currentUserId
-  const isOwner = project.access === PROJECT_ACCESS_LEVEL.OWNER
-  const canWrite = isOwner || project.access === PROJECT_ACCESS_LEVEL.WRITE
-
+  // Every permission here is the server's answer (decorateProjectRows in
+  // models/projects/service.ts): `relation` is "is it mine", `mayShare` is
+  // ProjectPolicy.share, `steps` is workspaceStepsFor, `canDerive` is "shared
+  // with me, owns its corpus, ingested". The tile recomputes none of them.
+  const locale = useLocale()
+  const isMine = project.relation === PROJECT_RELATION.OWN
   const sourceState = corpusSourceState(project)
   const derived = isDerived(project)
   const revoked = sourceState === CORPUS_SOURCE_STATE.REVOKED
-  // Owning a derived workspace is not owning the corpus it reads. Sharing it
-  // would hand the source's corpus to a group its owner never granted — see
-  // ProjectPolicy.share, which refuses the same case server-side.
-  const mayShare = isOwner && !derived
-  // Constituer and Ingérer mutate the corpus; a derived project has none of
-  // its own, and a read-only member may not touch the one it points at.
-  const showCorpusSteps = canWrite && !derived
-  const canDerive = !isMine && !derived && project.isIngested && onDerive
+  // Constituer and Ingérer are offered exactly when the pages would let the
+  // user in.
+  const showCorpusSteps = project.steps.includes(WORKSPACE_STEP.CONSTITUER)
+  const mayShare = project.mayShare
+  const canDerive = project.canDerive && onDerive
 
   return (
     <Card className="flex flex-col transition-colors hover:bg-accent/30">
@@ -152,7 +145,7 @@ export function CardProjectTile({
             <span className="inline-flex items-center gap-1.5 text-sm text-muted-foreground">
               <Database className="size-3.5" strokeWidth={1.8} />
               <span className="font-mono font-medium text-foreground">
-                {project.corpusSize.toLocaleString("fr-FR")}
+                {project.corpusSize.toLocaleString(locale)}
               </span>
               {t("documents")}
             </span>

@@ -2,6 +2,7 @@
 // Domain constants + derived types for the research buffer ("tampon").
 // No `import "server-only"` — schema is referenced by both client and server.
 // No imports from other model directories — schema.ts is the foundation layer.
+// The filter types are inferred from their zod schema in types.ts.
 // See playbook/models.md import diagram.
 import type { BufferItem } from "@/lib/generated/prisma/client"
 
@@ -22,8 +23,36 @@ export const BUFFER_STATUS = {
 
 export type BufferStatus = (typeof BUFFER_STATUS)[keyof typeof BUFFER_STATUS]
 
-/** The facet dimensions buffer_stats can tabulate — mirrors the corpus set. */
-export type BufferFacetDimension = "period" | "type" | "lang" | "source"
+/**
+ * Background metadata enrichment of a BARE row (staged by ARK only, e.g. by
+ * buffer_add) — lib/buffer/enricher.ts. Null = nothing to enrich (the row came
+ * with its metadata, or it is no longer curated).
+ */
+export const BUFFER_ENRICH_STATUS = {
+  /** Queued: the drain will resolve it (Document copy, then the broker). */
+  PENDING: "pending",
+  /** Metadata filled in. */
+  RESOLVED: "resolved",
+  /** Gave up (attempt ceiling, or the BnF does not know the ARK). */
+  FAILED: "failed",
+} as const
+
+export type BufferEnrichStatus = (typeof BUFFER_ENRICH_STATUS)[keyof typeof BUFFER_ENRICH_STATUS]
+
+/**
+ * "Unresolved" — the ONE definition the counts and the `unresolved` filter
+ * share: a candidate WITHOUT its metadata, still being resolved (pending) or
+ * given up on (failed). A NULL status (the row came with its metadata) and
+ * `resolved` are resolved. `unresolvedFailed` reports the failed part of it.
+ */
+export const BUFFER_UNRESOLVED_ENRICH_STATUSES = [BUFFER_ENRICH_STATUS.PENDING, BUFFER_ENRICH_STATUS.FAILED] as const
+
+/** DELETE /api/projects/:id/buffer — how many candidates were discarded. */
+export type BufferDiscardResult = { discarded: number }
+
+/** The facet dimensions buffer_stats can tabulate — the corpus set plus the
+ *  record kind (arkKind). */
+export type BufferFacetDimension = "period" | "type" | "lang" | "source" | "kind"
 
 // ---------------------------------------------------------------------------
 // Composite shapes returned to the API / agent-tool layer
@@ -42,20 +71,30 @@ export type BufferRow = Pick<
   | "snippet"
   | "originQuery"
   | "createdAt"
+  | "creator"
+  | "dateLabel"
+  | "arkKind"
+  | "subjects"
+  | "enrichStatus"
 >
 
 /**
  * Facet distribution over the candidate set — the buffer's counterpart to
  * CorpusSnapshot.facets. Computed over candidate rows only; `undated` is the
  * count of candidates with `year IS NULL` (informational, excluded from the
- * period buckets). `period` bins by decade ("1880s", "1890s", …).
+ * period buckets). `period` bins by decade ("1880s", "1890s", …). `kind` counts
+ * by record kind (arkKind). `unresolved` counts candidates whose metadata is
+ * still being resolved in the background (enrichStatus pending) — filters do
+ * not apply to them yet.
  */
 export type BufferFacets = {
   type: Record<string, number>
+  kind: Record<string, number>
   lang: Record<string, number>
   source: Record<string, number>
   period: Record<string, number>
   undated: number
+  unresolved: number
 }
 
 /**
@@ -77,4 +116,23 @@ export type BufferSnapshot = {
 export type BufferCrossFacets = {
   dims: [BufferFacetDimension, BufferFacetDimension]
   cells: { a: string; b: string; count: number }[]
+}
+
+/**
+ * The buffer's own counters of a commit (BufferService.commit returns them
+ * with the corpus add result, `corpus`, typed in models/corpus/schema.ts).
+ */
+export type BufferCommitCounts = {
+  /** Candidate ARKs submitted to the corpus. */
+  committed: number
+  /** Of those, catalogue notices (`cb…`) — queued for cb→Gallica
+   *  canonicalisation, so the caller knows whether to kick that drain. */
+  catalogueNotices: number
+  /** ARKs already present in the corpus (skipped by addArks dedupe). */
+  duplicates: number
+  /** Head members still waiting for cb→Gallica canonicalisation AFTER the
+   *  commit: while above zero, `corpus.total` will still change. */
+  canonicalizationPending: number
+  /** Committed candidates whose metadata was still being resolved. */
+  committedUnresolved: number
 }

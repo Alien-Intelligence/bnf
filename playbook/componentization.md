@@ -100,6 +100,16 @@ export function ConstituerClient(...) {
 </CardCorpusSummary>
 ```
 
+### A confirmation nested in a dialog
+
+A confirmation that only exists inside another dialog — "revoke this grant?"
+inside the share dialog — is rendered by that dialog, at the dialog's level,
+with its state there (which item awaits confirmation), not inside a row or a
+card. It is still its own extracted component on the `AlertDialog` primitive
+(`components/alerts/<feature>/<name>.tsx`), taking `open` / `onOpenChange`
+plus data props, and it refuses to close while its action is in flight.
+Example: `AlertDialogProjectRevokeShare`, owned by `DialogProjectShare`.
+
 ## Onboarding intros are dialogs
 
 The two "guided intro" dialogs are first-class extracted components:

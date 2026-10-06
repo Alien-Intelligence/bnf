@@ -17,13 +17,14 @@
 import type { BnfMcpDocumentDetail } from "@/lib/bnf/types"
 import {
   GALLICA_DOC_TYPE,
-  MARC_TO_ISO_LANG,
+  canonicalLang,
   gallicaSubtype,
   iiifManifestUrl,
   mapCatalogueDocType,
   mapGallicaTypedoc,
   sourceFromArk,
 } from "@/lib/mcp/vocab"
+import { DOCUMENT_SOURCE } from "@/models/documents/schema"
 
 // ---------------------------------------------------------------------------
 // Output type
@@ -130,6 +131,7 @@ function normalizeCenturyLabel(roman: string): string | null {
  * |--------------------------------------------|-------------|----------------------------|
  * | null / ""                                  | null        | null                       |
  * | "1862"  (exactly 4 digits)                 | 1862        | null                       |
+ * | "1937-07-12" / "1937-07" (ISO date)        | 1937        | "1937-07-12" (verbatim)    |
  * | "vers 1890" / "circa 1890" / "ca 1890"     | 1890        | "vers 1890" (normalised)   |
  * | "1850–1860" / "1850-1860" / "1850/1860"    | 1850        | "1850–1860" (en-dash)      |
  * | "XIXe siècle" / "XIXème siècle"            | null        | "XIXe siècle"              |
@@ -147,6 +149,15 @@ export function parseBnfDate(
   // 1. Exact 4-digit year —————————————————————————————————————————————————
   if (/^\d{4}$/.test(s)) {
     return { year: parseInt(s, 10), label: null }
+  }
+
+  // 1b. Full ISO date "YYYY-MM-DD" or "YYYY-MM" — how Gallica dates a press
+  //     ISSUE. Without this rule an issue fell to "unparseable" (year null)
+  //     and vanished from year filters and the period histogram. The label
+  //     keeps the full date: it is what tells two issues of a title apart.
+  const isoMatch = /^(\d{4})-(0[1-9]|1[0-2])(?:-(0[1-9]|[12]\d|3[01]))?$/.exec(s)
+  if (isoMatch) {
+    return { year: parseInt(isoMatch[1], 10), label: s }
   }
 
   // 2. Approximate year: "vers 1890" / "circa 1890" / "ca. 1890" / "ca 1890"
@@ -198,8 +209,8 @@ export function parseBnfDate(
  *    null (caller — normalizeMany — drops the record).
  * 4. `author` — prefer `author`, fall back to `creator`.
  * 5. `parseBnfDate(mcp.date)` → `{ year, label: dateLabel }`.
- * 6. `lang` — map MARC 639-2 via MARC_TO_ISO_LANG; preserve unknown codes
- *    verbatim.
+ * 6. `lang` — canonicalLang: MARC 639-2 (both columns) → ISO 639-1, language
+ *    names → code; unknown codes preserved lowercased.
  * 7. `docType` — Gallica enum key → GALLICA_DOC_TYPE[key]; Catalogue
  *    free-text → mapCatalogueDocType(); missing → "book" for catalogue,
  *    "other" for anything else; unknown free-text → "other" + hook.
@@ -258,14 +269,10 @@ export function normalizeDocument(
   const { year, label: dateLabel } = parseBnfDate(rawDate)
 
   // ── 6. Language ───────────────────────────────────────────────────────────
-  const rawLang =
-    typeof mcp.language === "string" && mcp.language.trim() !== ""
-      ? mcp.language.trim()
-      : null
-  const lang =
-    rawLang !== null
-      ? (MARC_TO_ISO_LANG[rawLang] ?? rawLang) // preserve unknown codes verbatim
-      : null
+  // canonicalLang knows both ISO 639-2 columns: MARC records carry the
+  // bibliographic codes (`ger`, `dut`), which the old terminology-only lookup
+  // left verbatim — so German documents were `ger`, matched by no `de` filter.
+  const lang = canonicalLang(typeof mcp.language === "string" ? mcp.language : null)
 
   // ── 7. docType + subtype ──────────────────────────────────────────────────
   // The Gallica typedoc set (OAI-PMH record header) is the AUTHORITATIVE
@@ -309,7 +316,7 @@ export function normalizeDocument(
     // No typedoc and no doc_type field at all:
     //   Catalogue records are predominantly books → "book"
     //   Everything else → "other"
-    docType = source === "catalogue" ? "book" : "other"
+    docType = source === DOCUMENT_SOURCE.CATALOGUE ? "book" : "other"
   }
 
   // ── 8. Pages + excerpt ────────────────────────────────────────────────────

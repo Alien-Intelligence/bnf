@@ -297,3 +297,30 @@ test("counts() reconcile: completed + failed equals total sent, none left in fli
     "all sent items must be accounted for across the four states",
   );
 });
+
+test("attemptsSpent: a copy counts the deliveries its predecessor spent and keeps only the rest of the budget", async () => {
+  const q = new MemoryQueue();
+  const attemptsSeen: number[] = [];
+
+  await q.work<{ v: number }>(
+    "handed-back",
+    async (msg) => {
+      attemptsSeen.push(msg.attempts);
+      throw new Error("retry me");
+    },
+    { concurrency: 1, retryLimit: 3 },
+  );
+
+  // An item whose first 2 deliveries were spent: 4 allowed in all → 2 left.
+  await q.send("handed-back", { v: 1 }, { attemptsSpent: 2 });
+  await q.idle();
+
+  assert.deepEqual(attemptsSeen, [3, 4]);
+  assert.equal((await q.counts("handed-back")).failed, 1);
+});
+
+test("attemptsSpent: a negative or fractional count is a caller bug and throws", async () => {
+  const q = new MemoryQueue();
+  await assert.rejects(q.send("x", { v: 1 }, { attemptsSpent: -1 }), /non-negative integer/);
+  await assert.rejects(q.send("x", { v: 1 }, { attemptsSpent: 1.5 }), /non-negative integer/);
+});

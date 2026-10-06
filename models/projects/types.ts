@@ -37,6 +37,23 @@ export const shareProjectSchema = z.object({
 export type ShareProjectInput = z.infer<typeof shareProjectSchema>
 
 /**
+ * The same contract for the grant form, which starts with no group chosen
+ * (`null`) and must say so in the user's language. Built from a client with
+ * the translated message (playbook/forms.md: messages in the schema, keys
+ * resolved by the caller); its output is a ShareProjectInput.
+ */
+export function shareProjectFormSchema(messages: { groupRequired: string }) {
+  return z.object({
+    groupId: z
+      .uuid({ error: messages.groupRequired })
+      .nullable()
+      .refine((v) => v !== null, { error: messages.groupRequired }),
+    access: shareProjectSchema.shape.access,
+  })
+}
+export type ShareProjectFormValues = z.input<ReturnType<typeof shareProjectFormSchema>>
+
+/**
  * Creating a derived project — a research workspace over another project's
  * corpus. The source is identified by id; the grant that authorises it is
  * resolved server-side from the caller's group membership, never sent by the

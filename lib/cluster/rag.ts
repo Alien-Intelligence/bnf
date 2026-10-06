@@ -3,11 +3,25 @@ import "server-only"
 // Facade that routes RAG queries to the real cluster or the fake in-process
 // implementation based on the CLUSTER_MODE environment variable.
 //
-// CLUSTER_MODE=fake  (default) → FakeRagRunner (no network, no ML)
+// CLUSTER_MODE=fake            → FakeRagRunner (no network, no ML)
 // CLUSTER_MODE=real             → RealRagRunner (data-cluster MCP, real Qdrant)
+// unset or any other value      → throws (lib/cluster/mode.ts)
 //
 // All application code that needs RAG results imports ClusterRagClient from
 // this module — never FakeRagRunner / RealRagRunner directly.
+//
+// Corpus versions: the cluster index has NO notion of a corpus version. Chunks
+// and entries carry no version field, and no MCP tool filters by one, so every
+// read sees the project dataset's current entries — including entries an
+// in-flight ingest has already written. The agent tools gate on the project
+// HAVING a committed ingested version (ingestion-guard.ts); they cannot scope a
+// read to it, and these requests do not pretend to.
+//
+// Every request carries the caller's AbortSignal (the turn's `ctx.signal`), and
+// every offset and length is in Unicode code points (folio-text.ts).
+
+import type { DocumentFolios } from "./folio-text"
+import { CLUSTER_MODE, clusterMode } from "./mode"
 
 // ---------------------------------------------------------------------------
 // Public types (shared by fake and real implementations)
@@ -28,58 +42,53 @@ export interface RagPassage {
   /** Cosine similarity score in [0, 1]. */
   score: number
   /**
-   * Character-offset range of the snippet within the entry's processed text
-   * (start inclusive, end exclusive). Feed these to `rag_get_text` to pull the
+   * Code-point range of the snippet within the entry's processed text (start
+   * inclusive, end exclusive). Feed these to `rag_get_text` to pull the
    * surrounding context selectively.
+   *
+   * `null` when the chunk was indexed before worker-v2 wrote offsets
+   * (`char_start` / `char_end` in the chunk metadata); a re-ingest fills it.
+   * Never `[0, 0]` as a stand-in — the agent is told to treat the range as
+   * optional, not to read from offset 0.
    */
-  charRange: [number, number]
+  charRange: [number, number] | null
   /**
    * Cluster entry id this chunk belongs to (null if the cluster omitted it).
    * The handle for `rag_get_text` — chain search → full text with it.
    */
   entryId: number | null
-  /** Human-readable document title (optional, denormalised for display). */
-  title?: string
-  /** Publication year (optional, denormalised for filtering). */
-  year?: number
 }
 
 export interface RagQueryRequest {
-  /** Project identifier — scopes the search to the project's vector store. */
+  /** The CORPUS project id — scopes the search to its dataset. */
   projectId: string
-  /** Version snapshot the cluster should query against. */
-  ingestedVersionId: string
   /** Free-text query issued by the research agent. */
   query: string
-  /** Maximum number of passages to return (default: 12). */
-  k?: number
-  /** Server-side pre-filters applied before vector search. */
-  filters?: {
-    type?: string[]
-    lang?: string[]
-    source?: string[]
-    yearFrom?: number
-    yearTo?: number
-  }
+  /** Passages to return (the rag_query handler applies RAG_DEFAULT_K). */
+  k: number
+  // No filters: the cluster's vector search filters by dataset / entry / score
+  // only. Facet filtering is keyword search's (RagKeywordRequest.filters).
+  /** Bounds every cluster await (the turn's signal). */
+  signal: AbortSignal
 }
 
 export interface RagQueryResponse {
   passages: RagPassage[]
-  /** Total number of passages that survived filters and scored > 0. */
+  /** Total number of passages the search matched. */
   total: number
-  /** Version tag of the embedding model used (or "fake-rag-v1" in fake mode). */
+  /** Version tag of the embedding model used (FAKE_RAG_MODEL_VERSION in fake mode). */
   modelVersion: string
 }
 
 // --- Keyword search (entry-level, faceted) ---------------------------------
 
 export interface RagKeywordRequest {
+  /** The CORPUS project id — scopes the search to its dataset. */
   projectId: string
-  ingestedVersionId: string
   /** Free-text query — typo-tolerant. May be empty when filtering only. */
   query: string
-  /** Maximum number of entry hits to return (default: 20). */
-  limit?: number
+  /** Entry hits to return (the handler applies RAG_KEYWORD_DEFAULT_LIMIT). */
+  limit: number
   /** Exact-match facet filters on the corpus metadata. */
   filters?: {
     type?: string
@@ -88,6 +97,8 @@ export interface RagKeywordRequest {
     lang?: string
     source?: string
   }
+  /** Bounds every cluster await (the turn's signal). */
+  signal: AbortSignal
 }
 
 export interface RagKeywordHit {
@@ -107,20 +118,48 @@ export interface RagKeywordHit {
 
 export interface RagKeywordResponse {
   hits: RagKeywordHit[]
+  /** Entries the search matched in all (may exceed `hits.length` when limited). */
   total: number
 }
 
 // --- Full-text retrieval (selective, paginated) ----------------------------
 
 export interface RagEntryContentRequest {
+  /** The CORPUS project id — the dataset the entry must belong to. */
   projectId: string
+  /**
+   * The ARK of the search result the entry id came from. The runner reads the
+   * entry only if the ARK lookup in the corpus project's dataset returns this
+   * id for it: entry ids are cluster-wide, so a model-supplied id alone could
+   * name another project's (another client's) document.
+   */
+  ark: string
   /** Cluster entry id, obtained from a search result. */
   entryId: number
-  /** Start offset into the processed text (default: 0). */
-  charOffset?: number
-  /** Characters to return; 0 = the rest of the document (default: 4000). */
-  charLimit?: number
+  /** Start offset into the processed text, in code points. */
+  charOffset: number
+  /**
+   * Code points to return; 0 = the rest of the document. Always explicit: the
+   * default is applied once, by the rag_get_text tool handler.
+   */
+  charLimit: number
+  /** Bounds every cluster await (the turn's signal). */
+  signal: AbortSignal
 }
+
+/** Outcomes of a facade read that resolves an ARK to its entry. */
+export const RAG_LOOKUP_STATUS = {
+  FOUND: "found",
+  /** No entry of the corpus project's dataset carries this ARK. */
+  ENTRY_NOT_FOUND: "entry_not_found",
+  /** The requested entry id is not the ARK's live entry in the dataset. */
+  ENTRY_NOT_IN_CORPUS: "entry_not_in_corpus",
+} as const
+
+export type RagEntryContentResult =
+  | { status: typeof RAG_LOOKUP_STATUS.FOUND; content: RagEntryContent }
+  /** The requested id is not the ARK's live entry; `liveEntryId` is (null: the ARK has none). */
+  | { status: typeof RAG_LOOKUP_STATUS.ENTRY_NOT_IN_CORPUS; liveEntryId: number | null }
 
 export interface RagEntryContent {
   entryId: number
@@ -132,18 +171,35 @@ export interface RagEntryContent {
   nextOffset: number
 }
 
+// --- Whole-document folio text --------------------------------------------
+
+export interface DocumentFoliosRequest {
+  /**
+   * The CORPUS project id (`ctx.corpusProjectId`, resolved through
+   * lib/authz/corpus-source.ts) — the dataset a derived workspace's citations
+   * point into is its source's. Never `ctx.projectId`.
+   */
+  projectId: string
+  /** The cited document's ARK, verbatim. */
+  ark: string
+  /** Bounds every cluster await; the caller composes its own budget into it. */
+  signal: AbortSignal
+}
+
+export type DocumentFoliosResult =
+  | { status: typeof RAG_LOOKUP_STATUS.FOUND; entryId: number; folios: DocumentFolios }
+  /** No cluster entry carries this ARK — not ingested, or dropped since. */
+  | { status: typeof RAG_LOOKUP_STATUS.ENTRY_NOT_FOUND }
+
 // ---------------------------------------------------------------------------
 // Facade
 // ---------------------------------------------------------------------------
 
-function clusterMode(): "fake" | "real" {
-  return (process.env.CLUSTER_MODE ?? "fake") === "real" ? "real" : "fake"
-}
 
 export const ClusterRagClient = {
   /** Semantic similarity search → ARK + folio + char-range passages. */
   async query(req: RagQueryRequest): Promise<RagQueryResponse> {
-    if (clusterMode() === "real") {
+    if (clusterMode() === CLUSTER_MODE.REAL) {
       const { RealRagRunner } = await import("./real-rag")
       return RealRagRunner.query(req)
     }
@@ -153,7 +209,7 @@ export const ClusterRagClient = {
 
   /** Keyword search → entry-level hits with snippets and facet filters. */
   async keywordSearch(req: RagKeywordRequest): Promise<RagKeywordResponse> {
-    if (clusterMode() === "real") {
+    if (clusterMode() === CLUSTER_MODE.REAL) {
       const { RealRagRunner } = await import("./real-rag")
       return RealRagRunner.keywordSearch(req)
     }
@@ -161,13 +217,34 @@ export const ClusterRagClient = {
     return FakeRagRunner.keywordSearch(req)
   },
 
-  /** Selective full-text retrieval by entry id and character range. */
-  async getEntryContent(req: RagEntryContentRequest): Promise<RagEntryContent> {
-    if (clusterMode() === "real") {
+  /**
+   * Selective full-text retrieval by entry id and character range — only for
+   * an entry the ARK lookup in the corpus project's dataset vouches for.
+   */
+  async getEntryContent(req: RagEntryContentRequest): Promise<RagEntryContentResult> {
+    if (clusterMode() === CLUSTER_MODE.REAL) {
       const { RealRagRunner } = await import("./real-rag")
       return RealRagRunner.getEntryContent(req)
     }
     const { FakeRagRunner } = await import("./fake-rag")
     return FakeRagRunner.getEntryContent(req)
+  },
+
+  /**
+   * The whole processed text of a cited document, split per folio — what the
+   * quote check compares a note's quotations against. One ARK → entry lookup
+   * plus one full-content fetch. Failures propagate as the cluster client's
+   * typed `DataclusterMcp*Error`s — a malformed lookup or text that is not in
+   * the worker's folio format is a `DataclusterMcpProtocolError` — or as the
+   * request signal's abort; the caller decides. (A failure to resolve the
+   * project's dataset id through the database propagates as that error.)
+   */
+  async getDocumentFolios(req: DocumentFoliosRequest): Promise<DocumentFoliosResult> {
+    if (clusterMode() === CLUSTER_MODE.REAL) {
+      const { RealRagRunner } = await import("./real-rag")
+      return RealRagRunner.getDocumentFolios(req)
+    }
+    const { FakeRagRunner } = await import("./fake-rag")
+    return FakeRagRunner.getDocumentFolios(req)
   },
 }

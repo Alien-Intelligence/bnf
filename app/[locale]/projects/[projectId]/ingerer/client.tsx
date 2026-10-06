@@ -21,7 +21,6 @@ import {
 import { CardIngestPanel, deriveMode } from "@/components/cards/ingest/panel"
 import { CardIngestJobHistory } from "@/components/cards/ingest/job-history"
 import { INGEST_STATUS } from "@/models/ingest/schema"
-import { WorkspaceHeader } from "@/components/layouts/workspace/header"
 import { DialogIngestConfirmCancel } from "@/components/dialogs/ingest/confirm-cancel"
 import {
   DialogIngestPaidOcrConfirm,
@@ -34,7 +33,6 @@ import type { IngestDeltaPreview, IngestJobView } from "@/models/ingest/types"
 
 interface Props {
   projectId: string
-  initialUser: { name?: string; email: string }
   /** Server-computed delta preview (incl. the already-consultable count) — a
    *  page-load snapshot, refreshed on the live→terminal transition. */
   initialDeltaPreview: IngestDeltaPreview
@@ -44,7 +42,6 @@ interface Props {
 
 export function IngererClient({
   projectId,
-  initialUser,
   initialDeltaPreview,
   initialActiveJobId,
   initialRecentJobs,
@@ -204,14 +201,14 @@ export function IngererClient({
     initialDeltaPreview.removed,
   )
 
+  // The header is the project layout's; this column fills its min-h-0 flex-1
+  // slot and is the scroll container.
   return (
-    <div className="flex h-screen flex-col">
-      <WorkspaceHeader user={initialUser} projectId={projectId} />
-
+    <>
       {/* *:shrink-0 — in a flex-col scroll container, items default to shrink:1
           and get squeezed below their content height when the column overflows.
           Keep natural heights → the container scrolls. */}
-      <div className="mx-auto flex w-full max-w-4xl flex-col gap-6 overflow-auto p-6 *:shrink-0">
+      <div className="mx-auto flex min-h-0 w-full max-w-4xl flex-1 flex-col gap-6 overflow-auto p-6 *:shrink-0">
         <CardIngestPanel
           mode={mode}
           projectId={projectId}
@@ -271,6 +268,6 @@ export function IngererClient({
         onConfirm={() => void confirmCancel()}
         isPending={cancelMutation.isPending}
       />
-    </div>
+    </>
   )
 }

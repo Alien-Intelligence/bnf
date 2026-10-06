@@ -18,6 +18,12 @@ export class ProjectQueries {
     return prisma.project.findUnique({ where: { id }, ...projectWithShares })
   }
 
+  /** The project row (no shares) — for readers that authorise nothing, such as
+   *  the prompt builder. Throws when it does not exist. */
+  static async rowOrThrow(id: string): Promise<Project> {
+    return prisma.project.findUniqueOrThrow({ where: { id } })
+  }
+
   static async listForOwner(ownerId: string): Promise<Project[]> {
     return prisma.project.findMany({
       where: { ownerId },
@@ -43,7 +49,12 @@ export class ProjectQueries {
           OR: [
             { ownerId: scope.userId },
             { isPublic: true },
-            { shares: { some: { groupId: { in: scope.groupIds } } } },
+            // Only a recognised level is a grant (VisibilityScope.shareAccess).
+            {
+              shares: {
+                some: { groupId: { in: scope.groupIds }, access: { in: scope.shareAccess } },
+              },
+            },
           ],
         }
 
@@ -76,15 +87,6 @@ export class ProjectQueries {
       _count: { ark: true },
     })
     return new Map(counts.map((c) => [c.versionId, c._count.ark]))
-  }
-
-  /** The ids of the projects reading this project's corpus. */
-  static async derivedIds(sourceProjectId: string): Promise<string[]> {
-    const rows = await prisma.project.findMany({
-      where: { corpusSourceId: sourceProjectId },
-      select: { id: true },
-    })
-    return rows.map((r) => r.id)
   }
 
   /**

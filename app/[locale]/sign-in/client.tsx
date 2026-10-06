@@ -3,12 +3,14 @@
 import { useState } from "react"
 import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
-import { useRouter, useSearchParams } from "next/navigation"
-import { useTranslations } from "next-intl"
-import { Link } from "@/i18n/navigation"
+import { useLocale, useTranslations } from "next-intl"
+import { Link, getPathname, useRouter } from "@/i18n/navigation"
 import { apiFetch } from "@/lib/api-fetch"
 import { authClient } from "@/lib/auth-client"
-import { OAUTH_PROVIDER_ID, ROUTES } from "@/lib/constants"
+import { AUTH_ENDPOINT, OAUTH_PROVIDER_ID, ROUTES } from "@/lib/constants"
+import { INVALID_CREDENTIAL_CODES, betterAuthErrorCode } from "@/lib/auth-error"
+import { SIGNED_OUT_NOTICE } from "@/models/users/schema"
+import type { SignedOutNotice } from "@/models/users/types"
 import { signInSchema, type SignInInput } from "@/models/users/types"
 import {
   Form,
@@ -28,12 +30,29 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { LayoutAuthShell } from "@/components/layouts/auth/shell"
+import { Separator } from "@/components/ui/separator"
+import { AUTH_MESSAGE_TONE, AlertAuthMessage } from "@/components/alerts/auth/message"
 
-export function SignInClient({ ssoEnabled }: { ssoEnabled: boolean }) {
+interface SignInClientProps {
+  ssoEnabled: boolean
+  /**
+   * Where to land after a successful sign-in. Already validated by the page
+   * (lib/auth-redirect.ts safeNextPath): always an in-app, locale-less path.
+   */
+  nextPath: string
+  /** How the previous session ended, from `?signedOut=` (validated by the page). */
+  signedOutNotice: SignedOutNotice | null
+}
+
+export function SignInClient({
+  ssoEnabled,
+  nextPath,
+  signedOutNotice,
+}: SignInClientProps) {
   const t = useTranslations("auth.signIn")
   const tSignUp = useTranslations("auth.signUp")
+  const locale = useLocale()
   const router = useRouter()
-  const searchParams = useSearchParams()
   const [serverError, setServerError] = useState<string | null>(null)
   const [ssoLoading, setSsoLoading] = useState(false)
 
@@ -46,13 +65,22 @@ export function SignInClient({ ssoEnabled }: { ssoEnabled: boolean }) {
     setServerError(null)
     setSsoLoading(true)
     // Better Auth redirects the browser to Authentik; callbackURL is where it
-    // lands after a successful round-trip. Respect ?next= like the email flow.
-    const next = searchParams.get("next") ?? ROUTES.projects
-    const { error } = await authClient.signIn.oauth2({
-      providerId: OAUTH_PROVIDER_ID,
-      callbackURL: next,
-    })
-    if (error) {
+    // lands after the round-trip. Same safe `next` as the email flow, with the
+    // locale prefix applied here because this is a full-page hop, not an i18n
+    // router navigation. On success the page unloads, so the button stays busy;
+    // on a refusal or a throw it is released and the failure is shown.
+    try {
+      const { error } = await authClient.signIn.oauth2({
+        providerId: OAUTH_PROVIDER_ID,
+        callbackURL: getPathname({ href: nextPath, locale }),
+      })
+      if (error) {
+        console.error("[sign-in] SSO refused", error)
+        setServerError(t("errorGeneric"))
+        setSsoLoading(false)
+      }
+    } catch (e) {
+      console.error("[sign-in] SSO failed", e)
       setServerError(t("errorGeneric"))
       setSsoLoading(false)
     }
@@ -60,33 +88,31 @@ export function SignInClient({ ssoEnabled }: { ssoEnabled: boolean }) {
 
   async function handleSubmit(values: SignInInput) {
     setServerError(null)
-    const response = await apiFetch("/api/auth/sign-in/email", {
-      method: "POST",
-      body: JSON.stringify({ email: values.email, password: values.password }),
-    })
-
-    if (!response.ok) {
-      const body = await response.json().catch(() => ({}))
-      const code: string | undefined =
-        (body as { code?: string }).code ??
-        (body as { error?: string }).error
-
-      const INVALID_CREDENTIAL_CODES = new Set([
-        "INVALID_EMAIL_OR_PASSWORD",
-        "INVALID_PASSWORD",
-        "USER_NOT_FOUND",
-      ])
-      const message =
-        code !== undefined && INVALID_CREDENTIAL_CODES.has(code)
-          ? t("errorInvalidCredentials")
-          : t("errorGeneric")
-
-      setServerError(message)
+    let response: Response
+    try {
+      response = await apiFetch(AUTH_ENDPOINT.SIGN_IN_EMAIL, {
+        method: "POST",
+        body: JSON.stringify({ email: values.email, password: values.password }),
+      })
+    } catch (e) {
+      console.error("[sign-in] request failed", e)
+      setServerError(t("errorGeneric"))
       return
     }
 
-    const next = searchParams.get("next")
-    router.push(next ?? "/projects")
+    if (!response.ok) {
+      const code = await betterAuthErrorCode(response)
+      setServerError(
+        code !== null && INVALID_CREDENTIAL_CODES.has(code)
+          ? t("errorInvalidCredentials")
+          : t("errorGeneric"),
+      )
+      return
+    }
+
+    // `replace`, not `push`: Back should not return to a form the user has
+    // already got past.
+    router.replace(nextPath)
   }
 
   return (
@@ -96,13 +122,17 @@ export function SignInClient({ ssoEnabled }: { ssoEnabled: boolean }) {
           <CardTitle>{t("title")}</CardTitle>
         </CardHeader>
         <CardContent>
+          {signedOutNotice === SIGNED_OUT_NOTICE.DONE && (
+            <AlertAuthMessage tone={AUTH_MESSAGE_TONE.INFO} message={t("signedOut")} />
+          )}
+          {signedOutNotice === SIGNED_OUT_NOTICE.SSO_UNAVAILABLE && (
+            <AlertAuthMessage
+              tone={AUTH_MESSAGE_TONE.ERROR}
+              message={t("signedOutSsoUnavailable")}
+            />
+          )}
           {serverError !== null && (
-            <div
-              role="alert"
-              className="mb-4 rounded-md border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive"
-            >
-              {serverError}
-            </div>
+            <AlertAuthMessage tone={AUTH_MESSAGE_TONE.ERROR} message={serverError} />
           )}
           {ssoEnabled && (
             <div className="mb-4 flex flex-col gap-4">
@@ -116,9 +146,9 @@ export function SignInClient({ ssoEnabled }: { ssoEnabled: boolean }) {
                 {ssoLoading ? t("submitting") : t("ssoButton")}
               </Button>
               <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                <span className="h-px flex-1 bg-border" />
+                <Separator className="flex-1" />
                 <span>{t("or")}</span>
-                <span className="h-px flex-1 bg-border" />
+                <Separator className="flex-1" />
               </div>
             </div>
           )}
@@ -159,7 +189,7 @@ export function SignInClient({ ssoEnabled }: { ssoEnabled: boolean }) {
               />
               <div className="flex justify-end">
                 <Link
-                  href="/forgot-password"
+                  href={ROUTES.forgotPassword}
                   className="text-xs text-muted-foreground hover:text-foreground"
                 >
                   {t("forgotPassword")}
@@ -177,7 +207,7 @@ export function SignInClient({ ssoEnabled }: { ssoEnabled: boolean }) {
         </CardContent>
         <CardFooter className="flex justify-center gap-1 text-sm text-muted-foreground">
           <span>{t("noAccount")}</span>
-          <Link href="/sign-up" className="font-medium text-foreground underline">
+          <Link href={ROUTES.signUp} className="font-medium text-foreground underline">
             {tSignUp("title")}
           </Link>
         </CardFooter>

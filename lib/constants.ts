@@ -3,10 +3,31 @@
 // Rule: no magic numbers in routes, services, or components — import from here.
 // See playbook/constants.md.
 
+import { LOGIN_METHOD } from "@/models/users/schema"
+
+// ---------------------------------------------------------------------------
+// Database pool bounds (lib/db.ts) — every query the app sends is bounded
+// (CLAUDE_ERROR_PATTERNS §14), so a hung statement or an exhausted pool fails
+// instead of wedging the caller and every guard it holds. Same names and
+// values as Track B's ingestion pipeline.
+// ---------------------------------------------------------------------------
+
+/** Server-side ceiling of one SQL statement (Postgres `statement_timeout`). */
+export const DB_STATEMENT_TIMEOUT_MS = 30_000
+/** Ceiling of the wait for a pooled connection (pg `connectionTimeoutMillis`). */
+export const DB_CONNECTION_TIMEOUT_MS = 10_000
+
+import { OCR_CORRECTION_MARKING_MODE } from "@/models/notes/schema"
+import type { OcrCorrectionMarking } from "@/models/notes/schema"
+
 // ---------------------------------------------------------------------------
 // Routes — single source of truth for in-app navigation paths.
 // Locale prefix is handled by next-intl's <Link>; these are locale-agnostic.
 // ---------------------------------------------------------------------------
+
+/** The Constituer page's own URL parameter (the open document); every other
+ *  parameter of that page is a corpus filter. */
+export const SELECTED_ARK_PARAM = "selectedArk"
 
 export const ROUTES = {
   projects: "/projects",
@@ -24,6 +45,9 @@ export const ROUTES = {
   adminProjects: "/admin/projects",
   signIn: "/sign-in",
   signUp: "/sign-up",
+  forgotPassword: "/forgot-password",
+  /** The site root: the session-aware entry page (app/[locale]/page.tsx). */
+  root: "/",
 } as const
 
 /**
@@ -57,7 +81,16 @@ export const ADMIN_TAB_HREF: Record<AdminTab, string> = {
  * affordance derive their sequence from this list. `key` matches the route
  * segment and the `nav.*` i18n key.
  */
-export const WORKSPACE_STEPS = ["constituer", "ingerer", "rechercher"] as const
+export const WORKSPACE_STEP = {
+  CONSTITUER: "constituer",
+  INGERER: "ingerer",
+  RECHERCHER: "rechercher",
+} as const
+export const WORKSPACE_STEPS = [
+  WORKSPACE_STEP.CONSTITUER,
+  WORKSPACE_STEP.INGERER,
+  WORKSPACE_STEP.RECHERCHER,
+] as const
 export type WorkspaceStep = (typeof WORKSPACE_STEPS)[number]
 
 /**
@@ -65,7 +98,17 @@ export type WorkspaceStep = (typeof WORKSPACE_STEPS)[number]
  * derived workspace over a shared corpus. Constituer and Ingérer mutate the
  * corpus and are not theirs to open.
  */
-export const RESEARCH_ONLY_STEPS = ["rechercher"] as const satisfies readonly WorkspaceStep[]
+export const RESEARCH_ONLY_STEPS = [WORKSPACE_STEP.RECHERCHER] as const satisfies readonly WorkspaceStep[]
+
+// ---------------------------------------------------------------------------
+// Brand assets — the co-brand logos shown in the workspace header and on the
+// auth pages. Intrinsic sizes are the files' own, for next/image.
+// ---------------------------------------------------------------------------
+
+export const BRAND_ASSET = {
+  ALIEN_LOGO: { src: "/brand/logo-w.svg", width: 1048, height: 153 },
+  BNF_LOGO: { src: "/brand/bnf-logo-w.png", width: 960, height: 359 },
+} as const
 
 // ---------------------------------------------------------------------------
 // Authentication — Alien Auth (Authentik) SSO.
@@ -76,9 +119,92 @@ export const RESEARCH_ONLY_STEPS = ["rechercher"] as const satisfies readonly Wo
  * verbatim with the alien-agents demo so the OAuth callback path
  * (`/api/auth/oauth2/callback/authentik`) matches the redirect URI registered
  * on the shared Authentik application. Used server-side (lib/auth.ts) and
- * client-side (the sign-in button).
+ * client-side (the sign-in button). It IS the SSO login method stored on
+ * `session.login_method` (models/users/schema.ts LOGIN_METHOD), so the value
+ * is spelled once, there.
  */
-export const OAUTH_PROVIDER_ID = "authentik"
+export const OAUTH_PROVIDER_ID = LOGIN_METHOD.AUTHENTIK
+
+/**
+ * What the app asks Authentik for at SSO sign-in. `openid` makes it OIDC and
+ * yields the id_token that sign-out sends back as `id_token_hint`;
+ * `offline_access` + offline access type + consent prompt yield a refresh
+ * token. Changing these changes what sign-out can do.
+ */
+export const AUTHENTIK_OAUTH = {
+  SCOPES: ["openid", "email", "profile", "offline_access"],
+  ACCESS_TYPE: "offline",
+  PROMPT: "consent",
+} as const
+
+/**
+ * Query keys the auth pages read and write. `next` is the post-sign-in
+ * destination, always passed through `safeNextPath` (lib/auth-redirect.ts);
+ * written by `requireSessionUser`, read by the sign-in page. `signedOut`
+ * carries a SIGNED_OUT_NOTICE (models/users/schema.ts); written by
+ * UserService.signOut, read by the sign-in page. The auth e2e script asserts
+ * on both.
+ */
+export const AUTH_QUERY = { NEXT: "next", SIGNED_OUT: "signedOut" } as const
+
+/**
+ * better-auth's catch-all mount and the email endpoints under it, as
+ * better-auth names them (the session.create hook sees these paths:
+ * lib/auth-login-method.ts).
+ */
+export const BETTER_AUTH_BASE_PATH = "/api/auth"
+export const BETTER_AUTH_PATH = {
+  SIGN_IN_EMAIL: "/sign-in/email",
+  SIGN_UP_EMAIL: "/sign-up/email",
+} as const
+
+/**
+ * The auth endpoints the app's own clients call: better-auth's email sign-up
+ * and sign-in, and the app's sign-out route. Used by the sign-in/sign-up
+ * clients, the sign-out hook and the e2e/seed scripts.
+ */
+export const AUTH_ENDPOINT = {
+  SIGN_UP_EMAIL: `${BETTER_AUTH_BASE_PATH}${BETTER_AUTH_PATH.SIGN_UP_EMAIL}`,
+  SIGN_IN_EMAIL: `${BETTER_AUTH_BASE_PATH}${BETTER_AUTH_PATH.SIGN_IN_EMAIL}`,
+  SIGN_OUT: "/api/sign-out",
+} as const
+
+/**
+ * better-auth's error codes the auth forms tell apart. Anything else reads as
+ * the generic failure. INVALID_* / USER_NOT_FOUND → « Identifiants invalides »;
+ * *_ALREADY_EXISTS → « adresse déjà utilisée ».
+ */
+export const BETTER_AUTH_ERROR = {
+  INVALID_EMAIL_OR_PASSWORD: "INVALID_EMAIL_OR_PASSWORD",
+  INVALID_PASSWORD: "INVALID_PASSWORD",
+  USER_NOT_FOUND: "USER_NOT_FOUND",
+  USER_ALREADY_EXISTS: "USER_ALREADY_EXISTS",
+  USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL: "USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL",
+  EMAIL_ALREADY_EXISTS: "EMAIL_ALREADY_EXISTS",
+} as const
+
+/**
+ * The UI locales, French first and default. i18n/routing.ts builds next-intl's
+ * routing from these, and models/users/types.ts validates a client-sent locale
+ * against them.
+ */
+export const APP_LOCALES = ["fr", "en"] as const
+export const DEFAULT_LOCALE = "fr" satisfies (typeof APP_LOCALES)[number]
+
+/**
+ * Wall-clock ceiling on fetching Authentik's OIDC discovery document during
+ * sign-out (lib/auth-sso.ts). Sign-out must never hang on an identity
+ * provider: past this bound the app session is ended anyway and the user is
+ * told the Alien session could not be closed (CLAUDE_ERROR_PATTERNS §14).
+ */
+export const OIDC_DISCOVERY_TIMEOUT_MS = 5_000
+
+/**
+ * Longest `?next=` value accepted. A real in-app path is a few dozen
+ * characters; anything near this bound is a crafted payload, and the browser
+ * URL limit is the same order of magnitude.
+ */
+export const SAFE_NEXT_MAX_LENGTH = 2_048
 
 // ---------------------------------------------------------------------------
 // Layout geometry — prototype proportions (BnF Corpus Research.dc.html).
@@ -169,6 +295,27 @@ export const CORPUS_REASON_MAX_LEN = 1_000
 /** Candidate rows per page in a buffer list / snapshot sample. */
 export const BUFFER_SAMPLE_SIZE = 25
 
+/** Hits shown in a corpus_search result's `sample` — enough to judge a page,
+ *  never the page itself (the buffer holds it). */
+export const CORPUS_SEARCH_SAMPLE_SIZE = 8
+
+/** Upper bound on one buffer page (buffer_list, GET /buffer `limit`). */
+export const BUFFER_LIST_MAX_LIMIT = 200
+
+/**
+ * Field-scoped text filters (`title`, `creator`, `subject` — buffer and
+ * corpus): each string at least this long, at most this many strings. A
+ * one-letter contains-any matches nearly everything; twenty variants is more
+ * than any real spelling list.
+ */
+export const TEXT_FILTER_MIN_CHARS = 2
+export const TEXT_FILTER_MAX_VALUES = 20
+/** Values per coded filter list (`type`, `lang`, `source`, `kind`). */
+export const FILTER_LIST_MAX_VALUES = 20
+/** Longest language value a filter accepts — the store holds BnF's own
+ *  language strings, the longest seen being « sans contenu linguistique ». */
+export const LANG_FILTER_MAX_CHARS = 40
+
 /** Candidate rows the Constituer buffer panel requests (a curation buffer is
  *  bounded, so one page comfortably shows the working set). */
 export const BUFFER_PANEL_LIMIT = 100
@@ -183,14 +330,63 @@ export const BUFFER_PANEL_LIMIT = 100
 export const BUFFER_AUTO_COMMIT_MAX = 200
 
 /**
- * Default page size for a `corpus_search` call (hits written to the buffer per
- * call). The BnF MCP caps `maximum_records` at 50; the agent paginates with
- * `start_record` to gather more, deliberately, keeping any single page — and the
- * returned summary — bounded (CLAUDE_ERROR_PATTERNS §14).
+ * Per-source page ceilings for a `corpus_search` call — the BnF's own: Gallica
+ * SRU serves ≤ 50 records per page, the catalogue ≤ 1000
+ * (bnf_search_catalogue `maximum_records`). See incident 2026-09-30: a flat 50
+ * cap made a 3 000-record catalogue sweep cost 60 calls instead of 3, each one
+ * drawing on the shared catalogue quota. A request above the chosen source's
+ * ceiling is refused with a structured result, never silently clamped.
  */
-export const BUFFER_SEARCH_PAGE_SIZE = 20
-/** Hard ceiling the BnF SRU search tools enforce on `maximum_records`. */
-export const BUFFER_SEARCH_MAX_PAGE_SIZE = 50
+export const BUFFER_SEARCH_MAX_PAGE_SIZE_BY_SOURCE = { gallica: 50, catalogue: 1000 } as const
+/**
+ * Default page size per source when the agent omits `maximum_records`. The
+ * catalogue default is deliberately large: each call costs BnF quota, and the
+ * returned summary stays compact whatever the page size (CLAUDE_ERROR_PATTERNS
+ * §14 — the page, not the context, is what grows).
+ */
+export const BUFFER_SEARCH_DEFAULT_PAGE_SIZE_BY_SOURCE = { gallica: 50, catalogue: 500 } as const
+
+/**
+ * Version of the buffer classification (canonical docType + docTypeRaw,
+ * canonical lang, arkKind — lib/buffer/classify.ts). Every row written by
+ * registerCandidates carries it; the boot-time reclassifier
+ * (lib/buffer/reclassify.ts) rewrites rows below it once, so bumping this when
+ * the vocabulary changes re-runs the mapping over every existing row
+ * automatically. 0 = a row written before the v2 buffer (raw dc:type labels).
+ */
+export const BUFFER_CLASSIFIER_VERSION = 1
+/** Rows per reclassifier batch (one transaction each); ~87 batches for the
+ *  86 765 prod rows at the first boot, then the version gate makes it a no-op. */
+export const BUFFER_RECLASSIFY_BATCH_SIZE = 1_000
+/** Wall-clock ceiling of one reclassifier run; an unfinished run resumes on
+ *  the next sweep (BUFFER_RECLASSIFY_SWEEP_INTERVAL_MS). */
+export const BUFFER_RECLASSIFY_MAX_MS = 5 * 60_000
+/** How often the reclassifier is retried while rows remain below the version
+ *  (a finished run costs one empty query). */
+export const BUFFER_RECLASSIFY_SWEEP_INTERVAL_MS = 15 * 60_000
+
+// Background enrichment of BARE buffer rows (buffer_add stages ARKs only) —
+// lib/buffer/enricher.ts. Cost: a same-project Document is copied for free;
+// anything else is one broker-routed OAI-PMH GetRecord (Gallica) or catalogue
+// SRU query per ARK, on the broker's `external` bucket (120/min, shared) —
+// about 8–9 minutes per 1 000 ARKs. Never the 40/min manifest bucket, which is
+// the ingestion bottleneck.
+
+/** ARKs resolved per enrichment batch (one bounded client fan-out). */
+export const BUFFER_ENRICH_BATCH_SIZE = 30
+/** Batches per drain pass — a pass touches at most 600 rows, so one kick can
+ *  never spin unboundedly (CLAUDE_ERROR_PATTERNS §14); the rest waits for the
+ *  next kick or the periodic sweep. */
+export const BUFFER_ENRICH_DRAIN_MAX_BATCHES = 20
+/** Attempts per row before it is marked failed (a BnF "unknown ARK" is failed
+ *  at once). Transient failures are retried by the next pass, never in-loop. */
+export const BUFFER_ENRICH_MAX_ATTEMPTS = 3
+/** Backoff before a failed row is retried: this, doubled per attempt (1, 2,
+ *  4 min) — a broker 429/503 burst is not burned through in seconds. */
+export const BUFFER_ENRICH_RETRY_BASE_MS = 60_000
+/** Wall-clock ceiling of one drain (all its passes): under the 3-minute sweep
+ *  interval, so a slow drain ends before the next sweep would start another. */
+export const BUFFER_ENRICH_DRAIN_MAX_MS = 150_000
 
 /**
  * The seq assigned to the first (empty) CorpusVersion created by
@@ -292,6 +488,91 @@ export const DATACLUSTER_LIST_PAGE_SIZE = 100
 /** Default number of passages requested per RAG query when the agent omits k. */
 export const RAG_DEFAULT_K = 12
 
+/**
+ * `modelVersion` the fake cluster (CLUSTER_MODE=fake) reports on every
+ * rag_query. The quote harness refuses to score a run whose rag_query answered
+ * with anything else: a real cluster would make its fixtures meaningless.
+ */
+export const FAKE_RAG_MODEL_VERSION = "fake-rag-v1"
+
+/**
+ * Characters `rag_get_text` returns when the agent omits `charLimit`. The
+ * upstream MCP's own default is the opposite (0 = the whole document), so the
+ * app applies its documented default itself rather than inherit a whole
+ * multi-hundred-folio volume into the turn.
+ */
+export const RAG_GET_TEXT_DEFAULT_CHAR_LIMIT = 4_000
+
+/** Longest slice rag_get_text serves in one call (a few thousand is the advice). */
+export const RAG_GET_TEXT_MAX_CHAR_LIMIT = 20_000
+
+/** Shortest / longest query text the rag tools accept. */
+export const RAG_QUERY_MIN_CHARS = 3
+export const RAG_QUERY_MAX_CHARS = 500
+
+/** Most passages one rag_query may ask for. */
+export const RAG_QUERY_MAX_K = 50
+
+/** Entry hits rag_keyword_search returns when the agent does not say, and at most. */
+export const RAG_KEYWORD_DEFAULT_LIMIT = 20
+export const RAG_KEYWORD_MAX_LIMIT = 100
+
+// ---------------------------------------------------------------------------
+// Quote integrity — the note-write quote check (lib/citations/quote-check.ts)
+// and the prompt rules it backs (feedback-2026-09-29 #7 / #8).
+// ---------------------------------------------------------------------------
+
+/**
+ * How the agent marks an OCR word it corrected inside a quote. **BnF-confirmable
+ * house convention** (feedback-2026-09-29 #8): brackets by default because a
+ * reader cannot otherwise tell what the agent touched; `SILENT` is the one-line
+ * alternative. The prompt text, the tool hint and the guard all render from it.
+ */
+export const OCR_CORRECTION_MARKING: OcrCorrectionMarking =
+  OCR_CORRECTION_MARKING_MODE.BRACKETED_WORD
+
+/** At most this many `[…]` per quote — the upper end of BnF's "one or two". */
+export const QUOTE_MAX_ELISIONS = 2
+
+/** Spans shorter than this are terms and titles (« Le Figaro »), not quotes. */
+export const QUOTE_MIN_CHECKED_WORDS = 4
+
+/** Source words a `[…]` may skip — about one sentence (D7). */
+export const ELISION_MAX_GAP_WORDS = 40
+
+/** Character edits allowed between a quote word and its source word (D14). */
+export const QUOTE_FUZZY_MAX_EDIT = 2
+
+/** Share of a segment's words that may be fuzzy matches, floor 1 (D14). */
+export const QUOTE_FUZZY_WORD_RATIO = 0.2
+
+/** Source words one `[illisible]` may stand for (1 to this many). */
+export const QUOTE_ILLEGIBLE_MAX_WORDS = 6
+
+/** Distinct cited ARKs fetched per note write; the rest are `unverifiable`. */
+export const QUOTE_CHECK_MAX_SOURCES = 12
+
+/** Parallel document fetches during one check. */
+export const QUOTE_CHECK_CONCURRENCY = 4
+
+/** Wall-clock ceiling of one check; past it, pending quotes are `unverifiable`. */
+export const QUOTE_CHECK_BUDGET_MS = 20_000
+
+/** Characters of a flagged quote echoed back to the agent in a warning. */
+export const QUOTE_WARNING_EXCERPT_CHARS = 160
+
+/**
+ * Unclosed « / “ marks the quote extractor recovers past in one Markdown
+ * block. Each recovery rescans the rest of the block, so this bounds the work
+ * a body full of stray marks can cost; past it, the rest of the block is not
+ * scanned: the marks found are reported, and the unscanned rest is reported
+ * once as `unscanned_rest_of_block` (the check is then `partial`).
+ */
+export const QUOTE_UNBALANCED_MARKS_MAX_PER_BLOCK = 20
+
+/** Steps a synchronous quote-check loop (extraction, tokenisation, alignment) takes between two deadline checks. */
+export const QUOTE_MATCH_DEADLINE_STRIDE = 1_024
+
 // ---------------------------------------------------------------------------
 // Background document metadata resolution (the Document table is the queue)
 // ---------------------------------------------------------------------------
@@ -324,6 +605,10 @@ export const RESOLVE_DRAIN_MAX_BATCHES = 50
  * RESOLVE_MAX_ATTEMPTS. 3 min: prompt recovery without hammering BnF.
  */
 export const RESOLVE_SWEEP_INTERVAL_MS = 3 * 60 * 1_000
+
+/** Periodic sweep for buffer rows a restart or a transient outage left
+ *  pending enrichment (lib/buffer/enricher.ts) — same cadence as the resolver. */
+export const BUFFER_ENRICH_SWEEP_INTERVAL_MS = RESOLVE_SWEEP_INTERVAL_MS
 
 /**
  * How often the comprehension panel re-fetches the corpus snapshot while
@@ -389,6 +674,169 @@ export const CANONICALIZE_BATCH_SIZE = 25
  * genuinely-undigitized notice. Shares the resolver's 3-min cadence.
  */
 export const CANONICALIZE_SWEEP_INTERVAL_MS = RESOLVE_SWEEP_INTERVAL_MS
+
+// ---------------------------------------------------------------------------
+// OCR quality (feedback 2026-09-29 #7 — ai-memories/tech/repos/bnf/
+// feedback-2026-09-29, Track B)
+// ---------------------------------------------------------------------------
+// The worker records each prepared folio's OCR source and, for ALTO folios,
+// the mean word confidence (WC) in its per-ARK `ocr-quality/<slug>.json`
+// artifact. The app pulls those artifacts into DocumentOcr / DocumentFolio
+// (lib/documents/ocr-sync.ts) and decides "low" at READ time against the
+// threshold below, so changing it applies retroactively to every note.
+
+/**
+ * Per-folio mean ALTO word confidence (WC) below which a cited folio is "low
+ * OCR": a marker on its citation pill plus the note-level BnF disclaimer.
+ * Strict `<` (0.80 itself is not low). Leo, 2026-09-30. The ONLY place the
+ * number appears — every comparison goes through isLowOcr()
+ * (models/documents/schema.ts).
+ */
+export const OCR_LOW_QUALITY_THRESHOLD = 0.8
+
+/**
+ * Cadence of the OCR-quality sync sweep (instrumentation.ts). The terminal
+ * ingest callback kicks a sync for its ARKs; the sweep re-pulls every indexed
+ * ARK still pending (and, through it, drives the backfill of documents indexed
+ * before the feature). Shares the resolver's 3-min cadence.
+ */
+export const OCR_SYNC_SWEEP_INTERVAL_MS = RESOLVE_SWEEP_INTERVAL_MS
+
+/** ARKs per POST /ocr-quality/sync call — equals the worker's OCR_SYNC_MAX_ARKS. */
+export const OCR_SYNC_BATCH_SIZE = 100
+
+/**
+ * Safety bound on one sync cycle: at most this many batches, so a single sweep
+ * can never spin unboundedly (CLAUDE_ERROR_PATTERNS §14). What is still pending
+ * afterwards is picked up by the next sweep.
+ */
+export const OCR_SYNC_MAX_BATCHES_PER_CYCLE = 10
+
+/** A `building` row is asked again after this long (the worker is still building it). */
+export const OCR_SYNC_BUILDING_RECHECK_MS = OCR_SYNC_SWEEP_INTERVAL_MS
+
+/** An `unavailable` row is asked again after this long (24 h). */
+export const OCR_SYNC_UNAVAILABLE_RECHECK_MS = 24 * 60 * 60 * 1_000
+
+/**
+ * After this many consecutive rejections (a 400 naming the ARK, an artifact of
+ * the expected version failing its schema) OR outage strikes (failed ALONE,
+ * twice, bracketed by answered controls — lib/documents/ocr-sync.ts), an ARK
+ * is `quarantined`: rechecked on the long quarantine backoff below, at once on
+ * a re-ingest's resync. One poison ARK must never starve the sweep
+ * (CLAUDE_ERROR_PATTERNS §10).
+ */
+export const OCR_SYNC_MAX_ATTEMPTS = 5
+
+/**
+ * An artifact of another version than the app reads (`incompatible`, a deploy
+ * mismatch) is asked again after this long (24 h).
+ */
+export const OCR_SYNC_INCOMPATIBLE_RECHECK_MS = 24 * 60 * 60 * 1_000
+
+/**
+ * Quarantine is a long backoff, never a terminal state: a `quarantined` ARK
+ * (worker_fails_alone or sync_rejected) is asked again after 24 h, doubling
+ * per further failure up to 7 days, and recovers fully on any answer — so a
+ * false quarantine heals itself.
+ */
+export const OCR_SYNC_QUARANTINE_RECHECK_BASE_MS = 24 * 60 * 60 * 1_000
+export const OCR_SYNC_QUARANTINE_RECHECK_MAX_MS = 7 * 24 * 60 * 60 * 1_000
+
+/**
+ * The control that proves the worker up (lib/documents/ocr-sync.ts) rotates
+ * among this many most recently synced `available` ARKs without an outage on
+ * record, so one bad control is never asked for ever.
+ */
+export const OCR_SYNC_CONTROL_POOL = 10
+
+/** Backoff of a contract-failing ARK: base × 2^(attempt − 1), capped. */
+export const OCR_SYNC_REJECT_BACKOFF_BASE_MS = OCR_SYNC_SWEEP_INTERVAL_MS
+export const OCR_SYNC_REJECT_BACKOFF_MAX_MS = OCR_SYNC_UNAVAILABLE_RECHECK_MS
+
+/**
+ * Wall-clock ceiling of one drain. Every request and write of the drain is
+ * cancelled at this deadline, and no batch starts unless its worst-case cost
+ * (OCR_SYNC_BATCH_WRITE_MARGIN_MS + the worker request timeout) still fits.
+ * A sweep that fires while a drain runs is folded into it (re-entrancy guard).
+ */
+export const OCR_SYNC_DRAIN_DEADLINE_MS = 10 * 60 * 1_000
+
+/** Worst-case time to write one batch's answer (≤ OCR_SYNC_BATCH_SIZE per-ARK transactions). */
+export const OCR_SYNC_BATCH_WRITE_MARGIN_MS = 15_000
+
+/**
+ * The one exponential schedule of the sync's transport and exchange failures:
+ * base × 2^(failures − 1), capped (3, 6, 12, 24, 48 min, then 1 h). It paces
+ * the WHOLE sync after an exchange-level contract break (401/403/413, an
+ * envelope that does not parse), a CORPUS's turn after its batch failed on the
+ * transport, and an ARK asked alone after it failed on the transport.
+ */
+export const OCR_SYNC_BACKOFF_BASE_MS = OCR_SYNC_SWEEP_INTERVAL_MS
+export const OCR_SYNC_BACKOFF_MAX_MS = 60 * 60 * 1_000
+
+/**
+ * Requests one drain may spend asking ARKs ALONE (the ARKs of a batch that
+ * failed on the transport twice), the controls of their strike brackets
+ * included (lib/documents/ocr-sync.ts). While the worker answers them, a lone
+ * ARK costs one request (the previous answer opens its bracket), so a 100-ARK
+ * batch is gone through in about 10 drains; a strike costs 4 more (two
+ * controls, the second ask). Measured with a poison at position 0 of 100
+ * (tests/models/documents/ocr-sync-pg.test.ts): the 99 others served and the
+ * poison quarantined in 23 drains (69 min). A worker outage costs one failed
+ * control per drain.
+ */
+export const OCR_SYNC_ISOLATION_BUDGET = 10
+
+/**
+ * Ceiling on one database await in the OCR-quality paths (the drainer and the
+ * agent-tool reads). Prisma takes no per-query signal, so the await is raced
+ * against this deadline (lib/async/deadline.ts) and fails loudly.
+ */
+export const OCR_DB_TIMEOUT_MS = 10_000
+
+/**
+ * Ceiling on one database await on an agent tool-call path outside the OCR
+ * reads (the ingested-corpus guard, the note reads of the note tools): the
+ * await is raced against it and the turn's signal (lib/async/deadline.ts).
+ */
+export const TOOL_DB_TIMEOUT_MS = 10_000
+
+
+/**
+ * Largest progress-callback body the unauthenticated route reads and HMACs.
+ * A terminal event carries per-document error entries; 4 MiB holds thousands
+ * of them. Above it the route answers the uniform rejection without reading.
+ */
+export const PROGRESS_CALLBACK_MAX_BODY_BYTES = 4 * 1024 * 1024
+
+/**
+ * How long the progress route waits for a callback body: a trickling body is
+ * refused (the uniform 401) instead of being held up to Node's 300 s
+ * requestTimeout. The worker posts a few KiB at once; 15 s is generous.
+ */
+export const PROGRESS_CALLBACK_BODY_READ_MS = 15_000
+
+/**
+ * Sanity cap on the folios one worker artifact may carry — above any worker
+ * MAX_OCR_PAGES. A response beyond it is a contract break, not a big document.
+ */
+export const OCR_SYNC_MAX_FOLIOS_PER_DOC = 1_000
+
+/** Low-OCR folio numbers listed per document in a rag_keyword_search hit / doc_get result. */
+export const RAG_OCR_LOW_FOLIOS_MAX = 20
+
+/**
+ * The folio heading worker-v2's assembleMarkdown writes into an entry's
+ * processed text (worker-v2/src/live/cluster.ts, `## Folio N`). A worker
+ * contract: rag_get_text reads the folios of a text slice from it. Iterate it
+ * with String.prototype.matchAll (which clones the regex), never with .exec on
+ * this shared instance — it is a stateful /g regex.
+ */
+export const PROCESSED_TEXT_FOLIO_HEADING = /^## Folio (\d+)$/gm
+
+/** File name of a whole-carnet Markdown export (in-espace Carnet and the Carnet page). */
+export const CARNET_EXPORT_FILENAME = "carnet-de-recherche.md"
 
 // ---------------------------------------------------------------------------
 // Agent runtime
@@ -472,11 +920,33 @@ export const SPAWN_MAX_TOOL_TURNS = 40
  * throws / never hangs the parent turn — §14/§15). */
 export const SPAWN_TIMEOUT_MS = 240_000
 
-/** Cap on concurrent/total sub-agent tokens is implicit via the two bounds
- * above; the child text returned to the parent is truncated to this many chars
- * so a verbose child cannot re-flood the parent context (the whole point of
+/** The child text returned to the parent is truncated to this many chars so a
+ * verbose child cannot re-flood the parent context (the whole point of
  * isolation). */
 export const SPAWN_SUMMARY_MAX_CHARS = 8_000
+
+/** The task excerpt a sub-agent row shows as its second line (the start
+ *  event's `label`), so parallel sweeps are told apart at a glance. */
+export const SPAWN_LABEL_MAX_CHARS = 80
+
+/**
+ * Fan-out caps (incident 2026-09-30, Decision 20 of the Track E plan). Session
+ * b275569f… ran 7 children in parallel against one BnF quota and made 2 548
+ * catalogue calls in 2.5 h.
+ *
+ * Concurrency: 3 children + the parent = 4 searchers sharing 47 catalogue
+ * calls/min (≈ 12/min each), which is already the limiter's floor — a higher
+ * concurrency only adds queueing, it does not go faster. Counted in-process per
+ * appSessionId (a session runs one turn at a time), decremented in `finally`.
+ */
+export const SPAWN_MAX_CONCURRENT_PER_TURN = 3
+/**
+ * Total `spawn_research` calls per session, counted from the durable tool_call
+ * rows so a reload cannot reset it. 12 covers the largest legitimate prod
+ * session seen; the 17 spawns of session d1073498… were retries of failed
+ * sweeps, which is the pattern this stops.
+ */
+export const SPAWN_MAX_PER_SESSION = 12
 
 // ---------------------------------------------------------------------------
 // Session auto-naming
@@ -686,10 +1156,50 @@ export function IIIF_IMAGE_URL(ark: string, folio: number, size = "full"): strin
 
 /** IIIF size (`{width},` syntax) for a folio image embedded in a note figure.
  * Constrained so a full press-page scan isn't fetched at native resolution;
- * the source panel uses a smaller `200,` thumbnail. */
+ * the source panel uses the smaller CITATION_THUMB_IIIF_SIZE thumbnail. */
 export const NOTE_IMAGE_IIIF_SIZE = "843,"
+
+/** IIIF size (`{width},` syntax) of the cited folio's thumbnail in the source panel. */
+export const CITATION_THUMB_IIIF_SIZE = "200,"
 
 /** IIIF manifest URL for a given ARK. */
 export function IIIF_MANIFEST_URL(ark: string): string {
   return `https://gallica.bnf.fr/iiif/${ark}/manifest.json`
 }
+
+// ---------------------------------------------------------------------------
+// Cross-scope project memory (Track E Phase 11, feedback #10d)
+// ---------------------------------------------------------------------------
+
+/**
+ * Each agent's system prompt shows the OTHER step's memory as a read-only
+ * section (a research-scope "source à risque" must reach the corpus agent), at
+ * most this many items and characters — past the cap it says how many items
+ * are not shown and how to read them (memory_read). The own-scope memory is
+ * never capped: memory is curated, not trimmed (playbook/memory.md).
+ */
+export const MEMORY_CROSS_SCOPE_MAX_ITEMS = 20
+export const MEMORY_CROSS_SCOPE_MAX_CHARS = 3_000
+
+/**
+ * Memory dedupe (playbook/memory.md): a write whose normalised text is fewer
+ * than this many Levenshtein edits from an item of the same (scope, section)
+ * merges into it instead of adding a near-duplicate.
+ */
+export const MEMORY_NEAR_DUP_MAX_EDIT_DISTANCE = 4
+
+// ---------------------------------------------------------------------------
+// System-prompt cache revision
+// ---------------------------------------------------------------------------
+
+/**
+ * The revision of the rendered system prompts. AppSession caches its rendered
+ * prompt (systemPrompt + promptLocale + promptRevision); a cached prompt is
+ * served only when its revision equals this one, so a prompt-text change
+ * reaches EXISTING sessions on their next turn instead of never.
+ * Bump on ANY change to lib/agent/prompts/*; the fingerprint test enforces it
+ * (lib/agent/prompts/revision.test.ts): the value is `<date>.<label>.<seal>`,
+ * where the seal is content-addressed from the rendered prompts, so a prompt
+ * change cannot be recorded without a new revision.
+ */
+export const PROMPT_REVISION = "2026-10-05.quoting-rules.6e9149ff8048"

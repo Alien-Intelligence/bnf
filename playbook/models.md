@@ -81,6 +81,10 @@ export type DocumentRow = Prisma.DocumentGetPayload<typeof documentRow>
 
 Rules:
 - No imports from other model directories — `schema.ts` is the foundation.
+  One narrow exception: a **type-only** import of another model's `schema.ts`
+  for a composed response type that carries that model's rows (e.g.
+  `NoteDetail.ocr: NoteOcrRows` from `models/documents/schema.ts`), so the row
+  shape is defined once. Never a value import, never anything but `schema.ts`.
 - No imports from `app/`, `components/`, `hooks/`, `lib/mcp/`, `lib/cluster/`.
 - Enums are plain `const` objects with a companion type, not `enum` keyword.
 - Domain enums (status, scope, role) belong here, not in `app/api/` or
@@ -169,6 +173,11 @@ Rules:
 Zod schemas for request validation and their inferred TypeScript types. These
 are what route handlers validate against and what hooks import.
 
+`types.ts` may import `zod`, its model's `./schema` (domain constants such as
+length limits) and `@/lib/constants` — nothing server-only, since hooks import it.
+It may also import the shared pure validators in `@/lib/validation/` (the ARK
+schema, defined once there).
+
 ```ts
 // models/corpus/types.ts
 import { z } from "zod"
@@ -212,16 +221,24 @@ Rules:
 ## Import diagram
 
 ```
-types.ts      ← zod (no internal imports)
-schema.ts     ← @/lib/generated/prisma/client (no internal imports)
+types.ts      ← zod, ./schema, @/lib/constants, @/lib/validation (nothing server-only)
+schema.ts     ← @/lib/generated/prisma/client (+ type-only: another model's schema.ts, for a composed response type)
 queries.ts    ← @/lib/db, ./schema
 policy.ts     ← ./schema (types only)
-service.ts    ← ./queries, ./types, lib/mcp, lib/cluster, other models' queries
+service.ts    ← ./queries, ./schema, ./types, lib/mcp, lib/cluster, lib/ pure helpers, other models' queries
 ─────────────────────────────────────────────────────────────
 app/api/      ← ./queries (reads), ./service (writes), ./policy, ./types
 hooks/        ← ./types (inputs) + ./schema (response types) — types only
 components/   ← ./types (inputs to feed mutation hooks)
 ```
+
+`types.ts` may import zod, `./schema` (to derive Zod enums from the domain
+const objects there, e.g. `z.enum(LOGIN_METHOD)`) and `@/lib/constants`; it may
+not import `app/`, `components/`, `lib/mcp`, `lib/cluster` or another model.
+A service may import `lib/` pure helpers — for page URLs, the single
+locale-path helper `lib/auth-sign-out.ts` (`signedOutPath`, which wraps
+next-intl's `getPathname`); a service imports nothing else from `@/i18n`
+(types aside).
 
 Arrows are one-directional. Nothing below the line imports from `app/` or
 `components/`. Nothing in `queries.ts` or `schema.ts` reaches sideways.

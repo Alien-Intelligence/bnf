@@ -11,11 +11,13 @@
 // shows notes the user has OPENED, as closable tabs — the design's tab model.
 
 import { useMemo } from "react"
-import { ArrowLeft, Download, FileText, HelpCircle, NotebookText, PenLine, X } from "lucide-react"
-import { useTranslations } from "next-intl"
+import { ArrowLeft, Download, FileText, HelpCircle, NotebookText, PenLine, RotateCw, X } from "lucide-react"
+import { useFormatter, useNow, useTranslations } from "next-intl"
 import { LayoutCorpusChat } from "@/components/layouts/corpus/chat"
 import { NoteBody } from "@/components/cards/notes/note-body"
 import { FeedbackButton } from "@/components/cards/feedback/feedback-button"
+import { CardSharedLoadError } from "@/components/cards/shared/load-error"
+import type { CarnetEntryState } from "@/components/layouts/research/carnet"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Button } from "@/components/ui/button"
 import { useNote, useNoteDetails } from "@/hooks/api/notes"
@@ -25,12 +27,12 @@ import {
   downloadMarkdown,
   filenameFromTitle,
 } from "@/lib/notes/export"
-import { formatRelativeFr } from "@/lib/format"
 import { cn } from "@/lib/utils"
-import type { NoteListItem } from "@/models/notes/schema"
+import type { NoteDetail, NoteListItem } from "@/models/notes/schema"
+import { useNoteExportCopy } from "@/lib/notes/export-copy"
 import type { ParsedCitation } from "@/lib/citations/syntax"
 import type { UseTurnStreamResult } from "@/hooks/api/turn-stream"
-import type { AgentProvider } from "@/lib/constants"
+import { CARNET_EXPORT_FILENAME, type AgentProvider } from "@/lib/constants"
 
 type Disposition = "atelier" | "carnet"
 
@@ -294,18 +296,52 @@ function ReaderAtelier({
 
       {/* Active note */}
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {activeNoteId ? (
-          <NoteReader
-            projectId={projectId}
-            noteId={activeNoteId}
-            onCitationClick={onCitationClick}
-            onNoteLinkClick={onNoteLinkClick}
-            knownNoteIds={knownNoteIds}
-          />
-        ) : null}
+        <ActiveNotePane
+          projectId={projectId}
+          activeNoteId={activeNoteId}
+          onCitationClick={onCitationClick}
+          onNoteLinkClick={onNoteLinkClick}
+          knownNoteIds={knownNoteIds}
+        />
       </div>
     </div>
   )
+}
+
+/** The reader under the tab strip: the active note, or a hint to pick a tab. */
+function ActiveNotePane({
+  projectId,
+  activeNoteId,
+  onCitationClick,
+  onNoteLinkClick,
+  knownNoteIds,
+}: {
+  projectId: string
+  activeNoteId: string | null
+  onCitationClick: (c: ParsedCitation) => void
+  onNoteLinkClick: (noteId: string) => void
+  knownNoteIds: ReadonlySet<string>
+}) {
+  const t = useTranslations("research.atelier")
+  if (activeNoteId === null) {
+    return <p className="p-10 text-center text-sm text-muted-foreground">{t("noActiveTab")}</p>
+  }
+  return (
+    <NoteReader
+      projectId={projectId}
+      noteId={activeNoteId}
+      onCitationClick={onCitationClick}
+      onNoteLinkClick={onNoteLinkClick}
+      knownNoteIds={knownNoteIds}
+    />
+  )
+}
+
+/** A note's last update, relative, in the active locale (next-intl, not a French-only helper). */
+function NoteUpdatedAt({ date }: { date: Date | string }) {
+  const format = useFormatter()
+  const now = useNow()
+  return <>{format.relativeTime(new Date(date), now)}</>
 }
 
 // ── Single artefact reader (artefact eyebrow + title + meta + body) ─────────
@@ -324,6 +360,7 @@ function NoteReader({
   knownNoteIds: ReadonlySet<string>
 }) {
   const t = useTranslations("research.atelier")
+  const exportCopy = useNoteExportCopy()
   const { data: note, isLoading, isError, refetch } = useNote(noteId)
 
   if (isLoading) {
@@ -337,13 +374,10 @@ function NoteReader({
     )
   }
 
-  if (isError || !note) {
+  if (isError || note === undefined) {
     return (
-      <div className="flex flex-col items-center gap-3 p-10 text-center text-muted-foreground">
-        <p className="text-sm">{t("loadError")}</p>
-        <Button variant="outline" size="sm" onClick={() => void refetch()}>
-          {t("retry")}
-        </Button>
+      <div className="p-10">
+        <CardSharedLoadError layout="block" message={t("loadError")} onRetry={() => void refetch()} />
       </div>
     )
   }
@@ -369,7 +403,7 @@ function NoteReader({
               onClick={() =>
                 downloadMarkdown(
                   filenameFromTitle(note.title, "note"),
-                  noteToMarkdown(note),
+                  noteToMarkdown(note, exportCopy),
                 )
               }
               className="h-7 gap-1.5 text-[11.5px]"
@@ -381,10 +415,11 @@ function NoteReader({
         </div>
         <h1 className="mb-1 mt-2.5 text-[25px] font-semibold tracking-tight">{note.title}</h1>
         <div className="mb-5 font-mono text-[11.5px] text-muted-foreground">
-          {formatRelativeFr(note.updatedAt)}
+          <NoteUpdatedAt date={note.updatedAt} />
         </div>
         <NoteBody
           body={note.body_md ?? ""}
+          ocr={note.ocr}
           onCitationClick={onCitationClick}
           onNoteLinkClick={onNoteLinkClick}
           knownNoteIds={knownNoteIds}
@@ -408,14 +443,24 @@ function ReaderCarnet({
   knownNoteIds: ReadonlySet<string>
 }) {
   const t = useTranslations("research.carnet")
+  const exportCopy = useNoteExportCopy()
   const results = useNoteDetails(notes.map((n) => n.id))
 
-  const loaded = results
-    .map((r) => r.data)
-    .filter((n): n is NonNullable<typeof n> => Boolean(n))
-
+  // Found bug B5: the export used to stitch whatever had loaded, silently
+  // dropping notes still loading or that failed to load. It now waits for
+  // EVERY note; a failed one blocks it with an explicit retry instead.
+  const states = results.map(carnetEntryState)
+  // Only a note with nothing to show is failed: a background refetch error
+  // while data is in hand keeps showing that data.
+  const failed = results.filter((r) => r.data === undefined && r.isError)
+  const readyNotes = states.flatMap((st) => (st.kind === "ready" ? [st.note] : []))
+  const exportable = notes.length > 0 && readyNotes.length === notes.length
+  const retryFailed = () => {
+    for (const r of failed) void r.refetch()
+  }
   const onExport = () => {
-    downloadMarkdown("carnet-de-recherche.md", notesToMarkdown(loaded))
+    if (!exportable) return
+    downloadMarkdown(CARNET_EXPORT_FILENAME, notesToMarkdown(readyNotes, exportCopy))
   }
 
   // Clicking a TOC row OR an inline note-link pill scrolls its stitched section
@@ -435,71 +480,129 @@ function ReaderCarnet({
           <NotebookText className="size-3.5" strokeWidth={1.8} aria-hidden />
           {t("compiledHeader", { count: notes.length })}
         </span>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={onExport}
-          disabled={loaded.length === 0}
-          className="h-7 gap-1.5 text-[11.5px]"
-        >
-          <Download className="size-3.5" strokeWidth={1.8} />
-          {t("export")}
-        </Button>
+        <CarnetHeaderAction
+          failedCount={failed.length}
+          exportable={exportable}
+          onRetry={retryFailed}
+          onExport={onExport}
+        />
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-10 pb-20 pt-8">
-        {notes.length === 0 ? (
-          <p className="py-10 text-center text-sm text-muted-foreground">{t("empty")}</p>
-        ) : (
-          <div className="mx-auto max-w-[42.5rem]">
-            {/* Project header + TOC */}
-            <div className="mb-7 border-b pb-6">
-              <div className="font-mono text-[10.5px] uppercase tracking-wide text-brand-teal">
-                {t("projectEyebrow")}
-              </div>
-              <h1 className="mb-3.5 mt-2 text-[27px] font-semibold tracking-tight">{projectName}</h1>
-              <div className="flex flex-col gap-1.5">
-                {notes.map((n, i) => (
-                  <button
-                    key={n.id}
-                    type="button"
-                    onClick={() => scrollToSection(n.id)}
-                    title={n.title}
-                    className="group flex items-baseline gap-2.5 text-left text-[13px] text-neutral-300 transition-colors hover:text-foreground"
-                  >
-                    <span className="w-5.5 shrink-0 font-mono text-[11px] text-neutral-600 group-hover:text-brand-teal">
-                      {String(i + 1).padStart(2, "0")}
-                    </span>
-                    <span className="min-w-0 flex-1 truncate group-hover:underline">
-                      {n.title}
-                    </span>
-                    <span className="shrink-0 font-mono text-[10px] text-neutral-600">
-                      {n.citationCount}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Stitched notes */}
-            {results.map((r, i) => (
-              <CarnetSection
-                key={notes[i].id}
-                sectionId={carnetSectionId(notes[i].id)}
-                index={i}
-                fallbackTitle={notes[i].title}
-                note={r.data}
-                isLoading={r.isLoading}
-                onCitationClick={onCitationClick}
-                onNoteLinkClick={scrollToSection}
-                knownNoteIds={knownNoteIds}
-              />
-            ))}
-          </div>
-        )}
+        <ReaderCarnetBody
+          notes={notes}
+          states={states}
+          projectName={projectName}
+          onCitationClick={onCitationClick}
+          onTocClick={scrollToSection}
+          knownNoteIds={knownNoteIds}
+        />
       </div>
     </div>
   )
+}
+
+/**
+ * The compiled journal's header action: a failed note blocks the export with
+ * an explicit retry (found bug B5); otherwise the export, enabled only once
+ * every note is loaded.
+ */
+function CarnetHeaderAction({
+  failedCount,
+  exportable,
+  onRetry,
+  onExport,
+}: {
+  failedCount: number
+  exportable: boolean
+  onRetry: () => void
+  onExport: () => void
+}) {
+  const t = useTranslations("research.carnet")
+  if (failedCount > 0) {
+    return (
+      <Button variant="destructive" size="sm" onClick={onRetry} title={t("exportBlocked")} className="text-[11.5px]">
+        <RotateCw strokeWidth={1.8} />
+        {t("retryLoad")}
+      </Button>
+    )
+  }
+  return (
+    <Button variant="outline" size="sm" onClick={onExport} disabled={!exportable} className="text-[11.5px]">
+      <Download strokeWidth={1.8} />
+      {t("export")}
+    </Button>
+  )
+}
+
+/** The compiled journal: empty → project header + TOC + every stitched note. */
+function ReaderCarnetBody({
+  notes,
+  states,
+  projectName,
+  onCitationClick,
+  onTocClick,
+  knownNoteIds,
+}: {
+  notes: NoteListItem[]
+  states: CarnetEntryState[]
+  projectName: string
+  onCitationClick: (c: ParsedCitation) => void
+  onTocClick: (noteId: string) => void
+  knownNoteIds: ReadonlySet<string>
+}) {
+  const t = useTranslations("research.carnet")
+  if (notes.length === 0) {
+    return <p className="py-10 text-center text-sm text-muted-foreground">{t("empty")}</p>
+  }
+  return (
+    <div className="mx-auto max-w-[42.5rem]">
+      {/* Project header + TOC */}
+      <div className="mb-7 border-b pb-6">
+        <div className="font-mono text-[10.5px] uppercase tracking-wide text-brand-teal">
+          {t("projectEyebrow")}
+        </div>
+        <h1 className="mb-3.5 mt-2 text-[27px] font-semibold tracking-tight">{projectName}</h1>
+        <div className="flex flex-col gap-1.5">
+          {notes.map((n, i) => (
+            <button
+              key={n.id}
+              type="button"
+              onClick={() => onTocClick(n.id)}
+              title={n.title}
+              className="group flex items-baseline gap-2.5 text-left text-[13px] text-neutral-300 transition-colors hover:text-foreground"
+            >
+              <span className="w-5.5 shrink-0 font-mono text-[11px] text-neutral-600 group-hover:text-brand-teal">
+                {String(i + 1).padStart(2, "0")}
+              </span>
+              <span className="min-w-0 flex-1 truncate group-hover:underline">{n.title}</span>
+              <span className="shrink-0 font-mono text-[10px] text-neutral-600">{n.citationCount}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Stitched notes */}
+      {states.map((state, i) => (
+        <CarnetSection
+          key={notes[i].id}
+          sectionId={carnetSectionId(notes[i].id)}
+          index={i}
+          fallbackTitle={notes[i].title}
+          state={state}
+          onCitationClick={onCitationClick}
+          onNoteLinkClick={onTocClick}
+          knownNoteIds={knownNoteIds}
+        />
+      ))}
+    </div>
+  )
+}
+
+/** A stitched note's date line: a placeholder until the note is loaded. */
+function CarnetSectionDate({ state }: { state: CarnetEntryState }) {
+  if (state.kind === "ready") return <NoteUpdatedAt date={state.note.updatedAt} />
+  return <Skeleton className="inline-block h-3 w-16 align-middle" />
 }
 
 /** Stable DOM id for a carnet section, shared by the TOC scroll target and the
@@ -508,12 +611,22 @@ function carnetSectionId(noteId: string): string {
   return `carnet-${noteId}`
 }
 
+/** One stitched note's state; a refetch error with data in hand stays ready. */
+function carnetEntryState(r: {
+  data: NoteDetail | undefined
+  isError: boolean
+  refetch: () => Promise<unknown>
+}): CarnetEntryState {
+  if (r.data !== undefined) return { kind: "ready", note: r.data }
+  if (r.isError) return { kind: "error", retry: () => void r.refetch() }
+  return { kind: "loading" }
+}
+
 function CarnetSection({
   sectionId,
   index,
   fallbackTitle,
-  note,
-  isLoading,
+  state,
   onCitationClick,
   onNoteLinkClick,
   knownNoteIds,
@@ -521,34 +634,62 @@ function CarnetSection({
   sectionId: string
   index: number
   fallbackTitle: string
-  note: { title: string; body_md: string | null; updatedAt: Date | string } | undefined
-  isLoading: boolean
+  state: CarnetEntryState
   onCitationClick: (c: ParsedCitation) => void
   onNoteLinkClick: (noteId: string) => void
   knownNoteIds: ReadonlySet<string>
 }) {
+  const note = state.kind === "ready" ? state.note : null
   return (
     <section id={sectionId} className={cn("scroll-mt-6", index > 0 && "mt-9 border-t pt-7")}>
       <div className="mb-1 flex items-baseline gap-2.5">
         <span className="font-mono text-xs text-neutral-600">{String(index + 1).padStart(2, "0")}</span>
         <span className="font-mono text-[11px] text-muted-foreground">
-          {note ? formatRelativeFr(note.updatedAt) : ""}
+          <CarnetSectionDate state={state} />
         </span>
       </div>
-      <h2 className="mb-3 text-xl font-semibold">{note?.title ?? fallbackTitle}</h2>
-      {isLoading ? (
-        <div className="space-y-2">
-          <Skeleton className="h-4 w-full" />
-          <Skeleton className="h-4 w-4/5" />
-        </div>
-      ) : (
-        <NoteBody
-          body={note?.body_md ?? ""}
-          onCitationClick={onCitationClick}
-          onNoteLinkClick={onNoteLinkClick}
-          knownNoteIds={knownNoteIds}
-        />
-      )}
+      <h2 className="mb-3 text-xl font-semibold">{note === null ? fallbackTitle : note.title}</h2>
+      <CarnetSectionBody
+        state={state}
+        onCitationClick={onCitationClick}
+        onNoteLinkClick={onNoteLinkClick}
+        knownNoteIds={knownNoteIds}
+      />
     </section>
+  )
+}
+
+function CarnetSectionBody({
+  state,
+  onCitationClick,
+  onNoteLinkClick,
+  knownNoteIds,
+}: {
+  state: CarnetEntryState
+  onCitationClick: (c: ParsedCitation) => void
+  onNoteLinkClick: (noteId: string) => void
+  knownNoteIds: ReadonlySet<string>
+}) {
+  const t = useTranslations("research.carnet")
+  if (state.kind === "loading") {
+    return (
+      <div className="space-y-2">
+        <Skeleton className="h-4 w-full" />
+        <Skeleton className="h-4 w-4/5" />
+      </div>
+    )
+  }
+  if (state.kind === "error") {
+    // A failed note is said so, never rendered as an empty body.
+    return <CardSharedLoadError layout="inline" message={t("loadError")} onRetry={state.retry} />
+  }
+  return (
+    <NoteBody
+      body={state.note.body_md ?? ""}
+      ocr={state.note.ocr}
+      onCitationClick={onCitationClick}
+      onNoteLinkClick={onNoteLinkClick}
+      knownNoteIds={knownNoteIds}
+    />
   )
 }

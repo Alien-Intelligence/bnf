@@ -1,12 +1,13 @@
 // models/documents/types.ts
 // Zod schemas for document API request/query validation.
 //
-// The full document detail endpoint and its query parameters (filters, sort,
-// pagination) land in a later slice. This file is a placeholder that will be
-// extended then. It is present now so the five-file model structure is complete
-// from slice 1 (playbook/models.md: "five files per directory, no exceptions").
+// Imports zod and the app's one shared ARK schema only (playbook/models.md):
+// the worker-v2 OCR-quality wire contract lives with the other cluster
+// contracts in lib/cluster/ocr-quality.ts, not here.
 
 import { z } from "zod"
+
+import { arkSchema } from "@/lib/validation/ark"
 
 /**
  * Query params for the document detail endpoint.
@@ -17,3 +18,7 @@ export const documentDetailQuerySchema = z.object({
 })
 
 export type DocumentDetailQuery = z.infer<typeof documentDetailQuerySchema>
+
+/** GET /api/projects/[id]/documents/ocr?ark= */
+export const documentOcrQuerySchema = z.object({ ark: arkSchema })
+export type DocumentOcrQuery = z.infer<typeof documentOcrQuerySchema>

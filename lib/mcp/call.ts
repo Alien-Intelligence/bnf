@@ -20,8 +20,11 @@ import {
   BnfMcpAuthError,
   BnfMcpError,
   BnfMcpQueryRefusedError,
+  BnfMcpQuotaSaturatedError,
   BnfMcpRateLimitError,
 } from "./errors"
+import { acquireBnfMcp, reportBnfUpstreamRateLimit } from "./rate-limit"
+import type { BnfMcpToolName } from "./tools"
 
 interface JsonRpcOk<T> {
   jsonrpc: "2.0"
@@ -89,7 +92,7 @@ function retryAfterMs(header: string | null): number | undefined {
  * terminal. A 404 from a SEARCH tool is a different thing (routing / upstream
  * fault), so it stays a generic error rather than borrowing resolve semantics.
  */
-function softFailureError(envelope: McpFailureEnvelope, toolName: string): BnfMcpError {
+function softFailureError(envelope: McpFailureEnvelope, toolName: BnfMcpToolName): BnfMcpError {
   const status = typeof envelope.status_code === "number" ? envelope.status_code : undefined
   const detail =
     typeof envelope.error === "string" && envelope.error.length > 0
@@ -113,6 +116,28 @@ function softFailureError(envelope: McpFailureEnvelope, toolName: string): BnfMc
 }
 
 /**
+ * The body of a failed response, for the error message. A body that cannot be
+ * read is named as such in the message — the call is failing either way, and
+ * the status is what the caller acts on.
+ */
+async function failureBody(res: Response): Promise<string> {
+  try {
+    return (await res.text()).slice(0, 200)
+  } catch (err) {
+    return `<body unreadable: ${err instanceof Error ? err.message : String(err)}>`
+  }
+}
+
+/** Parse JSON, or throw the contract's BnfMcpError (never a raw SyntaxError). */
+function parseJson(text: string, what: string): unknown {
+  try {
+    return JSON.parse(text)
+  } catch (err) {
+    throw new BnfMcpError(`${what} is not JSON: ${text.slice(0, 120)}`, err)
+  }
+}
+
+/**
  * Call one BnF MCP tool and return its parsed JSON payload.
  *
  * The BnF search tools return their payload as a single `{type:"text"}` content
@@ -128,10 +153,28 @@ function softFailureError(envelope: McpFailureEnvelope, toolName: string): BnfMc
 export async function callBnfTool<T>(
   url: string,
   token: string,
-  toolName: string,
+  toolName: BnfMcpToolName,
   args: Record<string, unknown>,
   signal?: AbortSignal,
 ): Promise<T> {
+  // Enforcement point (a) of the app-side BnF rate limiter (lib/mcp/rate-limit.ts):
+  // take this call's grant BEFORE anything leaves the process. A shed call is a
+  // typed, non-retryable-right-now failure the caller coerces into a structured
+  // tool result; it never reached BnF. An abort during the wait rejects exactly
+  // like an aborted fetch would.
+  const grant = await acquireBnfMcp(toolName, args, signal)
+  if (!grant.ok) {
+    if (grant.kind === "invalid_input") {
+      throw new BnfMcpQueryRefusedError(`MCP ${toolName}: ${grant.error}`, [grant.error])
+    }
+    throw new BnfMcpQuotaSaturatedError(grant.api, grant.waitedMs)
+  }
+  if (signal?.aborted) {
+    // Cancelled as the grant landed: nothing is sent, so its capacity goes back.
+    grant.release()
+    throw signal.reason
+  }
+
   const res = await fetch(url, {
     method: "POST",
     headers: {
@@ -159,6 +202,7 @@ export async function callBnfTool<T>(
     // model can pace itself instead of reading a generic failure. The typed
     // class also means a future `withRetry` wrap honours Retry-After for free.
     const waitMs = retryAfterMs(res.headers.get("retry-after"))
+    reportBnfUpstreamRateLimit(toolName, waitMs)
     throw new BnfMcpRateLimitError(
       waitMs === undefined
         ? "MCP tools/call rate limited (HTTP 429)"
@@ -167,8 +211,7 @@ export async function callBnfTool<T>(
     )
   }
   if (!res.ok) {
-    const body = await res.text().catch(() => "")
-    throw new BnfMcpError(`MCP tools/call failed (HTTP ${res.status}): ${body.slice(0, 200)}`)
+    throw new BnfMcpError(`MCP tools/call failed (HTTP ${res.status}): ${await failureBody(res)}`)
   }
 
   const ctype = res.headers.get("content-type") ?? ""
@@ -177,9 +220,9 @@ export async function callBnfTool<T>(
     const body = await res.text()
     const dataLine = body.split("\n").find((line) => line.startsWith("data: "))
     if (!dataLine) throw new BnfMcpError("MCP tools/call: SSE response had no data line")
-    envelope = JSON.parse(dataLine.slice(6)) as JsonRpcOk<McpToolCallResult> | JsonRpcErr
+    envelope = parseJson(dataLine.slice(6), `MCP ${toolName} SSE frame`) as JsonRpcOk<McpToolCallResult> | JsonRpcErr
   } else {
-    envelope = (await res.json()) as JsonRpcOk<McpToolCallResult> | JsonRpcErr
+    envelope = parseJson(await res.text(), `MCP ${toolName} response`) as JsonRpcOk<McpToolCallResult> | JsonRpcErr
   }
 
   if ("error" in envelope) {
@@ -197,14 +240,18 @@ export async function callBnfTool<T>(
     throw new BnfMcpError(`MCP ${toolName}: no text content in result`)
   }
 
-  const payload: unknown = JSON.parse(textBlock.text)
+  const payload = parseJson(textBlock.text, `MCP ${toolName} result`)
 
   // Surface the soft failure as the tool failure it is. Without this the caller
   // reaches for `data.records` on a payload that has no `data`, and the agent is
   // handed an opaque "TypeError: Cannot read properties of undefined" instead of
   // the upstream status.
   if (isFailureEnvelope(payload)) {
-    throw softFailureError(payload, toolName)
+    const failure = softFailureError(payload, toolName)
+    // BnF's quota is already blown even though our limiters granted the call:
+    // pause the API's limiter so no other agent re-sends into it.
+    if (failure instanceof BnfMcpRateLimitError) reportBnfUpstreamRateLimit(toolName, undefined)
+    throw failure
   }
 
   return payload as T

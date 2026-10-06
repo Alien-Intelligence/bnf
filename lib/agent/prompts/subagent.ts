@@ -7,9 +7,12 @@
 // transcript, because the parent only ever sees the returned text.
 //
 // French, like every agent-facing prompt (the working language is FR).
+import { AGENT_TOOLS } from "@/lib/agent/tools/constants"
+import { SESSION_SCOPE, type SessionScope } from "@/models/sessions/schema"
+import { SUBAGENT_QUOTING_RULE } from "./quoting"
 
 /** Sub-agent directive for a given scope + concrete sub-task. */
-export function buildSubagentDirective(scope: "corpus" | "research", task: string): string {
+export function buildSubagentDirective(scope: SessionScope, task: string): string {
   const shared =
     "\n\n---\n\n" +
     "# TU ES UN SOUS-AGENT DE RECHERCHE\n" +
@@ -24,19 +27,23 @@ export function buildSubagentDirective(scope: "corpus" | "research", task: strin
     "- Tu ne peux PAS déléguer à ton tour (pas de sous-sous-agent).\n"
 
   const deposit =
-    scope === "corpus"
+    scope === SESSION_SCOPE.CORPUS
       ? "## Dépôt (corpus)\n" +
-        "Utilise `corpus_search` pour balayer, et laisse les candidats s'accumuler " +
-        "dans le TAMPON. Tu peux inspecter le tampon (`buffer_stats`, `buffer_list`) " +
-        "et y ajouter des ARK précis (`buffer_add`). NE VALIDE PAS le corpus " +
-        "(`buffer_commit`) et ne vide pas le tampon : la validation reste la " +
-        "décision de l'agent principal après revue. Ta synthèse indique combien de " +
-        "candidats tu as déposés dans le tampon.\n"
+        `Balaie UNIQUEMENT avec \`${AGENT_TOOLS.corpusSearch}\` (presse : \`doc_type: "fascicule"\`, ` +
+        "`collapsing: false`) et laisse les candidats s'accumuler dans le TAMPON avec " +
+        "leurs métadonnées. N'utilise JAMAIS `bnf__bnf_search_*` : leurs résultats " +
+        `n'entrent pas dans le tampon, et les redéposer avec \`${AGENT_TOOLS.bufferAdd}\` coûte une ` +
+        `requête BnF par ARK. Tu peux inspecter le tampon (\`${AGENT_TOOLS.bufferStats}\`, \`${AGENT_TOOLS.bufferList}\`). ` +
+        `NE VALIDE PAS le corpus (\`${AGENT_TOOLS.bufferCommit}\`) et ne vide pas le tampon : la ` +
+        "validation reste la décision de l'agent principal après revue. Ta synthèse " +
+        "donne les chiffres renvoyés par les outils (`added`, `alreadyInCorpus`), " +
+        "jamais une estimation.\n"
       : "## Dépôt (recherche)\n" +
-        "Utilise `rag_query` / `rag_keyword_search` / `rag_get_text` pour rassembler " +
-        "les passages pertinents du corpus ingéré, et `doc_get` au besoin. Ta " +
+        `Utilise \`${AGENT_TOOLS.ragQuery}\` / \`${AGENT_TOOLS.ragKeywordSearch}\` / \`${AGENT_TOOLS.ragGetText}\` pour rassembler ` +
+        `les passages pertinents du corpus ingéré, et \`${AGENT_TOOLS.docGet}\` au besoin. Ta ` +
         "synthèse cite les ARK+folios clés trouvés ; l'agent principal rédigera la " +
-        "note finale à partir de ta synthèse.\n"
+        "note finale à partir de ta synthèse.\n" +
+        `${SUBAGENT_QUOTING_RULE}\n`
 
   return `${shared}\n${deposit}\n## TA TÂCHE\n${task}\n`
 }

@@ -11,9 +11,9 @@ import { ProjectQueries } from "@/models/projects/queries"
 import { NotePolicy } from "@/models/notes/policy"
 import { NoteQueries } from "@/models/notes/queries"
 import { NoteService } from "@/models/notes/service"
-import { corpusProjectId } from "@/lib/authz/corpus-source"
+import { noteOcrReader, resolveCorpusProject } from "@/app/api/_corpus-source"
 import { createNoteSchema } from "@/models/notes/types"
-import type { NoteListItem, NoteWithCitations } from "@/models/notes/schema"
+import type { NoteDetail, NoteListItem } from "@/models/notes/schema"
 
 type RouteCtx = { params: Promise<{ id: string }> }
 
@@ -38,16 +38,22 @@ export const POST = withAuth(async (req, _user, bouncer, ctx: RouteCtx) => {
   await bouncer.with(NotePolicy).authorize("create", project)
 
   // The note belongs to this project; its citations are validated against the
-  // corpus the project reads, which is the source's when it is derived.
+  // corpus the project reads, which is the source's when it is derived — a
+  // revoked grant is a 409, never a write against an unreachable corpus.
+  const corpusId = resolveCorpusProject(project)
+  if (corpusId instanceof Response) return corpusId
+
   const { note } = await NoteService.create({
     projectId,
-    corpusProjectId: corpusProjectId(project),
+    corpusProjectId: corpusId,
     appSessionId: parsed.appSessionId,
     title: parsed.title,
     bodyMd: parsed.bodyMd,
   })
 
-  // Return the full note with citations so the client can prime the detail cache.
-  const full = await NoteQueries.get(note.id)
-  return ok<NoteWithCitations>(full!, 201)
+  // The created note already carries its citations (read in the write's own
+  // transaction): no re-read after the commit, so a saved note is never
+  // answered as a 500 (and retried into a duplicate). Its OCR is enriched
+  // best-effort — a failed read answers check_failed inside the NoteDetail.
+  return ok<NoteDetail>(await NoteService.detail(note, noteOcrReader(project, req.signal)), 201)
 })

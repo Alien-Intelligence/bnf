@@ -243,9 +243,14 @@ the **current head**, not the union of all documents ever added to the
 project. The histogram and facet chart drive off the same snapshot returned
 by `CorpusQueries.snapshot(projectId, "head")`.
 
-For research-time filtering (Step 3, when the agent calls `rag.query` with
-filters like `{ type: ["press"] }`), the filter applies to the **ingested**
-version's chunks in the cluster — see [ingestion-jobs.md](ingestion-jobs.md).
+For research-time filtering (Step 3), facet filters (type / language /
+source) are applied by `rag_keyword_search`; semantic `rag_query` cannot
+filter and reports any filter it was given as ignored. Neither reads "the
+ingested version": the cluster has no version concept, so every RAG read sees
+the project dataset's current entries, including those an in-flight ingest has
+already written. The tools only require that a committed ingestion exists —
+see "RAG reads are not version-scoped (known gap)" in
+[ingestion-jobs.md](ingestion-jobs.md).
 
 ## Concurrency
 

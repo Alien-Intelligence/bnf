@@ -1,12 +1,28 @@
 import "server-only"
 import { prisma } from "@/lib/db"
-import type { Note, NoteWithCitations, NoteListItem, NoteVersionListItem } from "./schema"
+import type { Prisma } from "@/lib/generated/prisma/client"
+import {
+  noteWithCitations,
+  type CitationUsage,
+  type NoteWithCitations,
+  type NoteListItem,
+  type NoteVersionListItem,
+} from "./schema"
+
+/**
+ * The note-list order — pinned first, then most recently updated — of every
+ * read that lists notes (the note list, note_list): written once.
+ */
+const NOTE_LIST_ORDER: Prisma.NoteOrderByWithRelationInput[] = [
+  { pinned: "desc" },
+  { updatedAt: "desc" },
+]
 
 export class NoteQueries {
   static async listForProject(projectId: string): Promise<NoteListItem[]> {
     return prisma.note.findMany({
       where: { projectId },
-      orderBy: [{ pinned: "desc" }, { updatedAt: "desc" }],
+      orderBy: NOTE_LIST_ORDER,
       select: {
         id: true,
         title: true,
@@ -21,8 +37,21 @@ export class NoteQueries {
   static async get(id: string): Promise<NoteWithCitations | null> {
     return prisma.note.findUnique({
       where: { id },
-      include: { citations: true },
-    }) as Promise<NoteWithCitations | null>
+      ...noteWithCitations,
+    })
+  }
+
+  /**
+   * Every note of the project with its citations, in the note-list order (the
+   * order of listForProject) — note_list's one read. NoteService.details adds
+   * the cited folios' OCR quality.
+   */
+  static async listWithCitationsForProject(projectId: string): Promise<NoteWithCitations[]> {
+    return prisma.note.findMany({
+      where: { projectId },
+      orderBy: NOTE_LIST_ORDER,
+      ...noteWithCitations,
+    })
   }
 
   /**
@@ -42,19 +71,7 @@ export class NoteQueries {
   ): Promise<NoteWithCitations | null> {
     return prisma.note.findFirst({
       where: { id, projectId },
-      include: { citations: true },
-    }) as Promise<NoteWithCitations | null>
-  }
-
-  /**
-   * Every note in the project with its full body, oldest first — the Carnet
-   * reads the notebook front to back, so it needs the bodies `listForProject`
-   * deliberately omits and the chronological order a rail listing does not use.
-   */
-  static async listForProjectWithBodies(projectId: string): Promise<Note[]> {
-    return prisma.note.findMany({
-      where: { projectId },
-      orderBy: { createdAt: "asc" },
+      ...noteWithCitations,
     })
   }
 
@@ -66,10 +83,7 @@ export class NoteQueries {
     })
   }
 
-  static async citationsForArk(
-    projectId: string,
-    ark: string,
-  ): Promise<{ noteId: string; folio: number | null; label: string | null; noteTitle: string }[]> {
+  static async citationsForArk(projectId: string, ark: string): Promise<CitationUsage[]> {
     const rows = await prisma.citation.findMany({
       where: { ark, note: { projectId } },
       select: {

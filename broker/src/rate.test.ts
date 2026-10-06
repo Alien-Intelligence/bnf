@@ -12,7 +12,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { RateWaitTimeoutError, retryAfterToEpochMs, TokenBucket } from "./rate.js";
+import { acquireAll, BucketShedError, RateWaitTimeoutError, retryAfterToEpochMs, TokenBucket } from "./rate.js";
 
 /** A fake clock + sleep triple sharing one mutable instant, for deterministic tests. */
 function fakeClock(): {
@@ -222,4 +222,64 @@ test("constructor validates rpm and burst", () => {
   assert.throws(() => new TokenBucket({ rpm: 0, burst: 1 }), /rpm must be > 0/);
   assert.throws(() => new TokenBucket({ rpm: -5, burst: 1 }), /rpm must be > 0/);
   assert.throws(() => new TokenBucket({ rpm: 60, burst: 0 }), /burst must be >= 1/);
+});
+
+// --- acquireAll: one request, several buckets (F-D5) ------------------------
+
+/** A bucket on the shared fake clock. */
+function bucketOn(clock: ReturnType<typeof fakeClock>, rpm: number, burst: number): TokenBucket {
+  return new TokenBucket({ rpm, burst, now: clock.now, wallNow: clock.wallNow, sleep: clock.sleep });
+}
+
+test("acquireAll: a shed by the second bucket refunds the token the first one gave, and names the shedding bucket", async () => {
+  const clock = fakeClock();
+  const api = bucketOn(clock, 60, 1); // one free token
+  const global = bucketOn(clock, 60, 1);
+  global.penalizeUntil(clock.wallNow() + 100_000); // frozen far beyond the budget
+
+  await assert.rejects(
+    () => acquireAll([["presentation", api], ["global", global]], 10_000, clock.now),
+    (e: unknown) => e instanceof BucketShedError && e.shedBy === "global",
+  );
+  // Nothing was sent for the api token, so it must be back: a zero-budget
+  // acquire succeeds at once. Without the refund it would need a 1000 ms
+  // refill and shed.
+  await assert.doesNotReject(() => api.acquire(0), "the api bucket's token was refunded");
+  assert.deepEqual(clock.sleeps, [], "no sleep anywhere — the freeze alone exceeded the budget");
+});
+
+test("acquireAll: ONE deadline for the whole plan — two buckets never wait more than maxWaitMs together", async () => {
+  const clock = fakeClock();
+  const api = bucketOn(clock, 60, 1); // empty: next token at t=1000
+  const global = bucketOn(clock, 30, 1); // empty: next token at t=2000
+  await api.acquire(0);
+  await global.acquire(0);
+
+  // Budget 1500 from t=0. The api token lands at t=1000; global's at t=2000 is
+  // past the plan's deadline, so the plan sheds on global. A fresh per-bucket
+  // budget at t=1000 would have waited for it and granted the plan at t=2000.
+  await assert.rejects(
+    () => acquireAll([["image", api], ["global", global]], 1_500, clock.now),
+    (e: unknown) => e instanceof BucketShedError && e.shedBy === "global",
+  );
+  assert.ok(clock.time() <= 1_500, `waited ${clock.time()} ms in total, budget 1500`);
+});
+
+test("acquireAll: a plan whose buckets all grant within the budget takes one token from each, in order", async () => {
+  const clock = fakeClock();
+  const manifest = bucketOn(clock, 60, 1);
+  const api = bucketOn(clock, 60, 1);
+  const global = bucketOn(clock, 60, 1);
+  await acquireAll([["manifest", manifest], ["presentation", api], ["global", global]], 10_000, clock.now);
+  for (const [name, b] of [["manifest", manifest], ["presentation", api], ["global", global]] as const) {
+    await assert.rejects(() => b.acquire(0), RateWaitTimeoutError, `${name} gave its only token`);
+  }
+});
+
+test("refund never raises a bucket past its burst", async () => {
+  const clock = fakeClock();
+  const b = bucketOn(clock, 60, 1);
+  b.refund(); // full bucket: the refund is a no-op
+  await b.acquire(0);
+  await assert.rejects(() => b.acquire(0), RateWaitTimeoutError, "burst 1 still means one token, not two");
 });

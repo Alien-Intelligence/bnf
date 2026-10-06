@@ -8,7 +8,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { RateLimiter } from "./rate.js";
+import { acquireWithin, CompositeRateGate, RateGateStoppedError, RateGateTimeoutError, RateLimiter } from "./rate.js";
+import type { RateGate } from "./types.js";
+
+/** A signal that never aborts — for the cases not about cancellation. */
+const LIVE = new AbortController().signal;
 
 test("starts full at burst capacity; tryAcquire consumes one; false when empty", () => {
   const t = 0; // clock never advances in this test
@@ -110,12 +114,12 @@ test("acquire resolves immediately when a token is free; empty acquires resolve 
   const limiter = new RateLimiter({ ratePerMin: 6000, burst: 1 });
 
   // One token in the bucket -> first acquire resolves immediately.
-  await limiter.acquire();
+  await limiter.acquire(LIVE);
 
   // Bucket now empty. Fire several acquires; record completion order.
   const order: number[] = [];
   const ps = [0, 1, 2, 3].map((i) =>
-    limiter.acquire().then(() => {
+    limiter.acquire(LIVE).then(() => {
       order.push(i);
     }),
   );
@@ -127,34 +131,149 @@ test("acquire resolves immediately when a token is free; empty acquires resolve 
   limiter.stop();
 });
 
-test("stop releases blocked acquirers and acquire after stop rejects", async () => {
+test("stop REJECTS blocked acquirers — never lets them through ungated — and acquire after stop rejects", async () => {
   // Very low rate so tokens won't naturally arrive during the test window.
   const limiter = new RateLimiter({ ratePerMin: 1, burst: 1 });
-
-  // Consume the single token.
-  await limiter.acquire();
-
-  // These block (bucket empty, ~60s until next token).
-  const blocked = [limiter.acquire(), limiter.acquire()];
-
-  // Settle each as fulfilled/rejected without hanging.
+  await limiter.acquire(LIVE); // consume the single token
+  const blocked = [limiter.acquire(LIVE), limiter.acquire(LIVE)];
   const settled = Promise.allSettled(blocked);
-
   limiter.stop();
-
   const results = await settled;
   for (const r of results) {
-    assert.ok(
-      r.status === "fulfilled" || r.status === "rejected",
-      "blocked acquirer settled (did not hang)",
-    );
+    assert.equal(r.status, "rejected", "a waiter is refused, never granted, on stop");
+    assert.ok(r.status === "rejected" && r.reason instanceof RateGateStoppedError);
   }
-
-  // acquire() after stop rejects.
-  await assert.rejects(() => limiter.acquire(), /stopped/i, "acquire after stop rejects");
+  await assert.rejects(() => limiter.acquire(LIVE), RateGateStoppedError, "acquire after stop rejects");
 });
 
 test("constructor rejects ratePerMin <= 0", () => {
   assert.throws(() => new RateLimiter({ ratePerMin: 0 }), /ratePerMin must be > 0/);
   assert.throws(() => new RateLimiter({ ratePerMin: -5 }), /ratePerMin must be > 0/);
+});
+
+test("acquire(signal): an aborted waiter rejects with the signal's reason and gives up its place", async () => {
+  const limiter = new RateLimiter({ ratePerMin: 60, burst: 1 });
+  await limiter.acquire(LIVE); // empty the bucket
+  const controller = new AbortController();
+  const waiting = limiter.acquire(controller.signal);
+  controller.abort(new Error("deadline"));
+  await assert.rejects(waiting, /deadline/);
+  assert.equal(limiter.pendingWaiters(), 0, "the aborted waiter left the queue");
+  limiter.stop();
+});
+
+test("acquire(signal): an already-aborted signal rejects at once", async () => {
+  const limiter = new RateLimiter({ ratePerMin: 60, burst: 1 });
+  const controller = new AbortController();
+  controller.abort(new Error("too late"));
+  await assert.rejects(limiter.acquire(controller.signal), /too late/);
+  assert.equal(limiter.available() >= 1, true, "no token was consumed");
+  limiter.stop();
+});
+
+
+test("acquire(signal): an abort mid-queue keeps FIFO order for the rest", async () => {
+  // 6000/min = one token per 10 ms; the bucket starts with one.
+  const limiter = new RateLimiter({ ratePerMin: 6000, burst: 1 });
+  await limiter.acquire(LIVE);
+  const order: string[] = [];
+  const middle = new AbortController();
+  const first = limiter.acquire(LIVE).then(() => order.push("first"));
+  const second = limiter.acquire(middle.signal).then(
+    () => order.push("second"),
+    () => order.push("second-aborted"),
+  );
+  const third = limiter.acquire(LIVE).then(() => order.push("third"));
+  middle.abort(new Error("gone"));
+  await Promise.all([first, second, third]);
+  assert.deepEqual(order, ["second-aborted", "first", "third"]);
+  assert.equal(limiter.pendingWaiters(), 0);
+  limiter.stop();
+});
+
+test("acquire(signal): an abort AFTER the grant changes nothing", async () => {
+  const limiter = new RateLimiter({ ratePerMin: 60, burst: 1 });
+  const controller = new AbortController();
+  await limiter.acquire(controller.signal);
+  controller.abort(new Error("late"));
+  assert.equal(limiter.pendingWaiters(), 0);
+  limiter.stop();
+});
+
+test("acquireWithin: a wait past its deadline rejects with RateGateTimeoutError and frees its place", async () => {
+  const limiter = new RateLimiter({ ratePerMin: 1, burst: 1 });
+  await limiter.acquire(LIVE);
+  await assert.rejects(
+    () => acquireWithin(limiter, 20),
+    (e: unknown) => e instanceof RateGateTimeoutError && e.waitedMs === 20,
+  );
+  assert.equal(limiter.pendingWaiters(), 0);
+  limiter.stop();
+});
+
+// --- CompositeRateGate: one token from each nested BnF quota ----------------
+
+/** A gate whose grants the test releases by hand, recording the signal it got. */
+class ManualGate implements RateGate {
+  readonly waiting: Array<() => void> = [];
+  readonly signals: AbortSignal[] = [];
+  constructor(readonly ratePerMin: number) {}
+  acquire(signal: AbortSignal): Promise<void> {
+    this.signals.push(signal);
+    return new Promise<void>((resolve, reject) => {
+      if (signal.aborted) return reject(signal.reason);
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      this.waiting.push(resolve);
+    });
+  }
+  grant(): void {
+    this.waiting.shift()?.();
+  }
+}
+
+/** Let pending promise callbacks run. */
+const settle = (): Promise<void> => new Promise((r) => setImmediate(r));
+
+test("CompositeRateGate: acquire resolves only once EVERY gate granted, specific gate first, global last", async () => {
+  const api = new ManualGate(1425);
+  const global = new ManualGate(950);
+  const gate = new CompositeRateGate([api, global]);
+  let granted = false;
+  const p = gate.acquire(LIVE).then(() => {
+    granted = true;
+  });
+  await settle();
+  assert.equal(api.waiting.length, 1, "waits on the specific gate first");
+  assert.equal(global.waiting.length, 0, "holds no global token while the API gate is empty");
+  api.grant();
+  await settle();
+  assert.equal(global.waiting.length, 1, "then waits on global");
+  assert.equal(granted, false, "not granted with only the API token");
+  global.grant();
+  await p;
+  assert.equal(granted, true);
+  assert.deepEqual([api.signals[0], global.signals[0]], [LIVE, LIVE], "the caller's signal bounds every wait");
+});
+
+test("CompositeRateGate: ratePerMin is the binding (smallest) rate", () => {
+  assert.equal(new CompositeRateGate([new ManualGate(1425), new ManualGate(950)]).ratePerMin, 950);
+  assert.equal(new CompositeRateGate([new ManualGate(38), new ManualGate(1425), new ManualGate(950)]).ratePerMin, 38);
+});
+
+test("CompositeRateGate: an empty gate list is a wiring error", () => {
+  assert.throws(() => new CompositeRateGate([]), /at least one gate/);
+});
+
+test("CompositeRateGate: a stopped inner gate rejects the composite with RateGateStoppedError (shutdown hands back)", async () => {
+  const api = new RateLimiter({ ratePerMin: 60, burst: 1 });
+  const global = new RateLimiter({ ratePerMin: 60, burst: 1 });
+  global.stop();
+  await assert.rejects(() => new CompositeRateGate([api, global]).acquire(LIVE), RateGateStoppedError);
+  api.stop();
+});
+
+test("CompositeRateGate: acquireWithin bounds the whole composite wait", async () => {
+  const api = new ManualGate(60);
+  const global = new ManualGate(60);
+  await assert.rejects(() => acquireWithin(new CompositeRateGate([api, global]), 20), RateGateTimeoutError);
 });

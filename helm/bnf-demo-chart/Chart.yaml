@@ -1,6 +1,6 @@
 apiVersion: v2
 name: bnf-demo
-version: 0.18.1
+version: 0.19.0
 description: BnF Corpus Research — Alien Intelligence × BnF demo (Next.js app + ingest worker + BnF broker + Postgres)
 type: application
 # 0.9.0 — worker+broker hardening pass 2: pg-boss sliding-window fetch (the ~600/min
@@ -58,4 +58,15 @@ type: application
 # critical "drop and execute new binary", and a boot that crashed outright whenever that
 # CDN was unreachable. PRISMA_SCHEMA_ENGINE_BINARY now pins the baked engine. Worker and
 # broker sources are unchanged; their images are rebuilt only to keep the tags in step.
-appVersion: "0.18.1"
+# 0.19.0 — the BnF feedback round of 2026-09-29, all three images. Workspace
+# navigation, sharing and sign-out (feedback #1–#3); per-folio OCR quality synced
+# from the worker and shown on citations, with a BnF disclaimer on low folios (#7);
+# quote integrity — quoting rules in every prompt and a post-write quote check
+# against the cited folio (#7/#8); the corpus buffer v2 with an app-side BnF MCP
+# rate limiter (#4–#6, the 2026-09-30 flood); BnF egress per API — the broker models
+# the ingestion subscription bucket by bucket, the worker fetches from the
+# Presentation and Image APIs on separate queues (#9). New config: BNF_RATES (broker
+# and worker, from broker.config.rates) and BNF_MCP_RATES (app, from
+# config.bnfMcpRate) replace the per-bucket variables; bnfIiif.* base URLs. Seven
+# migrations, applied at boot. Deploy order and rollback: helm/DEPLOY.md.
+appVersion: "0.19.0"

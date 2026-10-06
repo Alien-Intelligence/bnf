@@ -1,26 +1,41 @@
 /**
  * Worker V2 HTTP ingress — the app↔worker control plane. A tiny Node `http`
- * server (no framework) exposing the four routes the app drives:
+ * server (no framework) exposing the five routes the app drives:
  *
  *   GET  /health             → liveness
  *   POST /ingest             → open a run + seed ARKs → { clusterJobId }
  *   GET  /progress/:runId    → buildProgress(runId) read-model (the Ingérer poll)
  *   POST /ingest/:runId/cancel → suppress the terminal callback (best-effort)
+ *   POST /ocr-quality/sync   → per-ARK OCR-quality artifacts; queues the
+ *                              backfill for the missing ones (live/ocr-quality-sync.ts)
  *
- * `POST /ingest` and the terminal callback are the only two wire contracts shared
- * with the app (see the Phase 0 wire doc); everything else is v2's own clean
+ * `POST /ingest`, `POST /ocr-quality/sync` and the terminal callback are the
+ * wire contracts shared with the app; everything else is v2's own clean
  * implementation. The server holds no behaviour — it parses, authorizes by HMAC at
  * the callback (app side), and delegates to the ingress + the read-model.
+ *
+ * Security posture: none of these routes authenticates its caller — they trust
+ * the cluster network (RUN.md, F22). /ocr-quality/sync is unauthenticated by the
+ * same design (plan D17): it can at most enqueue rate-gated, idempotent artifact
+ * builds, capped at one row per ARK.
  */
 import { createServer as createHttpServer, type Server } from "node:http";
 
 import { buildProgress } from "./observability.js";
-import type { QueueClient } from "./core/types.js";
+import type { BlobStore, QueueClient } from "./core/types.js";
 import type { Logger } from "./core/types.js";
 import type { DocStateStore } from "./domain/doc-state.js";
+import type { OcrBackfillWiring } from "./domain/ocr-backfill.js";
 import type { RunStore } from "./domain/run.js";
 import type { CompletionMonitor } from "./live/completion-monitor.js";
 import { createRunAndSeed, parseIngestRequest } from "./live/ingress.js";
+import {
+  OCR_SYNC_MAX_BODY_BYTES,
+  OCR_SYNC_MAX_IN_FLIGHT,
+  parseOcrSyncRequest,
+  runOcrSync,
+  type OcrSyncResponse,
+} from "./live/ocr-quality-sync.js";
 
 export interface ServerDeps {
   runStore: RunStore;
@@ -32,28 +47,98 @@ export interface ServerDeps {
   fetchRatePerMin: number;
   /** IIIF manifest rate (manifests/min) for the read-model's metadata-row rate. */
   manifestRatePerMin: number;
+  /** The artifact store /ocr-quality/sync reads the per-ARK artifacts from. */
+  blob: BlobStore;
+  /**
+   * The OCR-quality backfill as main.ts wired it — the SAME object
+   * buildPipeline used to decide whether the backfill stage runs, so the
+   * endpoint enqueues exactly when a consumer exists.
+   */
+  ocrBackfill: OcrBackfillWiring;
+  /** Wall-clock ceiling of one /ocr-quality/sync request (OCR_SYNC_DEADLINE_MS). */
+  ocrSyncDeadlineMs: number;
+  /** Time allowed to receive a /ocr-quality/sync body (OCR_SYNC_BODY_READ_MS). */
+  ocrSyncBodyReadMs: number;
 }
 
-/** Read a request body to a string, capped to guard against unbounded uploads. */
+/** The /ingest body cap: a full corpus delta (thousands of ARKs with metadata). */
+const INGEST_MAX_BODY_BYTES = 8 * 1024 * 1024;
+/** Time allowed to receive an /ingest body. */
+const INGEST_BODY_READ_MS = 30_000;
+
+type BodyRead =
+  | { ok: true; text: string }
+  | { ok: false; reason: "too_large" | "timeout" | "stream_error"; detail: string };
+
+/**
+ * Read a request body to a string, bounded in size AND time. A refusal says
+ * why — oversize (413), too slow (408), a broken stream (400) — instead of one
+ * catch-all, and the caller logs it.
+ */
 function readBody(
   req: import("node:http").IncomingMessage,
-  maxBytes = 8 * 1024 * 1024,
-): Promise<string> {
-  return new Promise((resolve, reject) => {
+  opts: { maxBytes: number; timeoutMs: number },
+): Promise<BodyRead> {
+  return new Promise((resolve) => {
     const chunks: Buffer[] = [];
     let size = 0;
-    req.on("data", (c: Buffer) => {
+    let settled = false;
+    const finish = (r: BodyRead): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      req.removeListener("data", onData);
+      resolve(r);
+    };
+    const timer = setTimeout(
+      () => finish({ ok: false, reason: "timeout", detail: `body not received within ${opts.timeoutMs}ms` }),
+      opts.timeoutMs,
+    );
+    const onData = (c: Buffer): void => {
       size += c.length;
-      if (size > maxBytes) {
-        reject(new Error("request body too large"));
-        req.destroy();
+      if (size > opts.maxBytes) {
+        // Stop buffering; the response closes the connection (sendRefusal).
+        finish({ ok: false, reason: "too_large", detail: `body exceeds ${opts.maxBytes} bytes` });
         return;
       }
       chunks.push(c);
-    });
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-    req.on("error", reject);
+    };
+    req.on("data", onData);
+    req.on("end", () => finish({ ok: true, text: Buffer.concat(chunks).toString("utf8") }));
+    req.on("error", (e) => finish({ ok: false, reason: "stream_error", detail: e.message }));
   });
+}
+
+const REFUSAL_STATUS = { too_large: 413, timeout: 408, stream_error: 400 } as const;
+
+/**
+ * Read and JSON-parse a body for `route`, or answer the refusal (logged) and
+ * return null. An oversize or unfinished body closes the connection: the rest
+ * of it is never read.
+ */
+async function readJsonBody(
+  deps: ServerDeps,
+  route: string,
+  req: import("node:http").IncomingMessage,
+  res: import("node:http").ServerResponse,
+  opts: { maxBytes: number; timeoutMs: number },
+): Promise<{ value: unknown } | null> {
+  const read = await readBody(req, opts);
+  if (!read.ok) {
+    deps.log.warn("http_body_rejected", { route, reason: read.reason, detail: read.detail });
+    res.setHeader("connection", "close");
+    sendJson(res, REFUSAL_STATUS[read.reason], { error: read.detail });
+    res.once("finish", () => req.destroy());
+    return null;
+  }
+  try {
+    return { value: JSON.parse(read.text) };
+  } catch (e) {
+    const detail = e instanceof Error ? e.message : String(e);
+    deps.log.warn("http_body_rejected", { route, reason: "invalid_json", detail });
+    sendJson(res, 400, { error: `invalid JSON body: ${detail}` });
+    return null;
+  }
 }
 
 function sendJson(
@@ -66,9 +151,15 @@ function sendJson(
   res.end(payload);
 }
 
+/** Per-server mutable state: the /ocr-quality/sync requests in flight. */
+interface ServerState {
+  syncInFlight: number;
+}
+
 export function createServer(deps: ServerDeps): Server {
+  const state: ServerState = { syncInFlight: 0 };
   return createHttpServer((req, res) => {
-    void handle(deps, req, res).catch((err) => {
+    void handle(deps, state, req, res).catch((err) => {
       deps.log.error("http_handler_crash", {
         method: req.method,
         url: req.url,
@@ -81,6 +172,7 @@ export function createServer(deps: ServerDeps): Server {
 
 async function handle(
   deps: ServerDeps,
+  state: ServerState,
   req: import("node:http").IncomingMessage,
   res: import("node:http").ServerResponse,
 ): Promise<void> {
@@ -95,6 +187,11 @@ async function handle(
 
   if (method === "POST" && path === "/ingest") {
     await handleIngest(deps, req, res);
+    return;
+  }
+
+  if (method === "POST" && path === "/ocr-quality/sync") {
+    await handleOcrSync(deps, state, req, res);
     return;
   }
 
@@ -118,16 +215,13 @@ async function handleIngest(
   req: import("node:http").IncomingMessage,
   res: import("node:http").ServerResponse,
 ): Promise<void> {
-  let raw: unknown;
-  try {
-    const text = await readBody(req);
-    raw = JSON.parse(text);
-  } catch {
-    sendJson(res, 400, { error: "invalid JSON body" });
-    return;
-  }
+  const body = await readJsonBody(deps, "/ingest", req, res, {
+    maxBytes: INGEST_MAX_BODY_BYTES,
+    timeoutMs: INGEST_BODY_READ_MS,
+  });
+  if (body === null) return;
 
-  const parsed = parseIngestRequest(raw);
+  const parsed = parseIngestRequest(body.value);
   if (!parsed.ok) {
     sendJson(res, 400, { error: parsed.error });
     return;
@@ -156,6 +250,77 @@ async function handleIngest(
 
   // The app contract: { clusterJobId } — v2's runId IS the clusterJobId.
   sendJson(res, 200, { clusterJobId: runId });
+}
+
+async function handleOcrSync(
+  deps: ServerDeps,
+  state: ServerState,
+  req: import("node:http").IncomingMessage,
+  res: import("node:http").ServerResponse,
+): Promise<void> {
+  // Cap the requests in flight BEFORE reading anything: a burst is refused at
+  // once (the app retries next sweep) instead of stacking work on the pool.
+  if (state.syncInFlight >= OCR_SYNC_MAX_IN_FLIGHT) {
+    deps.log.warn("ocr_quality_sync_busy", { inFlight: state.syncInFlight });
+    res.setHeader("connection", "close");
+    sendJson(res, 503, { error: `${state.syncInFlight} sync requests already in flight` });
+    res.once("finish", () => req.destroy());
+    return;
+  }
+  state.syncInFlight += 1;
+  try {
+    await serveOcrSync(deps, req, res);
+  } finally {
+    state.syncInFlight -= 1;
+  }
+}
+
+async function serveOcrSync(
+  deps: ServerDeps,
+  req: import("node:http").IncomingMessage,
+  res: import("node:http").ServerResponse,
+): Promise<void> {
+  // ONE deadline for the whole request, body read included, so the worst case
+  // stays OCR_SYNC_DEADLINE_MS — below the app's WORKER_RUNNER_TIMEOUT_MS.
+  const startedAt = Date.now();
+  const body = await readJsonBody(deps, "/ocr-quality/sync", req, res, {
+    maxBytes: OCR_SYNC_MAX_BODY_BYTES,
+    timeoutMs: Math.min(deps.ocrSyncBodyReadMs, deps.ocrSyncDeadlineMs),
+  });
+  if (body === null) return;
+  const parsed = parseOcrSyncRequest(body.value);
+  if (!parsed.ok) {
+    deps.log.warn("ocr_quality_sync_bad_request", { error: parsed.error });
+    sendJson(res, 400, { error: parsed.error });
+    return;
+  }
+  const { arks } = parsed.value;
+  // The deadline CANCELS: the signal stops every ARK at its next step (no new
+  // S3 read or store transaction); a won claim still gets its send or release.
+  const deadline = AbortSignal.timeout(Math.max(0, deps.ocrSyncDeadlineMs - (Date.now() - startedAt)));
+  const run = runOcrSync(
+    { blob: deps.blob, queue: deps.queue, log: deps.log, backfill: deps.ocrBackfill },
+    arks,
+    deadline,
+  );
+  let response: OcrSyncResponse;
+  try {
+    response = await run.answer;
+  } catch (e) {
+    if (!deadline.aborted) throw e;
+    deps.log.warn("ocr_quality_sync_deadline", { asked: arks.length, deadlineMs: deps.ocrSyncDeadlineMs });
+    sendJson(res, 503, { error: `sync did not finish within ${deps.ocrSyncDeadlineMs}ms` });
+    // Keep the in-flight slot until the abandoned per-ARK work has stopped.
+    await run.settled;
+    return;
+  }
+  deps.log.info("ocr_quality_sync", {
+    asked: arks.length,
+    documents: response.documents.length,
+    building: response.building.length,
+    unavailable: response.unavailable.length,
+  });
+  sendJson(res, 200, response);
 }
 
 async function handleProgress(

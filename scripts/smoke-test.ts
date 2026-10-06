@@ -35,7 +35,6 @@ import { ProjectService } from "@/models/projects/service"
 import { DocumentService } from "@/models/documents/service"
 import { CorpusService } from "@/models/corpus/service"
 import { markHeadIngested } from "@/lib/testing/mark-ingested"
-import { CorpusQueries } from "@/models/corpus/queries"
 import type { User } from "@/models/users/schema"
 import { parseBnfDate, normalizeDocument, normalizeMany } from "@/lib/mcp/normalize"
 import { mapCatalogueDocType, sourceFromArk } from "@/lib/mcp/vocab"
@@ -914,7 +913,7 @@ async function testSessionAttributionFacet(owner: User): Promise<void> {
   )
 
   // --- 2. Session facet counts (unfiltered head) -----------------------------
-  const full = await CorpusQueries.snapshot(project.id, "head")
+  const full = await CorpusService.snapshot(project.id, "head")
   const facetById = new Map(full.sessions.map((s) => [s.sessionId, s.count]))
   assert.equal(
     facetById.get(sessionA.id),
@@ -931,7 +930,7 @@ async function testSessionAttributionFacet(owner: User): Promise<void> {
   assert.equal(titleA, "Mésopotamie", "Session facet must carry the session title")
 
   // --- 3. Filtering by session A narrows the corpus --------------------------
-  const filteredA = await CorpusQueries.snapshot(project.id, "head", {
+  const filteredA = await CorpusService.snapshot(project.id, "head", {
     filters: { session: [sessionA.id] },
     limit: 100,
   })
@@ -942,7 +941,7 @@ async function testSessionAttributionFacet(owner: User): Promise<void> {
   assert.ok(!arksA.has(onlyB), "Session A filter must exclude onlyB")
 
   // The shared doc appears under session B too (multi-session attribution).
-  const filteredB = await CorpusQueries.snapshot(project.id, "head", {
+  const filteredB = await CorpusService.snapshot(project.id, "head", {
     filters: { session: [sessionB.id] },
     limit: 100,
   })

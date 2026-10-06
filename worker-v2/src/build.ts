@@ -10,11 +10,12 @@ import type { BlobStore, Logger, QueueClient, RateGate } from "./core/types.js";
 import type { StageDeps } from "./core/stage.js";
 import type { BnfClient } from "./bnf/types.js";
 import type { DocStateStore } from "./domain/doc-state.js";
+import type { OcrBackfillWiring } from "./domain/ocr-backfill.js";
 import type { ClusterSink, Describer, Embedder, OcrEngine } from "./ports.js";
 
 import { MetadataStage } from "./stages/metadata.js";
 import { ManifestStage } from "./stages/manifest.js";
-import { FetchStage } from "./stages/fetch.js";
+import { FetchAltoStage, FetchImageStage } from "./stages/fetch.js";
 import { MonitorStage } from "./stages/monitor.js";
 import { AssembleStage } from "./stages/assemble.js";
 import { DescribeStage } from "./stages/describe.js";
@@ -22,6 +23,7 @@ import { OcrSubmitStage } from "./stages/ocr-submit.js";
 import { OcrPollStage } from "./stages/ocr-poll.js";
 import { EmbedStage } from "./stages/embed.js";
 import { RegisterStage } from "./stages/register.js";
+import { OCR_BACKFILL_RATE_WAIT_MS, OcrQualityBackfillStage } from "./stages/ocr-quality-backfill.js";
 
 export interface PipelineDeps {
   queue: QueueClient;
@@ -33,22 +35,36 @@ export interface PipelineDeps {
   ocr: OcrEngine;
   embedder: Embedder;
   cluster: ClusterSink;
+  /**
+   * The OCR-quality backfill as main.ts wired it — the SAME object the HTTP
+   * server gets. The stage is registered exactly when `enabled`, on
+   * `rates.fetchAlto` (required then), the SAME gate FetchAltoStage holds: the
+   * backfill fetches ALTO on the Presentation API.
+   */
+  ocrBackfill: OcrBackfillWiring;
   /** Optional per-dispatch observability hook (also feeds the read-model). */
   onOutcome?: StageDeps["onOutcome"];
-  /** Per-stage rate gates (undefined → unthrottled, e.g. in tests). */
+  /**
+   * Per-stage rate gates (undefined → unthrottled, e.g. in tests). In
+   * production each BnF gate is a CompositeRateGate mirroring the broker's
+   * buckets (main.ts): manifest = manifest ∧ presentation ∧ global,
+   * fetchAlto = presentation ∧ global, fetchImage = image ∧ global.
+   */
   rates?: {
     manifest?: RateGate;
-    fetch?: RateGate;
+    fetchAlto?: RateGate;
+    fetchImage?: RateGate;
     describe?: RateGate;
     embed?: RateGate;
   };
-  config?: {
+  config: {
+    /** In-flight ALTO fetches (BNF_ALTO_FETCH_CONCURRENCY). */
+    altoFetchConcurrency: number;
+    /** In-flight image fetches (BNF_IMAGE_FETCH_CONCURRENCY). */
+    imageFetchConcurrency: number;
     mistralEnabled?: boolean;
     maxPages?: number;
     maxCanvases?: number;
-    imageSize?: string;
-    visionImageSize?: string;
-    fetchConcurrency?: number;
     metadataConcurrency?: number;
     registerConcurrency?: number;
     describeConcurrency?: number;
@@ -65,13 +81,13 @@ export interface PipelineDeps {
 export function buildPipeline(deps: PipelineDeps): Pipeline {
   const { queue, blob, log, onOutcome } = deps;
   const base: StageDeps = { queue, blob, log, ...(onOutcome ? { onOutcome } : {}) };
-  const cfg = deps.config ?? {};
+  const cfg = deps.config;
   const rates = deps.rates ?? {};
 
   const stages: RunnableStage[] = [
     // rates.manifest is THE SAME RateGate instance passed to ManifestStage below —
     // that sharing is the invariant the 2026-08-11 rate-collapse fix depends on
-    // (one 40/min budget, one gate, no matter which stage needs the manifest
+    // (one manifest budget, one gate, no matter which stage needs the manifest
     // first). maxCanvases is likewise the SAME cfg value ManifestStage gets, so
     // the manifest blob the two stages share is produced identically either way.
     new MetadataStage(base, deps.bnf, deps.docState, rates.manifest, {
@@ -83,11 +99,10 @@ export function buildPipeline(deps: PipelineDeps): Pipeline {
     new ManifestStage(base, deps.bnf, deps.docState, rates.manifest, {
       ...(cfg.maxCanvases !== undefined ? { maxCanvases: cfg.maxCanvases } : {}),
     }),
-    new FetchStage(base, deps.bnf, rates.fetch, {
-      ...(cfg.imageSize !== undefined ? { imageSize: cfg.imageSize } : {}),
-      ...(cfg.visionImageSize !== undefined ? { visionImageSize: cfg.visionImageSize } : {}),
-      ...(cfg.fetchConcurrency !== undefined ? { concurrency: cfg.fetchConcurrency } : {}),
-    }),
+    // Two fetch stages, two queues, two gates (stages/fetch.ts): images
+    // waiting on the scarce Image quota never hold the slots ALTO needs.
+    new FetchAltoStage(base, deps.bnf, rates.fetchAlto, { concurrency: cfg.altoFetchConcurrency }),
+    new FetchImageStage(base, deps.bnf, rates.fetchImage, { concurrency: cfg.imageFetchConcurrency }),
     new MonitorStage(base, deps.docState, {
       ...(cfg.failRatio !== undefined ? { failRatio: cfg.failRatio } : {}),
     }),
@@ -111,6 +126,22 @@ export function buildPipeline(deps: PipelineDeps): Pipeline {
       ...(cfg.registerConcurrency !== undefined ? { concurrency: cfg.registerConcurrency } : {}),
     }),
   ];
+
+  // The backfill is not part of a run. It is registered exactly when the wiring
+  // says enabled — the same flag the endpoint obeys — so OCR_BACKFILL_ENABLED=
+  // false truly stops its BnF spend (D6) and an enabled endpoint always has a
+  // consumer for what it enqueues.
+  if (deps.ocrBackfill.enabled) {
+    if (!rates.fetchAlto) {
+      throw new Error("buildPipeline: the OCR backfill stage requires rates.fetchAlto (the shared ALTO fetch gate)");
+    }
+    stages.push(
+      new OcrQualityBackfillStage(base, deps.bnf, deps.ocrBackfill.store, rates.fetchAlto, {
+        concurrency: deps.ocrBackfill.concurrency,
+        rateWaitMs: OCR_BACKFILL_RATE_WAIT_MS,
+      }),
+    );
+  }
 
   return new Pipeline(queue, stages, log);
 }

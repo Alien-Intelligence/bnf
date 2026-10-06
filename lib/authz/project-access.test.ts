@@ -6,6 +6,7 @@
 
 import { test } from "node:test"
 import assert from "node:assert/strict"
+import { Prisma } from "@/lib/generated/prisma/client"
 
 import {
   PROJECT_ACCESS,
@@ -16,11 +17,12 @@ import {
   isProjectAccess,
   projectAccessLevel,
   personalVisibilityScope,
+  projectRelation,
   adminVisibilityScope,
 } from "./project-access"
 import { ProjectPolicy } from "@/models/projects/policy"
-import type { PolicyUser } from "@/models/users/schema"
-import type { ProjectWithShares } from "@/models/projects/schema"
+import { USER_ROLE, type PolicyUser } from "@/models/users/schema"
+import { PROJECT_RELATION, type ProjectWithShares } from "@/models/projects/schema"
 
 const OWNER_ID = "user-owner"
 const OTHER_ID = "user-other"
@@ -37,7 +39,7 @@ function user(
     image: null,
     createdAt: new Date(0),
     updatedAt: new Date(0),
-    role: "member",
+    role: USER_ROLE.MEMBER,
     alienUserId: null,
     groupIds: [],
     ...overrides,
@@ -58,7 +60,8 @@ function project(
     clusterDatasetId: null,
     paidOcrEnabled: true,
     paidOcrBudgetUsd: null,
-    paidOcrSpentUsd: null as never,
+    // The column's real type and default (prisma/schema.prisma: Decimal @default(0)).
+    paidOcrSpentUsd: new Prisma.Decimal(0),
     corpusSourceId: null,
     corpusSourceShareId: null,
     createdAt: new Date(0),
@@ -90,7 +93,7 @@ const CASES: Array<{
   },
   {
     name: "an admin resolves to owner on someone else's private project",
-    user: user({ id: OTHER_ID, role: "admin" }),
+    user: user({ id: OTHER_ID, role: USER_ROLE.ADMIN }),
     project: project(),
     level: PROJECT_ACCESS_LEVEL.OWNER,
   },
@@ -239,7 +242,7 @@ test("personalVisibilityScope is never widened for an admin", () => {
   // scope, so every project in the instance appeared under « Partagés avec moi »
   // — a heading asserting a share that never happened. An admin may OPEN any
   // project (rule 2); that is not the same as every project being theirs.
-  const admin = user({ id: OWNER_ID, role: "admin", groupIds: [GROUP_A] })
+  const admin = user({ id: OWNER_ID, role: USER_ROLE.ADMIN, groupIds: [GROUP_A] })
 
   const scope = personalVisibilityScope(admin)
   assert.equal(scope.unrestricted, false)
@@ -247,6 +250,7 @@ test("personalVisibilityScope is never widened for an admin", () => {
     unrestricted: false,
     userId: OWNER_ID,
     groupIds: [GROUP_A],
+    shareAccess: [PROJECT_ACCESS.READ, PROJECT_ACCESS.WRITE],
   })
 })
 
@@ -257,11 +261,13 @@ test("personalVisibilityScope carries the inputs rules 1, 4 and 5 read", () => {
     unrestricted: false,
     userId: OTHER_ID,
     groupIds: [GROUP_A, GROUP_B],
+    // Only a recognised level is a grant, in the listing query as in the table.
+    shareAccess: [PROJECT_ACCESS.READ, PROJECT_ACCESS.WRITE],
   })
 })
 
 test("adminVisibilityScope is unrestricted for an admin only", () => {
-  const admin = user({ id: OWNER_ID, role: "admin" })
+  const admin = user({ id: OWNER_ID, role: USER_ROLE.ADMIN })
   assert.deepEqual(adminVisibilityScope(admin), { unrestricted: true })
 
   // A non-admin reaching an admin listing still sees only their own rows, so a
@@ -272,11 +278,12 @@ test("adminVisibilityScope is unrestricted for an admin only", () => {
     unrestricted: false,
     userId: OTHER_ID,
     groupIds: [GROUP_A],
+    shareAccess: [PROJECT_ACCESS.READ, PROJECT_ACCESS.WRITE],
   })
 })
 
 test("ProjectPolicy.listAll is admin-only and distinct from view", () => {
-  const admin = user({ id: "someone", role: "admin" })
+  const admin = user({ id: "someone", role: USER_ROLE.ADMIN })
   const member = user({ id: "someone-else" })
   const foreign = project({ ownerId: "a-third-party" })
 
@@ -288,4 +295,57 @@ test("ProjectPolicy.listAll is admin-only and distinct from view", () => {
   // them all".
   assert.equal(new ProjectPolicy(admin).view(foreign), true)
   assert.equal(new ProjectPolicy(member).view(foreign), false)
+})
+
+// ---------------------------------------------------------------------------
+// "Is it mine?" is not "may I open it?"
+// ---------------------------------------------------------------------------
+
+test("projectRelation: own, shared through a group, public, or none", () => {
+  const owner = user({ id: OWNER_ID })
+  const member = user({ id: OTHER_ID, groupIds: [GROUP_A] })
+  const stranger = user({ id: "stranger" })
+  const shared = project({ shares: [share(GROUP_A, PROJECT_ACCESS.READ)] })
+
+  assert.equal(projectRelation(owner, project()), PROJECT_RELATION.OWN)
+  assert.equal(projectRelation(member, shared), PROJECT_RELATION.SHARED)
+  assert.equal(projectRelation(stranger, project({ isPublic: true })), PROJECT_RELATION.PUBLIC)
+  assert.equal(projectRelation(stranger, shared), PROJECT_RELATION.NONE)
+})
+
+test("projectRelation: a public project shared with my group is shared, not public", () => {
+  const member = user({ id: OTHER_ID, groupIds: [GROUP_A] })
+  const p = project({ isPublic: true, shares: [share(GROUP_A, PROJECT_ACCESS.WRITE)] })
+  assert.equal(projectRelation(member, p), PROJECT_RELATION.SHARED)
+})
+
+test("projectRelation: an admin's reach makes nothing theirs", () => {
+  const admin = user({ id: "someone", role: USER_ROLE.ADMIN })
+  assert.equal(projectRelation(admin, project()), PROJECT_RELATION.NONE)
+})
+
+test("projectRelation: a share with an unrecognised level is no share", () => {
+  const member = user({ id: OTHER_ID, groupIds: [GROUP_A] })
+  assert.equal(projectRelation(member, project({ shares: [share(GROUP_A, "admin")] })), PROJECT_RELATION.NONE)
+})
+
+test("projectRelation agrees with projectAccessLevel for every non-admin caller", () => {
+  const callers = [
+    user({ id: OWNER_ID }),
+    user({ id: OTHER_ID, groupIds: [GROUP_A] }),
+    user({ id: "stranger" }),
+  ]
+  const projects = [
+    project(),
+    project({ isPublic: true }),
+    project({ shares: [share(GROUP_A, PROJECT_ACCESS.READ)] }),
+    project({ shares: [share(GROUP_A, "bogus")] }),
+  ]
+  for (const u of callers) {
+    for (const p of projects) {
+      const related = projectRelation(u, p) !== PROJECT_RELATION.NONE
+      const readable = projectAccessLevel(u, p) !== PROJECT_ACCESS_LEVEL.NONE
+      assert.equal(related, readable, `${u.id} on ${JSON.stringify(p.shares)} public=${p.isPublic}`)
+    }
+  }
 })

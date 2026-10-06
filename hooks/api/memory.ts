@@ -6,7 +6,7 @@
 // Query keys are defined once at the top; never inlined at the call site.
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
-import { apiFetch } from "@/lib/api-fetch"
+import { apiFetch, readError } from "@/lib/api-fetch"
 import type { MemorySnapshot, MemoryItem } from "@/models/memory/schema"
 import type {
   CreateMemoryItemInput,
@@ -75,7 +75,8 @@ export function useUpdateMemoryItem(projectId: string, scope: "corpus" | "resear
         method: "PUT",
         body: JSON.stringify(body),
       })
-      if (!res.ok) throw new Error(`Failed to update memory item: ${res.status}`)
+      // A refused edit (the text duplicates another item) carries the server's message.
+      if (!res.ok) throw await readError(res, "Failed to update memory item")
       return res.json() as Promise<MemoryItem>
     },
     onSuccess: () =>

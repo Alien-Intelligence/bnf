@@ -12,8 +12,10 @@
 
 /**
  * A unit of work on a queue. `payload` is stage-specific (typed per stage);
- * the envelope is generic. `attempts` counts redeliveries (1 on first delivery)
- * so the base can apply the retry/terminal policy.
+ * the envelope is generic. `attempts` counts the item's deliveries, this one
+ * included (1 on first delivery) — ACROSS copies: a copy sent with
+ * `SendOpts.attemptsSpent` counts the deliveries its predecessor spent — so
+ * the base can apply the retry/terminal policy.
  */
 export interface QueueMessage<T = unknown> {
   readonly id: string;
@@ -75,6 +77,28 @@ export interface BlobStore {
  *  it; the in-memory queue ignores it and delivers immediately). */
 export interface SendOpts {
   startAfterMs?: number;
+  /**
+   * Deliveries of this item an earlier copy already spent (a hand-back,
+   * core/stage.ts). The copy's retry budget is reduced by them and its
+   * deliveries report `attempts` counting them, so an item never gets more
+   * deliveries than its stage's policy allows — however many restarts hand it
+   * back — and the final one is still recognised as final (`onExhausted`).
+   * Carried by the transport's own job fields (pg-boss: the job's
+   * `retry_limit`), never by the payload. A non-negative integer.
+   */
+  attemptsSpent?: number;
+}
+
+/**
+ * A queue's delivery policy — what a consuming stage declares for its input
+ * queue (core/stage.ts). Every job sent to the queue carries it, including
+ * jobs sent before the consumer's `work()` runs.
+ */
+export interface QueuePolicyOpts {
+  retryLimit?: number;
+  retryDelayMs?: number;
+  retryBackoff?: boolean;
+  expireInSeconds?: number;
 }
 
 /** Queue transport. One queue == one bucket == one stage's input. */
@@ -83,6 +107,12 @@ export interface QueueClient {
   send<T>(queue: string, payload: T, opts?: SendOpts): Promise<void>;
   /** Enqueue many (batch fan-out). */
   sendMany<T>(queue: string, payloads: readonly T[]): Promise<void>;
+  /**
+   * Register `queue`'s delivery policy (no I/O). The pipeline declares every
+   * stage's input queue before ANY stage starts, so a producer that sends to
+   * a queue before its consumer's `work()` still sends with the policy.
+   */
+  declare(queue: string, policy: QueuePolicyOpts): void;
   /**
    * Subscribe a handler; `concurrency` items processed in parallel. A handler
    * that throws is redelivered up to `retryLimit` times (at-least-once), then the
@@ -94,13 +124,7 @@ export interface QueueClient {
   work<T>(
     queue: string,
     handler: (msg: QueueMessage<T>) => Promise<void>,
-    opts: {
-      concurrency: number;
-      retryLimit?: number;
-      retryDelayMs?: number;
-      retryBackoff?: boolean;
-      expireInSeconds?: number;
-    },
+    opts: QueuePolicyOpts & { concurrency: number },
   ): Promise<void>;
   /** Count items by state for the progress read-model (GLOBAL — all runs). */
   counts(queue: string): Promise<QueueCounts>;
@@ -127,6 +151,17 @@ export interface QueueClient {
     queues: readonly string[],
     docJobIds: readonly string[],
   ): Promise<ReadonlySet<string>>;
+  /**
+   * Shutdown phase 1: stop taking new deliveries and wait up to `budgetMs` for
+   * the in-flight handlers. The transport STAYS USABLE — `send` still works —
+   * so a handler that hands its delivery back during shutdown can. Returns how
+   * many handlers are still in flight. Callable more than once.
+   */
+  drain(budgetMs: number): Promise<number>;
+  /**
+   * Shutdown phase 2: close the transport. A handler still running after it
+   * can no longer complete or fail its delivery: its job is left to expire.
+   */
   stop(): Promise<void>;
 }
 
@@ -144,11 +179,24 @@ export interface StageContext {
   readonly messageId: string;
   /** 1 on first delivery; the base passes the current attempt for backoff/decisions. */
   readonly attempt: number;
+  /**
+   * Aborts when the delivery reaches its ceiling (the stage's expireInSeconds)
+   * with a DeliveryExpiredError. pg-boss's own expiry only rewrites the job
+   * row; this is what actually stops the work — every gate wait, loop and
+   * long step of process() honours it.
+   */
+  readonly signal: AbortSignal;
 }
 
 /** A rate gate (token bucket). The framework's only pacing primitive. */
 export interface RateGate {
-  /** Resolve when a token is available; reject/throw only on shutdown. */
-  acquire(): Promise<void>;
+  /**
+   * Resolve when a token is available. Reject with RateGateStoppedError on
+   * shutdown (a stopped gate never lets a waiter through ungated), or with
+   * `signal.reason` when `signal` aborts first — the waiter then gives up its
+   * place and consumes no token. The signal is REQUIRED: every gated caller
+   * bounds its wait (acquireWithin, core/rate.ts).
+   */
+  acquire(signal: AbortSignal): Promise<void>;
   readonly ratePerMin: number;
 }

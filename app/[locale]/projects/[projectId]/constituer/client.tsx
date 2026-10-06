@@ -9,6 +9,7 @@
 // reload. The URL is only MIRRORED (shallow history.replaceState) so the view is
 // copy-paste/reload-able, and the initial state is seeded from it once on mount.
 
+import { STREAM_DOMAIN_EVENT } from "@/lib/agent/stream-events"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useSearchParams, usePathname } from "next/navigation"
 import { useQueryClient } from "@tanstack/react-query"
@@ -17,13 +18,12 @@ import { bufferKeys } from "@/hooks/api/buffer"
 import { memoryKeys } from "@/hooks/api/memory"
 import { sessionKeys } from "@/hooks/api/sessions"
 import { useTurnStream } from "@/hooks/api/turn-stream"
-import {
-  corpusFiltersFromParams,
-  corpusFiltersToParams,
-  emptyCorpusFilters,
-  hasActiveFilters,
-  type CorpusFilters,
-} from "@/models/corpus/types"
+import { SELECTED_ARK_PARAM } from "@/lib/constants"
+import { corpusFilterQuery } from "@/lib/corpus/filter-query"
+import { EMPTY_CORPUS_FILTERS, hasActiveFilters } from "@/lib/corpus/filter-state"
+import { parseFilterParams } from "@/lib/filter-query"
+import { corpusFilterSetSchema, type CorpusFilterSet } from "@/models/corpus/types"
+import { AlertCorpusFiltersRefused } from "@/components/alerts/corpus/filters-refused"
 import { LayoutCorpusChat } from "@/components/layouts/corpus/chat"
 import { LayoutSessionsSidebar } from "@/components/layouts/corpus/sessions-sidebar"
 import { CardCorpusSummary } from "@/components/cards/corpus/summary"
@@ -33,7 +33,6 @@ import { SheetDocumentDetail } from "@/components/sheets/corpus/document-detail"
 import { HelpCircle, Download } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useTranslations } from "next-intl"
-import { WorkspaceHeader } from "@/components/layouts/workspace/header"
 import { DialogOnboardingCorpus } from "@/components/dialogs/onboarding/corpus"
 import { useMarkOnboardingSeen } from "@/hooks/api/onboarding"
 import { ONBOARDING_INTRO } from "@/models/onboarding/schema"
@@ -45,7 +44,6 @@ interface Props {
   locale: string
   projectId: string
   initialCorpus: CorpusSnapshot
-  initialUser: { name?: string; email: string }
   initialSessionId: string
   initialSessions: AppSession[]
   introSeen: boolean
@@ -58,7 +56,6 @@ export function ConstituerClient({
   locale,
   projectId,
   initialCorpus,
-  initialUser,
   initialSessionId,
   initialSessions,
   introSeen,
@@ -108,7 +105,7 @@ export function ConstituerClient({
 
   useEffect(() => {
     const currentCount = stream.domainEvents.filter(
-      (e) => e.type === "corpus_event",
+      (e) => e.type === STREAM_DOMAIN_EVENT.CORPUS,
     ).length
 
     if (currentCount <= corpusEventCountRef.current) return
@@ -136,7 +133,7 @@ export function ConstituerClient({
   // fires a buffer_event. Debounce like the corpus refresh so a paginated sweep
   // (one event per page) doesn't hammer the API.
   useEffect(() => {
-    const currentCount = stream.domainEvents.filter((e) => e.type === "buffer_event").length
+    const currentCount = stream.domainEvents.filter((e) => e.type === STREAM_DOMAIN_EVENT.BUFFER).length
     if (currentCount <= bufferEventCountRef.current) return
     bufferEventCountRef.current = currentCount
 
@@ -158,7 +155,7 @@ export function ConstituerClient({
   const memoryEventCountRef = useRef(0)
   useEffect(() => {
     const currentCount = stream.domainEvents.filter(
-      (e) => e.type === "memory_event",
+      (e) => e.type === STREAM_DOMAIN_EVENT.MEMORY,
     ).length
     if (currentCount <= memoryEventCountRef.current) return
     memoryEventCountRef.current = currentCount
@@ -188,25 +185,31 @@ export function ConstituerClient({
   }, [stream.isStreaming, projectId, qc])
 
   // ── Filter + selection state (React state; seeded from the URL once) ──────────
-  const [filters, setFilters] = useState<CorpusFilters>(() =>
-    corpusFiltersFromParams(searchParams),
+  // Read through the ONE codec + schema the routes use; a URL the schema
+  // refuses opens the page unfiltered with a visible notice, never a thrown
+  // render. `selectedArk` is the page's own parameter.
+  const [initialFilters] = useState(() =>
+    parseFilterParams(corpusFilterQuery, corpusFilterSetSchema, searchParams, [SELECTED_ARK_PARAM]),
+  )
+  const [filters, setFilters] = useState<CorpusFilterSet>(() =>
+    initialFilters.ok ? (initialFilters.filters ?? EMPTY_CORPUS_FILTERS) : EMPTY_CORPUS_FILTERS,
   )
   const [selectedArk, setSelectedArk] = useState<string | null>(() =>
-    searchParams.get("selectedArk"),
+    searchParams.get(SELECTED_ARK_PARAM),
   )
 
   // ── Corpus CSV export — honours the active filters (exports what's shown) ─────
   const exportCorpus = useExportCorpus(projectId)
 
-  const onFiltersChange = useCallback((next: CorpusFilters) => setFilters(next), [])
-  const onClearFilters = useCallback(() => setFilters(emptyCorpusFilters()), [])
+  const onFiltersChange = useCallback((next: CorpusFilterSet) => setFilters(next), [])
+  const onClearFilters = useCallback(() => setFilters(EMPTY_CORPUS_FILTERS), [])
   const onSelectArk = useCallback((ark: string | null) => setSelectedArk(ark), [])
 
   // Mirror state → URL with a shallow history replace (NO Next navigation, so no
   // server round-trip / page reload). Purely for copy-paste + reload.
   useEffect(() => {
-    const params = corpusFiltersToParams(filters)
-    if (selectedArk) params.set("selectedArk", selectedArk)
+    const params = corpusFilterQuery.encode(filters)
+    if (selectedArk) params.set(SELECTED_ARK_PARAM, selectedArk)
     const qs = params.toString()
     window.history.replaceState(null, "", qs ? `${pathname}?${qs}` : pathname)
   }, [filters, selectedArk, pathname])
@@ -219,7 +222,7 @@ export function ConstituerClient({
   const {
     snapshot,
     isLoading,
-    isError,
+    error: corpusError,
     isPlaceholderData,
     refetch,
     hasNextPage,
@@ -245,10 +248,11 @@ export function ConstituerClient({
   // the server-rendered initial snapshot while the first page loads.
   const displaySnapshot = snapshot ?? initialCorpus
 
+  // The header is the project layout's (app/[locale]/projects/[projectId]/
+  // layout.tsx); this client fills the layout's min-h-0 flex-1 slot.
   return (
-    <div className="flex flex-col h-screen">
-      <WorkspaceHeader user={initialUser} projectId={projectId} />
-      <div className="flex flex-1 overflow-hidden">
+    <>
+      <div className="flex min-h-0 flex-1 overflow-hidden">
         {/* Sessions sidebar — left strip, fixed width */}
         <div
           className="shrink-0 overflow-hidden"
@@ -302,6 +306,7 @@ export function ConstituerClient({
               </div>
             </div>
             <CardCorpusSummary corpus={displaySnapshot} />
+            {!initialFilters.ok && <AlertCorpusFiltersRefused reason={initialFilters.error} />}
             <CardCorpusFiltersDrawer
               corpus={displaySnapshot}
               filters={filters}
@@ -312,7 +317,7 @@ export function ConstituerClient({
               selectedArk={selectedArk}
               onSelectArk={onSelectArk}
               isLoading={isLoading}
-              isError={isError}
+              error={corpusError}
               onRetry={() => void refetch()}
               hasActiveFilters={filtersActive}
               hasNextPage={hasNextPage ?? false}
@@ -335,6 +340,6 @@ export function ConstituerClient({
       </div>
 
       <DialogOnboardingCorpus open={introOpen} onOpenChange={onIntroOpenChange} />
-    </div>
+    </>
   )
 }

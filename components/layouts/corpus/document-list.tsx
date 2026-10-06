@@ -12,6 +12,8 @@ import { Button } from "@/components/ui/button"
 import { CardCorpusDocumentRow } from "@/components/cards/corpus/document-row"
 import { CardCorpusDocumentRowSkeleton } from "@/components/cards/corpus/document-row-skeleton"
 import { CardCorpusError } from "@/components/cards/corpus/error"
+import { AlertCorpusFiltersRefused } from "@/components/alerts/corpus/filters-refused"
+import { RequestRefusedError } from "@/lib/api-fetch"
 import { CardCorpusEmpty } from "@/components/cards/corpus/empty"
 import { CardCorpusNoResults } from "@/components/cards/corpus/no-results"
 import type { CorpusSnapshot } from "@/models/corpus/schema"
@@ -21,7 +23,10 @@ interface Props {
   selectedArk?: string | null
   onSelectArk: (ark: string | null) => void
   isLoading: boolean
-  isError: boolean
+  /** The read's failure, or null. A refusal (RequestRefusedError — a filter
+   *  the corpus does not hold) shows its message with no Retry; anything else
+   *  is the retriable error card. */
+  error: Error | null
   onRetry: () => void
   /** True when at least one filter is active (drives noResults vs. empty state). */
   hasActiveFilters: boolean
@@ -43,7 +48,7 @@ export function LayoutCorpusDocumentList({
   selectedArk,
   onSelectArk,
   isLoading,
-  isError,
+  error,
   onRetry,
   hasActiveFilters,
   hasNextPage,
@@ -66,8 +71,12 @@ export function LayoutCorpusDocumentList({
     )
   }
 
-  // Error — visible, retriable, never silent.
-  if (isError) {
+  // Error — visible, never silent. A refusal names its cause and cannot be
+  // retried (the same request would be refused again); anything else can.
+  if (error instanceof RequestRefusedError) {
+    return <AlertCorpusFiltersRefused reason={error.message} />
+  }
+  if (error !== null) {
     return <CardCorpusError onRetry={onRetry} />
   }
 

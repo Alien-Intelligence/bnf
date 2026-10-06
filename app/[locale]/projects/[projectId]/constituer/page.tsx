@@ -10,7 +10,7 @@ import { requireSessionUser } from "@/lib/auth-helpers"
 import { canWriteProject } from "@/lib/authz/project-access"
 import { isDerived } from "@/lib/authz/corpus-source"
 import { ProjectQueries } from "@/models/projects/queries"
-import { CorpusQueries } from "@/models/corpus/queries"
+import { CorpusService } from "@/models/corpus/service"
 import { SessionService } from "@/models/sessions/service"
 import { SessionQueries } from "@/models/sessions/queries"
 import { OnboardingQueries } from "@/models/onboarding/queries"
@@ -29,7 +29,7 @@ export default async function ConstituerPage({
 }) {
   const { locale, projectId } = await params
 
-  const user = await requireSessionUser(`/projects/${projectId}/constituer`)
+  const user = await requireSessionUser(ROUTES.constituer(projectId))
 
   const project = await ProjectQueries.get(projectId)
   if (!project) notFound()
@@ -41,7 +41,7 @@ export default async function ConstituerPage({
   if (isDerived(project)) redirect({ href: ROUTES.rechercher(projectId), locale })
 
   const [initialCorpus, session] = await Promise.all([
-    CorpusQueries.snapshot(projectId, "head"),
+    CorpusService.snapshot(projectId, "head"),
     SessionService.ensureDefaultForScope(projectId, SESSION_SCOPE.CORPUS),
   ])
 
@@ -61,7 +61,6 @@ export default async function ConstituerPage({
       locale={locale}
       projectId={projectId}
       initialCorpus={initialCorpus}
-      initialUser={{ name: user.name, email: user.email }}
       initialSessionId={initialSessionId}
       initialSessions={initialSessions}
       introSeen={seenIntros.includes(ONBOARDING_INTRO.CORPUS)}

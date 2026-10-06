@@ -2,9 +2,11 @@ import "server-only"
 
 import { createToolRegistry, type ToolContext } from "@alien/chat-sdk/claude"
 import { prisma } from "@/lib/db"
+import { withBnfRateLimit } from "@/lib/mcp/rate-limited-registry"
 import { resolveMcpServers } from "./mcp-servers"
 import { toolsForScope } from "./index"
-import type { User } from "@/lib/generated/prisma/client"
+import type { SessionScope } from "@/models/sessions/schema"
+import type { PolicyUser } from "@/models/users/schema"
 
 /**
  * Per-turn tool context threaded into every tool handler.
@@ -21,7 +23,12 @@ import type { User } from "@/lib/generated/prisma/client"
  */
 export interface TurnScopedCtx extends ToolContext {
   db: typeof prisma
-  user: User
+  /**
+   * The acting user WITH their groupIds — what every Policy takes. Mutating
+   * tools authorise through it (lib/agent/tools/authorize.ts); a bare User
+   * would make a shared member's access undecidable.
+   */
+  user: PolicyUser
   appSessionId: string
   /** The project this session belongs to. Notes, memory and sessions are its. */
   projectId: string
@@ -40,11 +47,17 @@ export interface TurnScopedCtx extends ToolContext {
    */
   corpusReachable: boolean
   /** Whether this is a corpus-building or RAG research session. */
-  scope: "corpus" | "research"
+  scope: SessionScope
+  /**
+   * Set only on a spawn_research CHILD's context: the staging tools add their
+   * exact `added` count here, so the child reports what IT staged — not a
+   * project-wide candidate delta that parallel siblings and clears distort.
+   */
+  stagingTally?: { added: number }
 }
 
 export interface BuildTurnCtxOpts {
-  user: User
+  user: PolicyUser
   appSessionId: string
   /** The project this session belongs to. */
   projectId: string
@@ -53,7 +66,7 @@ export interface BuildTurnCtxOpts {
   /** False when a derived project's corpus grant was revoked. */
   corpusReachable: boolean
   /** Whether this is a corpus-building or RAG research session. */
-  scope: "corpus" | "research"
+  scope: SessionScope
 }
 
 /**
@@ -106,7 +119,7 @@ export function buildTurnScopedCtx(
  * memory + ask_user are shared. See toolsForScope(). Tool-scoped data (user,
  * project, scope) lives on the `TurnScopedCtx` built by `buildTurnScopedCtx`.
  */
-export async function buildTurnScopedRegistry(scope: "corpus" | "research", signal?: AbortSignal) {
+export async function buildTurnScopedRegistry(scope: SessionScope, signal?: AbortSignal) {
   // MCP server is optional: if BNF_MCP_URL / BNF_MCP_TOKEN are absent — or the
   // session handshake fails (server down) — the app-defined corpus/memory/
   // ingest tools still work; the agent just has no BnF search capability for
@@ -118,8 +131,15 @@ export async function buildTurnScopedRegistry(scope: "corpus" | "research", sign
   // awaits the persistence adapter's recordToolStart → tool → recordToolEnd in
   // order (see @alien/chat-sdk/server runtime). The Prisma adapter
   // (lib/agent/persistence/prisma-adapter.ts) writes the ToolCall rows.
-  return createToolRegistry<TurnScopedCtx>({
-    tools: toolsForScope(scope),
-    mcpServers,
-  })
+  //
+  // `withBnfRateLimit` is NOT optional: the raw `bnf__*` MCP tools are
+  // dispatched by the SDK, and this decorator is the only place that throttles
+  // them against the shared BnF quota (incident 2026-09-30; see
+  // lib/mcp/rate-limit.ts and playbook/mcp-client.md).
+  return withBnfRateLimit(
+    createToolRegistry<TurnScopedCtx>({
+      tools: toolsForScope(scope),
+      mcpServers,
+    }),
+  )
 }

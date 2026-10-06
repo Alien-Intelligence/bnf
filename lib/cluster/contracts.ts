@@ -30,44 +30,33 @@ export interface ClusterIngestRequest {
   callbackSecret: string
 }
 
-/**
- * Live queue-status read-model returned by the worker's `GET /progress/:runId`
- * (worker-v2 `buildProgress`). Polled by the Ingérer page to render the staged
- * pipeline as it drains — the BnF fetch bucket is the headline bottleneck. This
- * is a LIVE-UX payload only; it is NOT the commit signal (that is the terminal
- * ClusterProgressEvent below). Mirror of the worker's ProgressReport.
- */
-export interface ClusterQueueStage {
-  done: number
-  running: number
-  queued: number
-  failed: number
-}
+import type { ClusterQueueProgress as QueueProgress } from "@/models/ingest/types"
 
-export interface ClusterQueueProgress {
-  /** Per-doc status counts (the headline reconciliation), keyed by worker DocStatus. */
-  docs: Record<string, number>
-  docsTotal: number
-  /** Docs fully registered into the index. */
-  docsFinished: number
-  /** Per-stage bucket counts, keyed by worker stage name (fetch, metadata, …). */
-  stages: Record<string, ClusterQueueStage>
-  /** Run-scoped BnF-fetch folio tally (récupérés/total) — honest, not the shared
-   *  pg-boss bucket counts. `expected` grows as metadata resolves more docs. */
-  folios: { expected: number; done: number; failed: number }
-  /** Folios from OTHER concurrent runs still pending in the shared BnF-fetch queue.
-   *  The rate cap is shared, so this is the work "ahead of you". 0 when alone.
-   *  Optional: older workers don't send it. */
-  foliosAhead?: number
-  /** The binding BnF fetch rate (folios/min) the ETA assumes. */
-  fetchRatePerMin: number
-  /** The IIIF manifest rate (manifests/min) — the metadata lane's binding cap. */
-  manifestRatePerMin: number
-  /** Estimated seconds remaining, or null when not computable. */
-  etaSeconds: number | null
-  /** True iff the doc totals reconcile (a UI guard against under-reporting). */
-  reconciles: boolean
-}
+// The worker → app wire contracts are Zod schemas in models/ingest/types.ts —
+// the single source; their inferred types are re-exported here for the
+// cluster client and the UI.
+export type {
+  ClusterProgressEvent,
+  ClusterQueueProgress,
+  ClusterQueueStage,
+} from "@/models/ingest/types"
+
+/** The outcomes of one poll of the worker's read-model (ClusterClient.progress). */
+export const CLUSTER_POLL = {
+  PROGRESS: "progress",
+  /** 404: the worker does not know this run (pruned, or never seeded). */
+  RUN_UNKNOWN: "run_unknown",
+  /** No answer at all (transport error, timeout). */
+  WORKER_UNREACHABLE: "worker_unreachable",
+  /** The worker answered with a non-2xx other than 404. */
+  WORKER_ERROR: "worker_error",
+} as const
+
+export type ClusterProgressPoll =
+  | { kind: typeof CLUSTER_POLL.PROGRESS; progress: QueueProgress }
+  | { kind: typeof CLUSTER_POLL.RUN_UNKNOWN }
+  | { kind: typeof CLUSTER_POLL.WORKER_UNREACHABLE; detail: string }
+  | { kind: typeof CLUSTER_POLL.WORKER_ERROR; status: number }
 
 /**
  * One entry in a terminal event's `stats.errors[]` (worker-v2's
@@ -89,16 +78,3 @@ export interface ClusterProgressErrorEntry {
   reason: string
   warning?: true
 }
-
-export type ClusterProgressEvent =
-  | {
-      stage: "extract" | "chunk" | "embed" | "index"
-      fraction: number
-      counters: Record<string, number>
-    }
-  | { stage: "done"; chunksWritten: number; stats: Record<string, unknown> }
-  | {
-      stage: "failed"
-      error: string
-      partialStats?: Record<string, unknown>
-    }

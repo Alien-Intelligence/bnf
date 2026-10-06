@@ -17,7 +17,7 @@ import { test, before, after } from "node:test"
 import assert from "node:assert/strict"
 import type { User } from "@/lib/generated/prisma/client"
 import { prisma } from "@/lib/db"
-import { CorpusQueries } from "@/models/corpus/queries"
+import { CorpusService } from "@/models/corpus/service"
 import {
   INDEXATION_OUTCOME,
   classifyOutcome,
@@ -250,7 +250,7 @@ after(async () => {
 
 test("the SQL filter agrees with the classifier on every row", async () => {
   for (const doc of DOCS) {
-    const page = await CorpusQueries.list(projectId, "head", {
+    const page = await CorpusService.list(projectId, "head", {
       filters: { outcome: [doc.expect] },
       limit: 100,
     })
@@ -285,7 +285,7 @@ test("the SQL filter agrees with the classifier on every row", async () => {
 test("no document matches two outcomes", async () => {
   const seen = new Map<string, string>()
   for (const outcome of Object.values(INDEXATION_OUTCOME)) {
-    const page = await CorpusQueries.list(projectId, "head", {
+    const page = await CorpusService.list(projectId, "head", {
       filters: { outcome: [outcome] },
       limit: 100,
     })
@@ -303,7 +303,7 @@ test("no document matches two outcomes", async () => {
 })
 
 test("the snapshot counts match, and sum to the corpus size", async () => {
-  const snap = await CorpusQueries.snapshot(projectId, "head", { limit: 0 })
+  const snap = await CorpusService.snapshot(projectId, "head", { limit: 0 })
   assert.deepEqual(snap.indexation, EXPECTED_COUNTS)
 
   const sum =
@@ -318,7 +318,7 @@ test("an active outcome filter does not collapse the other buckets", async () =>
   // The header tile reads these counts while the filter is on. If they narrowed
   // with it, selecting « en échec » would report zero failures — the filter
   // would erase the very number that prompted the click.
-  const snap = await CorpusQueries.snapshot(projectId, "head", {
+  const snap = await CorpusService.snapshot(projectId, "head", {
     limit: 0,
     filters: { outcome: [INDEXATION_OUTCOME.FAILED] },
   })
@@ -327,7 +327,7 @@ test("an active outcome filter does not collapse the other buckets", async () =>
 })
 
 test("selecting several outcomes returns their union", async () => {
-  const page = await CorpusQueries.list(projectId, "head", {
+  const page = await CorpusService.list(projectId, "head", {
     filters: {
       outcome: [INDEXATION_OUTCOME.FAILED, INDEXATION_OUTCOME.NOT_INGESTED],
     },

@@ -21,7 +21,8 @@ import { parseBody } from "@/app/api/_helpers"
 import { ok, notFound } from "@/lib/api-response"
 import { removeFromCorpusSchema } from "@/models/corpus/types"
 import { CorpusPolicy } from "@/models/corpus/policy"
-import { CorpusService, type CorpusMutationResult } from "@/models/corpus/service"
+import { CorpusService } from "@/models/corpus/service"
+import type { CorpusMutationResult } from "@/models/corpus/schema"
 import { ProjectQueries } from "@/models/projects/queries"
 
 type RouteCtx = { params: Promise<{ id: string }> }

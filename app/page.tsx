@@ -1,7 +1,8 @@
-// The root `/` path is handled by the next-intl middleware which redirects to
-// the appropriate locale-prefixed path (e.g. `/fr/…` or `/en/…`).
-// This file satisfies Next.js's requirement for a page at the root segment;
-// it will never actually be rendered in normal operation.
+// The root `/` path is rewritten by the next-intl proxy (proxy.ts) to the
+// default locale, so app/[locale]/page.tsx renders for it and owns the
+// session-aware redirect (projects when signed in, sign-in otherwise).
+// This file only satisfies Next.js's requirement for a page at the root
+// segment; it is never rendered in normal operation.
 export default function RootPage() {
   return null
 }

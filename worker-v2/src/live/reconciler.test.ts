@@ -158,7 +158,7 @@ test("orphaned 'planned' doc → only the MISSING folios are re-enqueued (right 
   const summary = await reconciler.sweep();
   assert.equal(summary.requeued, 1, "one doc re-driven");
 
-  const items = pending<FolioItem & { priority: number }>(queue, Q.fetch);
+  const items = pending<FolioItem & { priority: number }>(queue, Q.fetchAlto);
   assert.deepEqual(
     items.map((i) => i.ordre),
     [3, 4, 5],
@@ -186,18 +186,26 @@ test("orphaned 'planned' image-lane doc → folio ordres come from the CACHED MA
     metadata: [],
     totalPages: 3,
     canvases: [
-      { ordre: 7, label: "f7", width: 1, height: 1 },
-      { ordre: 9, label: "f9", width: 1, height: 1 },
-      { ordre: 11, label: "f11", width: 1, height: 1 },
+      { ordre: 7, label: "f7", width: 6955, height: 9894 },
+      { ordre: 9, label: "f9", width: 6955, height: 9894 },
+      { ordre: 11, label: "f11", width: 2592, height: 3508 },
     ],
   });
 
-  await reconciler.sweep();
+  const summary = await reconciler.sweep();
 
-  const items = pending<FolioItem & { priority: number }>(queue, Q.fetch);
+  // Image folios go to the image queue, with the canvas dims the image size is
+  // chosen from — the same payload the manifest fan-out builds.
+  const items = pending<FolioItem & { priority: number }>(queue, Q.fetchImage);
   assert.deepEqual(items.map((i) => i.ordre), [9, 11]);
   assert.equal(items[0]?.kind, "image", "image lanes fetch images");
   assert.equal(items[0]?.priority, 100, "mistral-lane priority");
+  assert.deepEqual(items.map((i) => i.canvas), [
+    { width: 6955, height: 9894 },
+    { width: 2592, height: 3508 },
+  ]);
+  assert.equal(pending(queue, Q.fetchAlto).length, 0, "nothing on the ALTO queue");
+  assert.equal(summary.requeued, 1);
 });
 
 test("orphaned 'planned' image doc with NO cached manifest → re-driven through the manifest stage", async () => {
@@ -211,7 +219,7 @@ test("orphaned 'planned' image doc with NO cached manifest → re-driven through
   const reqs = pending<{ docJobId: string; lane: string }>(queue, Q.manifest);
   assert.equal(reqs.length, 1, "no ordres to derive → the stage that derives them re-runs");
   assert.equal(reqs[0]?.lane, "vision");
-  assert.equal((pending(queue, Q.fetch)).length, 0, "no folios guessed");
+  assert.equal(pending(queue, Q.fetchAlto).length + pending(queue, Q.fetchImage).length, 0, "no folios guessed");
 });
 
 test("orphaned 'planned' doc whose folios ALL landed → the fan-in is kicked, not re-fetched", async () => {
@@ -224,7 +232,7 @@ test("orphaned 'planned' doc whose folios ALL landed → the fan-in is kicked, n
 
   await reconciler.sweep();
 
-  assert.equal((pending(queue, Q.fetch)).length, 0, "nothing to re-fetch");
+  assert.equal(pending(queue, Q.fetchAlto).length + pending(queue, Q.fetchImage).length, 0, "nothing to re-fetch");
   const results = pending<FolioResult>(queue, Q.monitor);
   assert.equal(results.length, 1, "one folio result replayed to re-run the fan-in");
   assert.deepEqual(results[0], {

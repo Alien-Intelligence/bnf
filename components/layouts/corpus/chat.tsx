@@ -45,9 +45,17 @@ import { ModelSelector } from "./model-selector"
 import { EventMemoryRow } from "@/components/events/agent/memory-event"
 import { EventIngestRow } from "@/components/events/agent/ingest-event"
 import { EventSubagentRow } from "@/components/events/agent/subagent-event"
+import {
+  reduceSubagentRuns,
+  SUBAGENT_RUN_STATUS,
+  type SubagentRun,
+  type SubagentTurnInput,
+} from "@/lib/tools/subagent-runs"
 import { EventCompactionRow } from "@/components/events/agent/compaction-event"
 import { FeedbackButton } from "@/components/cards/feedback/feedback-button"
-import type { AgentProvider } from "@/lib/constants"
+import { ROUTES, type AgentProvider } from "@/lib/constants"
+import { AGENT_TOOLS } from "@/lib/agent/tools/constants"
+import { parseStreamDomainEvent, STREAM_DOMAIN_EVENT } from "@/lib/agent/stream-events"
 
 interface LayoutCorpusChatProps {
   /** Turn-stream handle (a thin adapter over the SDK's useChat). Lifted to the
@@ -163,7 +171,7 @@ function ToolPartView({ tool }: { tool: ToolPartEntry }) {
   // ask_user is not rendered inline — it takes over the composer slot (see
   // AskUserComposer in LayoutCorpusChat). The user's selections come back as a
   // normal user message bubble, so there's nothing to show here.
-  if (tool.toolName === "ask_user") return null
+  if (tool.toolName === AGENT_TOOLS.askUser) return null
   // A BnF-MCP soft failure (Gallica 403/429/…) comes back as a transport
   // success with `isError` unset — so derive the error state from the result
   // envelope too, not the SDK flag alone. See lib/tools/display.toolCallErrored.
@@ -208,42 +216,62 @@ function ToolPartView({ tool }: { tool: ToolPartEntry }) {
   )
 }
 
+/** Every domain event of an assistant turn, nested instance parts included. */
+function turnDomainEvents(parts: ReadonlyArray<AgentPart>): Array<{ type: string; data: unknown }> {
+  const out: Array<{ type: string; data: unknown }> = []
+  for (const part of parts) {
+    if (part.kind === "domain") out.push(part.event)
+    else if (part.kind === "instance") out.push(...turnDomainEvents(part.children))
+  }
+  return out
+}
+
+/** The reducer's view of the chat: each assistant turn's domain events. */
+function turnsToRunInput(turns: ReadonlyArray<ChatTurn>): SubagentTurnInput[] {
+  return turns.flatMap((turn) =>
+    turn.role === "assistant" ? [{ streaming: turn.streaming, events: turnDomainEvents(turn.parts) }] : [],
+  )
+}
+
 function DomainPartView({
   event,
+  rawEvent,
   projectId,
   locale,
+  subagentRuns,
 }: {
   event: StreamDomainEvent
+  /** The part's event as the turn carries it — the identity the reducer anchors on. */
+  rawEvent: { readonly type: string; readonly data: unknown }
   projectId: string
   locale: string
+  subagentRuns: ReadonlyMap<string, SubagentRun>
 }) {
   // Corpus mutations render from their tool part (the +N/−N pill), so the
   // corpus_event row is suppressed to avoid doubling the count.
-  if (event.type === "corpus_event") return null
-  if (event.type === "memory_event") {
+  if (event.type === STREAM_DOMAIN_EVENT.CORPUS) return null
+  if (event.type === STREAM_DOMAIN_EVENT.MEMORY) {
     return <EventMemoryRow kind={event.data.kind} section={event.data.section} />
   }
-  if (event.type === "ingest_event") {
+  if (event.type === STREAM_DOMAIN_EVENT.INGEST) {
     return (
       <EventIngestRow
-        status={event.data.status ?? event.data.kind}
+        status={event.data.status}
         jobId={event.data.jobId}
-        projectLocaleHref={`/${locale}/projects/${projectId}/ingerer`}
+        projectLocaleHref={`/${locale}${ROUTES.ingerer(projectId)}`}
       />
     )
   }
-  if (event.type === "subagent_event") {
-    return event.data.kind === "start" ? (
-      <EventSubagentRow kind="start" />
-    ) : (
-      <EventSubagentRow
-        kind="done"
-        toolCalls={event.data.toolCalls}
-        buffered={event.data.buffered}
-      />
-    )
+  if (event.type === STREAM_DOMAIN_EVENT.SUBAGENT) {
+    // One row per run, at its anchor: the start event, or the terminal of a
+    // run whose start never arrived. Any other event of the run is folded into
+    // that row (reduceSubagentRuns) and renders nothing of its own.
+    const run = subagentRuns.get(event.data.runId)
+    // Only the run's anchor event renders its row (by identity: one row per
+    // run, a duplicate terminal included).
+    return run !== undefined && run.anchor === rawEvent ? <EventSubagentRow run={run.state} /> : null
   }
-  if (event.type === "compaction_event") {
+  if (event.type === STREAM_DOMAIN_EVENT.COMPACTION) {
     // Only surface a FRESH compaction; the per-turn cache-reuse is silent.
     if (event.data.reused) return null
     return <EventCompactionRow coveredMessageCount={event.data.coveredMessageCount} />
@@ -258,11 +286,13 @@ function PartView({
   active,
   projectId,
   locale,
+  subagentRuns,
 }: {
   part: AgentPart
   active: boolean
   projectId: string
   locale: string
+  subagentRuns: ReadonlyMap<string, SubagentRun>
 }) {
   if (part.kind === "text") {
     if (!part.text) return null
@@ -276,11 +306,23 @@ function PartView({
     return <ToolPartView tool={part.tool} />
   }
   if (part.kind === "domain") {
+    const parsed = parseStreamDomainEvent(part.event)
+    if (parsed.kind === "foreign") return null
+    if (parsed.kind === "invalid") {
+      // A payload that breaks the shared contract is a server bug: logged, and
+      // a sub-agent row still shows that something ran rather than vanishing.
+      console.error(`[chat] ${parsed.type} breaks the stream contract: ${parsed.issues}`)
+      return parsed.type === STREAM_DOMAIN_EVENT.SUBAGENT ? (
+        <EventSubagentRow run={{ status: SUBAGENT_RUN_STATUS.UNREADABLE }} />
+      ) : null
+    }
     return (
       <DomainPartView
-        event={part.event as StreamDomainEvent}
+        event={parsed.event}
+        rawEvent={part.event}
         projectId={projectId}
         locale={locale}
+        subagentRuns={subagentRuns}
       />
     )
   }
@@ -293,12 +335,14 @@ function AssistantTurnView({
   locale,
   thinkingLabel,
   isLast,
+  subagentRuns,
 }: {
   turn: AssistantTurn
   projectId: string
   locale: string
   thinkingLabel: string
   isLast: boolean
+  subagentRuns: ReadonlyMap<string, SubagentRun>
 }) {
   const lastIndex = turn.parts.length - 1
   const hasText = turn.parts.some((p) => p.kind === "text" && p.text.trim().length > 0)
@@ -317,6 +361,7 @@ function AssistantTurnView({
             active={turn.streaming && i === lastIndex && part.kind === "thinking"}
             projectId={projectId}
             locale={locale}
+            subagentRuns={subagentRuns}
           />
         ))}
         {turn.streaming && !hasText && (
@@ -380,6 +425,11 @@ export function LayoutCorpusChat({
   const t = useTranslations("corpus.chat")
   const chat = stream.chat
 
+  // Each sub-agent run's state, folded from the live domain events: a start
+  // and its terminal event share a runId, and a run still open when its turn
+  // ended reads `interrupted` — never a spinner that never stops.
+  const subagentRuns = useMemo(() => reduceSubagentRuns(turnsToRunInput(chat.turns)), [chat.turns])
+
   // The single open question, if any: the most recent ask_user with no user
   // reply after it. Once answered (a user turn follows), it's null and the
   // composer returns. This tool part drives the AskUserComposer that takes over
@@ -390,7 +440,7 @@ export function LayoutCorpusChat({
     for (const turn of chat.turns) {
       if (turn.role === "assistant") {
         for (const p of turn.parts) {
-          if (p.kind === "tool" && p.tool.toolName === "ask_user") {
+          if (p.kind === "tool" && p.tool.toolName === AGENT_TOOLS.askUser) {
             last = p.tool
             answered = false
           }
@@ -499,6 +549,7 @@ export function LayoutCorpusChat({
                 locale={locale}
                 thinkingLabel={t("thinking")}
                 isLast={turnIdx === chat.turns.length - 1}
+                subagentRuns={subagentRuns}
               />
             )
           })

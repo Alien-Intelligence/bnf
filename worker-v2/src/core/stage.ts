@@ -23,7 +23,51 @@ import type {
   RetryPolicy,
   StageContext,
   StageOutcome,
+  QueuePolicyOpts,
 } from "./types.js";
+import { acquireWithin, RateGateStoppedError } from "./rate.js";
+
+/** A delivery ran past its stage's ceiling (expireInSeconds): its work is aborted. */
+export class DeliveryExpiredError extends Error {
+  constructor(
+    readonly stage: string,
+    readonly ceilingSeconds: number,
+  ) {
+    super(`${stage}: delivery passed its ${ceilingSeconds}s ceiling`);
+    this.name = "DeliveryExpiredError";
+  }
+}
+
+/**
+ * `work`, or `signal`'s reason as soon as it aborts. The abandoned work is
+ * expected to stop at its next check of the same signal; a failure it still
+ * reports afterwards is logged, never unhandled.
+ */
+function untilAborted<T>(work: Promise<T>, signal: AbortSignal, log: Logger): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      reject(signal.reason);
+      work.catch((e: unknown) => {
+        if (e !== signal.reason) log.warn("abandoned_work_failed", { error: errMsg(e) });
+      });
+    };
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener("abort", onAbort, { once: true });
+    work.then(
+      (v) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(v);
+      },
+      (e: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(e);
+      },
+    );
+  });
+}
 
 /**
  * The generic per-delivery ceiling every stage inherits unless it declares its own
@@ -75,7 +119,7 @@ export abstract class PipelineStage<In, Out> {
    *
    * This MUST be declared, not inherited from the transport, because an expired
    * job runs NO handler code — every last-attempt reconciliation idiom in this
-   * codebase (MetadataStage/FetchStage's in-process exhaustion branch,
+   * codebase (MetadataStage's and the fetch stages' in-process exhaustion branch,
    * `onExhausted` below) is bypassed, and the doc orphans in a non-terminal
    * status forever. That is exactly how prod run efe5d747 wedged at 464/465: a
    * mid-run redeploy orphaned an in-flight v2.metadata delivery, pg-boss expired
@@ -91,6 +135,17 @@ export abstract class PipelineStage<In, Out> {
    * the ceiling, an expired job's doc gets re-driven within a sweep interval.
    */
   readonly expireInSeconds: number = DEFAULT_EXPIRE_IN_SECONDS;
+
+  /**
+   * Longest wait for one rate-gate token (the base's `rate`, and a stage's own
+   * gate — acquireWithin): HALF the delivery ceiling, so a delivery that got
+   * its token still has the other half to do its work before pg-boss expires
+   * it. A wait past it throws RateGateTimeoutError — retried like any
+   * transient — instead of parking the handler until the expiry.
+   */
+  protected get rateWaitMs(): number {
+    return this.expireInSeconds * 500;
+  }
 
   protected readonly queue: QueueClient;
   protected readonly blob: BlobStore;
@@ -126,15 +181,25 @@ export abstract class PipelineStage<In, Out> {
    */
   protected async onExhausted(_payload: In, _reason: string): Promise<void> {}
 
+  /** The delivery policy of this stage's input queue (retry budget, pacing, ceiling). */
+  private queuePolicy(): QueuePolicyOpts {
+    return {
+      retryLimit: Math.max(0, this.retry.attempts - 1),
+      expireInSeconds: this.expireInSeconds,
+      ...(this.queueRetryDelayMs !== undefined ? { retryDelayMs: this.queueRetryDelayMs } : {}),
+    };
+  }
+
+  /** Register the input queue's policy (Pipeline.start, before any stage starts). */
+  declareQueue(): void {
+    this.queue.declare(this.inputQueue, this.queuePolicy());
+  }
+
   async start(): Promise<void> {
     this.log = this.log.child({ stage: this.name });
     await this.queue.work<In>(this.inputQueue, (m) => this.handle(m), {
       concurrency: this.concurrency,
-      retryLimit: Math.max(0, this.retry.attempts - 1),
-      expireInSeconds: this.expireInSeconds,
-      ...(this.queueRetryDelayMs !== undefined
-        ? { retryDelayMs: this.queueRetryDelayMs }
-        : {}),
+      ...this.queuePolicy(),
     });
     this.log.info("stage_started", {
       queue: this.inputQueue,
@@ -159,11 +224,43 @@ export abstract class PipelineStage<In, Out> {
    * transport by throwing out of dispatch) still triggers it exactly once.
    */
   private async handle(msg: QueueMessage<In>): Promise<void> {
+    // The delivery's REAL ceiling: pg-boss expiring the job only rewrites its
+    // row, so the handler is raced against expireInSeconds here and the signal
+    // is handed to process(), whose gate waits and loops stop on it.
+    const ceiling = new AbortController();
+    const ceilingTimer = setTimeout(
+      () => ceiling.abort(new DeliveryExpiredError(this.name, this.expireInSeconds)),
+      this.expireInSeconds * 1000,
+    );
+    try {
+      await this.deliver(msg, ceiling.signal);
+    } finally {
+      clearTimeout(ceilingTimer);
+    }
+  }
+
+  /**
+   * A delivery whose rate gate was stopped (shutdown step 3, src/shutdown.ts:
+   * the gates stop after the drain, while the transport is still alive) is
+   * HANDED BACK: a copy is queued through `send` and this delivery completes.
+   * This delivery never counts as an attempt and never fails a document, but
+   * the ones BEFORE it do: the copy carries them (`attemptsSpent`), so its
+   * first delivery is attempt `msg.attempts` again, its retry budget is what
+   * was left, and `onExhausted` still fires after the real number of attempts
+   * — a deploy or a crash loop during a backlog never resets the history.
+   */
+  private async handBack(msg: QueueMessage<In>): Promise<void> {
+    await this.queue.send(this.inputQueue, msg.payload, { attemptsSpent: msg.attempts - 1 });
+    this.log.warn("delivery_handed_back", { msg: msg.id, attempt: msg.attempts });
+  }
+
+  private async deliver(msg: QueueMessage<In>, signal: AbortSignal): Promise<void> {
     const ctx: StageContext = {
       blob: this.blob,
       log: this.log.child({ msg: msg.id, attempt: msg.attempts }),
       messageId: msg.id,
       attempt: msg.attempts,
+      signal,
     };
     // The FINAL allowed delivery: no redelivery follows, so anything left
     // non-terminal here stays non-terminal forever unless the net runs.
@@ -190,12 +287,13 @@ export abstract class PipelineStage<In, Out> {
         }
       }
 
-      if (this.rate) await this.rate.acquire();
+      if (this.rate) await acquireWithin(this.rate, this.rateWaitMs, signal);
 
       let outcome: StageOutcome<Out>;
       try {
-        outcome = await this.process(msg.payload, ctx);
+        outcome = await untilAborted(this.process(msg.payload, ctx), signal, ctx.log);
       } catch (e) {
+        if (e instanceof RateGateStoppedError) throw e; // handed back below
         outcome = { kind: "fail", reason: describeError(e) };
       }
 
@@ -212,9 +310,14 @@ export abstract class PipelineStage<In, Out> {
       }
       await this.dispatch(outcome, msg.payload, false);
     } catch (e) {
-      // Anything that escaped the inner catch: an S3 read/write, a rate gate
-      // shutdown, the dispatch send — or dispatch's own re-throw of a
-      // non-terminal fail (whose net already fired, hence the once-guard).
+      // A stopped gate (shutdown) is not this item's failure: hand it back.
+      if (e instanceof RateGateStoppedError) {
+        await this.handBack(msg);
+        return;
+      }
+      // Anything else that escaped the inner catch: an S3 read/write, the
+      // dispatch send — or dispatch's own re-throw of a non-terminal fail
+      // (whose net already fired, hence the once-guard).
       await net(describeError(e));
       throw e;
     }

@@ -8,6 +8,7 @@ import "server-only"
 
 import { test } from "node:test"
 import assert from "node:assert/strict"
+import { Prisma } from "@/lib/generated/prisma/client"
 import { SessionPolicy } from "@/models/sessions/policy"
 import { SESSION_SCOPE } from "@/models/sessions/schema"
 import { CorpusPolicy } from "@/models/corpus/policy"
@@ -17,10 +18,12 @@ import { ProjectPolicy } from "@/models/projects/policy"
 import { PROJECT_ACCESS } from "@/lib/authz/project-access"
 import {
   CORPUS_ACCESS_REVOKED_ERROR,
+  NOT_INGESTED_ERROR,
   resolveIngestedCorpus,
 } from "./ingestion-guard"
 import { toolsForScope } from "./index"
-import type { PolicyUser } from "@/models/users/schema"
+import { AGENT_TOOLS } from "./constants"
+import { USER_ROLE, type PolicyUser } from "@/models/users/schema"
 import type { ProjectWithShares } from "@/models/projects/schema"
 
 const GROUP = "group-a"
@@ -33,7 +36,7 @@ const user: PolicyUser = {
   image: null,
   createdAt: new Date(0),
   updatedAt: new Date(0),
-  role: "member",
+  role: USER_ROLE.MEMBER,
   alienUserId: null,
   groupIds: [GROUP],
 }
@@ -50,7 +53,8 @@ function project(over: Partial<ProjectWithShares> = {}): ProjectWithShares {
     clusterDatasetId: null,
     paidOcrEnabled: true,
     paidOcrBudgetUsd: null,
-    paidOcrSpentUsd: null as never,
+    // The column's real type and default (prisma/schema.prisma: Decimal @default(0)).
+    paidOcrSpentUsd: new Prisma.Decimal(0),
     corpusSourceId: "source-1",
     corpusSourceShareId: "share-1",
     createdAt: new Date(0),
@@ -120,7 +124,7 @@ test("a derived project's OWNER may not re-share it", () => {
 test("not even an admin may re-share a derived project", () => {
   // Admin resolves to `owner` everywhere else. It must not be the way round
   // the rule above: the corpus still is not theirs to give.
-  const admin: PolicyUser = { ...user, id: "admin-1", role: "admin" }
+  const admin: PolicyUser = { ...user, id: "admin-1", role: USER_ROLE.ADMIN }
 
   assert.equal(new ProjectPolicy(admin).share(project()), false)
   assert.equal(
@@ -144,13 +148,23 @@ test("a write share does not let a member mutate a derived project's corpus", ()
 test("the research scope carries no corpus, buffer or ingest tools", () => {
   // A derived project only ever runs research sessions (see above), so the
   // research registry is the complete set of tools it can reach.
-  const names = toolsForScope("research").map((t) => t.name)
-  const leaked = names.filter(
-    (n) =>
-      n.startsWith("buffer_") ||
-      n.startsWith("corpus_") ||
-      n.startsWith("ingest"),
+  const names = toolsForScope(SESSION_SCOPE.RESEARCH).map((t) => t.name)
+  // The corpus-side tools are whatever the corpus registry offers that the
+  // research scope is not meant to share — read from the registry itself, so
+  // a new corpus tool is covered however it is named. The shared set is the
+  // explicit, reviewed list of tools both scopes may carry.
+  const sharedWithResearch: ReadonlySet<string> = new Set([
+    AGENT_TOOLS.memoryRead,
+    AGENT_TOOLS.memoryWrite,
+    AGENT_TOOLS.askUser,
+    AGENT_TOOLS.spawnResearch,
+  ])
+  const corpusSide = new Set(
+    toolsForScope(SESSION_SCOPE.CORPUS)
+      .map((t) => t.name)
+      .filter((n) => !sharedWithResearch.has(n)),
   )
+  const leaked = names.filter((n) => corpusSide.has(n))
   assert.deepEqual(leaked, [], `corpus-side tools in research scope: ${leaked}`)
 })
 
@@ -158,8 +172,8 @@ test("the research scope carries no corpus, buffer or ingest tools", () => {
 
 test("a revoked grant yields the revoked error without touching the database", async () => {
   const result = await resolveIngestedCorpus(
-    { corpusProjectId: "source-1", corpusReachable: false },
-    "not ingested",
+    { corpusProjectId: "source-1", corpusReachable: false, signal: AbortSignal.timeout(5_000) },
+    NOT_INGESTED_ERROR,
   )
 
   assert.deepEqual(result, { error: CORPUS_ACCESS_REVOKED_ERROR })
@@ -168,14 +182,13 @@ test("a revoked grant yields the revoked error without touching the database", a
 test("the revoked error is distinct from the not-ingested one", async () => {
   // The two invite different actions: one the researcher can take, one only
   // the corpus owner can. Collapsing them would send them to a dead end.
-  const NOT_INGESTED = "not ingested"
   const revoked = await resolveIngestedCorpus(
-    { corpusProjectId: "source-1", corpusReachable: false },
-    NOT_INGESTED,
+    { corpusProjectId: "source-1", corpusReachable: false, signal: AbortSignal.timeout(5_000) },
+    NOT_INGESTED_ERROR,
   )
 
   assert.notEqual(
     "error" in revoked ? revoked.error : null,
-    NOT_INGESTED,
+    NOT_INGESTED_ERROR,
   )
 })

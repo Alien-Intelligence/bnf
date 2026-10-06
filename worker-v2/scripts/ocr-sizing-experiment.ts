@@ -6,18 +6,22 @@
  * `ocr_no_text` docs dropped by the hallucination filter, and the 32 "done"
  * siblings kept only a fraction). The vision lane already downscales (pct:33)
  * for analogous reasons. This measures whether pct:50 materially reduces the
- * hallucinated-page drop rate, to decide MISTRAL_IMAGE_SIZE.
+ * hallucinated-page drop rate. (The knob it was written for, MISTRAL_IMAGE_SIZE,
+ * is retired: the Mistral lane is now capped at 4096 px per canvas —
+ * src/bnf/image-size.ts. The script still compares sizes on demand.)
  *
- * Run from worker-v2/:
+ * Run from worker-v2/ (BNF_BROKER_URL and the two BNF_IIIF_* bases required):
  *   BNF_BROKER_URL=http://localhost:8793 npx tsx --env-file=.env \
  *     scripts/ocr-sizing-experiment.ts
  * (the :8793 port-forward is the platform-dev validation broker — greenlighted
  *  egress; the dev machine's own IP 401s at BnF.)
  *
  * Spend: 3 ARKs × 6 folios × 2 sizes = 36 Mistral OCR pages ≈ $0.08.
- * Read-only against BnF (image GETs, on the 1000/min global budget).
+ * Read-only against BnF (image GETs, on the Image API's quota).
  */
+import { configureBrokerUrl } from "../src/bnf/broker-client.js";
 import { LiveBnfClient } from "../src/bnf/client.js";
+import { loadBrokerUrl, loadIiifBases } from "../src/config.js";
 import { LiveOcrEngine } from "../src/live/ocr.js";
 
 const ARKS = [
@@ -31,7 +35,8 @@ const POLL_MS = 20_000;
 const CEILING_MS = 40 * 60 * 1000;
 
 async function main(): Promise<void> {
-  const bnf = new LiveBnfClient();
+  configureBrokerUrl(loadBrokerUrl(process.env));
+  const bnf = new LiveBnfClient(loadIiifBases(process.env));
   const ocr = new LiveOcrEngine();
 
   // 1. Fetch every folio at every size (sequential — politeness over speed).

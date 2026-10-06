@@ -11,6 +11,8 @@
 import "server-only"
 
 import { Prisma } from "@/lib/generated/prisma/client"
+import { SessionQueries } from "@/models/sessions/queries"
+import { SESSION_SCOPE } from "@/models/sessions/schema"
 import { CORPUS_VERSION_STATUS, type CorpusVersionWithArks } from "./schema"
 
 /**
@@ -109,6 +111,16 @@ export async function advanceVersion(
     where: { id: projectId },
     data: { headVersionId: next.id },
   })
+
+  // The corpus prompt embeds the head ("Version N — X document(s)" and its
+  // facets): every corpus session of this project — and of the workspaces
+  // reading its corpus — is stale once the head moves. Invalidated in the
+  // SAME transaction, so a commit, an add or a removal can never leave a
+  // cached prompt describing the previous head.
+  await SessionQueries.invalidatePrompts(
+    { projectId, scope: SESSION_SCOPE.CORPUS, withDerived: true },
+    tx,
+  )
 
   // Return the new version with its membership so callers can build snapshots.
   return tx.corpusVersion.findUniqueOrThrow({

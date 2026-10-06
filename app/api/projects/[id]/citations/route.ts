@@ -16,6 +16,7 @@ import { ProjectQueries } from "@/models/projects/queries"
 import { NotePolicy } from "@/models/notes/policy"
 import { NoteQueries } from "@/models/notes/queries"
 import { citationLookupSchema } from "@/models/notes/types"
+import type { CitationUsage } from "@/models/notes/schema"
 
 type RouteCtx = { params: Promise<{ id: string }> }
 
@@ -29,5 +30,5 @@ export const GET = withAuth(async (req, _user, bouncer, ctx: RouteCtx) => {
   await bouncer.with(NotePolicy).authorize("read", project)
 
   const usages = await NoteQueries.citationsForArk(projectId, parsed.ark)
-  return ok(usages)
+  return ok<CitationUsage[]>(usages)
 })

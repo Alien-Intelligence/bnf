@@ -30,11 +30,13 @@ import "server-only"
 // watchdog's only job is to stop a stuck row from blocking the dedup guard
 // forever, never to have the final say on outcome. See the comment on
 // IngestService.applyProgress.
-import { prisma } from "@/lib/db"
+import { CLUSTER_MODE, clusterMode } from "@/lib/cluster/mode"
 import { INGEST_STATUS } from "@/models/ingest/schema"
 import { IngestQueries } from "@/models/ingest/queries"
+import { IngestService } from "@/models/ingest/service"
 import { ClusterRunner } from "@/lib/cluster/runner"
-import type { ClusterQueueProgress } from "@/lib/cluster/contracts"
+import { CLUSTER_POLL, type ClusterProgressPoll } from "@/lib/cluster/contracts"
+import { startPeriodic } from "@/lib/async/periodic"
 
 /** How stale a QUEUED job (no clusterJobId) must be to count as an F19 corpse. */
 export const WATCHDOG_QUEUED_STALE_MS = 15 * 60 * 1000
@@ -53,7 +55,7 @@ export interface WatchdogJobInput {
 
 export type WatchdogAction =
   | { kind: "none" }
-  | { kind: "write_progress"; progress: number; stats: Record<string, unknown> }
+  | { kind: "write_progress"; progress: number; stats: Record<string, number> }
   | { kind: "fail"; reason: string }
 
 export interface WatchdogDecision {
@@ -74,16 +76,21 @@ export interface WatchdogDecision {
  * @param job - the candidate job. Expected to already be either RUNNING or
  *   QUEUED (the caller's query is the coarse filter); the rules below
  *   re-derive everything else from the inputs so they are provable standalone.
- * @param clusterProgress - the worker's live read-model for this job, or
- *   null (no clusterJobId to poll yet, or the poll 404'd / was unreachable).
+ * @param poll - this tick's poll of the worker's read-model for the job, or
+ *   null when nothing was polled (no clusterJobId yet, or a QUEUED job).
  * @param now - injected clock.
- * @param nullSince - when `clusterProgress` started being continuously null
- *   for this job, as tracked by the caller across previous ticks; null if it
- *   has never been null (or was last seen non-null).
+ * @param nullSince - when the worker started CONTINUOUSLY answering "run
+ *   unknown" (404) for this job, as tracked by the caller across ticks; null
+ *   if it has not (or progress was last seen).
+ *
+ * Only a 404 — the worker is up and does not know the run — advances the
+ * give-up clock. A worker that cannot be reached, or answers an error, is an
+ * outage, not evidence the run is gone: the clock is held (neither started
+ * nor reset) until the worker answers again.
  */
 export function decideWatchdogAction(
   job: WatchdogJobInput,
-  clusterProgress: ClusterQueueProgress | null,
+  poll: ClusterProgressPoll | null,
   now: Date,
   nullSince: Date | null,
 ): WatchdogDecision {
@@ -107,7 +114,14 @@ export function decideWatchdogAction(
   // to poll yet, nothing to decide.
   if (!job.clusterJobId) return { action: { kind: "none" }, nullSince }
 
-  if (clusterProgress !== null) {
+  if (poll === null) return { action: { kind: "none" }, nullSince }
+
+  if (poll.kind === CLUSTER_POLL.WORKER_UNREACHABLE || poll.kind === CLUSTER_POLL.WORKER_ERROR) {
+    return { action: { kind: "none" }, nullSince }
+  }
+
+  if (poll.kind === CLUSTER_POLL.PROGRESS) {
+    const clusterProgress = poll.progress
     // F21: write-through a compact summary so the DB row stops lying while
     // v2 (which sends only the terminal callback) is running. `stage` is left
     // as-is (v2 has no per-stage breakdown to offer); `progress` is the docs
@@ -122,8 +136,8 @@ export function decideWatchdogAction(
     }
   }
 
-  // clusterProgress === null: the worker 404'd or was unreachable this tick.
-  // Track how long that has been continuously true.
+  // RUN_UNKNOWN: the worker is up and 404'd this run. Track how long that has
+  // been continuously true.
   const since = nullSince ?? now
   const staleMs = now.getTime() - since.getTime()
   if (staleMs > WATCHDOG_RUNNING_STALE_MS) {
@@ -131,7 +145,7 @@ export function decideWatchdogAction(
     return {
       action: {
         kind: "fail",
-        reason: "worker injoignable / run inconnu depuis 30 min (watchdog)",
+        reason: "run inconnu du worker depuis 30 min (watchdog)",
       },
       nullSince: null,
     }
@@ -161,19 +175,11 @@ const nullSinceByJob = new Map<string, Date>()
  * corpse, so there is nothing for this watchdog to reconcile.
  */
 export function startIngestWatchdog(): { stop: () => void } {
-  if (process.env.CLUSTER_MODE !== "real") {
+  if (clusterMode() !== CLUSTER_MODE.REAL) {
     return { stop: () => {} }
   }
-  const timer = setInterval(() => {
-    void runWatchdogTick().catch((err) => {
-      console.error("[ingest-watchdog] tick failed:", err)
-    })
-  }, WATCHDOG_TICK_MS)
-  return {
-    stop: () => {
-      clearInterval(timer)
-    },
-  }
+  // Unref'd, and replaced (not stacked) on a re-run of register().
+  return startPeriodic("ingest-watchdog", WATCHDOG_TICK_MS, runWatchdogTick)
 }
 
 async function runWatchdogTick(): Promise<void> {
@@ -181,13 +187,29 @@ async function runWatchdogTick(): Promise<void> {
   const queuedCutoff = new Date(now.getTime() - WATCHDOG_QUEUED_STALE_MS)
   const candidates = await IngestQueries.watchdogCandidates(queuedCutoff)
 
+  // One job's failure must not stop the others from being reconciled, nor be
+  // swallowed: every job is tried, then the failures are raised together (the
+  // interval's catch logs them, and the next tick retries those jobs).
+  const failures: unknown[] = []
   for (const job of candidates) {
-    await applyToJob(job, now)
+    try {
+      await reconcileWatchdogJob(job, now)
+    } catch (err) {
+      failures.push(err)
+    }
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(failures, `[ingest-watchdog] ${failures.length} job(s) could not be reconciled`)
   }
 }
 
-async function applyToJob(job: WatchdogJobInput, now: Date): Promise<void> {
-  const clusterProgress =
+/**
+ * Reconcile one candidate job at `now`: poll, decide, apply. Exported for the
+ * tests of its state handling (the staleness clock across ticks and failed
+ * writes); the interval tick is its only production caller.
+ */
+export async function reconcileWatchdogJob(job: WatchdogJobInput, now: Date): Promise<void> {
+  const poll =
     job.status === INGEST_STATUS.RUNNING && job.clusterJobId
       ? await ClusterRunner.progress(job.clusterJobId)
       : null
@@ -195,10 +217,21 @@ async function applyToJob(job: WatchdogJobInput, now: Date): Promise<void> {
   const nullSince = nullSinceByJob.get(job.id) ?? null
   const { action, nullSince: nextNullSince } = decideWatchdogAction(
     job,
-    clusterProgress,
+    poll,
     now,
     nullSince,
   )
+
+  if (action.kind === "fail") {
+    // The staleness clock is kept until the FAILED write has succeeded: if
+    // the write throws, the next tick must still see how long the worker has
+    // been gone and fail the job again at once — not start a fresh 30 min.
+    // A failed write leaves the job non-terminal: it is raised, not dropped,
+    // and the next tick finds the job again and retries.
+    await IngestService.failStuckJob(job.id, job.status, action.reason, now)
+    nullSinceByJob.delete(job.id)
+    return
+  }
 
   if (nextNullSince) nullSinceByJob.set(job.id, nextNullSince)
   else nullSinceByJob.delete(job.id)
@@ -207,37 +240,9 @@ async function applyToJob(job: WatchdogJobInput, now: Date): Promise<void> {
     case "none":
       return
     case "write_progress":
-      // Best-effort mirror of the read-model (F21) — guarded by `status:
-      // RUNNING` so a job that went terminal between the candidate scan and
-      // this write is left alone, and never throws (a failed write here must
-      // not fail the tick or the job; it's presentation, not the commit path).
-      await prisma.ingestJob
-        .updateMany({
-          where: { id: job.id, status: INGEST_STATUS.RUNNING },
-          data: { progress: action.progress, stats: action.stats as never },
-        })
-        .catch((err) => {
-          console.error("[ingest-watchdog] progress write-through failed:", {
-            jobId: job.id,
-            error: err instanceof Error ? err.message : String(err),
-          })
-        })
-      return
-    case "fail":
-      // Guarded by `status: job.status` so a job that already went terminal
-      // (e.g. a genuine terminal callback landed between the candidate scan
-      // and this write) is never clobbered back to FAILED.
-      await prisma.ingestJob
-        .updateMany({
-          where: { id: job.id, status: job.status },
-          data: { status: INGEST_STATUS.FAILED, error: action.reason, finishedAt: now },
-        })
-        .catch((err) => {
-          console.error("[ingest-watchdog] terminal fail write failed:", {
-            jobId: job.id,
-            error: err instanceof Error ? err.message : String(err),
-          })
-        })
+      // A failed write is raised to the tick, which reports it after
+      // reconciling the other jobs; the next tick writes it again.
+      await IngestService.mirrorWatchdogProgress(job.id, action.progress, action.stats)
       return
   }
 }

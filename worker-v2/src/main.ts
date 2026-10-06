@@ -1,8 +1,9 @@
 /**
  * Worker V2 entrypoint — the production composition. Wires the durable transport
  * (pg-boss), the per-doc state (Postgres), the artifact store (S3), the live BnF
- * client + the four downstream live ports, and the two binding rate gates (BnF
- * fetch + IIIF manifest), then starts the pipeline. Long-running: every stage
+ * client + the four downstream live ports, and the BnF rate gates (mirroring the
+ * broker's buckets: global, Presentation, Image, manifest), then starts the
+ * pipeline. Long-running: every stage
  * long-polls its bucket forever; the process stays up until SIGINT/SIGTERM.
  *
  * This file does I/O only — all behaviour lives in the stages + buildPipeline,
@@ -10,85 +11,58 @@
  */
 import { Pool } from "pg";
 
-import { loadConfig } from "./config.js";
-import { buildPipeline } from "./build.js";
+import { loadBrokerUrl, loadConfig, loadIiifBases, pgPoolConfig } from "./config.js";
+import { configureBrokerUrl } from "./bnf/broker-client.js";
+import { buildLivePipeline } from "./live-pipeline.js";
 import { PgBossQueue } from "./core/queue-pgboss.js";
 import { S3BlobStore } from "./core/blob.js";
-import { RateLimiter } from "./core/rate.js";
 import { createLogger } from "./core/logger.js";
 import { PgDocState } from "./domain/doc-state-pg.js";
+import { OCR_SYNC_BODY_READ_MS, OCR_SYNC_DEADLINE_MS } from "./live/ocr-quality-sync.js";
 import { PgRunStore } from "./domain/run-store-pg.js";
-import { LiveBnfClient } from "./bnf/client.js";
-import { LiveDescriber } from "./live/describer.js";
-import { LiveOcrEngine } from "./live/ocr.js";
-import { LiveEmbedder } from "./live/embedder.js";
-import { LiveClusterSink } from "./live/cluster.js";
 import { TerminalEmitter } from "./live/progress-callback.js";
 import { CompletionMonitor } from "./live/completion-monitor.js";
 import { Reconciler } from "./live/reconciler.js";
 import { startServer } from "./server.js";
+import { SHUTDOWN_BUDGETS, shutdownWorker } from "./shutdown.js";
 
 async function main(): Promise<void> {
   const cfg = loadConfig();
+  // The worker runtime — and only it — needs the broker and the IIIF API
+  // bases: validated here, once, before anything starts.
+  configureBrokerUrl(loadBrokerUrl(process.env));
+  const iiif = loadIiifBases(process.env);
   const log = createLogger({ worker: "bnf-ingest-v2" });
 
-  const queue = new PgBossQueue(cfg.databaseUrl);
+  const queue = new PgBossQueue(pgPoolConfig(cfg.databaseUrl));
   await queue.start();
 
-  // statement_timeout: pg has NO query timeout by default, so a lock wait or a bad
-  // plan parks whatever awaited it — a stage handler until pg-boss expires the job,
-  // or (new in this slice) the reconciliation sweep, forever. Every query this pool
-  // runs is small OLTP work measured in milliseconds, so 30s only ever fires on
-  // something genuinely stuck (CLAUDE_ERROR_PATTERNS §14).
-  const pool = new Pool({ connectionString: cfg.databaseUrl, statement_timeout: 30_000 });
+  // Both pg timeouts (pgPoolConfig): a stuck query or an exhausted pool must not
+  // park a stage handler until pg-boss expires the job, nor the sweep/endpoint.
+  const pool = new Pool(pgPoolConfig(cfg.databaseUrl));
   const docState = new PgDocState(pool);
   await docState.migrate();
   const runStore = new PgRunStore(pool);
-
   const blob = new S3BlobStore({ ...cfg.s3, prefix: cfg.s3Prefix });
 
-  const fetchRate = new RateLimiter({ ratePerMin: cfg.fetchRatePerMin });
-  const manifestRate = new RateLimiter({ ratePerMin: cfg.manifestRatePerMin });
-
   // The terminal commit callback + the run-completion detector. The detector is
-  // wired to the pipeline's onOutcome seam (below), so a doc reaching a terminal
-  // status triggers a run-completeness check → one HMAC-signed terminal event.
+  // wired to the pipeline's onOutcome seam (in buildLivePipeline), so a doc
+  // reaching a terminal status triggers a run-completeness check → one
+  // HMAC-signed terminal event.
   const emitter = new TerminalEmitter(docState, runStore, log, {
     maxCallbackFailures: cfg.reconcilerMaxCallbackFailures,
   });
   const completion = new CompletionMonitor(docState, runStore, emitter, log);
 
-  const pipeline = buildPipeline({
+  const { pipeline, ocrBackfill, limiters, fetchRatePerMin } = buildLivePipeline({
+    cfg,
+    iiif,
     queue,
+    pool,
+    docState,
     blob,
     log,
-    bnf: new LiveBnfClient(),
-    docState,
-    describer: new LiveDescriber(),
-    ocr: new LiveOcrEngine(),
-    embedder: new LiveEmbedder(),
-    cluster: new LiveClusterSink(),
-    onOutcome: (e) => completion.noteOutcome({ kind: e.kind, payload: e.payload }),
-    rates: { fetch: fetchRate, manifest: manifestRate },
-    config: {
-      mistralEnabled: cfg.mistralEnabled,
-      maxPages: cfg.maxPages,
-      maxCanvases: cfg.maxCanvases,
-      // FetchStage's `imageSize` opt is the mistral/text-lane size (fetch.ts
-      // defaults it to "max" itself); `visionImageSize` is the separate,
-      // already-downscaled vision-lane size. See config.ts's mistralImageSize doc.
-      imageSize: cfg.mistralImageSize,
-      visionImageSize: cfg.visionImageSize,
-      fetchConcurrency: cfg.fetchConcurrency,
-      metadataConcurrency: cfg.metadataConcurrency,
-      registerConcurrency: cfg.registerConcurrency,
-      describeConcurrency: cfg.describeConcurrency,
-      describeCallConcurrency: cfg.describeCallConcurrency,
-      embedConcurrency: cfg.embedConcurrency,
-      ocrSubmitConcurrency: cfg.ocrSubmitConcurrency,
-      ocrPollConcurrency: cfg.ocrPollConcurrency,
-      failRatio: cfg.failRatio,
-    },
+    completion,
   });
 
   await pipeline.start();
@@ -111,18 +85,27 @@ async function main(): Promise<void> {
       queue,
       completion,
       log,
-      fetchRatePerMin: cfg.fetchRatePerMin,
-      manifestRatePerMin: cfg.manifestRatePerMin,
+      fetchRatePerMin,
+      manifestRatePerMin: cfg.rates.manifestRpm,
+      blob,
+      ocrBackfill,
+      ocrSyncDeadlineMs: OCR_SYNC_DEADLINE_MS,
+      ocrSyncBodyReadMs: OCR_SYNC_BODY_READ_MS,
     },
     cfg.httpPort,
   );
 
   log.info("worker_v2_up", {
     httpPort: cfg.httpPort,
-    fetchRatePerMin: cfg.fetchRatePerMin,
-    manifestRatePerMin: cfg.manifestRatePerMin,
+    rates: cfg.rates,
+    altoFetchConcurrency: cfg.altoFetchConcurrency,
+    imageFetchConcurrency: cfg.imageFetchConcurrency,
+    iiif,
     mistralEnabled: cfg.mistralEnabled,
     reconcilerIntervalMs: cfg.reconcilerIntervalMs,
+    ocrBackfillEnabled: cfg.ocrBackfill.enabled,
+    ocrBackfillConcurrency: cfg.ocrBackfill.concurrency,
+    ocrBackfillRetryFailedAfterMs: cfg.ocrBackfill.retryFailedAfterMs,
   });
 
   let shuttingDown = false;
@@ -130,18 +113,23 @@ async function main(): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     log.info("worker_v2_shutdown", { sig });
-    // Order matters: stop the sweep FIRST. It re-enqueues work, and re-enqueueing
-    // into a pipeline that is draining would leave fresh jobs behind with nobody
-    // consuming them (and could race pg-boss's shutdown mid-send).
-    reconciler.stop();
-    fetchRate.stop();
-    manifestRate.stop();
-    await new Promise<void>((r) => server.close(() => r()));
-    // pipeline.stop() → PgBossQueue.stop(), which drains in-flight handlers within
-    // an explicit 110s budget (F12) — inside the pod's 120s grace period, and
-    // immediate when nothing is in flight.
-    await pipeline.stop().catch(() => {});
-    await pool.end().catch(() => {});
+    // The order is shutdownWorker's (src/shutdown.ts): intake, drain with the
+    // transport alive, gates (hand-backs through a working send), transport.
+    await shutdownWorker(
+      {
+        log,
+        stopIntake: async () => {
+          reconciler.stop();
+          await new Promise<void>((r) => server.close(() => r()));
+        },
+        pipeline,
+        gates: limiters,
+        closePools: () => pool.end(),
+      },
+      SHUTDOWN_BUDGETS,
+    ).catch((err: unknown) =>
+      log.error("shutdown_failed", { error: err instanceof Error ? err.message : String(err) }),
+    );
     process.exit(0);
   };
   process.on("SIGINT", () => void shutdown("SIGINT"));

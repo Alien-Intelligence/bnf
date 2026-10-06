@@ -107,7 +107,8 @@
     "role": {
       "admin": "Admin",
       "member": "Member",
-      "guest": "Guest"
+      "guest": "Guest",
+      "unknown": "Unknown"
     },
     "ocr": {
       "eyebrow": "Administration",
@@ -167,9 +168,6 @@
     "error": "An error occurred",
     "tryAgain": "Try again",
     "empty": "Empty",
-    "signIn": "Sign in",
-    "signUp": "Create an account",
-    "signOut": "Sign out",
     "welcome": "Welcome, {name}",
     "gotIt": "Got it"
   },
@@ -178,12 +176,29 @@
     "ingerer": "Ingest",
     "rechercher": "Research",
     "carnet": "Notebook",
-    "workspace": "BnF workspace",
-    "newProject": "New project",
-    "switchProject": "Switch project",
-    "userMenu": "User menu",
+    "homeLink": "Back to the projects list",
+    "projectsCrumb": "Projects",
+    "share": "Share",
+    "steps": "Project steps",
+    "signedInAs": "Signed in as {name}",
     "language": "Language",
-    "admin": "Administration"
+    "admin": "Administration",
+    "version": {
+      "title": "Version {version}",
+      "titleWithSha": "Version {version} · {sha}",
+      "label": "v{version}",
+      "labelWithSha": "v{version}·{sha}"
+    },
+    "switcher": {
+      "workspace": "BnF workspace",
+      "newProject": "New project",
+      "allProjects": "All projects",
+      "switchProject": "Switch project",
+      "projectMeta": "{count} · {subtitle}",
+      "projectsError": "Could not load your projects.",
+      "projectsEmpty": "No projects in your list.",
+      "createFirst": "Create your first project"
+    }
   },
   "health": {
     "aria": "Service health",
@@ -229,12 +244,19 @@
       "passwordLabel": "Password",
       "submit": "Sign in",
       "noAccount": "Don't have an account yet?",
-      "errorGeneric": "Invalid credentials",
+      "errorGeneric": "Sign-in failed. Please try again.",
       "errorInvalidCredentials": "Invalid credentials",
       "forgotPassword": "Forgot password?",
       "submitting": "Signing in…",
       "ssoButton": "Sign in with Alien",
-      "or": "or"
+      "or": "or",
+      "signedOut": "You are signed out.",
+      "signedOutSsoUnavailable": "You are signed out of the app, but your Alien session could not be closed. On a shared computer, also sign out of your Alien account."
+    },
+    "signOut": {
+      "action": "Sign out",
+      "pending": "Signing out…",
+      "error": "Sign-out failed. Please try again."
     },
     "signUp": {
       "title": "Create an account",
@@ -286,7 +308,8 @@
     "section": {
       "mine": "My projects",
       "mineEmpty": "You do not own any project yet.",
-      "shared": "Shared with me"
+      "shared": "Shared with me",
+      "public": "Public projects"
     },
     "access": {
       "read": "Read-only",
@@ -298,22 +321,48 @@
     },
     "share": {
       "title": "Share “{name}”",
-      "description": "Give a group access to this project. With read access its members consult the corpus and build their own research workspaces; with edit access they can also change and ingest it. Only you can share or delete the project.",
+      "description": "Members of the chosen group will find this project under “Shared with me”.",
+      "addHeading": "Give a group access",
       "group": "Group",
       "groupPlaceholder": "Choose a group",
+      "groupOption": "{name} · {count, plural, one {# member} other {# members}}",
       "access": "Access",
       "level": {
         "read": "Read-only",
         "write": "Can edit"
       },
+      "levelHint": {
+        "read": "Consult the corpus and run their own research",
+        "write": "Also: change the corpus and run ingestion"
+      },
+      "ownerNote": "Only the project's owner, or an administrator, can share or delete it.",
       "grant": "Share",
+      "granted": "“{group}” now has access to the project ({level}).",
+      "currentHeading": "Groups with access ({count})",
+      "memberCount": "{count, plural, one {# member} other {# members}}",
       "revoke": "Revoke access for {name}",
-      "empty": "This project is not shared with any group.",
-      "noGroups": "No group exists yet. Ask an administrator to create one.",
-      "allGroupsShared": "All of your groups already have access to this project.",
+      "revokeConfirm": "{count, plural, one {# research workspace built on this share will lose} other {# research workspaces built on this share will lose}} access to the corpus.",
+      "revokeConfirmAction": "Revoke access",
+      "revoked": "Access for “{name}” revoked.",
+      "empty": "No group has access to this project yet. Choose a group above to give it access.",
+      "noGroups": "You are not in any group. Sharing works through groups: ask an administrator to add you to one.",
+      "allGroupsShared": "All of your groups already have access to this project. To change their level, use the list below.",
       "groupsError": "Could not load the list of groups.",
       "derived": "{count, plural, one {# research workspace depends on it} other {# research workspaces depend on it}}",
-      "changeAccess": "Change access for {name}"
+      "changeAccess": "Change access for {name}",
+      "revokeTitle": "Revoke access for “{name}”?",
+      "createGroup": "Create a group",
+      "errors": {
+        "forbidden": "You cannot share this project.",
+        "projectGone": "This project no longer exists.",
+        "groupGone": "This group no longer exists. Choose another one.",
+        "generic": "The operation failed. Please try again.",
+        "groupRequired": "Choose a group."
+      },
+      "currentHeadingUnknown": "Groups with access",
+      "grantsError": "Could not load the groups with access.",
+      "noGroupsAdmin": "No group exists yet. Create one in the admin console, then come back to share this project.",
+      "levelUnknown": "Unrecognised access level: this share grants no access. Revoke it, then share again."
     },
     "derive": {
       "title": "Create a research workspace",
@@ -334,6 +383,7 @@
       "subtitle": "Gathered candidates, pending commit",
       "count": "{count} candidate(s)",
       "empty": "The buffer is empty. Run a search to gather candidates here.",
+      "emptyCta": "Back to the conversation",
       "emptyHint": "No candidates yet",
       "error": "Could not load the buffer.",
       "noTitle": "(untitled)",
@@ -348,7 +398,17 @@
       "clearConfirmBody": "The {count} gathered candidate(s) will be discarded. The corpus is not affected.",
       "clearConfirmCancel": "Cancel",
       "clearConfirmOk": "Clear",
-      "foundBy": "Found by the search: {query}"
+      "foundBy": "Found by the search: {query}",
+      "kinds": {
+        "periodicalIssue": "Periodical issue",
+        "periodicalCollection": "Periodical title (collection)",
+        "monograph": "Monograph",
+        "image": "Image",
+        "catalogueNotice": "Catalogue record",
+        "otherDocument": "Other digitized document",
+        "unknown": "Kind undetermined"
+      },
+      "enrichPending": "metadata pending"
     },
     "export": {
       "label": "Export (CSV)",
@@ -390,6 +450,7 @@
       "unindexedSub": "{count, number} not indexed"
     },
     "filters": {
+      "urlRefused": "The filters in the address were ignored: {reason}",
       "title": "Filters and statistics",
       "byType": "By type",
       "byLang": "By language",
@@ -483,8 +544,6 @@
         "consultBnf": "View on the BnF",
         "iiifViewer": "IIIF viewer",
         "iiifViewerSub": "Open in the BnF viewer",
-        "gallicaNotice": "Gallica record",
-        "gallicaNoticeSub": "Document page and facsimile",
         "iiifManifest": "IIIF manifest",
         "iiifManifestSub": "manifest.json",
         "oai": "OAI record",
@@ -520,6 +579,16 @@
           "ingestSansTexte": "No text · not ingested",
           "ingestNonNumerise": "Not ingested",
           "unknown": "—"
+        },
+        "ocrQuality": {
+          "docRate": "Document OCR rate: {rate} %",
+          "noRate": "No OCR rate published by the BnF",
+          "pending": "OCR quality: waiting for synchronisation",
+          "building": "OCR quality: being computed",
+          "unavailable": "OCR quality not available",
+          "quarantined": "OCR quality not available yet (synchronisation failing, retried daily)",
+          "loadError": "Could not load the OCR quality.",
+          "incompatible": "OCR quality: waiting for a service update"
         }
       },
       "indexation": {
@@ -551,7 +620,9 @@
       "other": "Other",
       "estampe": "Print",
       "enlum": "Illumination",
-      "charte": "Charter"
+      "charte": "Charter",
+      "text": "Printed text (kind undetermined)",
+      "object": "Object"
     },
     "langs": {
       "fr": "French",
@@ -600,7 +671,13 @@
       "subagentStartHint": "Working in a separate context; it will return a synthesis.",
       "subagentDone": "Sub-agent finished · {toolCalls} tool calls",
       "subagentDoneBuffered": "Sub-agent finished · {buffered} candidates staged in the buffer · {toolCalls} tool calls",
-      "compaction": "Conversation condensed · {count} earlier messages summarized to free context"
+      "compaction": "Conversation condensed · {count} earlier messages summarized to free context",
+      "subagentError": "Sub-agent failed · {toolCalls} tool calls",
+      "subagentTimeout": "Sub-agent stopped (time limit exceeded)",
+      "subagentAborted": "Sub-agent cancelled",
+      "subagentInterrupted": "Sub-agent interrupted (final state unknown)",
+      "subagentUnreadable": "Sub-agent: unreadable event",
+      "subagentStagedBeforeStop": "{buffered} candidates staged in the buffer before it stopped"
     }
   },
   "memory": {
@@ -759,7 +836,8 @@
       "emptyReaderTalk": "Talk to the assistant on the left to generate a research note.",
       "emptyReaderTalkSub": "Ask your question; the assistant writes the note, cites its sources, and opens it here.",
       "openSource": "Research assistant",
-      "openSubtitle": "Queries the corpus · cites its sources"
+      "openSubtitle": "Queries the corpus · cites its sources",
+      "notesRefreshError": "Could not refresh the notes list; the last version is still shown."
     },
     "artefacts": {
       "title": "Research artifacts",
@@ -785,14 +863,20 @@
       "cites": "{count, plural, =0 {no references} one {# ARK reference} other {# ARK references}}",
       "export": "Export as Markdown",
       "loadError": "Could not load the note.",
-      "retry": "Retry"
+      "retry": "Retry",
+      "noActiveTab": "Pick a tab to read its note."
     },
     "carnet": {
       "title": "Research notebook",
       "projectEyebrow": "Research project",
       "compiledHeader": "Research notebook · {count, plural, =0 {no notes} one {# note} other {# notes}}",
       "export": "Export as Markdown",
-      "empty": "No notes in this notebook."
+      "empty": "No notes in this notebook.",
+      "loadError": "Could not load this note.",
+      "exportBlocked": "Some notes could not be loaded: reload them before exporting.",
+      "retryLoad": "Reload the notes",
+      "loadListError": "Could not load the list of notes.",
+      "exportPartial": "Every note must be loaded before exporting."
     },
     "revoked": {
       "title": "Corpus access revoked",
@@ -811,7 +895,33 @@
       "iiifViewerSub": "Open the exact page in the viewer",
       "gallicaViewer": "View on Gallica",
       "gallicaViewerSub": "The document in the Gallica viewer",
-      "usages": "Used in other notes"
+      "usages": "Used in other notes",
+      "usagesLoadError": "Could not load the other notes citing this document.",
+      "usagesNone": "No other note cites this document."
+    },
+    "ocr": {
+      "disclaimer": "The legibility of some original documents can limit text recognition. The tool may therefore, in some cases, have mistranscribed or misinterpreted some of the quotations in these notes. The link to the source document lets you check their accuracy.",
+      "bannerLabel": "Text recognition quality warning",
+      "lowPill": "Low OCR quality on this folio ({quality} %) — check the quotation against the source",
+      "exportLowMarker": "(low OCR quality)",
+      "sheetTitle": "OCR quality",
+      "folioAlto": "Folio OCR quality: {quality} % ({words, number} words)",
+      "folioAltoUnscored": "BnF OCR text — quality not measured",
+      "folioMistral": "Automatic transcription (Mistral) — quality not measured",
+      "folioVision": "Generated image description — no OCR text",
+      "lowFolio": "Low quality — check the quotation against the source",
+      "unavailable": "OCR quality not available",
+      "docRate": "Document OCR rate: {rate} %",
+      "loadError": "Could not load the OCR quality.",
+      "pillUnavailable": "OCR quality not available for this folio",
+      "folioNotRecorded": "No OCR quality for this folio: it is not one of the document's processed pages",
+      "statusPending": "OCR quality: waiting for synchronisation",
+      "statusBuilding": "OCR quality: being computed",
+      "statusUnavailable": "OCR quality not available for this document",
+      "statusQuarantined": "OCR quality not available yet (synchronisation failing, retried daily)",
+      "corpusRevoked": "OCR quality not read: access to the shared corpus was revoked",
+      "noRate": "No document OCR rate published by the BnF",
+      "statusIncompatible": "OCR quality: waiting for a service update"
     }
   },
   "ingest": {
@@ -848,7 +958,8 @@
         "eyebrow": "In your research",
         "suffix": "{count, plural, one {consultable document} other {consultable documents}}",
         "sub": "The assistant can already read and cite them in its notes.",
-        "subNone": "The research assistant cannot read anything in this project yet."
+        "subNone": "The research assistant cannot read anything in this project yet.",
+        "subRemoved": "including {count, plural, one {# no longer in your selection, removed at the next run} other {# no longer in your selection, removed at the next run}}"
       },
       "action": {
         "eyebrow": "What this action will do",
@@ -940,6 +1051,16 @@
         "targetValue": "BnF RAG cluster",
         "processed": "Documents processed",
         "processedValue": "{done, number} / {total, number}"
+      },
+      "coverage": {
+        "eyebrow": "Your selection",
+        "empty": "Your selection is empty: nothing to ingest yet.",
+        "emptyCta": "Build the corpus",
+        "headline": "{ingestable, plural, one {# ingestable document} other {# ingestable documents}} out of {total, number}",
+        "notDigitized": "{count, plural, one {# record not digitized at the BnF} other {# records not digitized at the BnF}}",
+        "noText": "{count, plural, one {# digitized document with no readable text} other {# digitized documents with no readable text}}",
+        "paidOcr": "{count, plural, one {# document recoverable with paid OCR} other {# documents recoverable with paid OCR}}",
+        "unconfirmed": "including {count, plural, one {# whose type is not known yet} other {# whose type is not known yet}} (metadata pending or failed)"
       }
     },
     "paidOcr": {

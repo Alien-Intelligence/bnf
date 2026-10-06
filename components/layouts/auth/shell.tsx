@@ -4,6 +4,7 @@
 // hidden on small screens. Right: the form (children), always centered. The DS
 // voice rules apply to the copy: sentence case, possessive triad, no emoji.
 
+import { BRAND_ASSET } from "@/lib/constants"
 import Image from "next/image"
 import { useTranslations } from "next-intl"
 import type { ReactNode } from "react"
@@ -17,19 +18,19 @@ export function LayoutAuthShell({ children }: { children: ReactNode }) {
       <aside className="relative hidden flex-col justify-between overflow-hidden border-r bg-card p-12 lg:flex">
         <div className="flex items-center gap-3">
           <Image
-            src="/brand/logo-w.svg"
+            src={BRAND_ASSET.ALIEN_LOGO.src}
             alt={tBrand("alien")}
-            width={1048}
-            height={153}
+            width={BRAND_ASSET.ALIEN_LOGO.width}
+            height={BRAND_ASSET.ALIEN_LOGO.height}
             priority
             className="h-5 w-auto opacity-90"
           />
           <div className="h-6 w-px bg-border" aria-hidden />
           <Image
-            src="/brand/bnf-logo-w.png"
+            src={BRAND_ASSET.BNF_LOGO.src}
             alt={tBrand("bnf")}
-            width={960}
-            height={359}
+            width={BRAND_ASSET.BNF_LOGO.width}
+            height={BRAND_ASSET.BNF_LOGO.height}
             priority
             className="h-5.5 w-auto opacity-90"
           />

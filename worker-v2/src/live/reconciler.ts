@@ -44,8 +44,8 @@ import type { BlobStore, Logger, QueueClient } from "../core/types.js";
 import type { DocRow, DocStateStore } from "../domain/doc-state.js";
 import type { IngestRun, RunStore } from "../domain/run.js";
 import { keys } from "../domain/keys.js";
-import { LANE_QUEUE, Q, withFetchPriority } from "../domain/queues.js";
-import type { Manifest } from "../bnf/types.js";
+import { FETCH_QUEUE, LANE_QUEUE, Q, sendFolios, type FolioKind } from "../domain/queues.js";
+import type { Manifest, ManifestCanvas } from "../bnf/types.js";
 import type {
   DocReady,
   DocRef,
@@ -334,14 +334,14 @@ export class Reconciler {
     const lane = doc.lane;
     if (!lane) return await this.reseedMetadata(doc); // planned without a lane: inconsistent
 
-    let expected: number[];
+    let expected: Array<Pick<FolioItem, "ordre" | "canvas">>;
     if (lane === "text") {
       // The text fan-out is folios 1..pagesExpected (MetadataStage builds exactly
       // that), so the ordres are known without reading anything.
-      expected = Array.from({ length: pagesExpected }, (_, i) => i + 1);
+      expected = Array.from({ length: pagesExpected }, (_, i) => ({ ordre: i + 1 }));
     } else {
-      const ordres = await this.canvasOrdres(doc.ark, pagesExpected);
-      if (!ordres) {
+      const canvases = await this.canvasesFor(doc.ark, pagesExpected);
+      if (!canvases) {
         if (!doc.meta) return await this.reseedMetadata(doc);
         const req: ManifestReq = {
           projectId: doc.projectId,
@@ -354,12 +354,14 @@ export class Reconciler {
         await this.deps.queue.send(Q.manifest, req);
         return `${Q.manifest} (no cached manifest to rebuild folios from)`;
       }
-      expected = ordres;
+      // The image size is chosen from the canvas dims (bnf/image-size.ts), so a
+      // rebuilt image folio carries them exactly like the manifest fan-out's.
+      expected = canvases.map((c) => ({ ordre: c.ordre, canvas: { width: c.width, height: c.height } }));
     }
 
     const recorded = await this.deps.docState.listFolios(doc.docJobId);
     const landed = new Set(recorded.map((f) => f.ordre));
-    const missing = expected.filter((ordre) => !landed.has(ordre));
+    const missing = expected.filter((f) => !landed.has(f.ordre));
 
     if (missing.length === 0) {
       const last = recorded[recorded.length - 1];
@@ -378,24 +380,26 @@ export class Reconciler {
       return `${Q.monitor} (fan-in kick, all ${expected.length} folios already landed)`;
     }
 
-    const items: FolioItem[] = missing.map((ordre) => ({
+    const kind: FolioKind = lane === "text" ? "alto" : "image";
+    const items: FolioItem[] = missing.map((f) => ({
       docJobId: doc.docJobId,
       ark: doc.ark,
-      ordre,
-      kind: lane === "text" ? "alto" : "image",
+      ordre: f.ordre,
+      kind,
       lane,
+      ...(f.canvas ? { canvas: f.canvas } : {}),
     }));
-    await this.deps.queue.sendMany(Q.fetch, withFetchPriority(items));
-    return `${Q.fetch} (${missing.length}/${expected.length} folios)`;
+    await sendFolios(this.deps.queue, items);
+    return `${FETCH_QUEUE[kind]} (${missing.length}/${expected.length} folios)`;
   }
 
-  /** The image lanes' expected ordres, from the cached manifest; null if uncached. */
-  private async canvasOrdres(ark: string, pagesExpected: number): Promise<number[] | null> {
+  /** The image lanes' expected canvases, from the cached manifest; null if uncached. */
+  private async canvasesFor(ark: string, pagesExpected: number): Promise<ManifestCanvas[] | null> {
     const manifest = await this.deps.blob.getJson<Manifest>(keys.manifest(ark));
     if (!manifest) return null;
     // `pagesExpected` was itself the length of the (already capped) canvas slice
     // ManifestStage fanned out, so the same prefix reproduces the same ordres.
-    return manifest.canvases.slice(0, pagesExpected).map((c) => c.ordre);
+    return manifest.canvases.slice(0, pagesExpected);
   }
 
   /**

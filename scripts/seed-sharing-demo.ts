@@ -8,6 +8,7 @@
 //   npx tsx --env-file-if-exists .env.local --conditions react-server scripts/seed-sharing-demo.ts
 //
 // Idempotent: re-running reuses the accounts and the group.
+import { AUTH_ENDPOINT } from "@/lib/constants"
 import { prisma } from "@/lib/db"
 import { ProjectService } from "@/models/projects/service"
 import { ProjectQueries } from "@/models/projects/queries"
@@ -26,7 +27,7 @@ async function ensureUser(email: string, name: string) {
   const existing = await prisma.user.findUnique({ where: { email } })
   if (existing) return existing
 
-  const res = await fetch(`${BASE}/api/auth/sign-up/email`, {
+  const res = await fetch(`${BASE}${AUTH_ENDPOINT.SIGN_UP_EMAIL}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", origin: BASE },
     body: JSON.stringify({ email, password: PW, name }),

@@ -2,6 +2,8 @@
 // Typed error hierarchy for BnF MCP HTTP client failures.
 // Callers handle each error class explicitly — no silent swallowing.
 
+import type { BnfRateBucketName } from "./rate-limit"
+
 /** Base class for all BnF MCP failures. */
 export class BnfMcpError extends Error {
   constructor(message: string, public override cause?: unknown) {
@@ -46,6 +48,25 @@ export class BnfMcpQueryRefusedError extends BnfMcpError {
     super(message)
     this.name = "BnfMcpQueryRefusedError"
     this.problems = problems
+  }
+}
+
+/**
+ * The APP's own BnF MCP rate limiter (lib/mcp/rate-limit.ts) could not grant a
+ * token within its bounded wait: the call was NEVER sent. Distinct from
+ * `BnfMcpRateLimitError` (BnF answered 429 — the quota was already blown).
+ * `api` names the saturated bucket so the agent is told which quota it shares
+ * with every other agent of the application; `waitedMs` is how long the caller
+ * queued before being shed.
+ */
+export class BnfMcpQuotaSaturatedError extends BnfMcpError {
+  constructor(
+    public readonly api: BnfRateBucketName,
+    public readonly waitedMs: number,
+    m = `BnF MCP quota saturated (${api}) — call not sent`,
+  ) {
+    super(m)
+    this.name = "BnfMcpQuotaSaturatedError"
   }
 }
 

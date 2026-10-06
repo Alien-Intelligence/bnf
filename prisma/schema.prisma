@@ -64,6 +64,12 @@ model Session {
   expiresAt DateTime  @map("expires_at")
   ipAddress String?   @map("ip_address")
   userAgent String?   @map("user_agent")
+  // How this session was opened — models/users/schema.ts LOGIN_METHOD. Written
+  // by the better-auth session.create hook (lib/auth.ts). Null for sessions
+  // opened before the column existed or by an endpoint the app does not
+  // expose; sign-out then falls back to "has an Authentik account"
+  // (UserService.signOut).
+  loginMethod String? @map("login_method")
   createdAt DateTime  @default(now()) @map("created_at")
   updatedAt DateTime  @updatedAt @map("updated_at")
 
@@ -330,6 +336,85 @@ model Document {
 }
 
 // -----------------------------------------------------------------------------
+// DocumentOcr — OCR quality of a BnF document, keyed by ARK ALONE (not per
+// project): it is a property of the BnF content, which the worker caches and
+// shares across projects (worker-v2/src/domain/keys.ts). Mirrors the worker's
+// ocr-quality/<slug>.json artifact; written only by DocumentService (driven by
+// lib/documents/ocr-sync.ts and IngestService's commit). Every read takes the
+// reader's corpus project (DocumentQueries), so this global table is never an
+// oracle for another project's corpus.
+// status: available | building | unavailable | quarantined (OCR_SYNC_STATUS).
+// No row = pending. The sync bookkeeping (next check, resync request, attempts,
+// last error) is persisted so a restart loses nothing and a poison ARK backs
+// off and is quarantined instead of starving the sweep.
+// -----------------------------------------------------------------------------
+model DocumentOcr {
+  ark               String    @id
+  status            String
+  // "Taux OCR" / 100 from the IIIF manifest; null when BnF publishes none.
+  ocrRate           Float?    @map("ocr_rate")
+  // Why the quality is not available (status unavailable / quarantined).
+  reason            String?
+  // When the last EVIDENCE about this ARK was recorded: an answer (its
+  // question's time), or a rejection / strike / lone failure (strictly after
+  // its question). "checkedAt > askedAt" means something newer was recorded
+  // while a question was in flight — the failure writes are compare-and-set on
+  // it, so two drainers never record one failure twice. For a `pending` row:
+  // when it was first asked.
+  checkedAt         DateTime  @map("checked_at")
+  // Last time the folios below were replaced from an artifact (status=available).
+  syncedAt          DateTime? @map("synced_at")
+  // When the sweep asks again; null = not before a resync request (an
+  // available row; a quarantined one has its long backoff here).
+  nextCheckAt       DateTime? @map("next_check_at")
+  // Set by a re-ingest commit: re-pull even though the row is available (the
+  // document may have been re-OCR'd). Cleared by the next `available` answer.
+  resyncRequestedAt DateTime? @map("resync_requested_at")
+  // Consecutive rejections of this ARK's answers (a 400 naming it, an artifact
+  // of the expected version that fails its schema); quarantined at
+  // OCR_SYNC_MAX_ATTEMPTS. Reset by any accepted answer and by a resync request.
+  syncAttempts      Int       @default(0) @map("sync_attempts")
+  // Consecutive requests this ARK was part of that failed on the TRANSPORT
+  // (batch or alone). Evidence about no document on its own: at 2 the ARK is
+  // asked alone (lib/documents/ocr-sync.ts). Reset by any answer and by a
+  // resync request.
+  outageCount       Int       @default(0) @map("outage_count")
+  // Outage strikes: drains in which this ARK, asked ALONE, failed twice, each
+  // time right after answered controls (lib/documents/ocr-sync.ts).
+  // Quarantined (worker_fails_alone, long backoff) at OCR_SYNC_MAX_ATTEMPTS.
+  // Reset by any answer for the ARK and by a resync request.
+  outageStrikes     Int       @default(0) @map("outage_strikes")
+  // For an `incompatible` row: the artifact version the app expected when it
+  // recorded it. At boot, rows recorded against another version than the
+  // running app's are due again at once (the deploy that fixes the skew).
+  expectedVersion   Int?      @map("expected_version")
+  folios            DocumentFolio[]
+
+  // Sweep lookup: rows due for a recheck.
+  @@index([nextCheckAt])
+  @@map("document_ocr")
+}
+
+// -----------------------------------------------------------------------------
+// DocumentFolio — per-folio OCR quality of one prepared page. ocrQuality = mean
+// ALTO word confidence (WC) in [0,1]; null when unscored (a mistral/vision page,
+// or an ALTO page without WC). wordCount is the ALTO word count, null for
+// non-ALTO sources. "Low" is NOT stored: it is ocrQuality <
+// OCR_LOW_QUALITY_THRESHOLD, decided at read time (lib/ocr/quality.ts isLowOcr).
+// -----------------------------------------------------------------------------
+model DocumentFolio {
+  ark        String
+  folio      Int
+  ocrSource  String      @map("ocr_source") // alto | mistral | vision (OCR_SOURCE)
+  ocrQuality Float?      @map("ocr_quality")
+  wordCount  Int?        @map("word_count")
+  document   DocumentOcr @relation(fields: [ark], references: [ark], onDelete: Cascade)
+
+  @@id([ark, folio])
+  @@map("document_folio")
+}
+
+// -----------------------------------------------------------------------------
 // CorpusVersion — immutable membership snapshot.
 // seq: monotonic per project (1, 2, 3 …).
 // status: draft | sealed | ingested | failed  (enums in models/corpus/schema.ts).
@@ -397,6 +482,9 @@ model AppSession {
   activeMessageId String?   @unique @map("active_message_id")
   systemPrompt    String?   @map("system_prompt") // Cached rendered prompt (corpus or research); re-generated on memory change
   promptLocale    String?   @map("prompt_locale") // Locale the cached systemPrompt was rendered in; a turn in another locale rebuilds it
+  promptRevision  String?   @map("prompt_revision") // PROMPT_REVISION the cached systemPrompt was rendered at; a prompt-text change (new revision) rebuilds it
+  promptEpoch     Int       @default(0) @map("prompt_epoch") // Bumped by every invalidation; a rendered prompt is cached only if the epoch did not move while it rendered (compare-and-set)
+  spawnRuns       Int       @default(0) @map("spawn_runs") // spawn_research runs admitted in this session (claimed atomically against SPAWN_MAX_PER_SESSION; refusals never count)
   // Auto-compaction checkpoint (agent-context-survival Slice 2). `synopsis` is a
   // model-produced summary standing in for the first `compactedMessageCount`
   // messages of this session's history (the SDK CompactionCheckpoint shape); the
@@ -686,23 +774,45 @@ model Feedback {
 //     sole version creator (playbook/corpus-versioning.md invariant).
 //   - Rows are transient scratch, deduped per ARK, cleared on commit or clear.
 // Metadata is denormalised at search time (nullable until a hit carries it) so
-// the buffer panel + buffer_stats can facet without a Document join.
-// status: BUFFER_STATUS in models/buffer/schema.ts (String, no native enum —
-// per this file's convention).
+// the buffer panel + buffer_stats can facet without a Document join. A bare row
+// (staged by buffer_add with an ARK only) is enriched in the background
+// (enrichStatus, lib/buffer/enricher.ts): from a resolved same-project Document
+// first, otherwise through the broker (OAI-PMH / catalogue SRU) — never inline.
+// docType holds the CANONICAL code (the corpus vocabulary, so `type:["press"]`
+// means the same thing in the buffer and the corpus); the hit's own label is
+// kept verbatim in docTypeRaw. arkKind is WHAT the record is (ARK_KIND in
+// models/documents/schema.ts). classifierVersion gates the boot-time
+// reclassifier (lib/buffer/reclassify.ts).
+// status / enrichStatus: BUFFER_STATUS / BUFFER_ENRICH_STATUS in
+// models/buffer/schema.ts (String, no native enum — per this file's convention).
 // -----------------------------------------------------------------------------
 model BufferItem {
   id        String  @id @default(uuid())
   projectId String  @map("project_id")
   ark       String
   // Denormalised metadata captured from the search hit (null until a hit
-  // carries it). Never resolved in the background — the corpus is the resolved
-  // store; the buffer is pre-commit scratch.
-  title   String?
-  year    Int?
-  docType String? @map("doc_type")
-  lang    String?
-  source  String?
-  snippet String?
+  // carries it, or until background enrichment fills a bare row).
+  title             String?
+  year              Int?
+  docType           String?  @map("doc_type") // canonical code (DOC_TYPE)
+  lang              String? // canonical code (canonicalLang)
+  source            String?
+  snippet           String?
+  docTypeRaw        String?  @map("doc_type_raw") // the hit's own dc:type label, verbatim
+  arkKind           String?  @map("ark_kind") // ARK_KIND (models/documents/schema.ts)
+  creator           String? // Gallica creator / catalogue author
+  publisher         String?
+  dateLabel         String?  @map("date_label") // full BnF date string ("1861-1946", "1937-07-12")
+  yearEnd           Int?     @map("year_end") // last year of a range label; null = single year
+  subjects          String? // Rameau/dc:subject labels joined with " ; "
+  gallicaUrl        String?  @map("gallica_url")
+  catalogueUrl      String?  @map("catalogue_url")
+  searchCollapsing  Boolean? @map("search_collapsing") // provenance: collapsing mode of the staging search
+  enrichStatus      String?  @map("enrich_status") // null | pending | resolved | failed (BUFFER_ENRICH_STATUS)
+  enrichAttempts    Int      @default(0) @map("enrich_attempts")
+  enrichError       String?  @map("enrich_error")
+  enrichNextAttemptAt DateTime? @map("enrich_next_attempt_at") // backoff: a failed row is not retried before this instant
+  classifierVersion Int      @default(0) @map("classifier_version")
   // Provenance + lifecycle.
   originTool       String  @map("origin_tool") // which tool produced it, e.g. "corpus_search"
   originQuery      String? @map("origin_query") // the query string that surfaced it
@@ -715,5 +825,7 @@ model BufferItem {
 
   @@unique([projectId, ark]) // dedupe candidates by ARK (upsert target)
   @@index([projectId, status])
+  @@index([projectId, enrichStatus]) // enrichment drain lookup
+  @@index([classifierVersion]) // boot reclassifier: rows below the current version
   @@map("buffer_item")
 }

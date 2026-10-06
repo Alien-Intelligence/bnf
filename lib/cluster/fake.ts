@@ -1,7 +1,7 @@
 import "server-only"
 // lib/cluster/fake.ts
 // FakeClusterRunner — simulates the four ingestion stages in-process.
-// Used when CLUSTER_MODE=fake (the default in dev).
+// Used when CLUSTER_MODE=fake (set explicitly; unset throws — lib/cluster/mode.ts).
 //
 // The fake runner fires-and-forgets a setImmediate loop that walks through the
 // four stages (extract → chunk → embed → index), posting signed progress events

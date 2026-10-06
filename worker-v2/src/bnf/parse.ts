@@ -11,10 +11,10 @@
  * BnfClient interface, the client depends on the broker, the parsers depend on
  * nothing.
  */
-import { XMLParser } from "fast-xml-parser";
+import { XMLParser, XMLValidator } from "fast-xml-parser";
 
-import type { Manifest, ManifestCanvas } from "./types.js";
-import { PermanentBnfError } from "./errors.js";
+import type { AltoFolio, Manifest, ManifestCanvas } from "./types.js";
+import { PermanentBnfError, TransientBnfError } from "./errors.js";
 
 // ---------------------------------------------------------------------------
 // XML parsers — single instance each, configured once (verbatim from V1).
@@ -42,7 +42,10 @@ export const oaiParser = new XMLParser({
   trimValues: true,
 });
 
-/** ALTO parser: preserves @_CONTENT on String tags and TextLine structure. */
+/** ALTO parser: preserves @_CONTENT on String tags and TextLine structure.
+ *  Every container the walk iterates is always-array: a SINGLE child element
+ *  otherwise arrives as an object, and the walk (Array.isArray guards) would
+ *  silently skip it — a lone ComposedBlock used to drop all its words. */
 const altoParser = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: "@_",
@@ -50,6 +53,7 @@ const altoParser = new XMLParser({
     name === "String" ||
     name === "TextLine" ||
     name === "TextBlock" ||
+    name === "ComposedBlock" ||
     name === "Page",
   parseAttributeValue: false,
   parseTagValue: false,
@@ -343,7 +347,7 @@ export function iiifV3Values(v: unknown): string[] {
 /** First metadata value whose (case-insensitive) label matches any candidate. */
 export function metadataValue(
   metadata: Array<{ label: string; value: string }>,
-  labels: string[],
+  labels: readonly string[],
 ): string | null {
   const wanted = new Set(labels.map((l) => l.toLowerCase().trim()));
   for (const { label, value } of metadata) {
@@ -355,82 +359,280 @@ export function metadataValue(
 }
 
 // ---------------------------------------------------------------------------
-// ALTO text extraction
+// "Taux OCR" — the document-level OCR rate the IIIF manifest publishes
 // ---------------------------------------------------------------------------
 
 /**
- * Extract text from ALTO XML: concatenate <String CONTENT="..."> across
- * <TextLine> tags, joining words with spaces and lines with newlines. Returns
- * "" for malformed / structurally-empty ALTO (a legitimately text-less folio).
+ * Manifest metadata labels (case-insensitive, see metadataValue) under which
+ * BnF publishes the document-level OCR rate. The first two are Gallica's French
+ * labels; "ocr rate" is the English label mcp-bnf also matches
+ * (MCPs/mcp-bnf/src/clients/bnf_document_client.py:141-159). Presence of the row
+ * is the text-lane routing signal (BnfDocInfo.ocrAvailable); its VALUE is
+ * BnfDocInfo.ocrRate.
  */
-export function parseAltoText(xml: string): string {
-  let parsed: unknown;
-  try {
-    parsed = altoParser.parse(xml);
-  } catch {
-    return "";
-  }
-  const root = (parsed as Record<string, unknown>).alto as
-    | Record<string, unknown>
-    | undefined;
-  if (!root) return "";
-  const layout = root.Layout as Record<string, unknown> | undefined;
-  if (!layout) return "";
-  const pages = Array.isArray(layout.Page) ? (layout.Page as unknown[]) : [];
+export const TAUX_OCR_LABELS = ["taux ocr", "taux d'ocr", "ocr rate"] as const;
 
-  const lines: string[] = [];
-  for (const page of pages) {
-    if (!page || typeof page !== "object") continue;
-    const printSpace = (page as Record<string, unknown>).PrintSpace as
-      | Record<string, unknown>
-      | undefined;
-    if (!printSpace) continue;
-    collectLines(printSpace, lines);
-  }
-  return lines.join("\n").trim();
+/**
+ * What a "Taux OCR" metadata value parses to. The three non-`ok` kinds are kept
+ * apart so the caller can log what it saw (`missing` is normal — image documents
+ * have no OCR; `unparseable` / `out_of_range` mean BnF published something we do
+ * not understand) instead of collapsing them into one silent null.
+ */
+export type OcrRateParse =
+  | { kind: "ok"; rate: number }
+  | { kind: "missing" }
+  | { kind: "unparseable"; raw: string }
+  | { kind: "out_of_range"; raw: string };
+
+/** The plain doc-level rate: a number for an `ok` parse, null otherwise. */
+export function ocrRateValue(p: OcrRateParse): number | null {
+  return p.kind === "ok" ? p.rate : null;
 }
 
 /**
- * Walk an ALTO subtree collecting one string per TextLine. TextBlocks group
- * TextLines and TextLines group Strings; the spec also allows ComposedBlock
- * containers — we recurse defensively.
+ * Parse a "Taux OCR" metadata value ("78.21 %", "89,59 %", "100 %") into a
+ * fraction in [0, 1], rounded to 4 decimals — a port of mcp-bnf's
+ * `BnfDocumentClient._extract_ocr_rate` (bnf_document_client.py:141-159: strip
+ * the %, comma → dot, /100, round 4) with two additions that port lacks:
+ *   - a [0, 100] range check — "150 %" is out_of_range here, 1.5 there (bug B7,
+ *     reported against mcp-bnf separately; it is frozen this round);
+ *   - the " | " multi-value joiner of parseV3ManifestMetadata is split and the
+ *     first value taken.
+ * Never a default, never coerced.
  */
-function collectLines(node: Record<string, unknown>, out: string[]): void {
-  const textBlocks = Array.isArray(node.TextBlock) ? (node.TextBlock as unknown[]) : [];
-  for (const tb of textBlocks) {
-    if (!tb || typeof tb !== "object") continue;
-    const tbObj = tb as Record<string, unknown>;
-    const textLines = Array.isArray(tbObj.TextLine) ? (tbObj.TextLine as unknown[]) : [];
-    for (const tl of textLines) {
-      if (!tl || typeof tl !== "object") continue;
-      const strings = Array.isArray((tl as Record<string, unknown>).String)
-        ? ((tl as Record<string, unknown>).String as unknown[])
-        : [];
+export function parseOcrRate(raw: string | null): OcrRateParse {
+  if (raw === null) return { kind: "missing" };
+  const joiner = raw.indexOf(" | ");
+  const first = joiner === -1 ? raw : raw.slice(0, joiner);
+  const cleaned = first.replace(/%/g, "").replace(/,/g, ".").trim();
+  if (!/^\d+(\.\d+)?$/.test(cleaned)) return { kind: "unparseable", raw };
+  const pct = Number(cleaned);
+  if (pct > 100) return { kind: "out_of_range", raw };
+  return { kind: "ok", rate: round4(pct / 100) };
+}
+
+/**
+ * THE "Taux OCR" lookup of a manifest's metadata — done once per manifest by
+ * its reader (MetadataStage), which logs an unusable value and hands the parse
+ * to docInfoFromManifest.
+ */
+export function tauxOcrOf(metadata: Array<{ label: string; value: string }>): OcrRateParse {
+  return parseOcrRate(metadataValue(metadata, TAUX_OCR_LABELS));
+}
+
+function round4(n: number): number {
+  return Math.round(n * 10_000) / 10_000;
+}
+
+// ---------------------------------------------------------------------------
+// ALTO text extraction + per-folio word confidence
+// ---------------------------------------------------------------------------
+
+/**
+ * Everything one folio's ALTO XML yields: the extracted text (unchanged from
+ * the V1 extraction) plus the word-confidence statistics the OCR-quality
+ * feature rests on (plan D1 — ai-memories/tech/repos/bnf/feedback-2026-09-29).
+ */
+export interface AltoParse {
+  text: string;
+  /** <String> elements with a non-empty CONTENT — the words in `text`. */
+  wordCount: number;
+  /** Subset of those carrying a WC that parses to a finite number in [0, 1]. */
+  scoredWordCount: number;
+  /**
+   * Mean WC over the scored words, rounded to 4 decimals. Null when no word is
+   * scored (an ALTO without WC, or an empty folio) — never a default 0, which
+   * would read as "every word unreliable".
+   */
+  meanWordConfidence: number | null;
+  /**
+   * WC attributes that were present but non-numeric or outside [0, 1]. Excluded
+   * from the mean and never coerced; the caller logs the count (alto_invalid_wc).
+   */
+  invalidWcCount: number;
+}
+
+/**
+ * The ONE AltoParse → AltoFolio mapping, shared by the live client and the fake
+ * so both produce the sidecar from the same parse (fetchAltoFolio).
+ */
+export function altoFolioFromParse(parsed: AltoParse): AltoFolio {
+  return {
+    text: parsed.text,
+    empty: parsed.text.trim() === "",
+    quality: {
+      v: 1,
+      wordCount: parsed.wordCount,
+      scoredWordCount: parsed.scoredWordCount,
+      meanWc: parsed.meanWordConfidence,
+    },
+    invalidWcCount: parsed.invalidWcCount,
+  };
+}
+
+/** The AltoFolio for a folio BnF has no text for (ALTO 404). */
+export function emptyAltoFolio(): AltoFolio {
+  return {
+    text: "",
+    empty: true,
+    quality: { v: 1, wordCount: 0, scoredWordCount: 0, meanWc: null },
+    invalidWcCount: 0,
+  };
+}
+
+/** Mutable tally threaded through the collectLines walk. */
+interface AltoStats {
+  words: number;
+  scored: number;
+  wcSum: number;
+  invalid: number;
+}
+
+/**
+ * Parse ALTO XML: concatenate <String CONTENT="..."> across <TextLine> tags
+ * (words joined with spaces, lines with newlines — byte-identical to the V1
+ * extraction) and accumulate the WC statistics in the same pass.
+ *
+ * Structurally-empty ALTO (an <alto> root with no Layout / PrintSpace / words)
+ * is a legitimately text-less folio: `{text: "", wordCount: 0,
+ * meanWordConfidence: null}`.
+ *
+ * Everything else that is not a readable ALTO throws
+ * TransientBnfError("alto_parse_failed") (B9) — transient so the fetch stage
+ * retries, and a persistent one counts the folio as lost (fail-ratio) instead of
+ * silently shipping a wrong page:
+ *   - a body that is not well-formed XML (XMLValidator). fast-xml-parser alone
+ *     only throws on a tag truncated mid-attribute; a body cut BETWEEN elements
+ *     (a chunked response closed after a complete tag) parses "fine" and would
+ *     return the words seen so far — a shorter page, read as complete;
+ *   - a well-formed body with no <alto> root (an HTML error page served as 200);
+ *   - an <alto>, <Layout>, <Page>, <PrintSpace>, <TextBlock>, <TextLine> or
+ *     <ComposedBlock> that carries text instead of elements — read as an
+ *     empty page it would be a confident blank folio.
+ */
+export function parseAlto(xml: string): AltoParse {
+  const valid = XMLValidator.validate(xml);
+  if (valid !== true) {
+    throw altoParseFailure(`not well-formed XML: ${valid.err.msg} (line ${valid.err.line})`);
+  }
+  let parsed: unknown;
+  try {
+    parsed = altoParser.parse(xml);
+  } catch (e) {
+    throw altoParseFailure(e instanceof Error ? e.message : String(e));
+  }
+  if (!isRecord(parsed) || !("alto" in parsed)) {
+    throw altoParseFailure("body parsed but has no <alto> root element");
+  }
+  const root = elementOrEmpty(parsed.alto, "<alto>");
+  if (root.Layout === undefined) throw altoParseFailure("<alto> has no <Layout>");
+  const layout = elementOrEmpty(root.Layout, "<Layout>");
+  const pages = Array.isArray(layout.Page) ? (layout.Page as unknown[]) : [];
+
+  const lines: string[] = [];
+  const stats: AltoStats = { words: 0, scored: 0, wcSum: 0, invalid: 0 };
+  for (const rawPage of pages) {
+    const page = elementOrEmpty(rawPage, "<Page>");
+    if (page.PrintSpace === undefined) continue;
+    collectLines(elementOrEmpty(page.PrintSpace, "<PrintSpace>"), lines, stats);
+  }
+  return {
+    text: lines.join("\n").trim(),
+    wordCount: stats.words,
+    scoredWordCount: stats.scored,
+    meanWordConfidence: stats.scored > 0 ? round4(stats.wcSum / stats.scored) : null,
+    invalidWcCount: stats.invalid,
+  };
+}
+
+function altoParseFailure(hint: string): TransientBnfError {
+  return new TransientBnfError("alto_parse_failed", { hint });
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return v !== null && typeof v === "object" && !Array.isArray(v);
+}
+
+/**
+ * An ALTO element as the walk reads it: its children object, or `{}` for an
+ * empty element (`<Layout/>` parses to ""). Text content where elements belong
+ * is not ALTO — throw rather than read it as an empty page.
+ */
+function elementOrEmpty(v: unknown, what: string): Record<string, unknown> {
+  if (isRecord(v)) {
+    // Mixed content: text next to the child elements would be dropped.
+    if (TEXT_NODE in v) throw altoParseFailure(`${what} mixes text with ALTO elements`);
+    return v;
+  }
+  if (v === "") return {};
+  throw altoParseFailure(`${what} carries text, not ALTO elements`);
+}
+
+/** fast-xml-parser's key for an element's text content (its default textNodeName). */
+const TEXT_NODE = "#text";
+
+/** The children of one ALTO element kind (the parser's isArray makes each a list); none → []. */
+function childList(v: unknown): unknown[] {
+  if (v === undefined) return [];
+  if (Array.isArray(v)) return v;
+  return [v];
+}
+
+/**
+ * A WC attribute as a number in [0, 1], or null when it is not one. BnF writes
+ * WC as "1" or "0.34" (parseAttributeValue is off, so it arrives as a string).
+ * Only a plain decimal is accepted — Number("") is 0 and Number("0x1") is 1,
+ * neither of which is a confidence anyone wrote.
+ */
+function parseWordConfidence(raw: unknown): number | null {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  if (!/^\d+(\.\d+)?$/.test(trimmed)) return null;
+  const n = Number(trimmed);
+  if (!Number.isFinite(n) || n < 0 || n > 1) return null;
+  return n;
+}
+
+/**
+ * Walk an ALTO subtree collecting one string per TextLine and tallying each
+ * word's WC. TextBlocks group TextLines and TextLines group Strings; the spec
+ * also allows ComposedBlock containers — we recurse defensively.
+ */
+function collectLines(node: Record<string, unknown>, out: string[], stats: AltoStats): void {
+  for (const rawBlock of childList(node.TextBlock)) {
+    const block = elementOrEmpty(rawBlock, "<TextBlock>");
+    for (const rawLine of childList(block.TextLine)) {
+      const line = elementOrEmpty(rawLine, "<TextLine>");
       const words: string[] = [];
-      for (const s of strings) {
-        if (!s || typeof s !== "object") continue;
-        const content = (s as Record<string, unknown>)["@_CONTENT"];
-        if (typeof content === "string" && content.length > 0) {
-          words.push(content);
+      for (const s of childList(line.String)) {
+        if (s === "") continue; // <String/> carries no word
+        // A word is its CONTENT attribute; text content instead of (or next
+        // to) it is not an ALTO word and would be silently dropped.
+        if (!isRecord(s) || TEXT_NODE in s) throw altoParseFailure("<String> carries text content, not CONTENT");
+        const content = s["@_CONTENT"];
+        if (typeof content !== "string" || content.length === 0) continue;
+        words.push(content);
+        stats.words += 1;
+        // A WC on an empty String never reaches here: only words carry a score.
+        const wc = s["@_WC"];
+        if (wc === undefined) continue;
+        const confidence = parseWordConfidence(wc);
+        if (confidence === null) {
+          stats.invalid += 1;
+        } else {
+          stats.scored += 1;
+          stats.wcSum += confidence;
         }
       }
       if (words.length > 0) out.push(words.join(" "));
     }
     // ALTO can also nest ComposedBlock → TextBlock; recurse.
-    if (Array.isArray(tbObj.ComposedBlock)) {
-      for (const cb of tbObj.ComposedBlock as unknown[]) {
-        if (cb && typeof cb === "object") {
-          collectLines(cb as Record<string, unknown>, out);
-        }
-      }
+    for (const cb of childList(block.ComposedBlock)) {
+      collectLines(elementOrEmpty(cb, "<ComposedBlock>"), out, stats);
     }
   }
   // PrintSpace might also host ComposedBlock at the top level.
-  if (Array.isArray(node.ComposedBlock)) {
-    for (const cb of node.ComposedBlock as unknown[]) {
-      if (cb && typeof cb === "object") {
-        collectLines(cb as Record<string, unknown>, out);
-      }
-    }
+  for (const cb of childList(node.ComposedBlock)) {
+    collectLines(elementOrEmpty(cb, "<ComposedBlock>"), out, stats);
   }
 }

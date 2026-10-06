@@ -15,20 +15,25 @@ import "server-only"
 import {
   DATACLUSTER_DATASET_SLUG_PREFIX,
   DATACLUSTER_LIST_PAGE_SIZE,
-  RAG_DEFAULT_K,
 } from "@/lib/constants"
 import { prisma } from "@/lib/db"
+import { raceAbort } from "@/lib/mcp/abort"
+import { countFolioHeadings, pageChunkChecker, type FolioChunk } from "./folio-text"
 import {
   DataclusterMcpClient,
+  DataclusterMcpError,
   DataclusterMcpNotFoundError,
+  DataclusterMcpProtocolError,
+  DataclusterMcpToolError,
 } from "./datacluster-mcp-client"
+import type { DataclusterChunk, DataclusterKeywordHit } from "./datacluster-mcp-client"
+import { chunkToPassage, folioChunksOf, foliosForEntry, liveEntryIds, pickLiveEntryId, toEntryContent } from "./rag-wire"
+import { RAG_LOOKUP_STATUS } from "./rag"
 import type {
-  DataclusterChunk,
-  DataclusterKeywordHit,
-} from "./datacluster-mcp-client"
-import type {
-  RagEntryContent,
+  DocumentFoliosRequest,
+  DocumentFoliosResult,
   RagEntryContentRequest,
+  RagEntryContentResult,
   RagKeywordHit,
   RagKeywordRequest,
   RagKeywordResponse,
@@ -43,69 +48,98 @@ const MAX_DATASET_PAGES = 50
 const MODEL_VERSION = "datacluster-mcp"
 
 /**
+ * Keyword hits requested per page when resolving an ARK to its entries. One
+ * entry is the steady state; more than a page only after many lagging
+ * re-ingests, which the lookup pages through.
+ */
+const ARK_LOOKUP_PAGE_SIZE = 20
+
+/** Chunks per page when listing an entry's chunks (the MCP's maximum). */
+const CHUNK_LIST_PAGE_SIZE = 100
+/** Pages of chunks one entry may need: one chunk per page, 10 000 pages. */
+const CHUNK_LIST_MAX_PAGES = 100
+/** Chunk pages fetched in parallel (each is a vector search, ~1–3 s on the dev cluster). */
+const CHUNK_LIST_CONCURRENCY = 4
+
+/**
  * Resolve the project's numeric cluster dataset id, persisting it on first use.
  *
- * Reads `Project.clusterDatasetId` first; on a miss, pages through the cluster's
- * dataset list matching slug `bnf-<projectId>`, writes the id back to the
- * project, and returns it.
+ * Reads `Project.clusterDatasetId` first and checks it still names dataset
+ * `bnf-<projectId>`; on a miss (or a stale id), pages through the cluster's
+ * dataset list matching that slug, writes the id back to the project, and
+ * returns it.
  *
- * Throws DataclusterMcpNotFoundError if the project has no dataset in the
- * cluster — an inconsistency, since the rag_query tool only calls us after an
- * ingestion has been committed.
+ * Throws DataclusterMcpNotFoundError when the walk completed and no dataset
+ * has the slug — an inconsistency, since the rag tools only call us after an
+ * ingestion has been committed — and a plain DataclusterMcpError when it gave
+ * up after MAX_DATASET_PAGES without reaching the end (the dataset may exist).
+ * The database awaits are raced against the caller's signal.
  */
 async function resolveDatasetId(
   projectId: string,
   client: DataclusterMcpClient,
+  signal: AbortSignal,
 ): Promise<number> {
-  const project = await prisma.project.findUniqueOrThrow({
-    where: { id: projectId },
-    select: { clusterDatasetId: true },
-  })
-  if (project.clusterDatasetId !== null) return project.clusterDatasetId
-
+  const project = await raceAbort(
+    prisma.project.findUniqueOrThrow({
+      where: { id: projectId },
+      select: { clusterDatasetId: true },
+    }),
+    signal,
+  )
   const slug = `${DATACLUSTER_DATASET_SLUG_PREFIX}${projectId}`
+
+  // A cached id is checked before use: when the dataset was recreated (the
+  // worker re-registers after `register_receipt_stale`), the old id names a
+  // dead or foreign dataset, and every read would look like an empty corpus.
+  if (project.clusterDatasetId !== null) {
+    const cached = await cachedDatasetStillLive(client, project.clusterDatasetId, slug)
+    if (cached) return project.clusterDatasetId
+    console.warn(
+      `[rag] project ${projectId}: cached cluster dataset ${project.clusterDatasetId} is no longer "${slug}"; re-resolving`,
+    )
+  }
 
   for (let page = 0; page < MAX_DATASET_PAGES; page++) {
     const offset = page * DATACLUSTER_LIST_PAGE_SIZE
     const datasets = await client.listDatasets(DATACLUSTER_LIST_PAGE_SIZE, offset)
     const match = datasets.find((d) => d.slug === slug)
     if (match) {
-      await prisma.project.update({
-        where: { id: projectId },
-        data: { clusterDatasetId: match.id },
-      })
+      await raceAbort(
+        prisma.project.update({
+          where: { id: projectId },
+          data: { clusterDatasetId: match.id },
+        }),
+        signal,
+      )
       return match.id
     }
-    // Short page → no more datasets to walk.
-    if (datasets.length < DATACLUSTER_LIST_PAGE_SIZE) break
+    // Short page → the walk reached the end: the dataset does not exist.
+    if (datasets.length < DATACLUSTER_LIST_PAGE_SIZE) {
+      throw new DataclusterMcpNotFoundError(
+        `No data-cluster dataset found for project ${projectId} (slug "${slug}"). ` +
+          `The corpus may not have finished ingesting into the cluster.`,
+      )
+    }
   }
 
-  throw new DataclusterMcpNotFoundError(
-    `No data-cluster dataset found for project ${projectId} (slug "${slug}"). ` +
-      `The corpus may not have finished ingesting into the cluster.`,
+  throw new DataclusterMcpError(
+    `Gave up resolving the data-cluster dataset of project ${projectId} (slug "${slug}") after ` +
+      `${MAX_DATASET_PAGES} pages of ${DATACLUSTER_LIST_PAGE_SIZE} datasets without reaching the end of the list`,
   )
 }
 
 /**
- * Map a cluster chunk to a RagPassage. Returns null when the chunk carries no
- * ARK — it cannot serve as a citation source, so it is dropped (never cited
- * without an ARK; never an invented one). Folio is preserved when present and
- * left null otherwise (single-image documents may have no folio).
+ * Is the cached dataset id still this project's dataset? A tool error from
+ * `datacluster_get_dataset` (the dataset is gone) or another slug means no.
+ * Any other failure (transport, auth, protocol) propagates.
  */
-function chunkToPassage(chunk: DataclusterChunk): RagPassage | null {
-  const { ark, folio, char_start, char_end, entry_id } = chunk.metadata
-  if (typeof ark !== "string" || ark.length === 0) return null
-
-  return {
-    ark,
-    folio: typeof folio === "number" ? folio : null,
-    snippet: chunk.chunk_text,
-    score: chunk.score,
-    charRange: [
-      typeof char_start === "number" ? char_start : 0,
-      typeof char_end === "number" ? char_end : 0,
-    ],
-    entryId: typeof entry_id === "number" ? entry_id : null,
+async function cachedDatasetStillLive(client: DataclusterMcpClient, datasetId: number, slug: string): Promise<boolean> {
+  try {
+    return (await client.getDataset(datasetId)).slug === slug
+  } catch (err) {
+    if (err instanceof DataclusterMcpToolError) return false
+    throw err
   }
 }
 
@@ -118,10 +152,10 @@ function toMetadataFilters(
 ): Record<string, string> | undefined {
   if (!filters) return undefined
   const out: Record<string, string> = {}
-  if (filters.type) out.docType = filters.type
-  if (filters.subtype) out.subtype = filters.subtype
-  if (filters.lang) out.lang = filters.lang
-  if (filters.source) out.source = filters.source
+  if (filters.type !== undefined) out.docType = filters.type
+  if (filters.subtype !== undefined) out.subtype = filters.subtype
+  if (filters.lang !== undefined) out.lang = filters.lang
+  if (filters.source !== undefined) out.source = filters.source
   return Object.keys(out).length > 0 ? out : undefined
 }
 
@@ -141,16 +175,15 @@ function keywordHitToRag(hit: DataclusterKeywordHit): RagKeywordHit | null {
 
 export const RealRagRunner = {
   async query(req: RagQueryRequest): Promise<RagQueryResponse> {
-    const client = new DataclusterMcpClient()
-    const datasetId = await resolveDatasetId(req.projectId, client)
+    const client = new DataclusterMcpClient({ signal: req.signal })
+    const datasetId = await resolveDatasetId(req.projectId, client, req.signal)
 
-    // NB: `req.filters` (type/lang/source/year) are NOT pushed down — the
-    // cluster's vector search only filters by dataset_ids / entry_ids /
-    // score_threshold. Same limitation as FakeRagRunner; the agent narrows
-    // scope through the query text instead.
+    // The cluster's vector search filters by dataset_ids / entry_ids /
+    // score_threshold only, so the request carries no facet filters (the
+    // rag_query tool reports any it was given as ignored).
     const data = await client.vectorSearchChunks({
       query: req.query,
-      limit: req.k ?? RAG_DEFAULT_K,
+      limit: req.k,
       datasetIds: [datasetId],
     })
 
@@ -166,8 +199,8 @@ export const RealRagRunner = {
   },
 
   async keywordSearch(req: RagKeywordRequest): Promise<RagKeywordResponse> {
-    const client = new DataclusterMcpClient()
-    const datasetId = await resolveDatasetId(req.projectId, client)
+    const client = new DataclusterMcpClient({ signal: req.signal })
+    const datasetId = await resolveDatasetId(req.projectId, client, req.signal)
 
     const data = await client.keywordSearch({
       query: req.query,
@@ -180,28 +213,149 @@ export const RealRagRunner = {
       .map(keywordHitToRag)
       .filter((h): h is RagKeywordHit => h !== null)
 
-    return { hits, total: data.pagination?.total ?? hits.length }
+    // `total` is the cluster's count of matching entries, which mcp-datacluster
+    // always reports (keyword_search.py). Without it the response is not one
+    // the contract allows; `hits.length` would understate any paged search.
+    const total = data.pagination?.total
+    if (total === undefined) {
+      throw new DataclusterMcpProtocolError("datacluster_keyword_search returned no pagination.total")
+    }
+    return { hits, total }
   },
 
-  async getEntryContent(req: RagEntryContentRequest): Promise<RagEntryContent> {
-    // NB: get_entry_content is keyed by entry_id only (no dataset scope on the
-    // wire). The agent only ever receives entry ids from this project's
-    // dataset-scoped searches, so it cannot reach another project's entries.
-    const client = new DataclusterMcpClient()
+  async getEntryContent(req: RagEntryContentRequest): Promise<RagEntryContentResult> {
+    // get_entry_content is keyed by entry_id only, and entry ids are
+    // cluster-wide: the id is read only if it is the live entry the ARK lookup
+    // in THIS corpus project's dataset returns for the stated ARK. Offset and limit are
+    // explicit on the request: the tool handler owns the defaults.
+    const client = new DataclusterMcpClient({ signal: req.signal })
+    const datasetId = await resolveDatasetId(req.projectId, client, req.signal)
+    // Only the LIVE entry: a lagging tombstone's id would serve stale text
+    // that the quote check (which reads the live entry) would then contradict.
+    const liveEntryId = pickLiveEntryId(await lookupLiveEntryIds(client, datasetId, req.ark))
+    if (liveEntryId !== req.entryId) {
+      return { status: RAG_LOOKUP_STATUS.ENTRY_NOT_IN_CORPUS, liveEntryId }
+    }
     const data = await client.getEntryContent({
       entryId: req.entryId,
       charOffset: req.charOffset,
       charLimit: req.charLimit,
     })
+    return { status: RAG_LOOKUP_STATUS.FOUND, content: toEntryContent(data, req) }
+  },
 
+  /**
+   * ARK → entry → whole processed text → per-folio map, scoped to the corpus
+   * project's dataset (see lookupLiveEntryIds).
+   */
+  async getDocumentFolios(req: DocumentFoliosRequest): Promise<DocumentFoliosResult> {
+    const client = new DataclusterMcpClient({ signal: req.signal })
+    const datasetId = await resolveDatasetId(req.projectId, client, req.signal)
+    const entryId = pickLiveEntryId(await lookupLiveEntryIds(client, datasetId, req.ark))
+    if (entryId === null) return { status: RAG_LOOKUP_STATUS.ENTRY_NOT_FOUND }
+
+    const content = await client.getEntryContent({ entryId, charOffset: 0, charLimit: 0 })
+    const chunks = await listEntryChunks(client, datasetId, entryId, req.ark, content.text)
     return {
-      entryId: data.entry_id,
-      text: data.text,
-      charOffset: data.char_offset,
-      charLimit: data.char_limit,
-      totalLength: data.total_length,
-      hasMore: data.has_more,
-      nextOffset: data.next_offset,
+      status: RAG_LOOKUP_STATUS.FOUND,
+      entryId,
+      folios: foliosForEntry(entryId, req.ark, content.text, chunks),
     }
   },
+}
+
+/**
+ * Every chunk of one entry — the worker writes one per page, with its folio
+ * and code-point range — through vector search restricted to the entry (the
+ * MCP has no chunk listing; the query only orders the results, and no score
+ * threshold drops any).
+ *
+ * Returns [] as soon as the first page shows chunks that are not worker-v2
+ * pages (no offsets, or ranges that do not sit under their own heading — the
+ * pre-worker-v2 windows): the caller then falls back to the headings without
+ * paying for the rest. Otherwise the remaining pages, sized from the text's
+ * heading count, are fetched CHUNK_LIST_CONCURRENCY at a time, then any
+ * further full page in sequence. A cluster that keeps returning full pages
+ * past CHUNK_LIST_MAX_PAGES is a protocol error, not a loop.
+ */
+async function listEntryChunks(
+  client: DataclusterMcpClient,
+  datasetId: number,
+  entryId: number,
+  ark: string,
+  text: string,
+): Promise<FolioChunk[]> {
+  const page = (offset: number) =>
+    client.vectorSearchChunks({
+      query: ark,
+      datasetIds: [datasetId],
+      entryIds: [entryId],
+      limit: CHUNK_LIST_PAGE_SIZE,
+      offset,
+    })
+  const fitsText = pageChunkChecker(text)
+  const asPages = (results: readonly DataclusterChunk[]) => {
+    const chunks = folioChunksOf(results)
+    return chunks.length === results.length && chunks.every(fitsText) ? chunks : null
+  }
+
+  const first = await page(0)
+  const firstChunks = asPages(first.results)
+  if (firstChunks === null) return []
+  if (first.results.length < CHUNK_LIST_PAGE_SIZE) return firstChunks
+
+  const expectedPages = Math.min(
+    CHUNK_LIST_MAX_PAGES,
+    Math.max(1, Math.ceil(countFolioHeadings(text) / CHUNK_LIST_PAGE_SIZE)),
+  )
+  const offsets = Array.from({ length: expectedPages - 1 }, (_, i) => (i + 1) * CHUNK_LIST_PAGE_SIZE)
+  const pages: Array<readonly DataclusterChunk[]> = [first.results]
+  for (let i = 0; i < offsets.length; i += CHUNK_LIST_CONCURRENCY) {
+    const batch = await Promise.all(offsets.slice(i, i + CHUNK_LIST_CONCURRENCY).map((o) => page(o)))
+    pages.push(...batch.map((b) => b.results))
+  }
+  // More chunks than headings would be odd, but the cluster is the authority:
+  // keep reading while pages come back full.
+  let offset = expectedPages * CHUNK_LIST_PAGE_SIZE
+  while (pages[pages.length - 1].length === CHUNK_LIST_PAGE_SIZE) {
+    if (pages.length >= CHUNK_LIST_MAX_PAGES) {
+      throw new DataclusterMcpProtocolError(
+        `entry ${entryId} (${ark}) returned more than ${CHUNK_LIST_MAX_PAGES} full pages of chunks`,
+      )
+    }
+    pages.push((await page(offset)).results)
+    offset += CHUNK_LIST_PAGE_SIZE
+  }
+  const all = asPages(pages.flat())
+  return all ?? []
+}
+
+/**
+ * The entry ids of `ark` in the dataset. The ARK is a string field of the
+ * entry metadata schema, which data-cluster registers as Meili-filterable, so
+ * an empty keyword query with `metadata_filters: {ark}` is the lookup. It
+ * pages until it holds every match the cluster counted: an ARK may have
+ * several entries (re-ingests whose tombstones lag), and the live one can only
+ * be told from the complete set.
+ */
+async function lookupLiveEntryIds(
+  client: DataclusterMcpClient,
+  datasetId: number,
+  ark: string,
+): Promise<number[]> {
+  const hits: DataclusterKeywordHit[] = []
+  let total: number | undefined
+  do {
+    const page = await client.keywordSearch({
+      query: "",
+      datasetIds: [datasetId],
+      metadataFilters: { ark },
+      limit: ARK_LOOKUP_PAGE_SIZE,
+      offset: hits.length,
+    })
+    total = page.pagination?.total
+    if (page.results.length === 0) break
+    hits.push(...page.results)
+  } while (total !== undefined && hits.length < total)
+  return liveEntryIds(hits, total, ark)
 }

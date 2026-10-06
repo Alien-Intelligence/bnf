@@ -10,11 +10,13 @@
  *   - `buffer_item` rows nonetheless appear for the project — the child DID the
  *     work and deposited candidates into the shared buffer (BufferService writes
  *     to Postgres regardless of whose loop called it).
- *   - a `subagent_event` reached the live SSE stream.
+ *   - a `subagent_event` reached the live SSE stream, and every run's start is
+ *     paired with exactly one terminal event of the same runId (S7).
  *
  * Run:
  *   1. PORT=3939 npm run dev
- *   2. npm run e2e:spawn        (E2E_CLEANUP=1 to drop the throwaway project)
+ *   2. E2E_BASE_URL=http://localhost:3939 E2E_MODEL=z-ai/glm-5.2 npm run e2e:spawn
+ *      (both required; E2E_CLEANUP=1 to drop the throwaway project)
  *
  * Exits 0 only if every assertion passes. Each run creates a FRESH project.
  */
@@ -22,33 +24,36 @@ import { randomUUID } from "node:crypto"
 import { prisma } from "@/lib/db"
 import { toolsForScope } from "@/lib/agent/tools"
 import { AGENT_TOOLS } from "@/lib/agent/tools/constants"
-import { SESSION_SCOPE } from "@/models/sessions/schema"
+import { SESSION_SCOPE, SESSION_STATUS } from "@/models/sessions/schema"
+import { TOOL_CALL_STATUS } from "@/models/messages/schema"
 import { ProjectService } from "@/models/projects/service"
-import { cleanupProject } from "@/lib/testing/project-cleanup"
+import { subagentEventDataSchema } from "@/lib/tools/subagent-runs"
 import {
   ARK_RE,
-  BASE_URL,
-  CLEANUP,
-  MODEL,
-  TURN_TIMEOUT_MS,
   check,
   named,
   outputData,
   printVerdict,
   requireServer,
-  runTurn,
   section,
   signInCookie,
   toolCalls,
   trace,
   type ChatMessage,
+  runCheckedTurn,
+  runE2e,
+  trackProject,
+  turnSettings,
 } from "./e2e/harness"
 
 const E2E_EMAIL = "e2e-spawn@bnf-e2e.local"
 const E2E_PASSWORD = "e2e-spawn-pw-42"
 
+/** Teardown run whatever happens, in reverse order, by main()'s finally. */
+
 async function main(): Promise<void> {
-  console.log(`BnF spawn E2E\n  base=${BASE_URL}\n  model=${MODEL}\n  turnTimeout=${TURN_TIMEOUT_MS}ms`)
+  const settings = turnSettings()
+  console.log(`BnF spawn E2E\n  base=${settings.baseUrl}\n  model=${settings.model}\n  turnTimeout=${settings.turnTimeoutMs}ms`)
   await requireServer()
 
   // =========================================================================
@@ -73,13 +78,14 @@ async function main(): Promise<void> {
     subtitle: "sous-agent — presse 1889",
     ownerId: user.id,
   })
+  trackProject(project.id)
   const corpusSession = await prisma.appSession.create({
     data: {
       id: randomUUID(),
       projectId: project.id,
       scope: SESSION_SCOPE.CORPUS,
       title: "E2E spawn corpus session",
-      status: "active",
+      status: SESSION_STATUS.ACTIVE,
     },
   })
   console.log(`  user=${user.id}\n  project=${project.id}\n  corpusSession=${corpusSession.id}`)
@@ -94,9 +100,9 @@ async function main(): Promise<void> {
     "sa synthèse. Ne fais pas la recherche toi-même — délègue-la."
   const history: ChatMessage[] = [{ role: "user", content: prompt }]
   console.log(`\n> TURN 1: ${prompt}`)
-  const t1 = await runTurn(corpusSession.id, cookie, history)
+  const t1 = await runCheckedTurn("T1", corpusSession.id, cookie, history)
   console.log(`< (${Math.round(t1.elapsedMs / 1000)}s) ${t1.text.slice(0, 300)}`)
-  if (t1.errors.length) console.log(`  stream errors: ${t1.errors.join(" | ")}`)
+  check("t1: the stream ended without errors", t1.errors.length === 0, t1.errors.join(" | ") || "none")
 
   const parentCalls = await toolCalls(corpusSession.id)
   console.log(`  parent tools: ${trace(parentCalls)}`)
@@ -104,7 +110,7 @@ async function main(): Promise<void> {
   const spawnCalls = named(parentCalls, AGENT_TOOLS.spawnResearch)
   check(
     "S1 parent delegated via spawn_research",
-    spawnCalls.some((c) => c.status === "ok"),
+    spawnCalls.some((c) => c.status === TOOL_CALL_STATUS.OK),
     spawnCalls.length === 0
       ? `never delegated; parent used: ${trace(parentCalls)}`
       : `${spawnCalls.length} call(s), statuses: ${spawnCalls.map((c) => c.status).join(",")}`,
@@ -148,15 +154,19 @@ async function main(): Promise<void> {
   )
 
   // The spawn result the parent received is a DISTILLED summary, not a transcript.
-  const okSpawn = spawnCalls.find((c) => c.status === "ok")
-  const spawnOut = outputData(okSpawn)
-  check(
-    "S5 spawn_research returned a distilled result (summary + counts)",
-    typeof spawnOut["summary"] === "string" && String(spawnOut["summary"]).length > 0,
-    `keys: ${Object.keys(spawnOut).join(", ") || "none"}; buffered_added=${String(
-      spawnOut["buffered_added"] ?? "?",
-    )}`,
-  )
+  const okSpawn = spawnCalls.find((c) => c.status === TOOL_CALL_STATUS.OK)
+  if (okSpawn === undefined) {
+    check("S5 spawn_research returned a distilled result (summary + counts)", false, "no successful spawn_research call")
+  } else {
+    const spawnOut = outputData(okSpawn)
+    check(
+      "S5 spawn_research returned a distilled result (summary + counts)",
+      typeof spawnOut["summary"] === "string" && String(spawnOut["summary"]).length > 0,
+      `keys: ${Object.keys(spawnOut).join(", ") || "none"}; buffered_added=${String(
+        spawnOut["buffered_added"] ?? "?",
+      )}`,
+    )
+  }
 
   check(
     "S6 a subagent_event reached the live stream",
@@ -164,21 +174,27 @@ async function main(): Promise<void> {
     `domain events: ${t1.domainEvents.map((e) => e.type).join(", ") || "none"}`,
   )
 
+  // Feedback #10e: every start row must resolve. Each run's start is paired
+  // with exactly ONE terminal event carrying the same runId.
+  const subagent = t1.domainEvents
+    .filter((e) => e.type === "subagent_event")
+    .map((e) => subagentEventDataSchema.safeParse(e.data))
+    .flatMap((p) => (p.success ? [p.data] : []))
+  const startIds = subagent.filter((d) => d.kind === "start").map((d) => d.runId)
+  const terminalIds = subagent.filter((d) => d.kind !== "start").map((d) => d.runId)
+  check(
+    "S7 every subagent start has exactly one terminal event with the same runId",
+    startIds.length > 0 &&
+      startIds.every((id) => terminalIds.filter((t) => t === id).length === 1) &&
+      terminalIds.length === startIds.length,
+    `starts: ${startIds.length}, terminals: ${subagent
+      .filter((d) => d.kind !== "start")
+      .map((d) => d.kind)
+      .join(", ") || "none"}`,
+  )
+
   printVerdict({ project: project.id, corpusSession: corpusSession.id })
 
-  if (CLEANUP) {
-    await cleanupProject(project.id)
-    console.log(`\ncleaned up project ${project.id} (+ sessions, buffer, corpus)`)
-  } else {
-    console.log(`\nkept project ${project.id} for inspection (set E2E_CLEANUP=1 to remove)`)
-  }
 }
 
-main()
-  .catch((err: unknown) => {
-    console.error("\nE2E ABORTED:", err instanceof Error ? err.stack : String(err))
-    process.exitCode = 1
-  })
-  .finally(() => {
-    void prisma.$disconnect()
-  })
+runE2e(main)

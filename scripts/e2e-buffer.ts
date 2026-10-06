@@ -16,7 +16,8 @@
  *
  * Run:
  *   1. Start the app:  PORT=3939 npm run dev
- *   2. npm run e2e:buffer            (optionally E2E_MODEL=... E2E_BASE_URL=...)
+ *   2. E2E_BASE_URL=http://localhost:3939 E2E_MODEL=z-ai/glm-5.2 npm run e2e:buffer
+ *      (both required — scripts/e2e/harness.ts has no default server or model)
  *
  * Exits 0 only if every assertion passes; 1 otherwise. Prints a verdict table.
  * Each run creates a FRESH project so assertions are never polluted by history.
@@ -26,28 +27,35 @@ import { prisma } from "@/lib/db"
 import { toolsForScope } from "@/lib/agent/tools"
 import { AGENT_TOOLS } from "@/lib/agent/tools/constants"
 import { noteCreateTool } from "@/lib/agent/tools/note"
-import { SESSION_SCOPE } from "@/models/sessions/schema"
+import { bufferCommitTool } from "@/lib/agent/tools/buffer"
+import type { TurnScopedCtx } from "@/lib/agent/tools/registry-factory"
+import { PROJECT_ACCESS } from "@/lib/authz/project-access"
+import { GroupService } from "@/models/groups/service"
+import { ProjectQueries } from "@/models/projects/queries"
+import { ProjectSharingService } from "@/models/projects/service"
+import { SESSION_SCOPE, SESSION_STATUS } from "@/models/sessions/schema"
+import { TOOL_CALL_STATUS } from "@/models/messages/schema"
 import { BUFFER_STATUS } from "@/models/buffer/schema"
 import { ProjectService } from "@/models/projects/service"
-import { cleanupProject } from "@/lib/testing/project-cleanup"
 import {
   ARK_RE,
-  BASE_URL,
-  CLEANUP,
-  MODEL,
-  TURN_TIMEOUT_MS,
   check,
   named,
   outputData,
   outputText,
   printVerdict,
   requireServer,
-  runTurn,
   section,
   signInCookie,
   toolCalls,
   trace,
   type ChatMessage,
+  runCheckedTurn,
+  baseUrl,
+  onTeardown,
+  runE2e,
+  trackProject,
+  turnSettings,
 } from "./e2e/harness"
 
 const E2E_EMAIL = "e2e-buffer@bnf-e2e.local"
@@ -57,7 +65,8 @@ const E2E_PASSWORD = "e2e-buffer-pw-42"
 // Main
 // ---------------------------------------------------------------------------
 async function main(): Promise<void> {
-  console.log(`BnF buffer E2E\n  base=${BASE_URL}\n  model=${MODEL}\n  turnTimeout=${TURN_TIMEOUT_MS}ms`)
+  const settings = turnSettings()
+  console.log(`BnF buffer E2E\n  base=${settings.baseUrl}\n  model=${settings.model}\n  turnTimeout=${settings.turnTimeoutMs}ms`)
 
   // Fail fast if the server isn't up — otherwise every turn error looks like a bug.
   await requireServer()
@@ -116,13 +125,14 @@ async function main(): Promise<void> {
     subtitle: "presse française 1889",
     ownerId: user.id,
   })
+  trackProject(project.id)
   const corpusSession = await prisma.appSession.create({
     data: {
       id: randomUUID(),
       projectId: project.id,
       scope: SESSION_SCOPE.CORPUS,
       title: "E2E corpus session",
-      status: "active",
+      status: SESSION_STATUS.ACTIVE,
     },
   })
   console.log(`  user=${user.id}\n  project=${project.id}\n  corpusSession=${corpusSession.id}`)
@@ -143,10 +153,9 @@ async function main(): Promise<void> {
     "N'énumère pas les numéros du périodique : je veux une recherche. Une seule page suffit."
   history.push({ role: "user", content: t1Prompt })
   console.log(`\n> TURN 1: ${t1Prompt}`)
-  const t1 = await runTurn(corpusSession.id, cookie, history)
+  const t1 = await runCheckedTurn("T1", corpusSession.id, cookie, history)
   history.push({ role: "assistant", content: t1.text })
   console.log(`< (${Math.round(t1.elapsedMs / 1000)}s) ${t1.text.slice(0, 300)}`)
-  if (t1.errors.length) console.log(`  stream errors: ${t1.errors.join(" | ")}`)
 
   const callsT1 = await toolCalls(corpusSession.id)
   console.log(`  tools: ${trace(callsT1)}`)
@@ -159,7 +168,7 @@ async function main(): Promise<void> {
   const stageCalls = named(callsT1, AGENT_TOOLS.bufferAdd)
   check(
     "B1 gathered documents entered the buffer via a funnelled path",
-    searchCalls.some((c) => c.status === "ok") || stageCalls.some((c) => c.status === "ok"),
+    searchCalls.some((c) => c.status === TOOL_CALL_STATUS.OK) || stageCalls.some((c) => c.status === TOOL_CALL_STATUS.OK),
     `corpus_search=${searchCalls.length} buffer_add=${stageCalls.length}; used: ${trace(callsT1)}`,
   )
 
@@ -181,7 +190,7 @@ async function main(): Promise<void> {
 
   check(
     "B2c corpus_search was exercised (ARK-normalisation regression path)",
-    searchCalls.some((c) => c.status === "ok"),
+    searchCalls.some((c) => c.status === TOOL_CALL_STATUS.OK),
     searchCalls.length === 0
       ? `NOT exercised this run — the search path (source of the cb…/date bug) went untested; used: ${trace(callsT1)}`
       : `${searchCalls.length} call(s), statuses: ${searchCalls.map((c) => c.status).join(",")}`,
@@ -229,7 +238,7 @@ async function main(): Promise<void> {
       projectId: project.id,
       scope: SESSION_SCOPE.CORPUS,
       title: "E2E second corpus session",
-      status: "active",
+      status: SESSION_STATUS.ACTIVE,
     },
   })
   const arksFromSession1 = new Set(stagedAfterT1.map((r) => r.ark))
@@ -250,7 +259,7 @@ async function main(): Promise<void> {
   const t2Prompt = "Combien de candidats as-tu rassemblés, et de quels types et périodes sont-ils ?"
   history.push({ role: "user", content: t2Prompt })
   console.log(`\n> TURN 2: ${t2Prompt}`)
-  const t2 = await runTurn(corpusSession.id, cookie, history)
+  const t2 = await runCheckedTurn("T2", corpusSession.id, cookie, history)
   history.push({ role: "assistant", content: t2.text })
   console.log(`< (${Math.round(t2.elapsedMs / 1000)}s) ${t2.text.slice(0, 300)}`)
 
@@ -280,7 +289,7 @@ async function main(): Promise<void> {
     "puis applique ce filtrage pour ne garder que 1889."
   history.push({ role: "user", content: curatePrompt })
   console.log(`\n> TURN 2.5 (curate): ${curatePrompt}`)
-  const tCurate = await runTurn(corpusSession.id, cookie, history)
+  const tCurate = await runCheckedTurn("T-curate", corpusSession.id, cookie, history)
   history.push({ role: "assistant", content: tCurate.text })
   console.log(`< (${Math.round(tCurate.elapsedMs / 1000)}s) ${tCurate.text.slice(0, 300)}`)
 
@@ -300,8 +309,11 @@ async function main(): Promise<void> {
   // the same turn. If the agent only previewed, or only used discard, that is
   // also acceptable — the point is that no filter-removal happened WITHOUT a
   // preview having been produced.
-  const removedOutputs = removeCalls.filter((c) => outputData(c)["status"] === "removed")
-  const dryRunOutputs = removeCalls.filter((c) => outputData(c)["status"] === "dry_run")
+  // Only a successful call has a result object to read (outputData throws on a
+  // failed tool's text rather than reading it as "no status").
+  const okRemoveCalls = removeCalls.filter((c) => c.status === TOOL_CALL_STATUS.OK)
+  const removedOutputs = okRemoveCalls.filter((c) => outputData(c)["status"] === "removed")
+  const dryRunOutputs = okRemoveCalls.filter((c) => outputData(c)["status"] === "dry_run")
   check(
     "B6c a destructive remove_by_filter was previewed with a dry-run first",
     removedOutputs.length === 0 || dryRunOutputs.length > 0,
@@ -329,7 +341,7 @@ async function main(): Promise<void> {
   const t3Prompt = "Parfait, ajoute maintenant ces documents au corpus."
   history.push({ role: "user", content: t3Prompt })
   console.log(`\n> TURN 3: ${t3Prompt}`)
-  const t3 = await runTurn(corpusSession.id, cookie, history)
+  const t3 = await runCheckedTurn("T3", corpusSession.id, cookie, history)
   history.push({ role: "assistant", content: t3.text })
   console.log(`< (${Math.round(t3.elapsedMs / 1000)}s) ${t3.text.slice(0, 300)}`)
 
@@ -345,7 +357,7 @@ async function main(): Promise<void> {
   )
   check(
     "B8 buffer_commit SUCCEEDED (no tool error)",
-    commitCalls.some((c) => c.status === "ok"),
+    commitCalls.some((c) => c.status === TOOL_CALL_STATUS.OK),
     commitCalls.length === 0
       ? "not called"
       : `statuses: ${commitCalls.map((c) => c.status).join(",")}; output/err: ${(
@@ -413,7 +425,7 @@ async function main(): Promise<void> {
     "Ne vide pas le tampon et ne touche pas au corpus déjà constitué."
   history.push({ role: "user", content: restagePrompt })
   console.log(`\n> TURN 4a (re-stage): ${restagePrompt}`)
-  const t4a = await runTurn(corpusSession.id, cookie, history)
+  const t4a = await runCheckedTurn("T4a", corpusSession.id, cookie, history)
   history.push({ role: "assistant", content: t4a.text })
   console.log(`< (${Math.round(t4a.elapsedMs / 1000)}s) ${t4a.text.slice(0, 300)}`)
   console.log(`  tools: ${trace((await toolCalls(corpusSession.id)).slice(beforeRestage))}`)
@@ -446,14 +458,14 @@ async function main(): Promise<void> {
     const prompt = clearPrompts[attempt]
     history.push({ role: "user", content: prompt })
     console.log(`\n> TURN 4b (clear, attempt ${attempt + 1}): ${prompt}`)
-    const turn = await runTurn(corpusSession.id, cookie, history)
+    const turn = await runCheckedTurn(`T4b attempt ${attempt + 1}`, corpusSession.id, cookie, history)
     history.push({ role: "assistant", content: turn.text })
     console.log(`< (${Math.round(turn.elapsedMs / 1000)}s) ${turn.text.slice(0, 300)}`)
     const clearedSoFar = named(
       (await toolCalls(corpusSession.id)).slice(beforeClear),
       AGENT_TOOLS.bufferClear,
     )
-    if (clearedSoFar.some((c) => c.status === "ok")) break
+    if (clearedSoFar.some((c) => c.status === TOOL_CALL_STATUS.OK)) break
   }
 
   const callsT4 = (await toolCalls(corpusSession.id)).slice(beforeClear)
@@ -462,16 +474,20 @@ async function main(): Promise<void> {
   const clearCalls = named(callsT4, AGENT_TOOLS.bufferClear)
   check(
     "B13b agent cleared the buffer on a change of inquiry",
-    clearCalls.some((c) => c.status === "ok"),
+    clearCalls.some((c) => c.status === TOOL_CALL_STATUS.OK),
     clearCalls.length === 0 ? `never cleared; used: ${trace(callsT4)}` : `${clearCalls.length} call(s)`,
   )
   // The clear must report it actually dropped the freshly-staged candidates —
   // proof it cleared a POPULATED buffer, not a no-op on an already-empty one.
-  const clearedOk = clearCalls.some((c) => Number(outputData(c)["cleared"] ?? 0) > 0)
+  const okClearCalls = clearCalls.filter((c) => c.status === TOOL_CALL_STATUS.OK)
+  const clearedOk = okClearCalls.some((c) => {
+    const cleared = outputData(c)["cleared"]
+    return typeof cleared === "number" && cleared > 0
+  })
   check(
     "B13c buffer_clear reported dropping the staged candidates (cleared > 0)",
     clearedOk,
-    `clear outputs: ${clearCalls.map((c) => JSON.stringify(outputData(c))).join(" | ") || "none"}`,
+    `clear outputs: ${okClearCalls.map((c) => JSON.stringify(outputData(c))).join(" | ") || "none"}`,
   )
 
   const candidatesAfterClear = await prisma.bufferItem.count({
@@ -507,7 +523,7 @@ async function main(): Promise<void> {
       projectId: project.id,
       scope: SESSION_SCOPE.RESEARCH,
       title: "E2E research session",
-      status: "active",
+      status: SESSION_STATUS.ACTIVE,
     },
   })
   const notesBefore = await prisma.note.count({ where: { projectId: project.id } })
@@ -515,14 +531,17 @@ async function main(): Promise<void> {
   // Deterministic proof of the guard: invoke the note_create handler directly.
   // The live turn below depends on the model choosing to attempt a note, which
   // it may (correctly) decline to do — that would leave the guard unexercised.
-  const guardCtx = {
+  const guardCtx: TurnScopedCtx = {
     signal: new AbortController().signal,
+    request: new Request(`${baseUrl()}/e2e`),
     db: prisma,
-    user,
+    user: { ...user, groupIds: [] },
     appSessionId: researchSession.id,
     projectId: project.id,
-    scope: "research" as const,
-  } as unknown as Parameters<typeof noteCreateTool.handler>[1]
+    corpusProjectId: project.id,
+    corpusReachable: true,
+    scope: "research",
+  }
   const guardResult = (await noteCreateTool.handler(
     { title: "E2E guard probe", body_md: "Ceci ne doit pas être écrit." },
     guardCtx,
@@ -537,7 +556,7 @@ async function main(): Promise<void> {
   const cPrompt =
     "Rédige une note de recherche intitulée « Le Figaro en 1889 » résumant ce que contient le corpus."
   console.log(`\n> RESEARCH TURN: ${cPrompt}`)
-  const c1 = await runTurn(researchSession.id, cookie, [{ role: "user", content: cPrompt }])
+  const c1 = await runCheckedTurn("C research turn", researchSession.id, cookie, [{ role: "user", content: cPrompt }])
   console.log(`< (${Math.round(c1.elapsedMs / 1000)}s) ${c1.text.slice(0, 300)}`)
 
   const researchCalls = await toolCalls(researchSession.id)
@@ -571,25 +590,169 @@ async function main(): Promise<void> {
       : `leaked: ${corpusToolLeakInResearch.map((c) => c.tool).join(", ")}`,
   )
 
+  // =========================================================================
+  section("PHASE D — corpus buffer v2: press lane, filters, explained counts")
+  // =========================================================================
+  // A fresh corpus session (own history) on the same project. Every check
+  // reads durable tool_call / buffer_item rows, as the phases above do.
+  const pressSession = await prisma.appSession.create({
+    data: {
+      id: randomUUID(),
+      projectId: project.id,
+      scope: SESSION_SCOPE.CORPUS,
+      title: "E2E press session",
+      status: "active",
+    },
+  })
+  const pressHistory: ChatMessage[] = []
+  const say = async (label: string, prompt: string) => {
+    const before = (await toolCalls(pressSession.id)).length
+    pressHistory.push({ role: "user", content: prompt })
+    console.log(`\n> ${label}: ${prompt}`)
+    const turn = await runCheckedTurn(label, pressSession.id, cookie, pressHistory)
+    pressHistory.push({ role: "assistant", content: turn.text })
+    console.log(`< (${Math.round(turn.elapsedMs / 1000)}s) ${turn.text.slice(0, 300)}`)
+    const calls = (await toolCalls(pressSession.id)).slice(before)
+    console.log(`  tools: ${trace(calls)}`)
+    return calls
+  }
+
+  // --- D1: a press request stages ISSUES with their metadata -----------------
+  const pressCalls = await say(
+    "TURN D1 (press)",
+    "Je veux constituer un corpus de la presse de 1937 qui parle d'incendies de forêt : " +
+      "rassemble les numéros de journaux concernés. Une seule page suffit pour commencer.",
+  )
+  const pressSearches = named(pressCalls, AGENT_TOOLS.corpusSearch)
+  check(
+    "B16 a press request searches issues: corpus_search with collapsing:false + doc_type:fascicule",
+    pressSearches.some((c) => {
+      const input = c.input as Record<string, unknown>
+      return input["collapsing"] === false && input["doc_type"] === "fascicule"
+    }),
+    `corpus_search inputs: ${pressSearches.map((c) => JSON.stringify(c.input)).join(" | ") || "none"}`,
+  )
+  const pressRows = await prisma.bufferItem.findMany({
+    where: { projectId: project.id, status: BUFFER_STATUS.CANDIDATE },
+    select: { ark: true, title: true, arkKind: true },
+  })
+  const issues = pressRows.filter((r) => r.arkKind === "periodical_issue")
+  check(
+    "B18 the staged press rows are periodical issues with a title",
+    issues.length > 0 && issues.every((r) => r.title !== null),
+    `candidates=${pressRows.length} periodical_issue=${issues.length} untitled=${issues.filter((r) => r.title === null).length}`,
+  )
+
+  // --- D2: field-scoped exclusion, previewed first ---------------------------
+  const colonial = ["Alger", "Oran", "Constantine", "Maroc", "Casablanca", "Tanger", "Tunis"]
+  const filterCalls = await say(
+    "TURN D2 (filter)",
+    "Retire du tampon les journaux d'Algérie et du Maroc (titres contenant Alger, Oran, Constantine, " +
+      "Maroc, Casablanca, Tanger ou Tunis) : montre-moi d'abord l'aperçu, puis applique sans me redemander.",
+  )
+  const removals = named(filterCalls, AGENT_TOOLS.bufferRemoveByFilter)
+  const usesTitle = removals.some((c) => {
+    const filters = (c.input as Record<string, unknown>)["filters"] as Record<string, unknown> | undefined
+    const not = filters?.["not"] as Record<string, unknown> | undefined
+    return Array.isArray(filters?.["title"]) || Array.isArray(not?.["title"])
+  })
+  const previewedFirst =
+    removals.findIndex((c) => outputData(c)["status"] === "dry_run") >= 0 &&
+    removals.findIndex((c) => outputData(c)["status"] === "dry_run") <
+      removals.findIndex((c) => outputData(c)["status"] === "removed")
+  const stillColonial = (
+    await prisma.bufferItem.findMany({
+      where: { projectId: project.id, status: BUFFER_STATUS.CANDIDATE },
+      select: { title: true },
+    })
+  ).filter((r) => colonial.some((w) => (r.title ?? "").toLowerCase().includes(w.toLowerCase())))
+  check(
+    "B19 the filter request ran remove_by_filter on title (dry run, then removal) and the matches are gone",
+    usesTitle && previewedFirst && stillColonial.length === 0,
+    `title filter=${usesTitle} previewedFirst=${previewedFirst} colonial candidates left=${stillColonial.length}; ` +
+      `outputs: ${removals.map((c) => String(outputData(c)["status"])).join(",") || "none"}`,
+  )
+
+  // --- D3: commit, then report the total only after re-reading ---------------
+  const commitTurn = await say(
+    "TURN D3 (commit)",
+    "Ajoute ces numéros au corpus, puis dis-moi combien de documents compte le corpus.",
+  )
+  const pressCommits = named(commitTurn, AGENT_TOOLS.bufferCommit)
+  const provisionalAt = commitTurn.findIndex(
+    (c) => c.tool === AGENT_TOOLS.bufferCommit && outputData(c)["totalIsProvisional"] === true,
+  )
+  const rereadAfter =
+    provisionalAt >= 0 && commitTurn.slice(provisionalAt + 1).some((c) => c.tool === AGENT_TOOLS.corpusGetState)
+  check(
+    "B21 after a provisional commit the agent re-read corpus_get_state before answering",
+    pressCommits.some((c) => c.status === "ok") && (provisionalAt < 0 || rereadAfter),
+    `commits=${pressCommits.length} provisional=${provisionalAt >= 0} reread=${rereadAfter}`,
+  )
+
+  // --- D4: the same search again — explained, not "retried" ------------------
+  const rerunCalls = await say(
+    "TURN D4 (re-run)",
+    "Relance exactement la même recherche de presse que tout à l'heure, première page.",
+  )
+  const rerun = named(rerunCalls, AGENT_TOOLS.corpusSearch)
+  check(
+    "B20 re-running a committed search reports alreadyInCorpus with an explanation, and no buffer_clear",
+    rerun.some((c) => Number(outputData(c)["alreadyInCorpus"] ?? 0) > 0 && typeof outputData(c)["explanation"] === "string") &&
+      named(rerunCalls, AGENT_TOOLS.bufferClear).length === 0,
+    `outputs: ${rerun.map((c) => `alreadyInCorpus=${String(outputData(c)["alreadyInCorpus"])}`).join(" | ") || "none"}; ` +
+      `clears=${named(rerunCalls, AGENT_TOOLS.bufferClear).length}`,
+  )
+
+  const rawSearch = (await toolCalls(pressSession.id)).filter((c) => c.tool.startsWith("bnf__bnf_search_"))
+  check(
+    "B17 no raw bnf__bnf_search_* call in the whole press session",
+    rawSearch.length === 0,
+    rawSearch.length === 0 ? "none" : rawSearch.map((c) => c.tool).join(", "),
+  )
+
+  // --- C4: the policy gate, deterministic (no LLM) ---------------------------
+  const readerEmail = `e2e-reader-${randomUUID()}@bnf-e2e.local`
+  const reader = await prisma.user.create({
+    data: { id: randomUUID(), email: readerEmail, name: "E2E reader", emailVerified: true },
+  })
+  onTeardown("e2e reader account", async () => {
+    await prisma.user.deleteMany({ where: { id: reader.id } })
+  })
+  const group = await GroupService.create(`E2E reader group ${randomUUID()}`)
+  onTeardown("e2e reader group", async () => {
+    await prisma.group.deleteMany({ where: { id: group.id } })
+  })
+  const shared = await ProjectQueries.get(project.id)
+  if (!shared) throw new Error(`project ${project.id} vanished mid-run`)
+  await ProjectSharingService.share(shared, user.id, { groupId: group.id, access: PROJECT_ACCESS.READ })
+  const versionsBeforeC4 = await prisma.corpusVersion.count({ where: { projectId: project.id } })
+  const readerCtx: TurnScopedCtx = {
+    signal: new AbortController().signal,
+    request: new Request(`${baseUrl()}/e2e`),
+    db: prisma,
+    user: { ...reader, groupIds: [group.id] },
+    appSessionId: pressSession.id,
+    projectId: project.id,
+    corpusProjectId: project.id,
+    corpusReachable: true,
+    scope: "corpus",
+  }
+  const refused = (await bufferCommitTool.handler({ reason: "lecture seule" }, readerCtx)) as Record<string, unknown>
+  const versionsAfterC4 = await prisma.corpusVersion.count({ where: { projectId: project.id } })
+  check(
+    "C4 a read-share member's buffer_commit is refused as a structured result and commits nothing",
+    refused["forbidden"] === true && refused["success"] === false && versionsAfterC4 === versionsBeforeC4,
+    `result=${JSON.stringify(refused).slice(0, 160)} versions ${versionsBeforeC4}→${versionsAfterC4}`,
+  )
+
   printVerdict({
     project: project.id,
     corpusSession: corpusSession.id,
     researchSession: researchSession.id,
+    pressSession: pressSession.id,
   })
 
-  if (CLEANUP) {
-    await cleanupProject(project.id)
-    console.log(`\ncleaned up project ${project.id} (+ sessions, buffer, corpus)`)
-  } else {
-    console.log(`\nkept project ${project.id} for inspection (set E2E_CLEANUP=1 to remove)`)
-  }
 }
 
-main()
-  .catch((err: unknown) => {
-    console.error("\nE2E ABORTED:", err instanceof Error ? err.stack : String(err))
-    process.exitCode = 1
-  })
-  .finally(() => {
-    void prisma.$disconnect()
-  })
+runE2e(main)

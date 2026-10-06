@@ -18,6 +18,13 @@ export const MEMORY_ORIGIN = {
 export type MemoryOrigin = (typeof MEMORY_ORIGIN)[keyof typeof MEMORY_ORIGIN]
 
 export type MemorySection = { title: string; items: MemoryItem[] }
+
+/** What a user's explicit edit did. An edit never merges into or deletes
+ *  another item: text equal to another item of the target section is refused. */
+export const MEMORY_UPDATE_STATUS = { UPDATED: "updated", DUPLICATE: "duplicate" } as const
+export type MemoryUpdateResult =
+  | { status: typeof MEMORY_UPDATE_STATUS.UPDATED; item: MemoryItem }
+  | { status: typeof MEMORY_UPDATE_STATUS.DUPLICATE; duplicateOf: { id: string; text: string } }
 export type MemorySnapshot = { sections: MemorySection[] }
 
 export type { MemoryItem }

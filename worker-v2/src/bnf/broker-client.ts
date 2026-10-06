@@ -3,10 +3,11 @@
  * worker/src/prepare/broker-client.ts.
  *
  * The broker (broker/ service) is the single egress chokepoint for all BnF
- * traffic: it owns the OAuth token and enforces the shared 300/min global +
- * 12/min-per-IP manifest + politeness rate caps. Every BnF fetch in V2 goes
- * through it; the broker selects auth + rate bucket from the URL and mirrors
- * the upstream status + bytes verbatim.
+ * traffic: it owns the OAuth token and enforces the ingestion subscription's
+ * rate model (a global cap, one quota per BnF API, the per-IP manifest limit —
+ * broker/README.md). Every BnF fetch in V2 goes through it; the broker selects
+ * auth + rate buckets from the URL and mirrors the upstream status + bytes
+ * verbatim.
  *
  * V1 wrapped every call in `withFetchPermit` (the process-global fetch gate)
  * so the per-doc monolith couldn't blow the broker's concurrency. V2 drops
@@ -17,10 +18,21 @@
  */
 import { request } from "undici";
 
-/** The configured broker base URL, or undefined when not deployed. */
+/**
+ * The broker base URL, set ONCE at boot from the validated config
+ * (config.ts loadBrokerUrl, called by main.ts) — never read from the
+ * environment per call.
+ */
+let configuredBrokerUrl: string | undefined;
+
+/** Set the broker URL (main.ts at boot; tests pointing at a stub broker). */
+export function configureBrokerUrl(url: string): void {
+  configuredBrokerUrl = url;
+}
+
+/** The configured broker base URL, or undefined before configureBrokerUrl. */
 export function brokerUrl(): string | undefined {
-  const v = process.env.BNF_BROKER_URL;
-  return v && v.trim() !== "" ? v.trim().replace(/\/$/, "") : undefined;
+  return configuredBrokerUrl;
 }
 
 export interface BrokerResult {

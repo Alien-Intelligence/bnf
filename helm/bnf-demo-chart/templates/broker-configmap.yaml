@@ -1,4 +1,5 @@
 {{- if .Values.broker.enabled }}
+{{- include "bnf-demo.validateRates" . }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -16,12 +17,11 @@ data:
   BNF_OAUTH_TOKEN_URL: {{ .Values.broker.config.oauthTokenUrl | quote }}
   BNF_API_BASE_URL: {{ .Values.broker.config.apiBaseUrl | quote }}
 
-  # --- Rate caps (requests/min) — these WILL rise; bump here, no code change.
-  # Defaults are live-measured (2026-06-24 sandbox key): global ~150 enforced,
-  # manifest verified EXACTLY 12/min/IP. See ai-memories bnf-partner-api-design.
-  BNF_GLOBAL_RPM: {{ .Values.broker.config.globalRpm | quote }}
-  BNF_MANIFEST_RPM: {{ .Values.broker.config.manifestRpm | quote }}
-  BNF_EXTERNAL_RPM: {{ .Values.broker.config.externalRpm | quote }}
+  # --- Rate buckets (broker/src/plan.ts) — rpm + burst of every bucket of the
+  # ingestion subscription, from broker.config.rates (checked at render:
+  # rpm + burst <= quota), as ONE JSON object. REQUIRED, every bucket: the
+  # broker refuses to boot on a missing, unknown or malformed one.
+  BNF_RATES: {{ include "bnf-demo.ratesJson" . | quote }}
 
   # --- Timeouts ---
   # Per-attempt upstream timeout to BnF. 120s: under ingest load BnF is slow to

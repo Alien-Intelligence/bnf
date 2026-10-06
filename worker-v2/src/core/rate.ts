@@ -1,13 +1,48 @@
 /**
  * Token-bucket rate gate — the pipeline's one pacing primitive (generalises the
- * V1 fetch-gate). Each stage that touches a capped external API owns one: the
- * IIIF manifest stage at 42/min, the BnF fetch stage at 300/min, etc.
+ * V1 fetch-gate). Each stage that touches a capped external API owns one; a
+ * BnF call that spends several nested quotas (an API's quota inside the
+ * subscription's global cap, a manifest inside both) holds a CompositeRateGate
+ * over the gates of those quotas, mirroring the broker's buckets.
  *
  * Pure concurrency/rate math, no I/O. The clock is injectable (`now`) so the
  * token arithmetic is unit-testable without real waiting; `tryAcquire()` is the
  * synchronous core, `acquire()` wraps it with FIFO waiters for real use.
  */
 import type { RateGate } from "./types.js";
+
+/** The gate was stopped (shutdown) while — or before — a caller waited. */
+export class RateGateStoppedError extends Error {
+  constructor() {
+    super("rate gate stopped");
+    this.name = "RateGateStoppedError";
+  }
+}
+
+/** A token wait outlived its deadline — the gate is saturated. Retry later. */
+export class RateGateTimeoutError extends Error {
+  constructor(readonly waitedMs: number) {
+    super(`no rate-gate token within ${waitedMs}ms`);
+    this.name = "RateGateTimeoutError";
+  }
+}
+
+/**
+ * Acquire one token from `gate`, or reject with RateGateTimeoutError after
+ * `ms` — THE bounded wait every gated caller uses (CLAUDE_ERROR_PATTERNS §14).
+ * `signal` (a delivery's ceiling, StageContext.signal) aborts the wait too,
+ * with its own reason. The abandoned waiter gives up its place and consumes no
+ * token.
+ */
+export async function acquireWithin(gate: RateGate, ms: number, signal?: AbortSignal): Promise<void> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new RateGateTimeoutError(ms)), ms);
+  try {
+    await gate.acquire(signal ? AbortSignal.any([controller.signal, signal]) : controller.signal);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 export interface RateLimiterOpts {
   /** Sustained tokens per minute. */
@@ -26,7 +61,7 @@ export class RateLimiter implements RateGate {
 
   private tokens: number;
   private last: number;
-  private readonly waiters: Array<() => void> = [];
+  private readonly waiters: Array<{ grant: () => void; refuse: (e: Error) => void }> = [];
   private timer: ReturnType<typeof setTimeout> | null = null;
   private stopped = false;
 
@@ -71,12 +106,38 @@ export class RateLimiter implements RateGate {
     return Math.ceil((1 - this.tokens) / this.refillPerMs);
   }
 
-  /** Acquire one token, waiting (FIFO) if the bucket is empty. */
-  acquire(): Promise<void> {
-    if (this.stopped) return Promise.reject(new Error("RateLimiter stopped"));
+  /** Waiters currently queued — for tests/introspection. */
+  pendingWaiters(): number {
+    return this.waiters.length;
+  }
+
+  /**
+   * Acquire one token, waiting (FIFO) if the bucket is empty. An abort of
+   * `signal` rejects with its reason and removes the waiter, so an abandoned
+   * wait never consumes a token later; stop() rejects every waiter.
+   */
+  acquire(signal: AbortSignal): Promise<void> {
+    if (this.stopped) return Promise.reject(new RateGateStoppedError());
+    if (signal.aborted) return Promise.reject(signal.reason);
     if (this.waiters.length === 0 && this.tryAcquire()) return Promise.resolve();
-    return new Promise<void>((resolve) => {
-      this.waiters.push(resolve);
+    return new Promise<void>((resolve, reject) => {
+      const waiter = {
+        grant: (): void => {
+          signal.removeEventListener("abort", onAbort);
+          resolve();
+        },
+        refuse: (e: Error): void => {
+          signal.removeEventListener("abort", onAbort);
+          reject(e);
+        },
+      };
+      const onAbort = (): void => {
+        const i = this.waiters.indexOf(waiter);
+        if (i >= 0) this.waiters.splice(i, 1);
+        reject(signal.reason);
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      this.waiters.push(waiter);
       this.schedule();
     });
   }
@@ -93,8 +154,7 @@ export class RateLimiter implements RateGate {
   private drain(): void {
     if (this.stopped) return;
     while (this.waiters.length > 0 && this.tryAcquire()) {
-      const next = this.waiters.shift();
-      next?.();
+      this.waiters.shift()?.grant();
     }
     if (this.waiters.length > 0) this.schedule();
   }
@@ -105,7 +165,34 @@ export class RateLimiter implements RateGate {
       clearTimeout(this.timer);
       this.timer = null;
     }
-    // Release any blocked acquirers so shutdown doesn't hang.
-    while (this.waiters.length > 0) this.waiters.shift()?.();
+    // Refuse every blocked acquirer so shutdown doesn't hang — never grant
+    // them: a waiter let through here would call BnF ungated.
+    while (this.waiters.length > 0) this.waiters.shift()?.refuse(new RateGateStoppedError());
+  }
+}
+
+/**
+ * A gate that grants only when EVERY inner gate granted: one token from each,
+ * in order — the most specific quota first, the global one last, like the
+ * broker's plan (broker/src/plan.ts), so a call waiting on a scarce API quota
+ * holds no global token. `ratePerMin` is the binding (smallest) rate.
+ *
+ * The composite owns nothing: whoever built the inner gates stops them
+ * (main.ts), and a stopped inner gate rejects the composite with
+ * RateGateStoppedError like any gate. A wait aborted after an earlier inner
+ * gate granted leaves that token spent with no request sent — it errs low
+ * (under the quota), never over it.
+ */
+export class CompositeRateGate implements RateGate {
+  readonly ratePerMin: number;
+
+  constructor(private readonly gates: readonly RateGate[]) {
+    const first = gates[0];
+    if (first === undefined) throw new Error("CompositeRateGate needs at least one gate");
+    this.ratePerMin = gates.reduce((min, g) => Math.min(min, g.ratePerMin), first.ratePerMin);
+  }
+
+  async acquire(signal: AbortSignal): Promise<void> {
+    for (const gate of this.gates) await gate.acquire(signal);
   }
 }

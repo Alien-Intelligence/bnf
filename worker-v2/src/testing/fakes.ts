@@ -6,7 +6,8 @@
  * BnF quota. The live clients (ported from V1) implement the same interfaces.
  */
 import { PermanentBnfError, TransientBnfError } from "../bnf/errors.js";
-import type { AltoFolio, BnfClient, BnfDocInfo, Manifest } from "../bnf/types.js";
+import { altoFolioFromParse, emptyAltoFolio, parseAlto } from "../bnf/parse.js";
+import { DOC_INFO_SOURCE, type AltoFolio, type BnfClient, type BnfDocInfo, type Manifest } from "../bnf/types.js";
 import type { ClusterSink, Describer, Embedder, OcrEngine, OcrBatchStatus } from "../ports.js";
 import type { PreparedPage } from "../domain/types.js";
 
@@ -43,13 +44,43 @@ export interface FakeDocSpec {
   ark: string;
   ocrAvailable: boolean;
   docType: string | null;
-  pageCount: number;
+  /**
+   * The page count BnF publishes; `null` = it publishes none. The OAI path
+   * carries it as is (pageCount null); a manifest always has a canvas count,
+   * so the fake manifest of a `null` doc has no canvases.
+   */
+  pageCount: number | null;
   title?: string | null;
   /** Folios (ordre) that have no ALTO text — fetched ok but empty. */
   emptyFolios?: number[];
+  /**
+   * Mean word confidence the fake reports per ALTO folio. Default 1 (a fully
+   * confident fake OCR, so every unrelated test reads "not low"); `null` models
+   * an ALTO without WC. The real client derives this from the XML (parseAlto).
+   */
+  folioMeanWc?: Record<number, number | null>;
+  /**
+   * Raw WC attribute values, one per word of the folio's fake text (6 words),
+   * written verbatim into the fake ALTO — so a test can script values the real
+   * parser must reject ("abc", "1.5") and see invalidWcCount. Overrides
+   * folioMeanWc for that folio; null omits WC on that word.
+   */
+  folioWc?: Record<number, Array<string | null>>;
+  /**
+   * The raw "Taux OCR" metadata value the fake manifest publishes when
+   * `ocrAvailable` (default "100%"). Any string — "78.21 %", "n/a", "150 %" — so
+   * tests can drive every parseOcrRate outcome through the real parsing path.
+   */
+  tauxOcr?: string;
   /** Image folios (ordre) served TRUNCATED (valid SOI, missing EOI) — the
    *  poisoned-transport shape the fetch stage must reject, never cache. */
   truncatedFolios?: number[];
+  /**
+   * The canvas dims the fake manifest declares for every canvas (default
+   * FAKE_CANVAS, 1000×1400). A null dim models a manifest that omits it; the
+   * fake image master then keeps FAKE_CANVAS's size.
+   */
+  canvas?: { width: number | null; height: number | null };
   /**
    * Fault on getManifest — the PRIMARY path for both metadata resolution
    * (MetadataStage) and canvas fan-out (ManifestStage); both stages share one
@@ -67,10 +98,78 @@ export interface FakeDocSpec {
   folioFaults?: Record<number, Fault>;
 }
 
+/** The mean WC a fake ALTO word carries unless the spec says otherwise: fully
+ *  confident, so every unrelated test reads "not low". `null` = no WC at all. */
+const FAKE_DEFAULT_WC = "1";
+
+function fakeMeanWc(mean: number | null | undefined): string | null {
+  if (mean === undefined) return FAKE_DEFAULT_WC;
+  return mean === null ? null : String(mean);
+}
+
+function xmlAttr(v: string): string {
+  return v.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+}
+
+/** The canvas (and image master) dims of a fake doc unless its spec says otherwise. */
+export const FAKE_CANVAS = { width: 1000, height: 1400 } as const;
+
+/**
+ * A minimal, structurally complete JPEG declaring `width`×`height` in a SOF0
+ * frame header: SOI, SOF0, SOS, `payload` as scan data, EOI — what
+ * isCompleteJpeg and jpegDimensions read. Test fixtures only.
+ */
+export function fakeJpeg(width: number, height: number, payload: Buffer = Buffer.alloc(1)): Buffer {
+  const sof = Buffer.alloc(19);
+  sof.writeUInt16BE(0xffc0, 0);
+  sof.writeUInt16BE(17, 2);
+  sof.writeUInt8(8, 4);
+  sof.writeUInt16BE(height, 5);
+  sof.writeUInt16BE(width, 7);
+  sof.writeUInt8(3, 9);
+  return Buffer.concat([
+    Buffer.from([0xff, 0xd8]),
+    sof,
+    Buffer.from([0xff, 0xda, 0x00, 0x02]),
+    payload,
+    Buffer.from([0xff, 0xd9]),
+  ]);
+}
+
+/**
+ * The output dims of a IIIF Image v3 `size` on a master, as BnF answers it:
+ * `max` is the master; `!w,h` fits the master into the box, and is a 400 when
+ * that would UPSCALE (BnF accepts no `^`). Any other size is refused here so a
+ * test catches the worker sending one.
+ */
+function iiifOutputDims(master: { width: number; height: number }, size: string): { width: number; height: number } {
+  if (size === "max") return master;
+  const box = /^!(\d+),(\d+)$/.exec(size);
+  if (!box) throw new Error(`FakeBnfClient: the worker sent an unexpected IIIF size "${size}"`);
+  const w = Number(box[1]);
+  const h = Number(box[2]);
+  const scale = Math.min(w / master.width, h / master.height);
+  if (scale > 1) {
+    throw new PermanentBnfError("bad_ark", {
+      status: 400,
+      hint: `size ${size} would upscale a ${master.width}x${master.height} master (BnF strict IIIF v3)`,
+    });
+  }
+  return { width: Math.round(master.width * scale), height: Math.round(master.height * scale) };
+}
+
+/** The Presentation API base the fake's manifest URLs hang off. */
+export const FAKE_PRESENTATION_BASE = "https://presentation.fake.bnf.test/presentation/iiif/gallica/1.0.0";
+
+/** The Taux OCR a fake text document publishes unless its spec says otherwise. */
+const FAKE_DEFAULT_TAUX_OCR = "100%";
+
 export class FakeBnfClient implements BnfClient {
   private readonly docs = new Map<string, FakeDocSpec>();
   private readonly faults = new FaultCounter();
   readonly calls = { oai: 0, manifest: 0, alto: 0, image: 0 };
+  /** Every image fetch, with the IIIF size the worker asked for. */
+  readonly imageFetches: Array<{ ark: string; ordre: number; size: string }> = [];
 
   add(spec: FakeDocSpec): this {
     this.docs.set(spec.ark, spec);
@@ -95,10 +194,12 @@ export class FakeBnfClient implements BnfClient {
       docType: s.docType,
       subtype: null,
       ocrAvailable: s.ocrAvailable,
+      // The OAI path publishes no Taux OCR (client.ts getDocumentInfoViaOai).
+      ocrRate: null,
       pageCount: s.pageCount,
       iiifManifestUrl: null,
       lang: "fre",
-      raw: {},
+      raw: { source: DOC_INFO_SOURCE.OAI_PMH },
     };
   }
 
@@ -106,11 +207,13 @@ export class FakeBnfClient implements BnfClient {
     this.calls.manifest++;
     const s = this.spec(ark);
     this.faults.hit(`manifest:${ark}`, s.manifestFault);
-    const canvases = Array.from({ length: Math.min(s.pageCount, maxCanvases) }, (_, i) => ({
+    const canvasCount = s.pageCount ?? 0; // a manifest always has a canvas list (see FakeDocSpec.pageCount)
+    const dims = s.canvas ?? FAKE_CANVAS;
+    const canvases = Array.from({ length: Math.min(canvasCount, maxCanvases) }, (_, i) => ({
       ordre: i + 1,
       label: `f${i + 1}`,
-      width: 1000,
-      height: 1400,
+      width: dims.width,
+      height: dims.height,
     }));
     // Mirror the real IIIF manifest's label/value metadata pairs so
     // docInfoFromManifest (client.ts) derives the SAME docType/ocrAvailable the
@@ -120,31 +223,56 @@ export class FakeBnfClient implements BnfClient {
     // never round-tripped through a manifest at all.)
     const metadata: Array<{ label: string; value: string }> = [{ label: "langue", value: "fre" }];
     if (s.docType) metadata.push({ label: "type document", value: s.docType });
-    if (s.ocrAvailable) metadata.push({ label: "taux ocr", value: "100%" });
-    return { title: s.title ?? `Doc ${ark}`, metadata, totalPages: s.pageCount, canvases };
+    if (s.ocrAvailable) metadata.push({ label: "taux ocr", value: s.tauxOcr ?? FAKE_DEFAULT_TAUX_OCR });
+    return { title: s.title ?? `Doc ${ark}`, metadata, totalPages: canvasCount, canvases };
   }
 
-  async fetchAltoFolio(ark: string, ordre: number): Promise<AltoFolio> {
+  async fetchAltoFolio(ark: string, ordre: number, signal?: AbortSignal): Promise<AltoFolio> {
+    signal?.throwIfAborted();
     this.calls.alto++;
     const s = this.spec(ark);
     this.faults.hit(`folio:${ark}:${ordre}`, s.folioFaults?.[ordre]);
-    if (s.emptyFolios?.includes(ordre)) return { text: "", empty: true };
-    return { text: `ALTO text of ${ark} folio ${ordre}`, empty: false };
+    if (s.emptyFolios?.includes(ordre)) return emptyAltoFolio();
+    // A real ALTO document, parsed by the REAL parser (range check, invalid WC
+    // count, rounding) and mapped by the SAME altoFolioFromParse the live
+    // client uses — so the fake cannot report a quality the client never could.
+    const words = `ALTO text of ${ark} folio ${ordre}`.split(" ");
+    const wcs = s.folioWc?.[ordre] ?? words.map(() => fakeMeanWc(s.folioMeanWc?.[ordre]));
+    if (wcs.length !== words.length) {
+      throw new Error(`fake folioWc[${ordre}] must hold ${words.length} values, got ${wcs.length}`);
+    }
+    const strings = words
+      .map((w, i) => {
+        const wc = wcs[i];
+        return `<String CONTENT="${xmlAttr(w)}"${wc === null || wc === undefined ? "" : ` WC="${xmlAttr(wc)}"`}/>`;
+      })
+      .join("");
+    const xml = `<alto><Layout><Page><PrintSpace><TextBlock><TextLine>${strings}</TextLine></TextBlock></PrintSpace></Page></Layout></alto>`;
+    return altoFolioFromParse(parseAlto(xml));
   }
 
-  async fetchImageFolio(ark: string, ordre: number, _size?: string): Promise<Buffer> {
+  manifestUrl(canonicalArk: string): string {
+    return `${FAKE_PRESENTATION_BASE}/presentation/v3/${canonicalArk}/manifest.json`;
+  }
+
+  async fetchImageFolio(ark: string, ordre: number, size: string): Promise<Buffer> {
     this.calls.image++;
+    this.imageFetches.push({ ark, ordre, size });
     const s = this.spec(ark);
     this.faults.hit(`folio:${ark}:${ordre}`, s.folioFaults?.[ordre]);
-    // A STRUCTURALLY valid JPEG (SOI … payload … EOI) — the fetch stage
-    // validates completeness before caching (isCompleteJpeg), so the fake must
-    // produce bytes that pass it. `truncatedFolios` opts a folio into the
-    // truncated shape (valid SOI, no EOI) to exercise the rejection path.
-    const payload = Buffer.from(`IMG ${ark} f${ordre}`, "utf8");
-    if (s.truncatedFolios?.includes(ordre)) {
-      return Buffer.concat([Buffer.from([0xff, 0xd8]), payload]);
-    }
-    return Buffer.concat([Buffer.from([0xff, 0xd8]), payload, Buffer.from([0xff, 0xd9])]);
+    const master = {
+      width: s.canvas?.width ?? FAKE_CANVAS.width,
+      height: s.canvas?.height ?? FAKE_CANVAS.height,
+    };
+    const out = iiifOutputDims(master, size);
+    // A STRUCTURALLY valid JPEG (SOI, a frame header with the served dims,
+    // payload, EOI) — the fetch stage validates completeness before caching
+    // (isCompleteJpeg) and reads the dims back for the cache rule.
+    // `truncatedFolios` opts a folio into the truncated shape (valid SOI, no
+    // EOI) to exercise the rejection path.
+    const jpeg = fakeJpeg(out.width, out.height, Buffer.from(`IMG ${ark} f${ordre}`, "utf8"));
+    if (s.truncatedFolios?.includes(ordre)) return jpeg.subarray(0, jpeg.length - 2);
+    return jpeg;
   }
 }
 

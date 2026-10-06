@@ -30,6 +30,16 @@ export const INGEST_STAGE = {
 } as const
 export type IngestStage = (typeof INGEST_STAGE)[keyof typeof INGEST_STAGE]
 
+/**
+ * The two TERMINAL `stage` values of a cluster progress callback event (the
+ * running events carry an IngestStage). `done` commits the version (fully or
+ * partially), `failed` leaves the ingested pointer where it was.
+ */
+export const CLUSTER_TERMINAL_STAGE = {
+  DONE: "done",
+  FAILED: "failed",
+} as const
+
 /** Cost estimate for transcribing a set of `sans_texte` documents via paid OCR. */
 export interface PaidOcrEstimate {
   /** Number of `sans_texte` documents the estimate covers. */

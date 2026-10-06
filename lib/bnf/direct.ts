@@ -15,7 +15,11 @@
 // gallica.bnf.fr calls through the same curl_cffi sidecar the ingest worker
 // uses. See lib/bnf/gallica-relay.ts. Only gallica.bnf.fr is relayed.
 //
-// Endpoints (confirmed by reading MCPs/mcp-bnf and curling the live APIs):
+// Endpoints (confirmed by reading MCPs/mcp-bnf and curling the live APIs). With
+// the broker (prod), Gallica metadata comes from the IIIF v3 manifest on the
+// BnF Presentation API (BNF_IIIF_PRESENTATION_BASE_URL/presentation/v3/<ark>/
+// manifest.json) and the catalogue/SPARQL calls go to their proext APIs (see
+// "Two transports" below). Without it (dev), the ungated hosts:
 //   Gallica:   GET http://oai.bnf.fr/oai2/OAIHandler?verb=GetRecord
 //                  &metadataPrefix=oai_dc&identifier=oai:bnf.fr:gallica/<ark>
 //              → Dublin Core (oai_dc). UNGATED (no auth, no Cloudflare, no
@@ -43,6 +47,7 @@ import {
   BNF_USER_AGENT,
 } from "@/lib/constants"
 import { brokerGetText, brokerUrl } from "@/lib/bnf/broker-client"
+import { presentationManifestUrl } from "@/lib/bnf/endpoints"
 import { relayGetText, shouldRelay } from "@/lib/bnf/gallica-relay"
 import { env } from "@/lib/env"
 import { withTimeout } from "@/lib/mcp/abort"
@@ -59,6 +64,7 @@ import {
 } from "@/lib/mcp/errors"
 import { type Settled, withConcurrency, withRetry } from "@/lib/mcp/retry"
 import { GALLICA_DOC_TYPE, sourceFromArk } from "@/lib/mcp/vocab"
+import { DOCUMENT_SOURCE } from "@/models/documents/schema"
 
 /**
  * Outcome of classifying a catalogue (`cb…`) ARK against its digitized Gallica
@@ -73,8 +79,10 @@ export type CanonicalizeOutcome =
 // Two transports per endpoint (dual-path):
 //   • proext  — the authenticated partner gateway (openapiproext.bnf.fr). Used
 //     whenever the broker is configured: the broker mints the OAuth bearer and
-//     counts the call against the shared quota (it only tokenises the proext
-//     host — see broker isPartnerApi). This is the prod path.
+//     counts the call against the BnF API's own bucket and the global one (it
+//     only tokenises the proext host and classifies by path — broker plan.ts).
+//     The manifest is on the Presentation API (BNF_IIIF_PRESENTATION_BASE_URL);
+//     catalogue SRU and SPARQL are on PROEXT_BASE below. This is the prod path.
 //   • ungated — the legacy tokenless hosts (oai/catalogue/data.bnf.fr). The
 //     no-broker dev fallback: proext needs creds the broker holds, so without a
 //     broker we keep hitting the ungated hosts directly.
@@ -437,9 +445,37 @@ export class BnfDirectClient {
     })
   }
 
+  /**
+   * Resolve ARKs STAGED in the research buffer (buffer_add enrichment,
+   * lib/buffer/enricher.ts). Same bounded concurrency and per-attempt timeouts
+   * as resolveArks, but Gallica ARKs always go through the ungated OAI-PMH
+   * record (oai.bnf.fr, broker `external` bucket) regardless of viaPartner():
+   *   - the IIIF manifest path is skipped on purpose — its 40/min bucket is
+   *     the ingestion bottleneck, and staging must never starve ingestion;
+   *   - OAI carries `gallica_typedoc` (periodiques:fascicules, …), the only
+   *     metadata-level press discriminator, which the manifest lacks.
+   * Catalogue ARKs use the catalogue SRU, as resolveArk does.
+   */
+  async resolveArksForStaging(
+    arks: string[],
+  ): Promise<Array<BnfMcpResolveResult | BnfMcpResolveError>> {
+    const settled: Settled<BnfMcpDocumentDetail>[] = await withConcurrency(
+      arks,
+      (ark) =>
+        sourceFromArk(ark) === DOCUMENT_SOURCE.CATALOGUE ? this.resolveCatalogue(ark) : this.resolveGallicaViaOai(ark),
+      BNF_DIRECT_CONCURRENCY,
+    )
+    return arks.map((ark, i) => {
+      const s = settled[i]
+      return s.ok
+        ? { ark, ok: true as const, document: s.value }
+        : { ark, ok: false as const, error: s.error }
+    })
+  }
+
   /** Resolve one ARK to BnfMcpDocumentDetail (the shape normalize.ts consumes). */
   async resolveArk(ark: string): Promise<BnfMcpDocumentDetail> {
-    return sourceFromArk(ark) === "catalogue"
+    return sourceFromArk(ark) === DOCUMENT_SOURCE.CATALOGUE
       ? this.resolveCatalogue(ark)
       : this.resolveGallica(ark)
   }
@@ -491,7 +527,7 @@ export class BnfDirectClient {
    * (non-catalogue ARKs are skipped — they need no canonicalization).
    */
   async canonicalizeArks(arks: string[]): Promise<CanonicalizeOutcome[]> {
-    const cbArks = arks.filter((a) => sourceFromArk(a) === "catalogue")
+    const cbArks = arks.filter((a) => sourceFromArk(a) === DOCUMENT_SOURCE.CATALOGUE)
     if (cbArks.length === 0) return []
 
     const settled: Settled<CanonicalizeOutcome>[] = await withConcurrency(
@@ -543,8 +579,8 @@ export class BnfDirectClient {
   }
 
   // ---- Gallica metadata (dual-path) -----------------------------------------
-  // PRIMARY (brokered/proext): the IIIF v3 manifest — the partner gateway, on the
-  // authenticated quota. It carries title/creator/date/lang, the `Taux OCR`
+  // PRIMARY (brokered/proext): the IIIF v3 manifest on the BnF Presentation API,
+  // on the authenticated ingestion quota. It carries title/creator/date/lang, the `Taux OCR`
   // text-layer signal, the doc type (`Type document` + the "publication en série"
   // press marker) and the authoritative page count (canvas count). FALLBACK
   // (no broker / dev): the ungated OAI-PMH record on oai.bnf.fr, which needs no
@@ -555,12 +591,25 @@ export class BnfDirectClient {
       : this.resolveGallicaViaOai(ark)
   }
 
-  /** PRIMARY: derive Gallica metadata from the IIIF v3 manifest (proext). */
+  /**
+   * PRIMARY: derive Gallica metadata from the IIIF v3 manifest, on the BnF
+   * Presentation API (BNF_IIIF_PRESENTATION_BASE_URL — its own quota, the
+   * broker's `manifest` + `presentation` buckets).
+   */
   private async resolveGallicaViaManifest(
     ark: string,
   ): Promise<BnfMcpDocumentDetail> {
+    const presentationBase = env.BNF_IIIF_PRESENTATION_BASE_URL
+    if (presentationBase === undefined) {
+      // lib/env.ts refuses to boot with a broker and no Presentation base, and
+      // this path runs only with a broker (viaPartner) — reaching here means
+      // that invariant broke. Fail the resolution loudly, never guess a URL.
+      throw new BnfMcpError(
+        "broker configured without the Presentation base (BNF_IIIF_PRESENTATION_BASE_URL)",
+      )
+    }
     const body = await this.httpGetText(
-      `${PROEXT_BASE}/iiif/presentation/v3/${fullArk(ark)}/manifest.json`,
+      presentationManifestUrl(presentationBase, fullArk(ark)),
       {},
       "application/json, application/ld+json",
     )

@@ -2,9 +2,9 @@
 // App-side client for the BnF broker (broker/ service).
 //
 // The broker is the single egress chokepoint for all BnF traffic: it owns the
-// OAuth token and enforces the shared 300/min global + 12/min-per-IP manifest +
-// politeness rate caps that the app resolver and the ingest worker must jointly
-// respect. When `BNF_BROKER_URL` is set, the resolver POSTs its fetches here
+// OAuth token and enforces the ingestion subscription's rate buckets (a global
+// cap, one quota per BnF API, the per-IP manifest limit, politeness —
+// broker/README.md) that the app resolver and the ingest worker jointly spend. When `BNF_BROKER_URL` is set, the resolver POSTs its fetches here
 // instead of talking to BnF directly; the broker mirrors the upstream status
 // verbatim, so the caller's classification is identical. Absent → callers fall
 // back to their direct transport (dev without the broker).

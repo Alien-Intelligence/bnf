@@ -16,6 +16,8 @@ import type { Logger, QueueClient } from "./types.js";
 export interface RunnableStage {
   readonly name: string;
   readonly inputQueue: string;
+  /** Register the input queue's delivery policy with the transport (no I/O). */
+  declareQueue(): void;
   start(): Promise<void>;
 }
 
@@ -36,10 +38,23 @@ export class Pipeline {
     }
   }
 
+  /**
+   * Register every stage's input-queue policy with the transport, without
+   * starting any worker loop. start() runs it first; a process that only SENDS
+   * into the pipeline (the requeue-stranded CLI) runs it alone, so what it
+   * sends carries the same policy a live worker would.
+   */
+  declareQueues(): void {
+    for (const s of this.stages) s.declareQueue();
+  }
+
   /** Start every stage's worker loop. Idempotent guard so a double-start throws. */
   async start(): Promise<void> {
     if (this.started) throw new Error("pipeline already started");
     this.started = true;
+    // Every policy first: a stage that starts emits to the NEXT stage's queue
+    // before that stage's work() runs, and those jobs must carry its policy.
+    this.declareQueues();
     for (const s of this.stages) {
       await s.start();
     }
@@ -51,6 +66,11 @@ export class Pipeline {
     if (docs.length === 0) return;
     await this.queue.sendMany(Q.metadata, docs);
     this.log.info("pipeline_seeded", { count: docs.length });
+  }
+
+  /** Shutdown phase 1 — see QueueClient.drain. */
+  async drain(budgetMs: number): Promise<number> {
+    return this.queue.drain(budgetMs);
   }
 
   async stop(): Promise<void> {

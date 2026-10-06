@@ -10,9 +10,10 @@
  *  - `counts()` reads the `pgboss.job` table by state for the progress read-model.
  */
 import PgBoss from "pg-boss";
-import { Pool } from "pg";
+import { Pool, type PoolConfig } from "pg";
 
-import type { QueueClient, QueueCounts, QueueMessage } from "./types.js";
+import { assertAttemptsSpent, spentFromRetryLimit } from "./queue-attempts.js";
+import type { QueueClient, QueueCounts, QueueMessage, QueuePolicyOpts, SendOpts } from "./types.js";
 
 interface QueuePolicy {
   retryLimit: number;
@@ -35,11 +36,38 @@ interface QueuePolicy {
  */
 const GRACEFUL_STOP_TIMEOUT_MS = 110_000;
 
+/** The policy a caller declares, with the transport's chosen defaults filled in. */
+function toPolicy(opts: QueuePolicyOpts): QueuePolicy {
+  return {
+    retryLimit: opts.retryLimit ?? 3,
+    retryDelaySec: Math.max(1, Math.round((opts.retryDelayMs ?? 5_000) / 1000)),
+    retryBackoff: opts.retryBackoff ?? true,
+    // 600s, not pg-boss's silent 15-min default: a caller that doesn't declare
+    // a ceiling still gets a chosen one (see PipelineStage.expireInSeconds).
+    expireInSeconds: opts.expireInSeconds ?? 600,
+  };
+}
+
+/** Postgres codes of a create that lost a race to another creator — the queue exists. */
+const ALREADY_EXISTS_CODES = new Set(["23505", "42P07"]);
+
+function isAlreadyExists(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "code" in err &&
+    typeof err.code === "string" &&
+    ALREADY_EXISTS_CODES.has(err.code)
+  );
+}
+
 export class PgBossQueue implements QueueClient {
   private boss: PgBoss | null = null;
   private pool: Pool | null = null;
   private readonly policies = new Map<string, QueuePolicy>();
   private readonly created = new Set<string>();
+  /** The policy last written to each queue's row (identity of the `policies` entry). */
+  private readonly applied = new Map<string, QueuePolicy>();
   /** Set on stop() so the sliding-window pumps stop fetching new work. */
   private stopped = false;
   /** The per-queue safety-poll timers, cleared on stop(). */
@@ -47,11 +75,24 @@ export class PgBossQueue implements QueueClient {
   /** Handlers currently running across ALL queues — what stop() drains on. */
   private inFlight = 0;
 
-  constructor(private readonly connectionString: string) {}
+  /** pg-boss's own pool — built from the caller's config, so it carries both timeouts. */
+  private bossPool: Pool | null = null;
+
+  /**
+   * `poolConfig` (config.ts pgPoolConfig) is used for BOTH pools — pg-boss's
+   * (through its `db` adapter: its own options cannot carry
+   * connectionTimeoutMillis) and the read-model one — so neither a job send
+   * nor a count can wait forever for a client or a statement.
+   */
+  constructor(private readonly poolConfig: PoolConfig) {}
 
   async start(): Promise<void> {
     if (this.boss) return;
-    const boss = new PgBoss({ connectionString: this.connectionString });
+    const bossPool = new Pool(this.poolConfig);
+    this.bossPool = bossPool;
+    const boss = new PgBoss({
+      db: { executeSql: (text: string, values: unknown[]) => bossPool.query(text, values) },
+    });
     boss.on("error", (err: Error) => console.error("[pg-boss] error:", err.message));
     await boss.start();
     this.boss = boss;
@@ -61,12 +102,34 @@ export class PgBossQueue implements QueueClient {
     // of those callers is now the reconciliation sweep (CLAUDE_ERROR_PATTERNS
     // §14 — every external await bounded). 30s is ~100× the measured cost of
     // these queries, so it only ever fires on something genuinely stuck.
-    this.pool = new Pool({ connectionString: this.connectionString, statement_timeout: 30_000 });
+    this.pool = new Pool(this.poolConfig);
   }
 
   private b(): PgBoss {
     if (!this.boss) throw new Error("PgBossQueue not started");
     return this.boss;
+  }
+
+  /**
+   * Complete or fail a delivery. After stop() (pg-boss closed) there is
+   * nothing to talk to: the job is deliberately left `active` and expires —
+   * logged, never a throw out of a finished handler.
+   */
+  private async settle(
+    queue: string,
+    jobId: string,
+    outcome: { kind: "complete" } | { kind: "fail"; error: string },
+  ): Promise<void> {
+    const boss = this.boss;
+    if (boss === null) {
+      console.error(
+        `[pg-boss] ${queue}/${jobId} finished after stop(): left active, pg-boss expires it`,
+      );
+      return;
+    }
+    const call =
+      outcome.kind === "complete" ? boss.complete(queue, jobId) : boss.fail(queue, jobId, { error: outcome.error });
+    await call.catch((e: unknown) => console.error(`[pg-boss] ${outcome.kind}() failed:`, e));
   }
 
   /**
@@ -79,44 +142,74 @@ export class PgBossQueue implements QueueClient {
    * "declared" their retry policy: nothing ever wrote the row again. `updateQueue`
    * COALESCEs each column, so it applies the declared values without clobbering
    * anything we don't set.
+   *
+   * The early return is for a queue whose CURRENT policy is already written:
+   * a `send` before the consuming stage's `work()` (a producer stage that
+   * starts first) creates the row without a policy, and the later `work()`
+   * must still write it — `applied` tracks which policy the row has.
    */
-  private async ensureQueue(name: string, policy?: QueuePolicy): Promise<void> {
-    if (policy) this.policies.set(name, policy);
-    if (this.created.has(name)) return;
+  private async ensureQueue(name: string): Promise<QueuePolicy> {
     const p = this.policies.get(name);
-    const queueOpts = p
-      ? {
-          name,
-          retryLimit: p.retryLimit,
-          retryDelay: p.retryDelaySec,
-          retryBackoff: p.retryBackoff,
-          expireInSeconds: p.expireInSeconds,
-        }
-      : { name };
-    await this.b()
-      .createQueue(name, queueOpts)
-      .catch(() => undefined); // idempotent
-    if (p) {
-      await this.b()
-        .updateQueue(name, queueOpts)
-        .catch((e) => console.error(`[pg-boss] updateQueue(${name}) failed:`, e));
+    if (!p) {
+      // A job sent with pg-boss's defaults would carry the silent 15-min
+      // expiry and retry_limit 2 (pass-6 item 9): every queue is declared by
+      // its consuming stage (Pipeline.start) before anything is sent.
+      throw new Error(`PgBossQueue: queue ${name} has no declared policy (declare() it before sending or working)`);
     }
-    this.created.add(name);
+    if (this.created.has(name) && this.applied.get(name) === p) return p;
+    const queueOpts = {
+      name,
+      retryLimit: p.retryLimit,
+      retryDelay: p.retryDelaySec,
+      retryBackoff: p.retryBackoff,
+      expireInSeconds: p.expireInSeconds,
+    };
+    if (!this.created.has(name)) {
+      // create_queue is ON CONFLICT DO NOTHING; only a create that loses a
+      // race to another creator can still say "exists". Anything else throws.
+      await this.b()
+        .createQueue(name, queueOpts)
+        .catch((e: unknown) => {
+          if (!isAlreadyExists(e)) throw e;
+        });
+      this.created.add(name);
+    }
+    // A failed policy write throws: the queue is not recorded as applied, so
+    // the next send or work() writes it again.
+    await this.b().updateQueue(name, queueOpts);
+    this.applied.set(name, p);
+    return p;
   }
 
-  async send<T>(queue: string, payload: T, opts?: { startAfterMs?: number }): Promise<void> {
-    await this.ensureQueue(queue);
-    const p = this.policies.get(queue);
-    // Job-level options override the queue row, so a job inserted before/while
-    // the queue policy is being applied still carries the right ceiling.
-    const sendOpts: Record<string, unknown> = p
-      ? {
-          retryLimit: p.retryLimit,
-          retryDelay: p.retryDelaySec,
-          retryBackoff: p.retryBackoff,
-          expireInSeconds: p.expireInSeconds,
-        }
-      : {};
+  declare(queue: string, policy: QueuePolicyOpts): void {
+    const next = toPolicy(policy);
+    const current = this.policies.get(queue);
+    const same =
+      current !== undefined &&
+      current.retryLimit === next.retryLimit &&
+      current.retryDelaySec === next.retryDelaySec &&
+      current.retryBackoff === next.retryBackoff &&
+      current.expireInSeconds === next.expireInSeconds;
+    if (!same) this.policies.set(queue, next);
+  }
+
+  /** The job-level options every job of `queue` carries (they override the queue row). */
+  private jobOpts(p: QueuePolicy, spent: number): Record<string, unknown> {
+    return {
+      // A hand-back's copy: only what is left of the budget (the attempts
+      // are recovered from it, runJob).
+      retryLimit: Math.max(0, p.retryLimit - spent),
+      retryDelay: p.retryDelaySec,
+      retryBackoff: p.retryBackoff,
+      expireInSeconds: p.expireInSeconds,
+    };
+  }
+
+  async send<T>(queue: string, payload: T, opts?: SendOpts): Promise<void> {
+    const spent = opts?.attemptsSpent ?? 0;
+    assertAttemptsSpent(spent);
+    const p = await this.ensureQueue(queue);
+    const sendOpts = this.jobOpts(p, spent);
     // Defer delivery (e.g. the OCR poll re-enqueue) — pg-boss takes whole seconds.
     if (opts?.startAfterMs && opts.startAfterMs > 0) {
       sendOpts.startAfter = Math.max(1, Math.round(opts.startAfterMs / 1000));
@@ -125,16 +218,8 @@ export class PgBossQueue implements QueueClient {
   }
 
   async sendMany<T>(queue: string, payloads: readonly T[]): Promise<void> {
-    await this.ensureQueue(queue);
-    const p = this.policies.get(queue);
-    const opts = p
-      ? {
-          retryLimit: p.retryLimit,
-          retryDelay: p.retryDelaySec,
-          retryBackoff: p.retryBackoff,
-          expireInSeconds: p.expireInSeconds,
-        }
-      : {};
+    const p = await this.ensureQueue(queue);
+    const opts = this.jobOpts(p, 0);
     await this.b().insert(
       payloads.map((data) => ({ name: queue, data: data as object, ...opts })),
     );
@@ -161,22 +246,10 @@ export class PgBossQueue implements QueueClient {
   async work<T>(
     queue: string,
     handler: (msg: QueueMessage<T>) => Promise<void>,
-    opts: {
-      concurrency: number;
-      retryLimit?: number;
-      retryDelayMs?: number;
-      retryBackoff?: boolean;
-      expireInSeconds?: number;
-    },
+    opts: QueuePolicyOpts & { concurrency: number },
   ): Promise<void> {
-    await this.ensureQueue(queue, {
-      retryLimit: opts.retryLimit ?? 3,
-      retryDelaySec: Math.max(1, Math.round((opts.retryDelayMs ?? 5_000) / 1000)),
-      retryBackoff: opts.retryBackoff ?? true,
-      // 600s, not pg-boss's silent 15-min default: a caller that doesn't declare
-      // a ceiling still gets a chosen one (see PipelineStage.expireInSeconds).
-      expireInSeconds: opts.expireInSeconds ?? 600,
-    });
+    this.declare(queue, opts);
+    const policy = await this.ensureQueue(queue);
 
     const cap = Math.max(1, Math.floor(opts.concurrency));
     let inFlight = 0; // this queue's slots (the pump's own accounting)
@@ -186,17 +259,16 @@ export class PgBossQueue implements QueueClient {
       inFlight++;
       this.inFlight++; // process-wide, so stop() can drain across all queues
       void (async () => {
-        const attempts = (job.retryCount ?? 0) + 1;
         try {
+          // A hand-back's copy was sent with a reduced retry_limit: the
+          // deliveries its predecessors spent are the difference.
+          const spent = spentFromRetryLimit(policy.retryLimit, job.retryLimit);
+          const attempts = spent + (job.retryCount ?? 0) + 1;
           await handler({ id: job.id, payload: job.data, attempts });
-          await this.b()
-            .complete(queue, job.id)
-            .catch((e) => console.error("[pg-boss] complete() failed:", e));
+          await this.settle(queue, job.id, { kind: "complete" });
         } catch (err) {
           const error = err instanceof Error ? err.message : String(err);
-          await this.b()
-            .fail(queue, job.id, { error })
-            .catch((e) => console.error("[pg-boss] fail() failed:", e));
+          await this.settle(queue, job.id, { kind: "fail", error });
         } finally {
           inFlight--;
           this.inFlight--;
@@ -298,39 +370,44 @@ export class PgBossQueue implements QueueClient {
   }
 
   /**
-   * Stop fetching, drain what is already running, then shut pg-boss down.
+   * Shutdown phase 1 (QueueClient.drain): stop fetching and wait for the
+   * in-flight handlers, up to `budgetMs`, with pg-boss ALIVE — so a handler
+   * can still complete, fail, or hand its delivery back (`send`).
    *
    * The drain has to be OURS (F12): pg-boss's graceful stop waits on the work-in-
-   * progress of its own `work()` workers, and we consume via `fetch()` — so
-   * `boss.stop()` sees zero WIP, returns instantly, closes its pool, and every
-   * still-running handler's `complete()`/`fail()` then fails. With a 135s BnF fetch
-   * inside a 120s terminationGracePeriodSeconds that meant a deploy routinely
-   * killed in-flight deliveries mid-call. Now we wait for the real in-flight count,
-   * bounded by ONE budget shared with pg-boss's own wait (CLAUDE_ERROR_PATTERNS
-   * §14 — the wait is bounded, and it exits the instant nothing is in flight).
+   * progress of its own `work()` workers, and we consume via `fetch()`.
    */
-  async stop(): Promise<void> {
+  async drain(budgetMs: number): Promise<number> {
     this.stopped = true;
     for (const t of this.workTimers) clearInterval(t);
     this.workTimers.length = 0;
-
-    const deadline = Date.now() + GRACEFUL_STOP_TIMEOUT_MS;
+    const deadline = Date.now() + budgetMs;
     while (this.inFlight > 0 && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 200));
     }
+    return this.inFlight;
+  }
+
+  /**
+   * Shutdown phase 2: drain anything left (if drain() was not called), then
+   * shut pg-boss down and end both pools. A handler still running after this
+   * leaves its job `active` for pg-boss to expire (settle()).
+   */
+  async stop(): Promise<void> {
+    if (!this.stopped) await this.drain(GRACEFUL_STOP_TIMEOUT_MS);
     if (this.inFlight > 0) {
       console.error(
-        `[pg-boss] graceful stop budget exhausted with ${this.inFlight} handler(s) in flight` +
-          " — their jobs stay `active` until pg-boss expires them (the reconciliation" +
-          " sweep re-drives the affected docs on the next boot)",
+        `[pg-boss] stopping with ${this.inFlight} handler(s) still in flight` +
+          " — their jobs stay `active` until pg-boss expires them",
       );
     }
-
     await this.boss
-      ?.stop({ graceful: true, timeout: Math.max(1_000, deadline - Date.now()) })
-      .catch(() => undefined);
+      ?.stop({ graceful: true, timeout: 1_000 })
+      .catch((e: unknown) => console.error("[pg-boss] stop() failed:", e));
     await this.pool?.end().catch(() => undefined);
+    await this.bossPool?.end().catch(() => undefined);
     this.boss = null;
     this.pool = null;
+    this.bossPool = null;
   }
 }
