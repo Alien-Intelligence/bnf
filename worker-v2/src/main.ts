@@ -11,7 +11,7 @@
  */
 import { Pool } from "pg";
 
-import { loadBrokerUrl, loadConfig, loadIiifBases, pgPoolConfig } from "./config.js";
+import { gateRates, loadBrokerUrl, loadConfig, loadIiifBases, pgPoolConfig } from "./config.js";
 import { configureBrokerUrl } from "./bnf/broker-client.js";
 import { buildLivePipeline } from "./live-pipeline.js";
 import { PgBossQueue } from "./core/queue-pgboss.js";
@@ -86,7 +86,7 @@ async function main(): Promise<void> {
       completion,
       log,
       fetchRatePerMin,
-      manifestRatePerMin: cfg.rates.manifestRpm,
+      manifestRatePerMin: gateRates(cfg.rates).manifestRpm,
       blob,
       ocrBackfill,
       ocrSyncDeadlineMs: OCR_SYNC_DEADLINE_MS,

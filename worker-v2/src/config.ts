@@ -148,6 +148,10 @@ export interface WorkerConfig {
      * isn't (the 2026-08-11 broker queue collapse).
      */
     manifestRpm: number;
+    /** BNF_RATES.catalogue.rpm — reserved out of global for metadata lookups (gateRates). */
+    catalogueRpm: number;
+    /** BNF_RATES.grapheData.rpm — reserved out of global like catalogue (gateRates). */
+    grapheDataRpm: number;
   };
   /**
    * BNF_ALTO_FETCH_CONCURRENCY — in-flight ALTO fetches. Sized so in-progress
@@ -224,7 +228,44 @@ export interface WorkerConfig {
  * worker's /progress (main.ts) and the status CLI.
  */
 export function etaFetchRatePerMin(rates: WorkerConfig["rates"]): number {
-  return Math.min(rates.globalRpm, rates.presentationRpm);
+  return Math.min(gateRates(rates).bulkRpm, rates.presentationRpm);
+}
+
+/**
+ * The share of the broker's manifest bucket the worker's manifest gate takes.
+ * The app reads Presentation manifests through the SAME bucket, unpaced by
+ * the worker (lib/bnf/direct.ts, called by the stub resolver, the
+ * canonicalizer and the buffer enricher): at 100 % the two
+ * oversubscribed it and the broker shed the worker's metadata lookups until
+ * documents failed for good (2026-10-06, 0.19.0: 3 804 manifest sheds, 55
+ * documents failed in 3 h). The rest is the app's.
+ */
+export const WORKER_MANIFEST_SHARE = 0.75;
+
+/**
+ * The rates the worker's gates run at, derived from the broker's buckets.
+ *
+ * - bulkRpm caps ALTO + image fetches TOGETHER below the global bucket, by the
+ *   rpm of every bucket that must still get through global while a big ingest
+ *   fetches: manifests, catalogue, graphe. Without it ALTO alone (Presentation
+ *   1425 > global 950) took the whole global budget and the broker shed the
+ *   metadata lookups of the same ingest (2026-10-06: 471 global sheds of
+ *   manifests, 412 of catalogue calls).
+ * - manifestRpm is WORKER_MANIFEST_SHARE of the manifest bucket.
+ *
+ * Throws when the reserve leaves no room for bulk fetches: a rates object
+ * like that is a chart mistake, not something to run on.
+ */
+export function gateRates(rates: WorkerConfig["rates"]): { bulkRpm: number; manifestRpm: number } {
+  const reserved = rates.manifestRpm + rates.catalogueRpm + rates.grapheDataRpm;
+  const bulkRpm = rates.globalRpm - reserved;
+  if (bulkRpm < 1) {
+    throw new Error(
+      `${RATES_ENV}: global.rpm (${rates.globalRpm}) leaves no room for ALTO and image fetches once ` +
+        `manifest + catalogue + grapheData (${reserved}) are reserved`,
+    );
+  }
+  return { bulkRpm, manifestRpm: Math.max(1, Math.floor(rates.manifestRpm * WORKER_MANIFEST_SHARE)) };
 }
 
 /**
@@ -375,6 +416,8 @@ const WORKER_RATE_BUCKETS = {
   presentationRpm: "presentation",
   imageRpm: "image",
   manifestRpm: "manifest",
+  catalogueRpm: "catalogue",
+  grapheDataRpm: "grapheData",
 } as const;
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -406,6 +449,8 @@ export function workerRatesFrom(env: Env): WorkerConfig["rates"] {
     presentationRpm: rpmOf(WORKER_RATE_BUCKETS.presentationRpm),
     imageRpm: rpmOf(WORKER_RATE_BUCKETS.imageRpm),
     manifestRpm: rpmOf(WORKER_RATE_BUCKETS.manifestRpm),
+    catalogueRpm: rpmOf(WORKER_RATE_BUCKETS.catalogueRpm),
+    grapheDataRpm: rpmOf(WORKER_RATE_BUCKETS.grapheDataRpm),
   };
   if (problems.length > 0) throw new Error(`${RATES_ENV} is invalid — ${problems.join("; ")}`);
   return rates;

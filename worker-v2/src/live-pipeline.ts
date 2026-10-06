@@ -8,7 +8,7 @@
  */
 import type { Pool } from "pg";
 
-import { etaFetchRatePerMin, type IiifBases, type WorkerConfig } from "./config.js";
+import { etaFetchRatePerMin, gateRates, type IiifBases, type WorkerConfig } from "./config.js";
 import { buildPipeline } from "./build.js";
 import type { S3BlobStore } from "./core/blob.js";
 import type { Pipeline } from "./core/pipeline.js";
@@ -45,7 +45,7 @@ export type LivePipelineDeps = {
 export type LivePipeline = {
   pipeline: Pipeline;
   ocrBackfill: OcrBackfillWiring;
-  /** The four limiters the gates compose — what shutdown stops. */
+  /** The limiters the gates compose — what shutdown stops. */
   limiters: RateLimiter[];
   fetchRatePerMin: number;
 };
@@ -69,15 +69,20 @@ export function buildLivePipeline(deps: LivePipelineDeps): LivePipeline {
 
   // The broker's buckets, mirrored (same values, same chart keys): one
   // limiter per quota, and one composite per kind of call, most specific
-  // first. The composites own nothing — the four limiters are what shutdown
-  // stops.
+  // first. ALTO and image fetches also share a BULK limiter that keeps
+  // global room for the metadata lookups of the same ingest, and the manifest
+  // gate takes only the worker's share of the manifest bucket (gateRates,
+  // config.ts — the 2026-10-06 starvation). The composites own nothing — the
+  // five limiters are what shutdown stops.
+  const shares = gateRates(cfg.rates);
   const globalRate = new RateLimiter({ ratePerMin: cfg.rates.globalRpm });
+  const bulkRate = new RateLimiter({ ratePerMin: shares.bulkRpm });
   const presentationRate = new RateLimiter({ ratePerMin: cfg.rates.presentationRpm });
   const imageRate = new RateLimiter({ ratePerMin: cfg.rates.imageRpm });
-  const manifestRate = new RateLimiter({ ratePerMin: cfg.rates.manifestRpm });
+  const manifestRate = new RateLimiter({ ratePerMin: shares.manifestRpm });
   const gates = {
-    fetchAlto: new CompositeRateGate([presentationRate, globalRate]),
-    fetchImage: new CompositeRateGate([imageRate, globalRate]),
+    fetchAlto: new CompositeRateGate([presentationRate, bulkRate, globalRate]),
+    fetchImage: new CompositeRateGate([imageRate, bulkRate, globalRate]),
     manifest: new CompositeRateGate([manifestRate, presentationRate, globalRate]),
   };
   const fetchRatePerMin = etaFetchRatePerMin(cfg.rates);
@@ -115,7 +120,7 @@ export function buildLivePipeline(deps: LivePipelineDeps): LivePipeline {
   return {
     pipeline,
     ocrBackfill,
-    limiters: [globalRate, presentationRate, imageRate, manifestRate],
+    limiters: [globalRate, bulkRate, presentationRate, imageRate, manifestRate],
     fetchRatePerMin,
   };
 }
