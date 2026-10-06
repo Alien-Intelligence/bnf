@@ -19,7 +19,7 @@ replicaCount: 1
 image:
   repository: rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo
   pullPolicy: Always
-  tag: "0.18.1"
+  tag: "0.19.0"
 
 imagePullSecrets: []
 
@@ -154,7 +154,7 @@ worker:
   image:
     repository: rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo-worker
     pullPolicy: Always
-    tag: "0.18.1"
+    tag: "0.19.0"
 
   service:
     type: ClusterIP
@@ -340,7 +340,7 @@ broker:
   image:
     repository: rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo-broker
     pullPolicy: Always
-    tag: "0.18.1"
+    tag: "0.19.0"
 
   service:
     type: ClusterIP
