@@ -5,8 +5,8 @@
  * concurrency (Track D):
  *
  *   - FetchAltoStage  on Q.fetchAlto  — ALTO text, Presentation API
- *                                        (gate: presentation ∧ global);
- *   - FetchImageStage on Q.fetchImage — images, Image API (gate: image ∧ global).
+ *                                        (gate: presentation ∧ bulk ∧ global);
+ *   - FetchImageStage on Q.fetchImage — images, Image API (gate: image ∧ bulk ∧ global).
  *
  * Split because the Image quota (300/min) is five times scarcer than the
  * Presentation one: in one images-first queue, items waiting on the image gate

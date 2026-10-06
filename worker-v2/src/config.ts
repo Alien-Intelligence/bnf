@@ -125,12 +125,13 @@ export interface WorkerConfig {
   maxPages: number;
   maxCanvases: number;
   /**
-   * The worker's own BnF gates, mirroring the broker's buckets for the
-   * ingestion subscription (broker/src/plan.ts) — the SAME values, rendered from
-   * the same chart keys (helm `broker.config.rates`). The broker is the rate
-   * authority; these keep the worker from offering far more than it grants
-   * (every broker shed is a wasted round trip). ALL REQUIRED, no defaults: a
-   * rate is a BnF quota decision (CLAUDE_ERROR_PATTERNS §9/§10).
+   * The worker's own BnF gates, derived from the broker's buckets for the
+   * ingestion subscription (broker/src/plan.ts), read from the same chart keys
+   * (helm `broker.config.rates`). The broker is the rate authority; these keep
+   * the worker from offering more than it grants (every broker shed is a
+   * wasted round trip). The six bucket rpms are REQUIRED, no defaults (a rate
+   * is a BnF quota decision, CLAUDE_ERROR_PATTERNS §9/§10); bulkRpm and
+   * workerManifestRpm are derived from them, BELOW the broker's own values.
    * live-pipeline.ts composes them: ALTO = presentation ∧ bulk ∧ global,
    * images = image ∧ bulk ∧ global, manifests = the worker's manifest share ∧
    * presentation ∧ global. bulkRpm and workerManifestRpm are derived and
@@ -440,7 +441,7 @@ export function loadIiifBases(env: Env): IiifBases {
  */
 export const RATES_ENV = "BNF_RATES";
 
-/** The broker buckets whose rpm the worker's gates mirror (main.ts composes them). */
+/** The broker buckets the worker reads: four its gates use, plus catalogue and grapheData, reserved out of global (gateRates). */
 const WORKER_RATE_BUCKETS = {
   globalRpm: "global",
   presentationRpm: "presentation",

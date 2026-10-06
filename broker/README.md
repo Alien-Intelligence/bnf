@@ -42,7 +42,7 @@ Only `*.bnf.fr` upstreams are accepted (SSRF guard). Partner-API hosts get a Bea
 
 ## Configuration
 
-Every bucket's rate is **required**, carried by ONE variable, `BNF_RATES`: a JSON object `{"<bucket>": {"rpm": n, "burst": n}, …}` with exactly the buckets `global`, `manifest`, `external`, `presentation`, `image`, `iiifLegacy`, `catalogue`, `gallicaSru`, `grapheData`, `datePeriodique`, `documentTdm` (see `.env.example`). A missing, unknown or non-integer bucket or field stops the broker at boot, naming every problem: a rate is a BnF quota decision, never a code default, and a new image booted with an old ConfigMap fails loudly instead of running on guesses. The chart renders it from `broker.config.rates`, and the worker reads its four gates from the same object. `BNF_CLIENT_KEY` / `BNF_CLIENT_SECRET` are required too. Timeouts and sizes keep documented defaults (`src/config.ts`).
+Every bucket's rate is **required**, carried by ONE variable, `BNF_RATES`: a JSON object `{"<bucket>": {"rpm": n, "burst": n}, …}` with exactly the buckets `global`, `manifest`, `external`, `presentation`, `image`, `iiifLegacy`, `catalogue`, `gallicaSru`, `grapheData`, `datePeriodique`, `documentTdm` (see `.env.example`). A missing, unknown or non-integer bucket or field stops the broker at boot, naming every problem: a rate is a BnF quota decision, never a code default, and a new image booted with an old ConfigMap fails loudly instead of running on guesses. The chart renders it from `broker.config.rates`, and the worker derives its gates from the same object (worker-v2 `config.ts` `gateRates`). `BNF_CLIENT_KEY` / `BNF_CLIENT_SECRET` are required too. Timeouts and sizes keep documented defaults (`src/config.ts`).
 
 In the chart the rates live in ONE place, `broker.config.rates.<bucket>.{quota,rpm,burst}` in `helm/bnf-demo-chart/values.yaml`; the worker's own gates render from the same keys.
 
@@ -64,7 +64,7 @@ Clients (app `lib/bnf/broker-client.ts`, worker `worker-v2/src/bnf/broker-client
 
 ## Feeding the buckets (worker side)
 
-The broker is the rate **authority**; worker-v2 mirrors its rates with in-process gates so it does not offer far more than the broker grants (every shed is a wasted round trip). Its ALTO fetch stage is gated by `presentation ∧ global`, its image fetch stage by `image ∧ global`, its manifest fetches by `manifest ∧ presentation ∧ global` — the same values, rendered from the same chart keys. Each fetch stage's concurrency is sized `permits ≈ rpm × latency_s / 60` with headroom (`BNF_ALTO_FETCH_CONCURRENCY`, `BNF_IMAGE_FETCH_CONCURRENCY`); see `worker-v2/RUN.md`.
+The broker is the rate **authority**; worker-v2 mirrors its rates with in-process gates so it does not offer far more than the broker grants (every shed is a wasted round trip). Its ALTO fetch stage is gated by `presentation ∧ bulk ∧ global`, its image fetch stage by `image ∧ bulk ∧ global`, its manifest fetches by its manifest share `∧ presentation ∧ global`. Bulk is global minus the manifest, catalogue and graphe rpm, so a large ingest's fetches always leave global room for its own metadata lookups; the worker's manifest share is 75 % of the manifest bucket, the rest being the app's (0.19.1, after the 2026-10-06 starvation). Each fetch stage's concurrency is sized `permits ≈ rpm × latency_s / 60` with headroom (`BNF_ALTO_FETCH_CONCURRENCY`, `BNF_IMAGE_FETCH_CONCURRENCY`); see `worker-v2/RUN.md`.
 
 ## Raising a quota
 

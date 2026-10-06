@@ -4,8 +4,8 @@
  *
  *   metadata → [text: fan-out alto folios → FETCH_ALTO]
  *            → [image/mistral: → MANIFEST → fan-out image folios → FETCH_IMAGE]
- *   FETCH_ALTO  (gate: presentation ∧ global) ┐
- *   FETCH_IMAGE (gate: image ∧ global)        ┴→ folio-result → MONITOR (fan-in per doc)
+ *   FETCH_ALTO  (gate: presentation ∧ bulk ∧ global) ┐
+ *   FETCH_IMAGE (gate: image ∧ bulk ∧ global)        ┴→ folio-result → MONITOR (fan-in per doc)
  *   MONITOR → route by lane:
  *       text    → ASSEMBLE  → EMBED → REGISTER
  *       vision  → DESCRIBE  → EMBED → REGISTER
