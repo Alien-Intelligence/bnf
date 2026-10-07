@@ -125,14 +125,18 @@ export interface WorkerConfig {
   maxPages: number;
   maxCanvases: number;
   /**
-   * The worker's own BnF gates, mirroring the broker's buckets for the
-   * ingestion subscription (broker/src/plan.ts) — the SAME values, rendered from
-   * the same chart keys (helm `broker.config.rates`). The broker is the rate
-   * authority; these keep the worker from offering far more than it grants
-   * (every broker shed is a wasted round trip). ALL REQUIRED, no defaults: a
-   * rate is a BnF quota decision (CLAUDE_ERROR_PATTERNS §9/§10).
-   * main.ts composes them: ALTO = presentation ∧ global, images = image ∧
-   * global, manifests = manifest ∧ presentation ∧ global.
+   * The worker's own BnF gates, derived from the broker's buckets for the
+   * ingestion subscription (broker/src/plan.ts), read from the same chart keys
+   * (helm `broker.config.rates`). The broker is the rate authority; these keep
+   * the worker from offering more than it grants (every broker shed is a
+   * wasted round trip). The six bucket rpms are REQUIRED, no defaults (a rate
+   * is a BnF quota decision, CLAUDE_ERROR_PATTERNS §9/§10); bulkRpm and
+   * workerManifestRpm are derived from them, BELOW the broker's own values.
+   * live-pipeline.ts composes them: ALTO = presentation ∧ bulk ∧ global,
+   * images = image ∧ bulk ∧ global, manifests = the worker's manifest share ∧
+   * presentation ∧ global. bulkRpm and workerManifestRpm are derived and
+   * checked at load (gateRates): the worker never takes the whole global or
+   * manifest budget.
    */
   rates: {
     /** BNF_RATES.global.rpm — the subscription's cap over every partner API. */
@@ -142,12 +146,21 @@ export interface WorkerConfig {
     /** BNF_RATES.image.rpm — the Image API (folio images). */
     imageRpm: number;
     /**
-     * BNF_RATES.manifest.rpm — the per-IP manifest sub-limit. Shared by MetadataStage
+     * BNF_RATES.manifest.rpm — the broker's per-IP manifest sub-limit. The
+     * worker's gate runs at workerManifestRpm (its share), shared by MetadataStage
      * and ManifestStage through ONE gate (build.ts `rates.manifest`) — see F1/F2
      * in ai-memories/tech/repos/bnf/ingest-hardening for what happens when it
      * isn't (the 2026-08-11 broker queue collapse).
      */
     manifestRpm: number;
+    /** BNF_RATES.catalogue.rpm — reserved out of global for metadata lookups (gateRates). */
+    catalogueRpm: number;
+    /** BNF_RATES.grapheData.rpm — reserved out of global like catalogue (gateRates). */
+    grapheDataRpm: number;
+    /** ALTO + image fetches together (gateRates): global minus the reserved buckets. */
+    bulkRpm: number;
+    /** The worker's manifest gate (gateRates): its share of the manifest bucket. */
+    workerManifestRpm: number;
   };
   /**
    * BNF_ALTO_FETCH_CONCURRENCY — in-flight ALTO fetches. Sized so in-progress
@@ -218,13 +231,73 @@ export interface WorkerConfig {
 
 /**
  * The fetch rate the progress read-model's ETA assumes: ALTO's binding rate,
- * min(global, presentation). ALTO is ≥ 90 % of folios (2.2 M ALTO against
+ * min(bulk, presentation). ALTO is ≥ 90 % of folios (2.2 M ALTO against
  * 172 k images in the DSI log), so image-heavy runs keep an approximate ETA —
  * their Mistral or vision tail dominates anyway. One definition, used by the
  * worker's /progress (main.ts) and the status CLI.
  */
 export function etaFetchRatePerMin(rates: WorkerConfig["rates"]): number {
-  return Math.min(rates.globalRpm, rates.presentationRpm);
+  return Math.min(rates.bulkRpm, rates.presentationRpm);
+}
+
+/**
+ * The share of the broker's manifest bucket the worker's manifest gate takes.
+ * The app reads Presentation manifests through the SAME bucket, unpaced by
+ * the worker (lib/bnf/direct.ts, called by the stub resolver, the
+ * canonicalizer and the buffer enricher): at 100 % the two
+ * oversubscribed it and the broker shed the worker's metadata lookups until
+ * documents failed for good (2026-10-06, 0.19.0: 3 804 manifest sheds, 55
+ * documents failed in 3 h). The rest is LEFT for the app, which does not pace
+ * itself: a sustained app burst above it can still shed the worker. Holding
+ * the app to its share needs an app-side manifest limiter (follow-up).
+ */
+export const WORKER_MANIFEST_SHARE = 0.75;
+
+/** The broker buckets the worker reads, before its gate shares are derived. */
+export type BrokerBucketRates = {
+  globalRpm: number;
+  presentationRpm: number;
+  imageRpm: number;
+  manifestRpm: number;
+  catalogueRpm: number;
+  grapheDataRpm: number;
+};
+
+/**
+ * The rates the worker's gates run at, derived from the broker's buckets.
+ *
+ * - bulkRpm caps ALTO + image fetches TOGETHER below the global bucket, by the
+ *   rpm of every bucket that must still get through global while a big ingest
+ *   fetches: manifests, catalogue, graphe. Without it ALTO alone (Presentation
+ *   1425 > global 950) took the whole global budget and the broker shed the
+ *   metadata lookups of the same ingest (2026-10-06: 471 global sheds of
+ *   manifests, 412 of catalogue calls).
+ * - workerManifestRpm is WORKER_MANIFEST_SHARE of the manifest bucket, floored.
+ *
+ * Pure. Returns the problems instead of a share that cannot hold: a bulk
+ * share or a manifest share below 1/min is a chart mistake, refused at config
+ * load (workerRatesFrom) — never rounded up, which would take the app's part.
+ */
+export function gateRates(
+  rates: BrokerBucketRates,
+): { bulkRpm: number; workerManifestRpm: number } | { problems: string[] } {
+  const problems: string[] = [];
+  const reserved = rates.manifestRpm + rates.catalogueRpm + rates.grapheDataRpm;
+  const bulkRpm = rates.globalRpm - reserved;
+  if (bulkRpm < 1) {
+    problems.push(
+      `global.rpm (${rates.globalRpm}) leaves no room for ALTO and image fetches once ` +
+        `manifest + catalogue + grapheData (${reserved}) are reserved`,
+    );
+  }
+  const workerManifestRpm = Math.floor(rates.manifestRpm * WORKER_MANIFEST_SHARE);
+  if (workerManifestRpm < 1) {
+    problems.push(
+      `manifest.rpm (${rates.manifestRpm}) is too small to share: the worker's ` +
+        `${WORKER_MANIFEST_SHARE * 100} % is below 1/min`,
+    );
+  }
+  return problems.length > 0 ? { problems } : { bulkRpm, workerManifestRpm };
 }
 
 /**
@@ -362,19 +435,23 @@ export function loadIiifBases(env: Env): IiifBases {
 /**
  * BNF_RATES: the broker's whole bucket table as one JSON object (helm
  * `broker.config.rates`, the SAME object the broker reads), of which the
- * worker's gates use four buckets' rpm. REQUIRED. The other buckets are the
- * broker's business and are not read here; the four this worker needs must be
- * present with an rpm that is a whole number ≥ 1 (a JSON number, never a
- * string), or the worker refuses to boot naming each one.
+ * worker reads six buckets' rpm: global, presentation, image and manifest for
+ * its gates, catalogue and grapheData for the global room it leaves them
+ * (gateRates). REQUIRED. The other buckets are the broker's business and are
+ * not read here; the six this worker needs must be present with an rpm that is
+ * a whole number ≥ 1 (a JSON number, never a string), or the worker refuses to
+ * boot naming each one.
  */
 export const RATES_ENV = "BNF_RATES";
 
-/** The broker buckets whose rpm the worker's gates mirror (main.ts composes them). */
+/** The broker buckets the worker reads: four its gates use, plus catalogue and grapheData, reserved out of global (gateRates). */
 const WORKER_RATE_BUCKETS = {
   globalRpm: "global",
   presentationRpm: "presentation",
   imageRpm: "image",
   manifestRpm: "manifest",
+  catalogueRpm: "catalogue",
+  grapheDataRpm: "grapheData",
 } as const;
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -406,9 +483,13 @@ export function workerRatesFrom(env: Env): WorkerConfig["rates"] {
     presentationRpm: rpmOf(WORKER_RATE_BUCKETS.presentationRpm),
     imageRpm: rpmOf(WORKER_RATE_BUCKETS.imageRpm),
     manifestRpm: rpmOf(WORKER_RATE_BUCKETS.manifestRpm),
+    catalogueRpm: rpmOf(WORKER_RATE_BUCKETS.catalogueRpm),
+    grapheDataRpm: rpmOf(WORKER_RATE_BUCKETS.grapheDataRpm),
   };
   if (problems.length > 0) throw new Error(`${RATES_ENV} is invalid — ${problems.join("; ")}`);
-  return rates;
+  const shares = gateRates(rates);
+  if ("problems" in shares) throw new Error(`${RATES_ENV} is invalid — ${shares.problems.join("; ")}`);
+  return { ...rates, ...shares };
 }
 
 /**

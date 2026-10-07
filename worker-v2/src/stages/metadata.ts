@@ -76,7 +76,7 @@ export interface MetadataOpts {
    */
   maxCanvases?: number;
   /** Doc-resolution concurrency. On a manifest-cache MISS this is bounded by the
-   *  shared manifest rate gate (BNF_RATES.manifest.rpm), not this — so this just needs
+   *  shared manifest rate gate (the worker's manifest share, config.ts gateRates), not this — so this just needs
    *  to be high enough to keep that rate fed once cache hits dominate. Default 6. */
   concurrency?: number;
 }

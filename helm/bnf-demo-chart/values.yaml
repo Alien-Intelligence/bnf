@@ -19,7 +19,7 @@ replicaCount: 1
 image:
   repository: rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo
   pullPolicy: Always
-  tag: "0.19.0"
+  tag: "0.19.1"
 
 imagePullSecrets: []
 
@@ -154,7 +154,7 @@ worker:
   image:
     repository: rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo-worker
     pullPolicy: Always
-    tag: "0.19.0"
+    tag: "0.19.1"
 
   service:
     type: ClusterIP
@@ -273,7 +273,8 @@ worker:
     # BnF fetch concurrency, per stage. ALTO and images are two stages on two
     # queues, each behind its own gate (worker-v2/src/stages/fetch.ts); the
     # gates' RATES are not here — the worker renders them from
-    # broker.config.rates (the same values the broker enforces). Sizing rule:
+    # broker.config.rates (ALTO + images share a bulk limit below global — see
+    # the rates block). Sizing rule:
     # permits ≈ rpm × latency_s / 60, with headroom.
     #   ALTO:   1425 × ~3 s under load / 60 ≈ 71 → 96
     #   images:  285 × ~4 s at ≤ 4096 px / 60 ≈ 19 → 32
@@ -287,7 +288,8 @@ worker:
     # document costs ONE Presentation-API (ALTO) call per indexed folio, once —
     # the "alto" cache holds extracted text, not XML, so the word confidences
     # cannot be recovered without a re-fetch. Image lanes cost nothing. The stage
-    # shares the worker's ALTO gate (presentation ∧ global) FIFO with live ingests,
+    # shares the worker's ALTO gate (presentation ∧ bulk ∧ global; bulk = global
+    # minus the manifest, catalogue and graphe rpm, 770/min) FIFO with live ingests,
     # so live runs keep their share. Raise the concurrency off-hours to drain the
     # backlog faster; set enabled "false" to stop the BnF spend without a
     # rollback (existing artifacts stay served). Progress: `npm run status` in
@@ -340,7 +342,7 @@ broker:
   image:
     repository: rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo-broker
     pullPolicy: Always
-    tag: "0.19.0"
+    tag: "0.19.1"
 
   service:
     type: ClusterIP
@@ -356,8 +358,11 @@ broker:
     # THE BnF rates — the one place they live. The ingestion subscription
     # (the broker's key): `quota` is BnF's per-minute allowance, `rpm`/`burst`
     # what we send. The broker renders BNF_<BUCKET>_RPM/_BURST from every
-    # bucket (all required), and the worker its own gates (global,
-    # presentation, image, manifest rpm) from the SAME values.
+    # bucket (all required). The worker reads six of them and derives its gates:
+    # ALTO + image fetches share a bulk limit of global minus the manifest,
+    # catalogue and graphe rpm (raising one of those lowers the worker's fetch
+    # throughput), and it takes 75 % of the manifest bucket, the rest being the
+    # app's. A global rpm that leaves no bulk room stops the worker at boot.
     #
     # Invariant, checked at render (bnf-demo.validateRates): rpm + burst <= quota
     # — BnF counts fixed clock-minute windows and a token bucket can emit

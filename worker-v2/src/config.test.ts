@@ -11,6 +11,8 @@ import {
   DEFAULT_OCR_BACKFILL_CONCURRENCY,
   DEFAULT_OCR_BACKFILL_ENABLED,
   DEFAULT_OCR_BACKFILL_RETRY_FAILED_AFTER_MS,
+  etaFetchRatePerMin,
+  gateRates,
   loadBrokerUrl,
   loadConfigFrom,
   loadIiifBases,
@@ -64,6 +66,7 @@ const RATES = {
   image: { rpm: 285, burst: 6 },
   manifest: { rpm: 38, burst: 2 },
   catalogue: { rpm: 95, burst: 2 },
+  grapheData: { rpm: 47, burst: 1 },
 };
 const RATE_ENV = {
   BNF_RATES: JSON.stringify(RATES),
@@ -112,9 +115,18 @@ test("loadConfigFrom: ONE rule for every numeric knob — zero, negative, fracti
   assert.throws(() => loadConfigFrom({ ...REQUIRED_ENV, MISTRAL_OCR_ENABLED: "yes" }), /MISTRAL_OCR_ENABLED/);
 });
 
-test("BNF_RATES: the worker reads its four gates from the broker's one rate object", () => {
+test("BNF_RATES: the worker reads its six buckets from the broker's one rate object", () => {
   const cfg = loadConfigFrom(REQUIRED_ENV);
-  assert.deepEqual(cfg.rates, { globalRpm: 950, presentationRpm: 1425, imageRpm: 285, manifestRpm: 38 });
+  assert.deepEqual(cfg.rates, {
+    globalRpm: 950,
+    presentationRpm: 1425,
+    imageRpm: 285,
+    manifestRpm: 38,
+    catalogueRpm: 95,
+    grapheDataRpm: 47,
+    bulkRpm: 770,
+    workerManifestRpm: 28,
+  });
   const { BNF_RATES: _rates, ...noRates } = REQUIRED_ENV;
   assert.throws(() => loadConfigFrom(noRates), /Missing required env var BNF_RATES/);
   assert.throws(() => loadConfigFrom({ ...REQUIRED_ENV, BNF_RATES: "global=950" }), /BNF_RATES is not valid JSON/);
@@ -197,7 +209,16 @@ test("a retired env var stops the worker, naming its replacement (BNF_API_BASE_U
 
 test("the BnF rates and both fetch concurrencies are required — none has a default", () => {
   const cfg = loadConfigFrom(REQUIRED_ENV);
-  assert.deepEqual(cfg.rates, { globalRpm: 950, presentationRpm: 1425, imageRpm: 285, manifestRpm: 38 });
+  assert.deepEqual(cfg.rates, {
+    globalRpm: 950,
+    presentationRpm: 1425,
+    imageRpm: 285,
+    manifestRpm: 38,
+    catalogueRpm: 95,
+    grapheDataRpm: 47,
+    bulkRpm: 770,
+    workerManifestRpm: 28,
+  });
   assert.equal(cfg.altoFetchConcurrency, 96);
   assert.equal(cfg.imageFetchConcurrency, 32);
   for (const name of Object.keys(RATE_ENV)) {
@@ -216,4 +237,32 @@ test("the per-lane image knobs and the single fetch concurrency are retired, eac
     assert.throws(() => loadConfigFrom({ ...REQUIRED_ENV, [name]: "128" }), new RegExp(`${name} is retired`), name);
     assert.throws(() => loadConfigFrom({ ...REQUIRED_ENV, [name]: "128" }), replacement, name);
   }
+});
+
+test("gateRates: bulk fetches leave global room for manifests, catalogue and graphe; the worker takes 75 % of manifests", () => {
+  const buckets = {
+    globalRpm: 950,
+    presentationRpm: 1425,
+    imageRpm: 285,
+    manifestRpm: 38,
+    catalogueRpm: 95,
+    grapheDataRpm: 47,
+  };
+  assert.deepEqual(gateRates(buckets), { bulkRpm: 770, workerManifestRpm: 28 });
+  assert.deepEqual(gateRates({ ...buckets, globalRpm: 180 }), {
+    problems: ["global.rpm (180) leaves no room for ALTO and image fetches once manifest + catalogue + grapheData (180) are reserved"],
+  });
+  const tiny = gateRates({ ...buckets, manifestRpm: 1 });
+  assert.ok("problems" in tiny && tiny.problems.some((p) => p.includes("too small to share")), "never rounded up to 1");
+});
+
+test("BNF_RATES: the gate shares are derived and checked at config load, before anything starts", () => {
+  const cfg = loadConfigFrom(REQUIRED_ENV);
+  assert.equal(cfg.rates.bulkRpm, 770);
+  assert.equal(cfg.rates.workerManifestRpm, 28);
+  assert.equal(etaFetchRatePerMin(cfg.rates), 770, "the ETA follows the bulk cap, not global");
+  const starved = JSON.stringify({ ...RATES, global: { rpm: 180, burst: 4 } });
+  assert.throws(() => loadConfigFrom({ ...REQUIRED_ENV, BNF_RATES: starved }), /BNF_RATES is invalid — global\.rpm \(180\) leaves no room/);
+  const tiny = JSON.stringify({ ...RATES, manifest: { rpm: 1, burst: 1 } });
+  assert.throws(() => loadConfigFrom({ ...REQUIRED_ENV, BNF_RATES: tiny }), /manifest\.rpm \(1\) is too small to share/);
 });

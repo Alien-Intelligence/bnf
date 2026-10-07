@@ -86,7 +86,7 @@ async function main(): Promise<void> {
       completion,
       log,
       fetchRatePerMin,
-      manifestRatePerMin: cfg.rates.manifestRpm,
+      manifestRatePerMin: cfg.rates.workerManifestRpm,
       blob,
       ocrBackfill,
       ocrSyncDeadlineMs: OCR_SYNC_DEADLINE_MS,

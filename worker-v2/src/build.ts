@@ -46,9 +46,10 @@ export interface PipelineDeps {
   onOutcome?: StageDeps["onOutcome"];
   /**
    * Per-stage rate gates (undefined → unthrottled, e.g. in tests). In
-   * production each BnF gate is a CompositeRateGate mirroring the broker's
-   * buckets (main.ts): manifest = manifest ∧ presentation ∧ global,
-   * fetchAlto = presentation ∧ global, fetchImage = image ∧ global.
+   * production each BnF gate is a CompositeRateGate over the broker's buckets
+   * (live-pipeline.ts): manifest = worker manifest share ∧ presentation ∧
+   * global, fetchAlto = presentation ∧ bulk ∧ global, fetchImage = image ∧
+   * bulk ∧ global (config.ts gateRates).
    */
   rates?: {
     manifest?: RateGate;

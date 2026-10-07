@@ -43,7 +43,7 @@ export interface ProgressReport {
    *  attente devant vous", not as a stall. 0 when this run has the queues to itself. */
   foliosAhead: number;
   /** The binding BnF fetch rate (folios/min) the ETA assumes — surfaced so the UI
-   *  can headline the constraint. The ALTO rate, min(global, presentation): ALTO
+   *  can headline the constraint. The ALTO rate, min(bulk, presentation): ALTO
    *  is ≥ 90 % of folios, so image-heavy runs keep an approximate ETA (their
    *  Mistral or vision tail dominates anyway). */
   fetchRatePerMin: number;

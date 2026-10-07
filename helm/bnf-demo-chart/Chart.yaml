@@ -1,6 +1,6 @@
 apiVersion: v2
 name: bnf-demo
-version: 0.19.0
+version: 0.19.1
 description: BnF Corpus Research — Alien Intelligence × BnF demo (Next.js app + ingest worker + BnF broker + Postgres)
 type: application
 # 0.9.0 — worker+broker hardening pass 2: pg-boss sliding-window fetch (the ~600/min
@@ -69,4 +69,12 @@ type: application
 # and worker, from broker.config.rates) and BNF_MCP_RATES (app, from
 # config.bnfMcpRate) replace the per-bucket variables; bnfIiif.* base URLs. Seven
 # migrations, applied at boot. Deploy order and rollback: helm/DEPLOY.md.
-appVersion: "0.19.0"
+# 0.19.1 — worker fix: ALTO no longer takes the whole global BnF budget. In 0.19.0
+# ALTO's gate was Presentation ∧ global, so a large ingest's ALTO fetches used all
+# of global and the broker shed the manifest and catalogue lookups of that same
+# ingest; with the app also reading manifests through the manifest bucket, 55
+# documents failed for good in 3 h. ALTO + image now share a bulk limit of global
+# minus the manifest, catalogue and graphe rpm, and the worker takes 75 % of the
+# manifest bucket. Derived from BNF_RATES, no config change. App and broker
+# sources are unchanged; their images are rebuilt only to keep the tags in step.
+appVersion: "0.19.1"
