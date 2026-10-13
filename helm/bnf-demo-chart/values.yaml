@@ -34,7 +34,10 @@ resources:
     memory: 512Mi
   limits:
     cpu: 1000m
-    memory: 2Gi
+    # 4Gi, not 2Gi: in the 2026-10-13 multi-user load test the single app pod's
+    # working set climbed steadily from 0.95 to 1.45 GB in an hour of ingestion
+    # and research, heading for an OOM kill of the only replica.
+    memory: 4Gi
 
 # App boots at root `/`; the locale middleware 307-redirects, which counts as a
 # probe success (k8s treats any 2xx/3xx as healthy).
@@ -436,13 +439,17 @@ postgres:
     accessModes:
       - ReadWriteOnce
     # storageClassName: leave unset to use the cluster default (sbs-default on Scaleway)
+  # 2 cores and 2Gi, not 500m and 1Gi: in the 2026-10-13 multi-user load test
+  # Postgres sat at 100% of its 500m limit for over 30 min, connection waits
+  # reached 3 s and buffer commits ("Ajouter au corpus") hit the 30 s statement
+  # timeout (4 of 5 failed). Its working set was also at ~1 GB of the 1Gi limit.
   resources:
     requests:
-      cpu: 100m
-      memory: 256Mi
-    limits:
       cpu: 500m
-      memory: 1Gi
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
 
 # ===========================================================================
 # Istio ingress. bnf.demo.alien.club is a dedicated subdomain served at root
