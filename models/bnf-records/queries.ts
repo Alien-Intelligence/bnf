@@ -5,8 +5,12 @@ import "server-only"
 // here is joined to a project table (playbook/sharing.md).
 
 import { prisma } from "@/lib/db"
-import type { Prisma } from "@/lib/generated/prisma/client"
-import { bnfRecordRow, type BnfRecordRow, type BnfRecordWrite } from "./schema"
+import {
+  bnfRecordRow,
+  type BnfRecordRow,
+  type BnfRecordUpsertStatement,
+  type BnfRecordWrite,
+} from "./schema"
 
 export class BnfRecordQueries {
   /**
@@ -27,7 +31,7 @@ export class BnfRecordQueries {
    * ARK. Returned unexecuted so a caller can run them in the same
    * `$transaction` as its own writes.
    */
-  static upsertStatements(records: readonly BnfRecordWrite[]): Prisma.PrismaPromise<unknown>[] {
+  static upsertStatements(records: readonly BnfRecordWrite[]): BnfRecordUpsertStatement[] {
     return records.map((r) =>
       prisma.bnfRecord.upsert({
         where: { ark: r.ark },

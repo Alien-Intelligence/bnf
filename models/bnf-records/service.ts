@@ -3,7 +3,7 @@ import "server-only"
 // The global BnF record cache (see prisma BnfRecord). One record per ARK serves
 // every caller that would otherwise ask the BnF again: the metadata resolver
 // (cross-project re-adds), the buffer enricher (so the commit-time resolve is a
-// hit) and the canonicalizer's upgraded stubs.
+// hit) and scripts/fix-doc-types.ts (explicit refresh).
 //
 // Two kinds of entry, told apart by the payload alone:
 //   - COMPLETE: the record plus, for Gallica, the OCR verdict (`ocr_source`).

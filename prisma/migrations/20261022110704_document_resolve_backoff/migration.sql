@@ -1,3 +1,11 @@
+-- Locking, accepted at the current table size: prod "document" is 175,909 rows
+-- / 154 MB, so the plain CREATE INDEX holds its SHARE lock (writes blocked,
+-- reads allowed) for seconds, and ADD COLUMN without a default is metadata-only
+-- under a brief ACCESS EXCLUSIVE lock. The old index is dropped in the same
+-- transaction, so the drainer never runs without a supporting index. This is
+-- not split into CONCURRENTLY migrations: Prisma runs a migration in a single
+-- transaction, where CONCURRENTLY fails.
+
 -- DropIndex
 DROP INDEX "document_resolve_status_project_id_idx";
 

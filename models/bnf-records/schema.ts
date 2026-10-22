@@ -17,6 +17,9 @@ export const bnfRecordRow = {
 } satisfies Prisma.BnfRecordDefaultArgs
 export type BnfRecordRow = Prisma.BnfRecordGetPayload<typeof bnfRecordRow>
 
+/** An unexecuted write that stores one record, to be run in a caller's `$transaction`. */
+export type BnfRecordUpsertStatement = Prisma.PrismaPromise<unknown>
+
 /** One record to store: the unnormalized BnF payload of an ARK. */
 export type BnfRecordWrite = {
   ark: string

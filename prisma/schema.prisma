@@ -345,8 +345,9 @@ model Document {
 // the same ARK reads one record instead of re-fetching it. It holds public BnF
 // data only — never project state (no indexedAt / indexError / canonicalStatus,
 // no corpus membership) — and is never joined to a project table; see
-// playbook/sharing.md. Written by the resolver, the buffer enricher and the
-// canonicalizer (BnfRecordService); read through BnfRecordQueries.foundAmong.
+// playbook/sharing.md. Written by the resolver, the buffer enricher and
+// scripts/fix-doc-types.ts (BnfRecordService); read through
+// BnfRecordQueries.foundAmong.
 //   payload   the raw BnfMcpDocumentDetail, BEFORE normalization (a rule change
 //             in lib/mcp/normalize.ts therefore applies to cached entries too).
 //             A COMMIT entry carries the Gallica OCR verdict (`ocr_source`,
