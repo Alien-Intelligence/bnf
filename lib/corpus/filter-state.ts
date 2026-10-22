@@ -6,9 +6,27 @@
 // the server would refuse. Pure.
 import { corpusFilterSetSchema, type CorpusFilterSet } from "@/models/corpus/types"
 
-/** The multi-select dimensions the panel toggles. */
-export const CORPUS_LIST_FILTER_KEYS = ["type", "subtype", "lang", "source", "session", "ingest", "outcome", "kind"] as const
-export type CorpusListFilterKey = (typeof CORPUS_LIST_FILTER_KEYS)[number]
+/** The multi-select dimensions the panel toggles, named once for every reader. */
+export const CORPUS_FILTER_KEY = {
+  TYPE: "type",
+  SUBTYPE: "subtype",
+  LANG: "lang",
+  SOURCE: "source",
+  SESSION: "session",
+  INGEST: "ingest",
+  OUTCOME: "outcome",
+  KIND: "kind",
+} as const
+export type CorpusListFilterKey = (typeof CORPUS_FILTER_KEY)[keyof typeof CORPUS_FILTER_KEY]
+export const CORPUS_LIST_FILTER_KEYS: readonly CorpusListFilterKey[] = Object.values(CORPUS_FILTER_KEY)
+
+/** A filter edit the corpus filter schema refused (a value off the vocabulary, a list past its bound). */
+export class FilterChangeRefusedError extends Error {
+  constructor(reason: string) {
+    super(`corpus filter change refused: ${reason}`)
+    this.name = "FilterChangeRefusedError"
+  }
+}
 
 /** No filter at all. */
 export const EMPTY_CORPUS_FILTERS: CorpusFilterSet = {}
@@ -19,17 +37,40 @@ export function selectedValues(filters: CorpusFilterSet, key: CorpusListFilterKe
 }
 
 /**
- * `filters` with `patch` applied, validated by the corpus filter schema — or
- * the unchanged `filters` when the result would be refused (a value off the
- * vocabulary, a list past its bound), with the reason logged.
+ * `filters` with `patch` applied, validated by the corpus filter schema.
+ * Throws FilterChangeRefusedError when the result would be refused, so the
+ * caller can tell the user (see applyFilterChange) instead of the click
+ * silently doing nothing.
  */
 export function patchFilters(filters: CorpusFilterSet, patch: Record<string, unknown>): CorpusFilterSet {
   const next: Record<string, unknown> = { ...filters, ...patch }
   for (const key of Object.keys(next)) if (next[key] === undefined) delete next[key]
   const parsed = corpusFilterSetSchema.safeParse(next)
   if (parsed.success) return parsed.data
-  console.warn(`[corpus-filters] change refused: ${parsed.error.message}`)
-  return filters
+  throw new FilterChangeRefusedError(parsed.error.message)
+}
+
+/**
+ * Compute a filter edit and hand it to `apply`; a refused edit goes to
+ * `onRefused` (the panel's toast) and `apply` is not called. Any other error
+ * propagates.
+ */
+export function applyFilterChange(
+  compute: () => CorpusFilterSet,
+  apply: (next: CorpusFilterSet) => void,
+  onRefused: () => void,
+): void {
+  let next: CorpusFilterSet
+  try {
+    next = compute()
+  } catch (error) {
+    if (error instanceof FilterChangeRefusedError) {
+      onRefused()
+      return
+    }
+    throw error
+  }
+  apply(next)
 }
 
 /** Select `value` in `key` when absent, deselect it when present. */

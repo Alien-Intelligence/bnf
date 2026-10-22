@@ -36,7 +36,7 @@ import {
   classifyOutcome,
   DOCUMENT_SOURCE,
 } from "@/models/documents/schema"
-import { GALLICA_IIIF_VIEWER_URL, CATALOGUE_RECORD_URL } from "@/lib/constants"
+import { GALLICA_IIIF_VIEWER_URL, CATALOGUE_RECORD_URL, csvDownloadHeaders } from "@/lib/constants"
 import { toCsv } from "@/lib/csv"
 import type { DocumentRow } from "@/models/corpus/schema"
 
@@ -157,10 +157,6 @@ export const GET = withAuth(async (req, user, bouncer, ctx: RouteCtx) => {
 
   return new Response(csv, {
     status: 200,
-    headers: {
-      "Content-Type": "text/csv; charset=utf-8",
-      "Content-Disposition": `attachment; filename="corpus-${projectId}-v${versionSeq}.csv"`,
-      "Cache-Control": "no-store",
-    },
+    headers: csvDownloadHeaders(`corpus-${projectId}-v${versionSeq}.csv`),
   })
 })

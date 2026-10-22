@@ -6,7 +6,6 @@
 import "server-only"
 
 import { prisma } from "@/lib/db"
-import type { Prisma } from "@/lib/generated/prisma/client"
 import {
   corpusVersionWithArks,
   documentRow,
@@ -15,6 +14,7 @@ import {
   type CorpusFacetDimension,
   type CorpusListPage,
   type DocumentRow,
+  type DocumentWhere,
   type CorpusVersionStatus,
   type CorpusVersionWithArks,
   type CorpusSnapshotRead,
@@ -461,7 +461,7 @@ export class CorpusQueries {
   static async list(
     version: CorpusVersionWithArks,
     paidOcr: boolean,
-    sharedWhere: Prisma.DocumentWhereInput,
+    sharedWhere: DocumentWhere,
     opts: { cursor?: string; limit: number },
   ): Promise<CorpusListPage> {
     const limit = opts.limit
@@ -516,7 +516,7 @@ export class CorpusQueries {
   static async exportRows(
     version: CorpusVersionWithArks,
     paidOcr: boolean,
-    sharedWhere: Prisma.DocumentWhereInput,
+    sharedWhere: DocumentWhere,
   ): Promise<{ versionSeq: number; rows: DocumentRow[]; paidOcrEnabled: boolean }> {
     const rows = await prisma.document.findMany({
       where: sharedWhere,
@@ -542,7 +542,7 @@ export class CorpusQueries {
    * sparse and sorted by count descending.
    */
   static async crossFacets(
-    resolvedWhere: Prisma.DocumentWhereInput,
+    resolvedWhere: DocumentWhere,
     dims: [CorpusFacetDimension, CorpusFacetDimension],
   ): Promise<CorpusCrossFacets> {
     const rows = await prisma.document.findMany({
@@ -648,13 +648,13 @@ export class CorpusQueries {
   }
 
   /** The ARKs matching `where`, in stable ascending order (a reproducible preview). */
-  static async arks(where: Prisma.DocumentWhereInput): Promise<string[]> {
+  static async arks(where: DocumentWhere): Promise<string[]> {
     const rows = await prisma.document.findMany({ where, select: { ark: true }, orderBy: { ark: "asc" } })
     return rows.map((r) => r.ark)
   }
 
   /** One count per predicate, in one transaction (one state of the corpus). */
-  static async counts(wheres: ReadonlyArray<Prisma.DocumentWhereInput>): Promise<number[]> {
+  static async counts(wheres: ReadonlyArray<DocumentWhere>): Promise<number[]> {
     if (wheres.length === 0) return []
     return prisma.$transaction(wheres.map((where) => prisma.document.count({ where })))
   }

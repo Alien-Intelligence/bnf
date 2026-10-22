@@ -506,6 +506,7 @@
       },
       "facetSubtypeTitle": "Par sous-type",
       "subtypeNote": "Les sous-types sont les catégories fines de Gallica. Les monographies n'en ont pas : elles ne correspondent jamais à un filtre de sous-type.",
+      "changeRefused": "Ce changement de filtre n'a pas été appliqué : la valeur n'est pas reconnue, ou un filtre accepte au plus {max} valeurs.",
       "facetSessionTitle": "Par session",
       "chrono": {
         "title": "Répartition chronologique",

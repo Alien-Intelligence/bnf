@@ -7,18 +7,25 @@
 
 import { useState, useCallback, useMemo } from "react"
 import { ChevronDown, SlidersHorizontal } from "lucide-react"
-import { useTranslations } from "next-intl"
+import { useFormatter, useTranslations } from "next-intl"
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible"
-import { DOC_TYPE, LANG, SOURCE } from "@/models/documents/schema"
-import { DATASET_COLOR_CYCLE, TYPE_DATASET_COLOR } from "@/lib/constants"
+import { useToast } from "@/components/ui/toast"
+import { DATASET_COLOR_CYCLE, FILTER_LIST_MAX_VALUES, TYPE_DATASET_COLOR } from "@/lib/constants"
 import { cn } from "@/lib/utils"
 import type { CorpusSnapshot } from "@/models/corpus/schema"
 import type { CorpusFilterSet } from "@/models/corpus/types"
-import { EMPTY_CORPUS_FILTERS, patchFilters, selectedValues, toggleFilterValue } from "@/lib/corpus/filter-state"
+import {
+  applyFilterChange,
+  CORPUS_FILTER_KEY,
+  EMPTY_CORPUS_FILTERS,
+  patchFilters,
+  selectedValues,
+  toggleFilterValue,
+} from "@/lib/corpus/filter-state"
 import { CardCorpusFacetBars } from "./facet-bars"
 import { CardCorpusPeriodHistogram } from "./period-histogram"
 import { CardCorpusFullTextInput } from "./full-text-input"
@@ -54,14 +61,11 @@ interface Props {
 // Vocab label/color resolvers (fall back to raw code for unknown entries).
 // ---------------------------------------------------------------------------
 
-function typeLabel(code: string): string {
-  return DOC_TYPE[code]?.label ?? code
-}
-function langLabel(code: string): string {
-  return LANG[code]?.label ?? code
-}
-function sourceLabel(code: string): string {
-  return SOURCE[code]?.label ?? code
+type Translator = ReturnType<typeof useTranslations>
+
+/** The translated label of `code` in `t`'s namespace, or the raw code when the vocabulary has no entry for it. */
+function labelOrCode(t: Translator, code: string): string {
+  return t.has(code) ? t(code) : code
 }
 
 // Facet bar colors are dataset hues (dark-first), not the pastel badge classes.
@@ -101,6 +105,7 @@ function FacetStatusRow({
   count: number
   color: string
 }) {
+  const format = useFormatter()
   return (
     <div className="flex items-center gap-2 p-1">
       <span
@@ -110,7 +115,7 @@ function FacetStatusRow({
       />
       <span className="flex-1 truncate text-xs text-muted-foreground">{label}</span>
       <span className="font-mono text-[11px] tabular-nums text-muted-foreground">
-        {count.toLocaleString("fr-FR")}
+        {format.number(count)}
       </span>
     </div>
   )
@@ -127,6 +132,10 @@ export function CardCorpusFiltersDrawer({
 }: Props) {
   const t = useTranslations("corpus.filters")
   const tSubtype = useTranslations("corpus.filters.subtypes")
+  const tDocType = useTranslations("corpus.docTypes")
+  const tLang = useTranslations("corpus.langs")
+  const tSource = useTranslations("corpus.sources")
+  const { toast } = useToast()
   const [open, setOpen] = useState(false)
 
   // Provide stable defaults so the drawer is usable read-only when commit #9
@@ -135,16 +144,24 @@ export function CardCorpusFiltersDrawer({
   // Stable no-op so useCallback deps remain stable when onChange is omitted.
   const noop = useCallback(() => undefined, [])
   const onChange: (next: CorpusFilterSet) => void = onChangeProp ?? noop
+  // A refused edit is told to the user, never dropped.
+  const change = useCallback(
+    (compute: () => CorpusFilterSet) =>
+      applyFilterChange(compute, onChange, () =>
+        toast(t("changeRefused", { max: FILTER_LIST_MAX_VALUES })),
+      ),
+    [onChange, toast, t],
+  )
 
   const { facets, pendingCount, failedCount } = corpus
 
-  const typeSelected = selectedValues(filters, "type")
-  const langSelected = selectedValues(filters, "lang")
-  const subtypeSelected = selectedValues(filters, "subtype")
-  const sourceSelected = selectedValues(filters, "source")
-  const sessionSelected = selectedValues(filters, "session")
-  const ingestSelected = selectedValues(filters, "ingest")
-  const outcomeSelected = selectedValues(filters, "outcome")
+  const typeSelected = selectedValues(filters, CORPUS_FILTER_KEY.TYPE)
+  const langSelected = selectedValues(filters, CORPUS_FILTER_KEY.LANG)
+  const subtypeSelected = selectedValues(filters, CORPUS_FILTER_KEY.SUBTYPE)
+  const sourceSelected = selectedValues(filters, CORPUS_FILTER_KEY.SOURCE)
+  const sessionSelected = selectedValues(filters, CORPUS_FILTER_KEY.SESSION)
+  const ingestSelected = selectedValues(filters, CORPUS_FILTER_KEY.INGEST)
+  const outcomeSelected = selectedValues(filters, CORPUS_FILTER_KEY.OUTCOME)
 
   // Session facet record + title map, derived from the snapshot's `sessions`
   // array. The facet bars want a Record<id, count>; the active-filters chips
@@ -159,11 +176,12 @@ export function CardCorpusFiltersDrawer({
     for (const s of corpus.sessions) m[s.sessionId] = s.title
     return m
   }, [corpus.sessions])
-  // Gallica's subtype vocabulary: labelled when known, else the raw code.
-  const subtypeLabel = useCallback(
-    (code: string) => (tSubtype.has(code) ? tSubtype(code) : code),
-    [tSubtype],
-  )
+  // Each vocabulary is labelled when known, else the raw code (Gallica and the
+  // BnF add codes faster than the message files follow).
+  const typeLabel = useCallback((code: string) => labelOrCode(tDocType, code), [tDocType])
+  const langLabel = useCallback((code: string) => labelOrCode(tLang, code), [tLang])
+  const sourceLabel = useCallback((code: string) => labelOrCode(tSource, code), [tSource])
+  const subtypeLabel = useCallback((code: string) => labelOrCode(tSubtype, code), [tSubtype])
   const sessionLabel = useCallback(
     (id: string) => sessionTitleById[id] ?? id,
     [sessionTitleById],
@@ -184,6 +202,7 @@ export function CardCorpusFiltersDrawer({
 
   const hasAnyFacets =
     Object.keys(facets.type).length > 0 ||
+    Object.keys(facets.subtype).length > 0 ||
     Object.keys(facets.lang).length > 0 ||
     Object.keys(facets.source).length > 0 ||
     Object.keys(facets.period).length > 0 ||
@@ -192,38 +211,38 @@ export function CardCorpusFiltersDrawer({
 
   const handleTypeToggle = useCallback(
     (code: string) =>
-      onChange(toggleFilterValue(filters, "type", code)),
-    [filters, onChange],
+      change(() => toggleFilterValue(filters, CORPUS_FILTER_KEY.TYPE, code)),
+    [filters, change],
   )
   const handleSubtypeToggle = useCallback(
     (code: string) =>
-      onChange(toggleFilterValue(filters, "subtype", code)),
-    [filters, onChange],
+      change(() => toggleFilterValue(filters, CORPUS_FILTER_KEY.SUBTYPE, code)),
+    [filters, change],
   )
   const handleLangToggle = useCallback(
     (code: string) =>
-      onChange(toggleFilterValue(filters, "lang", code)),
-    [filters, onChange],
+      change(() => toggleFilterValue(filters, CORPUS_FILTER_KEY.LANG, code)),
+    [filters, change],
   )
   const handleSourceToggle = useCallback(
     (code: string) =>
-      onChange(toggleFilterValue(filters, "source", code)),
-    [filters, onChange],
+      change(() => toggleFilterValue(filters, CORPUS_FILTER_KEY.SOURCE, code)),
+    [filters, change],
   )
   const handleSessionToggle = useCallback(
     (id: string) =>
-      onChange(toggleFilterValue(filters, "session", id)),
-    [filters, onChange],
+      change(() => toggleFilterValue(filters, CORPUS_FILTER_KEY.SESSION, id)),
+    [filters, change],
   )
   const handleIngestToggle = useCallback(
     (code: string) =>
-      onChange(toggleFilterValue(filters, "ingest", code)),
-    [filters, onChange],
+      change(() => toggleFilterValue(filters, CORPUS_FILTER_KEY.INGEST, code)),
+    [filters, change],
   )
   const handleOutcomeToggle = useCallback(
     (outcome: string) =>
-      onChange(toggleFilterValue(filters, "outcome", outcome)),
-    [filters, onChange],
+      change(() => toggleFilterValue(filters, CORPUS_FILTER_KEY.OUTCOME, outcome)),
+    [filters, change],
   )
   const handleRangeSelect = useCallback(
     (from: number, to: number) => {
@@ -231,7 +250,7 @@ export function CardCorpusFiltersDrawer({
       // mirroring the facet bars' click-to-unset behaviour.
       const isActiveRange =
         filters.yearFrom === from && filters.yearTo === to
-      onChange(
+      change(() =>
         patchFilters(filters, {
           yearFrom: isActiveRange ? undefined : from,
           yearTo: isActiveRange ? undefined : to,
@@ -239,16 +258,16 @@ export function CardCorpusFiltersDrawer({
         }),
       )
     },
-    [filters, onChange],
+    [filters, change],
   )
   const handleUndatedSelect = useCallback(
     () =>
-      onChange(patchFilters(filters, { undated: filters.undated ? undefined : true, yearFrom: undefined, yearTo: undefined })),
-    [filters, onChange],
+      change(() => patchFilters(filters, { undated: filters.undated ? undefined : true, yearFrom: undefined, yearTo: undefined })),
+    [filters, change],
   )
   const handleQueryCommit = useCallback(
-    (q: string | undefined) => onChange(patchFilters(filters, { q })),
-    [filters, onChange],
+    (q: string | undefined) => change(() => patchFilters(filters, { q })),
+    [filters, change],
   )
   const handleClearAll = useCallback(
     () => onChange(EMPTY_CORPUS_FILTERS),

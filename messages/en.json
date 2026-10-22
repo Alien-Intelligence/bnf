@@ -506,6 +506,7 @@
       },
       "facetSubtypeTitle": "By subtype",
       "subtypeNote": "Subtypes are Gallica's finer categories. Monographs have none, so they never match a subtype filter.",
+      "changeRefused": "That filter change was not applied: the value is not recognised, or a filter holds at most {max} values.",
       "facetSessionTitle": "By session",
       "chrono": {
         "title": "Chronological distribution",

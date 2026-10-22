@@ -15,8 +15,14 @@ import {
   TEXT_FILTER_MAX_VALUES,
   TEXT_FILTER_MIN_CHARS,
 } from "@/lib/constants"
-import { KNOWN_SUBTYPES } from "@/lib/mcp/vocab"
-import { ARK_KIND_VALUES, DOC_TYPE_CODE, DOCUMENT_SOURCE, INDEXATION_OUTCOME, INGESTION_CLASS } from "@/models/documents/schema"
+import {
+  ARK_KIND_VALUES,
+  DOC_TYPE_CODE,
+  DOCUMENT_SOURCE,
+  INDEXATION_OUTCOME,
+  INGESTION_CLASS,
+  KNOWN_SUBTYPES,
+} from "@/models/documents/schema"
 
 /** What a `*_remove_by_filter` call did — buffer and corpus alike. */
 export const REMOVE_BY_FILTER_STATUS = {

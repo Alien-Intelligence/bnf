@@ -6,6 +6,7 @@
  */
 import { withAuth } from "@/app/api/_middleware"
 import { forbidden } from "@/lib/api-response"
+import { csvDownloadHeaders } from "@/lib/constants"
 import { toCsv } from "@/lib/csv"
 import { FeedbackQueries } from "@/models/feedback/queries"
 
@@ -48,10 +49,6 @@ export const GET = withAuth(async (_req, user) => {
 
   return new Response(csv, {
     status: 200,
-    headers: {
-      "Content-Type": "text/csv; charset=utf-8",
-      "Content-Disposition": 'attachment; filename="feedback.csv"',
-      "Cache-Control": "no-store",
-    },
+    headers: csvDownloadHeaders("feedback.csv"),
   })
 })

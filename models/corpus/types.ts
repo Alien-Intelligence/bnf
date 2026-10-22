@@ -7,6 +7,11 @@
 
 import { z } from "zod"
 import {
+  CORPUS_MUTATION_MAX_ARKS,
+  CORPUS_MUTATION_REASON_MAX_CHARS,
+  CORPUS_RETRY_RESOLVE_MAX_ARKS,
+} from "@/lib/constants"
+import {
   arkKindListSchema,
   docTypeListSchema,
   ingestClassListSchema,
@@ -47,7 +52,7 @@ export const corpusFilterFieldsSchema = z.strictObject({
   source: sourceListSchema.optional().describe('Sources to match: "gallica" | "catalogue" | "databnf" | "other".'),
   session: sessionIdListSchema
     .optional()
-    .describe("Sessions (ids) whose contributions to keep — the panel's attribution facet."),
+    .describe("Sessions (ids) whose contributions to match — the panel's attribution facet."),
   title: textAnySchema
     .optional()
     .describe(
@@ -152,19 +157,19 @@ export { arkSchema }
 // ---------------------------------------------------------------------------
 
 export const addToCorpusSchema = z.object({
-  /** The ARKs to add. Max 5000 per call (bulk add via agent, not API spam). */
-  arks: z.array(arkSchema).min(1).max(5_000),
+  /** The ARKs to add. Capped per call (CORPUS_MUTATION_MAX_ARKS) (bulk add via agent, not API spam). */
+  arks: z.array(arkSchema).min(1).max(CORPUS_MUTATION_MAX_ARKS),
   /** Human-readable reason for this mutation (logged as version note). */
-  reason: z.string().trim().min(1).max(300),
+  reason: z.string().trim().min(1).max(CORPUS_MUTATION_REASON_MAX_CHARS),
 })
 
 export type AddToCorpusInput = z.infer<typeof addToCorpusSchema>
 
 export const removeFromCorpusSchema = z.object({
   /** The ARKs to remove. */
-  arks: z.array(arkSchema).min(1).max(5_000),
+  arks: z.array(arkSchema).min(1).max(CORPUS_MUTATION_MAX_ARKS),
   /** Human-readable reason for this mutation. */
-  reason: z.string().trim().min(1).max(300),
+  reason: z.string().trim().min(1).max(CORPUS_MUTATION_REASON_MAX_CHARS),
 })
 
 export type RemoveFromCorpusInput = z.infer<typeof removeFromCorpusSchema>
@@ -175,7 +180,7 @@ export type RemoveFromCorpusInput = z.infer<typeof removeFromCorpusSchema>
  * is a per-document user action, not a bulk import.
  */
 export const retryResolveSchema = z.object({
-  arks: z.array(arkSchema).min(1).max(50),
+  arks: z.array(arkSchema).min(1).max(CORPUS_RETRY_RESOLVE_MAX_ARKS),
 })
 
 export type RetryResolveInput = z.infer<typeof retryResolveSchema>
