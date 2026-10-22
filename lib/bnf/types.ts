@@ -16,6 +16,50 @@
 // layer. The `BnfMcp` name prefix is kept for continuity with normalize.ts /
 // Document.rawMetadata; the shapes themselves are MCP-agnostic.
 
+import { DOCUMENT_CANONICAL_STATUS } from "@/models/documents/schema"
+
+/**
+ * What a resolve is for. It decides whether the IIIF manifest may be fetched:
+ *   - `commit`  — the ARK enters a corpus (resolver, backfill): the full hybrid
+ *     rule applies, including the manifest for text-like documents OAI does not
+ *     mark "mode texte".
+ *   - `staging` — the ARK is parked in the research buffer: OAI only, never the
+ *     manifest. Staging must not spend the manifest bucket (the ingestion
+ *     bottleneck), and the OCR flag is not needed before commit.
+ */
+export const RESOLVE_MODE = { COMMIT: "commit", STAGING: "staging" } as const
+export type ResolveMode = (typeof RESOLVE_MODE)[keyof typeof RESOLVE_MODE]
+
+/**
+ * The `rawMetadata` keys other code reads back from a stored record to tell how
+ * it was resolved (the OAI typedoc, and the provenance of the OCR verdict and
+ * of `pages`). The names of the fields on BnfMcpDocumentDetail below.
+ */
+export const RAW_METADATA_KEY = {
+  GALLICA_TYPEDOC: "gallica_typedoc",
+  OCR_SOURCE: "ocr_source",
+  PAGES_SOURCE: "pages_source",
+} as const
+
+/** Which source decided `ocr_available`. */
+export const OCR_SOURCE = { OAI: "oai", MANIFEST: "manifest", IMAGE_LIKE: "image_like" } as const
+export type OcrSource = (typeof OCR_SOURCE)[keyof typeof OCR_SOURCE]
+
+/** Which source decided `pages`. */
+export const PAGES_SOURCE = { OAI: "oai", MANIFEST: "manifest" } as const
+export type PagesSource = (typeof PAGES_SOURCE)[keyof typeof PAGES_SOURCE]
+
+/**
+ * Outcome status of classifying a catalogue (`cb…`) ARK against its digitized
+ * Gallica reproduction. `UPGRADED` is transient to the classification (the ARK
+ * is substituted); the other two are persisted as Document.canonicalStatus.
+ */
+export const CANONICAL_OUTCOME_STATUS = {
+  UPGRADED: "upgraded",
+  NOT_DIGITIZED: DOCUMENT_CANONICAL_STATUS.NOT_DIGITIZED,
+  API_ERROR: DOCUMENT_CANONICAL_STATUS.API_ERROR,
+} as const
+
 /**
  * Shape of a resolved document — produced by BnfDirectClient.resolveArk
  * (Gallica via OAI-PMH, Catalogue via SRU) and consumed by normalize.ts.
@@ -66,9 +110,9 @@ export interface BnfMcpDocumentDetail {
    */
   ocr_available?: boolean | null
   /** Which source decided `ocr_available`. */
-  ocr_source?: "oai" | "manifest" | "image_like"
+  ocr_source?: OcrSource
   /** Which source decided `pages`; `null` when no source gave a page count. */
-  pages_source?: "oai" | "manifest" | null
+  pages_source?: PagesSource | null
   /** Manifest "Taux OCR" (text-layer rate), when the manifest was fetched. */
   taux_ocr?: number
   nqa_score?: number

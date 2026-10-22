@@ -5,13 +5,19 @@
 
 import { XMLParser } from "fast-xml-parser"
 
+import { BnfMcpNotFoundError } from "@/lib/mcp/errors"
+import { arkSchema } from "@/lib/validation/ark"
+
+/** Prefix fast-xml-parser puts on attribute keys; every attribute read uses it. */
+export const XML_ATTR_PREFIX = "@_"
+
 // removeNSPrefix turns <dc:title> into "title" and <oai_dc:dc> into "dc", so
 // callers navigate by local name. Attributes are kept (xml:lang on <dc:type>
 // picks the French label). Values stay strings: an ARK-like or numeric-looking
 // text must not be coerced.
 export const bnfXmlParser = new XMLParser({
   ignoreAttributes: false,
-  attributeNamePrefix: "@_",
+  attributeNamePrefix: XML_ATTR_PREFIX,
   removeNSPrefix: true,
   trimValues: true,
   parseTagValue: false,
@@ -37,12 +43,20 @@ export function nodeText(node: XmlNode): string | null {
   return null
 }
 
-/** ARK short form, as BnF URLs and records key it: strip the `ark:/<naan>/` prefix. */
-export function localArk(ark: string): string {
-  return ark.replace(/^ark:\/\d+\//, "")
+/**
+ * Validate that `ark` is a full ARK (`ark:/<naan>/<name>`) and return it
+ * untouched. ARKs are opaque: never constructed from a bare id, so a bare or
+ * malformed value fails here instead of becoming a plausible wrong identifier.
+ * Terminal for that ARK (not retryable).
+ */
+export function assertFullArk(ark: string): string {
+  if (!arkSchema.safeParse(ark).success) {
+    throw new BnfMcpNotFoundError(`Not a full ARK (expected ark:/<naan>/<name>): ${ark}`)
+  }
+  return ark
 }
 
-/** Full canonical ARK form, as the OAI identifier and Gallica URLs need it. */
-export function fullArk(ark: string): string {
-  return ark.startsWith("ark:/") ? ark : `ark:/12148/${ark}`
+/** ARK short form, as BnF records key it: the name after the last `/` of a full ARK. */
+export function localArk(ark: string): string {
+  return assertFullArk(ark).slice(ark.lastIndexOf("/") + 1)
 }

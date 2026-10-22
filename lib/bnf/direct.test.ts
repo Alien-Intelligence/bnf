@@ -14,7 +14,13 @@ import {
   BnfDirectClient,
   parseRetryAfter,
 } from "@/lib/bnf/direct"
-import { BNF_DIRECT_CONCURRENCY } from "@/lib/constants"
+import {
+  CANONICAL_OUTCOME_STATUS,
+  OCR_SOURCE,
+  PAGES_SOURCE,
+  RESOLVE_MODE,
+} from "@/lib/bnf/types"
+import { BNF_DIRECT_CONCURRENCY, IIIF_MANIFEST_URL } from "@/lib/constants"
 import {
   BnfMcpAuthError,
   BnfMcpError,
@@ -44,7 +50,7 @@ const OAI_FIXTURE: Record<string, string> = {
 function manifestJson(ark: string, canvases: number, tauxOcr?: string): string {
   return JSON.stringify({
     "@context": "http://iiif.io/api/presentation/3/context.json",
-    id: `https://gallica.bnf.fr/iiif/${ark}/manifest.json`,
+    id: IIIF_MANIFEST_URL(ark),
     type: "Manifest",
     label: { fr: ["Titre du manifeste"] },
     metadata:
@@ -127,23 +133,23 @@ describe("hybrid resolver: rule 2, OAI says 'mode texte'", () => {
     const stub = stubEgress({})
     const doc = await new BnfDirectClient({ egress: stub.egress, retry: NO_RETRY }).resolveArk(
       MONOGRAPH_TEXT,
-      { mode: "commit" },
+      { mode: RESOLVE_MODE.COMMIT },
     )
     assert.equal(stub.manifestCalls().length, 0)
     assert.equal(stub.oaiCalls().length, 1)
     assert.equal(doc.ocr_available, true)
-    assert.equal(doc.ocr_source, "oai")
+    assert.equal(doc.ocr_source, OCR_SOURCE.OAI)
   })
 
   it("leaves pages unset and records the OAI provenance of the count", async () => {
     const stub = stubEgress({})
     const doc = await new BnfDirectClient({ egress: stub.egress, retry: NO_RETRY }).resolveArk(
       MONOGRAPH_TEXT,
-      { mode: "commit" },
+      { mode: RESOLVE_MODE.COMMIT },
     )
     assert.equal("pages" in doc, false)
     assert.equal(doc.oai_total_views, 406)
-    assert.equal(doc.pages_source, "oai")
+    assert.equal(doc.pages_source, PAGES_SOURCE.OAI)
   })
 })
 
@@ -152,11 +158,11 @@ describe("hybrid resolver: rule 3, image-like documents", () => {
     const stub = stubEgress({})
     const doc = await new BnfDirectClient({ egress: stub.egress, retry: NO_RETRY }).resolveArk(
       ESTAMPE,
-      { mode: "commit" },
+      { mode: RESOLVE_MODE.COMMIT },
     )
     assert.equal(stub.manifestCalls().length, 0)
     assert.equal(doc.ocr_available, false)
-    assert.equal(doc.ocr_source, "image_like")
+    assert.equal(doc.ocr_source, OCR_SOURCE.IMAGE_LIKE)
     assert.equal(normalizeDocument(doc)?.subtype, "estampes")
   })
 })
@@ -166,7 +172,7 @@ describe("hybrid resolver: rule 4, a text document OAI is silent on", () => {
     const stub = stubEgress({ manifest: () => respond(200, manifestJson(FASCICULE, 4, "78.21 %")) })
     const doc = await new BnfDirectClient({ egress: stub.egress, retry: NO_RETRY }).resolveArk(
       FASCICULE,
-      { mode: "commit" },
+      { mode: RESOLVE_MODE.COMMIT },
     )
     assert.equal(stub.manifestCalls().length, 1)
     assert.equal(
@@ -174,10 +180,10 @@ describe("hybrid resolver: rule 4, a text document OAI is silent on", () => {
       true,
     )
     assert.equal(doc.pages, 4)
-    assert.equal(doc.pages_source, "manifest")
+    assert.equal(doc.pages_source, PAGES_SOURCE.MANIFEST)
     assert.equal(doc.oai_total_views, 3197)
     assert.equal(doc.ocr_available, true)
-    assert.equal(doc.ocr_source, "manifest")
+    assert.equal(doc.ocr_source, OCR_SOURCE.MANIFEST)
     assert.equal(doc.taux_ocr, 78.21)
   })
 
@@ -185,7 +191,7 @@ describe("hybrid resolver: rule 4, a text document OAI is silent on", () => {
     const stub = stubEgress({ manifest: () => respond(200, manifestJson(FASCICULE, 4, "78.21 %")) })
     const doc = await new BnfDirectClient({ egress: stub.egress, retry: NO_RETRY }).resolveArk(
       FASCICULE,
-      { mode: "commit" },
+      { mode: RESOLVE_MODE.COMMIT },
     )
     assert.equal(doc.gallica_typedoc, "periodiques:fascicules")
     assert.match(doc.title ?? "", /^Figaro : électeur/)
@@ -198,10 +204,10 @@ describe("hybrid resolver: rule 4, a text document OAI is silent on", () => {
     const stub = stubEgress({ manifest: () => respond(200, manifestJson(FASCICULE, 4)) })
     const doc = await new BnfDirectClient({ egress: stub.egress, retry: NO_RETRY }).resolveArk(
       FASCICULE,
-      { mode: "commit" },
+      { mode: RESOLVE_MODE.COMMIT },
     )
     assert.equal(doc.ocr_available, false)
-    assert.equal(doc.ocr_source, "manifest")
+    assert.equal(doc.ocr_source, OCR_SOURCE.MANIFEST)
     assert.equal("taux_ocr" in doc, false)
   })
 
@@ -209,7 +215,7 @@ describe("hybrid resolver: rule 4, a text document OAI is silent on", () => {
     const stub = stubEgress({ manifest: () => respond(200, manifestJson(FASCICULE, 4, "n/a")) })
     const doc = await new BnfDirectClient({ egress: stub.egress, retry: NO_RETRY }).resolveArk(
       FASCICULE,
-      { mode: "commit" },
+      { mode: RESOLVE_MODE.COMMIT },
     )
     assert.equal(doc.ocr_available, true)
     assert.equal("taux_ocr" in doc, false)
@@ -221,7 +227,7 @@ describe("hybrid resolver: rule 4, a text document OAI is silent on", () => {
     })
     const doc = await new BnfDirectClient({ egress: stub.egress, retry: NO_RETRY }).resolveArk(
       OCR_PRESS_ISSUE,
-      { mode: "commit" },
+      { mode: RESOLVE_MODE.COMMIT },
     )
     assert.equal(stub.manifestCalls().length, 1)
     assert.equal(doc.ocr_available, true)
@@ -232,11 +238,11 @@ describe("hybrid resolver: rule 4, a text document OAI is silent on", () => {
     const stub = stubEgress({ viaPartner: false })
     const doc = await new BnfDirectClient({ egress: stub.egress, retry: NO_RETRY }).resolveArk(
       FASCICULE,
-      { mode: "commit" },
+      { mode: RESOLVE_MODE.COMMIT },
     )
     assert.equal(stub.manifestCalls().length, 0)
     assert.equal(doc.ocr_available, null)
-    assert.equal(doc.ocr_source, "oai")
+    assert.equal(doc.ocr_source, OCR_SOURCE.OAI)
     assert.equal("pages" in doc, false)
   })
 })
@@ -246,12 +252,12 @@ describe("hybrid resolver: staging mode", () => {
     const stub = stubEgress({})
     const doc = await new BnfDirectClient({ egress: stub.egress, retry: NO_RETRY }).resolveArk(
       FASCICULE,
-      { mode: "staging" },
+      { mode: RESOLVE_MODE.STAGING },
     )
     assert.equal(stub.manifestCalls().length, 0)
     assert.equal("ocr_available" in doc, false)
     assert.equal("ocr_source" in doc, false)
-    assert.equal(doc.pages_source, "oai")
+    assert.equal(doc.pages_source, PAGES_SOURCE.OAI)
     assert.equal(normalizeDocument(doc)?.subtype, "fascicules")
   })
 
@@ -259,17 +265,17 @@ describe("hybrid resolver: staging mode", () => {
     const stub = stubEgress({})
     const doc = await new BnfDirectClient({ egress: stub.egress, retry: NO_RETRY }).resolveArk(
       MONOGRAPH_TEXT,
-      { mode: "staging" },
+      { mode: RESOLVE_MODE.STAGING },
     )
     assert.equal(doc.ocr_available, true)
-    assert.equal(doc.ocr_source, "oai")
+    assert.equal(doc.ocr_source, OCR_SOURCE.OAI)
   })
 
   it("resolveArks applies the mode to every ARK of the batch", async () => {
     const stub = stubEgress({})
     const results = await new BnfDirectClient({ egress: stub.egress, retry: NO_RETRY }).resolveArks(
       [FASCICULE, OCR_PRESS_ISSUE, ESTAMPE],
-      { mode: "staging" },
+      { mode: RESOLVE_MODE.STAGING },
     )
     assert.equal(stub.manifestCalls().length, 0)
     assert.deepEqual(results.map((r) => r.ok), [true, true, true])
@@ -280,19 +286,19 @@ describe("hybrid resolver: staged records", () => {
   it("skips the OAI fetch for a staged ARK and runs the OCR rule on it", async () => {
     const staging = stubEgress({})
     const client = new BnfDirectClient({ egress: staging.egress, retry: NO_RETRY })
-    const stagedDoc = await client.resolveArk(FASCICULE, { mode: "staging" })
+    const stagedDoc = await client.resolveArk(FASCICULE, { mode: RESOLVE_MODE.STAGING })
 
     const stub = stubEgress({ manifest: () => respond(200, manifestJson(FASCICULE, 4, "78.21 %")) })
     const results = await new BnfDirectClient({ egress: stub.egress, retry: NO_RETRY }).resolveArks(
       [FASCICULE, ESTAMPE],
-      { mode: "commit", staged: new Map([[FASCICULE, stagedDoc]]) },
+      { mode: RESOLVE_MODE.COMMIT, staged: new Map([[FASCICULE, stagedDoc]]) },
     )
     assert.deepEqual(results.map((r) => r.ok), [true, true])
     // OAI is asked for the ESTAMPE only; the staged fascicule is not refetched.
     assert.equal(stub.oaiCalls().length, 1)
     assert.equal(stub.manifestCalls().length, 1)
     const fascicule = results[0]
-    assert.equal(fascicule.ok && fascicule.document.ocr_source, "manifest")
+    assert.equal(fascicule.ok && fascicule.document.ocr_source, OCR_SOURCE.MANIFEST)
     assert.equal(fascicule.ok && fascicule.document.pages, 4)
   })
 })
@@ -304,7 +310,7 @@ describe("hybrid resolver: rule 4 failures never guess a flag", () => {
       const stub = stubEgress({ manifest: () => respond(404, "") })
       const doc = await new BnfDirectClient({ egress: stub.egress, retry: NO_RETRY }).resolveArk(
         FASCICULE,
-        { mode: "commit" },
+        { mode: RESOLVE_MODE.COMMIT },
       )
       assert.equal(doc.ocr_available, null)
       assert.equal("ocr_source" in doc, false)
@@ -321,7 +327,7 @@ describe("hybrid resolver: rule 4 failures never guess a flag", () => {
   it("a manifest 5xx rejects with a transient BnfMcpError", async () => {
     const stub = stubEgress({ manifest: () => respond(503, "unavailable") })
     const client = new BnfDirectClient({ egress: stub.egress, retry: NO_RETRY })
-    await assert.rejects(client.resolveArk(FASCICULE, { mode: "commit" }), (err: unknown) => {
+    await assert.rejects(client.resolveArk(FASCICULE, { mode: RESOLVE_MODE.COMMIT }), (err: unknown) => {
       assert.ok(err instanceof BnfMcpError)
       assert.equal(err instanceof BnfMcpNotFoundError, false)
       assert.equal(err instanceof BnfMcpAuthError, false)
@@ -342,7 +348,7 @@ describe("hybrid resolver: rule 4 failures never guess a flag", () => {
       egress: stub.egress,
       retry: { attempts: 3, baseMs: 0, capMs: 0 },
     })
-    const doc = await client.resolveArk(FASCICULE, { mode: "commit" })
+    const doc = await client.resolveArk(FASCICULE, { mode: RESOLVE_MODE.COMMIT })
     assert.equal(attempts, 3)
     assert.equal(doc.pages, 4)
   })
@@ -350,17 +356,29 @@ describe("hybrid resolver: rule 4 failures never guess a flag", () => {
   it("a manifest body that is not JSON is a transient BnfMcpError", async () => {
     const stub = stubEgress({ manifest: () => respond(200, "<html>captcha</html>") })
     const client = new BnfDirectClient({ egress: stub.egress, retry: NO_RETRY })
-    await assert.rejects(client.resolveArk(FASCICULE, { mode: "commit" }), /not valid JSON/)
+    await assert.rejects(client.resolveArk(FASCICULE, { mode: RESOLVE_MODE.COMMIT }), /not valid JSON/)
   })
 
   it("an OAI not-found stays terminal and never reaches the manifest", async () => {
     const stub = stubEgress({})
     const client = new BnfDirectClient({ egress: stub.egress, retry: NO_RETRY })
     await assert.rejects(
-      client.resolveArk("ark:/12148/bpt6kdoesnotexist000", { mode: "commit" }),
+      client.resolveArk("ark:/12148/bpt6kdoesnotexist000", { mode: RESOLVE_MODE.COMMIT }),
       BnfMcpNotFoundError,
     )
     assert.equal(stub.manifestCalls().length, 0)
+  })
+})
+
+describe("ARK validation", () => {
+  it("rejects a bare id without any egress call", async () => {
+    const stub = stubEgress({})
+    const client = new BnfDirectClient({ egress: stub.egress, retry: NO_RETRY })
+    await assert.rejects(
+      client.resolveArk("bpt6k268418n", { mode: RESOLVE_MODE.COMMIT }),
+      BnfMcpNotFoundError,
+    )
+    assert.deepEqual(stub.urls, [])
   })
 })
 
@@ -372,7 +390,7 @@ describe("Retry-After", () => {
       getText: async () => respond(429, "slow down", { "retry-after": "7" }),
     }
     const client = new BnfDirectClient({ egress: rateLimited, retry: NO_RETRY })
-    await assert.rejects(client.resolveArk(FASCICULE, { mode: "commit" }), (err: unknown) => {
+    await assert.rejects(client.resolveArk(FASCICULE, { mode: RESOLVE_MODE.COMMIT }), (err: unknown) => {
       assert.ok(err instanceof BnfMcpRateLimitError)
       assert.equal(err.retryAfterMs, 7000)
       return true
@@ -383,7 +401,7 @@ describe("Retry-After", () => {
     const stub = stubEgress({})
     const rateLimited: BnfEgress = { ...stub.egress, getText: async () => respond(429, "") }
     const client = new BnfDirectClient({ egress: rateLimited, retry: NO_RETRY })
-    await assert.rejects(client.resolveArk(FASCICULE, { mode: "commit" }), (err: unknown) => {
+    await assert.rejects(client.resolveArk(FASCICULE, { mode: RESOLVE_MODE.COMMIT }), (err: unknown) => {
       assert.ok(err instanceof BnfMcpRateLimitError)
       assert.equal(err.retryAfterMs, undefined)
       return true
@@ -411,7 +429,7 @@ describe("abort", () => {
       retry: NO_RETRY,
     })
     const arks = Array.from({ length: 4 * BNF_DIRECT_CONCURRENCY }, () => MONOGRAPH_TEXT)
-    const results = await client.resolveArks(arks, { mode: "staging" })
+    const results = await client.resolveArks(arks, { mode: RESOLVE_MODE.STAGING })
 
     assert.ok(stub.urls.length <= BNF_DIRECT_CONCURRENCY, `${stub.urls.length} requests started`)
     const failed = results.filter((r) => !r.ok)
@@ -436,7 +454,7 @@ describe("abort", () => {
       egress: failing,
       retry: { attempts: 5, baseMs: 0, capMs: 0 },
     })
-    await assert.rejects(client.resolveArk(MONOGRAPH_TEXT, { mode: "commit" }), /HTTP 503/)
+    await assert.rejects(client.resolveArk(MONOGRAPH_TEXT, { mode: RESOLVE_MODE.COMMIT }), /HTTP 503/)
     assert.equal(calls, 1)
   })
 })
@@ -469,7 +487,7 @@ describe("classifyCanonical", () => {
       })
       const client = new BnfDirectClient({ egress: stub.egress, retry: NO_RETRY })
       const outcome = await client.classifyCanonical(CATALOGUE_NOTICE)
-      assert.equal(outcome.status, "api_error")
+      assert.equal(outcome.status, CANONICAL_OUTCOME_STATUS.API_ERROR)
       assert.equal(warn.mock.calls.length, 1)
       const [message, context] = warn.mock.calls[0].arguments as [string, { ark: string; err: unknown }]
       assert.equal(message, "[bnf-direct] canonical via sparql failed")
@@ -488,7 +506,7 @@ describe("classifyCanonical", () => {
         unimarc: () => respond(200, UNIMARC_EMPTY),
       })
       const client = new BnfDirectClient({ egress: stub.egress, retry: NO_RETRY })
-      assert.equal((await client.classifyCanonical(CATALOGUE_NOTICE)).status, "api_error")
+      assert.equal((await client.classifyCanonical(CATALOGUE_NOTICE)).status, CANONICAL_OUTCOME_STATUS.API_ERROR)
     } finally {
       warn.mock.restore()
     }
@@ -500,7 +518,7 @@ describe("classifyCanonical", () => {
       unimarc: () => respond(200, UNIMARC_EMPTY),
     })
     const client = new BnfDirectClient({ egress: stub.egress, retry: NO_RETRY })
-    assert.equal((await client.classifyCanonical(CATALOGUE_NOTICE)).status, "not_digitized")
+    assert.equal((await client.classifyCanonical(CATALOGUE_NOTICE)).status, CANONICAL_OUTCOME_STATUS.NOT_DIGITIZED)
   })
 
   it("upgrades through SPARQL when a reproduction is linked", async () => {
@@ -517,7 +535,7 @@ describe("classifyCanonical", () => {
     const client = new BnfDirectClient({ egress: stub.egress, retry: NO_RETRY })
     assert.deepEqual(await client.classifyCanonical(CATALOGUE_NOTICE), {
       ark: CATALOGUE_NOTICE,
-      status: "upgraded",
+      status: CANONICAL_OUTCOME_STATUS.UPGRADED,
       canonical: "ark:/12148/bpt6k104247x",
     })
   })
@@ -541,7 +559,7 @@ describe("catalogue SRU", () => {
     const stub = stubEgress({ other: () => respond(200, SRU) })
     const doc = await new BnfDirectClient({ egress: stub.egress, retry: NO_RETRY }).resolveArk(
       CATALOGUE_NOTICE,
-      { mode: "commit" },
+      { mode: RESOLVE_MODE.COMMIT },
     )
     assert.deepEqual(doc.subject, ["Roman", "Paris"])
     assert.equal(doc.author, "Hugo, Victor")
@@ -554,7 +572,7 @@ describe("catalogue SRU", () => {
     })
     const doc = await new BnfDirectClient({ egress: stub.egress, retry: NO_RETRY }).resolveArk(
       CATALOGUE_NOTICE,
-      { mode: "commit" },
+      { mode: RESOLVE_MODE.COMMIT },
     )
     assert.equal("subject" in doc, false)
   })

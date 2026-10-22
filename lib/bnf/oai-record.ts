@@ -1,18 +1,28 @@
 // lib/bnf/oai-record.ts
 // Pure parser for one Gallica OAI-PMH `GetRecord` response (oai_dc).
 //
-// No I/O and no `server-only`: the transport (lib/bnf/direct.ts) fetches the
-// XML, this module turns it into a BnfMcpDocumentDetail. Keeping it pure lets
-// the fixtures under tests/fixtures/bnf/oai/ pin every branch.
+// No I/O: the transport (lib/bnf/direct.ts) fetches the XML, this module turns
+// it into a BnfMcpDocumentDetail. Keeping it pure lets the fixtures under
+// tests/fixtures/bnf/oai/ pin every branch.
 //
 // Fields are read ONLY from GetRecord/record/{header, metadata/dc} by direct
 // path, never by a tree-wide search, so an unrelated element elsewhere in the
 // envelope (an HTML proxy page's <title>, an <error>) can never be mistaken for
 // record metadata.
+import "server-only"
+
 import { XMLValidator } from "fast-xml-parser"
 
 import type { BnfMcpDocumentDetail } from "@/lib/bnf/types"
-import { bnfXmlParser, fullArk, localArk, nodeText, type XmlNode } from "@/lib/bnf/wire"
+import {
+  assertFullArk,
+  bnfXmlParser,
+  localArk,
+  nodeText,
+  XML_ATTR_PREFIX,
+  type XmlNode,
+} from "@/lib/bnf/wire"
+import { GALLICA_ITEM_URL } from "@/lib/constants"
 import { BnfMcpError, BnfMcpNotFoundError } from "@/lib/mcp/errors"
 import { GALLICA_DOC_TYPE, PRESS_MARKER } from "@/lib/mcp/vocab"
 
@@ -23,6 +33,8 @@ const TYPEDOC_SET_SPEC = /^gallica:typedoc:(.+)$/
 const TEXT_MODE = /mode\s+texte/i
 const TOTAL_VIEWS = /Nombre total de vues\s*:\s*(\d+)/i
 const FRENCH_LANG = "fre"
+// The page-level viewer URL is the stable link (the bare document URL 403s).
+const FIRST_FOLIO = 1
 
 function asObject(node: XmlNode): Record<string, unknown> | undefined {
   return node !== null && typeof node === "object" && !Array.isArray(node)
@@ -46,7 +58,7 @@ function texts(node: XmlNode, key: string): string[] {
 }
 
 function attribute(node: XmlNode, name: string): string | undefined {
-  const v = asObject(node)?.[`@_${name}`]
+  const v = asObject(node)?.[`${XML_ATTR_PREFIX}${name}`]
   return typeof v === "string" ? v : undefined
 }
 
@@ -175,6 +187,7 @@ function parseEnvelope(xml: string, ark: string): Record<string, unknown> {
  *                          metadata. Transient: the caller may retry.
  */
 export function parseGallicaOaiRecord(xml: string, ark: string): BnfMcpDocumentDetail {
+  assertFullArk(ark)
   const root = parseEnvelope(xml, ark)
 
   for (const error of children(root, "error")) {
@@ -221,6 +234,6 @@ export function parseGallicaOaiRecord(xml: string, ark: string): BnfMcpDocumentD
     ...(subject.length > 0 ? { subject } : {}),
     ...(views !== undefined ? { oai_total_views: views } : {}),
     ...(hasTextMode(dc) ? { ocr_available: true } : {}),
-    gallica_url: `https://gallica.bnf.fr/${fullArk(ark)}`,
+    gallica_url: GALLICA_ITEM_URL(ark, FIRST_FOLIO),
   }
 }

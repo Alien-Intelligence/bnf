@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { describe, it } from "node:test"
 
+import { GALLICA_ITEM_URL } from "@/lib/constants"
 import { hasTextMode, parseGallicaOaiRecord, pickTypedoc, totalViews } from "@/lib/bnf/oai-record"
 import {
   BnfMcpError,
@@ -43,7 +44,7 @@ describe("parseGallicaOaiRecord: fascicule (bpt6k268418n)", () => {
     assert.equal(doc.date, "1835-05-10")
     assert.equal(doc.language, "fre")
     assert.equal(doc.publisher, "[s.n.] (Paris)")
-    assert.equal(doc.gallica_url, "https://gallica.bnf.fr/ark:/12148/bpt6k268418n")
+    assert.equal(doc.gallica_url, GALLICA_ITEM_URL("ark:/12148/bpt6k268418n", 1))
     assert.equal(doc.creator, undefined)
   })
 
@@ -55,10 +56,11 @@ describe("parseGallicaOaiRecord: fascicule (bpt6k268418n)", () => {
     assert.equal("subject" in doc, false)
   })
 
-  it("accepts the short ARK form", () => {
-    const short = parseGallicaOaiRecord(fixture("fascicule-bpt6k268418n.xml"), "bpt6k268418n")
-    assert.equal(short.ark, "bpt6k268418n")
-    assert.equal(short.gallica_url, "https://gallica.bnf.fr/ark:/12148/bpt6k268418n")
+  it("rejects a bare id: an ARK is never constructed from one", () => {
+    assert.throws(
+      () => parseGallicaOaiRecord(fixture("fascicule-bpt6k268418n.xml"), "bpt6k268418n"),
+      BnfMcpNotFoundError,
+    )
   })
 })
 

@@ -68,13 +68,25 @@ import {
 import { presentationManifestUrl } from "@/lib/bnf/endpoints"
 import { relayGetText, shouldRelay } from "@/lib/bnf/gallica-relay"
 import { parseGallicaOaiRecord } from "@/lib/bnf/oai-record"
-import { bnfXmlParser, fullArk, localArk, nodeText, type XmlNode } from "@/lib/bnf/wire"
+import {
+  assertFullArk,
+  bnfXmlParser,
+  localArk,
+  nodeText,
+  XML_ATTR_PREFIX,
+  type XmlNode,
+} from "@/lib/bnf/wire"
 import { env } from "@/lib/env"
 import { withTimeout } from "@/lib/mcp/abort"
-import type {
-  BnfMcpDocumentDetail,
-  BnfMcpResolveError,
-  BnfMcpResolveResult,
+import {
+  CANONICAL_OUTCOME_STATUS,
+  OCR_SOURCE,
+  PAGES_SOURCE,
+  RESOLVE_MODE,
+  type BnfMcpDocumentDetail,
+  type BnfMcpResolveError,
+  type BnfMcpResolveResult,
+  type ResolveMode,
 } from "@/lib/bnf/types"
 import {
   BnfMcpAuthError,
@@ -87,26 +99,17 @@ import { type RetryOptions, type Settled, withConcurrency, withRetry } from "@/l
 import { GALLICA_DOC_TYPE, sourceFromArk } from "@/lib/mcp/vocab"
 import { DOCUMENT_SOURCE, INGESTION_IMAGE_LIKE_TYPES } from "@/models/documents/schema"
 
+export { RESOLVE_MODE, type ResolveMode }
+
 /**
  * Outcome of classifying a catalogue (`cb…`) ARK against its digitized Gallica
  * reproduction. `upgraded` carries the digitized ARK to substitute; the other
  * two record why the notice stayed a notice (see Document.canonicalStatus).
  */
 export type CanonicalizeOutcome =
-  | { ark: string; status: "upgraded"; canonical: string }
-  | { ark: string; status: "not_digitized" }
-  | { ark: string; status: "api_error" }
-
-/**
- * What a resolve is for. It decides whether the IIIF manifest may be fetched:
- *   - `commit`  — the ARK enters a corpus (resolver, backfill): the full hybrid
- *     rule applies, including the manifest for text-like documents OAI does not
- *     mark "mode texte".
- *   - `staging` — the ARK is parked in the research buffer: OAI only, never the
- *     manifest. Staging must not spend the manifest bucket (the ingestion
- *     bottleneck), and the OCR flag is not needed before commit.
- */
-export type ResolveMode = "commit" | "staging"
+  | { ark: string; status: typeof CANONICAL_OUTCOME_STATUS.UPGRADED; canonical: string }
+  | { ark: string; status: typeof CANONICAL_OUTCOME_STATUS.NOT_DIGITIZED }
+  | { ark: string; status: typeof CANONICAL_OUTCOME_STATUS.API_ERROR }
 
 // Two transports per endpoint (dual-path):
 //   • proext  — the authenticated partner gateway (openapiproext.bnf.fr). Used
@@ -171,6 +174,21 @@ const GALLICA_ARK_FAMILY = /^(bpt6k|btv1b|bd6t)/
 
 // The manifest metadata labels carrying the text-layer rate ("Taux OCR": "78.21 %").
 const TAUX_OCR_LABELS = ["taux ocr", "taux d'ocr"]
+
+const SRU_VERSION = "1.2"
+const SRU_OPERATION_SEARCH_RETRIEVE = "searchRetrieve"
+const SRU_SINGLE_RECORD = "1"
+
+/** SRU query for the one catalogue record whose persistent id is `ark`, in `recordSchema`. */
+function catalogueSruParams(ark: string, recordSchema: string): Record<string, string> {
+  return {
+    version: SRU_VERSION,
+    operation: SRU_OPERATION_SEARCH_RETRIEVE,
+    query: `bib.persistentId all "${ark}"`,
+    recordSchema,
+    maximumRecords: SRU_SINGLE_RECORD,
+  }
+}
 
 const IMAGE_LIKE_DOC_TYPES: ReadonlySet<string> = new Set(INGESTION_IMAGE_LIKE_TYPES)
 
@@ -333,7 +351,7 @@ function uniqueTexts(root: XmlNode, key: string): string[] {
 function langAttr(node: XmlNode): string | undefined {
   if (node === null || typeof node !== "object" || Array.isArray(node)) return undefined
   const o = node as Record<string, unknown>
-  const v = o["@_xml:lang"] ?? o["@_lang"]
+  const v = o[`${XML_ATTR_PREFIX}xml:lang`] ?? o[`${XML_ATTR_PREFIX}lang`]
   return typeof v === "string" ? v : undefined
 }
 
@@ -358,7 +376,7 @@ function pickDocType(root: XmlNode): string | undefined {
 /** Read a string attribute (e.g. "tag", "code") off a parsed element. */
 function attrText(node: XmlNode, name: string): string | undefined {
   if (node === null || typeof node !== "object" || Array.isArray(node)) return undefined
-  const v = (node as Record<string, unknown>)[`@_${name}`]
+  const v = (node as Record<string, unknown>)[`${XML_ATTR_PREFIX}${name}`]
   return typeof v === "string" ? v : typeof v === "number" ? String(v) : undefined
 }
 
@@ -551,6 +569,7 @@ export class BnfDirectClient {
     ark: string,
     opts: { mode: ResolveMode; staged?: BnfMcpDocumentDetail },
   ): Promise<BnfMcpDocumentDetail> {
+    assertFullArk(ark)
     return sourceFromArk(ark) === DOCUMENT_SOURCE.CATALOGUE
       ? this.resolveCatalogue(ark)
       : this.resolveGallica(ark, opts.mode, opts.staged)
@@ -582,6 +601,7 @@ export class BnfDirectClient {
    * error) is rethrown: an `api_error` verdict would hide it behind a retry.
    */
   async classifyCanonical(ark: string): Promise<CanonicalizeOutcome> {
+    assertFullArk(ark)
     const routes = [
       ["sparql", () => this.canonicalViaSparql(ark)],
       ["unimarc", () => this.canonicalViaUnimarc(ark)],
@@ -590,7 +610,7 @@ export class BnfDirectClient {
     for (const [route, lookup] of routes) {
       try {
         const g = await lookup()
-        if (g) return { ark, status: "upgraded", canonical: g }
+        if (g) return { ark, status: CANONICAL_OUTCOME_STATUS.UPGRADED, canonical: g }
       } catch (err) {
         if (!(err instanceof BnfMcpError)) throw err
         console.warn(`[bnf-direct] canonical via ${route} failed`, { ark, err })
@@ -599,7 +619,12 @@ export class BnfDirectClient {
     }
     // Neither route produced an ARK. If a route errored we cannot trust the
     // "absent" verdict — treat it as retryable rather than "not on Gallica".
-    return { ark, status: apiError ? "api_error" : "not_digitized" }
+    return {
+      ark,
+      status: apiError
+        ? CANONICAL_OUTCOME_STATUS.API_ERROR
+        : CANONICAL_OUTCOME_STATUS.NOT_DIGITIZED,
+    }
   }
 
   /**
@@ -626,7 +651,7 @@ export class BnfDirectClient {
       const s = settled[i]
       if (s.ok) return s.value
       console.warn("[bnf-direct] canonicalize failed", { ark, err: s.error })
-      return { ark, status: "api_error" as const }
+      return { ark, status: CANONICAL_OUTCOME_STATUS.API_ERROR }
     })
   }
 
@@ -635,7 +660,7 @@ export class BnfDirectClient {
     // data.bnf.fr resource URIs MUST be http:// (https:// yields zero results).
     const query =
       `SELECT ?gallica WHERE { ` +
-      `<http://data.bnf.fr/${fullArk(ark)}#about> ` +
+      `<http://data.bnf.fr/${ark}#about> ` +
       `<${ELECTRONIC_REPRODUCTION}> ?gallica } LIMIT 1`
     const body = await this.httpGetText(
       this.egress.viaPartner ? DATABNF_SPARQL.proext : DATABNF_SPARQL.ungated,
@@ -658,13 +683,7 @@ export class BnfDirectClient {
   /** Route 2: Catalogue SRU (UNIMARC) — field 856 $u, then 325 $u. */
   private async canonicalViaUnimarc(ark: string): Promise<string | null> {
     const cat = this.egress.viaPartner ? CATALOGUE_SRU.proext : CATALOGUE_SRU.ungated
-    const xml = await this.httpGetText(cat.url, {
-      version: "1.2",
-      operation: "searchRetrieve",
-      query: `bib.persistentId all "${fullArk(ark)}"`,
-      recordSchema: cat.unimarc,
-      maximumRecords: "1",
-    })
+    const xml = await this.httpGetText(cat.url, catalogueSruParams(ark, cat.unimarc))
     const root = parseXml(xml, `Catalogue SRU (UNIMARC) response for ${ark}`)
     const url =
       datafieldSubfield(root, "856", "u") ?? datafieldSubfield(root, "325", "u")
@@ -682,19 +701,19 @@ export class BnfDirectClient {
     const oai = staged ?? (await this.fetchOaiRecord(ark))
     const base: BnfMcpDocumentDetail = {
       ...oai,
-      pages_source: oai.oai_total_views !== undefined ? "oai" : null,
+      pages_source: oai.oai_total_views !== undefined ? PAGES_SOURCE.OAI : null,
     }
 
     // Rule 2: OAI marks a text layer. 100 % precise, so no manifest call.
-    if (oai.ocr_available === true) return { ...base, ocr_source: "oai" }
+    if (oai.ocr_available === true) return { ...base, ocr_source: OCR_SOURCE.OAI }
 
     // Staging stops here: OAI silence is left as "unknown" (ocr_available unset).
-    if (mode === "staging") return base
+    if (mode === RESOLVE_MODE.STAGING) return base
 
     // Rule 3: an image-like document has no native text either way; the flag is
     // irrelevant to its lanes, so don't spend a manifest call on it.
     if (isImageLike(oai)) {
-      return { ...base, ocr_available: false, ocr_source: "image_like" }
+      return { ...base, ocr_available: false, ocr_source: OCR_SOURCE.IMAGE_LIKE }
     }
 
     // No broker (dev): the Presentation API needs credentials only the broker
@@ -702,7 +721,7 @@ export class BnfDirectClient {
     // misses the text layer of every OCR'd press issue), so the verdict stays
     // UNKNOWN (null) — never false, which would route the document to paid OCR.
     if (!this.egress.viaPartner) {
-      return { ...base, ocr_available: null, ocr_source: "oai" }
+      return { ...base, ocr_available: null, ocr_source: OCR_SOURCE.OAI }
     }
 
     // Rule 4: a text-like document OAI is silent on. The manifest decides.
@@ -721,8 +740,8 @@ export class BnfDirectClient {
     return {
       ...base,
       ocr_available: signals.ocr_available,
-      ocr_source: "manifest",
-      ...(signals.pages !== null ? { pages: signals.pages, pages_source: "manifest" as const } : {}),
+      ocr_source: OCR_SOURCE.MANIFEST,
+      ...(signals.pages !== null ? { pages: signals.pages, pages_source: PAGES_SOURCE.MANIFEST } : {}),
       ...(signals.taux_ocr !== undefined ? { taux_ocr: signals.taux_ocr } : {}),
     }
   }
@@ -732,7 +751,7 @@ export class BnfDirectClient {
     const xml = await this.httpGetText(GALLICA_OAI_PMH_URL, {
       verb: "GetRecord",
       metadataPrefix: "oai_dc",
-      identifier: `oai:bnf.fr:gallica/${fullArk(ark)}`,
+      identifier: `oai:bnf.fr:gallica/${ark}`,
     })
     return parseGallicaOaiRecord(xml, ark)
   }
@@ -753,7 +772,7 @@ export class BnfDirectClient {
       )
     }
     const body = await this.httpGetText(
-      presentationManifestUrl(presentationBase, fullArk(ark)),
+      presentationManifestUrl(presentationBase, ark),
       {},
       "application/json, application/ld+json",
     )
@@ -780,13 +799,7 @@ export class BnfDirectClient {
   // ---- Catalogue: SRU -------------------------------------------------------
   private async resolveCatalogue(ark: string): Promise<BnfMcpDocumentDetail> {
     const cat = this.egress.viaPartner ? CATALOGUE_SRU.proext : CATALOGUE_SRU.ungated
-    const xml = await this.httpGetText(cat.url, {
-      version: "1.2",
-      operation: "searchRetrieve",
-      query: `bib.persistentId all "${fullArk(ark)}"`,
-      recordSchema: cat.dc,
-      maximumRecords: "1",
-    })
+    const xml = await this.httpGetText(cat.url, catalogueSruParams(ark, cat.dc))
     const root = parseXml(xml, `Catalogue SRU response for ${ark}`)
 
     const title = firstText(root, "title")
@@ -804,7 +817,7 @@ export class BnfDirectClient {
       language: firstText(root, "language"),
       publisher: firstText(root, "publisher"),
       ...(subject.length > 0 ? { subject } : {}),
-      catalogue_url: `http://catalogue.bnf.fr/${fullArk(ark)}`,
+      catalogue_url: `http://catalogue.bnf.fr/${ark}`,
     }
   }
 
