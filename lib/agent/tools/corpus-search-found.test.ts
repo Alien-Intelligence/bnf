@@ -3,7 +3,9 @@
 // mapping: a hit whose identifier is not a document ARK is dropped before
 // registration, and it must be explained like a registration skip — never
 // vanish from the counts (playbook review: `found` was post-mapping).
-// No BnF egress: the MCP transport is a stubbed fetch.
+// No BnF egress: the MCP transport is a stubbed fetch, the MCP env points at
+// a reserved `.invalid` host and the limiter is built from fixed test rates —
+// nothing here depends on a developer's .env.local.
 import "server-only"
 
 import { test, before, after } from "node:test"
@@ -22,6 +24,9 @@ let project: Project
 let session: string
 const realFetch = globalThis.fetch
 
+const MCP_ENV_KEYS = ["BNF_MCP_URL", "BNF_MCP_TOKEN"] as const
+const savedMcpEnv: Record<string, string | undefined> = {}
+
 const hit = (ark: string, title: string) => ({
   ark,
   title,
@@ -36,6 +41,12 @@ const hit = (ark: string, title: string) => ({
 })
 
 before(async () => {
+  // corpus_search reads the MCP env lazily (requireMcpEnv). Set here, after
+  // lib/env.ts ran its import-time BNF_MCP_RATES boot check, it needs no rate
+  // env: the limiter is replaced with fixed test rates below.
+  for (const k of MCP_ENV_KEYS) savedMcpEnv[k] = process.env[k]
+  process.env.BNF_MCP_URL = "https://bnf.mcp.invalid/mcp"
+  process.env.BNF_MCP_TOKEN = "test-token"
   user = await createTestUser()
   project = await createTestProject(user.id, "search-found")
   session = await createTestSession(project.id, SESSION_SCOPE.CORPUS)
@@ -69,6 +80,11 @@ before(async () => {
 
 after(async () => {
   globalThis.fetch = realFetch
+  for (const k of MCP_ENV_KEYS) {
+    const v = savedMcpEnv[k]
+    if (v === undefined) delete process.env[k]
+    else process.env[k] = v
+  }
   await cleanupProject(project.id)
   await deleteTestUser(user.id)
 })
