@@ -3,7 +3,6 @@
 // No `import "server-only"` — schema is referenced by both client and server.
 import type { IngestJob } from "@/lib/generated/prisma/client"
 import {
-  PAID_OCR_FALLBACK_PAGES,
   PAID_OCR_MAX_PAGES_PER_DOC,
   PAID_OCR_USD_PER_1K_PAGES,
 } from "@/lib/constants"
@@ -44,7 +43,7 @@ export const CLUSTER_TERMINAL_STAGE = {
 export interface PaidOcrEstimate {
   /** Number of `sans_texte` documents the estimate covers. */
   docCount: number
-  /** Total folios to transcribe, after the null-fallback and per-doc cap. */
+  /** Total folios to transcribe, after holding unknown counts at the per-doc cap. */
   pages: number
   /** Estimated USD cost at the Mistral OCR Batch rate. */
   usd: number
@@ -53,17 +52,18 @@ export interface PaidOcrEstimate {
 /**
  * Estimate the paid-OCR cost for a list of documents from their page counts.
  *
- * A null/zero/absent page count (an unresolved stub) is charged at
- * {@link PAID_OCR_FALLBACK_PAGES}; every document is capped at
- * {@link PAID_OCR_MAX_PAGES_PER_DOC} (the worker drops folios beyond that). The
- * result is an ESTIMATE shown at the confirmation prompt — the worker reports
- * the real billed cost on completion. Pure; safe on both client and server.
+ * A null/zero/absent page count (an unresolved stub, or a fascicule whose folio
+ * count is not known) is held at {@link PAID_OCR_MAX_PAGES_PER_DOC}, the most
+ * the worker will ever transcribe for one document; every document is capped at
+ * that same value (the worker drops folios beyond it). The result is therefore
+ * an upper bound shown at the confirmation prompt, and the confirmed estimate is
+ * what the project is charged at commit. Pure; safe on both client and server.
  */
 export function estimatePaidOcrCostUsd(
   pageCounts: ReadonlyArray<number | null | undefined>,
 ): PaidOcrEstimate {
   const pages = pageCounts.reduce<number>((sum, p) => {
-    const count = typeof p === "number" && p > 0 ? p : PAID_OCR_FALLBACK_PAGES
+    const count = typeof p === "number" && p > 0 ? p : PAID_OCR_MAX_PAGES_PER_DOC
     return sum + Math.min(count, PAID_OCR_MAX_PAGES_PER_DOC)
   }, 0)
   return {

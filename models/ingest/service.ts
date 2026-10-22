@@ -595,9 +595,10 @@ export class IngestService {
   static async commit(job: IngestJob, results: IngestResults): Promise<void> {
     const now = new Date()
     // Charge the confirmed paid-OCR estimate to the project's running spend,
-    // set-once (paidOcrActualUsd null → not yet charged). The estimate (capped
-    // page counts) is conservative — it never under-counts spend, which is the
-    // safe direction for a budget ceiling. See _chargePaidOcr* helpers.
+    // set-once (paidOcrActualUsd null → not yet charged). The estimate holds
+    // unknown page counts at the per-document maximum and caps known ones, so it
+    // is an upper bound on the folios the worker transcribes — the safe
+    // direction for a budget ceiling. See _paidOcrChargeFor.
     const paidOcrCharge = IngestService._paidOcrChargeFor(job)
     // F13: warning-only entries route here (never commitPartialFailure), so the
     // annotation must be applied here too — same transaction, so it's atomic
@@ -705,9 +706,9 @@ export class IngestService {
     const now = new Date()
 
     // Charge the confirmed paid-OCR estimate even on a partial run: the worker
-    // already paid Mistral for the folios it transcribed, and the estimate is
-    // conservative. Set-once via paidOcrActualUsd. (A whole-job FAILED, which
-    // does not commit, is the one case that escapes accounting — acceptably rare.)
+    // may already have paid Mistral for the folios it transcribed. Set-once via
+    // paidOcrActualUsd. (A whole-job FAILED, which does not commit, charges
+    // nothing — a known gap.)
     const paidOcrCharge = IngestService._paidOcrChargeFor(job)
 
     const ops: Prisma.PrismaPromise<unknown>[] = [
@@ -1099,8 +1100,9 @@ export class IngestService {
    * The paid-OCR amount to charge a project when this job commits, or null if
    * there is nothing to charge. Set-once: returns null once `paidOcrActualUsd`
    * is already recorded (so a re-delivered commit can't double-charge) or when
-   * the job carried no paid-OCR estimate. The number is the confirmed estimate
-   * — conservative by design (capped page counts never under-count spend).
+   * the job carried no paid-OCR estimate. The number is the confirmed estimate,
+   * not a billed cost: unknown page counts are held at the per-document maximum
+   * and known ones are capped, so it is an upper bound on the folios transcribed.
    */
   private static _paidOcrChargeFor(job: IngestJob): number | null {
     if (job.paidOcrActualUsd !== null) return null
@@ -1108,12 +1110,6 @@ export class IngestService {
     return Number(job.paidOcrEstimatedUsd)
   }
 
-  /**
-   * Estimate the paid-OCR cost for a set of `sans_texte` ARKs from their stored
-   * page counts (`Document.pages`). A missing row or null page count falls back
-   * to the conservative default inside estimatePaidOcrCostUsd(). The worker
-   * reports the real billed cost on completion.
-   */
   /** Effective paid-OCR budget ceiling: the project override, or the default. */
   private static _paidOcrCeilingUsd(project: Project): number {
     return project.paidOcrBudgetUsd === null
@@ -1121,6 +1117,12 @@ export class IngestService {
       : Number(project.paidOcrBudgetUsd)
   }
 
+  /**
+   * Estimate the paid-OCR cost for a set of `sans_texte` ARKs from their stored
+   * page counts (`Document.pages`). A missing row or null page count is held at
+   * the per-document maximum inside estimatePaidOcrCostUsd(), so the result is
+   * an upper bound; it is also the amount charged when the job commits.
+   */
   private static async _estimatePaidOcr(
     projectId: string,
     arks: string[],

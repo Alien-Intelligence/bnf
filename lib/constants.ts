@@ -585,6 +585,29 @@ export const QUOTE_MATCH_DEADLINE_STRIDE = 1_024
  */
 export const RESOLVE_MAX_ATTEMPTS = 5
 
+/**
+ * Backoff before a failed resolve is retried: this, doubled per attempt (1, 2,
+ * 4, 8 min), capped at RESOLVE_RETRY_CAP_MS. A broker 429/503 burst is not
+ * burned through in seconds. Mirrors BUFFER_ENRICH_RETRY_BASE_MS.
+ */
+export const RESOLVE_RETRY_BASE_MS = 60_000
+
+/**
+ * Upper bound of the resolve backoff, so a row never waits unboundedly for its
+ * next attempt however the base and the attempt count are tuned. 30 min keeps a
+ * long BnF outage from being retried every few minutes without parking rows for
+ * hours.
+ */
+export const RESOLVE_RETRY_CAP_MS = 30 * 60 * 1_000
+
+/**
+ * Wall-clock ceiling of one resolve drain (all its batches and reruns). Under
+ * the 3-minute RESOLVE_SWEEP_INTERVAL_MS, so a slow drain ends before the next
+ * sweep would start another and drains cannot overlap sweeps. Rows cut off by
+ * the deadline stay pending. Mirrors BUFFER_ENRICH_DRAIN_MAX_MS.
+ */
+export const RESOLVE_DRAIN_MAX_MS = 150_000
+
 /** ARKs resolved per drainer batch (one MCP fan-out; ≤ MCP 50-hit cap). */
 export const RESOLVE_BATCH_SIZE = 30
 
@@ -1079,8 +1102,11 @@ export const INGEST_RECENT_JOBS_LIMIT = 20
 // Cost model for transcribing digitized text that has no BnF OCR layer, via
 // the Mistral OCR Batch API (one batch job per document, one entry per folio).
 // Used to estimate the spend shown at the per-ingestion confirmation prompt and
-// to enforce the per-project budget ceiling. The worker reports the actual cost
-// back on completion. See models/ingest/schema.ts estimatePaidOcrCostUsd() and
+// to enforce the per-project budget ceiling. The confirmed estimate is what the
+// project is charged when the job commits; the worker does not report a billed
+// cost back. A document with an unknown page count is held at the per-document
+// maximum (PAID_OCR_MAX_PAGES_PER_DOC), so the amount shown is an upper bound.
+// See models/ingest/schema.ts estimatePaidOcrCostUsd() and
 // ai-memories/tech/repos/bnf/mistral-ocr-fallback/.
 
 /**
@@ -1090,16 +1116,12 @@ export const INGEST_RECENT_JOBS_LIMIT = 20
 export const PAID_OCR_USD_PER_1K_PAGES = 2
 
 /**
- * Page count assumed for a `sans_texte` document whose `Document.pages` is null
- * (metadata not yet resolved) when estimating cost. Deliberately conservative —
- * the estimate is labelled as such in the UI and the worker bills the real count.
- */
-export const PAID_OCR_FALLBACK_PAGES = 50
-
-/**
  * Hard ceiling on folios transcribed per document. Caps the blast radius of a
  * single oversized scan; the worker drops (and logs) folios beyond this. Kept in
- * sync with the worker's MISTRAL_OCR_MAX_PAGES default.
+ * sync with the worker's MISTRAL_OCR_MAX_PAGES default. It is also the page
+ * count a `sans_texte` document with a null `Document.pages` (fascicules, whose
+ * folio count is only known from the manifest) is held at, since no document
+ * can cost more than this.
  */
 export const PAID_OCR_MAX_PAGES_PER_DOC = 300
 
