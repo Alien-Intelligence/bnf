@@ -10,6 +10,7 @@ import assert from "node:assert/strict"
 import {
   GALLICA_FILTER_DOC_TYPE,
   GALLICA_SEARCHABLE_DOC_TYPE,
+  PRESS_MARKER,
   canonicalDocTypeFromLabel,
   canonicalLang,
   gallicaPageCount,
@@ -173,5 +174,28 @@ test("KNOWN_SUBTYPES covers the subtypes of the typedocs seen in the parity samp
   }
   for (const typedoc of ["monographies", "manuscrits", "partitions", "audio", "objets"]) {
     assert.equal(gallicaSubtype(typedoc), null, typedoc)
+  }
+})
+
+// The worker's PRESS_DC_TYPE (worker-v2/src/bnf/parse.ts) is the same pattern
+// and the worker cannot import app code. This table is repeated verbatim in
+// worker-v2/src/bnf/parse.test.ts (PRESS_LABEL_FIXTURES); PRESS_MARKER is
+// applied to the lowercased label, as gallicaPageCount does.
+const PRESS_LABEL_FIXTURES: ReadonlyArray<readonly [label: string, isPress: boolean]> = [
+  ["publication en série imprimée", true],
+  ["Publication en Série Imprimée", true],
+  ["périodique", true],
+  ["periodique", true],
+  ["presse", true],
+  ["journal", true],
+  ["série imprimée", true],
+  ["monographie imprimée", false],
+  ["texte", false],
+  ["carte", false],
+]
+
+test("PRESS_MARKER classifies the press-label fixture table the worker's PRESS_DC_TYPE also satisfies", () => {
+  for (const [label, isPress] of PRESS_LABEL_FIXTURES) {
+    assert.equal(PRESS_MARKER.test(label.toLowerCase()), isPress, label)
   }
 })

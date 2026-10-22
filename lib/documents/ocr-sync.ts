@@ -65,6 +65,7 @@
 // never Prisma itself. A no-op unless CLUSTER_MODE=real.
 import "server-only"
 
+import { ABORT_ERROR_NAME } from "@/lib/async/abort"
 import { DeadlineExceededError, withDeadline } from "@/lib/async/deadline"
 import { CLUSTER_MODE, clusterMode } from "@/lib/cluster/mode"
 import {
@@ -576,7 +577,7 @@ export function createOcrSyncDrainer(ports: OcrSyncPorts, limits: OcrSyncLimits)
 }
 
 function isAbortError(err: unknown): boolean {
-  return err instanceof Error && err.name === "AbortError"
+  return err instanceof Error && err.name === ABORT_ERROR_NAME
 }
 
 // ---------------------------------------------------------------------------

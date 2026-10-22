@@ -31,25 +31,28 @@ import "server-only"
 // forever, never to have the final say on outcome. See the comment on
 // IngestService.applyProgress.
 import { CLUSTER_MODE, clusterMode } from "@/lib/cluster/mode"
-import { INGEST_STATUS } from "@/models/ingest/schema"
+import { INGEST_STATUS, type IngestStatus } from "@/models/ingest/schema"
 import { IngestQueries } from "@/models/ingest/queries"
 import { IngestService } from "@/models/ingest/service"
 import { ClusterRunner } from "@/lib/cluster/runner"
+import type { IngestJob } from "@/lib/generated/prisma/client"
 import type { ClusterProgressPoll } from "@/lib/cluster/contracts"
 import { CLUSTER_POLL } from "@/models/ingest/schema"
 import { startPeriodic } from "@/lib/async/periodic"
 
+const MS_PER_MINUTE = 60 * 1000
+
 /** How stale a QUEUED job (no clusterJobId) must be to count as an F19 corpse. */
-export const WATCHDOG_QUEUED_STALE_MS = 15 * 60 * 1000
+export const WATCHDOG_QUEUED_STALE_MS = 15 * MS_PER_MINUTE
 /** How long the worker's read-model may 404 / be unreachable before a RUNNING job is given up on. */
-export const WATCHDOG_RUNNING_STALE_MS = 30 * 60 * 1000
+export const WATCHDOG_RUNNING_STALE_MS = 30 * MS_PER_MINUTE
 /** Tick cadence for the interval loop. */
-export const WATCHDOG_TICK_MS = 60 * 1000
+export const WATCHDOG_TICK_MS = MS_PER_MINUTE
 
 /** The minimal job shape the pure decision function needs. */
 export interface WatchdogJobInput {
   id: string
-  status: string
+  status: IngestStatus
   clusterJobId: string | null
   createdAt: Date
 }
@@ -110,6 +113,10 @@ export function decideWatchdogAction(
     return { action: { kind: "none" }, nullSince: null }
   }
 
+  // Only QUEUED and RUNNING jobs are the watchdog's business; a terminal
+  // job is left alone rather than judged by the RUNNING rules below.
+  if (job.status !== INGEST_STATUS.RUNNING) return { action: { kind: "none" }, nullSince: null }
+
   // RUNNING. No clusterJobId means the job is still inside the tiny window
   // between the job-row insert and ClusterRunner.submit returning — nothing
   // to poll yet, nothing to decide.
@@ -146,7 +153,7 @@ export function decideWatchdogAction(
     return {
       action: {
         kind: "fail",
-        reason: "run inconnu du worker depuis 30 min (watchdog)",
+        reason: `run inconnu du worker depuis ${WATCHDOG_RUNNING_STALE_MS / MS_PER_MINUTE} min (watchdog)`,
       },
       nullSince: null,
     }
@@ -183,6 +190,23 @@ export function startIngestWatchdog(): { stop: () => void } {
   return startPeriodic("ingest-watchdog", WATCHDOG_TICK_MS, runWatchdogTick)
 }
 
+const INGEST_STATUSES: readonly string[] = Object.values(INGEST_STATUS)
+
+function isIngestStatus(status: string): status is IngestStatus {
+  return INGEST_STATUSES.includes(status)
+}
+
+/**
+ * The watchdog's view of a candidate row. A status outside INGEST_STATUS is a
+ * schema/code mismatch — raised, never reconciled as if it were RUNNING.
+ */
+function toWatchdogJob(row: IngestJob): WatchdogJobInput {
+  if (!isIngestStatus(row.status)) {
+    throw new Error(`[ingest-watchdog] job ${row.id} has unknown status "${row.status}"`)
+  }
+  return { id: row.id, status: row.status, clusterJobId: row.clusterJobId, createdAt: row.createdAt }
+}
+
 async function runWatchdogTick(): Promise<void> {
   const now = new Date()
   const queuedCutoff = new Date(now.getTime() - WATCHDOG_QUEUED_STALE_MS)
@@ -194,7 +218,7 @@ async function runWatchdogTick(): Promise<void> {
   const failures: unknown[] = []
   for (const job of candidates) {
     try {
-      await reconcileWatchdogJob(job, now)
+      await reconcileWatchdogJob(toWatchdogJob(job), now)
     } catch (err) {
       failures.push(err)
     }

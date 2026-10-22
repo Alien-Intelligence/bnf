@@ -1262,6 +1262,9 @@ export const PROMPT_REVISION = "2026-10-05.quoting-rules.6e9149ff8048"
 // CSV exports
 // ---------------------------------------------------------------------------
 
+/** The trailing window of the admin usage export's "last week" token columns. */
+export const USAGE_EXPORT_WINDOW_MS = 7 * 24 * 60 * 60 * 1_000
+
 /** The response headers of a CSV download — the admin exports and the corpus export. */
 export function csvDownloadHeaders(filename: string): Record<string, string> {
   return {

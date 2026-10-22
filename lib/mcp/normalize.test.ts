@@ -159,6 +159,7 @@ test("normalizeMany reports every record it drops, with the reason", () => {
       { ark: "ark:/12148/bpt6k268418n" },
       { ark: "ark:/12148/temp-work/abc", title: "Travail" },
       { ark: "", title: "Sans ARK" },
+      { ark: "not an ark!", title: "Identifiant invalide" },
     ],
     { onRejected: (ark, reason) => rejected.push([ark, reason]) },
   )
@@ -170,5 +171,6 @@ test("normalizeMany reports every record it drops, with the reason", () => {
     ["ark:/12148/bpt6k268418n", NORMALIZE_REJECTION.NO_TITLE],
     ["ark:/12148/temp-work/abc", NORMALIZE_REJECTION.TEMP_WORK],
     [null, NORMALIZE_REJECTION.NO_ARK],
+    ["not an ark!", NORMALIZE_REJECTION.BAD_ARK],
   ])
 })

@@ -3,7 +3,6 @@ import "server-only"
 // Pure database access for the documents model.
 // Imports only from @/lib/db and ./schema.
 
-import { RESOLVE_MAX_ATTEMPTS } from "@/lib/constants"
 import { prisma } from "@/lib/db"
 import type { Prisma } from "@/lib/generated/prisma/client"
 import {
@@ -44,11 +43,11 @@ const resolvedDocumentSelect = {
 export type ResolvedDocumentRow = Prisma.DocumentGetPayload<{ select: typeof resolvedDocumentSelect }>
 
 export class DocumentQueries {
-  /** The pending rows a resolve pass may try at `now`: under the attempt ceiling and past their backoff. */
-  private static dueResolveWhere(now: Date): Prisma.DocumentWhereInput {
+  /** The pending rows a resolve pass may try at `now`: under the `maxAttempts` ceiling and past their backoff. */
+  private static dueResolveWhere(now: Date, maxAttempts: number): Prisma.DocumentWhereInput {
     return {
       resolveStatus: DOCUMENT_RESOLVE_STATUS.PENDING,
-      resolveAttempts: { lt: RESOLVE_MAX_ATTEMPTS },
+      resolveAttempts: { lt: maxAttempts },
       OR: [{ nextResolveAt: null }, { nextResolveAt: { lte: now } }],
     }
   }
@@ -57,10 +56,11 @@ export class DocumentQueries {
   static async dueResolveRows(
     projectId: string,
     now: Date,
+    maxAttempts: number,
     take: number,
   ): Promise<Array<{ ark: string; resolveAttempts: number }>> {
     return prisma.document.findMany({
-      where: { projectId, ...DocumentQueries.dueResolveWhere(now) },
+      where: { projectId, ...DocumentQueries.dueResolveWhere(now, maxAttempts) },
       select: { ark: true, resolveAttempts: true },
       orderBy: { resolveAttempts: "asc" },
       take,
@@ -68,9 +68,9 @@ export class DocumentQueries {
   }
 
   /** Every project that still has a due pending row at `now`. */
-  static async projectsWithDueResolves(now: Date): Promise<string[]> {
+  static async projectsWithDueResolves(now: Date, maxAttempts: number): Promise<string[]> {
     const rows = await prisma.document.findMany({
-      where: DocumentQueries.dueResolveWhere(now),
+      where: DocumentQueries.dueResolveWhere(now, maxAttempts),
       distinct: ["projectId"],
       select: { projectId: true },
     })

@@ -531,7 +531,8 @@ test("gallicaPageCount: an absent or non-positive count is null, never 0", () =>
 });
 
 // The app's PRESS_MARKER (lib/mcp/vocab.ts) is the same pattern, and the worker
-// cannot import app code; this table is what both copies must satisfy.
+// cannot import app code; this table is what both copies must satisfy. It is
+// repeated verbatim in lib/mcp/vocab.test.ts, which runs it through PRESS_MARKER.
 const PRESS_LABEL_FIXTURES: ReadonlyArray<readonly [label: string, isPress: boolean]> = [
   ["publication en série imprimée", true],
   ["Publication en Série Imprimée", true],

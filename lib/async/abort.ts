@@ -3,6 +3,9 @@
 // shared by the background drainers (lib/buffer/enricher.ts,
 // lib/documents/resolver.ts). Pure: imports nothing.
 
+/** The `name` DOMException/fetch give the error thrown when a signal aborts. */
+export const ABORT_ERROR_NAME = "AbortError"
+
 /** How deep `causedByOwnCeiling` follows an error's `cause` chain. */
 const MAX_CAUSE_DEPTH = 5
 
@@ -16,7 +19,7 @@ export function causedByOwnCeiling(error: unknown, signal: AbortSignal): boolean
   let current: unknown = error
   for (let depth = 0; depth < MAX_CAUSE_DEPTH && current !== undefined && current !== null; depth++) {
     if (signal.aborted && current === signal.reason) return true
-    if (current instanceof Error && current.name === "AbortError") return true
+    if (current instanceof Error && current.name === ABORT_ERROR_NAME) return true
     current = current instanceof Error ? current.cause : undefined
   }
   return false

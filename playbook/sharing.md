@@ -244,8 +244,12 @@ A table that is global on purpose (the other is `DocumentOcr`, below).
 `BnfRecord` (`models/bnf-records/`) holds the public BnF record of an ARK, keyed
 by ARK alone, so a project adding an ARK another project already resolved reads
 the record instead of asking the BnF again. The metadata resolver, the buffer
-enricher and `scripts/fix-doc-types.ts` read it through
-`BnfRecordService.foundAmong`; the same three write it.
+enricher and `scripts/fix-doc-types.ts` are the only readers: the resolver and
+the script read through `BnfRecordService.foundAmong`, the enricher through
+`BnfRecordQueries.foundAmong`. The writers are the resolver (the upserts ride
+`DocumentService`'s batch write, via `BnfRecordService.upsertStatements`), the
+script (`BnfRecordService.upsertMany`) and the enricher
+(`BnfRecordService.insertMissing`, insert-only: it never overwrites a record).
 
 - **Public BnF data only.** The payload is what the BnF published; nothing
   about a project is ever written to it — no membership, `indexedAt`,

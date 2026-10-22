@@ -28,6 +28,7 @@ import type { AddressInfo } from "node:net";
 import { readFileSync } from "node:fs";
 
 import { PermanentBnfError, TransientBnfError } from "./errors.js";
+import { RAW_GALLICA_TYPEDOC, RAW_OAI_TOTAL_VIEWS } from "./parse.js";
 
 const SHORT_BUDGET_MS = "50"; // stands in for DEFAULT_TIMEOUT_MS (OAI)
 const LONG_BUDGET_MS = "300"; // stands in for PAGE_TIMEOUT_MS (manifest/folio)
@@ -416,7 +417,7 @@ test("getDocumentInfoViaOai: the fascicule bpt6k268418n (OAI claims 3197 views) 
   const info = await oaiInfo(fixtureXml("oai-bpt6k268418n.xml"), "ark:/12148/bpt6k268418n");
   assert.equal(info.pageCount, null);
   assert.equal(info.subtype, "fascicules");
-  assert.equal(info.raw.oai_total_views, 3197, "the raw OAI count stays traceable");
+  assert.equal(info.raw[RAW_OAI_TOTAL_VIEWS], 3197, "the raw OAI count stays traceable");
 });
 
 test("getDocumentInfoViaOai: a monograph keeps its page count", async () => {
@@ -434,6 +435,6 @@ test("getDocumentInfoViaOai: a press record with no typedoc has pageCount null",
   );
   assert.ok(!xml.includes("typedoc"), "the fixture edit must remove the typedoc setSpec");
   const info = await oaiInfo(xml, "ark:/12148/bpt6k268418n");
-  assert.equal(info.raw.gallica_typedoc, null);
+  assert.equal(info.raw[RAW_GALLICA_TYPEDOC], null);
   assert.equal(info.pageCount, null);
 });

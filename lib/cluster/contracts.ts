@@ -66,6 +66,7 @@ export type ClusterProgressPoll =
  */
 export interface ClusterProgressErrorEntry {
   ark: string
+  /** The worker's LANE for the doc (or "unknown") — not an IngestStage, which names the app-side job stages. */
   stage: string
   reason: string
   warning?: true

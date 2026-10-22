@@ -58,7 +58,14 @@ import {
   pickDcType,
   pickFirstLanguage,
   pickTypedocFromHeader,
+  RAW_GALLICA_TYPEDOC,
+  RAW_LANGUAGE,
+  RAW_METADATA,
   RAW_OAI_TOTAL_VIEWS,
+  RAW_PAGE_NUMBER,
+  RAW_SOURCE,
+  RAW_TYPE,
+  RAW_TYPE_DOCUMENT,
   textOf,
   typedocSubtype,
 } from "./parse.js";
@@ -315,12 +322,12 @@ export function docInfoFromManifest(
     iiifManifestUrl,
     lang,
     raw: {
-      source: DOC_INFO_SOURCE.IIIF_MANIFEST,
-      type_document: typeDocument,
-      type: typeGeneric,
-      language: lang,
-      pageNumber: pageCount,
-      metadata: manifest.metadata,
+      [RAW_SOURCE]: DOC_INFO_SOURCE.IIIF_MANIFEST,
+      [RAW_TYPE_DOCUMENT]: typeDocument,
+      [RAW_TYPE]: typeGeneric,
+      [RAW_LANGUAGE]: lang,
+      [RAW_PAGE_NUMBER]: pageCount,
+      [RAW_METADATA]: manifest.metadata,
     },
   };
 }
@@ -439,11 +446,11 @@ export class LiveBnfClient implements BnfClient {
       lang,
       raw: {
         ...(dc as Record<string, unknown>),
-        language: lang,
-        source: DOC_INFO_SOURCE.OAI_PMH,
-        gallica_typedoc: typedoc,
+        [RAW_LANGUAGE]: lang,
+        [RAW_SOURCE]: DOC_INFO_SOURCE.OAI_PMH,
+        [RAW_GALLICA_TYPEDOC]: typedoc,
         [RAW_OAI_TOTAL_VIEWS]: totalViews,
-        pageNumber: pageCount,
+        [RAW_PAGE_NUMBER]: pageCount,
       },
     };
   }

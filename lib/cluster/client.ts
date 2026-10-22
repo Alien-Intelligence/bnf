@@ -17,6 +17,7 @@ import "server-only"
 import { z } from "zod"
 
 import { clusterQueueProgressSchema } from "@/models/ingest/types"
+import { ABORT_ERROR_NAME } from "@/lib/async/abort"
 import { CLUSTER_POLL } from "@/models/ingest/schema"
 import type { ClusterIngestRequest, ClusterProgressPoll } from "./contracts"
 import {
@@ -98,7 +99,7 @@ async function requestWorker(
         cause: err,
       })
     }
-    if (err instanceof Error && err.name === "AbortError") {
+    if (err instanceof Error && err.name === ABORT_ERROR_NAME) {
       throw new WorkerTransportError(`ClusterClient: ${base}${path} timed out after ${ms}ms`, {
         cause: err,
       })

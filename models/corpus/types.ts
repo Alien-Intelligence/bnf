@@ -21,7 +21,7 @@ import {
   sourceListSchema,
   subtypeListSchema,
   textAnySchema,
-} from "@/lib/filters"
+} from "@/lib/validation/filter-lists"
 
 import { arkSchema } from "@/lib/validation/ark"
 

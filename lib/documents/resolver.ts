@@ -252,7 +252,12 @@ async function drainOnce(
 ): Promise<void> {
   const pending = await bounded(
     "due pending rows",
-    DocumentQueries.dueResolveRows(projectId, now(), RESOLVE_BATCH_SIZE * RESOLVE_DRAIN_MAX_BATCHES),
+    DocumentQueries.dueResolveRows(
+      projectId,
+      now(),
+      RESOLVE_MAX_ATTEMPTS,
+      RESOLVE_BATCH_SIZE * RESOLVE_DRAIN_MAX_BATCHES,
+    ),
     signal,
   )
   if (pending.length === 0) return
@@ -382,7 +387,7 @@ export async function resumePendingResolves(opts?: Pick<ResolveOptions, "client"
   }
   g.sweeping = true
   try {
-    const projects = await withDeadline(DocumentQueries.projectsWithDueResolves(new Date()), {
+    const projects = await withDeadline(DocumentQueries.projectsWithDueResolves(new Date(), RESOLVE_MAX_ATTEMPTS), {
       label: "[resolver] projects with due rows",
       ms: DRAINER_DB_TIMEOUT_MS,
     })

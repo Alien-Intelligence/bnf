@@ -25,6 +25,7 @@ import {
   mapGallicaTypedoc,
   sourceFromArk,
 } from "@/lib/mcp/vocab"
+import { fullBnfArk } from "@/lib/validation/ark"
 import { DOC_TYPE_CODE, DOCUMENT_SOURCE } from "@/models/documents/schema"
 
 // ---------------------------------------------------------------------------
@@ -75,6 +76,8 @@ export const NORMALIZE_REJECTION = {
   TEMP_WORK: "temp_work",
   /** Neither `title` nor `creator` is usable. */
   NO_TITLE: "no_title",
+  /** A bare local id that does not form a valid ARK once given the BnF naan. */
+  BAD_ARK: "bad_ark",
 } as const
 export type NormalizeRejection =
   (typeof NORMALIZE_REJECTION)[keyof typeof NORMALIZE_REJECTION]
@@ -229,11 +232,11 @@ function finiteNumberOrNull(value: unknown): number | null {
  *
  * Algorithm (per plan §4):
  *
- * 1. Resolve full ARK (`ark:/12148/<id>` if the OAI parser's bare local id is
- *    supplied).
+ * 1. Resolve full ARK (the BnF naan is restored on a parser's bare local id;
+ *    an id that then is no valid ARK is refused as `bad_ark`).
  * 2. Derive `source` from the ARK prefix.
  * 3. `title` — fall back to `creator` when absent. If still absent, return
- *    null (caller — normalizeMany — drops the record).
+ *    null (reported through `opts.onRejected` as `no_title`).
  * 4. `author` — prefer `author`, fall back to `creator`.
  * 5. `parseBnfDate(mcp.date)` → `{ year, label: dateLabel }`.
  * 6. `lang` — canonicalLang: MARC 639-2 (both columns) → ISO 639-1, language
@@ -247,7 +250,7 @@ function finiteNumberOrNull(value: unknown): number | null {
  * 9. `iiifManifestUrl` — derived via vocab helper (Gallica only).
  * 10. `rawMetadata` — the full mcp object (preserve for re-normalize).
  *
- * Returns null when the ARK is missing, is a temp-work/ URI, or when
+ * Returns null when the ARK is missing or invalid, is a temp-work/ URI, or when
  * both `title` and `creator` are absent; `opts.onRejected` receives the reason.
  * The resolver treats a null as a resolve failure.
  */
@@ -261,7 +264,11 @@ export function normalizeDocument(
     opts?.onRejected?.(null, NORMALIZE_REJECTION.NO_ARK)
     return null
   }
-  const fullArk = rawArk.startsWith("ark:/") ? rawArk : `ark:/12148/${rawArk}`
+  const fullArk = fullBnfArk(rawArk)
+  if (fullArk === null) {
+    opts?.onRejected?.(rawArk, NORMALIZE_REJECTION.BAD_ARK)
+    return null
+  }
 
   // ── 2. Source ─────────────────────────────────────────────────────────────
   const source = sourceFromArk(fullArk)

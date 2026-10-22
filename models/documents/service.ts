@@ -41,7 +41,6 @@ import { iiifManifestUrl, sourceFromArk } from "@/lib/mcp/vocab"
 import type { NormalizedDocument } from "@/lib/mcp/normalize"
 import { BnfRecordService } from "@/models/bnf-records/service"
 import { SessionQueries } from "@/models/sessions/queries"
-import { SESSION_SCOPE } from "@/models/sessions/schema"
 
 /**
  * The worker must answer each asked ARK exactly once (the envelope already
@@ -227,9 +226,7 @@ export class DocumentService {
     )
     writes.push(...BnfRecordService.upsertStatements(fresh))
     if (rows.some((row) => row.data.resolveStatus === DOCUMENT_RESOLVE_STATUS.RESOLVED)) {
-      writes.push(
-        SessionQueries.invalidatePrompts({ projectId, scope: SESSION_SCOPE.CORPUS, withDerived: true }, prisma),
-      )
+      writes.push(SessionQueries.invalidateCorpusPrompts(projectId, prisma))
     }
     await prisma.$transaction(writes)
   }

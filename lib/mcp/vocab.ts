@@ -8,6 +8,7 @@ import {
   type DocTypeCode,
   type DocumentSource,
 } from "@/models/documents/schema"
+import { fullBnfArk } from "@/lib/validation/ark"
 
 /**
  * MARC 639-2 → ISO 639-1 language code mapping.
@@ -387,6 +388,7 @@ export function sourceFromArk(ark: string): DocumentSource {
  */
 export function iiifManifestUrl(ark: string, source: string): string | null {
   if (source !== DOCUMENT_SOURCE.GALLICA) return null
-  const full = ark.startsWith("ark:/") ? ark : `ark:/12148/${ark}`
+  const full = fullBnfArk(ark)
+  if (full === null) return null
   return `https://gallica.bnf.fr/iiif/${full}/manifest.json`
 }

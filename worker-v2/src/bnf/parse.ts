@@ -70,6 +70,19 @@ export const BNF_ARK_PREFIX = "ark:/12148/";
 /** Raw-payload key under which the OAI view count (title-level for press) stays traceable. */
 export const RAW_OAI_TOTAL_VIEWS = "oai_total_views";
 
+/**
+ * The other keys of a BnfDocInfo's `raw` blob (cached as `meta/<slug>.json`),
+ * named once for the writers in client.ts and the cached-blob reader in
+ * doc-info.ts.
+ */
+export const RAW_SOURCE = "source";
+export const RAW_LANGUAGE = "language";
+export const RAW_PAGE_NUMBER = "pageNumber";
+export const RAW_GALLICA_TYPEDOC = "gallica_typedoc";
+export const RAW_TYPE_DOCUMENT = "type_document";
+export const RAW_TYPE = "type";
+export const RAW_METADATA = "metadata";
+
 const ARK_RE = /^ark:\/12148\/([A-Za-z0-9._-]+)$/;
 
 /** Extract the BnF-internal identifier (e.g. "btv1b9015469h") from a full ARK. */
@@ -216,9 +229,11 @@ const FASCICULE_TYPEDOC = "periodiques:fascicules";
  * Press markers in a <dc:type> label. A fascicule that carries no typedoc
  * setSpec is still recognisable by "publication en série imprimée". The app's
  * PRESS_MARKER (lib/mcp/vocab.ts) is the same pattern, applied to a lowercased
- * label instead of case-insensitively; the worker cannot import app code, so
- * parse.test.ts pins this one to a fixture table (PRESS_LABEL_FIXTURES) that
- * PRESS_MARKER must satisfy too.
+ * label instead of case-insensitively. The worker cannot import app code, so
+ * the two copies are pinned by the SAME fixture table, kept in both
+ * parse.test.ts (against this pattern) and lib/mcp/vocab.test.ts (against
+ * PRESS_MARKER, label lowercased): change one pattern and its test fails until
+ * the table and the other pattern follow.
  */
 export const PRESS_DC_TYPE = /p[ée]riodique|presse|journal|publication en s[ée]rie|s[ée]rie imprim/i;
 
