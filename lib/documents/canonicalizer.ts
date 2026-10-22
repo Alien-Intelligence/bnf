@@ -23,17 +23,20 @@ import "server-only"
 
 import { after } from "next/server"
 
+import { DeadlineExceededError, withDeadline } from "@/lib/async/deadline"
+import { processSingleton } from "@/lib/async/process-singleton"
 import {
   BNF_CANONICALIZE_BUDGET_MS,
   CANONICALIZE_BATCH_SIZE,
   CANONICALIZE_DRAIN_MAX,
+  CANONICALIZE_SWAP_TIMEOUT_MS,
+  DRAINER_DB_TIMEOUT_MS,
 } from "@/lib/constants"
 import { BnfDirectClient } from "@/lib/bnf/direct"
-import { prisma } from "@/lib/db"
-import { CorpusQueries } from "@/models/corpus/queries"
-import { advanceVersion } from "@/models/corpus/versioning"
+import { CANONICAL_OUTCOME_STATUS } from "@/lib/bnf/types"
+import { CorpusService } from "@/models/corpus/service"
+import { DocumentQueries } from "@/models/documents/queries"
 import { DocumentService } from "@/models/documents/service"
-import { DOCUMENT_CANONICAL_STATUS } from "@/models/documents/schema"
 import { resolvePendingForProject } from "./resolver"
 
 /** Structured log line. Prefix lets ops grep `[canonicalize]`. */
@@ -46,8 +49,32 @@ function log(msg: string): void {
 // ---------------------------------------------------------------------------
 // At most one drain runs per project at a time. A drain requested while one is
 // active sets `rerun` so the active loop picks up notices queued in the
-// meantime, rather than being silently dropped. Same shape as the resolver.
-const active = new Map<string, { rerun: boolean }>()
+// meantime, rather than being silently dropped. Same shape as the resolver. The
+// map lives on globalThis under a registered symbol: Next.js may evaluate this
+// module more than once, and a second copy must share the guard, never hold its
+// own beside it.
+type ActiveDrains = Map<string, { rerun: boolean }>
+
+const ACTIVE_KEY = Symbol.for("bnf.documents.canonicalizer-active")
+
+function isActiveDrains(v: unknown): v is ActiveDrains {
+  return v instanceof Map
+}
+
+function activeDrains(): ActiveDrains {
+  return processSingleton<ActiveDrains>(ACTIVE_KEY, () => new Map(), isActiveDrains)
+}
+
+/** A database await of the drain, bounded by a wall-clock deadline and the caller's signal. */
+function bounded<T>(label: string, work: Promise<T>, ms: number, signal?: AbortSignal): Promise<T> {
+  return withDeadline(work, { label: `[canonicalize] ${label}`, ms, signal })
+}
+
+/** One sub-batch's BnF window: the per-fan-out budget, cut short by the caller's abort. */
+function batchSignal(signal?: AbortSignal): AbortSignal {
+  const budget = AbortSignal.timeout(BNF_CANONICALIZE_BUDGET_MS)
+  return signal ? AbortSignal.any([signal, budget]) : budget
+}
 
 function chunk<T>(items: T[], size: number): T[][] {
   const out: T[][] = []
@@ -64,6 +91,7 @@ export async function canonicalizePendingForProject(
   projectId: string,
   opts?: { signal?: AbortSignal },
 ): Promise<void> {
+  const active = activeDrains()
   const existing = active.get(projectId)
   if (existing) {
     existing.rerun = true
@@ -76,6 +104,11 @@ export async function canonicalizePendingForProject(
       state.rerun = false
       await drainOnce(projectId, opts?.signal)
     } while (state.rerun && !opts?.signal?.aborted)
+  } catch (err) {
+    // The caller's abort cut a database await: the drain stopped, nothing
+    // failed. Any other error is a real failure.
+    if (!(err instanceof DeadlineExceededError && opts?.signal?.aborted)) throw err
+    log(`project ${projectId}: aborted mid-drain`)
   } finally {
     active.delete(projectId)
   }
@@ -89,14 +122,12 @@ export async function canonicalizePendingForProject(
  * so the loop always terminates without an attempts counter.
  */
 async function drainOnce(projectId: string, signal?: AbortSignal): Promise<void> {
-  const pending = await prisma.document.findMany({
-    where: {
-      projectId,
-      canonicalStatus: DOCUMENT_CANONICAL_STATUS.PENDING,
-    },
-    select: { ark: true },
-    take: CANONICALIZE_DRAIN_MAX,
-  })
+  const pending = await bounded(
+    "pending notices",
+    DocumentQueries.pendingCanonicalArks(projectId, CANONICALIZE_DRAIN_MAX),
+    DRAINER_DB_TIMEOUT_MS,
+    signal,
+  )
   if (pending.length === 0) return
 
   log(`project ${projectId}: classifying ${pending.length} pending notice(s)`)
@@ -108,35 +139,27 @@ async function drainOnce(projectId: string, signal?: AbortSignal): Promise<void>
   // Classify in bounded sub-batches, each with its own budget window, so a stalled
   // data.bnf.fr/SRU can never hang the drain (CLAUDE_ERROR §14) and the budget
   // stays meaningful per fan-out rather than across the whole pass.
-  for (const batch of chunk(pending.map((p) => p.ark), CANONICALIZE_BATCH_SIZE)) {
+  for (const batch of chunk(pending, CANONICALIZE_BATCH_SIZE)) {
     if (signal?.aborted) {
       log(`project ${projectId}: aborted mid-drain`)
       break
     }
-    const client = new BnfDirectClient({
-      signal: signal ?? AbortSignal.timeout(BNF_CANONICALIZE_BUDGET_MS),
-    })
+    const client = new BnfDirectClient({ signal: batchSignal(signal) })
     const outcomes = await client.canonicalizeArks(batch)
     for (const o of outcomes) {
-      if (o.status === "upgraded") upgrades.set(o.ark, o.canonical)
-      else if (o.status === "not_digitized") notDigitized.push(o.ark)
+      if (o.status === CANONICAL_OUTCOME_STATUS.UPGRADED) upgrades.set(o.ark, o.canonical)
+      else if (o.status === CANONICAL_OUTCOME_STATUS.NOT_DIGITIZED) notDigitized.push(o.ark)
       else apiError.push(o.ark)
     }
   }
 
   // --- Terminal non-upgrades: record the reason (drives the manual promote UI).
-  if (notDigitized.length > 0) {
-    await prisma.document.updateMany({
-      where: { projectId, ark: { in: notDigitized } },
-      data: { canonicalStatus: DOCUMENT_CANONICAL_STATUS.NOT_DIGITIZED },
-    })
-  }
-  if (apiError.length > 0) {
-    await prisma.document.updateMany({
-      where: { projectId, ark: { in: apiError } },
-      data: { canonicalStatus: DOCUMENT_CANONICAL_STATUS.API_ERROR },
-    })
-  }
+  await bounded(
+    "canonical verdicts",
+    DocumentService.recordCanonicalVerdicts(projectId, { notDigitized, apiError }),
+    DRAINER_DB_TIMEOUT_MS,
+    signal,
+  )
 
   log(
     `project ${projectId}: upgraded=${upgrades.size}, not_digitized=${notDigitized.length}, api_error=${apiError.length}`,
@@ -147,40 +170,21 @@ async function drainOnce(projectId: string, signal?: AbortSignal): Promise<void>
   // --- Swap the upgraded notices for their digitized docs in ONE new version --
   // Ensure the digitized docs have rows so the membership FK holds.
   const canonicalArks = [...new Set(upgrades.values())]
-  const newStubArks = await DocumentService.createStubs(projectId, canonicalArks)
+  const newStubArks = await bounded(
+    "canonical stubs",
+    DocumentService.createStubs(projectId, canonicalArks),
+    DRAINER_DB_TIMEOUT_MS,
+    signal,
+  )
 
-  await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`project:${projectId}`}))`
-
-    const head = await CorpusQueries.headVersion(projectId)
-    const memberSet = new Set(head.membership.map((m) => m.ark))
-
-    // Only swap notices that are STILL members of the head — a notice the
-    // librarian removed in the meantime must not be resurrected as its Gallica
-    // doc. For each such notice, drop it and add its canonical (unless the
-    // canonical is already a member, e.g. it was added independently).
-    const removeArks: string[] = []
-    const addArks = new Set<string>()
-    for (const [notice, canonical] of upgrades) {
-      if (!memberSet.has(notice)) continue
-      removeArks.push(notice)
-      if (!memberSet.has(canonical)) addArks.add(canonical)
-    }
-
-    await advanceVersion(tx, projectId, head, {
-      addArks: [...addArks],
-      removeArks,
-      createdBy: "system:canonicalize",
-      note: `Canonicalisation : ${removeArks.length} notice(s) remplacée(s) par leur document numérisé`,
-    })
-  })
-
-  // Notices are no longer members (or were already gone); clear their stale
-  // pending status so the row is tidy and never re-queued.
-  await prisma.document.updateMany({
-    where: { projectId, ark: { in: [...upgrades.keys()] } },
-    data: { canonicalStatus: null },
-  })
+  // Only notices still in the head are swapped, and the swapped notices' stale
+  // pending status is cleared in the same transaction (see swapCanonicalNotices).
+  await bounded(
+    "membership swap",
+    CorpusService.swapCanonicalNotices(projectId, upgrades),
+    CANONICALIZE_SWAP_TIMEOUT_MS,
+    signal,
+  )
 
   // Resolve the freshly-stubbed digitized docs' metadata. We are already in a
   // detached background task, so invoke the resolver drain directly rather than
@@ -215,15 +219,15 @@ export function kickCanonicalize(projectId: string): void {
  * outage). Fire-and-forget from instrumentation.ts — never blocks startup.
  */
 export async function resumePendingCanonicalize(): Promise<void> {
-  const projects = await prisma.document.findMany({
-    where: { canonicalStatus: DOCUMENT_CANONICAL_STATUS.PENDING },
-    distinct: ["projectId"],
-    select: { projectId: true },
-  })
+  const projects = await bounded(
+    "projects with pending notices",
+    DocumentQueries.projectsWithPendingCanonical(),
+    DRAINER_DB_TIMEOUT_MS,
+  )
   if (projects.length === 0) return
 
   log(`resume — draining ${projects.length} project(s) with pending notices`)
-  for (const { projectId } of projects) {
+  for (const projectId of projects) {
     await canonicalizePendingForProject(projectId).catch((err: unknown) => {
       console.error(`[canonicalize] resume drain failed for project ${projectId}:`, err)
     })

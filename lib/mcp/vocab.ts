@@ -2,7 +2,12 @@
 // Vocabulary mapping tables for the BnF MCP normalization layer.
 // Pure data + pure functions — no server-only import, safe on either side.
 // See playbook/mcp-client.md and ai-memories/…/persistence-architecture/research/bnf-mcp-contract.md
-import { DOCUMENT_SOURCE, type DocTypeCode, type DocumentSource } from "@/models/documents/schema"
+import {
+  DOC_TYPE_CODE,
+  DOCUMENT_SOURCE,
+  type DocTypeCode,
+  type DocumentSource,
+} from "@/models/documents/schema"
 
 /**
  * MARC 639-2 → ISO 639-1 language code mapping.
@@ -113,17 +118,17 @@ export function canonicalLang(raw: string | null | undefined): string | null {
  * even where they are no longer usable as a search filter.
  */
 export const GALLICA_DOC_TYPE: Record<string, DocTypeCode> = {
-  monographie: "book",
-  image: "image",
-  carte: "map",
-  manuscrit: "manuscript",
-  fascicule: "press",
-  partition: "score",
-  objet: "object",
-  sonore: "audio",
-  video: "video",
-  son: "audio",
-  typeAffiche: "poster",
+  monographie: DOC_TYPE_CODE.BOOK,
+  image: DOC_TYPE_CODE.IMAGE,
+  carte: DOC_TYPE_CODE.MAP,
+  manuscrit: DOC_TYPE_CODE.MANUSCRIPT,
+  fascicule: DOC_TYPE_CODE.PRESS,
+  partition: DOC_TYPE_CODE.SCORE,
+  objet: DOC_TYPE_CODE.OBJECT,
+  sonore: DOC_TYPE_CODE.AUDIO,
+  video: DOC_TYPE_CODE.VIDEO,
+  son: DOC_TYPE_CODE.AUDIO,
+  typeAffiche: DOC_TYPE_CODE.POSTER,
 }
 
 /**
@@ -181,14 +186,14 @@ export const GALLICA_COLLAPSING_DEFAULT = true
  * makes a new searchable value without a mapping a type error.
  */
 export const GALLICA_FILTER_DOC_TYPE = {
-  fascicule: "press",
-  monographie: "book",
-  image: "image",
-  objet: "object",
-  manuscrit: "manuscript",
-  carte: "map",
-  partition: "score",
-  sonore: "audio",
+  fascicule: DOC_TYPE_CODE.PRESS,
+  monographie: DOC_TYPE_CODE.BOOK,
+  image: DOC_TYPE_CODE.IMAGE,
+  objet: DOC_TYPE_CODE.OBJECT,
+  manuscrit: DOC_TYPE_CODE.MANUSCRIPT,
+  carte: DOC_TYPE_CODE.MAP,
+  partition: DOC_TYPE_CODE.SCORE,
+  sonore: DOC_TYPE_CODE.AUDIO,
 } as const satisfies Record<(typeof GALLICA_SEARCHABLE_DOC_TYPE)[number], DocTypeCode>
 
 /** GALLICA_DOC_TYPE keyed by its folded label, for a case-insensitive lookup. */
@@ -225,22 +230,22 @@ export function canonicalDocTypeFromLabel(
   if (enumMatch !== undefined) return { code: enumMatch, known: true }
 
   const rules: Array<[RegExp, DocTypeCode]> = [
-    [/cartograph|^carte|^map$|^plan$/, "map"],
-    [/^genre musical|musique|notated music|partition|manuscript music/, "score"],
-    [/manuscri/, "manuscript"],
-    [/affiche/, "poster"],
-    [/^image|still image|photograph|estampe|dessin/, "image"],
-    [/^sound|sonore|enregistrement sonore/, "audio"],
-    [/^objet|^object|three dimensional/, "object"],
-    [/^video|moving image|film/, "video"],
-    [/monographie|livre|colloque/, "book"],
-    [/^text$|^texte$|printed text|texte imprime/, "text"],
-    [/archival material|archives/, "other"],
+    [/cartograph|^carte|^map$|^plan$/, DOC_TYPE_CODE.MAP],
+    [/^genre musical|musique|notated music|partition|manuscript music/, DOC_TYPE_CODE.SCORE],
+    [/manuscri/, DOC_TYPE_CODE.MANUSCRIPT],
+    [/affiche/, DOC_TYPE_CODE.POSTER],
+    [/^image|still image|photograph|estampe|dessin/, DOC_TYPE_CODE.IMAGE],
+    [/^sound|sonore|enregistrement sonore/, DOC_TYPE_CODE.AUDIO],
+    [/^objet|^object|three dimensional/, DOC_TYPE_CODE.OBJECT],
+    [/^video|moving image|film/, DOC_TYPE_CODE.VIDEO],
+    [/monographie|livre|colloque/, DOC_TYPE_CODE.BOOK],
+    [/^text$|^texte$|printed text|texte imprime/, DOC_TYPE_CODE.TEXT],
+    [/archival material|archives/, DOC_TYPE_CODE.OTHER],
   ]
   for (const [re, code] of rules) {
     if (re.test(label)) return { code, known: true }
   }
-  return { code: "other", known: false }
+  return { code: DOC_TYPE_CODE.OTHER, known: false }
 }
 
 /**
@@ -256,15 +261,15 @@ export function canonicalDocTypeFromLabel(
  * top-level vocabulary is the live ListSets output (same date).
  */
 export const GALLICA_TYPEDOC: Record<string, DocTypeCode> = {
-  periodiques: "press",
-  monographies: "book",
-  cartes: "map",
-  manuscrits: "manuscript",
-  images: "image",
-  objets: "image",
-  partitions: "score",
-  videos: "video",
-  audio: "audio",
+  periodiques: DOC_TYPE_CODE.PRESS,
+  monographies: DOC_TYPE_CODE.BOOK,
+  cartes: DOC_TYPE_CODE.MAP,
+  manuscrits: DOC_TYPE_CODE.MANUSCRIPT,
+  images: DOC_TYPE_CODE.IMAGE,
+  objets: DOC_TYPE_CODE.IMAGE,
+  partitions: DOC_TYPE_CODE.SCORE,
+  videos: DOC_TYPE_CODE.VIDEO,
+  audio: DOC_TYPE_CODE.AUDIO,
 }
 
 /**
@@ -294,33 +299,6 @@ export function gallicaSubtype(
   const parts = typedoc.trim().toLowerCase().split(":")
   return parts.length > 1 && parts[1] !== "" ? parts[1] : null
 }
-
-/**
- * Every Gallica typedoc subcategory (the second ":"-segment of a setSpec), as
- * published by the live ListSets output (verified 2026-10-22). It is the closed
- * vocabulary `gallicaSubtype()` can return and the corpus `subtype` filter
- * validates against, so a typo is refused instead of silently matching nothing.
- * A subtype Gallica adds later is stored (the column is free text) but cannot be
- * filtered on until it is added here.
- */
-export const KNOWN_SUBTYPES = [
-  "atlas",
-  "carte",
-  "cartes",
-  "coupe",
-  "dessins",
-  "diagramme",
-  "estampes",
-  "fascicules",
-  "globe",
-  "maquette",
-  "objets",
-  "photographies",
-  "plan",
-  "teledetection",
-  "titres",
-  "vue",
-] as const
 
 /** The Gallica typedoc whose records are single periodical issues. */
 const FASCICULE_TYPEDOC = "periodiques:fascicules"
@@ -370,15 +348,15 @@ export function mapCatalogueDocType(raw: string): string | null {
   // Press is tested before the "texte"→book rule below: the catalogue SRU and
   // Gallica records without a typedoc setSpec carry only a free-text label, and
   // "publication en série imprimée" would otherwise fall through to "book".
-  if (PRESS_MARKER.test(s)) return "press"
-  if (/carte|plan/.test(s)) return "map"
+  if (PRESS_MARKER.test(s)) return DOC_TYPE_CODE.PRESS
+  if (/carte|plan/.test(s)) return DOC_TYPE_CODE.MAP
   // Scores: the manifest labels them "Musique notée" / "musique manuscrite" — no
   // "partition" token. Tested BEFORE manuscript: "musique manuscrite" contains the
   // "manuscrit" substring, but a notated-music document is a score, not a codex.
-  if (/musique|partition/.test(s)) return "score"
-  if (/manuscrit/.test(s)) return "manuscript"
-  if (/image|photo|estampe/.test(s)) return "image"
-  if (/livre|imprim[eé]|texte|monographie/.test(s)) return "book"
+  if (/musique|partition/.test(s)) return DOC_TYPE_CODE.SCORE
+  if (/manuscrit/.test(s)) return DOC_TYPE_CODE.MANUSCRIPT
+  if (/image|photo|estampe/.test(s)) return DOC_TYPE_CODE.IMAGE
+  if (/livre|imprim[eé]|texte|monographie/.test(s)) return DOC_TYPE_CODE.BOOK
   return null
 }
 

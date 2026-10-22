@@ -246,6 +246,9 @@ export type CorpusDiff = {
   removedCount: number
 }
 
+/** A Prisma WHERE over the document table — what the filtered corpus reads execute. */
+export type DocumentWhere = Prisma.DocumentWhereInput
+
 /**
  * The predicates a filtered corpus read runs, built once per read from the
  * filters by CorpusService (lib/corpus/filter-where.ts holds the translation;
@@ -332,3 +335,12 @@ export type CorpusPromoteResult =
       pendingResolve: boolean
     }
   | { promoted: false; status: "not_digitized" | "api_error" | "not_catalogue" }
+
+/**
+ * `CorpusVersion.createdBy` of a version no user or agent session made: a
+ * background drainer's. Formats: `user:<uid>`, `agent:session:<sid>`, or one of
+ * these.
+ */
+export const CORPUS_SYSTEM_ACTOR = {
+  CANONICALIZE: "system:canonicalize",
+} as const

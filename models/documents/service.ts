@@ -7,12 +7,14 @@ import "server-only"
 import { prisma } from "@/lib/db"
 import type { Prisma } from "@/lib/generated/prisma/client"
 import {
+  DOCUMENT_CANONICAL_STATUS,
   DOCUMENT_RESOLVE_STATUS,
   OCR_SYNC_REASON,
   OCR_SYNC_STATUS,
   type DocumentUpsertData,
   type OcrSyncBatchResult,
   type OcrSyncWritePlan,
+  type ResolveRowWrite,
 } from "./schema"
 import {
   OCR_SYNC_BACKOFF_BASE_MS,
@@ -34,7 +36,12 @@ import {
 } from "@/lib/cluster/ocr-quality"
 import { workerRequestTimeoutMs } from "@/lib/cluster/client"
 import { ClusterRunner } from "@/lib/cluster/runner"
+import type { BnfMcpResolveResult } from "@/lib/bnf/types"
 import { iiifManifestUrl, sourceFromArk } from "@/lib/mcp/vocab"
+import type { NormalizedDocument } from "@/lib/mcp/normalize"
+import { BnfRecordService } from "@/models/bnf-records/service"
+import { SessionQueries } from "@/models/sessions/queries"
+import { SESSION_SCOPE } from "@/models/sessions/schema"
 
 /**
  * The worker must answer each asked ARK exactly once (the envelope already
@@ -179,7 +186,83 @@ function keepDueIfResyncedInFlight(ark: string, checkedAt: Date): Prisma.PrismaP
   })
 }
 
+/** The columns a resolved record writes onto its stub row. Pure. */
+export function resolvedRowData(doc: NormalizedDocument, resolvedAt: Date): Prisma.DocumentUpdateManyMutationInput {
+  return {
+    title: doc.title,
+    author: doc.author ?? null,
+    year: doc.year ?? null,
+    dateLabel: doc.dateLabel ?? null,
+    docType: doc.docType,
+    subtype: doc.subtype ?? null,
+    lang: doc.lang ?? null,
+    source: doc.source,
+    pages: doc.pages ?? null,
+    excerpt: doc.excerpt ?? null,
+    iiifManifestUrl: doc.iiifManifestUrl ?? null,
+    ocrAvailable: doc.ocrAvailable ?? null,
+    rawMetadata: doc.rawMetadata as Prisma.InputJsonValue,
+    resolveStatus: DOCUMENT_RESOLVE_STATUS.RESOLVED,
+    resolveError: null,
+    nextResolveAt: null,
+    resolvedAt,
+  }
+}
+
 export class DocumentService {
+  /**
+   * Persists one resolve batch in ONE transaction: each row's outcome, the cache
+   * entries of the records the BnF just answered (`fresh`) and, when any row
+   * resolved, the invalidation of the project's corpus prompts — they embed the
+   * head's type / lang / period counts, which a resolved stub changes (a stub
+   * has none). All or nothing: a row is never resolved without its cache entry.
+   */
+  static async recordResolveBatch(
+    projectId: string,
+    rows: readonly ResolveRowWrite[],
+    fresh: readonly BnfMcpResolveResult[],
+  ): Promise<void> {
+    const writes: Prisma.PrismaPromise<unknown>[] = rows.map((row) =>
+      prisma.document.updateMany({ where: { projectId, ark: row.ark }, data: row.data }),
+    )
+    writes.push(...BnfRecordService.upsertStatements(fresh))
+    if (rows.some((row) => row.data.resolveStatus === DOCUMENT_RESOLVE_STATUS.RESOLVED)) {
+      writes.push(
+        SessionQueries.invalidatePrompts({ projectId, scope: SESSION_SCOPE.CORPUS, withDerived: true }, prisma),
+      )
+    }
+    await prisma.$transaction(writes)
+  }
+
+  /**
+   * Records why catalogue notices were not upgraded (drives the manual promote
+   * UI): `not_digitized` (the BnF holds no reproduction) and `api_error` (the
+   * lookup failed — terminal for the auto-loop).
+   */
+  static async recordCanonicalVerdicts(
+    projectId: string,
+    verdicts: { notDigitized: readonly string[]; apiError: readonly string[] },
+  ): Promise<void> {
+    const writes: Prisma.PrismaPromise<unknown>[] = []
+    if (verdicts.notDigitized.length > 0) {
+      writes.push(
+        prisma.document.updateMany({
+          where: { projectId, ark: { in: [...verdicts.notDigitized] } },
+          data: { canonicalStatus: DOCUMENT_CANONICAL_STATUS.NOT_DIGITIZED },
+        }),
+      )
+    }
+    if (verdicts.apiError.length > 0) {
+      writes.push(
+        prisma.document.updateMany({
+          where: { projectId, ark: { in: [...verdicts.apiError] } },
+          data: { canonicalStatus: DOCUMENT_CANONICAL_STATUS.API_ERROR },
+        }),
+      )
+    }
+    if (writes.length > 0) await prisma.$transaction(writes)
+  }
+
   /**
    * Bulk-upserts document metadata rows.
    *

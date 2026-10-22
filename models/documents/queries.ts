@@ -3,19 +3,28 @@ import "server-only"
 // Pure database access for the documents model.
 // Imports only from @/lib/db and ./schema.
 
+import { RESOLVE_MAX_ATTEMPTS } from "@/lib/constants"
 import { prisma } from "@/lib/db"
 import type { Prisma } from "@/lib/generated/prisma/client"
 import {
   DOCUMENT_CANONICAL_STATUS,
   DOCUMENT_RESOLVE_STATUS,
   type Document,
+  documentClusterRow,
   documentFolioRow,
+  documentIndexOutcomeRow,
+  documentIngestClassificationRow,
   documentOcrStatusRow,
   documentOcrWithFolios,
+  documentPagesRow,
   OCR_SYNC_STATUS,
+  type DocumentClusterRow,
   type DocumentFolioRow,
+  type DocumentIndexOutcomeRow,
+  type DocumentIngestClassificationRow,
   type DocumentOcrStatusRow,
   type DocumentOcrWithFolios,
+  type DocumentPagesRow,
   type FolioRef,
 } from "./schema"
 
@@ -35,6 +44,59 @@ const resolvedDocumentSelect = {
 export type ResolvedDocumentRow = Prisma.DocumentGetPayload<{ select: typeof resolvedDocumentSelect }>
 
 export class DocumentQueries {
+  /** The pending rows a resolve pass may try at `now`: under the attempt ceiling and past their backoff. */
+  private static dueResolveWhere(now: Date): Prisma.DocumentWhereInput {
+    return {
+      resolveStatus: DOCUMENT_RESOLVE_STATUS.PENDING,
+      resolveAttempts: { lt: RESOLVE_MAX_ATTEMPTS },
+      OR: [{ nextResolveAt: null }, { nextResolveAt: { lte: now } }],
+    }
+  }
+
+  /** Up to `take` due pending rows of a project, freshest stubs (fewest attempts) first. */
+  static async dueResolveRows(
+    projectId: string,
+    now: Date,
+    take: number,
+  ): Promise<Array<{ ark: string; resolveAttempts: number }>> {
+    return prisma.document.findMany({
+      where: { projectId, ...DocumentQueries.dueResolveWhere(now) },
+      select: { ark: true, resolveAttempts: true },
+      orderBy: { resolveAttempts: "asc" },
+      take,
+    })
+  }
+
+  /** Every project that still has a due pending row at `now`. */
+  static async projectsWithDueResolves(now: Date): Promise<string[]> {
+    const rows = await prisma.document.findMany({
+      where: DocumentQueries.dueResolveWhere(now),
+      distinct: ["projectId"],
+      select: { projectId: true },
+    })
+    return rows.map((r) => r.projectId)
+  }
+
+  /** Up to `take` catalogue notices of a project still waiting for cb→Gallica canonicalisation. */
+  static async pendingCanonicalArks(projectId: string, take: number): Promise<string[]> {
+    const rows = await prisma.document.findMany({
+      where: { projectId, canonicalStatus: DOCUMENT_CANONICAL_STATUS.PENDING },
+      select: { ark: true },
+      take,
+    })
+    return rows.map((r) => r.ark)
+  }
+
+  /** Every project that still has a notice waiting for canonicalisation. */
+  static async projectsWithPendingCanonical(): Promise<string[]> {
+    const rows = await prisma.document.findMany({
+      where: { canonicalStatus: DOCUMENT_CANONICAL_STATUS.PENDING },
+      distinct: ["projectId"],
+      select: { projectId: true },
+    })
+    return rows.map((r) => r.projectId)
+  }
+
   /** Members of a corpus version still waiting for cb→Gallica canonicalisation. */
   static async pendingCanonicalInVersion(versionId: string): Promise<number> {
     return prisma.corpusMembership.count({
@@ -73,6 +135,44 @@ export class DocumentQueries {
         OR: [...arksByProject].map(([projectId, arks]) => ({ projectId, ark: { in: [...arks] } })),
       },
       select: resolvedDocumentSelect,
+    })
+  }
+
+  /** What the ingest submit classifier needs for the given ARKs of a project. */
+  static async ingestClassificationRows(
+    projectId: string,
+    arks: string[],
+  ): Promise<DocumentIngestClassificationRow[]> {
+    return prisma.document.findMany({
+      where: { projectId, ark: { in: arks } },
+      ...documentIngestClassificationRow,
+    })
+  }
+
+  /** The stored page counts of the given ARKs of a project. */
+  static async pagesByArks(projectId: string, arks: string[]): Promise<DocumentPagesRow[]> {
+    return prisma.document.findMany({
+      where: { projectId, ark: { in: arks } },
+      ...documentPagesRow,
+    })
+  }
+
+  /** The documents among `arks` that failed indexing: never indexed, with an error recorded. */
+  static async indexFailuresAmong(
+    projectId: string,
+    arks: string[],
+  ): Promise<DocumentIndexOutcomeRow[]> {
+    return prisma.document.findMany({
+      where: { projectId, ark: { in: arks }, indexedAt: null, indexError: { not: null } },
+      ...documentIndexOutcomeRow,
+    })
+  }
+
+  /** The columns a ClusterDoc is built from, for the given ARKs of a project. */
+  static async clusterRows(projectId: string, arks: string[]): Promise<DocumentClusterRow[]> {
+    return prisma.document.findMany({
+      where: { projectId, ark: { in: arks } },
+      ...documentClusterRow,
     })
   }
 

@@ -266,6 +266,9 @@ same change.
 | Drainer | Imports (exactly) | Nudged by |
 |---|---|---|
 | `lib/documents/ocr-sync.ts` (OCR-quality sync) | `@/models/documents/service` (writes, the worker call and its timeout), `@/models/documents/queries` (reads), `@/models/documents/schema` (type `OcrSyncWritePlan`), `@/lib/async/deadline` (bounded reads), `@/lib/cluster/mode` (enabled?), `@/lib/cluster/ocr-quality` (the typed fault classes it switches on), `@/lib/constants`, `./ocr-sync-signal` | `lib/documents/ocr-sync-signal.ts` |
+| `lib/buffer/enricher.ts` (buffer metadata enrichment) | `@/models/buffer/service` (the guarded enrichment write), `@/models/buffer/queries` (reads), `@/models/buffer/schema` (constants, type `BufferEnrichmentWrite`), `@/models/documents/queries` (resolved Documents of the project), `@/models/bnf-records/queries` (cache reads), `@/models/bnf-records/service` (insert-only cache write), `@/lib/bnf/cached-records` (pure cache-row reading), `@/lib/bnf/direct` and `@/lib/bnf/types` (the broker-routed client), `@/lib/mcp/errors`, `@/lib/mcp/normalize`, `@/lib/async/abort` (own-ceiling classification), `@/lib/constants`, `./classify` | `lib/agent/tools/buffer.ts` (`kickBufferEnrich` after `buffer_add`), `instrumentation.ts` (`resumePendingBufferEnrich` at boot and on the sweep) |
+| `lib/documents/resolver.ts` (metadata resolver) | `@/models/documents/queries` (due rows, projects with due rows), `@/models/documents/service` (the batch write, `resolvedRowData`), `@/models/documents/schema` (type `ResolveRowWrite`, statuses), `@/models/bnf-records/service` (record cache), `@/lib/bnf/direct` and `@/lib/bnf/types` (the broker-routed client), `@/lib/mcp/errors`, `@/lib/mcp/normalize`, `@/lib/async/abort` (own-ceiling classification), `@/lib/async/deadline` (bounded awaits), `@/lib/async/process-singleton` (guards on `globalThis`), `@/lib/generated/prisma/client` (type `Prisma` for the failure columns), `@/lib/constants` | `kickResolve` after a corpus add, `instrumentation.ts` (`resumePendingResolves` at boot and on the sweep) |
+| `lib/documents/canonicalizer.ts` (cb to Gallica canonicalizer) | `@/models/documents/queries` (pending notices), `@/models/documents/service` (verdicts, canonical stubs), `@/models/corpus/service` (`swapCanonicalNotices`, the advisory-locked swap), `@/lib/bnf/direct` and `@/lib/bnf/types`, `@/lib/async/deadline`, `@/lib/async/process-singleton`, `@/lib/constants`, `./resolver` (drains the new stubs) | `kickCanonicalize` after a corpus add, `instrumentation.ts` (`resumePendingCanonicalize` at boot and on the sweep) |
 
 Rules:
 - A drainer reads through `queries.ts` and writes through `service.ts`; it never
@@ -281,9 +284,9 @@ Rules:
   under a registered symbol, so a second evaluation of its module (Next.js
   bundles) replaces the one drainer instead of starting another.
 
-(`lib/documents/resolver.ts`, `canonicalizer.ts` and `lib/ingest/watchdog.ts`
-predate this rule and still write through Prisma directly; they are not
-precedents.)
+(`lib/ingest/watchdog.ts`
+predates this rule and still writes through Prisma directly; it is not a
+precedent.)
 
 ## The resulting route handler
 

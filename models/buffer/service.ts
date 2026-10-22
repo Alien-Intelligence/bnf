@@ -10,6 +10,7 @@ import {
   BUFFER_STATUS,
   BUFFER_UNRESOLVED_ENRICH_STATUSES,
   type BufferCrossFacets,
+  type BufferEnrichmentWrite,
   type BufferFacetDimension,
   type BufferRow,
   type BufferSnapshot,
@@ -717,6 +718,15 @@ export class BufferService {
       },
     })
     return result.count
+  }
+
+  /**
+   * Write one row's enrichment outcome for the background drain. Guarded: only
+   * while the row is still a pending candidate. Returns false when it no longer
+   * is (buffer_clear or a discard removed it mid-drain), so the drain moves on.
+   */
+  static async writeEnrichment(projectId: string, ark: string, data: BufferEnrichmentWrite): Promise<boolean> {
+    return BufferQueries.writeEnrichment(projectId, ark, data)
   }
 
   /** True when at least one filter field carries a constraint — a non-empty

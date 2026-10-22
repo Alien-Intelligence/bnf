@@ -47,6 +47,35 @@ export type BufferEnrichStatus = (typeof BUFFER_ENRICH_STATUS)[keyof typeof BUFF
  */
 export const BUFFER_UNRESOLVED_ENRICH_STATUSES = [BUFFER_ENRICH_STATUS.PENDING, BUFFER_ENRICH_STATUS.FAILED] as const
 
+/**
+ * What the enrichment drain writes on one row: the classified metadata of a
+ * resolved record, or the bookkeeping of a failed, deferred or resolved attempt.
+ * Only these columns — a drain never touches a row's provenance or lifecycle.
+ */
+export type BufferEnrichmentWrite = Partial<
+  Pick<
+    BufferItem,
+    | "title"
+    | "creator"
+    | "year"
+    | "yearEnd"
+    | "dateLabel"
+    | "docType"
+    | "docTypeRaw"
+    | "lang"
+    | "publisher"
+    | "subjects"
+    | "gallicaUrl"
+    | "catalogueUrl"
+    | "arkKind"
+    | "classifierVersion"
+    | "enrichStatus"
+    | "enrichAttempts"
+    | "enrichError"
+    | "enrichNextAttemptAt"
+  >
+>
+
 /** DELETE /api/projects/:id/buffer — how many candidates were discarded. */
 export type BufferDiscardResult = { discarded: number }
 

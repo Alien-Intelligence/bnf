@@ -11,7 +11,13 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { parseGallicaOaiRecord } from "@/lib/bnf/oai-record"
 import type { BnfMcpDocumentDetail } from "@/lib/bnf/types"
-import { normalizeDocument, parseBnfDate } from "./normalize"
+import {
+  NORMALIZE_REJECTION,
+  normalizeDocument,
+  normalizeMany,
+  parseBnfDate,
+  type NormalizeRejection,
+} from "./normalize"
 
 test("a full ISO date (a press issue) gives its year and keeps the date as label", () => {
   assert.deepEqual(parseBnfDate("1937-07-12"), { year: 1937, label: "1937-07-12" })
@@ -143,4 +149,26 @@ function pick(raw: unknown, keys: string[]): Record<string, unknown> {
 test("a catalogue record keeps the page count its parser gave", () => {
   const doc = normalized({ ark: "cb123456789", title: "Un livre", pages: 212 })
   assert.equal(doc.pages, 212)
+})
+
+test("normalizeMany reports every record it drops, with the reason", () => {
+  const rejected: Array<[string | null, NormalizeRejection]> = []
+  const kept = normalizeMany(
+    [
+      { ark: "ark:/12148/bpt6k9618082w", title: "Gardé" },
+      { ark: "ark:/12148/bpt6k268418n" },
+      { ark: "ark:/12148/temp-work/abc", title: "Travail" },
+      { ark: "", title: "Sans ARK" },
+    ],
+    { onRejected: (ark, reason) => rejected.push([ark, reason]) },
+  )
+  assert.deepEqual(
+    kept.map((d) => d.ark),
+    ["ark:/12148/bpt6k9618082w"],
+  )
+  assert.deepEqual(rejected, [
+    ["ark:/12148/bpt6k268418n", NORMALIZE_REJECTION.NO_TITLE],
+    ["ark:/12148/temp-work/abc", NORMALIZE_REJECTION.TEMP_WORK],
+    [null, NORMALIZE_REJECTION.NO_ARK],
+  ])
 })

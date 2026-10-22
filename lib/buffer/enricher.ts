@@ -10,8 +10,8 @@
 //
 // Order per batch (Decision 8 of the Track E plan, SDS-945):
 //   1. Copy from a resolved Document of the same project — zero BnF cost.
-//   2. The global BnF record cache (models/bnf-records): a record any project
-//      already resolved — zero BnF cost.
+//   2. The global BnF record cache (models/bnf-records, read through its
+//      queries): a record any project already resolved — zero BnF cost.
 //   3. The rest through BnfDirectClient.resolveArks({ mode: "staging" }): the
 //      broker-routed OAI-PMH record for Gallica (carries the typedoc, the only
 //      press discriminator), the catalogue SRU for `cb…`. Never the MCP (new app
@@ -56,12 +56,15 @@ import {
 } from "@/lib/constants"
 import { BnfDirectClient } from "@/lib/bnf/direct"
 import type { BnfMcpResolveError, BnfMcpResolveResult } from "@/lib/bnf/types"
+import { recordsFromCacheRows } from "@/lib/bnf/cached-records"
+import { causedByOwnCeiling } from "@/lib/async/abort"
 import { BnfMcpNotFoundError } from "@/lib/mcp/errors"
 import { normalizeMany } from "@/lib/mcp/normalize"
+import { BnfRecordQueries } from "@/models/bnf-records/queries"
 import { BnfRecordService } from "@/models/bnf-records/service"
-import type { Prisma } from "@/lib/generated/prisma/client"
 import { BufferQueries } from "@/models/buffer/queries"
-import { BUFFER_ENRICH_STATUS } from "@/models/buffer/schema"
+import { BUFFER_ENRICH_STATUS, type BufferEnrichmentWrite } from "@/models/buffer/schema"
+import { BufferService } from "@/models/buffer/service"
 import { DocumentQueries } from "@/models/documents/queries"
 import { bufferMetadataFromDocument, type ResolvedDocumentFields } from "./classify"
 
@@ -106,32 +109,13 @@ function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-/** How deep `causedByOwnCeiling` follows an error's `cause` chain. */
-const MAX_CAUSE_DEPTH = 5
-
-/**
- * True when `error` IS the drain's own abort — the signal's reason, or an
- * AbortError — directly or through its `cause` chain. Classified by CAUSE, not
- * by the signal's state: a 404 that happens to land after the ceiling fired is
- * still the BnF's answer, and counts.
- */
-export function causedByOwnCeiling(error: unknown, signal: AbortSignal): boolean {
-  let current: unknown = error
-  for (let depth = 0; depth < MAX_CAUSE_DEPTH && current !== undefined && current !== null; depth++) {
-    if (signal.aborted && current === signal.reason) return true
-    if (current instanceof Error && current.name === "AbortError") return true
-    current = current instanceof Error ? current.cause : undefined
-  }
-  return false
-}
-
 /** The backoff after the `attempts`-th failure: base × 2^(attempts − 1). */
 function retryAt(now: Date, attempts: number): Date {
   return new Date(now.getTime() + BUFFER_ENRICH_RETRY_BASE_MS * 2 ** Math.max(0, attempts - 1))
 }
 
 /** The columns a resolved record fills, in the current classification. */
-function resolvedData(doc: ResolvedDocumentFields): Prisma.BufferItemUpdateManyMutationInput {
+function resolvedData(doc: ResolvedDocumentFields): BufferEnrichmentWrite {
   return {
     ...bufferMetadataFromDocument(doc, logUnknownDocType),
     classifierVersion: BUFFER_CLASSIFIER_VERSION,
@@ -147,7 +131,7 @@ function failedAttemptData(
   reason: string,
   terminal: boolean,
   now: Date,
-): Prisma.BufferItemUpdateManyMutationInput {
+): BufferEnrichmentWrite {
   return {
     enrichAttempts: attempts,
     enrichError: reason,
@@ -219,8 +203,8 @@ async function drainOnce(
   const attemptsByArk = new Map(pending.map((p) => [p.ark, p.enrichAttempts]))
   const tally: DrainTally = { fromDocuments: 0, fromCache: 0, fromBnf: 0, failed: 0, retry: 0, skipped: 0, deferred: 0 }
 
-  const write = async (ark: string, data: Prisma.BufferItemUpdateManyMutationInput) => {
-    if (!(await BufferQueries.writeEnrichment(projectId, ark, data))) tally.skipped += 1
+  const write = async (ark: string, data: BufferEnrichmentWrite) => {
+    if (!(await BufferService.writeEnrichment(projectId, ark, data))) tally.skipped += 1
   }
   const fail = async (ark: string, reason: string, notFound: boolean) => {
     const before = attemptsByArk.get(ark)
@@ -254,7 +238,9 @@ async function drainOnce(
     //    metadata a buffer row needs.
     const rest = batch.filter((ark) => !fromDoc.has(ark))
     if (rest.length === 0) continue
-    const cached = await BnfRecordService.foundAmong(rest)
+    const cached = recordsFromCacheRows(await BnfRecordQueries.foundAmong(rest), (ark) =>
+      console.warn(`[bnf-record] corrupt cache entry ignored: ${ark}`),
+    )
     const fromCache: BnfMcpResolveResult[] = rest.flatMap((ark) => {
       const document = cached.get(ark)
       return document ? [{ ark, ok: true as const, document }] : []
@@ -283,7 +269,10 @@ async function drainOnce(
 
     const freshArks = new Set(fetched.map((r) => r.ark))
     const results = [...fromCache, ...fetched]
-    const normalised = normalizeMany(results.filter((r) => r.ok).map((r) => r.document))
+    const normalised = normalizeMany(results.filter((r) => r.ok).map((r) => r.document), {
+      onRejected: (ark, reason) =>
+        console.warn(`[buffer-enrich] project ${projectId}: record refused by normalize`, { ark, reason }),
+    })
     const byArk = new Map(normalised.map((n) => [n.ark, n]))
     const fresh: BnfMcpResolveResult[] = []
 

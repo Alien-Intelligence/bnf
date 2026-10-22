@@ -31,7 +31,10 @@ import "server-only"
 
 import { after } from "next/server"
 
+import { DeadlineExceededError, withDeadline } from "@/lib/async/deadline"
+import { processSingleton } from "@/lib/async/process-singleton"
 import {
+  DRAINER_DB_TIMEOUT_MS,
   RESOLVE_BATCH_SIZE,
   RESOLVE_DRAIN_MAX_BATCHES,
   RESOLVE_DRAIN_MAX_MS,
@@ -39,17 +42,21 @@ import {
   RESOLVE_RETRY_BASE_MS,
   RESOLVE_RETRY_CAP_MS,
 } from "@/lib/constants"
-import { prisma } from "@/lib/db"
+import { causedByOwnCeiling } from "@/lib/async/abort"
 import { BnfDirectClient } from "@/lib/bnf/direct"
-import type { BnfMcpDocumentDetail, BnfMcpResolveError, BnfMcpResolveResult } from "@/lib/bnf/types"
-import { causedByOwnCeiling } from "@/lib/buffer/enricher"
+import {
+  RESOLVE_MODE,
+  type BnfMcpDocumentDetail,
+  type BnfMcpResolveError,
+  type BnfMcpResolveResult,
+} from "@/lib/bnf/types"
 import { BnfMcpError, BnfMcpNotFoundError, BnfMcpRateLimitError } from "@/lib/mcp/errors"
 import { normalizeMany } from "@/lib/mcp/normalize"
 import { BnfRecordService } from "@/models/bnf-records/service"
-import { DOCUMENT_RESOLVE_STATUS } from "@/models/documents/schema"
 import type { Prisma } from "@/lib/generated/prisma/client"
-import { SessionQueries } from "@/models/sessions/queries"
-import { SESSION_SCOPE } from "@/models/sessions/schema"
+import { DocumentQueries } from "@/models/documents/queries"
+import { DOCUMENT_RESOLVE_STATUS, type ResolveRowWrite } from "@/models/documents/schema"
+import { DocumentService, resolvedRowData } from "@/models/documents/service"
 
 /** Structured log line for the resolver. Prefix lets ops grep `[resolver]`. */
 function log(msg: string): void {
@@ -57,15 +64,40 @@ function log(msg: string): void {
 }
 
 // ---------------------------------------------------------------------------
-// Per-project re-entrancy guard
+// Re-entrancy guards
 // ---------------------------------------------------------------------------
 // At most one drain runs per project at a time. A drain requested while one is
 // active sets `rerun` so the active loop picks up rows added in the meantime,
-// rather than being silently dropped.
-const active = new Map<string, { rerun: boolean }>()
+// rather than being silently dropped. At most one sweep runs at a time. Both
+// guards live on globalThis under a registered symbol: Next.js may evaluate this
+// module more than once, and a second copy must share the guards, never hold
+// its own beside them.
+type ResolverGuards = {
+  active: Map<string, { rerun: boolean }>
+  sweeping: boolean
+}
 
-type PrismaJsonValue =
-  Parameters<typeof prisma.document.create>[0]["data"]["rawMetadata"]
+const GUARDS_KEY = Symbol.for("bnf.documents.resolver-guards")
+
+function isGuards(v: unknown): v is ResolverGuards {
+  return (
+    typeof v === "object" &&
+    v !== null &&
+    "active" in v &&
+    v.active instanceof Map &&
+    "sweeping" in v &&
+    typeof v.sweeping === "boolean"
+  )
+}
+
+function guards(): ResolverGuards {
+  return processSingleton<ResolverGuards>(GUARDS_KEY, () => ({ active: new Map(), sweeping: false }), isGuards)
+}
+
+/** A database or cache await of the drain, bounded by the pool deadline and, for a read, the drain's own signal. */
+function bounded<T>(label: string, work: Promise<T>, signal?: AbortSignal): Promise<T> {
+  return withDeadline(work, { label: `[resolver] ${label}`, ms: DRAINER_DB_TIMEOUT_MS, signal })
+}
 
 function chunk<T>(items: T[], size: number): T[][] {
   const out: T[][] = []
@@ -75,7 +107,7 @@ function chunk<T>(items: T[], size: number): T[][] {
 
 /** How a drain asks the client: `staged` holds the cached OAI-only records whose OCR rule is still to run. */
 export type CommitResolveOptions = {
-  mode: "commit"
+  mode: typeof RESOLVE_MODE.COMMIT
   staged?: ReadonlyMap<string, BnfMcpDocumentDetail>
 }
 
@@ -117,16 +149,13 @@ function rateLimitRetryAt(now: Date, retryAfterMs: number | undefined): Date {
   return new Date(now.getTime() + Math.min(usable ? retryAfterMs : RESOLVE_RETRY_BASE_MS, RESOLVE_RETRY_CAP_MS))
 }
 
-/** The pending rows a drain may try now: under the attempt ceiling and past their backoff. */
-function dueNow(now: Date): Prisma.DocumentWhereInput {
-  return {
-    resolveStatus: DOCUMENT_RESOLVE_STATUS.PENDING,
-    resolveAttempts: { lt: RESOLVE_MAX_ATTEMPTS },
-    OR: [{ nextResolveAt: null }, { nextResolveAt: { lte: now } }],
-  }
-}
-
-type FailureKind = "deferred" | "rate_limited" | "retry" | "failed"
+const FAILURE_KIND = {
+  DEFERRED: "deferred",
+  RATE_LIMITED: "rate_limited",
+  RETRY: "retry",
+  FAILED: "failed",
+} as const
+type FailureKind = (typeof FAILURE_KIND)[keyof typeof FAILURE_KIND]
 
 type Failure = {
   kind: FailureKind
@@ -144,12 +173,12 @@ type Failure = {
  */
 function classifyFailure(error: unknown, attemptsBefore: number, now: Date, signal: AbortSignal): Failure {
   if (causedByOwnCeiling(error, signal)) {
-    return { kind: "deferred", reason: DRAIN_CEILING_NOTE, attempts: attemptsBefore, data: { resolveError: DRAIN_CEILING_NOTE } }
+    return { kind: FAILURE_KIND.DEFERRED, reason: DRAIN_CEILING_NOTE, attempts: attemptsBefore, data: { resolveError: DRAIN_CEILING_NOTE } }
   }
   const reason = describeError(error)
   if (error instanceof BnfMcpRateLimitError) {
     return {
-      kind: "rate_limited",
+      kind: FAILURE_KIND.RATE_LIMITED,
       reason,
       attempts: attemptsBefore,
       data: { resolveError: reason, nextResolveAt: rateLimitRetryAt(now, error.retryAfterMs) },
@@ -158,14 +187,14 @@ function classifyFailure(error: unknown, attemptsBefore: number, now: Date, sign
   const attempts = attemptsBefore + 1
   if (error instanceof BnfMcpNotFoundError || attempts >= RESOLVE_MAX_ATTEMPTS) {
     return {
-      kind: "failed",
+      kind: FAILURE_KIND.FAILED,
       reason,
       attempts,
       data: { resolveAttempts: attempts, resolveError: reason, resolveStatus: DOCUMENT_RESOLVE_STATUS.FAILED, nextResolveAt: null },
     }
   }
   return {
-    kind: "retry",
+    kind: FAILURE_KIND.RETRY,
     reason,
     attempts,
     data: { resolveAttempts: attempts, resolveError: reason, nextResolveAt: retryAt(now, attempts) },
@@ -179,6 +208,7 @@ function classifyFailure(error: unknown, attemptsBefore: number, now: Date, sign
  * drain (all its batches and reruns).
  */
 export async function resolvePendingForProject(projectId: string, opts?: ResolveOptions): Promise<void> {
+  const { active } = guards()
   const existing = active.get(projectId)
   if (existing) {
     existing.rerun = true
@@ -191,10 +221,16 @@ export async function resolvePendingForProject(projectId: string, opts?: Resolve
   const signal = opts?.signal ? AbortSignal.any([opts.signal, deadline.signal]) : deadline.signal
   try {
     const client = (opts?.client ?? directClient)(signal)
-    do {
-      state.rerun = false
-      await drainOnce(projectId, client, signal, opts?.now ?? (() => new Date()))
-    } while (state.rerun && !signal.aborted)
+    try {
+      do {
+        state.rerun = false
+        await drainOnce(projectId, client, signal, opts?.now ?? (() => new Date()))
+      } while (state.rerun && !signal.aborted)
+    } catch (err) {
+      // The ceiling (or the caller's abort) cut a database await: the drain
+      // stopped, nothing failed. Any other error is a real failure.
+      if (!(err instanceof DeadlineExceededError && signal.aborted)) throw err
+    }
     if (deadline.signal.aborted) log(`project ${projectId}: drain stopped at its time ceiling — the next sweep resumes`)
     else if (signal.aborted) log(`project ${projectId}: aborted mid-drain`)
   } finally {
@@ -214,12 +250,11 @@ async function drainOnce(
   signal: AbortSignal,
   now: () => Date,
 ): Promise<void> {
-  const pending = await prisma.document.findMany({
-    where: { projectId, ...dueNow(now()) },
-    select: { ark: true, resolveAttempts: true },
-    orderBy: { resolveAttempts: "asc" }, // give freshest stubs priority
-    take: RESOLVE_BATCH_SIZE * RESOLVE_DRAIN_MAX_BATCHES,
-  })
+  const pending = await bounded(
+    "due pending rows",
+    DocumentQueries.dueResolveRows(projectId, now(), RESOLVE_BATCH_SIZE * RESOLVE_DRAIN_MAX_BATCHES),
+    signal,
+  )
   if (pending.length === 0) return
 
   log(`project ${projectId}: draining ${pending.length} pending document(s)`)
@@ -231,7 +266,7 @@ async function drainOnce(
 
     // 1. The global record cache: a COMPLETE entry is final; a STAGED one goes
     //    to the client with the rest, which runs only its OCR rule.
-    const cached = await BnfRecordService.foundAmong(batch)
+    const cached = await bounded("record cache read", BnfRecordService.foundAmong(batch), signal)
     const fromCache: BnfMcpResolveResult[] = []
     const toFetch: string[] = []
     const staged = new Map<string, BnfMcpDocumentDetail>()
@@ -249,7 +284,7 @@ async function drainOnce(
     let fetched: Array<BnfMcpResolveResult | BnfMcpResolveError> = []
     if (toFetch.length > 0) {
       try {
-        fetched = await client.resolveArks(toFetch, staged.size > 0 ? { mode: "commit", staged } : { mode: "commit" })
+        fetched = await client.resolveArks(toFetch, staged.size > 0 ? { mode: RESOLVE_MODE.COMMIT, staged } : { mode: RESOLVE_MODE.COMMIT })
       } catch (err) {
         // The whole call failed (broker down, or our own ceiling): every row
         // of it is classified by that one error, never retried unaccounted.
@@ -262,17 +297,17 @@ async function drainOnce(
 
     const results = [...fromCache, ...fetched]
     const normalisedByArk = new Map(
-      normalizeMany(results.filter((r) => r.ok).map((r) => r.document)).map((n) => [n.ark, n]),
+      normalizeMany(results.filter((r) => r.ok).map((r) => r.document), {
+        onRejected: (ark, reason) =>
+          console.warn(`[resolver] project ${projectId}: record refused by normalize`, { ark, reason }),
+      }).map((n) => [n.ark, n]),
     )
     const freshArks = new Set(fetched.map((r) => r.ark))
     const fresh: BnfMcpResolveResult[] = []
 
-    // One transaction per batch: the rows, the cache entries of what the BnF
-    // just answered AND, when any document resolved, the invalidation of the
-    // corpus prompts — they embed the head's type / lang / period counts, which
-    // a resolved stub changes (a stub has none).
-    const writes: Prisma.PrismaPromise<unknown>[] = []
-    let batchResolved = 0
+    // One transaction per batch (DocumentService.recordResolveBatch): the rows,
+    // the cache entries of what the BnF just answered and the prompt invalidation.
+    const rows: ResolveRowWrite[] = []
     for (const r of results) {
       const attemptsBefore = attemptsByArk.get(r.ark)
       if (attemptsBefore === undefined) {
@@ -283,31 +318,9 @@ async function drainOnce(
       const doc = r.ok ? normalisedByArk.get(r.ark) : undefined
       if (r.ok && doc) {
         tally.resolved++
-        batchResolved++
         if (freshArks.has(r.ark)) fresh.push(r)
         else tally.fromCache++
-        writes.push(prisma.document.updateMany({
-          where: { projectId, ark: r.ark },
-          data: {
-            title: doc.title,
-            author: doc.author ?? null,
-            year: doc.year ?? null,
-            dateLabel: doc.dateLabel ?? null,
-            docType: doc.docType,
-            subtype: doc.subtype ?? null,
-            lang: doc.lang ?? null,
-            source: doc.source,
-            pages: doc.pages ?? null,
-            excerpt: doc.excerpt ?? null,
-            iiifManifestUrl: doc.iiifManifestUrl ?? null,
-            ocrAvailable: doc.ocrAvailable ?? null,
-            rawMetadata: doc.rawMetadata as PrismaJsonValue,
-            resolveStatus: DOCUMENT_RESOLVE_STATUS.RESOLVED,
-            resolveError: null,
-            nextResolveAt: null,
-            resolvedAt: now(),
-          },
-        }))
+        rows.push({ ark: r.ark, data: resolvedRowData(doc, now()) })
         continue
       }
       // Either the resolve call failed, or it succeeded but normalize dropped
@@ -315,23 +328,18 @@ async function drainOnce(
       // failure and is not cached: a retry must be able to see a better record.
       const error = r.ok ? new BnfMcpError(INCOMPLETE_METADATA_REASON) : r.error
       const failure = classifyFailure(error, attemptsBefore, now(), signal)
-      if (failure.kind === "failed") tally.failed++
-      else if (failure.kind === "retry") tally.retry++
-      else if (failure.kind === "rate_limited") tally.rateLimited++
+      if (failure.kind === FAILURE_KIND.FAILED) tally.failed++
+      else if (failure.kind === FAILURE_KIND.RETRY) tally.retry++
+      else if (failure.kind === FAILURE_KIND.RATE_LIMITED) tally.rateLimited++
       else tally.deferred++
-      if (failure.kind !== "deferred") {
+      if (failure.kind !== FAILURE_KIND.DEFERRED) {
         log(`  ${failure.kind} ${r.ark} (attempt ${failure.attempts}/${RESOLVE_MAX_ATTEMPTS}): ${failure.reason}`)
       }
-      writes.push(prisma.document.updateMany({ where: { projectId, ark: r.ark }, data: failure.data }))
+      rows.push({ ark: r.ark, data: failure.data })
     }
-    writes.push(...BnfRecordService.upsertStatements(fresh))
-    if (batchResolved > 0) {
-      // A statement of the batch $transaction below: built on the app client.
-      writes.push(
-        SessionQueries.invalidatePrompts({ projectId, scope: SESSION_SCOPE.CORPUS, withDerived: true }, prisma),
-      )
-    }
-    await prisma.$transaction(writes)
+    // Not tied to the drain's signal: when the ceiling cut the BnF call, this
+    // write still records what the batch learned (cache hits, deferral notes).
+    await bounded("batch write", DocumentService.recordResolveBatch(projectId, rows, fresh))
   }
 
   log(
@@ -360,9 +368,6 @@ export function kickResolve(projectId: string): void {
   })
 }
 
-/** True while a sweep runs: the periodic timer never starts a second one. */
-let sweeping = false
-
 /**
  * Boot resume and periodic sweep: drain every project that still has due
  * pending stubs (e.g. left over from a process restart mid-resolution, or past
@@ -370,28 +375,28 @@ let sweeping = false
  * startup. A call while a sweep is still running returns at once (overlap guard).
  */
 export async function resumePendingResolves(opts?: Pick<ResolveOptions, "client">): Promise<void> {
-  if (sweeping) {
+  const g = guards()
+  if (g.sweeping) {
     log("sweep skipped — the previous one is still running")
     return
   }
-  sweeping = true
+  g.sweeping = true
   try {
-    const projects = await prisma.document.findMany({
-      where: dueNow(new Date()),
-      distinct: ["projectId"],
-      select: { projectId: true },
+    const projects = await withDeadline(DocumentQueries.projectsWithDueResolves(new Date()), {
+      label: "[resolver] projects with due rows",
+      ms: DRAINER_DB_TIMEOUT_MS,
     })
     if (projects.length === 0) return
 
     console.warn(
       `[resolver] resume — draining ${projects.length} project(s) with pending documents`,
     )
-    for (const { projectId } of projects) {
+    for (const projectId of projects) {
       await resolvePendingForProject(projectId, opts).catch((err: unknown) => {
         console.error(`[resolver] resume drain failed for project ${projectId}:`, err)
       })
     }
   } finally {
-    sweeping = false
+    g.sweeping = false
   }
 }

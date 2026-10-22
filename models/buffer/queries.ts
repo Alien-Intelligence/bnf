@@ -6,7 +6,14 @@ import "server-only"
 import type { Prisma } from "@/lib/generated/prisma/client"
 import { prisma } from "@/lib/db"
 import { BUFFER_ENRICH_STATUS, BUFFER_STATUS, BUFFER_UNRESOLVED_ENRICH_STATUSES } from "./schema"
-import type { BufferCrossFacets, BufferFacetDimension, BufferFacets, BufferRow, BufferSnapshot } from "./schema"
+import type {
+  BufferCrossFacets,
+  BufferEnrichmentWrite,
+  BufferFacetDimension,
+  BufferFacets,
+  BufferRow,
+  BufferSnapshot,
+} from "./schema"
 
 /** A candidate without its metadata (BUFFER_UNRESOLVED_ENRICH_STATUSES) —
  *  every "unresolved" count, and the `unresolved` filter, read this set. */
@@ -141,7 +148,7 @@ export class BufferQueries {
   static async writeEnrichment(
     projectId: string,
     ark: string,
-    data: Prisma.BufferItemUpdateManyMutationInput,
+    data: BufferEnrichmentWrite,
   ): Promise<boolean> {
     const { count } = await prisma.bufferItem.updateMany({
       where: { projectId, ark, status: BUFFER_STATUS.CANDIDATE, ...PENDING_ENRICH },

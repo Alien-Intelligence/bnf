@@ -287,6 +287,24 @@ export const CORPUS_REMOVE_PREVIEW_LIMIT = 50
  */
 export const CORPUS_REASON_MAX_LEN = 1_000
 
+/**
+ * REST corpus mutations (POST /corpus/add, /corpus/remove): ARKs per call and
+ * the length of the human-readable reason. The REST bound is tighter than the
+ * agent's CORPUS_REASON_MAX_LEN — a form field, not a model's justification.
+ */
+export const CORPUS_MUTATION_MAX_ARKS = 5_000
+export const CORPUS_MUTATION_REASON_MAX_CHARS = 300
+
+/**
+ * The version note recorded when a librarian removes a document from the
+ * detail panel. A stored audit string, not UI chrome: it stays the same in
+ * every locale, so it is a constant rather than a translation key.
+ */
+export const CORPUS_REMOVE_REASON_DETAIL_PANEL = "Retiré du corpus depuis le panneau de notice"
+
+/** ARKs per "retry resolution" call — a per-document user action, not a bulk import. */
+export const CORPUS_RETRY_RESOLVE_MAX_ARKS = 50
+
 // ---------------------------------------------------------------------------
 // Research buffer ("tampon") — the pre-commit candidate staging area.
 // See models/buffer/ and lib/agent/tools/buffer.ts.
@@ -697,6 +715,20 @@ export const CANONICALIZE_BATCH_SIZE = 25
  * genuinely-undigitized notice. Shares the resolver's 3-min cadence.
  */
 export const CANONICALIZE_SWEEP_INTERVAL_MS = RESOLVE_SWEEP_INTERVAL_MS
+
+/**
+ * Ceiling on one database await in the resolver and canonicalizer drainers.
+ * Prisma takes no per-query signal, so the await is raced against this deadline
+ * (lib/async/deadline.ts) and fails loudly instead of hanging the drain.
+ */
+export const DRAINER_DB_TIMEOUT_MS = 15_000
+
+/**
+ * Ceiling on the canonicalizer's membership swap: it waits for the project's
+ * advisory lock (a concurrent corpus mutation holds it) before it writes, so it
+ * gets a longer budget than a plain read.
+ */
+export const CANONICALIZE_SWAP_TIMEOUT_MS = 60_000
 
 // ---------------------------------------------------------------------------
 // OCR quality (feedback 2026-09-29 #7 — ai-memories/tech/repos/bnf/
@@ -1225,3 +1257,16 @@ export const MEMORY_NEAR_DUP_MAX_EDIT_DISTANCE = 4
  * change cannot be recorded without a new revision.
  */
 export const PROMPT_REVISION = "2026-10-05.quoting-rules.6e9149ff8048"
+
+// ---------------------------------------------------------------------------
+// CSV exports
+// ---------------------------------------------------------------------------
+
+/** The response headers of a CSV download — the admin exports and the corpus export. */
+export function csvDownloadHeaders(filename: string): Record<string, string> {
+  return {
+    "Content-Type": "text/csv; charset=utf-8",
+    "Content-Disposition": `attachment; filename="${filename}"`,
+    "Cache-Control": "no-store",
+  }
+}

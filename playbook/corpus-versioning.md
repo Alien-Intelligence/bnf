@@ -68,7 +68,7 @@ model CorpusVersion {
   seq       Int
   status    String   // CORPUS_VERSION_STATUS
   parentId  String?
-  createdBy String   // "agent:session:<sid>" | "user:<uid>"
+  createdBy String   // "agent:session:<sid>" | "user:<uid>" | "system:<job>"
   note      String?
   createdAt DateTime @default(now())
 
@@ -157,7 +157,10 @@ Rules:
   meaningful (one entry per actual change) and satisfies the "iterate without
   noise" UX.
 - `createdBy` is required and uses a stable format: `agent:session:<sid>` for
-  agent-initiated mutations, `user:<uid>` for direct user actions.
+  agent-initiated mutations, `user:<uid>` for direct user actions, and
+  `system:<job>` for a background drainer's mutation (today only
+  `system:canonicalize`, the constant `CORPUS_SYSTEM_ACTOR` in
+  `models/corpus/schema.ts`).
 
 ## `Document` rows live forever; membership decides visibility
 

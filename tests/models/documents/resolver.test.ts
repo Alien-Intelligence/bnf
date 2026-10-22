@@ -11,7 +11,14 @@ import { test, before, after } from "node:test"
 import assert from "node:assert/strict"
 import { prisma } from "@/lib/db"
 import type { Project, User } from "@/lib/generated/prisma/client"
-import type { BnfMcpDocumentDetail, BnfMcpResolveError, BnfMcpResolveResult } from "@/lib/bnf/types"
+import {
+  OCR_SOURCE,
+  PAGES_SOURCE,
+  RESOLVE_MODE,
+  type BnfMcpDocumentDetail,
+  type BnfMcpResolveError,
+  type BnfMcpResolveResult,
+} from "@/lib/bnf/types"
 import { RESOLVE_MAX_ATTEMPTS, RESOLVE_RETRY_BASE_MS, RESOLVE_RETRY_CAP_MS } from "@/lib/constants"
 import {
   resolvePendingForProject,
@@ -22,7 +29,7 @@ import {
 import { BnfMcpError, BnfMcpNotFoundError, BnfMcpRateLimitError } from "@/lib/mcp/errors"
 import { BnfRecordService } from "@/models/bnf-records/service"
 import { DocumentService } from "@/models/documents/service"
-import { DOCUMENT_RESOLVE_STATUS } from "@/models/documents/schema"
+import { DOCUMENT_CANONICAL_STATUS, DOCUMENT_RESOLVE_STATUS } from "@/models/documents/schema"
 import { createTestUser, createTestProject, deleteTestUser } from "@/lib/testing/fixtures"
 import { cleanupProject } from "@/lib/testing/project-cleanup"
 
@@ -30,8 +37,33 @@ let user: User
 const projects: string[] = []
 const usedArks = new Set<string>()
 
-const ARK = (n: number): string => {
-  const ark = `ark:/12148/bpt6k${String(9_400_000 + n)}`
+/** Fixed synthetic ARKs, one per test slot: the ARK stays an opaque literal, never built from an id. */
+const SYNTHETIC_ARKS: Readonly<Record<number, string>> = {
+  1: "ark:/12148/bpt6k9400001",
+  2: "ark:/12148/bpt6k9400002",
+  3: "ark:/12148/bpt6k9400003",
+  4: "ark:/12148/bpt6k9400004",
+  5: "ark:/12148/bpt6k9400005",
+  6: "ark:/12148/bpt6k9400006",
+  7: "ark:/12148/bpt6k9400007",
+  10: "ark:/12148/bpt6k9400010",
+  11: "ark:/12148/bpt6k9400011",
+  12: "ark:/12148/bpt6k9400012",
+  13: "ark:/12148/bpt6k9400013",
+  20: "ark:/12148/bpt6k9400020",
+  21: "ark:/12148/bpt6k9400021",
+  22: "ark:/12148/bpt6k9400022",
+  23: "ark:/12148/bpt6k9400023",
+  24: "ark:/12148/bpt6k9400024",
+  25: "ark:/12148/bpt6k9400025",
+  26: "ark:/12148/bpt6k9400026",
+  30: "ark:/12148/bpt6k9400030",
+  31: "ark:/12148/bpt6k9400031",
+}
+
+const ARK = (slot: number): string => {
+  const ark = SYNTHETIC_ARKS[slot]
+  if (ark === undefined) throw new Error(`no synthetic ARK for test slot ${slot}`)
   usedArks.add(ark)
   return ark
 }
@@ -48,7 +80,7 @@ function completeDetail(ark: string, over: Partial<BnfMcpDocumentDetail> = {}): 
     language: "fre",
     gallica_typedoc: "monographies",
     ocr_available: true,
-    ocr_source: "oai",
+    ocr_source: OCR_SOURCE.OAI,
     ...over,
   }
 }
@@ -112,14 +144,14 @@ test("a cache miss asks the client once (commit mode, nothing staged) and stores
   await resolvePendingForProject(project.id, { client: factory })
   assert.equal(calls.length, 1)
   assert.deepEqual(calls[0]!.arks, [a])
-  assert.deepEqual(calls[0]!.opts, { mode: "commit" })
+  assert.deepEqual(calls[0]!.opts, { mode: RESOLVE_MODE.COMMIT })
   const d = await doc(project.id, a)
   assert.equal(d.resolveStatus, DOCUMENT_RESOLVE_STATUS.RESOLVED)
   assert.equal(d.title, `Titre ${shortArk(a)}`)
   const entry = await cacheEntry(a)
   assert.ok(entry, "the fresh record is in the cache")
   assert.equal(entry.source, "oai_gallica")
-  assert.equal((entry.payload as BnfMcpDocumentDetail).ocr_source, "oai")
+  assert.equal((entry.payload as BnfMcpDocumentDetail).ocr_source, OCR_SOURCE.OAI)
 })
 
 test("a cache hit resolves the row with ZERO client calls", async () => {
@@ -153,7 +185,7 @@ test("a STAGED entry (no ocr_source) goes to the client as `staged`: only the OC
   await BnfRecordService.insertMissing([{ ark: a, ok: true, document: stagedRecord }])
   assert.equal(BnfRecordService.needsOcrRule(a, (await cacheEntry(a))!.payload as BnfMcpDocumentDetail), true)
   const project = await freshProject("resolver-staged", [a])
-  const { factory, calls } = fake((ark) => ok(ark, { ocr_available: false, ocr_source: "manifest", pages: 4, pages_source: "manifest" }))
+  const { factory, calls } = fake((ark) => ok(ark, { ocr_available: false, ocr_source: OCR_SOURCE.MANIFEST, pages: 4, pages_source: PAGES_SOURCE.MANIFEST }))
   await resolvePendingForProject(project.id, { client: factory })
   assert.equal(calls.length, 1)
   assert.deepEqual([...calls[0]!.opts.staged!.keys()], [a], "the cached OAI record rides along: no OAI re-fetch")
@@ -161,13 +193,13 @@ test("a STAGED entry (no ocr_source) goes to the client as `staged`: only the OC
   const d = await doc(project.id, a)
   assert.equal(d.ocrAvailable, false)
   assert.equal(d.pages, 4)
-  assert.equal(((await cacheEntry(a))!.payload as BnfMcpDocumentDetail).ocr_source, "manifest", "completed for every later reader")
+  assert.equal(((await cacheEntry(a))!.payload as BnfMcpDocumentDetail).ocr_source, OCR_SOURCE.MANIFEST, "completed for every later reader")
 })
 
 test("a record whose OCR verdict is undecided is cached as STAGED, never frozen", async () => {
   const a = ARK(5)
   const project = await freshProject("resolver-undecided", [a])
-  const { factory } = fake((ark) => ok(ark, { ocr_available: null, ocr_source: "manifest", pages: null, pages_source: null }))
+  const { factory } = fake((ark) => ok(ark, { ocr_available: null, ocr_source: OCR_SOURCE.MANIFEST, pages: null, pages_source: null }))
   await resolvePendingForProject(project.id, { client: factory })
   assert.equal((await doc(project.id, a)).resolveStatus, DOCUMENT_RESOLVE_STATUS.RESOLVED)
   const payload = (await cacheEntry(a))!.payload as BnfMcpDocumentDetail
@@ -192,7 +224,7 @@ test("project B resolves an ARK project A holds with ZERO client calls, and carr
   // A's own state: indexed, with an error note and a canonical verdict.
   await prisma.document.update({
     where: { projectId_ark: { projectId: projectA.id, ark: a } },
-    data: { indexedAt: new Date(), indexError: "boom", canonicalStatus: "api_error" },
+    data: { indexedAt: new Date(), indexError: "boom", canonicalStatus: DOCUMENT_CANONICAL_STATUS.API_ERROR },
   })
 
   const projectB = await freshProject("resolver-cross-b", [a])

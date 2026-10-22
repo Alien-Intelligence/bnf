@@ -11,11 +11,11 @@ import {
   GALLICA_FILTER_DOC_TYPE,
   GALLICA_SEARCHABLE_DOC_TYPE,
   canonicalDocTypeFromLabel,
-  KNOWN_SUBTYPES,
   canonicalLang,
   gallicaPageCount,
   gallicaSubtype,
 } from "./vocab"
+import { KNOWN_SUBTYPES } from "@/models/documents/schema"
 
 test("every raw prod doc_type label maps to a canonical code", () => {
   const table: Array<[string, string]> = [
