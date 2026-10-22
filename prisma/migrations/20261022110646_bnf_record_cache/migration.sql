@@ -21,17 +21,35 @@ CREATE TABLE "bnf_record" (
 -- informational only (no read filters on it), so a null "resolved_at" falls
 -- back to the migration time.
 --
--- Every seeded entry is a STAGING entry: `ocr_source` is a field of this
--- release, so no existing "raw_metadata" carries it, and the commit-time
--- resolver keys on its absence (BnfRecordService.needsOcrRule) to re-run the
--- OCR rule (a manifest call only for text-like documents OAI does not mark
--- "mode texte"). No network call happens here.
+-- Every seeded entry is a clean STAGED entry (models/bnf-records/service.ts:
+-- staged entries never carry the OCR verdict keys). Rows resolved by the
+-- previous release can carry `ocr_available`, `pages` (the raw OAI view count)
+-- and no `ocr_source`, so the payload is rebuilt from "raw_metadata" as:
+--   - `ocr_available`, `ocr_source`, `pages`, `pages_source` and `taux_ocr`
+--     are removed;
+--   - `"ocr_available": true` is added back ONLY when "raw_metadata" says
+--     `true` (OAI "mode texte" is 100% precise, so the OCR rule can still skip
+--     the manifest for those);
+--   - the old raw OAI count `pages` is carried as `oai_total_views`, when
+--     present, so normalize's page rule re-applies.
+-- `ocr_source` is a field of this release, so the commit-time resolver keys on
+-- its absence (BnfRecordService.needsOcrRule) to re-run the OCR rule (a
+-- manifest call only for text-like documents OAI does not mark "mode texte").
+-- No network call happens here.
 --
 -- Cost, accepted at the current size: prod "document" is 175,909 rows / 154 MB
 -- and the seed matches 6,328 distinct ARKs. The seq scan and the sort take
 -- seconds, so the statement is neither batched nor given a statement_timeout.
 INSERT INTO "bnf_record" ("ark", "payload", "source", "fetched_at")
-SELECT DISTINCT ON ("ark") "ark", "raw_metadata", 'oai_gallica', COALESCE("resolved_at", CURRENT_TIMESTAMP)
+SELECT DISTINCT ON ("ark") "ark",
+       ("raw_metadata" - 'ocr_available' - 'ocr_source' - 'pages' - 'pages_source' - 'taux_ocr')
+         || CASE WHEN "raw_metadata" -> 'ocr_available' = 'true'::jsonb
+                 THEN jsonb_build_object('ocr_available', true)
+                 ELSE '{}'::jsonb END
+         || CASE WHEN jsonb_typeof("raw_metadata" -> 'pages') = 'number'
+                 THEN jsonb_build_object('oai_total_views', "raw_metadata" -> 'pages')
+                 ELSE '{}'::jsonb END AS "payload",
+       'oai_gallica' AS "source", COALESCE("resolved_at", CURRENT_TIMESTAMP) AS "fetched_at"
 FROM "document"
 WHERE "resolve_status" = 'resolved'
   AND jsonb_typeof("raw_metadata") = 'object'
