@@ -243,10 +243,13 @@ export function etaFetchRatePerMin(rates: WorkerConfig["rates"]): number {
 /**
  * The share of the broker's manifest bucket the worker's manifest gate takes.
  * The app reads Presentation manifests through the SAME bucket, unpaced by
- * the worker (lib/bnf/direct.ts, called by the stub resolver, the
- * canonicalizer and the buffer enricher): at 100 % the two
- * oversubscribed it and the broker shed the worker's metadata lookups until
- * documents failed for good (2026-10-06, 0.19.0: 3 804 manifest sheds, 55
+ * the worker (lib/bnf/direct.ts, corpus-add resolution): for a text-like
+ * document that OAI does not mark "mode texte" (every press issue, the odd
+ * monograph, manuscripts, scores) the app fetches the manifest to learn the OCR
+ * flag and the page count. Documents OAI marks "mode texte", and image-like
+ * documents, cost the app no manifest call. At 100 % the worker and the app
+ * oversubscribed the bucket and the broker shed the worker's metadata lookups
+ * until documents failed for good (2026-10-06, 0.19.0: 3 804 manifest sheds, 55
  * documents failed in 3 h). The rest is LEFT for the app, which does not pace
  * itself: a sustained app burst above it can still shed the worker. Holding
  * the app to its share needs an app-side manifest limiter (follow-up).
@@ -272,7 +275,9 @@ export type BrokerBucketRates = {
  *   1425 > global 950) took the whole global budget and the broker shed the
  *   metadata lookups of the same ingest (2026-10-06: 471 global sheds of
  *   manifests, 412 of catalogue calls).
- * - workerManifestRpm is WORKER_MANIFEST_SHARE of the manifest bucket, floored.
+ * - workerManifestRpm is WORKER_MANIFEST_SHARE of the manifest bucket, floored;
+ *   the remainder serves the app's manifest fetches for text-like documents OAI
+ *   does not mark "mode texte".
  *
  * Pure. Returns the problems instead of a share that cannot hold: a bulk
  * share or a manifest share below 1/min is a chart mistake, refused at config

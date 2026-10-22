@@ -10,6 +10,7 @@ import { MemoryQueue } from "../core/queue-memory.js";
 import { MemoryDocState } from "../domain/doc-state-memory.js";
 import { MemoryRunStore } from "../domain/run-store-memory.js";
 import { Q } from "../domain/queues.js";
+import type { DocRef } from "../domain/types.js";
 import { createRunAndSeed, parseIngestRequest } from "./ingress.js";
 
 function validBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -28,11 +29,14 @@ function validBody(overrides: Record<string, unknown> = {}): Record<string, unkn
   };
 }
 
-test("parseIngestRequest accepts a well-formed body and keeps only ARKs from added", () => {
+test("parseIngestRequest accepts a well-formed body and keeps ark, subtype and docType from added", () => {
   const r = parseIngestRequest(validBody());
   assert.equal(r.ok, true);
   if (!r.ok) return;
-  assert.deepEqual(r.value.arks, ["ark:/12148/a", "ark:/12148/b"]);
+  assert.deepEqual(r.value.docs, [
+    { ark: "ark:/12148/a", subtype: null, docType: "texte" },
+    { ark: "ark:/12148/b", subtype: null, docType: "texte" },
+  ]);
   assert.equal(r.value.projectId, "p1");
   assert.equal(r.value.callbackSecret, "deadbeef");
 });
@@ -49,6 +53,53 @@ test("parseIngestRequest rejects a non-array added and a doc missing ark", () =>
   assert.equal(parseIngestRequest(validBody({ added: [{ title: "no ark" }] })).ok, false);
   assert.equal(parseIngestRequest(null).ok, false);
   assert.equal(parseIngestRequest("string").ok, false);
+});
+
+test("parseIngestRequest reads subtype: a string is kept, null and absent become null", () => {
+  const r = parseIngestRequest(
+    validBody({
+      added: [
+        { ark: "ark:/12148/a", docType: "texte", subtype: "fascicules" },
+        { ark: "ark:/12148/b", docType: "image", subtype: null },
+        { ark: "ark:/12148/c" },
+      ],
+    }),
+  );
+  assert.equal(r.ok, true);
+  if (!r.ok) return;
+  assert.deepEqual(r.value.docs, [
+    { ark: "ark:/12148/a", subtype: "fascicules", docType: "texte" },
+    { ark: "ark:/12148/b", subtype: null, docType: "image" },
+    { ark: "ark:/12148/c", subtype: null, docType: null },
+  ]);
+});
+
+test("parseIngestRequest rejects a non-string subtype or docType with the specific reason", () => {
+  const badSubtype = parseIngestRequest(validBody({ added: [{ ark: "ark:/12148/a", subtype: 3 }] }));
+  assert.deepEqual(badSubtype, { ok: false, error: "added[0].subtype must be a string or null" });
+  const badDocType = parseIngestRequest(
+    validBody({ added: [{ ark: "ark:/12148/a" }, { ark: "ark:/12148/b", docType: ["texte"] }] }),
+  );
+  assert.deepEqual(badDocType, { ok: false, error: "added[1].docType must be a string or null" });
+});
+
+test("createRunAndSeed puts subtype and docType on the queued DocRefs", async () => {
+  const queue = new MemoryQueue();
+  const seen: DocRef[] = [];
+  await queue.work<DocRef>(Q.metadata, async (m) => { seen.push(m.payload); }, { concurrency: 1 });
+  const parsed = parseIngestRequest(
+    validBody({ added: [{ ark: "ark:/12148/a", docType: "texte", subtype: "fascicules" }] }),
+  );
+  assert.equal(parsed.ok, true);
+  if (!parsed.ok) return;
+  await createRunAndSeed(
+    { runStore: new MemoryRunStore(), docState: new MemoryDocState(), queue },
+    parsed.value,
+  );
+  await queue.idle();
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0]?.subtype, "fascicules");
+  assert.equal(seen[0]?.docType, "texte");
 });
 
 test("createRunAndSeed creates the run, seeds N metadata messages, returns a runId", async () => {

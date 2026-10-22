@@ -7,8 +7,10 @@ export interface ClusterDoc {
   title: string
   year: number | null
   docType: string
-  /** Gallica typedoc subcategory ("fascicules", "titres", "plan", …); null when
-   *  absent. Indexed into the datacluster as a filterable metadata field. */
+  /** Gallica typedoc subcategory ("fascicules", "titres", "plan", …), derived
+   *  app-side from the OAI `gallica_typedoc`; null when absent. The worker
+   *  forwards it as-is into the index metadata (it fetches nothing itself and
+   *  does not use it for lane routing). */
   subtype: string | null
   lang: string | null
   source: string

@@ -25,6 +25,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { readFileSync } from "node:fs";
 
 import { PermanentBnfError, TransientBnfError } from "./errors.js";
 
@@ -371,4 +372,68 @@ test("manifestUrl and the doc-info's iiifManifestUrl are on the Presentation API
     docInfoFromManifest(manifest, ARK, tauxOcrOf(manifest.metadata), client.manifestUrl(ARK)).iiifManifestUrl,
     MANIFEST_URL,
   );
+});
+
+// ---------------------------------------------------------------------------
+// getDocumentInfoViaOai — the page rule, end to end over a captured OAI record
+// ---------------------------------------------------------------------------
+
+/** A fake broker (POST /fetch) that answers every call with the given XML body. */
+function startXmlBroker(xml: string): Promise<{ url: string; close: () => Promise<void> }> {
+  return new Promise((resolve) => {
+    const server: Server = createServer((req, res) => {
+      req.on("data", () => {});
+      req.on("end", () => {
+        res.writeHead(200, { "content-type": "application/xml; charset=utf-8" });
+        res.end(xml);
+      });
+    });
+    server.listen(0, "127.0.0.1", () => {
+      const { port } = server.address() as AddressInfo;
+      resolve({
+        url: `http://127.0.0.1:${port}`,
+        close: () => new Promise<void>((r) => server.close(() => r())),
+      });
+    });
+  });
+}
+
+function fixtureXml(name: string): string {
+  return readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8");
+}
+
+async function oaiInfo(xml: string, ark: string) {
+  const broker = await startXmlBroker(xml);
+  configureBrokerUrl(broker.url);
+  try {
+    return await new LiveBnfClient(IIIF).getDocumentInfoViaOai(ark);
+  } finally {
+    await broker.close();
+  }
+}
+
+test("getDocumentInfoViaOai: the fascicule bpt6k268418n (OAI claims 3197 views) has pageCount null", async () => {
+  const info = await oaiInfo(fixtureXml("oai-bpt6k268418n.xml"), "ark:/12148/bpt6k268418n");
+  assert.equal(info.pageCount, null);
+  assert.equal(info.subtype, "fascicules");
+  assert.equal(info.raw.oai_total_views, 3197, "the raw OAI count stays traceable");
+});
+
+test("getDocumentInfoViaOai: a monograph keeps its page count", async () => {
+  const info = await oaiInfo(
+    fixtureXml("oai-monographie-bpt6k9618082w.xml"),
+    "ark:/12148/bpt6k9618082w",
+  );
+  assert.equal(info.pageCount, 406);
+});
+
+test("getDocumentInfoViaOai: a press record with no typedoc has pageCount null", async () => {
+  const xml = fixtureXml("oai-bpt6k268418n.xml").replace(
+    "<setSpec>gallica:typedoc:periodiques:fascicules</setSpec>",
+    "",
+  );
+  assert.ok(!xml.includes("typedoc"), "the fixture edit must remove the typedoc setSpec");
+  const info = await oaiInfo(xml, "ark:/12148/bpt6k268418n");
+  assert.equal(info.raw.gallica_typedoc, null);
+  assert.equal(info.pageCount, null);
 });

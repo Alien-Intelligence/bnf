@@ -47,6 +47,7 @@ import {
   ensureCanonicalArk,
   extractPageCountFromFormat,
   firstOrNull,
+  gallicaPageCount,
   metadataValue,
   oaiParser,
   ocrRateValue,
@@ -245,8 +246,10 @@ function classifyStatus(
  *   • pageCount— the canvas count (manifest.totalPages) — authoritative AND
  *                independent of maxCanvases (parseV3Manifest computes totalPages
  *                from the full canvas list, before slicing it to maxCanvases).
- *   • subtype  — null: the fine Gallica typedoc sub-category (fascicules/titres)
- *                lives only in OAI's setSpec, which the manifest does not carry.
+ *   • subtype  — null: the manifest does not carry the Gallica typedoc. The
+ *                subtype that reaches the index comes from ClusterDoc.subtype on
+ *                the ingest contract (the app resolved it from OAI); the worker
+ *                makes no OAI fetch for it.
  *   • iiifManifestUrl — the caller's (BnfClient.manifestUrl), so this function
  *                stays pure and the API base lives in the client alone.
  */
@@ -329,10 +332,14 @@ export class LiveBnfClient implements BnfClient {
    * manifest); the manifest is the PRIMARY path (see docInfoFromManifest).
    * Dublin Core fields under <OAI-PMH><GetRecord><record><metadata><oai_dc:dc>.
    * OCR availability is the "Avec mode texte" <dc:description> flag (scanning
-   * ALL descriptions); page count is the "Nombre total de vues" <dc:format>
-   * note — collection-level and occasionally wildly wrong for periodical issues
-   * (e.g. bpt6k268418n: 4 real folios, OAI claims 3197), which is exactly why
-   * the manifest's canvas count is authoritative when it's available.
+   * ALL descriptions).
+   *
+   * Page count: the "Nombre total de vues" <dc:format> note is title-level for
+   * press and so wildly wrong for periodical issues (bpt6k268418n: 4 real
+   * folios, OAI claims 3197). gallicaPageCount (parse.ts) drops it for a
+   * fascicule or an untyped press record, so pageCount is null and the text
+   * lane yields PAGE_COUNT_UNKNOWN instead of fanning out up to 1000 ALTO
+   * requests. The manifest's canvas count stays authoritative when available.
    */
   async getDocumentInfoViaOai(ark: string): Promise<BnfDocInfo> {
     const canonicalArk = ensureCanonicalArk(ark);
@@ -397,7 +404,10 @@ export class LiveBnfClient implements BnfClient {
     const subtype = typedocSubtype(typedoc);
     const lang = pickFirstLanguage(dc["dc:language"]);
     const ocrAvailable = descriptionsHaveModeTexte(dc["dc:description"]);
-    const pageCount = extractPageCountFromFormat(dc["dc:format"]);
+    const totalViews = extractPageCountFromFormat(dc["dc:format"]);
+    // OAI's view count is title-level for press issues; the page rule drops it
+    // there so the text lane reports PAGE_COUNT_UNKNOWN rather than fanning out.
+    const pageCount = gallicaPageCount(typedoc, totalViews, dc["dc:type"]);
     const iiifManifestUrl = this.manifestUrl(canonicalArk);
 
     return {
@@ -417,6 +427,7 @@ export class LiveBnfClient implements BnfClient {
         language: lang,
         source: DOC_INFO_SOURCE.OAI_PMH,
         gallica_typedoc: typedoc,
+        oai_total_views: totalViews,
         pageNumber: pageCount,
       },
     };

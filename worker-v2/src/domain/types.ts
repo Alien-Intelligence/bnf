@@ -14,6 +14,18 @@ export interface DocRef {
    *  set for every doc admitted through the HTTP ingress so the completion detector
    *  and the read-model can scope per run. Flows through every downstream payload. */
   runId?: string | null;
+  /**
+   * The app's Gallica typedoc subcategory, from the ingest contract
+   * (ClusterDoc.subtype). Request-scoped: carried on the queue payload only,
+   * never persisted in doc state or the global metadata blob cache. Trusted
+   * for the INDEXED metadata alone — it never influences lane routing. Absent
+   * or null (seed-CLI docs, no ingress) → the indexed subtype is null.
+   */
+  subtype?: string | null;
+  /** The app's document type (ClusterDoc.docType); same scope and trust as
+   *  `subtype`. When present it replaces the manifest-derived docType in the
+   *  indexed metadata; lane routing still uses the manifest's. */
+  docType?: string | null;
 }
 
 /** Document-level plan produced by the metadata stage, carried to the manifest/

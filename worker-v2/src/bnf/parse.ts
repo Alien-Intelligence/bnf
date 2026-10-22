@@ -203,6 +203,43 @@ export function extractPageCountFromFormat(formats: unknown): number | null {
   return null;
 }
 
+/** The Gallica typedoc of a press issue: a single number of a periodical. */
+const FASCICULE_TYPEDOC = "periodiques:fascicules";
+
+/**
+ * Press markers in a <dc:type> label. A fascicule that carries no typedoc
+ * setSpec is still recognisable by "publication en série imprimée". Mirrors the
+ * app's press regex (lib/mcp/vocab.ts) so both sides drop the same counts.
+ */
+const PRESS_DC_TYPE = /p[ée]riodique|presse|journal|publication en s[ée]rie|s[ée]rie imprim/i;
+
+/**
+ * The page count to trust from an OAI record. "Nombre total de vues" is the view
+ * count of the whole periodical title, not of the issue: bpt6k268418n is a
+ * 4-folio issue that OAI reports as 3197. So the count is discarded (null) for a
+ * fascicule (typedoc periodiques:fascicules) and for a record that has no
+ * typedoc but whose <dc:type> labels mark it as press. Everything else keeps its
+ * count; an absent or non-positive count is null.
+ *
+ * null means "unknown", never "zero": the text lane turns it into
+ * PAGE_COUNT_UNKNOWN instead of fanning out one ALTO request per phantom page.
+ * `dcTypes` is the raw parsed <dc:type> node (every label is scanned, because
+ * the press marker is not the one pickDcType prefers).
+ */
+export function gallicaPageCount(
+  typedoc: string | null,
+  totalViews: number | null,
+  dcTypes: unknown,
+): number | null {
+  if (typedoc != null) {
+    if (typedoc.toLowerCase() === FASCICULE_TYPEDOC) return null;
+  } else {
+    const labels = Array.isArray(dcTypes) ? dcTypes : dcTypes != null ? [dcTypes] : [];
+    if (labels.some((l) => PRESS_DC_TYPE.test(textOf(l) ?? ""))) return null;
+  }
+  return totalViews != null && totalViews > 0 ? totalViews : null;
+}
+
 /**
  * OCR-availability signal: true if ANY <dc:description> announces a text layer
  * ("Avec mode texte"). Must scan all descriptions — Gallica emits several

@@ -504,3 +504,41 @@ test("a corrupt cached manifest is logged and repaired from BnF, never cast and 
   assert.notEqual(row?.status, "failed");
   assert.equal(h.fetched.length, 2, "resolved from the repaired manifest: two folios fanned out");
 });
+
+// SDS-945 A4 — the indexed subtype/docType come from the app's DocRef, never a BnF call.
+test("the indexed meta carries the DocRef subtype and docType; lane routing still follows the manifest", async () => {
+  const spec: FakeDocSpec = { ark: "ark:/12148/subtyped", ocrAvailable: true, docType: "texte", pageCount: 2 };
+  const h = await setup({
+    spec,
+    ref: { projectId: "proj-1", docJobId: "doc-1", ark: spec.ark, subtype: "fascicules", docType: "periodique" },
+  });
+  await h.deliver();
+  await h.q.idle();
+
+  const row = await h.ds.get(h.ref.docJobId);
+  assert.equal(row?.lane, "text", "app docType never re-routes the lane");
+  assert.equal(row?.meta?.subtype, "fascicules");
+  assert.equal(row?.meta?.docType, "periodique");
+  assert.equal(h.bnf.calls.oai, 0, "zero extra BnF calls");
+
+  const blob = await h.blob.getJson<{ subtype: string | null; docType: string | null }>(keys.metadata(spec.ark));
+  assert.equal(blob?.subtype, null, "request-scoped subtype never enters the global metadata blob");
+  assert.equal(blob?.docType, "texte");
+});
+
+test("an absent or null DocRef subtype stays null in the indexed meta", async () => {
+  for (const ref of [
+    undefined,
+    { projectId: "proj-1", docJobId: "doc-1", ark: "ark:/12148/nosub", subtype: null, docType: null },
+  ]) {
+    const h = await setup({
+      spec: { ark: "ark:/12148/nosub", ocrAvailable: true, docType: "texte", pageCount: 1 },
+      ref,
+    });
+    await h.deliver();
+    await h.q.idle();
+    const row = await h.ds.get(h.ref.docJobId);
+    assert.equal(row?.meta?.subtype, null);
+    assert.equal(row?.meta?.docType, "texte");
+  }
+});

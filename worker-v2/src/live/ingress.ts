@@ -5,9 +5,12 @@
  * returned runId IS the clusterJobId the app stores and polls.
  *
  * Self-contained on purpose (the dual-undici lesson): v2 re-resolves each doc's
- * metadata itself in the metadata stage, so the only field it trusts from the
- * app's `added[]` is the ARK. `removed[]` is ignored — removal is committed
- * app-side; v2 has no delete path.
+ * metadata itself in the metadata stage, and lane routing, page count and OCR
+ * rate stay manifest-authoritative. From the app's `added[]` it takes the ARK
+ * plus `subtype` and `docType` (derived app-side from the OAI typedoc), which
+ * are trusted for the INDEXED metadata only: they ride on the DocRef into the
+ * metadata stage and make no BnF call. `removed[]` is ignored — removal is
+ * committed app-side; v2 has no delete path.
  */
 import { randomUUID } from "node:crypto";
 
@@ -23,12 +26,21 @@ export interface IngressDeps {
   queue: QueueClient;
 }
 
+/** One `added[]` entry, reduced to what v2 consumes. */
+export interface IngestDoc {
+  ark: string;
+  /** Gallica typedoc subcategory; null when the app has none. */
+  subtype: string | null;
+  /** The app's document type; null when the app sent none. */
+  docType: string | null;
+}
+
 /** The fields v2 needs from the app's ClusterIngestRequest. */
 export interface ParsedIngestRequest {
   projectId: string;
   targetVersionId: string;
   appJobId: string;
-  arks: string[];
+  docs: IngestDoc[];
   callbackUrl: string;
   callbackSecret: string;
 }
@@ -40,6 +52,17 @@ export interface IngressResult {
 
 function asString(v: unknown): string | null {
   return typeof v === "string" && v.trim().length > 0 ? v : null;
+}
+
+/**
+ * An optional string field of an `added[]` entry: absent or null → null, a
+ * non-blank string → itself. Anything else is a contract violation, reported by
+ * the caller as a 400 rather than coerced.
+ */
+function optionalString(v: unknown): { ok: true; value: string | null } | { ok: false } {
+  if (v === undefined || v === null) return { ok: true, value: null };
+  if (typeof v !== "string") return { ok: false };
+  return { ok: true, value: v.trim().length > 0 ? v : null };
 }
 
 /**
@@ -68,16 +91,21 @@ export function parseIngestRequest(
   if (!callbackSecret) return { ok: false, error: "callbackSecret is required" };
 
   if (!Array.isArray(b.added)) return { ok: false, error: "added must be an array" };
-  const arks: string[] = [];
-  for (const [i, doc] of b.added.entries()) {
-    const ark = doc && typeof doc === "object" ? asString((doc as Record<string, unknown>).ark) : null;
-    if (!ark) return { ok: false, error: `added[${i}].ark is required` };
-    arks.push(ark);
+  const docs: IngestDoc[] = [];
+  for (const [i, entry] of b.added.entries()) {
+    const doc = entry && typeof entry === "object" ? (entry as Record<string, unknown>) : null;
+    const ark = doc ? asString(doc.ark) : null;
+    if (!doc || !ark) return { ok: false, error: `added[${i}].ark is required` };
+    const subtype = optionalString(doc.subtype);
+    if (!subtype.ok) return { ok: false, error: `added[${i}].subtype must be a string or null` };
+    const docType = optionalString(doc.docType);
+    if (!docType.ok) return { ok: false, error: `added[${i}].docType must be a string or null` };
+    docs.push({ ark, subtype: subtype.value, docType: docType.value });
   }
 
   return {
     ok: true,
-    value: { projectId, targetVersionId, appJobId, arks, callbackUrl, callbackSecret },
+    value: { projectId, targetVersionId, appJobId, docs, callbackUrl, callbackSecret },
   };
 }
 
@@ -110,11 +138,13 @@ export async function createRunAndSeed(
   }
 
   const runId = randomUUID();
-  const refs: DocRef[] = req.arks.map((ark) => ({
+  const refs: DocRef[] = req.docs.map(({ ark, subtype, docType }) => ({
     projectId: req.projectId,
     docJobId: randomUUID(),
     ark,
     runId,
+    subtype,
+    docType,
   }));
 
   await deps.runStore.create({
