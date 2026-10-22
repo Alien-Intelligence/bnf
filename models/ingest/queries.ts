@@ -4,24 +4,15 @@ import "server-only"
 import { prisma } from "@/lib/db"
 import { Prisma } from "@/lib/generated/prisma/client"
 import type { IngestJob } from "@/lib/generated/prisma/client"
-import { PAID_OCR_USD_PER_1K_PAGES } from "@/lib/constants"
-import type { AdminOcrUsage } from "./schema"
-
-/** An IngestJob row with its base/target version seqs joined (for the history). */
-export type IngestJobWithVersions = Prisma.IngestJobGetPayload<{
-  include: {
-    targetVersion: { select: { seq: true } }
-    baseVersion: { select: { seq: true } }
-  }
-}>
-
-/**
- * The slice of a (transaction) client a service hook may use to extend an
- * ingest transaction with another model's statement. Narrowed to the one table
- * the sessions model's prompt-invalidation query touches, so the hook cannot
- * reach the ingest tables around the named builders below.
- */
-export type IngestTxDb = Pick<Prisma.TransactionClient, "appSession">
+import { INGEST_RECENT_JOBS_LIMIT, PAID_OCR_USD_PER_1K_PAGES } from "@/lib/constants"
+import {
+  INGEST_ACTIVE_STATUSES,
+  INGEST_STATUS,
+  ingestJobWithVersions,
+  type AdminOcrUsage,
+  type IngestJobWithVersions,
+  type IngestStatus,
+} from "./schema"
 
 export class IngestQueries {
   /** Returns a single job by id; throws when it does not exist. */
@@ -46,77 +37,29 @@ export class IngestQueries {
    */
   static async updateIfStatus(
     id: string,
-    expectedStatus: string,
+    expectedStatus: IngestStatus,
     data: Prisma.IngestJobUncheckedUpdateManyInput,
   ): Promise<void> {
     await prisma.ingestJob.updateMany({ where: { id, status: expectedStatus }, data })
   }
 
-  /** A corpus version of a project by its sequence number, with its membership ARKs. */
-  static async versionBySeq(projectId: string, seq: number) {
-    return prisma.corpusVersion.findUniqueOrThrow({
-      where: { projectId_seq: { projectId, seq } },
-      include: { membership: { select: { ark: true } } },
-    })
+  /**
+   * Runs the given statements as one atomic batch transaction and returns
+   * their results in order. The statements are built by the owning models'
+   * queries; this model only opens the transaction.
+   */
+  static batch<P extends Prisma.PrismaPromise<unknown>[]>(ops: [...P]) {
+    return prisma.$transaction(ops)
   }
 
-  /**
-   * Runs the given statements as one atomic batch transaction. `build` receives
-   * the client only to hand to another model's query that needs one.
-   */
-  static async batch(
-    build: (db: IngestTxDb) => Prisma.PrismaPromise<unknown>[],
-  ): Promise<void> {
-    await prisma.$transaction(build(prisma))
+  /** Statement: insert a job row (for composition in {@link batch}). */
+  static createOp(data: Prisma.IngestJobUncheckedCreateInput) {
+    return prisma.ingestJob.create({ data })
   }
 
   /** Statement: update a job row (for composition in {@link batch}). */
   static updateOp(id: string, data: Prisma.IngestJobUncheckedUpdateInput) {
     return prisma.ingestJob.update({ where: { id }, data })
-  }
-
-  /** Statement: set a corpus version's status (for composition in {@link batch}). */
-  static versionStatusOp(versionId: string, status: string) {
-    return prisma.corpusVersion.update({ where: { id: versionId }, data: { status } })
-  }
-
-  /** Statement: update a project row (for composition in {@link batch}). */
-  static projectUpdateOp(projectId: string, data: Prisma.ProjectUncheckedUpdateInput) {
-    return prisma.project.update({ where: { id: projectId }, data })
-  }
-
-  /** Statement: update a project's documents matching `ark` (for {@link batch}). */
-  static documentsUpdateOp(
-    projectId: string,
-    ark: string | { in: string[] },
-    data: Prisma.DocumentUncheckedUpdateManyInput,
-  ) {
-    return prisma.document.updateMany({ where: { projectId, ark }, data })
-  }
-
-  /**
-   * Inserts a job and, in the same interactive transaction, marks the target
-   * version, advances the project's ingested pointer, then runs `inTransaction`
-   * (cross-model statements that must commit with them).
-   */
-  static async createAndAdvance(
-    data: Prisma.IngestJobUncheckedCreateInput,
-    versionStatus: string,
-    inTransaction: (db: IngestTxDb) => Promise<unknown>,
-  ): Promise<IngestJob> {
-    return prisma.$transaction(async (tx) => {
-      const job = await tx.ingestJob.create({ data })
-      await tx.corpusVersion.update({
-        where: { id: data.targetVersionId },
-        data: { status: versionStatus },
-      })
-      await tx.project.update({
-        where: { id: data.projectId },
-        data: { ingestedVersionId: data.targetVersionId },
-      })
-      await inTransaction(tx)
-      return job
-    })
   }
 
   /** Returns a single job by id, or null if not found. */
@@ -130,17 +73,13 @@ export class IngestQueries {
    */
   static async listForProject(
     projectId: string,
-    limit = 20,
+    limit = INGEST_RECENT_JOBS_LIMIT,
   ): Promise<IngestJobWithVersions[]> {
     return prisma.ingestJob.findMany({
       where: { projectId },
       orderBy: { createdAt: "desc" },
       take: limit,
-      // Join the base/target version seqs so the history can show "v10 → v15".
-      include: {
-        targetVersion: { select: { seq: true } },
-        baseVersion: { select: { seq: true } },
-      },
+      ...ingestJobWithVersions,
     })
   }
 
@@ -150,7 +89,7 @@ export class IngestQueries {
    */
   static async activeForProject(projectId: string): Promise<IngestJob | null> {
     return prisma.ingestJob.findFirst({
-      where: { projectId, status: { in: ["queued", "running"] } },
+      where: { projectId, status: { in: [...INGEST_ACTIVE_STATUSES] } },
     })
   }
 
@@ -166,7 +105,7 @@ export class IngestQueries {
       where: {
         projectId,
         targetVersionId,
-        status: { in: ["queued", "running"] },
+        status: { in: [...INGEST_ACTIVE_STATUSES] },
       },
     })
   }
@@ -184,8 +123,8 @@ export class IngestQueries {
     return prisma.ingestJob.findMany({
       where: {
         OR: [
-          { status: "running", clusterJobId: { not: null } },
-          { status: "queued", createdAt: { lt: queuedCutoff } },
+          { status: INGEST_STATUS.RUNNING, clusterJobId: { not: null } },
+          { status: INGEST_STATUS.QUEUED, createdAt: { lt: queuedCutoff } },
         ],
       },
     })

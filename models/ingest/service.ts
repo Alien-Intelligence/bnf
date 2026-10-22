@@ -18,6 +18,7 @@ import { SessionQueries } from "@/models/sessions/queries"
 import { SESSION_SCOPE } from "@/models/sessions/schema"
 import type { Prisma, IngestJob, Project, User } from "@/lib/generated/prisma/client"
 import { CorpusQueries } from "@/models/corpus/queries"
+import { ProjectQueries } from "@/models/projects/queries"
 import {
   classifyIngestion,
   DOCUMENT_RESOLVE_STATUS,
@@ -26,7 +27,7 @@ import {
   isLatinScriptLang,
 } from "@/models/documents/schema"
 import { IngestQueries } from "./queries"
-import { CLUSTER_POLL, CLUSTER_TERMINAL_STAGE, estimatePaidOcrCostUsd, INGEST_STATUS } from "./schema"
+import { CLUSTER_POLL, CLUSTER_TERMINAL_STAGE, estimatePaidOcrCostUsd, INGEST_STATUS, isIngestStatus } from "./schema"
 import type { PaidOcrEstimate } from "./schema"
 import type {
   IngestDeltaPreview,
@@ -43,6 +44,7 @@ import { requestOcrSync } from "@/lib/documents/ocr-sync-signal"
 import { DocumentQueries } from "@/models/documents/queries"
 import { DocumentService } from "@/models/documents/service"
 import { PAID_OCR_DEFAULT_BUDGET_USD } from "@/lib/constants"
+import { prisma } from "@/lib/db"
 import { env } from "@/lib/env"
 import { toInputJson } from "@/lib/validation/json"
 
@@ -189,7 +191,7 @@ export class IngestService {
     let targetVersion: Awaited<ReturnType<typeof CorpusQueries.headVersion>>
 
     if (input.targetVersionSeq !== undefined) {
-      targetVersion = await IngestQueries.versionBySeq(project.id, input.targetVersionSeq)
+      targetVersion = await CorpusQueries.versionBySeq(project.id, input.targetVersionSeq)
     } else {
       targetVersion = await CorpusQueries.headVersion(project.id)
     }
@@ -469,6 +471,9 @@ export class IngestService {
    * FAILED. A late terminal callback still overwrites this (applyProgress).
    */
   static async failStuckJob(jobId: string, expectedStatus: string, reason: string, at: Date): Promise<void> {
+    if (!isIngestStatus(expectedStatus)) {
+      throw new Error(`failStuckJob: job ${jobId} has unknown status "${expectedStatus}"`)
+    }
     await IngestQueries.updateIfStatus(jobId, expectedStatus, {
       status: INGEST_STATUS.FAILED,
       error: reason,
@@ -588,8 +593,8 @@ export class IngestService {
         stats: toInputJson(results.stats),
         ...(paidOcrCharge !== null ? { paidOcrActualUsd: paidOcrCharge } : {}),
       }),
-      IngestQueries.versionStatusOp(job.targetVersionId, CORPUS_VERSION_STATUS.INGESTED),
-      IngestQueries.projectUpdateOp(job.projectId, {
+      CorpusQueries.versionStatusOp(job.targetVersionId, CORPUS_VERSION_STATUS.INGESTED),
+      ProjectQueries.updateOp(job.projectId, {
         ingestedVersionId: job.targetVersionId,
         ...(paidOcrCharge !== null
           ? { paidOcrSpentUsd: { increment: paidOcrCharge } }
@@ -597,18 +602,18 @@ export class IngestService {
       }),
       // Per-doc index state: every added ARK is now in the index; every removed
       // ARK is out. Keeps the delta truthful independent of the version pointer.
-      IngestQueries.documentsUpdateOp(
+      DocumentQueries.updateManyOp(
         job.projectId,
         { in: job.addedArks },
         { indexedAt: now, indexError: null },
       ),
-      IngestQueries.documentsUpdateOp(job.projectId, { in: job.removedArks }, { indexedAt: null }),
+      DocumentQueries.updateManyOp(job.projectId, { in: job.removedArks }, { indexedAt: null }),
     ]
     // Applied AFTER the blanket indexError:null above so the annotation
     // survives — indexedAt stays `now` (the doc IS indexed), only indexError
     // carries the warning text.
     for (const [ark, reason] of warningsByArk) {
-      ops.push(IngestQueries.documentsUpdateOp(job.projectId, ark, { indexError: reason }))
+      ops.push(DocumentQueries.updateManyOp(job.projectId, ark, { indexError: reason }))
     }
     // OCR quality (feedback 2026-09-29 #7): the run's documents may have been
     // re-OCR'd, so their stored quality is due again — persisted in the same
@@ -620,9 +625,9 @@ export class IngestService {
     // refuses to search. Derived workspaces reading this corpus are affected by
     // an ingestion they did not run, so they are invalidated too — in the same
     // transaction as the state change.
-    await IngestQueries.batch((db) => [
+    await IngestQueries.batch([
       ...ops,
-      SessionQueries.invalidatePrompts(researchPromptsOf(job.projectId), db),
+      SessionQueries.invalidatePrompts(researchPromptsOf(job.projectId), prisma),
     ])
     requestOcrSync()
   }
@@ -675,8 +680,8 @@ export class IngestService {
       // A partial run still advances the baseline (same as commit) — the per-doc
       // Document.indexedAt above is the real delta truth; this pointer is just the
       // "Dernière ingestion vN" label. Only a whole-job failure leaves it behind.
-      IngestQueries.versionStatusOp(job.targetVersionId, CORPUS_VERSION_STATUS.INGESTED),
-      IngestQueries.projectUpdateOp(job.projectId, {
+      CorpusQueries.versionStatusOp(job.targetVersionId, CORPUS_VERSION_STATUS.INGESTED),
+      ProjectQueries.updateOp(job.projectId, {
         ingestedVersionId: job.targetVersionId,
         ...(paidOcrCharge !== null
           ? { paidOcrSpentUsd: { increment: paidOcrCharge } }
@@ -685,7 +690,7 @@ export class IngestService {
     ]
     if (succeededAdded.length > 0) {
       ops.push(
-        IngestQueries.documentsUpdateOp(
+        DocumentQueries.updateManyOp(
           job.projectId,
           { in: succeededAdded },
           { indexedAt: now, indexError: null },
@@ -698,18 +703,18 @@ export class IngestService {
     // succeededAdded's blanket indexError:null, so their annotation survives.
     for (const [ark, v] of entriesByArk) {
       if (v.warning) continue
-      ops.push(IngestQueries.documentsUpdateOp(job.projectId, ark, { indexError: v.reason }))
+      ops.push(DocumentQueries.updateManyOp(job.projectId, ark, { indexError: v.reason }))
     }
     // F13: a warning doc IS in succeededAdded (indexedAt just set to `now`,
     // indexError cleared, above) — re-apply the warning text afterward, in the
     // same transaction, so the doc stays indexed but the reason survives.
     for (const [ark, v] of entriesByArk) {
       if (!v.warning) continue
-      ops.push(IngestQueries.documentsUpdateOp(job.projectId, ark, { indexError: v.reason }))
+      ops.push(DocumentQueries.updateManyOp(job.projectId, ark, { indexError: v.reason }))
     }
     if (job.removedArks.length > 0) {
       ops.push(
-        IngestQueries.documentsUpdateOp(job.projectId, { in: job.removedArks }, { indexedAt: null }),
+        DocumentQueries.updateManyOp(job.projectId, { in: job.removedArks }, { indexedAt: null }),
       )
     }
     // OCR quality (feedback 2026-09-29 #7): the run's documents may have been
@@ -722,9 +727,9 @@ export class IngestService {
     // refuses to search. Derived workspaces reading this corpus are affected by
     // an ingestion they did not run, so they are invalidated too — in the same
     // transaction as the state change.
-    await IngestQueries.batch((db) => [
+    await IngestQueries.batch([
       ...ops,
-      SessionQueries.invalidatePrompts(researchPromptsOf(job.projectId), db),
+      SessionQueries.invalidatePrompts(researchPromptsOf(job.projectId), prisma),
     ])
     requestOcrSync()
   }
@@ -868,8 +873,8 @@ export class IngestService {
     const now = new Date()
     // Same reason as the commit path: the pointer moved, so the research
     // prompt's ÉTAT DU CORPUS is stale here and in every derived workspace.
-    return IngestQueries.createAndAdvance(
-      {
+    const [job] = await IngestQueries.batch([
+      IngestQueries.createOp({
         projectId: project.id,
         targetVersionId,
         baseVersionId,
@@ -884,10 +889,12 @@ export class IngestService {
         stats: { noOp: true },
         startedAt: now,
         finishedAt: now,
-      },
-      CORPUS_VERSION_STATUS.INGESTED,
-      (db) => SessionQueries.invalidatePrompts(researchPromptsOf(project.id), db),
-    )
+      }),
+      CorpusQueries.versionStatusOp(targetVersionId, CORPUS_VERSION_STATUS.INGESTED),
+      ProjectQueries.updateOp(project.id, { ingestedVersionId: targetVersionId }),
+      SessionQueries.invalidatePrompts(researchPromptsOf(project.id), prisma),
+    ])
+    return job
   }
 
   /**

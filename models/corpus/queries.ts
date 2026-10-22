@@ -22,6 +22,19 @@ import {
 } from "./schema"
 
 export class CorpusQueries {
+  /** A corpus version of a project by its sequence number, with its membership ARKs. */
+  static async versionBySeq(projectId: string, seq: number): Promise<CorpusVersionWithArks> {
+    return prisma.corpusVersion.findUniqueOrThrow({
+      where: { projectId_seq: { projectId, seq } },
+      ...corpusVersionWithArks,
+    })
+  }
+
+  /** Statement: set a corpus version's status (for composition in a batch transaction). */
+  static versionStatusOp(versionId: string, status: CorpusVersionStatus) {
+    return prisma.corpusVersion.update({ where: { id: versionId }, data: { status } })
+  }
+
   /**
    * Whether the project pays for fallback OCR. It decides whether a digitized,
    * OCR-less, Latin-script document counts as `excluded` ("nothing to index")

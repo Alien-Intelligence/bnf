@@ -1,7 +1,7 @@
 // models/ingest/schema.ts
 // Domain enums and re-exported Prisma types for the IngestJob model.
 // No `import "server-only"` — schema is referenced by both client and server.
-import type { IngestJob } from "@/lib/generated/prisma/client"
+import type { IngestJob, Prisma } from "@/lib/generated/prisma/client"
 import {
   PAID_OCR_MAX_PAGES_PER_DOC,
   PAID_OCR_USD_PER_1K_PAGES,
@@ -20,6 +20,11 @@ export const INGEST_STATUS = {
   CANCELED: "canceled",
 } as const
 export type IngestStatus = (typeof INGEST_STATUS)[keyof typeof INGEST_STATUS]
+
+/** Narrows a status read from the database (a plain string column) to {@link IngestStatus}. */
+export function isIngestStatus(value: string): value is IngestStatus {
+  return (Object.values(INGEST_STATUS) as string[]).includes(value)
+}
 
 export const INGEST_STAGE = {
   EXTRACT: "extract",
@@ -88,6 +93,18 @@ export function estimatePaidOcrCostUsd(
 }
 
 export type { IngestJob }
+
+/** Query shape: a job with its base/target version seqs joined (for the history, "v10 → v15"). */
+export const ingestJobWithVersions = {
+  include: {
+    targetVersion: { select: { seq: true } },
+    baseVersion: { select: { seq: true } },
+  },
+} satisfies Prisma.IngestJobDefaultArgs
+export type IngestJobWithVersions = Prisma.IngestJobGetPayload<typeof ingestJobWithVersions>
+
+/** The statuses of a job that is still in flight (the soft-uniqueness set). */
+export const INGEST_ACTIVE_STATUSES = [INGEST_STATUS.QUEUED, INGEST_STATUS.RUNNING] as const
 
 // ---------------------------------------------------------------------------
 // Admin console — OCR / ingestion usage.

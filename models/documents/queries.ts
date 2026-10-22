@@ -43,6 +43,18 @@ const resolvedDocumentSelect = {
 export type ResolvedDocumentRow = Prisma.DocumentGetPayload<{ select: typeof resolvedDocumentSelect }>
 
 export class DocumentQueries {
+  /**
+   * Statement: update a project's documents matching `ark` (one ARK or a set),
+   * for composition in a batch transaction. updateMany, so a missing row cannot throw.
+   */
+  static updateManyOp(
+    projectId: string,
+    ark: string | { in: string[] },
+    data: Prisma.DocumentUncheckedUpdateManyInput,
+  ) {
+    return prisma.document.updateMany({ where: { projectId, ark }, data })
+  }
+
   /** The pending rows a resolve pass may try at `now`: under the `maxAttempts` ceiling and past their backoff. */
   private static dueResolveWhere(now: Date, maxAttempts: number): Prisma.DocumentWhereInput {
     return {

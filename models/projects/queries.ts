@@ -1,14 +1,22 @@
 import "server-only"
 
 import { prisma } from "@/lib/db"
+import type { Prisma } from "@/lib/generated/prisma/client"
 import type { VisibilityScope } from "@/lib/authz/project-access"
 import {
+  projectWithMessageUsage,
   projectWithShares,
   type Project,
+  type ProjectWithMessageUsage,
   type ProjectWithShares,
 } from "./schema"
 
 export class ProjectQueries {
+  /** Statement: update a project row (for composition in a batch transaction). */
+  static updateOp(projectId: string, data: Prisma.ProjectUncheckedUpdateInput) {
+    return prisma.project.update({ where: { id: projectId }, data })
+  }
+
   /**
    * The single loader every authorization path uses. It always includes
    * `shares`, because lib/authz/project-access.ts reads them: a Project loaded
@@ -98,4 +106,12 @@ export class ProjectQueries {
     return prisma.project.count({ where: { corpusSourceId: sourceProjectId } })
   }
 
+  /**
+   * Every project in the instance with the usage of all its messages. Demo-scale
+   * aggregation shared in shape with UserQueries.listWithAdminStats: one fetch,
+   * the totals are computed by MessageService.projectUsageTotals.
+   */
+  static async listWithMessageUsage(): Promise<ProjectWithMessageUsage[]> {
+    return prisma.project.findMany(projectWithMessageUsage)
+  }
 }
