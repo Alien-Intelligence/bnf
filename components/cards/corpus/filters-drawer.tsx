@@ -74,6 +74,9 @@ function typeColorVar(code: string, index: number): string {
 function langColorVar(_code: string, index: number): string {
   return index === 0 ? "var(--brand-teal)" : "var(--neutral-500)"
 }
+function subtypeColorVar(_code: string, index: number): string {
+  return DATASET_COLOR_CYCLE[index % DATASET_COLOR_CYCLE.length]
+}
 function sourceColorVar(): string {
   return "var(--dataset-5)"
 }
@@ -123,6 +126,7 @@ export function CardCorpusFiltersDrawer({
   onChange: onChangeProp,
 }: Props) {
   const t = useTranslations("corpus.filters")
+  const tSubtype = useTranslations("corpus.filters.subtypes")
   const [open, setOpen] = useState(false)
 
   // Provide stable defaults so the drawer is usable read-only when commit #9
@@ -136,6 +140,7 @@ export function CardCorpusFiltersDrawer({
 
   const typeSelected = selectedValues(filters, "type")
   const langSelected = selectedValues(filters, "lang")
+  const subtypeSelected = selectedValues(filters, "subtype")
   const sourceSelected = selectedValues(filters, "source")
   const sessionSelected = selectedValues(filters, "session")
   const ingestSelected = selectedValues(filters, "ingest")
@@ -154,6 +159,11 @@ export function CardCorpusFiltersDrawer({
     for (const s of corpus.sessions) m[s.sessionId] = s.title
     return m
   }, [corpus.sessions])
+  // Gallica's subtype vocabulary: labelled when known, else the raw code.
+  const subtypeLabel = useCallback(
+    (code: string) => (tSubtype.has(code) ? tSubtype(code) : code),
+    [tSubtype],
+  )
   const sessionLabel = useCallback(
     (id: string) => sessionTitleById[id] ?? id,
     [sessionTitleById],
@@ -163,6 +173,7 @@ export function CardCorpusFiltersDrawer({
   const activeCount =
     typeSelected.length +
     langSelected.length +
+    subtypeSelected.length +
     sourceSelected.length +
     sessionSelected.length +
     ingestSelected.length +
@@ -182,6 +193,11 @@ export function CardCorpusFiltersDrawer({
   const handleTypeToggle = useCallback(
     (code: string) =>
       onChange(toggleFilterValue(filters, "type", code)),
+    [filters, onChange],
+  )
+  const handleSubtypeToggle = useCallback(
+    (code: string) =>
+      onChange(toggleFilterValue(filters, "subtype", code)),
     [filters, onChange],
   )
   const handleLangToggle = useCallback(
@@ -321,6 +337,22 @@ export function CardCorpusFiltersDrawer({
                     color="var(--destructive)"
                   />
                 )}
+              </FacetCard>
+            )}
+
+            {Object.keys(facets.subtype).length > 0 && (
+              <FacetCard title={t("facetSubtypeTitle")}>
+                <CardCorpusFacetBars
+                  facet={facets.subtype}
+                  selected={subtypeSelected}
+                  onToggle={handleSubtypeToggle}
+                  getLabel={subtypeLabel}
+                  getColor={subtypeColorVar}
+                  swatchShape="square"
+                />
+                <p className="text-[11px] leading-snug text-muted-foreground">
+                  {t("subtypeNote")}
+                </p>
               </FacetCard>
             )}
 

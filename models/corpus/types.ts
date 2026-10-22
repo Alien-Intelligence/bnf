@@ -14,6 +14,7 @@ import {
   outcomeListSchema,
   sessionIdListSchema,
   sourceListSchema,
+  subtypeListSchema,
   textAnySchema,
 } from "@/lib/filters"
 
@@ -34,6 +35,14 @@ import { arkSchema } from "@/lib/validation/ark"
 
 export const corpusFilterFieldsSchema = z.strictObject({
   type: docTypeListSchema.optional().describe('Doc-type codes to match, e.g. ["book","press"].'),
+  subtype: subtypeListSchema
+    .optional()
+    .describe(
+      "Gallica subcategories to match, finer than `type`: fascicules | titres (periodicals), " +
+        "estampes | dessins | photographies | … (images), plan | carte | atlas | … (maps). " +
+        "Monographs, manuscripts and scores have no subcategory, so a document of unknown " +
+        "subcategory is never matched by this criterion.",
+    ),
   lang: langListSchema.optional().describe('Language codes to match (ISO 639, lowercase), e.g. ["fr","la","de"].'),
   source: sourceListSchema.optional().describe('Sources to match: "gallica" | "catalogue" | "databnf" | "other".'),
   session: sessionIdListSchema

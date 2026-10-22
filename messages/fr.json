@@ -486,6 +486,26 @@
       "facetTypeTitle": "Par type de document",
       "facetLangTitle": "Par langue",
       "facetSourceTitle": "Par source",
+      "subtypes": {
+        "atlas": "Atlas",
+        "carte": "Carte",
+        "cartes": "Cartes",
+        "coupe": "Coupe",
+        "dessins": "Dessins",
+        "diagramme": "Diagramme",
+        "estampes": "Estampes",
+        "fascicules": "Fascicules",
+        "globe": "Globe",
+        "maquette": "Maquette",
+        "objets": "Objets",
+        "photographies": "Photographies",
+        "plan": "Plan",
+        "teledetection": "Télédétection",
+        "titres": "Titres de presse",
+        "vue": "Vue"
+      },
+      "facetSubtypeTitle": "Par sous-type",
+      "subtypeNote": "Les sous-types sont les catégories fines de Gallica. Les monographies n'en ont pas : elles ne correspondent jamais à un filtre de sous-type.",
       "facetSessionTitle": "Par session",
       "chrono": {
         "title": "Répartition chronologique",
@@ -560,6 +580,7 @@
         "notOnGallica": "Ce document n'est pas numérisé sur Gallica — notice catalographique uniquement.",
         "fields": {
           "type": "Type",
+          "subtype": "Sous-type",
           "date": "Date",
           "pages": "Pages",
           "lang": "Langue",
@@ -568,6 +589,7 @@
           "ocr": "Océrisation",
           "ingestion": "Ingestion"
         },
+        "subtypeNone": "Aucun sous-type (les monographies n'en ont pas)",
         "values": {
           "digitized": "Numérisé",
           "notDigitized": "Non numérisé",
@@ -1030,12 +1052,12 @@
         "title": "Faire lire les documents sans texte",
         "explain": "{count, plural, one {# document textuel de votre sélection n'a pas de texte lisible} other {# documents textuels de votre sélection n'ont pas de texte lisible}}. Un service d'océrisation payant peut les rendre consultables.",
         "docsLabel": "Documents concernés",
-        "costLabel": "Coût estimé",
-        "cost": "≈ {cost} $",
+        "costLabel": "Coût maximum",
+        "cost": "jusqu'à {cost} $",
         "enable": "Activer",
         "enabled": "Océrisation incluse ✓",
         "overBudget": "Coût supérieur au budget ({ceiling} $)",
-        "footnote": "Facturé à la page, en dehors de votre abonnement. Désactivé par défaut.",
+        "footnote": "Facturé à la page, en dehors de votre abonnement. Le montant est un maximum : un document dont le nombre de pages n'est pas encore connu (un fascicule de presse, par exemple) est compté pour 300 vues, et le montant confirmé est celui qui est facturé. Désactivé par défaut.",
         "budget": "Budget plateforme : {spent} $ / {ceiling} $ utilisés"
       },
       "tech": {
@@ -1065,12 +1087,12 @@
     },
     "paidOcr": {
       "confirmTitle": "Océrisation à la demande",
-      "confirmBody": "{count, plural, one {# document numérisé sans couche OCR sera transcrit} other {# documents numérisés sans couche OCR seront transcrits}} via Mistral OCR. Ce traitement a un coût pour la plateforme (≈ {cost} $ US) — à utiliser à bon escient. Lancer l'océrisation ?",
+      "confirmBody": "{count, plural, one {# document numérisé sans couche OCR sera transcrit} other {# documents numérisés sans couche OCR seront transcrits}} via Mistral OCR. Ce traitement a un coût pour la plateforme pouvant atteindre {cost} $ US (un document dont le nombre de pages est inconnu est compté pour 300 vues, et le montant confirmé est celui qui est facturé) — à utiliser à bon escient. Lancer l'océrisation ?",
       "confirm": "Confirmer et lancer",
       "confirming": "Lancement…",
       "dismiss": "Annuler",
       "budgetTitle": "Budget OCR dépassé",
-      "budgetBody": "Cette transcription (~{cost} $) dépasserait le budget OCR du projet (déjà dépensé {spent} $ sur un plafond de {ceiling} $).",
+      "budgetBody": "Cette transcription (jusqu'à {cost} $) dépasserait le budget OCR du projet (déjà dépensé {spent} $ sur un plafond de {ceiling} $).",
       "close": "Fermer"
     },
     "queue": {

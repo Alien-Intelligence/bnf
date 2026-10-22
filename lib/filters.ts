@@ -15,6 +15,7 @@ import {
   TEXT_FILTER_MAX_VALUES,
   TEXT_FILTER_MIN_CHARS,
 } from "@/lib/constants"
+import { KNOWN_SUBTYPES } from "@/lib/mcp/vocab"
 import { ARK_KIND_VALUES, DOC_TYPE_CODE, DOCUMENT_SOURCE, INDEXATION_OUTCOME, INGESTION_CLASS } from "@/models/documents/schema"
 
 /** What a `*_remove_by_filter` call did — buffer and corpus alike. */
@@ -40,6 +41,9 @@ function codeList<T extends z.ZodType>(code: T) {
 
 /** Canonical docType codes (DOC_TYPE_CODE). */
 export const docTypeListSchema = codeList(z.enum(DOC_TYPE_CODE))
+
+/** Gallica typedoc subcategories (KNOWN_SUBTYPES): fascicules, titres, estampes, … */
+export const subtypeListSchema = codeList(z.enum(KNOWN_SUBTYPES))
 
 /** Record kinds (ARK_KIND). */
 export const arkKindListSchema = codeList(z.enum(ARK_KIND_VALUES))

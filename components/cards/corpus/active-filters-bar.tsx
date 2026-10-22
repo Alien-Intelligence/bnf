@@ -82,6 +82,7 @@ export function CardCorpusActiveFiltersBar({
   sessionTitleById,
 }: Props) {
   const t = useTranslations("corpus.filters")
+  const tSubtype = useTranslations("corpus.filters.subtypes")
 
   if (!hasActiveFilters(filters)) return null
 
@@ -99,6 +100,17 @@ export function CardCorpusActiveFiltersBar({
         />,
       )
     }
+  }
+
+  // Subtype — Gallica's vocabulary: labelled when known, else the raw code.
+  for (const value of selectedValues(filters, "subtype")) {
+    chips.push(
+      <ActiveChip
+        key={`subtype:${value}`}
+        label={tSubtype.has(value) ? tSubtype(value) : value}
+        onRemove={() => onChange(removeFilterValue(filters, "subtype", value))}
+      />,
+    )
   }
 
   // Sessions — label with the session title (resolved from the snapshot via the

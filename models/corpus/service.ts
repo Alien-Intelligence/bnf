@@ -593,6 +593,7 @@ export class CorpusService {
     const hasArray = (a?: string[]) => Array.isArray(a) && a.length > 0
     return !(
       hasArray(filters.type) ||
+      hasArray(filters.subtype) ||
       hasArray(filters.lang) ||
       hasArray(filters.source) ||
       hasArray(filters.session) ||

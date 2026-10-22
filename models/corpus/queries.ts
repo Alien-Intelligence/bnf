@@ -212,6 +212,7 @@ export class CorpusQueries {
       pendingCount,
       failedCount,
       typeRows,
+      subtypeRows,
       langRows,
       sourceRows,
       sessionRows,
@@ -236,6 +237,12 @@ export class CorpusQueries {
       prisma.document.groupBy({
         by: ["docType"],
         where: { ...resolvedWhere, docType: { not: null } },
+        _count: { ark: true },
+      }),
+      // Facet: subtype (resolved; most documents have none — they stay out)
+      prisma.document.groupBy({
+        by: ["subtype"],
+        where: { ...resolvedWhere, subtype: { not: null } },
         _count: { ark: true },
       }),
       // Facet: lang (resolved; skip null lang values)
@@ -288,6 +295,11 @@ export class CorpusQueries {
       // docType is nullable in the schema; resolvedWhere + `not: null` already
       // exclude nulls, but guard for the type-checker.
       if (r.docType !== null) typeFacet[r.docType] = r._count.ark
+    }
+
+    const subtypeFacet: Record<string, number> = {}
+    for (const r of subtypeRows) {
+      if (r.subtype !== null) subtypeFacet[r.subtype] = r._count.ark
     }
 
     const langFacet: Record<string, number> = {}
@@ -386,6 +398,7 @@ export class CorpusQueries {
       failedCount,
       facets: {
         type: typeFacet,
+        subtype: subtypeFacet,
         lang: langFacet,
         source: sourceFacet,
         period: periodFacet,

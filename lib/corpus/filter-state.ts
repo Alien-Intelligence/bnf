@@ -7,7 +7,7 @@
 import { corpusFilterSetSchema, type CorpusFilterSet } from "@/models/corpus/types"
 
 /** The multi-select dimensions the panel toggles. */
-export const CORPUS_LIST_FILTER_KEYS = ["type", "lang", "source", "session", "ingest", "outcome", "kind"] as const
+export const CORPUS_LIST_FILTER_KEYS = ["type", "subtype", "lang", "source", "session", "ingest", "outcome", "kind"] as const
 export type CorpusListFilterKey = (typeof CORPUS_LIST_FILTER_KEYS)[number]
 
 /** No filter at all. */

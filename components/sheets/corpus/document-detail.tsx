@@ -66,11 +66,24 @@ interface Props {
 }
 
 // One label/value pair in the metadata grid.
-function Field({ label, value }: { label: string; value: string }) {
+function Field({
+  label,
+  value,
+  hint,
+}: {
+  label: string
+  value: string
+  hint?: string
+}) {
   return (
     <div className="flex flex-col gap-1">
       <span className="mono-eyebrow">{label}</span>
       <span className="text-[12.5px] text-foreground">{value}</span>
+      {hint && (
+        <span className="text-[11px] leading-snug text-muted-foreground">
+          {hint}
+        </span>
+      )}
     </div>
   )
 }
@@ -178,6 +191,7 @@ function LinkCard({
 
 export function SheetDocumentDetail({ doc, projectId, open, onOpenChange }: Props) {
   const t = useTranslations("corpus.documents")
+  const tSubtype = useTranslations("corpus.filters.subtypes")
   const remove = useRemoveFromCorpus(projectId)
   const retry = useRetryResolve(projectId)
   const promote = usePromoteNotice(projectId)
@@ -228,6 +242,13 @@ export function SheetDocumentDetail({ doc, projectId, open, onOpenChange }: Prop
   const typeLabel = doc.docType
     ? (DOC_TYPE[doc.docType]?.label ?? doc.docType)
     : t("detail.values.unknown")
+  // Subtype is Gallica's vocabulary; a value added after our label set shipped
+  // renders as its raw code rather than a missing-message error.
+  const subtypeLabel = doc.subtype
+    ? tSubtype.has(doc.subtype)
+      ? tSubtype(doc.subtype)
+      : doc.subtype
+    : "—"
   const langLabel = doc.lang ? (LANG[doc.lang]?.label ?? doc.lang) : "—"
   const sourceLabel = doc.source
     ? (SOURCE[doc.source]?.label ?? doc.source)
@@ -327,6 +348,11 @@ export function SheetDocumentDetail({ doc, projectId, open, onOpenChange }: Prop
               {/* Metadata grid */}
               <div className="mt-5 grid grid-cols-2 gap-x-3 gap-y-3.5">
                 <Field label={t("detail.fields.type")} value={typeLabel} />
+                <Field
+                  label={t("detail.fields.subtype")}
+                  value={subtypeLabel}
+                  hint={doc.subtype ? undefined : t("detail.subtypeNone")}
+                />
                 <Field label={t("detail.fields.date")} value={dateLabel} />
                 <Field
                   label={t("detail.fields.pages")}

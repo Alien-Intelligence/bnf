@@ -28,6 +28,7 @@ let project: Project
 type Fixture = {
   ark: string
   docType: string | null
+  subtype?: string
   title: string
   author: string | null
   lang: string | null
@@ -36,14 +37,14 @@ type Fixture = {
 }
 
 const DOCS: Fixture[] = [
-  { ark: "ark:/12148/bpt6k9200001", docType: "press", title: "L'Écho d'Oran", author: null, lang: "fr", year: 1937 },
-  { ark: "ark:/12148/bpt6k9200002", docType: "press", title: "Le Petit Marseillais", author: null, lang: "fr", year: 1937 },
+  { ark: "ark:/12148/bpt6k9200001", docType: "press", subtype: "fascicules", title: "L'Écho d'Oran", author: null, lang: "fr", year: 1937 },
+  { ark: "ark:/12148/bpt6k9200002", docType: "press", subtype: "fascicules", title: "Le Petit Marseillais", author: null, lang: "fr", year: 1937 },
   { ark: "ark:/12148/bpt6k9200003", docType: "book", title: "Die Alamannen", author: "Geuenich, Dieter", lang: "de", year: 1997 },
-  { ark: "ark:/12148/btv1b9200004", docType: "image", title: "Village suisse", author: null, lang: null, year: 1896 },
+  { ark: "ark:/12148/btv1b9200004", docType: "image", subtype: "estampes", title: "Village suisse", author: null, lang: null, year: 1896 },
   { ark: "ark:/12148/btv1b9200005", docType: "map", title: "Plan de Genève", author: null, lang: "fr", year: 1896 },
   { ark: "ark:/12148/bpt6k9200006", docType: "text", title: "Texte", author: null, lang: "fr", year: 1900 },
   { ark: "ark:/12148/bpt6k9200007", docType: null, title: "Sans type", author: null, lang: null, year: null },
-  { ark: "ark:/12148/cb92000008z", docType: "press", title: "Le Temps (titre)", author: null, lang: "fr", year: 1861 },
+  { ark: "ark:/12148/cb92000008z", docType: "press", subtype: "titres", title: "Le Temps (titre)", author: null, lang: "fr", year: 1861 },
   { ark: "ark:/12148/cb92000009z", docType: null, title: "Notice", author: "Clovis", lang: "fr", year: 1960 },
   { ark: "ark:/12148/cb92000010z", docType: "book", title: "Notice livre", author: null, lang: "fr", year: 1970 },
   { ark: "ark:/12148/bd6t9200011", docType: "press", title: "Numéro bd6t", author: null, lang: "fr", year: 1937 },
@@ -201,4 +202,35 @@ test("a language the version does not hold is refused for every read and the rem
   await assert.rejects(CorpusService.notUnknownCounts(project.id, "head", { not: { lang: ["xx"] } }), FilterValueError)
   await assert.rejects(arksRemovedBy({ not: { lang: ["xx"] } }), /Langue\(s\) absente\(s\) du corpus : xx/)
   assert.deepEqual(await arksFor({ lang: ["de"] }), ["ark:/12148/bpt6k9200003"], "a held language is accepted")
+})
+
+test("subtype selects the Gallica subcategory; a document with none is never matched", async () => {
+  assert.deepEqual(await arksFor({ subtype: ["fascicules"] }), ["ark:/12148/bpt6k9200001", "ark:/12148/bpt6k9200002"])
+  assert.deepEqual(await arksFor({ subtype: ["titres", "estampes"] }), ["ark:/12148/btv1b9200004", "ark:/12148/cb92000008z"])
+  assert.deepEqual(await arksFor({ type: ["press"], subtype: ["titres"] }), ["ark:/12148/cb92000008z"], "ANDed with the other dimensions")
+  assert.deepEqual(await arksRemovedBy({ subtype: ["fascicules"] }), ["ark:/12148/bpt6k9200001", "ark:/12148/bpt6k9200002"])
+})
+
+test("subtype counts as a constraint: a lone subtype filter is not an empty removal", async () => {
+  const preview = await CorpusService.removeByFilter(project, user, {
+    filters: { subtype: ["fascicules"] },
+    reason: "aperçu",
+    dryRun: true,
+  })
+  assert.equal(preview.status, "dry_run")
+  if (preview.status !== "dry_run") return
+  assert.equal(preview.matched, 2)
+})
+
+test("not.subtype — Decision 4: documents with no subcategory are neither listed nor removed, and are reported", async () => {
+  const expected = ["ark:/12148/btv1b9200004", "ark:/12148/cb92000008z"]
+  assert.deepEqual(await arksFor({ not: { subtype: ["fascicules"] } }), expected)
+  assert.deepEqual(await arksRemovedBy({ not: { subtype: ["fascicules"] } }), expected)
+  const snapshot = await CorpusService.snapshot(project.id, "head", { filters: { not: { subtype: ["fascicules"] } }, limit: 0 })
+  assert.deepEqual(snapshot.notUnknown, { subtype: DOCS.length - 4 })
+})
+
+test("the snapshot facets count subtypes of resolved documents only, with no null bucket", async () => {
+  const snapshot = await CorpusService.snapshot(project.id, "head", { limit: 0 })
+  assert.deepEqual(snapshot.facets.subtype, { fascicules: 2, estampes: 1, titres: 1 })
 })
