@@ -31,8 +31,11 @@ export interface IngestDoc {
   ark: string;
   /** Gallica typedoc subcategory; null when the app has none. */
   subtype: string | null;
-  /** The app's document type; null when the app sent none. */
-  docType: string | null;
+  /**
+   * The app's document type, already normalized app-side (the boundary funnel,
+   * unknown → "other"). Required: the app's ClusterDoc.docType is never null.
+   */
+  docType: string;
 }
 
 /** The fields v2 needs from the app's ClusterIngestRequest. */
@@ -55,14 +58,14 @@ function asString(v: unknown): string | null {
 }
 
 /**
- * An optional string field of an `added[]` entry: absent or null → null, a
- * non-blank string → itself. Anything else is a contract violation, reported by
- * the caller as a 400 rather than coerced.
+ * A nullable string field of an `added[]` entry: absent or null → null, a
+ * non-blank string → itself. Anything else (a non-string, a blank string) is a
+ * contract violation, reported by the caller as a 400 rather than coerced.
  */
-function optionalString(v: unknown): { ok: true; value: string | null } | { ok: false } {
+function nullableString(v: unknown): { ok: true; value: string | null } | { ok: false } {
   if (v === undefined || v === null) return { ok: true, value: null };
-  if (typeof v !== "string") return { ok: false };
-  return { ok: true, value: v.trim().length > 0 ? v : null };
+  const s = asString(v);
+  return s === null ? { ok: false } : { ok: true, value: s };
 }
 
 /**
@@ -96,11 +99,11 @@ export function parseIngestRequest(
     const doc = entry && typeof entry === "object" ? (entry as Record<string, unknown>) : null;
     const ark = doc ? asString(doc.ark) : null;
     if (!doc || !ark) return { ok: false, error: `added[${i}].ark is required` };
-    const subtype = optionalString(doc.subtype);
-    if (!subtype.ok) return { ok: false, error: `added[${i}].subtype must be a string or null` };
-    const docType = optionalString(doc.docType);
-    if (!docType.ok) return { ok: false, error: `added[${i}].docType must be a string or null` };
-    docs.push({ ark, subtype: subtype.value, docType: docType.value });
+    const subtype = nullableString(doc.subtype);
+    if (!subtype.ok) return { ok: false, error: `added[${i}].subtype must be a non-blank string or null` };
+    const docType = asString(doc.docType);
+    if (!docType) return { ok: false, error: `added[${i}].docType is required` };
+    docs.push({ ark, subtype: subtype.value, docType });
   }
 
   return {
@@ -110,11 +113,11 @@ export function parseIngestRequest(
 }
 
 /**
- * Open a run and seed its ARKs. Creates the ingest_run row first (so the callback
+ * Open a run and seed its docs' ARKs. Creates the ingest_run row first (so the callback
  * coordinates exist before any doc can complete and trigger a terminal emit), then
  * upserts one doc-state row per ARK and fans them onto the metadata bucket.
  *
- * An empty `arks` (a removal-only delta) creates a zero-doc run that completes
+ * An empty `docs` (a removal-only delta) creates a zero-doc run that completes
  * immediately — the caller emits its terminal event so the app commits the
  * removal. We never short-circuit it away here; the run row must exist for the
  * callback to fire.

@@ -28,6 +28,7 @@ import {
   parseV3Manifest,
   pickDcType,
   pickTypedocFromHeader,
+  PRESS_DC_TYPE,
 } from "./parse.js";
 
 // ---------------------------------------------------------------------------
@@ -527,4 +528,25 @@ test("gallicaPageCount: no typedoc + a non-press dc:type keeps the count", () =>
 test("gallicaPageCount: an absent or non-positive count is null, never 0", () => {
   assert.equal(gallicaPageCount("monographies", null, "texte"), null);
   assert.equal(gallicaPageCount("monographies", 0, "texte"), null);
+});
+
+// The app's PRESS_MARKER (lib/mcp/vocab.ts) is the same pattern, and the worker
+// cannot import app code; this table is what both copies must satisfy.
+const PRESS_LABEL_FIXTURES: ReadonlyArray<readonly [label: string, isPress: boolean]> = [
+  ["publication en série imprimée", true],
+  ["Publication en Série Imprimée", true],
+  ["périodique", true],
+  ["periodique", true],
+  ["presse", true],
+  ["journal", true],
+  ["série imprimée", true],
+  ["monographie imprimée", false],
+  ["texte", false],
+  ["carte", false],
+];
+
+test("PRESS_DC_TYPE classifies the press-label fixture table", () => {
+  for (const [label, isPress] of PRESS_LABEL_FIXTURES) {
+    assert.equal(PRESS_DC_TYPE.test(label), isPress, label);
+  }
 });

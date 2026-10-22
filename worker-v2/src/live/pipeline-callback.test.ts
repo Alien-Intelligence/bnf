@@ -74,7 +74,7 @@ const body = (arks: string[]) => ({
   projectId: "p1",
   targetVersionId: "v2",
   appJobId: "job-1",
-  added: arks.map((ark) => ({ ark })),
+  added: arks.map((ark) => ({ ark, docType: "texte" })),
   removed: [],
   callbackUrl: "http://127.0.0.1:1/api/internal/ingest/job-1/progress",
   callbackSecret: "s3cr3t",

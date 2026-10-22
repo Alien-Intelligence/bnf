@@ -61,7 +61,7 @@ test("parseIngestRequest reads subtype: a string is kept, null and absent become
       added: [
         { ark: "ark:/12148/a", docType: "texte", subtype: "fascicules" },
         { ark: "ark:/12148/b", docType: "image", subtype: null },
-        { ark: "ark:/12148/c" },
+        { ark: "ark:/12148/c", docType: "other" },
       ],
     }),
   );
@@ -70,17 +70,25 @@ test("parseIngestRequest reads subtype: a string is kept, null and absent become
   assert.deepEqual(r.value.docs, [
     { ark: "ark:/12148/a", subtype: "fascicules", docType: "texte" },
     { ark: "ark:/12148/b", subtype: null, docType: "image" },
-    { ark: "ark:/12148/c", subtype: null, docType: null },
+    { ark: "ark:/12148/c", subtype: null, docType: "other" },
   ]);
 });
 
-test("parseIngestRequest rejects a non-string subtype or docType with the specific reason", () => {
-  const badSubtype = parseIngestRequest(validBody({ added: [{ ark: "ark:/12148/a", subtype: 3 }] }));
-  assert.deepEqual(badSubtype, { ok: false, error: "added[0].subtype must be a string or null" });
-  const badDocType = parseIngestRequest(
-    validBody({ added: [{ ark: "ark:/12148/a" }, { ark: "ark:/12148/b", docType: ["texte"] }] }),
-  );
-  assert.deepEqual(badDocType, { ok: false, error: "added[1].docType must be a string or null" });
+test("parseIngestRequest rejects a non-string or blank subtype with the specific reason", () => {
+  const expected = { ok: false, error: "added[0].subtype must be a non-blank string or null" };
+  for (const subtype of [3, "", "   "]) {
+    const r = parseIngestRequest(validBody({ added: [{ ark: "ark:/12148/a", docType: "texte", subtype }] }));
+    assert.deepEqual(r, expected);
+  }
+});
+
+test("parseIngestRequest requires a non-blank string docType", () => {
+  for (const docType of [undefined, null, "", "  ", ["texte"], 3]) {
+    const r = parseIngestRequest(
+      validBody({ added: [{ ark: "ark:/12148/a", docType: "texte" }, { ark: "ark:/12148/b", docType }] }),
+    );
+    assert.deepEqual(r, { ok: false, error: "added[1].docType is required" });
+  }
 });
 
 test("createRunAndSeed puts subtype and docType on the queued DocRefs", async () => {

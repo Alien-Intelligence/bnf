@@ -64,6 +64,12 @@ const altoParser = new XMLParser({
 // ARK helpers (ported from V1 slug.ts)
 // ---------------------------------------------------------------------------
 
+/** The BnF ARK prefix (NAAN 12148) — the only ARKs the worker accepts. */
+export const BNF_ARK_PREFIX = "ark:/12148/";
+
+/** Raw-payload key under which the OAI view count (title-level for press) stays traceable. */
+export const RAW_OAI_TOTAL_VIEWS = "oai_total_views";
+
 const ARK_RE = /^ark:\/12148\/([A-Za-z0-9._-]+)$/;
 
 /** Extract the BnF-internal identifier (e.g. "btv1b9015469h") from a full ARK. */
@@ -80,9 +86,9 @@ export function arkToSlug(ark: string): string {
  */
 export function ensureCanonicalArk(ark: string): string {
   const trimmed = ark.trim();
-  if (!trimmed.startsWith("ark:/12148/")) {
+  if (!trimmed.startsWith(BNF_ARK_PREFIX)) {
     throw new PermanentBnfError("bad_ark", {
-      hint: `expected "ark:/12148/<id>", got: ${ark}`,
+      hint: `expected "${BNF_ARK_PREFIX}<id>", got: ${ark}`,
     });
   }
   return trimmed;
@@ -208,10 +214,13 @@ const FASCICULE_TYPEDOC = "periodiques:fascicules";
 
 /**
  * Press markers in a <dc:type> label. A fascicule that carries no typedoc
- * setSpec is still recognisable by "publication en série imprimée". Mirrors the
- * app's press regex (lib/mcp/vocab.ts) so both sides drop the same counts.
+ * setSpec is still recognisable by "publication en série imprimée". The app's
+ * PRESS_MARKER (lib/mcp/vocab.ts) is the same pattern, applied to a lowercased
+ * label instead of case-insensitively; the worker cannot import app code, so
+ * parse.test.ts pins this one to a fixture table (PRESS_LABEL_FIXTURES) that
+ * PRESS_MARKER must satisfy too.
  */
-const PRESS_DC_TYPE = /p[ée]riodique|presse|journal|publication en s[ée]rie|s[ée]rie imprim/i;
+export const PRESS_DC_TYPE = /p[ée]riodique|presse|journal|publication en s[ée]rie|s[ée]rie imprim/i;
 
 /**
  * The page count to trust from an OAI record. "Nombre total de vues" is the view

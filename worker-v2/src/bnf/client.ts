@@ -42,6 +42,7 @@ import { brokerGet, brokerUrl } from "./broker-client.js";
 import {
   altoFolioFromParse,
   arkToSlug,
+  BNF_ARK_PREFIX,
   descriptionsHaveModeTexte,
   emptyAltoFolio,
   ensureCanonicalArk,
@@ -57,6 +58,7 @@ import {
   pickDcType,
   pickFirstLanguage,
   pickTypedocFromHeader,
+  RAW_OAI_TOTAL_VIEWS,
   textOf,
   typedocSubtype,
 } from "./parse.js";
@@ -98,6 +100,17 @@ function optionalIntEnv(name: string, fallback: number): number {
 //     NOT openapi.bnf.fr — that public host serves IIIF from a no-token,
 //     anonymous-per-IP pool that is not our subscription.
 const OAI_PMH = "http://oai.bnf.fr/oai2/OAIHandler";
+
+// Accept headers, one per payload kind (a typo in one copy would silently change
+// content negotiation for a single path).
+const ACCEPT_XML = "application/xml, text/xml, */*";
+const ACCEPT_MANIFEST_JSON = "application/json, application/ld+json";
+const ACCEPT_JPEG = "image/jpeg";
+
+/** The ARK path segment both IIIF APIs (Presentation and Image) key a document by. */
+function iiifArkPath(canonicalArk: string): string {
+  return `${BNF_ARK_PREFIX}${arkToSlug(canonicalArk)}`;
+}
 
 interface FetchResult {
   status: number;
@@ -248,8 +261,10 @@ function classifyStatus(
  *                from the full canvas list, before slicing it to maxCanvases).
  *   • subtype  — null: the manifest does not carry the Gallica typedoc. The
  *                subtype that reaches the index comes from ClusterDoc.subtype on
- *                the ingest contract (the app resolved it from OAI); the worker
- *                makes no OAI fetch for it.
+ *                the ingest contract (the app resolved it from OAI); this
+ *                manifest path makes no OAI fetch for it. Only the OAI fallback
+ *                (getDocumentInfoViaOai) derives a subtype itself, from the
+ *                record's typedoc setSpec.
  *   • iiifManifestUrl — the caller's (BnfClient.manifestUrl), so this function
  *                stays pure and the API base lives in the client alone.
  */
@@ -318,9 +333,9 @@ export class LiveBnfClient implements BnfClient {
     return `${this.presentationArkBase(canonicalArk)}/manifest.json`;
   }
 
-  /** `<presentation base>/presentation/v3/ark:/12148/<slug>` — manifest and ALTO hang off it. */
+  /** `<presentation base>/presentation/v3/<ark path>` — manifest and ALTO hang off it. */
   private presentationArkBase(canonicalArk: string): string {
-    return `${this.iiif.presentationBaseUrl}/presentation/v3/ark:/12148/${arkToSlug(canonicalArk)}`;
+    return `${this.iiif.presentationBaseUrl}/presentation/v3/${iiifArkPath(canonicalArk)}`;
   }
 
   // ---------------- getDocumentInfoViaOai ----------------
@@ -348,7 +363,7 @@ export class LiveBnfClient implements BnfClient {
 
     const { status, bytes, contentType } = await brokerFetch(
       url,
-      "application/xml, text/xml, */*",
+      ACCEPT_XML,
       DEFAULT_TIMEOUT_MS,
     );
     const body = decodeForStatus(status, bytes, contentType);
@@ -427,7 +442,7 @@ export class LiveBnfClient implements BnfClient {
         language: lang,
         source: DOC_INFO_SOURCE.OAI_PMH,
         gallica_typedoc: typedoc,
-        oai_total_views: totalViews,
+        [RAW_OAI_TOTAL_VIEWS]: totalViews,
         pageNumber: pageCount,
       },
     };
@@ -445,7 +460,7 @@ export class LiveBnfClient implements BnfClient {
     // and usually lost against the broker's own legitimate 120s upstream wait).
     const { status, bytes, contentType } = await brokerFetch(
       url,
-      "application/json, application/ld+json",
+      ACCEPT_MANIFEST_JSON,
       PAGE_TIMEOUT_MS,
     );
     const body = decodeForStatus(status, bytes, contentType);
@@ -478,7 +493,7 @@ export class LiveBnfClient implements BnfClient {
     signal?.throwIfAborted();
     const { status, bytes, contentType } = await brokerFetch(
       url,
-      "application/xml, text/xml, */*",
+      ACCEPT_XML,
       PAGE_TIMEOUT_MS,
     );
     signal?.throwIfAborted(); // an answer arriving after the caller's ceiling is discarded
@@ -500,12 +515,11 @@ export class LiveBnfClient implements BnfClient {
    */
   async fetchImageFolio(ark: string, ordre: number, size: string): Promise<Buffer> {
     const canonicalArk = ensureCanonicalArk(ark);
-    const slug = arkToSlug(canonicalArk);
-    const url = `${this.iiif.imageBaseUrl}/image/v3/ark:/12148/${slug}/f${ordre}/full/${size}/0/default.jpg`;
+    const url = `${this.iiif.imageBaseUrl}/image/v3/${iiifArkPath(canonicalArk)}/f${ordre}/full/${size}/0/default.jpg`;
 
     const { status, bytes, contentType } = await brokerFetch(
       url,
-      "image/jpeg",
+      ACCEPT_JPEG,
       PAGE_TIMEOUT_MS,
     );
     if (status < 200 || status >= 300) {
