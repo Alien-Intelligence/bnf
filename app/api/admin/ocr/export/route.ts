@@ -2,17 +2,16 @@
  * GET /api/admin/ocr/export
  *
  * Streams a CSV of paid-OCR jobs (project, cost, docs, status, timing).
- * Admin-only — same flat role gate and same aggregation as /api/admin/ocr.
+ * Admin-only (UserPolicy.exportAdminData) — same aggregation as /api/admin/ocr.
  */
 import { withAuth } from "@/app/api/_middleware"
-import { forbidden } from "@/lib/api-response"
 import { csvDownloadHeaders } from "@/lib/constants"
 import { toCsv } from "@/lib/csv"
+import { UserPolicy } from "@/models/users/policy"
 import { IngestQueries } from "@/models/ingest/queries"
 
-export const GET = withAuth(async (_req, user) => {
-  // Admin-only — flat role gate (not a per-resource ownership decision).
-  if (user.role !== "admin") return forbidden()
+export const GET = withAuth(async (_req, _user, bouncer) => {
+  await bouncer.with(UserPolicy).authorize("exportAdminData")
 
   const usage = await IngestQueries.adminOcrUsage(10_000)
 

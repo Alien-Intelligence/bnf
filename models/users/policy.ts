@@ -13,4 +13,8 @@ export class UserPolicy {
     return this.user.role === USER_ROLE.ADMIN || this.user.id === target.id
   }
 
+  /** The admin console's CSV exports (accounts, feedback, OCR, usage) are admin-only. */
+  exportAdminData(): boolean {
+    return this.user.role === USER_ROLE.ADMIN
+  }
 }

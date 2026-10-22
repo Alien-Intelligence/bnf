@@ -1,18 +1,17 @@
 /**
  * GET /api/admin/feedback/export
  *
- * Streams a CSV of every feedback row, resolved to its target. Admin-only —
- * same flat role gate and same resolution as /api/admin/feedback.
+ * Streams a CSV of every feedback row, resolved to its target. Admin-only
+ * (UserPolicy.exportAdminData), same resolution as /api/admin/feedback.
  */
 import { withAuth } from "@/app/api/_middleware"
-import { forbidden } from "@/lib/api-response"
 import { csvDownloadHeaders } from "@/lib/constants"
 import { toCsv } from "@/lib/csv"
+import { UserPolicy } from "@/models/users/policy"
 import { FeedbackQueries } from "@/models/feedback/queries"
 
-export const GET = withAuth(async (_req, user) => {
-  // Admin-only — flat role gate (not a per-resource ownership decision).
-  if (user.role !== "admin") return forbidden()
+export const GET = withAuth(async (_req, _user, bouncer) => {
+  await bouncer.with(UserPolicy).authorize("exportAdminData")
 
   const feedback = await FeedbackQueries.listAllResolvedForAdmin()
 
