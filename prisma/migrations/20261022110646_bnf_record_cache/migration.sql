@@ -8,12 +8,13 @@ CREATE TABLE "bnf_record" (
     CONSTRAINT "bnf_record_pkey" PRIMARY KEY ("ark")
 );
 
--- Seed from the records the resolver already fetched. The ONLY thing copied out
--- of "document" is `raw_metadata`, the unnormalized BnF payload, i.e. exactly
--- what the BnF published. No project field (indexed_at, index_error,
--- canonical_status, project_id) reaches "bnf_record"; the project row is only
--- the place the published payload was kept (playbook/sharing.md). One-time
--- exception, decided by Leo (SDS-945).
+-- Seed from the records the resolver already fetched. The ONLY column read out
+-- of "document" is `raw_metadata`, the unnormalized BnF payload, copied minus
+-- the OCR-verdict keys and with the raw view count carried as `oai_total_views`
+-- (rebuilt below, as playbook/sharing.md states). No project field
+-- (indexed_at, index_error, canonical_status, project_id) reaches
+-- "bnf_record"; the project row is only the place the published payload was
+-- kept. One-time exception, decided by Leo (SDS-945).
 --
 -- Only rows with OAI provenance (`gallica_typedoc` is read from the OAI record
 -- header) are copied: manifest-derived rows have no typedoc and would spread

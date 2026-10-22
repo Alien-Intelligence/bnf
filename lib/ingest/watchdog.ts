@@ -39,8 +39,7 @@ import type { IngestJob } from "@/lib/generated/prisma/client"
 import type { ClusterProgressPoll } from "@/lib/cluster/contracts"
 import { CLUSTER_POLL } from "@/models/ingest/schema"
 import { startPeriodic } from "@/lib/async/periodic"
-
-const MS_PER_MINUTE = 60 * 1000
+import { MS_PER_MINUTE } from "@/lib/constants"
 
 /** How stale a QUEUED job (no clusterJobId) must be to count as an F19 corpse. */
 export const WATCHDOG_QUEUED_STALE_MS = 15 * MS_PER_MINUTE

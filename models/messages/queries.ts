@@ -1,15 +1,6 @@
 import "server-only"
-
-import { prisma } from "@/lib/db"
-import { projectWithMessageUsage, type ProjectWithMessageUsage } from "./schema"
-
-export class MessageQueries {
-  /**
-   * Every project in the instance with the usage of all its messages. Demo-scale
-   * aggregation shared in shape with UserQueries.listWithAdminStats: one fetch,
-   * the totals are computed by the service.
-   */
-  static async projectsWithUsage(): Promise<ProjectWithMessageUsage[]> {
-    return prisma.project.findMany(projectWithMessageUsage)
-  }
-}
+// Empty by design: the one cross-model read the messages model needs, every
+// project with the usage of its messages, is a Project-rooted query and lives
+// in ProjectQueries.listWithMessageUsage (models.md: the model that owns the
+// primary entity writes the join).
+export class MessageQueries {}

@@ -1,7 +1,7 @@
 import "server-only"
 
 import { USAGE_EXPORT_WINDOW_MS } from "@/lib/constants"
-import { MessageQueries } from "./queries"
+import { ProjectQueries } from "@/models/projects/queries"
 import type { ProjectUsageTotals } from "./schema"
 import { messageUsageSchema } from "./types"
 
@@ -13,7 +13,7 @@ export class MessageService {
    */
   static async projectUsageTotals(now: Date): Promise<ProjectUsageTotals[]> {
     const since = new Date(now.getTime() - USAGE_EXPORT_WINDOW_MS)
-    const projects = await MessageQueries.projectsWithUsage()
+    const projects = await ProjectQueries.listWithMessageUsage()
 
     return projects.map((p) => {
       const totals: ProjectUsageTotals = {

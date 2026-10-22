@@ -5,6 +5,9 @@
 
 import { LOGIN_METHOD } from "@/models/users/schema"
 
+/** Milliseconds in one minute; the unit of every `N * MS_PER_MINUTE` duration. */
+export const MS_PER_MINUTE = 60_000
+
 // ---------------------------------------------------------------------------
 // Database pool bounds (lib/db.ts) — every query the app sends is bounded
 // (CLAUDE_ERROR_PATTERNS §14), so a hung statement or an exhausted pool fails

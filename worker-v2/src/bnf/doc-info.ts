@@ -165,7 +165,7 @@ export function inspectCachedDocInfo(raw: unknown): CachedDocInfo {
     pageCount: nullablePageCount(raw, ark),
     iiifManifestUrl: nullableString(raw, "iiifManifestUrl", ark),
     lang: nullableString(raw, "lang", ark),
-    raw: { ...rawBlob, source },
+    raw: { ...rawBlob, [RAW_SOURCE]: source },
   };
   return { info, unusableTauxOcr: unusable };
 }

@@ -276,9 +276,14 @@ script (`BnfRecordService.upsertMany`) and the enricher
 `projectId` to it. Copying another project's `Document` row to resolve an ARK
 is forbidden for the same reason (it carries that project's state and needs a
 cross-project read). The only thing that may be copied out of a `Document` is
-its `raw_metadata`, the unnormalized BnF payload exactly as published, and only
-as the one-time seed in migration `20261022110646_bnf_record_cache`; never
-`indexedAt`, `indexError`, `canonicalStatus`, or which project holds the ARK.
+its `raw_metadata`, and only as the one-time seed in migration
+`20261022110646_bnf_record_cache`. The seed is not a verbatim copy: it removes
+the OCR-verdict keys (`ocr_available`, `ocr_source`, `pages`, `pages_source`,
+`taux_ocr`), puts `ocr_available` back only when it was `true`, and carries the
+raw OAI view count (`pages`) as `oai_total_views`, so every seeded entry is a
+clean staged entry that the OCR and page rules re-apply to at commit time. It
+never copies project state: `indexedAt`, `indexError`, `canonicalStatus`, or
+which project holds the ARK.
 
 ## Deletion
 

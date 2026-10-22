@@ -8,6 +8,7 @@ import {
   type DocTypeCode,
   type DocumentSource,
 } from "@/models/documents/schema"
+import { IIIF_MANIFEST_URL } from "@/lib/constants"
 import { fullBnfArk } from "@/lib/validation/ark"
 
 /**
@@ -390,5 +391,5 @@ export function iiifManifestUrl(ark: string, source: string): string | null {
   if (source !== DOCUMENT_SOURCE.GALLICA) return null
   const full = fullBnfArk(ark)
   if (full === null) return null
-  return `https://gallica.bnf.fr/iiif/${full}/manifest.json`
+  return IIIF_MANIFEST_URL(full)
 }
