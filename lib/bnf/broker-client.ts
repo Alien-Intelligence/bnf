@@ -21,18 +21,26 @@ export function brokerUrl(): string | undefined {
   return v && v.trim() !== "" ? v.trim() : undefined
 }
 
-/** Upstream status + decoded body, as returned through the broker. */
+/** The one thing callers read off response headers: a case-insensitive lookup. */
+export interface ResponseHeaders {
+  get(name: string): string | null
+}
+
+/** Upstream status, decoded body and headers, as returned through the broker. */
 export interface BrokerTextResult {
   status: number
   body: string
+  headers: ResponseHeaders
 }
 
 /**
  * Fetch one BnF URL through the broker. The broker selects the auth + rate
  * bucket from the URL (partner API → Bearer + global cap; manifest → + manifest
  * cap; ungated oai/catalogue/data → politeness bucket, no auth) and mirrors the
- * upstream status verbatim. Throws on broker-transport failure (treated as
- * transient, same as a direct network error).
+ * upstream status verbatim. The response headers come back too: `Retry-After` is
+ * the upstream's, or the shedding bucket's refill time when the broker itself
+ * shed the request. Throws on broker-transport failure (treated as transient,
+ * same as a direct network error).
  */
 export async function brokerGetText(
   targetUrl: string,
@@ -50,5 +58,5 @@ export async function brokerGetText(
     body: JSON.stringify({ url: targetUrl, accept }),
     signal: withTimeout(signal, timeoutMs),
   })
-  return { status: res.status, body: await res.text() }
+  return { status: res.status, body: await res.text(), headers: res.headers }
 }
