@@ -296,18 +296,81 @@ export function gallicaSubtype(
 }
 
 /**
+ * Every Gallica typedoc subcategory (the second ":"-segment of a setSpec), as
+ * published by the live ListSets output (verified 2026-10-22). It is the closed
+ * vocabulary `gallicaSubtype()` can return and the corpus `subtype` filter
+ * validates against, so a typo is refused instead of silently matching nothing.
+ * A subtype Gallica adds later is stored (the column is free text) but cannot be
+ * filtered on until it is added here.
+ */
+export const KNOWN_SUBTYPES = [
+  "atlas",
+  "carte",
+  "cartes",
+  "coupe",
+  "dessins",
+  "diagramme",
+  "estampes",
+  "fascicules",
+  "globe",
+  "maquette",
+  "objets",
+  "photographies",
+  "plan",
+  "teledetection",
+  "titres",
+  "vue",
+] as const
+
+/** The Gallica typedoc whose records are single periodical issues. */
+const FASCICULE_TYPEDOC = "periodiques:fascicules"
+
+/**
+ * Press markers in a free-text doc_type / dc:type. "publication en série
+ * imprimée" is the press label of records that carry no typedoc setSpec; the
+ * catalogue SRU never has a typedoc at all. Shared by mapCatalogueDocType and
+ * gallicaPageCount so the two cannot disagree on what a periodical is.
+ */
+export const PRESS_MARKER = /p[ée]riodique|presse|journal|publication en s[ée]rie|s[ée]rie imprim/
+
+/**
+ * The page count of a Gallica record, or null when none can be trusted.
+ *
+ * OAI's "Nombre total de vues" is collection-level for a periodical issue
+ * (bpt6k268418n has 4 folios, OAI says 3197), so it is never a page count
+ * there:
+ *   - `periodiques:fascicules` → null;
+ *   - no typedoc AND a press dcType (a fascicule without a setSpec) → null;
+ *   - otherwise `totalViews` when it is a finite positive integer, else null.
+ *
+ * When the IIIF manifest was fetched, its canvas count is authoritative and
+ * replaces this value (see normalizeDocument).
+ */
+export function gallicaPageCount(
+  typedoc: string | undefined,
+  totalViews: number | undefined,
+  dcType: string | undefined,
+): number | null {
+  const normalizedTypedoc = typedoc?.trim().toLowerCase() ?? ""
+  if (normalizedTypedoc === FASCICULE_TYPEDOC) return null
+  if (normalizedTypedoc === "" && PRESS_MARKER.test(dcType?.toLowerCase() ?? ""))
+    return null
+  return typeof totalViews === "number" && Number.isInteger(totalViews) && totalViews > 0
+    ? totalViews
+    : null
+}
+
+/**
  * Map a Catalogue free-text doc_type string to our canonical docType.
  * Best-effort regex; returns null when nothing matches — caller falls back to
  * "other" AND must emit a structured WARN log so we can grow the map.
  */
 export function mapCatalogueDocType(raw: string): string | null {
   const s = raw.toLowerCase()
-  // "publication en série imprimée" is the IIIF manifest's press marker — it has no
-  // typedoc setSpec, so without this the periodical falls through to "texte" →
-  // "book" (the press misclassification bug). Order matters: press is tested before
-  // the "texte"→book rule. See ai-memories bnf-metadata-via-manifest.
-  if (/p[ée]riodique|presse|journal|publication en s[ée]rie|s[ée]rie imprim/.test(s))
-    return "press"
+  // Press is tested before the "texte"→book rule below: the catalogue SRU and
+  // Gallica records without a typedoc setSpec carry only a free-text label, and
+  // "publication en série imprimée" would otherwise fall through to "book".
+  if (PRESS_MARKER.test(s)) return "press"
   if (/carte|plan/.test(s)) return "map"
   // Scores: the manifest labels them "Musique notée" / "musique manuscrite" — no
   // "partition" token. Tested BEFORE manuscript: "musique manuscrite" contains the

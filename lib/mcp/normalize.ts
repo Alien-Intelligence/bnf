@@ -18,6 +18,7 @@ import type { BnfMcpDocumentDetail } from "@/lib/bnf/types"
 import {
   GALLICA_DOC_TYPE,
   canonicalLang,
+  gallicaPageCount,
   gallicaSubtype,
   iiifManifestUrl,
   mapCatalogueDocType,
@@ -193,6 +194,10 @@ export function parseBnfDate(
   return { year: null, label: s }
 }
 
+function finiteNumberOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null
+}
+
 // ---------------------------------------------------------------------------
 // normalizeDocument
 // ---------------------------------------------------------------------------
@@ -214,7 +219,9 @@ export function parseBnfDate(
  * 7. `docType` — Gallica enum key → GALLICA_DOC_TYPE[key]; Catalogue
  *    free-text → mapCatalogueDocType(); missing → "book" for catalogue,
  *    "other" for anything else; unknown free-text → "other" + hook.
- * 8. `pages` / `excerpt` — passed through as-is when present.
+ * 8. `pages` — Gallica: the manifest canvas count when `pages_source` is
+ *    "manifest", else gallicaPageCount over OAI's raw view count (null for
+ *    periodical issues); Catalogue: passed through. `excerpt` — as-is.
  * 9. `iiifManifestUrl` — derived via vocab helper (Gallica only).
  * 10. `rawMetadata` — the full mcp object (preserve for re-normalize).
  *
@@ -320,10 +327,24 @@ export function normalizeDocument(
   }
 
   // ── 8. Pages + excerpt ────────────────────────────────────────────────────
+  // The ONE place that decides `pages` for a Gallica record, so the resolver,
+  // the BnfRecord cache read, the enricher and fix-doc-types agree:
+  //   - the IIIF manifest was fetched (`pages_source === "manifest"`): its
+  //     canvas count is authoritative whatever the type, a fascicule included;
+  //   - otherwise OAI's raw view count goes through gallicaPageCount, which
+  //     refuses it for periodical issues (collection-level figure) and for
+  //     anything that is not a positive integer.
+  // Catalogue records keep the count the SRU parser gave.
   const pages =
-    typeof mcp.pages === "number" && Number.isFinite(mcp.pages)
-      ? mcp.pages
-      : null
+    source === DOCUMENT_SOURCE.GALLICA
+      ? mcp.pages_source === "manifest"
+        ? finiteNumberOrNull(mcp.pages)
+        : gallicaPageCount(
+            rawTypedoc ?? undefined,
+            mcp.oai_total_views,
+            rawDocType ?? undefined,
+          )
+      : finiteNumberOrNull(mcp.pages)
   const excerpt =
     typeof mcp.excerpt === "string" && mcp.excerpt.trim() !== ""
       ? mcp.excerpt.trim()
@@ -333,13 +354,16 @@ export function normalizeDocument(
   const manifestUrl = iiifManifestUrl(fullArk, source)
 
   // ── 9b. OCR availability ──────────────────────────────────────────────────
-  // The MCP reports a text layer via `ocr_available`. Preserve true/false as
-  // given; leave null (unknown) when the field is absent rather than guessing.
+  // Preserve true/false as the resolver set it; leave null (unknown) when the
+  // field is absent or null rather than guessing. Never coerced to false: false
+  // routes a document to paid OCR.
   const ocrAvailable =
     typeof mcp.ocr_available === "boolean" ? mcp.ocr_available : null
 
   // ── 10. rawMetadata ───────────────────────────────────────────────────────
-  // Preserve the full MCP payload so we can re-normalize without re-fetching.
+  // Preserve the full payload so we can re-normalize without re-fetching. It
+  // keeps the provenance the page and OCR decisions depended on
+  // (`oai_total_views`, `ocr_source`, `pages_source`).
   const rawMetadata: unknown = mcp
 
   return {
