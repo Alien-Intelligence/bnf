@@ -19,7 +19,7 @@ replicaCount: 1
 image:
   repository: rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo
   pullPolicy: Always
-  tag: "0.19.1"
+  tag: "0.20.0"
 
 imagePullSecrets: []
 
@@ -157,7 +157,7 @@ worker:
   image:
     repository: rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo-worker
     pullPolicy: Always
-    tag: "0.19.1"
+    tag: "0.20.0"
 
   service:
     type: ClusterIP
@@ -345,7 +345,7 @@ broker:
   image:
     repository: rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo-broker
     pullPolicy: Always
-    tag: "0.19.1"
+    tag: "0.20.0"
 
   service:
     type: ClusterIP
@@ -365,7 +365,9 @@ broker:
     # ALTO + image fetches share a bulk limit of global minus the manifest,
     # catalogue and graphe rpm (raising one of those lowers the worker's fetch
     # throughput), and it takes 75 % of the manifest bucket, the rest being the
-    # app's. A global rpm that leaves no bulk room stops the worker at boot.
+    # app's (the corpus resolver reads a manifest only for a text-like document
+    # whose OAI record lacks "mode texte": press issues, a few monographs). A
+    # global rpm that leaves no bulk room stops the worker at boot.
     #
     # Invariant, checked at render (bnf-demo.validateRates): rpm + burst <= quota
     # — BnF counts fixed clock-minute windows and a token bucket can emit

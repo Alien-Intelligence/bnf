@@ -1,6 +1,6 @@
 apiVersion: v2
 name: bnf-demo
-version: 0.19.1
+version: 0.20.0
 description: BnF Corpus Research — Alien Intelligence × BnF demo (Next.js app + ingest worker + BnF broker + Postgres)
 type: application
 # 0.9.0 — worker+broker hardening pass 2: pg-boss sliding-window fetch (the ~600/min
@@ -77,4 +77,23 @@ type: application
 # minus the manifest, catalogue and graphe rpm, and the worker takes 75 % of the
 # manifest bucket. Derived from BNF_RATES, no config change. App and broker
 # sources are unchanged; their images are rebuilt only to keep the tags in step.
-appVersion: "0.19.1"
+# 0.20.0 — SDS-945, corpus metadata back on OAI-PMH, all three images. The corpus
+# resolver is hybrid: Gallica OAI is always fetched first (title, creator, date,
+# language, subjects, typedoc -> docType + subtype, views); a record OAI marks
+# "mode texte" is OCR'd and costs no manifest call, an image-like docType needs no
+# OCR flag, and ONLY a text-like document OAI does not mark (every periodical
+# issue, ~4 % of monographs, manuscripts, scores) reads the IIIF manifest, whose
+# canvas count gives its pages and OCR flag. Live check of 277 prod rows: OAI
+# "mode texte" is 100 % precise but absent on 25/25 OCR'd press issues, so OAI
+# alone would have sent the press to paid OCR. A global BnfRecord cache keyed by
+# ARK (no TTL) stores the resolved record including the manifest result, so a
+# re-add in any project costs zero BnF calls; the staging enricher stays OAI-only.
+# Paid OCR: a document with unknown pages is held at the 300-page cap (the
+# confirmed estimate is what is charged; no charge-actual in this release).
+# subtype is now filterable in the corpus and carried to the index from the
+# ingest contract. Two migrations, applied at boot: bnf_record_cache (seeded from
+# OAI-provenance rows) and document_resolve_backoff. Retry-After from BnF is
+# forwarded by the broker and honoured by the app. Worker manifest share stays
+# 75 %; BNF_IIIF_PRESENTATION_BASE_URL stays on the app. No new config. The
+# legacy-row backfill (scripts/fix-doc-types.ts) is not run by the deploy.
+appVersion: "0.20.0"

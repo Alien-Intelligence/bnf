@@ -64,7 +64,15 @@ Clients (app `lib/bnf/broker-client.ts`, worker `worker-v2/src/bnf/broker-client
 
 ## Feeding the buckets (worker side)
 
-The broker is the rate **authority**; worker-v2 mirrors its rates with in-process gates so it does not offer far more than the broker grants (every shed is a wasted round trip). Its ALTO fetch stage is gated by `presentation ∧ bulk ∧ global`, its image fetch stage by `image ∧ bulk ∧ global`, its manifest fetches by its manifest share `∧ presentation ∧ global`. Bulk is global minus the manifest, catalogue and graphe rpm, so a large ingest's fetches always leave global room for its own metadata lookups; the worker's manifest share is 75 % of the manifest bucket, the rest being the app's (0.19.1, after the 2026-10-06 starvation). Each fetch stage's concurrency is sized `permits ≈ rpm × latency_s / 60` with headroom (`BNF_ALTO_FETCH_CONCURRENCY`, `BNF_IMAGE_FETCH_CONCURRENCY`); see `worker-v2/RUN.md`.
+The broker is the rate **authority**; worker-v2 mirrors its rates with in-process gates so it does not offer far more than the broker grants (every shed is a wasted round trip). Its ALTO fetch stage is gated by `presentation ∧ bulk ∧ global`, its image fetch stage by `image ∧ bulk ∧ global`, its manifest fetches by its manifest share `∧ presentation ∧ global`. Bulk is global minus the manifest, catalogue and graphe rpm, so a large ingest's fetches always leave global room for its own metadata lookups; the worker's manifest share is 75 % of the manifest bucket, the rest being the app's (0.19.1, after the 2026-10-06 starvation). The app's 25 % now serves only the manifest fetches of corpus add's hybrid resolver (rule 4: text-like documents OAI does not mark "mode texte"); all other corpus-add metadata goes through OAI on the `external` bucket. Each fetch stage's concurrency is sized `permits ≈ rpm × latency_s / 60` with headroom (`BNF_ALTO_FETCH_CONCURRENCY`, `BNF_IMAGE_FETCH_CONCURRENCY`); see `worker-v2/RUN.md`.
+
+## Retry-After
+
+The broker tells callers how long to back off.
+
+- An upstream `Retry-After` is forwarded verbatim on the response, whatever its status (delta-seconds, an HTTP-date, or BnF's French-localized date). Parsing it is the client's job.
+- When the broker sheds a request itself (a bucket of the plan cannot grant a token within `BNF_ACQUIRE_MAX_WAIT_MS`, or is frozen by an earlier 429/403), the 429 carries `Retry-After` in whole seconds: the time until that bucket can serve a token (refill deficit or remaining freeze), rounded up, never below 1.
+- No header when the upstream sent none and the request was not shed.
 
 ## Raising a quota
 

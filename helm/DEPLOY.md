@@ -168,7 +168,7 @@ helm template t helm/bnf-demo-chart > /dev/null
 Bump the same version everywhere (keep them in sync):
 
 ```
-1. bnf/package.json                              — "version"
+1. bnf/package.json + package-lock.json         — "version" (root entries)
 2. bnf/helm/bnf-demo-chart/values.yaml           — image.tag
 3. bnf/helm/bnf-demo-chart/values.yaml           — worker.image.tag
 4. bnf/helm/bnf-demo-chart/values.yaml           — broker.image.tag
