@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8" ?><OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.openarchives.org/OAI/2.0/ http://www.openarchives.org/OAI/2.0/OAI-PMH.xsd"><responseDate>2026-10-22T11:02:28Z</responseDate><request verb="GetRecord" metadataPrefix="oai_dc" identifier="oai:bnf.fr:gallica/ark:/12148/bpt6k559134j">http://oai.bnf.fr/oai2/OAIHandler</request><GetRecord><record><header><identifier>oai:bnf.fr:gallica/ark:/12148/bpt6k559134j</identifier><datestamp>2024-02-28</datestamp><setSpec>gallica:theme:0:07</setSpec><setSpec>gallica:typedoc:periodiques:fascicules</setSpec></header><metadata><oai_dc:dc xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:oai_dc="http://www.openarchives.org/OAI/2.0/oai_dc/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.openarchives.org/OAI/2.0/oai_dc/ http://www.openarchives.org/OAI/2.0/oai_dc.xsd">
+<dc:identifier>http://gallica.bnf.fr/ark:/12148/bpt6k559134j</dc:identifier>
+<dc:date>1903-02-04</dc:date>
+<dc:description>04 février 1903</dc:description>
+<dc:description>1903/02/04 (Numéro 6919).</dc:description>
+<dc:description/>
+<dc:title>Le Matin : derniers télégrammes de la nuit</dc:title>
+<dc:contributor>Edwards, Alfred (1856-1914). Directeur de publication</dc:contributor>
+<dc:publisher>[s.n.] (Paris)</dc:publisher>
+<dc:type xml:lang="fre">texte</dc:type>
+<dc:type xml:lang="eng">text</dc:type>
+<dc:type xml:lang="fre">publication en série imprimée</dc:type>
+<dc:type xml:lang="eng">printed serial</dc:type>
+<dc:language>fre</dc:language>
+<dc:relation>Notice du catalogue : http://catalogue.bnf.fr/ark:/12148/cb328123058</dc:relation>
+<dc:source>Bibliothèque nationale de France</dc:source>
+<dc:rights xml:lang="fre">domaine public</dc:rights>
+<dc:rights xml:lang="eng">public domain</dc:rights>
+<dc:relation>http://gallica.bnf.fr/ark:/12148/cb328123058/date</dc:relation>
+<dc:description>Appartient à l’ensemble documentaire : GCFeTra</dc:description>
+<dc:description>Appartient à l’ensemble documentaire : GCGen1</dc:description>
+<dc:format>Nombre total de vues :  123753</dc:format>
+</oai_dc:dc>
+</metadata></record></GetRecord></OAI-PMH>

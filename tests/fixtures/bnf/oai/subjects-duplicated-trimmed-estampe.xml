@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8" ?><OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.openarchives.org/OAI/2.0/ http://www.openarchives.org/OAI/2.0/OAI-PMH.xsd"><responseDate>2026-10-22T11:02:32Z</responseDate><request verb="GetRecord" metadataPrefix="oai_dc" identifier="oai:bnf.fr:gallica/ark:/12148/btv1b69497161">http://oai.bnf.fr/oai2/OAIHandler</request><GetRecord><record><header><identifier>oai:bnf.fr:gallica/ark:/12148/btv1b69497161</identifier><datestamp>2022-06-15</datestamp><setSpec>gallica:typedoc:images:estampes</setSpec></header><metadata><oai_dc:dc xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:oai_dc="http://www.openarchives.org/OAI/2.0/oai_dc/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.openarchives.org/OAI/2.0/oai_dc/ http://www.openarchives.org/OAI/2.0/oai_dc.xsd">
+<dc:identifier>http://gallica.bnf.fr/ark:/12148/btv1b69497161</dc:identifier>
+<dc:title>Louis XVI Roi de France et de Navarre. Né à Versailles le 23 août 1754 mort le 21 janvier 1793 : testament de Louis XVI conforme à la minute déposée à la commune de Paris... : [estampe] / [non identifié]</dc:title>
+<dc:description>Collectionneur : Vinck, Carl de (1859-1931). Collectionneur</dc:description>
+<dc:publisher>chez Lepetit (A Paris)</dc:publisher>
+<dc:date>1793</dc:date>
+<dc:subject xml:lang="fre">Louis XVI (1754-1793 ; roi de France)</dc:subject>
+<dc:subject xml:lang="fre">Louis XVI (1754-1793 ; roi de France) -- Testaments</dc:subject>
+<dc:description>Référence bibliographique : De Vinck, 5238</dc:description>
+<dc:description>Référence bibliographique : Vidéodisque, 5825-5827</dc:description>
+<dc:subject xml:lang="fre">Portraits -- 1789-1799</dc:subject>
+<dc:subject xml:lang="fre">  Portraits -- 1789-1799 </dc:subject>
+<dc:subject xml:lang="fre"> </dc:subject>
+<dc:format>1 est. : eau-forte ; 41,5 x 31 cm (élt d'impr.)</dc:format>
+<dc:relation>Notice de recueil : http://catalogue.bnf.fr/ark:/12148/cb38793035x</dc:relation>
+<dc:relation>Appartient à : [Recueil. Collection de Vinck. Un siècle d'histoire de France par l'estampe, 1770-1870. Vol. 31 (pièces 5142-5251), Ancien Régime et Révolution]</dc:relation>
+<dc:relation>Notice du catalogue : http://catalogue.bnf.fr/ark:/12148/cb402479077</dc:relation>
+<dc:type xml:lang="fre">image fixe</dc:type>
+<dc:type xml:lang="eng">image</dc:type>
+<dc:type xml:lang="eng">still image</dc:type>
+<dc:type xml:lang="fre">estampe</dc:type>
+<dc:type xml:lang="eng">engraving</dc:type>
+<dc:source>Bibliothèque nationale de France, département Estampes et photographie, RESERVE QB-370 (31)-FT 4</dc:source>
+<dc:rights xml:lang="fre">domaine public</dc:rights>
+<dc:rights xml:lang="eng">public domain</dc:rights>
+<dc:description>Appartient à l’ensemble documentaire : Est18Rev1</dc:description>
+<dc:format>image/jpeg</dc:format>
+<dc:format>Nombre total de vues :  1</dc:format>
+</oai_dc:dc>
+</metadata></record></GetRecord></OAI-PMH>
