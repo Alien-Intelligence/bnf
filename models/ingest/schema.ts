@@ -38,6 +38,8 @@ export const CLUSTER_TERMINAL_STAGE = {
   DONE: "done",
   FAILED: "failed",
 } as const
+export type ClusterTerminalStage =
+  (typeof CLUSTER_TERMINAL_STAGE)[keyof typeof CLUSTER_TERMINAL_STAGE]
 
 /** The outcomes of one poll of the worker's read-model (ClusterClient.progress). */
 export const CLUSTER_POLL = {
@@ -49,6 +51,7 @@ export const CLUSTER_POLL = {
   /** The worker answered with a non-2xx other than 404. */
   WORKER_ERROR: "worker_error",
 } as const
+export type ClusterPoll = (typeof CLUSTER_POLL)[keyof typeof CLUSTER_POLL]
 
 /** Cost estimate for transcribing a set of `sans_texte` documents via paid OCR. */
 export interface PaidOcrEstimate {
