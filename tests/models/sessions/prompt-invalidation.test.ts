@@ -18,6 +18,7 @@ import { PROJECT_ACCESS } from "@/lib/authz/project-access"
 import { createTestUser, createTestProject, createTestSession, deleteTestUser } from "@/lib/testing/fixtures"
 import { markHeadIngested } from "@/lib/testing/mark-ingested"
 import { cleanupProject } from "@/lib/testing/project-cleanup"
+import { RESOLVE_RETRY_CAP_MS } from "@/lib/constants"
 import { resolvePendingForProject } from "@/lib/documents/resolver"
 import { CorpusService } from "@/models/corpus/service"
 import { IngestService } from "@/models/ingest/service"
@@ -114,20 +115,22 @@ test("resolving a stub drops the corpus prompts (their facet counts changed); a 
   // A batch where nothing resolves leaves the prompts alone.
   await cache(corpusSession, researchSession)
   await resolvePendingForProject(project.id, {
-    client: { resolveArks: async (arks) => arks.map((ark) => ({ ark, ok: false as const, error: new Error("BnF down") })) },
+    client: () => ({ resolveArks: async (arks) => arks.map((ark) => ({ ark, ok: false as const, error: new Error("BnF down") })) }),
   })
   assert.equal(await cached(corpusSession), CACHED, "no facet changed")
 
   // A batch where one resolves drops the corpus prompts in the same transaction.
+  // The first pass backed both rows off; the clock moves past any backoff.
   await resolvePendingForProject(project.id, {
-    client: {
+    now: () => new Date(Date.now() + RESOLVE_RETRY_CAP_MS),
+    client: () => ({
       resolveArks: async (arks) =>
         arks.map((ark) =>
           ark === ok
             ? { ark, ok: true as const, document: { ark: "bpt6k9810011", title: "Résolu", date: "1937", doc_type: "texte", language: "fre" } }
             : { ark, ok: false as const, error: new Error("BnF down") },
         ),
-    },
+    }),
   })
   assert.equal(await cached(corpusSession), null, "the corpus prompt's counts changed")
   assert.equal(await cached(researchSession), CACHED, "a resolve says nothing new to research")

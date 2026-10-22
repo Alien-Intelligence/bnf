@@ -30,9 +30,9 @@ The ingest worker is a third egress (IIIF manifest/ALTO/image via
 
 | Need | Path | Through the broker? |
 |---|---|---|
-| Resolve ARK → metadata (corpus add) | `BnfDirectClient.resolveArks` → broker → the manifest on the Presentation API (`BNF_IIIF_PRESENTATION_BASE_URL`), catalogue SRU; dev without a broker: `oai.bnf.fr` / `catalogue.bnf.fr` | ✅ |
+| Resolve ARK → metadata (corpus add) | `BnfDirectClient.resolveArks(arks, { mode: "commit" })` → broker → `oai.bnf.fr` (`external` bucket) first; the manifest on the Presentation API (`BNF_IIIF_PRESENTATION_BASE_URL`) **only** for a text-like docType that OAI does not mark "mode texte" (press issues, a few monographs); catalogue SRU for `cb…`; dev without a broker: the same hosts directly. A `BnfRecord` cache hit (keyed by ARK, no TTL, holds the manifest result) makes a re-add zero-call | ✅ |
 | `cb…` notice → digitized `bpt6k…` ARK | `BnfDirectClient.canonicalizeArks` → broker → `data.bnf.fr` SPARQL + catalogue SRU | ✅ |
-| Stage bare ARK → metadata (buffer_add) | `BnfDirectClient.resolveArksForStaging` → broker → `oai.bnf.fr` / catalogue SRU (never the manifest: its bucket is ingestion's) | ✅ |
+| Stage bare ARK → metadata (buffer_add) | `BnfDirectClient.resolveArks(arks, { mode: "staging" })` → broker → `oai.bnf.fr` / catalogue SRU only (never the manifest: its OCR flag is not needed before commit, and the commit-time resolve applies the manifest rule) | ✅ |
 | Worker ingest (manifest/ALTO → Presentation API, images → Image API) | `worker-v2/src/bnf/client.ts` → broker → `openapiproext.bnf.fr/{presentation,image}/iiif/gallica/<version>` | ✅ |
 | Agent search / browse / read | chat-sdk `mcpServers` → **BnF MCP server** | ❌ (separate egress) |
 | User-facing Gallica links / `<img>` | derived URLs (`lib/constants.ts`) → public `gallica.bnf.fr`, in the browser | ❌ (by design) |
@@ -50,8 +50,10 @@ credentials. See [ingestion-jobs.md](ingestion-jobs.md).
 ```ts
 // lib/bnf/direct.ts — import "server-only" is the first line.
 export class BnfDirectClient {
-  resolveArk(ark: string): Promise<BnfMcpDocumentDetail>
-  resolveArks(arks: string[]): Promise<Array<BnfMcpResolveResult | BnfMcpResolveError>>
+  // `mode` is required: "commit" (resolver/backfill: manifest allowed by the
+  // hybrid rule) or "staging" (research buffer: OAI only, never the manifest)
+  resolveArk(ark: string, opts: { mode: ResolveMode }): Promise<BnfMcpDocumentDetail>
+  resolveArks(arks: string[], opts: { mode: ResolveMode }): Promise<Array<BnfMcpResolveResult | BnfMcpResolveError>>
   classifyCanonical(ark: string): Promise<CanonicalizeOutcome>
   canonicalizeArks(arks: string[]): Promise<CanonicalizeOutcome[]>
 }
