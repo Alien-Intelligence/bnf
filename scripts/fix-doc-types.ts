@@ -52,7 +52,15 @@
  *   npm run fix:doc-types -- --apply --refresh   # re-fetch and overwrite the cache
  */
 import { parseArgs } from "node:util"
-import type { BnfMcpDocumentDetail, BnfMcpResolveError, BnfMcpResolveResult } from "@/lib/bnf/types"
+import {
+  OCR_SOURCE,
+  PAGES_SOURCE,
+  RAW_METADATA_KEY,
+  RESOLVE_MODE,
+  type BnfMcpDocumentDetail,
+  type BnfMcpResolveError,
+  type BnfMcpResolveResult,
+} from "@/lib/bnf/types"
 import type { Prisma } from "@/lib/generated/prisma/client"
 import { BnfMcpNotFoundError, BnfMcpRateLimitError } from "@/lib/mcp/errors"
 import { normalizeDocument } from "@/lib/mcp/normalize"
@@ -61,9 +69,6 @@ import { DOCUMENT_RESOLVE_STATUS, DOCUMENT_SOURCE } from "@/models/documents/sch
 /** Default ARKs per resolver call, and the pause between two batches that called BnF. */
 const DEFAULT_BATCH_SIZE = 10
 const DEFAULT_BATCH_DELAY_MS = 2000
-
-/** `pages_source` / `ocr_source` value of a manifest-derived row (lib/bnf/types.ts). */
-const PROVENANCE_MANIFEST = "manifest"
 
 // ---------------------------------------------------------------------------
 // Options
@@ -148,7 +153,7 @@ export interface RecordCache {
 export interface OaiResolver {
   resolveArks(
     arks: string[],
-    opts: { mode: "staging" },
+    opts: { mode: typeof RESOLVE_MODE.STAGING },
   ): Promise<Array<BnfMcpResolveResult | BnfMcpResolveError>>
 }
 
@@ -196,7 +201,7 @@ function isJsonObject(raw: Prisma.JsonValue | null): raw is Prisma.JsonObject {
 
 /** True when the stored rawMetadata carries the OAI typedoc (SQL: `raw_metadata ? 'gallica_typedoc'`). */
 function hasOaiTypedoc(raw: Prisma.JsonValue | null): boolean {
-  return isJsonObject(raw) && Object.hasOwn(raw, "gallica_typedoc")
+  return isJsonObject(raw) && Object.hasOwn(raw, RAW_METADATA_KEY.GALLICA_TYPEDOC)
 }
 
 /**
@@ -206,8 +211,8 @@ function hasOaiTypedoc(raw: Prisma.JsonValue | null): boolean {
  */
 function pagesCameFromOai(row: DocRow): boolean {
   if (!hasOaiTypedoc(row.rawMetadata)) return false
-  const source = isJsonObject(row.rawMetadata) ? row.rawMetadata["pages_source"] : undefined
-  return source !== PROVENANCE_MANIFEST
+  const source = isJsonObject(row.rawMetadata) ? row.rawMetadata[RAW_METADATA_KEY.PAGES_SOURCE] : undefined
+  return source !== PAGES_SOURCE.MANIFEST
 }
 
 /**
@@ -220,12 +225,12 @@ function pagesCameFromOai(row: DocRow): boolean {
 function mergedRawMetadata(row: DocRow, fresh: Prisma.InputJsonObject): Prisma.InputJsonValue {
   const stored = isJsonObject(row.rawMetadata) ? row.rawMetadata : null
   const legacy = !hasOaiTypedoc(row.rawMetadata)
-  const ocrSource = legacy ? PROVENANCE_MANIFEST : stored?.["ocr_source"]
-  const pagesSource = legacy ? PROVENANCE_MANIFEST : stored?.["pages_source"]
+  const ocrSource = legacy ? OCR_SOURCE.MANIFEST : stored?.[RAW_METADATA_KEY.OCR_SOURCE]
+  const pagesSource = legacy ? PAGES_SOURCE.MANIFEST : stored?.[RAW_METADATA_KEY.PAGES_SOURCE]
   return {
     ...fresh,
-    ...(ocrSource === undefined ? {} : { ocr_source: ocrSource }),
-    ...(pagesSource === undefined ? {} : { pages_source: pagesSource }),
+    ...(ocrSource === undefined ? {} : { [RAW_METADATA_KEY.OCR_SOURCE]: ocrSource }),
+    ...(pagesSource === undefined ? {} : { [RAW_METADATA_KEY.PAGES_SOURCE]: pagesSource }),
   }
 }
 
@@ -349,7 +354,7 @@ export async function runFixDocTypes(
     summary.deferred += allMisses.length - misses.length
 
     if (misses.length > 0) {
-      const results = await resolver.resolveArks(misses, { mode: "staging" })
+      const results = await resolver.resolveArks(misses, { mode: RESOLVE_MODE.STAGING })
       const records: BnfMcpResolveResult[] = []
       for (const res of results) {
         if (res.ok) records.push(res)

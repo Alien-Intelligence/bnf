@@ -236,7 +236,7 @@ async function handleFetch(req: IncomingMessage, res: ServerResponse): Promise<v
   let note = reminted ? "remint" : "ok";
   if (upstream.status === 429) {
     // The most specific bucket only, never `global` (plan.ts planFor).
-    const until = retryAfterToEpochMs(retryAfter ?? undefined, 60_000);
+    const until = retryAfterToEpochMs(retryAfter ?? undefined, config.rateLimitFallbackMs);
     buckets[plan.penalize].penalizeUntil(until);
     console.warn(`[broker] 429 from ${target.host}${target.pathname} — bucket ${plan.penalize} frozen until ${new Date(until).toISOString()}`);
     note = "freeze";

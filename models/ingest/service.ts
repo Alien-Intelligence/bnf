@@ -27,7 +27,7 @@ import {
   isIngestableClass,
   isLatinScriptLang,
 } from "@/models/documents/schema"
-import { CLUSTER_TERMINAL_STAGE, estimatePaidOcrCostUsd, INGEST_STATUS } from "./schema"
+import { CLUSTER_POLL, CLUSTER_TERMINAL_STAGE, estimatePaidOcrCostUsd, INGEST_STATUS } from "./schema"
 import type { PaidOcrEstimate } from "./schema"
 import type {
   IngestDeltaPreview,
@@ -36,12 +36,12 @@ import type {
   IngestSubmitOutcome,
 } from "./types"
 import {
-  CLUSTER_POLL,
   type ClusterProgressEvent,
   type ClusterQueueProgress,
 } from "@/lib/cluster/contracts"
 import { ClusterRunner } from "@/lib/cluster/runner"
 import { requestOcrSync } from "@/lib/documents/ocr-sync-signal"
+import { DocumentQueries } from "@/models/documents/queries"
 import { DocumentService } from "@/models/documents/service"
 import { PAID_OCR_DEFAULT_BUDGET_USD } from "@/lib/constants"
 import { env } from "@/lib/env"
@@ -850,15 +850,7 @@ export class IngestService {
     // partial-failure retry) never touches Document here.
     const docRows =
       statsErrors.length === 0
-        ? await prisma.document.findMany({
-            where: {
-              projectId: job.projectId,
-              ark: { in: job.addedArks },
-              indexedAt: null,
-              indexError: { not: null },
-            },
-            select: { ark: true, indexedAt: true, indexError: true },
-          })
+        ? await DocumentQueries.indexFailuresAmong(job.projectId, job.addedArks)
         : []
 
     const failedArks = computeRetryArks(statsErrors, job.addedArks, docRows)
@@ -1035,17 +1027,7 @@ export class IngestService {
         excludedNoScan: 0,
         unconfirmed: 0,
       }
-    const rows = await prisma.document.findMany({
-      where: { projectId, ark: { in: arks } },
-      select: {
-        ark: true,
-        docType: true,
-        ocrAvailable: true,
-        iiifManifestUrl: true,
-        resolveStatus: true,
-        lang: true,
-      },
-    })
+    const rows = await DocumentQueries.ingestClassificationRows(projectId, arks)
     const byArk = new Map(rows.map((r) => [r.ark, r]))
 
     const ingestable: string[] = []
@@ -1128,10 +1110,7 @@ export class IngestService {
     arks: string[],
   ): Promise<PaidOcrEstimate> {
     if (arks.length === 0) return { docCount: 0, pages: 0, usd: 0 }
-    const rows = await prisma.document.findMany({
-      where: { projectId, ark: { in: arks } },
-      select: { ark: true, pages: true },
-    })
+    const rows = await DocumentQueries.pagesByArks(projectId, arks)
     const pagesByArk = new Map(rows.map((r) => [r.ark, r.pages]))
     return estimatePaidOcrCostUsd(arks.map((ark) => pagesByArk.get(ark) ?? null))
   }
@@ -1157,19 +1136,7 @@ export class IngestService {
     }[]
   > {
     if (arks.length === 0) return []
-    const rows = await prisma.document.findMany({
-      where: { projectId, ark: { in: arks } },
-      select: {
-        ark: true,
-        title: true,
-        year: true,
-        docType: true,
-        subtype: true,
-        lang: true,
-        source: true,
-        iiifManifestUrl: true,
-      },
-    })
+    const rows = await DocumentQueries.clusterRows(projectId, arks)
     return rows.map((doc) => ({
       ark: doc.ark,
       // title/docType are null on stubs whose metadata hasn't resolved yet. The

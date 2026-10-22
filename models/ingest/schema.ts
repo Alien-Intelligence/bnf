@@ -39,6 +39,17 @@ export const CLUSTER_TERMINAL_STAGE = {
   FAILED: "failed",
 } as const
 
+/** The outcomes of one poll of the worker's read-model (ClusterClient.progress). */
+export const CLUSTER_POLL = {
+  PROGRESS: "progress",
+  /** 404: the worker does not know this run (pruned, or never seeded). */
+  RUN_UNKNOWN: "run_unknown",
+  /** No answer at all (transport error, timeout). */
+  WORKER_UNREACHABLE: "worker_unreachable",
+  /** The worker answered with a non-2xx other than 404. */
+  WORKER_ERROR: "worker_error",
+} as const
+
 /** Cost estimate for transcribing a set of `sans_texte` documents via paid OCR. */
 export interface PaidOcrEstimate {
   /** Number of `sans_texte` documents the estimate covers. */

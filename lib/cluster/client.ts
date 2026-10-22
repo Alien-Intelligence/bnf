@@ -17,11 +17,8 @@ import "server-only"
 import { z } from "zod"
 
 import { clusterQueueProgressSchema } from "@/models/ingest/types"
-import {
-  CLUSTER_POLL,
-  type ClusterIngestRequest,
-  type ClusterProgressPoll,
-} from "./contracts"
+import { CLUSTER_POLL } from "@/models/ingest/schema"
+import type { ClusterIngestRequest, ClusterProgressPoll } from "./contracts"
 import {
   OCR_SYNC_FAULT_SCOPE,
   OcrSyncContractError,

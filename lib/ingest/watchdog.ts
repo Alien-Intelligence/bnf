@@ -35,7 +35,8 @@ import { INGEST_STATUS } from "@/models/ingest/schema"
 import { IngestQueries } from "@/models/ingest/queries"
 import { IngestService } from "@/models/ingest/service"
 import { ClusterRunner } from "@/lib/cluster/runner"
-import { CLUSTER_POLL, type ClusterProgressPoll } from "@/lib/cluster/contracts"
+import type { ClusterProgressPoll } from "@/lib/cluster/contracts"
+import { CLUSTER_POLL } from "@/models/ingest/schema"
 import { startPeriodic } from "@/lib/async/periodic"
 
 /** How stale a QUEUED job (no clusterJobId) must be to count as an F19 corpse. */

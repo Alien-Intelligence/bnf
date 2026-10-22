@@ -19,10 +19,10 @@ import {
   type WatchdogJobInput,
 } from "./watchdog"
 import {
-  CLUSTER_POLL,
   type ClusterProgressPoll,
   type ClusterQueueProgress,
 } from "@/lib/cluster/contracts"
+import { CLUSTER_POLL } from "@/models/ingest/schema"
 
 const UNKNOWN: ClusterProgressPoll = { kind: CLUSTER_POLL.RUN_UNKNOWN }
 function polled(progress: ClusterQueueProgress): ClusterProgressPoll {
