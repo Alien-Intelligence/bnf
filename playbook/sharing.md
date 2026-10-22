@@ -238,6 +238,32 @@ The general shape: when a role widens what someone can *reach*, check separately
 what it should widen about what they are *shown*. Those are different questions
 and the honest answer is usually different.
 
+## `BnfRecord` — shared public data, never project state
+
+The one table that is global on purpose. `BnfRecord` (`models/bnf-records/`)
+holds the public BnF record of an ARK, keyed by ARK alone, so a project adding
+an ARK another project already resolved reads the record instead of asking the
+BnF again. The metadata resolver, the buffer enricher and the canonicalizer all
+read it.
+
+- **Public BnF data only.** The payload is what the BnF published; nothing
+  about a project is ever written to it — no membership, `indexedAt`,
+  `indexError` or `canonicalStatus`. A project's `Document` row is built from
+  the record on read and carries only that project's own state.
+- **Never joined to a project table.** No query takes a project id, and no
+  query reads `BnfRecord` and `Document`/`CorpusMembership` together. Readers
+  cannot learn which project holds an ARK.
+- **Accepted side channel: timing.** A resolve that hits the cache returns
+  faster than one that asks the BnF, so a patient observer could infer that
+  *someone* resolved an ARK before. The payload is public and the observer
+  learns neither who nor where; this is accepted, not mitigated.
+- **No TTL.** An entry changes only through an explicit refresh
+  (`scripts/fix-doc-types.ts --refresh`).
+
+⛔ **Forbidden**: copying another project's `Document` row to resolve an ARK
+(it carries that project's state and needs a cross-project read), and adding a
+`projectId` to `BnfRecord`.
+
 ## Deletion
 
 `Project.corpusSourceId` is `onDelete: Restrict`. A source cannot be deleted
@@ -303,6 +329,8 @@ mutate(p) { return canWriteProject(this.user, p) }
 - [ ] User-facing lists use `personalVisibilityScope` — a role widens what you
       may reach, not what belongs to you.
 - [ ] New reach over shared data tested from an account granted **nothing**.
+- [ ] Data shared across projects without a grant is public BnF data only
+      (`BnfRecord`), never joined to a project table.
 
 
 ## Relation to other rules

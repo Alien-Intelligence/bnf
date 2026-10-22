@@ -21,6 +21,7 @@ import {
 } from "@/lib/constants"
 import { enrichPendingForProject, type BufferEnrichClient } from "@/lib/buffer/enricher"
 import { BnfMcpError, BnfMcpNotFoundError } from "@/lib/mcp/errors"
+import { BnfRecordService } from "@/models/bnf-records/service"
 import { BufferService } from "@/models/buffer/service"
 import { BUFFER_ENRICH_STATUS } from "@/models/buffer/schema"
 import { createTestUser, createTestProject, deleteTestUser } from "@/lib/testing/fixtures"
@@ -47,19 +48,25 @@ async function freshProject(label: string): Promise<Project> {
 
 const ARK = (n: number) => `ark:/12148/bpt6k${String(9_300_000 + n)}`
 
-/** A fake staging client: answers from `respond`, counts every ARK it is asked for. */
+/** A fake staging client: answers from `respond`, counts every ARK it is asked for and the mode it was asked in. */
 function fakeClient(
   respond: (ark: string) => BnfMcpResolveResult | BnfMcpResolveError,
-): BufferEnrichClient & { asked: string[] } {
+): BufferEnrichClient & { asked: string[]; modes: string[] } {
   const asked: string[] = []
+  const modes: string[] = []
   return {
     asked,
-    async resolveArksForStaging(arks: string[]) {
+    modes,
+    async resolveArks(arks: string[], opts: { mode: "staging" }) {
       asked.push(...arks)
+      modes.push(opts.mode)
       return arks.map(respond)
     },
   }
 }
+
+/** The cache rows these tests may leave behind (ARK(n) is bpt6k93000nn). */
+const clearCache = () => prisma.bnfRecord.deleteMany({ where: { ark: { startsWith: "ark:/12148/bpt6k93000" } } })
 
 /** Stage bare ARKs exactly as buffer_add does. */
 async function stageBare(projectId: string, arks: string[]) {
@@ -77,10 +84,12 @@ async function row(projectId: string, ark: string) {
 
 before(async () => {
   user = await createTestUser()
+  await clearCache()
 })
 
 after(async () => {
   for (const id of projects) await cleanupProject(id)
+  await clearCache()
   await deleteTestUser(user.id)
 })
 
@@ -208,7 +217,7 @@ test("a whole batch that throws is persisted on every row, not lost", async () =
   const project = await freshProject("enrich-batch-fail")
   await stageBare(project.id, [ARK(6), ARK(7)])
   const throwing: BufferEnrichClient = {
-    async resolveArksForStaging() {
+    async resolveArks() {
       throw new BnfMcpError("broker unreachable")
     },
   }
@@ -226,7 +235,7 @@ test("a row cleared mid-drain is skipped, and the rest of the batch is still wri
   await stageBare(project.id, [ARK(8), ARK(9)])
   const detail = (ark: string): BnfMcpDocumentDetail => ({ ark: ark.replace("ark:/12148/", ""), title: "Titre", doc_type: "texte" })
   const client: BufferEnrichClient = {
-    async resolveArksForStaging(arks: string[]) {
+    async resolveArks(arks: string[], _opts: { mode: "staging" }) {
       await BufferService.clear(project.id) // the librarian clears while the broker answers
       await stageBare(project.id, [ARK(9)]) // and ARK(9) is staged again
       return arks.map((ark) => ({ ark, ok: true as const, document: detail(ark) }))
@@ -241,7 +250,7 @@ test("a drain stops at its wall-clock ceiling WITHOUT charging the rows an attem
   const project = await freshProject("enrich-ceiling")
   await stageBare(project.id, [ARK(11)])
   const hangs = (signal: AbortSignal): BufferEnrichClient => ({
-    resolveArksForStaging: () =>
+    resolveArks: () =>
       new Promise((_, reject) => {
         signal.addEventListener("abort", () => reject(signal.reason), { once: true })
       }),
@@ -258,7 +267,7 @@ test("per-ARK errors that land after the ceiling fired are not attempts either",
   const project = await freshProject("enrich-ceiling-per-ark")
   await stageBare(project.id, [ARK(12)])
   const answersLate = (signal: AbortSignal): BufferEnrichClient => ({
-    resolveArksForStaging: (arks) =>
+    resolveArks: (arks) =>
       new Promise((resolve) => {
         signal.addEventListener(
           "abort",
@@ -278,7 +287,7 @@ test("a BnF 404 that lands after the ceiling fired is still the BnF's answer: it
   const project = await freshProject("enrich-ceiling-404")
   await stageBare(project.id, [ARK(13)])
   const notFoundLate = (signal: AbortSignal): BufferEnrichClient => ({
-    resolveArksForStaging: (arks) =>
+    resolveArks: (arks) =>
       new Promise((resolve) => {
         signal.addEventListener(
           "abort",
@@ -291,4 +300,77 @@ test("a BnF 404 that lands after the ceiling fired is still the BnF's answer: it
   const r = await row(project.id, ARK(13))
   assert.equal(r.enrichStatus, BUFFER_ENRICH_STATUS.FAILED, "classified by cause, not by the signal's state")
   assert.equal(r.enrichAttempts, 1)
+})
+
+// --- the global BnF record cache -------------------------------------------
+
+test("what the BnF answers is written to the cache as a STAGED entry, asked for in staging mode", async () => {
+  const project = await freshProject("enrich-writes-cache")
+  await stageBare(project.id, [ARK(20)])
+  const client = fakeClient((ark) => ({
+    ark,
+    ok: true,
+    document: { ark: "bpt6k9300020", title: "Le Matin", doc_type: "texte", gallica_typedoc: "periodiques:fascicules", ocr_available: true },
+  }))
+  await enrichPendingForProject(project.id, { client: () => client, now: clock.now })
+  assert.deepEqual(client.modes, ["staging"])
+  const entry = await prisma.bnfRecord.findUniqueOrThrow({ where: { ark: ARK(20) } })
+  assert.equal(entry.source, "oai_gallica")
+  assert.equal((entry.payload as BnfMcpDocumentDetail).title, "Le Matin")
+  assert.equal(
+    BnfRecordService.needsOcrRule(ARK(20), entry.payload as BnfMcpDocumentDetail),
+    true,
+    "a staging entry carries no OCR verdict: the commit-time resolve must run the OCR rule on it",
+  )
+})
+
+test("a cached record fills the row with ZERO client calls, in a project that never saw the ARK", async () => {
+  const projectA = await freshProject("enrich-cache-a")
+  const projectB = await freshProject("enrich-cache-b")
+  await stageBare(projectA.id, [ARK(21)])
+  const first = fakeClient((ark) => ({
+    ark,
+    ok: true,
+    document: { ark: "bpt6k9300021", title: "Le Figaro", doc_type: "texte", gallica_typedoc: "periodiques:fascicules" },
+  }))
+  await enrichPendingForProject(projectA.id, { client: () => first, now: clock.now })
+  assert.deepEqual(first.asked, [ARK(21)], "positive control: the first project asked the BnF")
+
+  await stageBare(projectB.id, [ARK(21)])
+  const second = fakeClient(() => {
+    throw new Error("the cache must serve project B")
+  })
+  await enrichPendingForProject(projectB.id, { client: () => second, now: clock.now })
+  assert.deepEqual(second.asked, [])
+  const r = await row(projectB.id, ARK(21))
+  assert.equal(r.title, "Le Figaro")
+  assert.equal(r.arkKind, "periodical_issue")
+  assert.equal(r.enrichStatus, BUFFER_ENRICH_STATUS.RESOLVED)
+})
+
+test("a staging write never downgrades a complete cache entry stored meanwhile", async () => {
+  const project = await freshProject("enrich-no-downgrade")
+  await stageBare(project.id, [ARK(22)])
+  const client: BufferEnrichClient = {
+    async resolveArks(arks) {
+      // A commit-time resolve completes the entry while the broker answers.
+      await BnfRecordService.upsertMany([
+        { ark: ARK(22), ok: true, document: { ark: "bpt6k9300022", title: "Complet", ocr_source: "manifest", ocr_available: false, pages: 4 } },
+      ])
+      return arks.map((ark) => ({ ark, ok: true as const, document: { ark: "bpt6k9300022", title: "Staged", doc_type: "texte" } }))
+    },
+  }
+  await enrichPendingForProject(project.id, { client: () => client, now: clock.now })
+  const entry = await prisma.bnfRecord.findUniqueOrThrow({ where: { ark: ARK(22) } })
+  assert.equal((entry.payload as BnfMcpDocumentDetail).ocr_source, "manifest")
+  assert.equal((entry.payload as BnfMcpDocumentDetail).title, "Complet")
+})
+
+test("a record with no title is neither cached nor charged as anything but a failed attempt", async () => {
+  const project = await freshProject("enrich-untitled-not-cached")
+  await stageBare(project.id, [ARK(23)])
+  const client = fakeClient((ark) => ({ ark, ok: true, document: { ark: "bpt6k9300023", doc_type: "texte" } }))
+  await enrichPendingForProject(project.id, { client: () => client, now: clock.now })
+  assert.equal(await prisma.bnfRecord.findUnique({ where: { ark: ARK(23) } }), null)
+  assert.equal((await row(project.id, ARK(23))).enrichAttempts, 1)
 })

@@ -185,6 +185,9 @@ async function drainOnce(projectId: string, signal?: AbortSignal): Promise<void>
   // Resolve the freshly-stubbed digitized docs' metadata. We are already in a
   // detached background task, so invoke the resolver drain directly rather than
   // kickResolve() (which schedules via after() — not valid outside a request).
+  // The drain reads the global BnF record cache before it asks the BnF, so a
+  // digitized doc any project (or the buffer enricher) already resolved costs
+  // no OAI call here, and its own wall-clock ceiling bounds the call.
   if (newStubArks.length > 0) {
     await resolvePendingForProject(projectId, { signal }).catch((err: unknown) => {
       console.error(`[canonicalize] resolve after swap failed (${projectId}):`, err)

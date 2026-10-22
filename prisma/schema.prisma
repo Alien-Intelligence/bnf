@@ -303,6 +303,10 @@ model Document {
   resolveStatus   String  @default("pending") @map("resolve_status") // pending | resolved | failed
   resolveError    String? @map("resolve_error")
   resolveAttempts Int     @default(0) @map("resolve_attempts")
+  // Earliest time the drainer may try this pending row again (exponential
+  // backoff after a failed attempt, or the broker's Retry-After after a 429).
+  // Null = ready now. See lib/documents/resolver.ts.
+  nextResolveAt   DateTime? @map("next_resolve_at")
 
   // Outcome of the add-time cb→Gallica canonicalization pass, recorded ONLY on a
   // catalogue (cb…) notice that stayed a notice (was not upgraded to its
@@ -330,9 +334,36 @@ model Document {
 
   @@id([projectId, ark])
   @@index([projectId, year])
-  // Drainer lookup: pending rows (under the retry ceiling) per project.
-  @@index([resolveStatus, projectId])
+  // Drainer lookup: pending rows (under the retry ceiling) that are due, per project.
+  @@index([resolveStatus, nextResolveAt, projectId])
   @@map("document")
+}
+
+// -----------------------------------------------------------------------------
+// BnfRecord — the public BnF record of an ARK, keyed by ARK ALONE (not per
+// project): it is a property of the BnF catalogue, so every project that adds
+// the same ARK reads one record instead of re-fetching it. It holds public BnF
+// data only — never project state (no indexedAt / indexError / canonicalStatus,
+// no corpus membership) — and is never joined to a project table; see
+// playbook/sharing.md. Written by the resolver, the buffer enricher and the
+// canonicalizer (BnfRecordService); read through BnfRecordQueries.foundAmong.
+//   payload   the raw BnfMcpDocumentDetail, BEFORE normalization (a rule change
+//             in lib/mcp/normalize.ts therefore applies to cached entries too).
+//             A COMMIT entry carries the Gallica OCR verdict (`ocr_source`,
+//             `ocr_available`, `pages`, `pages_source`); a STAGING entry (written
+//             by the buffer enricher, OAI only) has no `ocr_source`, which is
+//             what tells the commit-time resolver to run the OCR rule on it.
+//   source    oai_gallica | catalogue_sru (BNF_RECORD_SOURCE)
+//   fetchedAt INFORMATIONAL only. There is NO TTL: an entry changes only through
+//             an explicit refresh (scripts/fix-doc-types.ts --refresh).
+// -----------------------------------------------------------------------------
+model BnfRecord {
+  ark       String   @id
+  payload   Json
+  source    String
+  fetchedAt DateTime @default(now()) @map("fetched_at")
+
+  @@map("bnf_record")
 }
 
 // -----------------------------------------------------------------------------
