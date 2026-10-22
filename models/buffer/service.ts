@@ -1,6 +1,5 @@
 import "server-only"
-import type { Prisma, Project, User } from "@/lib/generated/prisma/client"
-import { prisma } from "@/lib/db"
+import type { Project, User } from "@/lib/generated/prisma/client"
 import { CorpusQueries } from "@/models/corpus/queries"
 import { CorpusService } from "@/models/corpus/service"
 import type { CorpusAddResult } from "@/models/corpus/schema"
@@ -11,6 +10,11 @@ import {
   BUFFER_UNRESOLVED_ENRICH_STATUSES,
   type BufferCrossFacets,
   type BufferEnrichmentWrite,
+  type BufferInsert,
+  type BufferWhere,
+  type BufferRefresh,
+  type BufferRowRefresh,
+  type ExistingBufferRow,
   type BufferFacetDimension,
   type BufferRow,
   type BufferSnapshot,
@@ -125,15 +129,6 @@ export type BufferRemoveByFilterResult =
  */
 export type BufferCommitResult = BufferCommitCounts & { corpus: CorpusAddResult }
 
-/** The columns registerCandidates reads back for an existing row. */
-const existingRowSelect = {
-  ark: true,
-  status: true,
-  title: true,
-  enrichStatus: true,
-} satisfies Prisma.BufferItemSelect
-type ExistingRow = Prisma.BufferItemGetPayload<{ select: typeof existingRowSelect }>
-
 /** Enrichment states a hit carrying a title settles. */
 const UNSETTLED_ENRICH: ReadonlySet<string | null> = new Set([
   BUFFER_ENRICH_STATUS.PENDING,
@@ -151,7 +146,7 @@ function insertData(
   args: { projectId: string; sessionId?: string | null; originTool: string; originQuery?: string | null },
   c: BufferCandidateInput,
   status: string,
-): Prisma.BufferItemCreateManyInput {
+): BufferInsert {
   return {
     projectId: args.projectId,
     ark: c.ark,
@@ -188,7 +183,7 @@ function insertData(
  * version; a hit without one (a catalogue record) never downgrades a kind a
  * typed hit established. A title settles a pending/failed enrichment.
  */
-function refreshData(c: BufferCandidateInput, row: ExistingRow): Prisma.BufferItemUpdateInput {
+function refreshData(c: BufferCandidateInput, row: ExistingBufferRow): BufferRefresh {
   return {
     ...(c.title !== undefined ? { title: c.title } : {}),
     ...(c.year !== undefined ? { year: c.year } : {}),
@@ -230,8 +225,8 @@ function refreshData(c: BufferCandidateInput, row: ExistingRow): Prisma.BufferIt
 type TextColumn = "title" | "creator" | "subjects"
 
 /** Contains-ANY over one text column, case-insensitive (ILIKE). */
-function containsAny(column: TextColumn, values: string[]): Prisma.BufferItemWhereInput {
-  const match = (v: string): Prisma.BufferItemWhereInput => {
+function containsAny(column: TextColumn, values: string[]): BufferWhere {
+  const match = (v: string): BufferWhere => {
     const contains = { not: null, contains: v, mode: "insensitive" as const }
     switch (column) {
       case "title":
@@ -250,13 +245,13 @@ function containsAny(column: TextColumn, values: string[]): Prisma.BufferItemWhe
  * running 1861–1946 matches yearFrom 1937. `undated` widens a range to also
  * admit null-dated rows; alone, it selects them.
  */
-function yearClause(f: BufferFilterFields): Prisma.BufferItemWhereInput | null {
+function yearClause(f: BufferFilterFields): BufferWhere | null {
   const hasRange = f.yearFrom !== undefined || f.yearTo !== undefined
   if (!hasRange) return f.undated === true ? { year: null } : null
   // Every arm is two-valued (`not: null` beside each comparison): a NULL
   // `yearEnd` (a single-year row) must make an arm FALSE, never SQL NULL, or a
   // `not.yearFrom` hides the row from both a read and a removal.
-  const bounds: Prisma.BufferItemWhereInput[] = []
+  const bounds: BufferWhere[] = []
   if (f.yearTo !== undefined) bounds.push({ year: { not: null, lte: f.yearTo } })
   if (f.yearFrom !== undefined) {
     const from = f.yearFrom
@@ -264,7 +259,7 @@ function yearClause(f: BufferFilterFields): Prisma.BufferItemWhereInput | null {
       OR: [{ yearEnd: { not: null, gte: from } }, { yearEnd: null, year: { not: null, gte: from } }],
     })
   }
-  const range: Prisma.BufferItemWhereInput = { year: { not: null }, AND: bounds }
+  const range: BufferWhere = { year: { not: null }, AND: bounds }
   return f.undated === true ? { OR: [range, { year: null }] } : range
 }
 
@@ -273,8 +268,8 @@ function yearClause(f: BufferFilterFields): Prisma.BufferItemWhereInput | null {
  * filter→SQL translation for the buffer, shared by the positive filters and
  * the inside of `not`.
  */
-function bufferFieldClauses(f: BufferFilterFields): Prisma.BufferItemWhereInput[] {
-  const clauses: Prisma.BufferItemWhereInput[] = []
+function bufferFieldClauses(f: BufferFilterFields): BufferWhere[] {
+  const clauses: BufferWhere[] = []
   // `not: null` beside every `in`: FALSE, never SQL NULL, on a NULL column.
   if (f.type?.length) clauses.push({ docType: { not: null, in: f.type } })
   if (f.kind?.length) clauses.push({ arkKind: { not: null, in: f.kind } })
@@ -306,8 +301,8 @@ function bufferFieldClauses(f: BufferFilterFields): Prisma.BufferItemWhereInput[
 const NOT_PRESENCE: ReadonlyArray<{
   dimension: string
   used: (f: BufferFilterFields) => boolean
-  present: Prisma.BufferItemWhereInput
-  unknown: Prisma.BufferItemWhereInput
+  present: BufferWhere
+  unknown: BufferWhere
 }> = [
   { dimension: "type", used: (f) => !!f.type?.length, present: { docType: { not: null } }, unknown: { docType: null } },
   { dimension: "kind", used: (f) => !!f.kind?.length, present: { arkKind: { not: null } }, unknown: { arkKind: null } },
@@ -344,7 +339,7 @@ const NOT_PRESENCE: ReadonlyArray<{
  * it. So `buffer_list` with a filter returns exactly what
  * `buffer_remove_by_filter` with that filter removes.
  */
-function notClauses(not: BufferFilterFields): Prisma.BufferItemWhereInput[] {
+function notClauses(not: BufferFilterFields): BufferWhere[] {
   const inner = bufferFieldClauses(not)
   if (inner.length === 0) return []
   const known = NOT_PRESENCE.filter((p) => p.used(not)).map((p) => p.present)
@@ -356,7 +351,7 @@ export class BufferService {
    * The Prisma `where` for a project's CANDIDATE rows under `filters`: every
    * positive clause AND the `not` clauses — one rule for reads and removals.
    */
-  static where(projectId: string, filters: BufferFilterSet = {}): Prisma.BufferItemWhereInput {
+  static where(projectId: string, filters: BufferFilterSet = {}): BufferWhere {
     const { not, ...positive } = filters
     const clauses = [...bufferFieldClauses(positive), ...(not !== undefined ? notClauses(not) : [])]
     return { ...BufferQueries.candidateScope(projectId), ...(clauses.length > 0 ? { AND: clauses } : {}) }
@@ -367,7 +362,7 @@ export class BufferService {
    * candidates hold (lib/filters.ts: language is the open dimension). Every
    * public read and the removal go through it.
    */
-  private static async scoped(projectId: string, filters: BufferFilterSet): Promise<Prisma.BufferItemWhereInput> {
+  private static async scoped(projectId: string, filters: BufferFilterSet): Promise<BufferWhere> {
     const requested = filterLangs(filters)
     if (requested.length > 0) assertLangsHeld(requested, await BufferQueries.langsHeld(projectId), "du tampon")
     return BufferService.where(projectId, filters)
@@ -467,41 +462,25 @@ export class BufferService {
     const arks = unique.map((c) => c.ark)
 
     const inCorpus = await CorpusQueries.headMembersAmong(args.projectId, arks)
-    const existing = new Map<string, ExistingRow>(
-      (
-        await prisma.bufferItem.findMany({
-          where: { projectId: args.projectId, ark: { in: arks } },
-          select: existingRowSelect,
-        })
-      ).map((r) => [r.ark, r]),
+    const existing = new Map<string, ExistingBufferRow>(
+      (await BufferQueries.existingRows(args.projectId, arks)).map((r) => [r.ark, r]),
     )
 
     // 1. ARKs the buffer has never seen.
     const fresh = unique.filter((c) => !existing.has(c.ark))
-    const inserted =
-      fresh.length === 0
-        ? []
-        : await prisma.bufferItem.createManyAndReturn({
-            data: fresh.map((c) =>
-              insertData(args, c, inCorpus.has(c.ark) ? BUFFER_STATUS.COMMITTED : BUFFER_STATUS.CANDIDATE),
-            ),
-            skipDuplicates: true,
-            select: { ark: true, status: true },
-          })
+    const inserted = await BufferQueries.insertMany(
+      fresh.map((c) => insertData(args, c, inCorpus.has(c.ark) ? BUFFER_STATUS.COMMITTED : BUFFER_STATUS.CANDIDATE)),
+    )
     const insertedArks = new Set(inserted.map((r) => r.ark))
     // A row a parallel call inserted between our read and our insert is not
     // ours: it is handled below like any existing row.
     const raced = fresh.filter((c) => !insertedArks.has(c.ark)).map((c) => c.ark)
     if (raced.length > 0) {
-      const rows = await prisma.bufferItem.findMany({
-        where: { projectId: args.projectId, ark: { in: raced } },
-        select: existingRowSelect,
-      })
-      for (const r of rows) existing.set(r.ark, r)
+      for (const r of await BufferQueries.existingRows(args.projectId, raced)) existing.set(r.ark, r)
     }
 
     // 2. Existing rows: refresh metadata, then decide the status transition.
-    const refreshes: Prisma.PrismaPromise<unknown>[] = []
+    const refreshes: BufferRowRefresh[] = []
     const toCommitted: string[] = []
     const toRestage: string[] = []
     const toUndiscard: string[] = []
@@ -513,12 +492,7 @@ export class BufferService {
       if (row === undefined) continue // deleted (buffer_clear) between our reads — nothing to stage onto
       const data = refreshData(c, row)
       if (Object.keys(data).length > 0) {
-        refreshes.push(
-          prisma.bufferItem.update({
-            where: { projectId_ark: { projectId: args.projectId, ark: c.ark } },
-            data,
-          }),
-        )
+        refreshes.push({ ark: c.ark, data })
       }
       if (inCorpus.has(c.ark)) {
         if (row.status !== BUFFER_STATUS.COMMITTED) toCommitted.push(c.ark)
@@ -532,47 +506,12 @@ export class BufferService {
       }
     }
 
-    const where = (list: string[], status: string): Prisma.BufferItemWhereInput => ({
-      projectId: args.projectId,
-      ark: { in: list },
-      status,
+    const { restaged, undiscarded } = await BufferQueries.applyRegistration(args.projectId, {
+      refreshes,
+      toCommitted,
+      toRestage,
+      toUndiscard,
     })
-    const results = await prisma.$transaction([
-      ...refreshes,
-      prisma.bufferItem.updateMany({
-        where: { projectId: args.projectId, ark: { in: toCommitted }, status: { not: BUFFER_STATUS.COMMITTED } },
-        data: { status: BUFFER_STATUS.COMMITTED },
-      }),
-      prisma.bufferItem.updateMany({
-        where: where(toRestage, BUFFER_STATUS.COMMITTED),
-        data: { status: BUFFER_STATUS.CANDIDATE },
-      }),
-      prisma.bufferItem.updateMany({
-        where: where(toUndiscard, BUFFER_STATUS.DISCARDED),
-        data: { status: BUFFER_STATUS.CANDIDATE },
-      }),
-      // A bare row that just became a candidate again is curated again: queue
-      // it for enrichment (never re-queues a row the drain gave up on).
-      prisma.bufferItem.updateMany({
-        where: {
-          projectId: args.projectId,
-          ark: { in: [...toRestage, ...toUndiscard] },
-          status: BUFFER_STATUS.CANDIDATE,
-          title: null,
-          enrichStatus: null,
-        },
-        data: { enrichStatus: BUFFER_ENRICH_STATUS.PENDING },
-      }),
-    ])
-    const transitionCount = (offset: number): number => {
-      const r = results[refreshes.length + offset]
-      if (typeof r !== "object" || r === null || !("count" in r) || typeof r.count !== "number") {
-        throw new Error(`registerCandidates: transition ${offset} returned no count`)
-      }
-      return r.count
-    }
-    const restaged = transitionCount(1)
-    const undiscarded = transitionCount(2)
 
     const insertedCandidates = inserted.filter((r) => r.status === BUFFER_STATUS.CANDIDATE).length
     const [unresolved, total] = await Promise.all([
@@ -596,11 +535,7 @@ export class BufferService {
   /** Mark candidates as `discarded` by ARK. Returns how many were dropped. */
   static async discard(projectId: string, arks: string[]): Promise<number> {
     if (arks.length === 0) return 0
-    const result = await prisma.bufferItem.updateMany({
-      where: { projectId, ark: { in: arks }, status: BUFFER_STATUS.CANDIDATE },
-      data: { status: BUFFER_STATUS.DISCARDED },
-    })
-    return result.count
+    return BufferQueries.discard(projectId, arks)
   }
 
   /**
@@ -680,10 +615,7 @@ export class BufferService {
       { canonicalize: true },
     )
 
-    await prisma.bufferItem.updateMany({
-      where: { projectId: project.id, ark: { in: arks }, status: BUFFER_STATUS.CANDIDATE },
-      data: { status: BUFFER_STATUS.COMMITTED },
-    })
+    await BufferQueries.markCommitted(project.id, arks)
 
     return {
       committed: arks.length,
@@ -711,13 +643,7 @@ export class BufferService {
    *     documents already in the corpus.
    */
   static async clear(projectId: string): Promise<number> {
-    const result = await prisma.bufferItem.deleteMany({
-      where: {
-        projectId,
-        status: { in: [BUFFER_STATUS.CANDIDATE, BUFFER_STATUS.DISCARDED] },
-      },
-    })
-    return result.count
+    return BufferQueries.clear(projectId)
   }
 
   /**

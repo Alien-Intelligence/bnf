@@ -7,7 +7,7 @@
 // lib/validation/ark.ts (no sideways import from models/corpus) and is
 // re-exported for this model's existing importers.
 import { z } from "zod"
-import { arkKindListSchema, docTypeListSchema, langListSchema, sourceListSchema, textAnySchema } from "@/lib/filters"
+import { arkKindListSchema, docTypeListSchema, langListSchema, sourceListSchema, textAnySchema } from "@/lib/validation/filter-lists"
 
 import { arkSchema } from "@/lib/validation/ark"
 

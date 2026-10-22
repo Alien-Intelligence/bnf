@@ -6,7 +6,7 @@ import "server-only"
 // prompt stale and the invalidation commit together or not at all.
 import { prisma } from "@/lib/db"
 import type { Prisma } from "@/lib/generated/prisma/client"
-import { SESSION_STATUS, type AppSession, type SessionScope } from "./schema"
+import { SESSION_SCOPE, SESSION_STATUS, type AppSession, type SessionScope } from "./schema"
 
 /** The client a sessions query runs on: the app client or a transaction's. */
 export type SessionDb = Pick<Prisma.TransactionClient, "appSession">
@@ -48,6 +48,15 @@ export class SessionQueries {
       where: { project, ...(target.scope !== undefined ? { scope: target.scope } : {}) },
       data: { systemPrompt: null, promptRevision: null, promptEpoch: { increment: 1 } },
     })
+  }
+
+  /**
+   * Drop the corpus prompts of a project and of the workspaces reading its
+   * corpus: the statement for a change to the project's documents (the corpus
+   * prompt embeds their count and facets). `db` as for `invalidatePrompts`.
+   */
+  static invalidateCorpusPrompts(projectId: string, db: SessionDb) {
+    return SessionQueries.invalidatePrompts({ projectId, scope: SESSION_SCOPE.CORPUS, withDerived: true }, db)
   }
 
   /** Drop the cached prompts of the sessions of the projects deriving from

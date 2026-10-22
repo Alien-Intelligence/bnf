@@ -20,8 +20,8 @@ import "server-only"
 
 import { BUFFER_CLASSIFIER_VERSION, BUFFER_RECLASSIFY_BATCH_SIZE, BUFFER_RECLASSIFY_MAX_MS } from "@/lib/constants"
 import type { Prisma } from "@/lib/generated/prisma/client"
-import { BufferQueries, type LegacyBufferItem } from "@/models/buffer/queries"
-import { BUFFER_ENRICH_STATUS, BUFFER_STATUS } from "@/models/buffer/schema"
+import { BufferQueries } from "@/models/buffer/queries"
+import { BUFFER_ENRICH_STATUS, BUFFER_STATUS, type LegacyBufferItem } from "@/models/buffer/schema"
 import { DocumentQueries } from "@/models/documents/queries"
 import { bufferMetadataFromDocument, classifyLegacyRow, type ResolvedDocumentFields } from "./classify"
 

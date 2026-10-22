@@ -54,6 +54,7 @@ import {
   yearEndFromLabel,
   type GallicaSearchDocType,
 } from "@/lib/buffer/classify"
+import { fullBnfArk } from "@/lib/validation/ark"
 import { classifyArkKind } from "@/lib/documents/ark-kind"
 import { DOCUMENT_SOURCE } from "@/models/documents/schema"
 import { BufferPolicy } from "@/models/buffer/policy"
@@ -577,8 +578,7 @@ function toFullArk(bare: string): string | null {
     .replace(/^https?:\/\/[^/]+\//, "")
     .replace(/^ark:\/\d+\//, "")
     .replace(/\/.*$/, "") // drop trailing path segments ("/date", "/f1.item", …)
-  if (!/^[A-Za-z0-9]+$/.test(id)) return null
-  return `ark:/12148/${id}`
+  return fullBnfArk(id)
 }
 /** Trim to a non-empty string, or undefined. */
 function clean(value: string | null | undefined): string | undefined {
