@@ -64,8 +64,16 @@ const altoParser = new XMLParser({
 // ARK helpers (ported from V1 slug.ts)
 // ---------------------------------------------------------------------------
 
-/** The BnF ARK prefix (NAAN 12148) — the only ARKs the worker accepts. */
-export const BNF_ARK_PREFIX = "ark:/12148/";
+/**
+ * The NAAN every BnF-held ARK carries. The worker's one definition (the app has
+ * its own in lib/validation/ark.ts: a separate package). The worker restores
+ * the full ARK from the bare id the BnF MCP wire contract sends; see
+ * playbook/mcp-client.md, "The one boundary exception".
+ */
+const BNF_NAAN = "12148";
+
+/** The BnF ARK prefix — the only ARKs the worker accepts. */
+export const BNF_ARK_PREFIX = `ark:/${BNF_NAAN}/`;
 
 /** Raw-payload key under which the OAI view count (title-level for press) stays traceable. */
 export const RAW_OAI_TOTAL_VIEWS = "oai_total_views";

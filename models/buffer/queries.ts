@@ -8,9 +8,9 @@ import {
   BUFFER_ENRICH_STATUS,
   BUFFER_STATUS,
   BUFFER_UNRESOLVED_ENRICH_STATUSES,
-  bufferRowSelect,
-  existingRowSelect,
-  legacyRowSelect,
+  bufferRow,
+  existingRow,
+  legacyRow,
 } from "./schema"
 import type {
   BufferCrossFacets,
@@ -23,6 +23,7 @@ import type {
   BufferRegistrationTransitions,
   BufferRow,
   BufferSnapshot,
+  BufferStatus,
   BufferWhere,
   ExistingBufferRow,
   InsertedBufferRow,
@@ -141,7 +142,7 @@ export class BufferQueries {
       where: { classifierVersion: { lt: version }, ...(cursor !== null ? { id: { gt: cursor } } : {}) },
       orderBy: { id: "asc" },
       take,
-      select: legacyRowSelect,
+      ...legacyRow,
     })
   }
 
@@ -184,7 +185,7 @@ export class BufferQueries {
   static async existingRows(projectId: string, arks: string[]): Promise<ExistingBufferRow[]> {
     return prisma.bufferItem.findMany({
       where: { projectId, ark: { in: arks } },
-      select: existingRowSelect,
+      ...existingRow,
     })
   }
 
@@ -205,19 +206,20 @@ export class BufferQueries {
   /**
    * Apply one registration's metadata refreshes and status transitions in one
    * transaction. Every transition is a guarded updateMany, so the counts are
-   * what THIS call moved. A bare row that just became a candidate again is
-   * curated again: it is queued for enrichment (never re-queues a row the
-   * drain gave up on).
+   * what THIS call moved. The rows of `t.toEnrich` are queued for the
+   * enrichment drain only while they are still bare (no title, never enriched),
+   * checked in the same statement: a row the drain gave up on is never re-queued.
+   *
+   * The three transitions lead the statement list and the queue write trails
+   * it, so the counts are read by destructuring (typed, by name) whatever the
+   * number of refreshes in between.
    */
   static async applyRegistration(
     projectId: string,
     t: BufferRegistrationTransitions,
   ): Promise<BufferRegistrationCounts> {
-    const inStatus = (arks: string[], status: string): BufferWhere => ({ projectId, ark: { in: arks }, status })
-    const results = await prisma.$transaction([
-      ...t.refreshes.map((r) =>
-        prisma.bufferItem.update({ where: { projectId_ark: { projectId, ark: r.ark } }, data: r.data }),
-      ),
+    const inStatus = (arks: string[], status: BufferStatus): BufferWhere => ({ projectId, ark: { in: arks }, status })
+    const [, restageResult, undiscardResult] = await prisma.$transaction([
       prisma.bufferItem.updateMany({
         where: { projectId, ark: { in: t.toCommitted }, status: { not: BUFFER_STATUS.COMMITTED } },
         data: { status: BUFFER_STATUS.COMMITTED },
@@ -230,10 +232,13 @@ export class BufferQueries {
         where: inStatus(t.toUndiscard, BUFFER_STATUS.DISCARDED),
         data: { status: BUFFER_STATUS.CANDIDATE },
       }),
+      ...t.refreshes.map((r) =>
+        prisma.bufferItem.update({ where: { projectId_ark: { projectId, ark: r.ark } }, data: r.data }),
+      ),
       prisma.bufferItem.updateMany({
         where: {
           projectId,
-          ark: { in: [...t.toRestage, ...t.toUndiscard] },
+          ark: { in: t.toEnrich },
           status: BUFFER_STATUS.CANDIDATE,
           title: null,
           enrichStatus: null,
@@ -241,14 +246,7 @@ export class BufferQueries {
         data: { enrichStatus: BUFFER_ENRICH_STATUS.PENDING },
       }),
     ])
-    const transitionCount = (offset: number): number => {
-      const r = results[t.refreshes.length + offset]
-      if (typeof r !== "object" || r === null || !("count" in r) || typeof r.count !== "number") {
-        throw new Error(`registerCandidates: transition ${offset} returned no count`)
-      }
-      return r.count
-    }
-    return { restaged: transitionCount(1), undiscarded: transitionCount(2) }
+    return { restaged: restageResult.count, undiscarded: undiscardResult.count }
   }
 
   /** Mark the project's candidates among `arks` as `discarded`. Returns how many. */
@@ -292,7 +290,7 @@ export class BufferQueries {
         where,
         orderBy: { createdAt: "desc" },
         take: limit,
-        select: bufferRowSelect,
+        ...bufferRow,
       }),
     ])
     return { total, rows }
@@ -316,7 +314,7 @@ export class BufferQueries {
         where,
         orderBy: { createdAt: "desc" },
         take: sampleSize,
-        select: bufferRowSelect,
+        ...bufferRow,
       }),
     ])
     return { total, facets, sample }

@@ -157,6 +157,24 @@ This protects route handlers from junk ARKs; it is **not** the canonical format
 spec. The BnF uses extensions like `ark:/12148/btv1b8470216w` (the regex matches
 them). Extend the regex when you hit a real ARK it rejects, not preemptively.
 
+### The one boundary exception: bare ids from the BnF MCP
+
+The BnF MCP wire contract sends **bare ids** (`bpt6k2839841`), not ARKs, and
+the parsers and the cached `BnfRecord` payloads are keyed by them. Removing that
+needs an mcp-bnf contract change. Until then the rule is satisfied **at the
+boundary**: the full ARK is built in exactly one helper per runtime, and from
+there on it is an opaque token.
+
+- App: `fullBnfArk` in `lib/validation/ark.ts`, with the one NAAN constant
+  (`BNF_NAAN`, not exported). Callers: `toFullArk` (`lib/agent/tools/buffer.ts`),
+  `lib/mcp/normalize.ts`, `lib/mcp/vocab.ts`. The result must pass `arkSchema`,
+  else `null` (refused, never guessed).
+- Worker: `BNF_ARK_PREFIX` / `BNF_NAAN` in `worker-v2/src/bnf/parse.ts` (a
+  separate package, so its own single definition).
+- No other code builds an ARK. A new `ark:/…${x}` template anywhere else is
+  still forbidden. A hit whose ARK `fullBnfArk` refuses is **logged and counted**
+  in the tool result, never silently dropped.
+
 ## IIIF & Gallica links — derived, not stored
 
 User-facing links to BnF are computed from `ark + folio` via the helpers in

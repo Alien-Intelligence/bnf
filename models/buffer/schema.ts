@@ -31,50 +31,59 @@ export type BufferReclassificationUpdate = {
 }
 
 /** The columns the reclassifier reads off a row below the classifier version. */
-export const legacyRowSelect = {
-  id: true,
-  projectId: true,
-  ark: true,
-  title: true,
-  docType: true,
-  lang: true,
-  originTool: true,
-  originQuery: true,
-  source: true,
-  status: true,
-  enrichStatus: true,
-} satisfies Prisma.BufferItemSelect
+export const legacyRow = {
+  select: {
+    id: true,
+    projectId: true,
+    ark: true,
+    title: true,
+    docType: true,
+    lang: true,
+    originTool: true,
+    originQuery: true,
+    source: true,
+    status: true,
+    enrichStatus: true,
+  },
+} satisfies Prisma.BufferItemDefaultArgs
 
-export type LegacyBufferItem = Prisma.BufferItemGetPayload<{ select: typeof legacyRowSelect }>
+export type LegacyBufferItem = Prisma.BufferItemGetPayload<typeof legacyRow>
 
 /** Fields projected for the buffer panel + buffer_list tool. */
-export const bufferRowSelect = {
-  id: true,
-  ark: true,
-  title: true,
-  year: true,
-  docType: true,
-  lang: true,
-  source: true,
-  snippet: true,
-  originQuery: true,
-  createdAt: true,
-  creator: true,
-  dateLabel: true,
-  arkKind: true,
-  subjects: true,
-  enrichStatus: true,
-} satisfies Prisma.BufferItemSelect
+export const bufferRow = {
+  select: {
+    id: true,
+    ark: true,
+    title: true,
+    year: true,
+    docType: true,
+    lang: true,
+    source: true,
+    snippet: true,
+    originQuery: true,
+    createdAt: true,
+    creator: true,
+    dateLabel: true,
+    arkKind: true,
+    subjects: true,
+    enrichStatus: true,
+  },
+} satisfies Prisma.BufferItemDefaultArgs
+
+/** One candidate as shown in the buffer panel + the buffer_list tool. */
+export type BufferRow = Prisma.BufferItemGetPayload<typeof bufferRow>
 
 /** The columns registerCandidates reads back for an existing row. */
-export const existingRowSelect = {
-  ark: true,
-  status: true,
-  title: true,
-  enrichStatus: true,
-} satisfies Prisma.BufferItemSelect
+export const existingRow = {
+  select: {
+    ark: true,
+    status: true,
+    title: true,
+    enrichStatus: true,
+  },
+} satisfies Prisma.BufferItemDefaultArgs
 
-export type ExistingBufferRow = Prisma.BufferItemGetPayload<{ select: typeof existingRowSelect }>
+export type ExistingBufferRow = Prisma.BufferItemGetPayload<typeof existingRow>
 
 /** A row a registration inserted: which ARK, and the status it landed in. */
 export type InsertedBufferRow = Pick<BufferItem, "ark" | "status">
@@ -94,6 +103,11 @@ export type BufferRegistrationTransitions = {
   toRestage: string[]
   /** Discarded rows an explicit buffer_add names: candidates again. */
   toUndiscard: string[]
+  /**
+   * Rows to queue for the enrichment drain (decided by BufferService). The
+   * statement still queues a row only while it is bare and never enriched.
+   */
+  toEnrich: string[]
 }
 
 /** How many rows the guarded transitions of a registration actually moved. */
@@ -177,26 +191,6 @@ export type BufferFacetDimension = "period" | "type" | "lang" | "source" | "kind
 // ---------------------------------------------------------------------------
 // Composite shapes returned to the API / agent-tool layer
 // ---------------------------------------------------------------------------
-
-/** One candidate as shown in the buffer panel + the buffer_list tool. */
-export type BufferRow = Pick<
-  BufferItem,
-  | "id"
-  | "ark"
-  | "title"
-  | "year"
-  | "docType"
-  | "lang"
-  | "source"
-  | "snippet"
-  | "originQuery"
-  | "createdAt"
-  | "creator"
-  | "dateLabel"
-  | "arkKind"
-  | "subjects"
-  | "enrichStatus"
->
 
 /**
  * Facet distribution over the candidate set — the buffer's counterpart to

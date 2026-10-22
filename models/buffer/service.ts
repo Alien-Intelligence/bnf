@@ -511,6 +511,8 @@ export class BufferService {
       toCommitted,
       toRestage,
       toUndiscard,
+      // A row curated again is queued for enrichment if it is still bare.
+      toEnrich: [...toRestage, ...toUndiscard],
     })
 
     const insertedCandidates = inserted.filter((r) => r.status === BUFFER_STATUS.CANDIDATE).length

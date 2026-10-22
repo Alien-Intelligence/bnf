@@ -101,11 +101,23 @@ test("found counts every hit; the unaddressable one is explained, not lost", asy
     corpusReachable: true,
     scope: SESSION_SCOPE.CORPUS,
   }
-  const result = await corpusSearchTool.handler({ source: "gallica", doc_type: "fascicule", query: "incendie" }, ctx)
+  const realWarn = console.warn
+  const warned: unknown[] = []
+  console.warn = (message: string, detail: unknown) => {
+    if (message === "[corpus_search] hit ARK refused") warned.push(detail)
+  }
+  let result: Awaited<ReturnType<typeof corpusSearchTool.handler>>
+  try {
+    result = await corpusSearchTool.handler({ source: "gallica", doc_type: "fascicule", query: "incendie" }, ctx)
+  } finally {
+    console.warn = realWarn
+  }
   const shown = JSON.stringify(result)
   assert.ok(typeof result === "object" && result !== null && "found" in result, shown)
   assert.equal(result.found, 3, "every hit the BnF returned")
   assert.equal("added" in result && result.added, 2)
   assert.equal("skipped_not_a_document" in result && result.skipped_not_a_document, 1)
+  assert.equal("ark_refused" in result && result.ark_refused, 1, "the refused ARK is counted on its own")
+  assert.deepEqual(warned, [{ source: "gallica", rawArk: "pas un identifiant !" }], "and logged with its raw value")
   assert.match("explanation" in result && typeof result.explanation === "string" ? result.explanation : "", /pas un document/)
 })
