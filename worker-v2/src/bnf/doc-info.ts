@@ -24,7 +24,15 @@ import {
   type BnfDocInfo,
   type Manifest,
 } from "./types.js";
-import { metadataValue, ocrRateValue, parseOcrRate, TAUX_OCR_LABELS, type OcrRateParse } from "./parse.js";
+import {
+  metadataValue,
+  ocrRateValue,
+  parseOcrRate,
+  RAW_METADATA,
+  RAW_SOURCE,
+  TAUX_OCR_LABELS,
+  type OcrRateParse,
+} from "./parse.js";
 
 /** A "Taux OCR" value BnF published that the worker cannot read — to be logged, never silently null. */
 export interface UnusableTauxOcr {
@@ -125,7 +133,7 @@ export function inspectCachedDocInfo(raw: unknown): CachedDocInfo {
   }
   const rawBlob = requireKey(raw, "raw", ark);
   if (!isRecord(rawBlob)) throw new CorruptDocInfoError(ark, "raw must be an object");
-  const source = rawBlob.source;
+  const source = rawBlob[RAW_SOURCE];
   if (source !== DOC_INFO_SOURCE.IIIF_MANIFEST && source !== DOC_INFO_SOURCE.OAI_PMH) {
     throw new CorruptDocInfoError(ark, `unknown raw.source ${JSON.stringify(source)}`);
   }
@@ -137,7 +145,7 @@ export function inspectCachedDocInfo(raw: unknown): CachedDocInfo {
     ocrRate = recordedOcrRate(raw.ocrRate, ark);
   } else if (source === DOC_INFO_SOURCE.IIIF_MANIFEST) {
     // Pre-release manifest blob: the Taux OCR row is still in raw.metadata.
-    const parsed = parseOcrRate(metadataValue(metadataPairs(rawBlob.metadata, ark), TAUX_OCR_LABELS));
+    const parsed = parseOcrRate(metadataValue(metadataPairs(rawBlob[RAW_METADATA], ark), TAUX_OCR_LABELS));
     ocrRate = ocrRateValue(parsed);
     unusable = unusableTauxOcr(parsed);
   } else {
@@ -157,7 +165,7 @@ export function inspectCachedDocInfo(raw: unknown): CachedDocInfo {
     pageCount: nullablePageCount(raw, ark),
     iiifManifestUrl: nullableString(raw, "iiifManifestUrl", ark),
     lang: nullableString(raw, "lang", ark),
-    raw: { ...rawBlob, source },
+    raw: { ...rawBlob, [RAW_SOURCE]: source },
   };
   return { info, unusableTauxOcr: unusable };
 }

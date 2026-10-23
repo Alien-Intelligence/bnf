@@ -48,6 +48,8 @@ export const documentRow = {
     year: true,
     dateLabel: true,
     docType: true,
+    // Gallica subcategory (fascicules, estampes, …); null for documents with none.
+    subtype: true,
     lang: true,
     source: true,
     pages: true,
@@ -120,6 +122,8 @@ export type CorpusSnapshot = {
   failedCount: number
   facets: {
     type: Record<string, number>
+    /** Gallica subcategories of RESOLVED documents that have one (no null bucket). */
+    subtype: Record<string, number>
     lang: Record<string, number>
     source: Record<string, number>
     /** Per-decade buckets, e.g. "1880s", "1890s". Nulls are skipped. */
@@ -242,6 +246,9 @@ export type CorpusDiff = {
   removedCount: number
 }
 
+/** A Prisma WHERE over the document table — what the filtered corpus reads execute. */
+export type DocumentWhere = Prisma.DocumentWhereInput
+
 /**
  * The predicates a filtered corpus read runs, built once per read from the
  * filters by CorpusService (lib/corpus/filter-where.ts holds the translation;
@@ -328,3 +335,12 @@ export type CorpusPromoteResult =
       pendingResolve: boolean
     }
   | { promoted: false; status: "not_digitized" | "api_error" | "not_catalogue" }
+
+/**
+ * `CorpusVersion.createdBy` of a version no user or agent session made: a
+ * background drainer's. Formats: `user:<uid>`, `agent:session:<sid>`, or one of
+ * these.
+ */
+export const CORPUS_SYSTEM_ACTOR = {
+  CANONICALIZE: "system:canonicalize",
+} as const

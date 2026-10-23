@@ -36,7 +36,7 @@ import { createServer, type Server } from "node:http"
 import type { AddressInfo } from "node:net"
 
 import { ClusterClient, refusedArks } from "./client"
-import { CLUSTER_POLL } from "./contracts"
+import { CLUSTER_POLL } from "@/models/ingest/schema"
 import {
   OCR_QUALITY_ARTIFACT_VERSION,
   OCR_SYNC_FAULT_SCOPE,

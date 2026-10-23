@@ -32,6 +32,12 @@ export type DocumentUpsertData = Omit<
   ark: string
 }
 
+/** What a resolve pass learned about one stub row: its ARK and the columns to write. */
+export type ResolveRowWrite = {
+  ark: string
+  data: Prisma.DocumentUpdateManyMutationInput
+}
+
 /** One entry in a facet vocabulary map. */
 export type VocabEntry = {
   /** i18n key suffix used to look up the display label. */
@@ -176,6 +182,33 @@ export const ARK_KIND_VALUES = [
   ARK_KIND.OTHER_DOCUMENT,
   ARK_KIND.UNKNOWN,
 ] as const satisfies readonly ArkKind[]
+
+/**
+ * Every Gallica typedoc subcategory (the second ":"-segment of a setSpec), as
+ * published by the live ListSets output (verified 2026-10-22). It is the closed
+ * vocabulary `gallicaSubtype()` (lib/mcp/vocab.ts) can return and the corpus
+ * `subtype` filter validates against, so a typo is refused instead of silently
+ * matching nothing. A subtype Gallica adds later is stored (the column is free
+ * text) but cannot be filtered on until it is added here.
+ */
+export const KNOWN_SUBTYPES = [
+  "atlas",
+  "carte",
+  "cartes",
+  "coupe",
+  "dessins",
+  "diagramme",
+  "estampes",
+  "fascicules",
+  "globe",
+  "maquette",
+  "objets",
+  "photographies",
+  "plan",
+  "teledetection",
+  "titres",
+  "vue",
+] as const
 
 /** Canonical docTypes whose digitized document is an image. */
 export const ARK_KIND_IMAGE_TYPES = [
@@ -699,6 +732,48 @@ export type OcrAccess = (typeof OCR_ACCESS)[keyof typeof OCR_ACCESS]
 
 /** One (ark, folio) whose stored quality a reader wants. */
 export type FolioRef = { ark: string; folio: number }
+
+/** Query shape: the columns the ingest submit classifier reads per ARK. */
+export const documentIngestClassificationRow = {
+  select: {
+    ark: true,
+    docType: true,
+    ocrAvailable: true,
+    iiifManifestUrl: true,
+    resolveStatus: true,
+    lang: true,
+  },
+} satisfies Prisma.DocumentDefaultArgs
+export type DocumentIngestClassificationRow = Prisma.DocumentGetPayload<
+  typeof documentIngestClassificationRow
+>
+
+/** Query shape: a document's stored page count (the paid-OCR estimate input). */
+export const documentPagesRow = {
+  select: { ark: true, pages: true },
+} satisfies Prisma.DocumentDefaultArgs
+export type DocumentPagesRow = Prisma.DocumentGetPayload<typeof documentPagesRow>
+
+/** Query shape: a document's index outcome (the failed-ARK retry input). */
+export const documentIndexOutcomeRow = {
+  select: { ark: true, indexedAt: true, indexError: true },
+} satisfies Prisma.DocumentDefaultArgs
+export type DocumentIndexOutcomeRow = Prisma.DocumentGetPayload<typeof documentIndexOutcomeRow>
+
+/** Query shape: the columns a ClusterDoc is built from. */
+export const documentClusterRow = {
+  select: {
+    ark: true,
+    title: true,
+    year: true,
+    docType: true,
+    subtype: true,
+    lang: true,
+    source: true,
+    iiifManifestUrl: true,
+  },
+} satisfies Prisma.DocumentDefaultArgs
+export type DocumentClusterRow = Prisma.DocumentGetPayload<typeof documentClusterRow>
 
 /** Query shape: one folio's stored quality (every scalar column of DocumentFolio). */
 export const documentFolioRow = {

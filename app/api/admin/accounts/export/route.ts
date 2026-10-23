@@ -2,16 +2,16 @@
  * GET /api/admin/accounts/export
  *
  * Streams a CSV of every account with its per-account activity totals.
- * Admin-only — same flat role gate and same aggregation as /api/admin/accounts.
+ * Admin-only (UserPolicy.exportAdminData) — same aggregation as /api/admin/accounts.
  */
 import { withAuth } from "@/app/api/_middleware"
-import { forbidden } from "@/lib/api-response"
+import { csvDownloadHeaders } from "@/lib/constants"
 import { toCsv } from "@/lib/csv"
+import { UserPolicy } from "@/models/users/policy"
 import { UserQueries } from "@/models/users/queries"
 
-export const GET = withAuth(async (_req, user) => {
-  // Admin-only — flat role gate (not a per-resource ownership decision).
-  if (user.role !== "admin") return forbidden()
+export const GET = withAuth(async (_req, _user, bouncer) => {
+  await bouncer.with(UserPolicy).authorize("exportAdminData")
 
   const accounts = await UserQueries.listWithAdminStats()
 
@@ -50,10 +50,6 @@ export const GET = withAuth(async (_req, user) => {
 
   return new Response(csv, {
     status: 200,
-    headers: {
-      "Content-Type": "text/csv; charset=utf-8",
-      "Content-Disposition": 'attachment; filename="accounts.csv"',
-      "Cache-Control": "no-store",
-    },
+    headers: csvDownloadHeaders("accounts.csv"),
   })
 })

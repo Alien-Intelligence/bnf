@@ -10,7 +10,8 @@ import "server-only"
 // All app code submits and cancels jobs through this facade; it never imports
 // ClusterClient or FakeClusterRunner directly.
 import type { WorkerSyncAnswer } from "./ocr-quality"
-import { CLUSTER_POLL, type ClusterIngestRequest, type ClusterProgressPoll } from "./contracts"
+import { CLUSTER_POLL } from "@/models/ingest/schema"
+import type { ClusterIngestRequest, ClusterProgressPoll } from "./contracts"
 import { ClusterClient } from "./client"
 import { FakeClusterRunner } from "./fake"
 import { CLUSTER_MODE, clusterMode } from "./mode"

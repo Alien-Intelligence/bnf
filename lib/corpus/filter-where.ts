@@ -194,6 +194,9 @@ const CORPUS_NOT_PRESENCE: ReadonlyArray<{
   unknown: Prisma.DocumentWhereInput
 }> = [
   { dimension: "type", used: (f) => !!f.type?.length, known: { docType: { not: null } }, unknown: { docType: null } },
+  // A monograph, manuscript or score has no Gallica subcategory: its subtype is
+  // unknown for this dimension, so `not` leaves it out and reports it.
+  { dimension: "subtype", used: (f) => !!f.subtype?.length, known: { subtype: { not: null } }, unknown: { subtype: null } },
   { dimension: "lang", used: (f) => !!f.lang?.length, known: { lang: { not: null } }, unknown: { lang: null } },
   { dimension: "source", used: (f) => !!f.source?.length, known: { source: { not: null } }, unknown: { source: null } },
   { dimension: "title", used: (f) => !!f.title?.length, known: { title: { not: null } }, unknown: { title: null } },
@@ -278,6 +281,11 @@ export function buildCorpusWhere(
       ? { docType: { in: filters.type } }
       : {}
 
+  const subtypeWhere: Prisma.DocumentWhereInput =
+    filters?.subtype && filters.subtype.length > 0
+      ? { subtype: { in: filters.subtype } }
+      : {}
+
   const langWhere: Prisma.DocumentWhereInput =
     filters?.lang && filters.lang.length > 0 ? { lang: { in: filters.lang } } : {}
 
@@ -355,6 +363,7 @@ export function buildCorpusWhere(
   const base: Prisma.DocumentWhereInput = {
     membership: { some: { versionId } },
     ...typeWhere,
+    ...subtypeWhere,
     ...langWhere,
     ...sourceWhere,
     ...sessionWhere,
@@ -390,6 +399,7 @@ export function buildCorpusWhere(
     undatedWhere: {
       ...membership,
       ...typeWhere,
+      ...subtypeWhere,
       ...langWhere,
       ...sourceWhere,
       ...fullTextWhere,

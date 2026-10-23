@@ -14,17 +14,19 @@
 //      ai-memories/…/persistence-architecture/research/bnf-mcp-contract.md
 //      ai-memories/…/mcp-and-filters/plan/implementation-plan.md §4
 
-import type { BnfMcpDocumentDetail } from "@/lib/bnf/types"
+import { PAGES_SOURCE, type BnfMcpDocumentDetail } from "@/lib/bnf/types"
 import {
   GALLICA_DOC_TYPE,
   canonicalLang,
+  gallicaPageCount,
   gallicaSubtype,
   iiifManifestUrl,
   mapCatalogueDocType,
   mapGallicaTypedoc,
   sourceFromArk,
 } from "@/lib/mcp/vocab"
-import { DOCUMENT_SOURCE } from "@/models/documents/schema"
+import { fullBnfArk } from "@/lib/validation/ark"
+import { DOC_TYPE_CODE, DOCUMENT_SOURCE } from "@/models/documents/schema"
 
 // ---------------------------------------------------------------------------
 // Output type
@@ -61,6 +63,29 @@ export interface NormalizedDocument {
   /** OCR text-layer availability as reported by the MCP; null when unknown. */
   ocrAvailable?: boolean | null
   rawMetadata: unknown // full MCP payload preserved for re-normalize without re-fetch
+}
+
+/**
+ * Why normalizeDocument refused a record. A refusal is a resolve failure, never
+ * an empty row: callers learn the reason through `onRejected`.
+ */
+export const NORMALIZE_REJECTION = {
+  /** `ark` missing or not a string. */
+  NO_ARK: "no_ark",
+  /** A `temp-work/` URI: not a stable document key. */
+  TEMP_WORK: "temp_work",
+  /** Neither `title` nor `creator` is usable. */
+  NO_TITLE: "no_title",
+  /** A bare local id that does not form a valid ARK once given the BnF naan. */
+  BAD_ARK: "bad_ark",
+} as const
+export type NormalizeRejection =
+  (typeof NORMALIZE_REJECTION)[keyof typeof NORMALIZE_REJECTION]
+
+export interface NormalizeOptions {
+  unknownDocTypeHook?: (raw: string, source: string) => void
+  /** Called once per refused record; `ark` is null when the record has none. */
+  onRejected?: (ark: string | null, reason: NormalizeRejection) => void
 }
 
 // ---------------------------------------------------------------------------
@@ -193,6 +218,10 @@ export function parseBnfDate(
   return { year: null, label: s }
 }
 
+function finiteNumberOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null
+}
+
 // ---------------------------------------------------------------------------
 // normalizeDocument
 // ---------------------------------------------------------------------------
@@ -203,10 +232,11 @@ export function parseBnfDate(
  *
  * Algorithm (per plan §4):
  *
- * 1. Resolve full ARK (`ark:/12148/<id>` if short form is supplied).
+ * 1. Resolve full ARK (the BnF naan is restored on a parser's bare local id;
+ *    an id that then is no valid ARK is refused as `bad_ark`).
  * 2. Derive `source` from the ARK prefix.
  * 3. `title` — fall back to `creator` when absent. If still absent, return
- *    null (caller — normalizeMany — drops the record).
+ *    null (reported through `opts.onRejected` as `no_title`).
  * 4. `author` — prefer `author`, fall back to `creator`.
  * 5. `parseBnfDate(mcp.date)` → `{ year, label: dateLabel }`.
  * 6. `lang` — canonicalLang: MARC 639-2 (both columns) → ISO 639-1, language
@@ -214,32 +244,40 @@ export function parseBnfDate(
  * 7. `docType` — Gallica enum key → GALLICA_DOC_TYPE[key]; Catalogue
  *    free-text → mapCatalogueDocType(); missing → "book" for catalogue,
  *    "other" for anything else; unknown free-text → "other" + hook.
- * 8. `pages` / `excerpt` — passed through as-is when present.
+ * 8. `pages` — Gallica: the manifest canvas count when `pages_source` is
+ *    "manifest", else gallicaPageCount over OAI's raw view count (null for
+ *    periodical issues); Catalogue: passed through. `excerpt` — as-is.
  * 9. `iiifManifestUrl` — derived via vocab helper (Gallica only).
  * 10. `rawMetadata` — the full mcp object (preserve for re-normalize).
  *
- * Returns null when the ARK is missing, is a temp-work/ URI, or when both
- * `title` and `creator` are absent. `normalizeMany` uses these sentinel nulls
- * to filter records.
+ * Returns null when the ARK is missing or invalid, is a temp-work/ URI, or when
+ * both `title` and `creator` are absent; `opts.onRejected` receives the reason.
+ * The resolver treats a null as a resolve failure.
  */
 export function normalizeDocument(
   mcp: BnfMcpDocumentDetail,
-  opts?: { unknownDocTypeHook?: (raw: string, source: string) => void },
+  opts?: NormalizeOptions,
 ): NormalizedDocument | null {
-  // ── 1. Full ARK ──────────────────────────────────────────────────────────
+  // ── 1. ARK ────────────────────────────────────────────────────────────────
   const rawArk = mcp.ark
-  if (!rawArk || typeof rawArk !== "string" || rawArk.trim() === "") {
+  if (typeof rawArk !== "string" || rawArk.trim() === "") {
+    opts?.onRejected?.(null, NORMALIZE_REJECTION.NO_ARK)
     return null
   }
-  const fullArk = rawArk.startsWith("ark:/")
-    ? rawArk
-    : `ark:/12148/${rawArk}`
+  const fullArk = fullBnfArk(rawArk)
+  if (fullArk === null) {
+    opts?.onRejected?.(rawArk, NORMALIZE_REJECTION.BAD_ARK)
+    return null
+  }
 
   // ── 2. Source ─────────────────────────────────────────────────────────────
   const source = sourceFromArk(fullArk)
 
   // temp-work/ URIs are unusable as stable document keys.
-  if (source === "databnf") return null
+  if (source === DOCUMENT_SOURCE.DATABNF) {
+    opts?.onRejected?.(fullArk, NORMALIZE_REJECTION.TEMP_WORK)
+    return null
+  }
 
   // ── 3. Title fallback ─────────────────────────────────────────────────────
   const title =
@@ -249,7 +287,10 @@ export function normalizeDocument(
         ? mcp.creator.trim()
         : null
 
-  if (title === null) return null
+  if (title === null) {
+    opts?.onRejected?.(fullArk, NORMALIZE_REJECTION.NO_TITLE)
+    return null
+  }
 
   // ── 4. Author ─────────────────────────────────────────────────────────────
   const author =
@@ -308,7 +349,7 @@ export function normalizeDocument(
       if (mapped !== null) {
         docType = mapped
       } else {
-        docType = "other"
+        docType = DOC_TYPE_CODE.OTHER
         opts?.unknownDocTypeHook?.(rawDocType, source)
       }
     }
@@ -316,14 +357,28 @@ export function normalizeDocument(
     // No typedoc and no doc_type field at all:
     //   Catalogue records are predominantly books → "book"
     //   Everything else → "other"
-    docType = source === DOCUMENT_SOURCE.CATALOGUE ? "book" : "other"
+    docType = source === DOCUMENT_SOURCE.CATALOGUE ? DOC_TYPE_CODE.BOOK : DOC_TYPE_CODE.OTHER
   }
 
   // ── 8. Pages + excerpt ────────────────────────────────────────────────────
+  // The ONE place that decides `pages` for a Gallica record, so the resolver,
+  // the BnfRecord cache read, the enricher and fix-doc-types agree:
+  //   - the IIIF manifest was fetched (`pages_source === "manifest"`): its
+  //     canvas count is authoritative whatever the type, a fascicule included;
+  //   - otherwise OAI's raw view count goes through gallicaPageCount, which
+  //     refuses it for periodical issues (collection-level figure) and for
+  //     anything that is not a positive integer.
+  // Catalogue records keep the count the SRU parser gave.
   const pages =
-    typeof mcp.pages === "number" && Number.isFinite(mcp.pages)
-      ? mcp.pages
-      : null
+    source === DOCUMENT_SOURCE.GALLICA
+      ? mcp.pages_source === PAGES_SOURCE.MANIFEST
+        ? finiteNumberOrNull(mcp.pages)
+        : gallicaPageCount(
+            rawTypedoc ?? undefined,
+            mcp.oai_total_views,
+            rawDocType ?? undefined,
+          )
+      : finiteNumberOrNull(mcp.pages)
   const excerpt =
     typeof mcp.excerpt === "string" && mcp.excerpt.trim() !== ""
       ? mcp.excerpt.trim()
@@ -333,13 +388,16 @@ export function normalizeDocument(
   const manifestUrl = iiifManifestUrl(fullArk, source)
 
   // ── 9b. OCR availability ──────────────────────────────────────────────────
-  // The MCP reports a text layer via `ocr_available`. Preserve true/false as
-  // given; leave null (unknown) when the field is absent rather than guessing.
+  // Preserve true/false as the resolver set it; leave null (unknown) when the
+  // field is absent or null rather than guessing. Never coerced to false: false
+  // routes a document to paid OCR.
   const ocrAvailable =
     typeof mcp.ocr_available === "boolean" ? mcp.ocr_available : null
 
   // ── 10. rawMetadata ───────────────────────────────────────────────────────
-  // Preserve the full MCP payload so we can re-normalize without re-fetching.
+  // Preserve the full payload so we can re-normalize without re-fetching. It
+  // keeps the provenance the page and OCR decisions depended on
+  // (`oai_total_views`, `ocr_source`, `pages_source`).
   const rawMetadata: unknown = mcp
 
   return {
@@ -365,16 +423,13 @@ export function normalizeDocument(
 // ---------------------------------------------------------------------------
 
 /**
- * Normalize a batch of MCP document detail records, silently dropping those
- * that normalizeDocument rejects.
- *
- * Rejection cases (per plan §TASK constraints):
- *   - `ark` missing or starts with "temp-work/"  → normalizeDocument returns null
- *   - `title` absent AND no useful `creator` fallback  → normalizeDocument returns null
+ * Normalize a batch of MCP document detail records. A record normalizeDocument
+ * refuses is absent from the result and reported through `opts.onRejected`
+ * (reasons: NORMALIZE_REJECTION), so a caller can mark that ARK failed.
  */
 export function normalizeMany(
   mcps: BnfMcpDocumentDetail[],
-  opts?: { unknownDocTypeHook?: (raw: string, source: string) => void },
+  opts?: NormalizeOptions,
 ): NormalizedDocument[] {
   const results: NormalizedDocument[] = []
   for (const mcp of mcps) {

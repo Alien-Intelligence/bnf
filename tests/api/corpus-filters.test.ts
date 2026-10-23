@@ -13,7 +13,7 @@ import "server-only"
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { corpusFilterQuery } from "@/lib/corpus/filter-query"
-import { patchFilters, toggleFilterValue } from "@/lib/corpus/filter-state"
+import { applyFilterChange, FilterChangeRefusedError, patchFilters, toggleFilterValue } from "@/lib/corpus/filter-state"
 import { parseFilterParams } from "@/lib/filter-query"
 import { corpusFilterSetSchema, type CorpusFilterSet } from "@/models/corpus/types"
 
@@ -43,6 +43,7 @@ test("the panel's comma-joined multi-selects become arrays; whitespace and empti
 test("every dimension the panel writes reads back the same", () => {
   let ui: CorpusFilterSet = {}
   ui = toggleFilterValue(ui, "type", "book")
+  ui = toggleFilterValue(ui, "subtype", "fascicules")
   ui = toggleFilterValue(ui, "lang", "fr")
   ui = toggleFilterValue(ui, "source", "gallica")
   ui = toggleFilterValue(ui, "session", "11111111-1111-4111-8111-111111111111")
@@ -54,6 +55,7 @@ test("every dimension the panel writes reads back the same", () => {
   assert.ok(parsed?.success)
   assert.deepEqual(parsed.data, {
     type: ["book"],
+    subtype: ["fascicules"],
     lang: ["fr"],
     source: ["gallica"],
     session: ["11111111-1111-4111-8111-111111111111"],
@@ -81,7 +83,7 @@ test("integers are digits only: 0x10 and 1e3 are refused, not read as 16 and 100
 })
 
 test("the panel cannot hold a set the server would refuse: an off-vocabulary toggle is refused", () => {
-  assert.deepEqual(toggleFilterValue({}, "type", "presse"), {})
+  assert.throws(() => toggleFilterValue({}, "type", "presse"), FilterChangeRefusedError)
 })
 
 test("undated is strict: false is false, garbage is refused", () => {
@@ -107,7 +109,26 @@ test("the agent's vocabulary is accepted at REST too; free-text keeps its commas
 })
 
 test("values outside the vocabulary are refused, not dropped", () => {
-  for (const qs of ["type=presse", "lang=FR", "source=bnf", "kind=pamphlet", "ingest=scan", "yearFrom=abc"]) {
+  for (const qs of ["type=presse", "subtype=fascicule", "subtype=Fascicules", "not.subtype=nope", "lang=FR", "source=bnf", "kind=pamphlet", "ingest=scan", "yearFrom=abc"]) {
     assert.equal(parse(new URLSearchParams(qs))?.success, false, qs)
   }
+})
+
+test("subtype is read from the URL, inside `not` too, and the panel refuses an off-vocabulary toggle", () => {
+  const parsed = parse(new URLSearchParams("subtype=fascicules,titres&not.subtype=estampes"))
+  assert.ok(parsed?.success)
+  assert.deepEqual(parsed.data, { subtype: ["fascicules", "titres"], not: { subtype: ["estampes"] } })
+  assert.throws(() => toggleFilterValue({}, "subtype", "gazette"), FilterChangeRefusedError)
+})
+
+test("applyFilterChange applies a valid edit and reports a refused one instead of dropping it", () => {
+  const applied: CorpusFilterSet[] = []
+  let refused = 0
+  applyFilterChange(() => toggleFilterValue({}, "type", "book"), (next) => applied.push(next), () => { refused += 1 })
+  assert.deepEqual(applied, [{ type: ["book"] }])
+  assert.equal(refused, 0)
+
+  applyFilterChange(() => toggleFilterValue({}, "type", "presse"), (next) => applied.push(next), () => { refused += 1 })
+  assert.equal(applied.length, 1)
+  assert.equal(refused, 1)
 })

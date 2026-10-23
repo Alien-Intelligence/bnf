@@ -7,8 +7,10 @@ export interface ClusterDoc {
   title: string
   year: number | null
   docType: string
-  /** Gallica typedoc subcategory ("fascicules", "titres", "plan", …); null when
-   *  absent. Indexed into the datacluster as a filterable metadata field. */
+  /** Gallica typedoc subcategory ("fascicules", "titres", "plan", …), derived
+   *  app-side from the OAI `gallica_typedoc`; null when absent. The worker
+   *  forwards it as-is into the index metadata (it fetches nothing itself and
+   *  does not use it for lane routing). */
   subtype: string | null
   lang: string | null
   source: string
@@ -30,6 +32,7 @@ export interface ClusterIngestRequest {
   callbackSecret: string
 }
 
+import type { CLUSTER_POLL } from "@/models/ingest/schema"
 import type { ClusterQueueProgress as QueueProgress } from "@/models/ingest/types"
 
 // The worker → app wire contracts are Zod schemas in models/ingest/types.ts —
@@ -40,17 +43,6 @@ export type {
   ClusterQueueProgress,
   ClusterQueueStage,
 } from "@/models/ingest/types"
-
-/** The outcomes of one poll of the worker's read-model (ClusterClient.progress). */
-export const CLUSTER_POLL = {
-  PROGRESS: "progress",
-  /** 404: the worker does not know this run (pruned, or never seeded). */
-  RUN_UNKNOWN: "run_unknown",
-  /** No answer at all (transport error, timeout). */
-  WORKER_UNREACHABLE: "worker_unreachable",
-  /** The worker answered with a non-2xx other than 404. */
-  WORKER_ERROR: "worker_error",
-} as const
 
 export type ClusterProgressPoll =
   | { kind: typeof CLUSTER_POLL.PROGRESS; progress: QueueProgress }
@@ -74,6 +66,7 @@ export type ClusterProgressPoll =
  */
 export interface ClusterProgressErrorEntry {
   ark: string
+  /** The worker's LANE for the doc (or "unknown") — not an IngestStage, which names the app-side job stages. */
   stage: string
   reason: string
   warning?: true

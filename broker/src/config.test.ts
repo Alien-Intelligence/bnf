@@ -78,3 +78,9 @@ test("the credentials stay required", () => {
   delete env.BNF_CLIENT_SECRET;
   assert.throws(() => loadConfig(env), /BNF_CLIENT_SECRET is required/);
 });
+
+test("the 429 fallback freeze window defaults to 60s and is overridable", () => {
+  assert.equal(loadConfig(envWith(allRates())).rateLimitFallbackMs, 60_000);
+  const cfg = loadConfig({ ...envWith(allRates()), BNF_429_FALLBACK_MS: "5000" });
+  assert.equal(cfg.rateLimitFallbackMs, 5000);
+});

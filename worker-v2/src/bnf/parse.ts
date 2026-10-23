@@ -64,6 +64,33 @@ const altoParser = new XMLParser({
 // ARK helpers (ported from V1 slug.ts)
 // ---------------------------------------------------------------------------
 
+/**
+ * The NAAN every BnF-held ARK carries. The worker's one definition (the app has
+ * its own in lib/validation/ark.ts: a separate package). The worker restores
+ * the full ARK from the bare id the BnF MCP wire contract sends; see
+ * playbook/mcp-client.md, "The one boundary exception".
+ */
+const BNF_NAAN = "12148";
+
+/** The BnF ARK prefix — the only ARKs the worker accepts. */
+export const BNF_ARK_PREFIX = `ark:/${BNF_NAAN}/`;
+
+/** Raw-payload key under which the OAI view count (title-level for press) stays traceable. */
+export const RAW_OAI_TOTAL_VIEWS = "oai_total_views";
+
+/**
+ * The other keys of a BnfDocInfo's `raw` blob (cached as `meta/<slug>.json`),
+ * named once for the writers in client.ts and the cached-blob reader in
+ * doc-info.ts.
+ */
+export const RAW_SOURCE = "source";
+export const RAW_LANGUAGE = "language";
+export const RAW_PAGE_NUMBER = "pageNumber";
+export const RAW_GALLICA_TYPEDOC = "gallica_typedoc";
+export const RAW_TYPE_DOCUMENT = "type_document";
+export const RAW_TYPE = "type";
+export const RAW_METADATA = "metadata";
+
 const ARK_RE = /^ark:\/12148\/([A-Za-z0-9._-]+)$/;
 
 /** Extract the BnF-internal identifier (e.g. "btv1b9015469h") from a full ARK. */
@@ -80,9 +107,9 @@ export function arkToSlug(ark: string): string {
  */
 export function ensureCanonicalArk(ark: string): string {
   const trimmed = ark.trim();
-  if (!trimmed.startsWith("ark:/12148/")) {
+  if (!trimmed.startsWith(BNF_ARK_PREFIX)) {
     throw new PermanentBnfError("bad_ark", {
-      hint: `expected "ark:/12148/<id>", got: ${ark}`,
+      hint: `expected "${BNF_ARK_PREFIX}<id>", got: ${ark}`,
     });
   }
   return trimmed;
@@ -201,6 +228,48 @@ export function extractPageCountFromFormat(formats: unknown): number | null {
     }
   }
   return null;
+}
+
+/** The Gallica typedoc of a press issue: a single number of a periodical. */
+const FASCICULE_TYPEDOC = "periodiques:fascicules";
+
+/**
+ * Press markers in a <dc:type> label. A fascicule that carries no typedoc
+ * setSpec is still recognisable by "publication en série imprimée". The app's
+ * PRESS_MARKER (lib/mcp/vocab.ts) is the same pattern, applied to a lowercased
+ * label instead of case-insensitively. The worker cannot import app code, so
+ * the two copies are pinned by the SAME fixture table, kept in both
+ * parse.test.ts (against this pattern) and lib/mcp/vocab.test.ts (against
+ * PRESS_MARKER, label lowercased): change one pattern and its test fails until
+ * the table and the other pattern follow.
+ */
+export const PRESS_DC_TYPE = /p[ée]riodique|presse|journal|publication en s[ée]rie|s[ée]rie imprim/i;
+
+/**
+ * The page count to trust from an OAI record. "Nombre total de vues" is the view
+ * count of the whole periodical title, not of the issue: bpt6k268418n is a
+ * 4-folio issue that OAI reports as 3197. So the count is discarded (null) for a
+ * fascicule (typedoc periodiques:fascicules) and for a record that has no
+ * typedoc but whose <dc:type> labels mark it as press. Everything else keeps its
+ * count; an absent or non-positive count is null.
+ *
+ * null means "unknown", never "zero": the text lane turns it into
+ * PAGE_COUNT_UNKNOWN instead of fanning out one ALTO request per phantom page.
+ * `dcTypes` is the raw parsed <dc:type> node (every label is scanned, because
+ * the press marker is not the one pickDcType prefers).
+ */
+export function gallicaPageCount(
+  typedoc: string | null,
+  totalViews: number | null,
+  dcTypes: unknown,
+): number | null {
+  if (typedoc != null) {
+    if (typedoc.toLowerCase() === FASCICULE_TYPEDOC) return null;
+  } else {
+    const labels = Array.isArray(dcTypes) ? dcTypes : dcTypes != null ? [dcTypes] : [];
+    if (labels.some((l) => PRESS_DC_TYPE.test(textOf(l) ?? ""))) return null;
+  }
+  return totalViews != null && totalViews > 0 ? totalViews : null;
 }
 
 /**

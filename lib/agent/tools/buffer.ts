@@ -54,6 +54,7 @@ import {
   yearEndFromLabel,
   type GallicaSearchDocType,
 } from "@/lib/buffer/classify"
+import { fullBnfArk } from "@/lib/validation/ark"
 import { classifyArkKind } from "@/lib/documents/ark-kind"
 import { DOCUMENT_SOURCE } from "@/models/documents/schema"
 import { BufferPolicy } from "@/models/buffer/policy"
@@ -560,8 +561,8 @@ interface CataloguePayload extends BnfSearchCommon {
 }
 
 /**
- * Search-hit ARK → the canonical `ark:/12148/<id>` form, or null when the hit
- * carries no usable identifier.
+ * Search-hit ARK → the canonical full ARK (built by `fullBnfArk`, the one
+ * boundary constructor), or null when the hit carries no usable identifier.
  *
  * The BnF SRU returns bare local ids ("bpt6k…"), and for PERIODICALS it returns
  * the *collection* entry as `cb…/date` — the Gallica collection page, not a
@@ -577,9 +578,33 @@ function toFullArk(bare: string): string | null {
     .replace(/^https?:\/\/[^/]+\//, "")
     .replace(/^ark:\/\d+\//, "")
     .replace(/\/.*$/, "") // drop trailing path segments ("/date", "/f1.item", …)
-  if (!/^[A-Za-z0-9]+$/.test(id)) return null
-  return `ark:/12148/${id}`
+  return fullBnfArk(id)
 }
+
+/**
+ * Map every hit of one search page to its candidate. A hit whose ARK is
+ * refused (`candidate === null`) is never dropped silently: each one is logged
+ * with its raw value, and the count is returned for the tool result.
+ */
+function mapHits<H extends { ark: string }, C>(
+  hits: readonly H[],
+  source: string,
+  toCandidate: (hit: H) => C | null,
+): { mapped: C[]; refused: number } {
+  const mapped: C[] = []
+  let refused = 0
+  for (const hit of hits) {
+    const candidate = toCandidate(hit)
+    if (candidate === null) {
+      refused += 1
+      console.warn("[corpus_search] hit ARK refused", { source, rawArk: hit.ark })
+    } else {
+      mapped.push(candidate)
+    }
+  }
+  return { mapped, refused }
+}
+
 /** Trim to a non-empty string, or undefined. */
 function clean(value: string | null | undefined): string | undefined {
   const t = value?.trim()
@@ -1322,6 +1347,8 @@ export const corpusSearchTool = defineTool<
     let typeAmbiguous = 0
     // Every hit the BnF returned for this page, before identifier mapping.
     let hitCount = 0
+    // Of those, the hits whose ARK the app refused (logged, never dropped silently).
+    let arkRefused = 0
     try {
       if (input.source === DOCUMENT_SOURCE.GALLICA) {
         const payload = await callBnfTool<GallicaPayload>(
@@ -1350,10 +1377,9 @@ export const corpusSearchTool = defineTool<
           collapsing: collapsing ?? input.collapsing ?? GALLICA_COLLAPSING_DEFAULT,
         }
         hitCount = payload.data.results.length
-        const mapped = payload.data.results.flatMap((h) => {
-          const c = candidateFromGallicaHit(h, search)
-          return c === null ? [] : [c]
-        })
+        const hits = mapHits(payload.data.results, input.source, (h) => candidateFromGallicaHit(h, search))
+        const mapped = hits.mapped
+        arkRefused = hits.refused
         typeAmbiguous = mapped.filter((c) => c.typeAmbiguous).length
         candidates = mapped.map(({ typeAmbiguous: _ambiguous, ...c }) => c)
       } else {
@@ -1375,10 +1401,9 @@ export const corpusSearchTool = defineTool<
           throw new BnfMcpError(`${BNF_SEARCH_TOOL.catalogue}: payload carried no records array`)
         }
         hitCount = payload.data.records.length
-        candidates = payload.data.records.flatMap((h) => {
-          const c = candidateFromCatalogueHit(h)
-          return c === null ? [] : [c]
-        })
+        const hits = mapHits(payload.data.records, input.source, candidateFromCatalogueHit)
+        candidates = hits.mapped
+        arkRefused = hits.refused
       }
     } catch (err) {
       // Coerce the transport/tool failure into a structured tool result the
@@ -1477,6 +1502,10 @@ export const corpusSearchTool = defineTool<
       // periodical COLLECTION entry): enumerate its issues with
       // bnf__bnf_get_periodical_issues, then stage those with buffer_add.
       ...(accounted.skipped > 0 ? { skipped_not_a_document: accounted.skipped } : {}),
+      // The part of those skips whose ARK was refused outright (junk or
+      // unbuildable identifier): logged per hit, counted here so a short
+      // result list is never read as a search that matched less.
+      ...(arkRefused > 0 ? { ark_refused: arkRefused } : {}),
       buffered,
       has_more: pagination.has_more,
       ...(pagination.next_start_record !== undefined

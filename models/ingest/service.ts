@@ -13,13 +13,12 @@ import "server-only"
 //   • Deduplication: if a (projectId, targetVersionId) job is already queued/running,
 //     IngestService.submit() returns the existing job — no new row.
 import crypto from "node:crypto"
-import { prisma } from "@/lib/db"
 import { CORPUS_VERSION_STATUS } from "@/models/corpus/schema"
 import { SessionQueries } from "@/models/sessions/queries"
 import { SESSION_SCOPE } from "@/models/sessions/schema"
-import { Prisma } from "@/lib/generated/prisma/client"
-import type { IngestJob, Project, User } from "@/lib/generated/prisma/client"
+import type { Prisma, IngestJob, Project, User } from "@/lib/generated/prisma/client"
 import { CorpusQueries } from "@/models/corpus/queries"
+import { ProjectQueries } from "@/models/projects/queries"
 import {
   classifyIngestion,
   DOCUMENT_RESOLVE_STATUS,
@@ -27,7 +26,8 @@ import {
   isIngestableClass,
   isLatinScriptLang,
 } from "@/models/documents/schema"
-import { CLUSTER_TERMINAL_STAGE, estimatePaidOcrCostUsd, INGEST_STATUS } from "./schema"
+import { IngestQueries } from "./queries"
+import { CLUSTER_POLL, CLUSTER_TERMINAL_STAGE, estimatePaidOcrCostUsd, INGEST_STATUS, isIngestStatus } from "./schema"
 import type { PaidOcrEstimate } from "./schema"
 import type {
   IngestDeltaPreview,
@@ -36,14 +36,15 @@ import type {
   IngestSubmitOutcome,
 } from "./types"
 import {
-  CLUSTER_POLL,
   type ClusterProgressEvent,
   type ClusterQueueProgress,
 } from "@/lib/cluster/contracts"
 import { ClusterRunner } from "@/lib/cluster/runner"
 import { requestOcrSync } from "@/lib/documents/ocr-sync-signal"
+import { DocumentQueries } from "@/models/documents/queries"
 import { DocumentService } from "@/models/documents/service"
 import { PAID_OCR_DEFAULT_BUDGET_USD } from "@/lib/constants"
+import { prisma } from "@/lib/db"
 import { env } from "@/lib/env"
 import { toInputJson } from "@/lib/validation/json"
 
@@ -190,15 +191,7 @@ export class IngestService {
     let targetVersion: Awaited<ReturnType<typeof CorpusQueries.headVersion>>
 
     if (input.targetVersionSeq !== undefined) {
-      targetVersion = await prisma.corpusVersion.findUniqueOrThrow({
-        where: {
-          projectId_seq: {
-            projectId: project.id,
-            seq: input.targetVersionSeq,
-          },
-        },
-        include: { membership: { select: { ark: true } } },
-      })
+      targetVersion = await CorpusQueries.versionBySeq(project.id, input.targetVersionSeq)
     } else {
       targetVersion = await CorpusQueries.headVersion(project.id)
     }
@@ -240,13 +233,7 @@ export class IngestService {
 
     // 4. Deduplication guard. Runs BEFORE the paid-OCR gate so re-submitting
     // while a job is already in flight reuses it without re-prompting for spend.
-    const existing = await prisma.ingestJob.findFirst({
-      where: {
-        projectId: project.id,
-        targetVersionId: targetVersion.id,
-        status: { in: [INGEST_STATUS.QUEUED, INGEST_STATUS.RUNNING] },
-      },
-    })
+    const existing = await IngestQueries.findByTarget(project.id, targetVersion.id)
     if (existing) return { kind: "job", job: existing }
 
     // 4b. Paid-OCR opt-in. The `sans_texte` docs are NEVER part of a normal
@@ -295,22 +282,20 @@ export class IngestService {
     const callbackSecret = crypto.randomBytes(32).toString("hex")
 
     // 8. Insert job row
-    const job = await prisma.ingestJob.create({
-      data: {
-        projectId: project.id,
-        targetVersionId: targetVersion.id,
-        baseVersionId: baseVersion?.id ?? null,
-        status: INGEST_STATUS.QUEUED,
-        addedCount: addedArks.length,
-        removedCount: removedArks.length,
-        addedArks,
-        removedArks,
-        excludedArks,
-        excludedCount: excludedArks.length,
-        paidOcrArks: paidOcrToInclude,
-        paidOcrEstimatedUsd,
-        callbackSecret,
-      },
+    const job = await IngestQueries.create({
+      projectId: project.id,
+      targetVersionId: targetVersion.id,
+      baseVersionId: baseVersion?.id ?? null,
+      status: INGEST_STATUS.QUEUED,
+      addedCount: addedArks.length,
+      removedCount: removedArks.length,
+      addedArks,
+      removedArks,
+      excludedArks,
+      excludedCount: excludedArks.length,
+      paidOcrArks: paidOcrToInclude,
+      paidOcrEstimatedUsd,
+      callbackSecret,
     })
 
     // 9. Enqueue to cluster runner (fire-and-forget; route handles progress via callback)
@@ -341,25 +326,19 @@ export class IngestService {
       })
       clusterJobId = result.clusterJobId
     } catch (err) {
-      await prisma.ingestJob.update({
-        where: { id: job.id },
-        data: {
-          status: INGEST_STATUS.FAILED,
-          error: IngestService._truncateError(err),
-          finishedAt: new Date(),
-        },
+      await IngestQueries.update(job.id, {
+        status: INGEST_STATUS.FAILED,
+        error: IngestService._truncateError(err),
+        finishedAt: new Date(),
       })
       throw err
     }
 
     // 10. Persist clusterJobId and transition to running
-    const running = await prisma.ingestJob.update({
-      where: { id: job.id },
-      data: {
-        clusterJobId,
-        status: INGEST_STATUS.RUNNING,
-        startedAt: new Date(),
-      },
+    const running = await IngestQueries.update(job.id, {
+      clusterJobId,
+      status: INGEST_STATUS.RUNNING,
+      startedAt: new Date(),
     })
     return { kind: "job", job: running }
   }
@@ -444,9 +423,9 @@ export class IngestService {
    * `_user` is the authenticated user — kept for future audit logging.
    */
   static async cancel(job: IngestJob, _user: User): Promise<IngestJob> {
-    const updated = await prisma.ingestJob.update({
-      where: { id: job.id },
-      data: { status: INGEST_STATUS.CANCELED, finishedAt: new Date() },
+    const updated = await IngestQueries.update(job.id, {
+      status: INGEST_STATUS.CANCELED,
+      finishedAt: new Date(),
     })
     if (job.clusterJobId) {
       await ClusterRunner.cancel(job.clusterJobId)
@@ -481,10 +460,7 @@ export class IngestService {
    * went terminal since the watchdog's scan is left alone.
    */
   static async mirrorWatchdogProgress(jobId: string, progress: number, stats: Record<string, number>): Promise<void> {
-    await prisma.ingestJob.updateMany({
-      where: { id: jobId, status: INGEST_STATUS.RUNNING },
-      data: { progress, stats },
-    })
+    await IngestQueries.updateIfStatus(jobId, INGEST_STATUS.RUNNING, { progress, stats })
   }
 
   /**
@@ -495,9 +471,13 @@ export class IngestService {
    * FAILED. A late terminal callback still overwrites this (applyProgress).
    */
   static async failStuckJob(jobId: string, expectedStatus: string, reason: string, at: Date): Promise<void> {
-    await prisma.ingestJob.updateMany({
-      where: { id: jobId, status: expectedStatus },
-      data: { status: INGEST_STATUS.FAILED, error: reason, finishedAt: at },
+    if (!isIngestStatus(expectedStatus)) {
+      throw new Error(`failStuckJob: job ${jobId} has unknown status "${expectedStatus}"`)
+    }
+    await IngestQueries.updateIfStatus(jobId, expectedStatus, {
+      status: INGEST_STATUS.FAILED,
+      error: reason,
+      finishedAt: at,
     })
   }
 
@@ -551,27 +531,21 @@ export class IngestService {
         })
       }
     } else if (event.stage === CLUSTER_TERMINAL_STAGE.FAILED) {
-      await prisma.ingestJob.update({
-        where: { id: job.id },
-        data: {
-          status: INGEST_STATUS.FAILED,
-          error: event.error,
-          finishedAt: new Date(),
-          ...(event.partialStats
-            ? { stats: toInputJson(event.partialStats) }
-            : {}),
-        },
+      await IngestQueries.update(job.id, {
+        status: INGEST_STATUS.FAILED,
+        error: event.error,
+        finishedAt: new Date(),
+        ...(event.partialStats
+          ? { stats: toInputJson(event.partialStats) }
+          : {}),
       })
     } else {
       // Running stage: extract | chunk | embed | index
-      await prisma.ingestJob.update({
-        where: { id: job.id },
-        data: {
-          status: INGEST_STATUS.RUNNING,
-          stage: event.stage,
-          progress: event.fraction,
-          stats: event.counters,
-        },
+      await IngestQueries.update(job.id, {
+        status: INGEST_STATUS.RUNNING,
+        stage: event.stage,
+        progress: event.fraction,
+        stats: event.counters,
       })
     }
   }
@@ -595,9 +569,10 @@ export class IngestService {
   static async commit(job: IngestJob, results: IngestResults): Promise<void> {
     const now = new Date()
     // Charge the confirmed paid-OCR estimate to the project's running spend,
-    // set-once (paidOcrActualUsd null → not yet charged). The estimate (capped
-    // page counts) is conservative — it never under-counts spend, which is the
-    // safe direction for a budget ceiling. See _chargePaidOcr* helpers.
+    // set-once (paidOcrActualUsd null → not yet charged). The estimate holds
+    // unknown page counts at the per-document maximum and caps known ones, so it
+    // is an upper bound on the folios the worker transcribes — the safe
+    // direction for a budget ceiling. See _paidOcrChargeFor.
     const paidOcrCharge = IngestService._paidOcrChargeFor(job)
     // F13: warning-only entries route here (never commitPartialFailure), so the
     // annotation must be applied here too — same transaction, so it's atomic
@@ -611,52 +586,34 @@ export class IngestService {
       [...errorEntries.entries()].map(([ark, v]) => [ark, v.reason] as const),
     )
     const ops: Prisma.PrismaPromise<unknown>[] = [
-      prisma.ingestJob.update({
-        where: { id: job.id },
-        data: {
-          status: INGEST_STATUS.DONE,
-          finishedAt: now,
-          chunksWritten: results.chunksWritten,
-          stats: toInputJson(results.stats),
-          ...(paidOcrCharge !== null
-            ? { paidOcrActualUsd: paidOcrCharge }
-            : {}),
-        },
+      IngestQueries.updateOp(job.id, {
+        status: INGEST_STATUS.DONE,
+        finishedAt: now,
+        chunksWritten: results.chunksWritten,
+        stats: toInputJson(results.stats),
+        ...(paidOcrCharge !== null ? { paidOcrActualUsd: paidOcrCharge } : {}),
       }),
-      prisma.corpusVersion.update({
-        where: { id: job.targetVersionId },
-        data: { status: CORPUS_VERSION_STATUS.INGESTED },
-      }),
-      prisma.project.update({
-        where: { id: job.projectId },
-        data: {
-          ingestedVersionId: job.targetVersionId,
-          ...(paidOcrCharge !== null
-            ? { paidOcrSpentUsd: { increment: paidOcrCharge } }
-            : {}),
-        },
+      CorpusQueries.versionStatusOp(job.targetVersionId, CORPUS_VERSION_STATUS.INGESTED),
+      ProjectQueries.updateOp(job.projectId, {
+        ingestedVersionId: job.targetVersionId,
+        ...(paidOcrCharge !== null
+          ? { paidOcrSpentUsd: { increment: paidOcrCharge } }
+          : {}),
       }),
       // Per-doc index state: every added ARK is now in the index; every removed
       // ARK is out. Keeps the delta truthful independent of the version pointer.
-      prisma.document.updateMany({
-        where: { projectId: job.projectId, ark: { in: job.addedArks } },
-        data: { indexedAt: now, indexError: null },
-      }),
-      prisma.document.updateMany({
-        where: { projectId: job.projectId, ark: { in: job.removedArks } },
-        data: { indexedAt: null },
-      }),
+      DocumentQueries.updateManyOp(
+        job.projectId,
+        { in: job.addedArks },
+        { indexedAt: now, indexError: null },
+      ),
+      DocumentQueries.updateManyOp(job.projectId, { in: job.removedArks }, { indexedAt: null }),
     ]
     // Applied AFTER the blanket indexError:null above so the annotation
     // survives — indexedAt stays `now` (the doc IS indexed), only indexError
     // carries the warning text.
     for (const [ark, reason] of warningsByArk) {
-      ops.push(
-        prisma.document.updateMany({
-          where: { projectId: job.projectId, ark },
-          data: { indexError: reason },
-        }),
-      )
+      ops.push(DocumentQueries.updateManyOp(job.projectId, ark, { indexError: reason }))
     }
     // OCR quality (feedback 2026-09-29 #7): the run's documents may have been
     // re-OCR'd, so their stored quality is due again — persisted in the same
@@ -668,9 +625,10 @@ export class IngestService {
     // refuses to search. Derived workspaces reading this corpus are affected by
     // an ingestion they did not run, so they are invalidated too — in the same
     // transaction as the state change.
-    // A statement of the batch $transaction(ops) below: built on the app client.
-    ops.push(SessionQueries.invalidatePrompts(researchPromptsOf(job.projectId), prisma))
-    await prisma.$transaction(ops)
+    await IngestQueries.batch([
+      ...ops,
+      SessionQueries.invalidatePrompts(researchPromptsOf(job.projectId), prisma),
+    ])
     requestOcrSync()
   }
 
@@ -705,46 +663,38 @@ export class IngestService {
     const now = new Date()
 
     // Charge the confirmed paid-OCR estimate even on a partial run: the worker
-    // already paid Mistral for the folios it transcribed, and the estimate is
-    // conservative. Set-once via paidOcrActualUsd. (A whole-job FAILED, which
-    // does not commit, is the one case that escapes accounting — acceptably rare.)
+    // may already have paid Mistral for the folios it transcribed. Set-once via
+    // paidOcrActualUsd. (A whole-job FAILED, which does not commit, charges
+    // nothing — a known gap.)
     const paidOcrCharge = IngestService._paidOcrChargeFor(job)
 
     const ops: Prisma.PrismaPromise<unknown>[] = [
-      prisma.ingestJob.update({
-        where: { id: job.id },
-        data: {
-          status: INGEST_STATUS.PARTIAL,
-          finishedAt: now,
-          chunksWritten: results.chunksWritten,
-          stats: toInputJson(results.stats),
-          error: `${failed}/${total} document(s) en échec — réessayez les documents échoués`,
-          ...(paidOcrCharge !== null ? { paidOcrActualUsd: paidOcrCharge } : {}),
-        },
+      IngestQueries.updateOp(job.id, {
+        status: INGEST_STATUS.PARTIAL,
+        finishedAt: now,
+        chunksWritten: results.chunksWritten,
+        stats: toInputJson(results.stats),
+        error: `${failed}/${total} document(s) en échec — réessayez les documents échoués`,
+        ...(paidOcrCharge !== null ? { paidOcrActualUsd: paidOcrCharge } : {}),
       }),
       // A partial run still advances the baseline (same as commit) — the per-doc
       // Document.indexedAt above is the real delta truth; this pointer is just the
       // "Dernière ingestion vN" label. Only a whole-job failure leaves it behind.
-      prisma.corpusVersion.update({
-        where: { id: job.targetVersionId },
-        data: { status: CORPUS_VERSION_STATUS.INGESTED },
-      }),
-      prisma.project.update({
-        where: { id: job.projectId },
-        data: {
-          ingestedVersionId: job.targetVersionId,
-          ...(paidOcrCharge !== null
-            ? { paidOcrSpentUsd: { increment: paidOcrCharge } }
-            : {}),
-        },
+      CorpusQueries.versionStatusOp(job.targetVersionId, CORPUS_VERSION_STATUS.INGESTED),
+      ProjectQueries.updateOp(job.projectId, {
+        ingestedVersionId: job.targetVersionId,
+        ...(paidOcrCharge !== null
+          ? { paidOcrSpentUsd: { increment: paidOcrCharge } }
+          : {}),
       }),
     ]
     if (succeededAdded.length > 0) {
       ops.push(
-        prisma.document.updateMany({
-          where: { projectId: job.projectId, ark: { in: succeededAdded } },
-          data: { indexedAt: now, indexError: null },
-        }),
+        DocumentQueries.updateManyOp(
+          job.projectId,
+          { in: succeededAdded },
+          { indexedAt: now, indexError: null },
+        ),
       )
     }
     // Mark each failed doc with its reason; indexedAt stays null so it remains
@@ -753,31 +703,18 @@ export class IngestService {
     // succeededAdded's blanket indexError:null, so their annotation survives.
     for (const [ark, v] of entriesByArk) {
       if (v.warning) continue
-      ops.push(
-        prisma.document.updateMany({
-          where: { projectId: job.projectId, ark },
-          data: { indexError: v.reason },
-        }),
-      )
+      ops.push(DocumentQueries.updateManyOp(job.projectId, ark, { indexError: v.reason }))
     }
     // F13: a warning doc IS in succeededAdded (indexedAt just set to `now`,
     // indexError cleared, above) — re-apply the warning text afterward, in the
     // same transaction, so the doc stays indexed but the reason survives.
     for (const [ark, v] of entriesByArk) {
       if (!v.warning) continue
-      ops.push(
-        prisma.document.updateMany({
-          where: { projectId: job.projectId, ark },
-          data: { indexError: v.reason },
-        }),
-      )
+      ops.push(DocumentQueries.updateManyOp(job.projectId, ark, { indexError: v.reason }))
     }
     if (job.removedArks.length > 0) {
       ops.push(
-        prisma.document.updateMany({
-          where: { projectId: job.projectId, ark: { in: job.removedArks } },
-          data: { indexedAt: null },
-        }),
+        DocumentQueries.updateManyOp(job.projectId, { in: job.removedArks }, { indexedAt: null }),
       )
     }
     // OCR quality (feedback 2026-09-29 #7): the run's documents may have been
@@ -790,9 +727,10 @@ export class IngestService {
     // refuses to search. Derived workspaces reading this corpus are affected by
     // an ingestion they did not run, so they are invalidated too — in the same
     // transaction as the state change.
-    // A statement of the batch $transaction(ops) below: built on the app client.
-    ops.push(SessionQueries.invalidatePrompts(researchPromptsOf(job.projectId), prisma))
-    await prisma.$transaction(ops)
+    await IngestQueries.batch([
+      ...ops,
+      SessionQueries.invalidatePrompts(researchPromptsOf(job.projectId), prisma),
+    ])
     requestOcrSync()
   }
 
@@ -834,7 +772,7 @@ export class IngestService {
     jobId: string,
     _user: User,
   ): Promise<{ created: false } | IngestJob> {
-    const job = await prisma.ingestJob.findUniqueOrThrow({ where: { id: jobId } })
+    const job = await IngestQueries.getOrThrow(jobId)
 
     // Defensively read stats.errors — absent when no per-doc failures were
     // recorded (e.g. FakeClusterRunner stub, or job died/was watchdog-failed
@@ -849,15 +787,7 @@ export class IngestService {
     // partial-failure retry) never touches Document here.
     const docRows =
       statsErrors.length === 0
-        ? await prisma.document.findMany({
-            where: {
-              projectId: job.projectId,
-              ark: { in: job.addedArks },
-              indexedAt: null,
-              indexError: { not: null },
-            },
-            select: { ark: true, indexedAt: true, indexError: true },
-          })
+        ? await DocumentQueries.indexFailuresAmong(job.projectId, job.addedArks)
         : []
 
     const failedArks = computeRetryArks(statsErrors, job.addedArks, docRows)
@@ -868,18 +798,16 @@ export class IngestService {
 
     const callbackSecret = crypto.randomBytes(32).toString("hex")
 
-    const retryJob = await prisma.ingestJob.create({
-      data: {
-        projectId: job.projectId,
-        targetVersionId: job.targetVersionId,
-        baseVersionId: job.baseVersionId,
-        status: INGEST_STATUS.QUEUED,
-        addedCount: failedArks.length,
-        removedCount: 0,
-        addedArks: failedArks,
-        removedArks: [],
-        callbackSecret,
-      },
+    const retryJob = await IngestQueries.create({
+      projectId: job.projectId,
+      targetVersionId: job.targetVersionId,
+      baseVersionId: job.baseVersionId,
+      status: INGEST_STATUS.QUEUED,
+      addedCount: failedArks.length,
+      removedCount: 0,
+      addedArks: failedArks,
+      removedArks: [],
+      callbackSecret,
     })
 
     const retryCallbackBase = process.env.WORKER_CALLBACK_BASE_URL ?? env.APP_URL
@@ -900,24 +828,18 @@ export class IngestService {
       })
       clusterJobId = result.clusterJobId
     } catch (err) {
-      await prisma.ingestJob.update({
-        where: { id: retryJob.id },
-        data: {
-          status: INGEST_STATUS.FAILED,
-          error: IngestService._truncateError(err),
-          finishedAt: new Date(),
-        },
+      await IngestQueries.update(retryJob.id, {
+        status: INGEST_STATUS.FAILED,
+        error: IngestService._truncateError(err),
+        finishedAt: new Date(),
       })
       throw err
     }
 
-    return prisma.ingestJob.update({
-      where: { id: retryJob.id },
-      data: {
-        clusterJobId,
-        status: INGEST_STATUS.RUNNING,
-        startedAt: new Date(),
-      },
+    return IngestQueries.update(retryJob.id, {
+      clusterJobId,
+      status: INGEST_STATUS.RUNNING,
+      startedAt: new Date(),
     })
   }
 
@@ -949,39 +871,29 @@ export class IngestService {
     excludedArks: string[] = [],
   ): Promise<IngestJob> {
     const now = new Date()
-    let job!: IngestJob
-    await prisma.$transaction(async (tx) => {
-      job = await tx.ingestJob.create({
-        data: {
-          projectId: project.id,
-          targetVersionId,
-          baseVersionId,
-          status: INGEST_STATUS.DONE,
-          addedCount: 0,
-          removedCount: 0,
-          addedArks: [],
-          removedArks: [],
-          excludedArks,
-          excludedCount: excludedArks.length,
-          chunksWritten: 0,
-          stats: { noOp: true },
-          startedAt: now,
-          finishedAt: now,
-        },
-      })
-      await tx.corpusVersion.update({
-        where: { id: targetVersionId },
-        data: { status: CORPUS_VERSION_STATUS.INGESTED },
-      })
-      await tx.project.update({
-        where: { id: project.id },
-        data: { ingestedVersionId: targetVersionId },
-      })
-      // Same reason as the commit path: the pointer moved, so the research
-      // prompt's ÉTAT DU CORPUS is stale here and in every derived workspace.
-      await SessionQueries.invalidatePrompts(researchPromptsOf(project.id), tx)
-    })
-
+    // Same reason as the commit path: the pointer moved, so the research
+    // prompt's ÉTAT DU CORPUS is stale here and in every derived workspace.
+    const [job] = await IngestQueries.batch([
+      IngestQueries.createOp({
+        projectId: project.id,
+        targetVersionId,
+        baseVersionId,
+        status: INGEST_STATUS.DONE,
+        addedCount: 0,
+        removedCount: 0,
+        addedArks: [],
+        removedArks: [],
+        excludedArks,
+        excludedCount: excludedArks.length,
+        chunksWritten: 0,
+        stats: { noOp: true },
+        startedAt: now,
+        finishedAt: now,
+      }),
+      CorpusQueries.versionStatusOp(targetVersionId, CORPUS_VERSION_STATUS.INGESTED),
+      ProjectQueries.updateOp(project.id, { ingestedVersionId: targetVersionId }),
+      SessionQueries.invalidatePrompts(researchPromptsOf(project.id), prisma),
+    ])
     return job
   }
 
@@ -1034,17 +946,7 @@ export class IngestService {
         excludedNoScan: 0,
         unconfirmed: 0,
       }
-    const rows = await prisma.document.findMany({
-      where: { projectId, ark: { in: arks } },
-      select: {
-        ark: true,
-        docType: true,
-        ocrAvailable: true,
-        iiifManifestUrl: true,
-        resolveStatus: true,
-        lang: true,
-      },
-    })
+    const rows = await DocumentQueries.ingestClassificationRows(projectId, arks)
     const byArk = new Map(rows.map((r) => [r.ark, r]))
 
     const ingestable: string[] = []
@@ -1099,8 +1001,9 @@ export class IngestService {
    * The paid-OCR amount to charge a project when this job commits, or null if
    * there is nothing to charge. Set-once: returns null once `paidOcrActualUsd`
    * is already recorded (so a re-delivered commit can't double-charge) or when
-   * the job carried no paid-OCR estimate. The number is the confirmed estimate
-   * — conservative by design (capped page counts never under-count spend).
+   * the job carried no paid-OCR estimate. The number is the confirmed estimate,
+   * not a billed cost: unknown page counts are held at the per-document maximum
+   * and known ones are capped, so it is an upper bound on the folios transcribed.
    */
   private static _paidOcrChargeFor(job: IngestJob): number | null {
     if (job.paidOcrActualUsd !== null) return null
@@ -1108,12 +1011,6 @@ export class IngestService {
     return Number(job.paidOcrEstimatedUsd)
   }
 
-  /**
-   * Estimate the paid-OCR cost for a set of `sans_texte` ARKs from their stored
-   * page counts (`Document.pages`). A missing row or null page count falls back
-   * to the conservative default inside estimatePaidOcrCostUsd(). The worker
-   * reports the real billed cost on completion.
-   */
   /** Effective paid-OCR budget ceiling: the project override, or the default. */
   private static _paidOcrCeilingUsd(project: Project): number {
     return project.paidOcrBudgetUsd === null
@@ -1121,15 +1018,18 @@ export class IngestService {
       : Number(project.paidOcrBudgetUsd)
   }
 
+  /**
+   * Estimate the paid-OCR cost for a set of `sans_texte` ARKs from their stored
+   * page counts (`Document.pages`). A missing row or null page count is held at
+   * the per-document maximum inside estimatePaidOcrCostUsd(), so the result is
+   * an upper bound; it is also the amount charged when the job commits.
+   */
   private static async _estimatePaidOcr(
     projectId: string,
     arks: string[],
   ): Promise<PaidOcrEstimate> {
     if (arks.length === 0) return { docCount: 0, pages: 0, usd: 0 }
-    const rows = await prisma.document.findMany({
-      where: { projectId, ark: { in: arks } },
-      select: { ark: true, pages: true },
-    })
+    const rows = await DocumentQueries.pagesByArks(projectId, arks)
     const pagesByArk = new Map(rows.map((r) => [r.ark, r.pages]))
     return estimatePaidOcrCostUsd(arks.map((ark) => pagesByArk.get(ark) ?? null))
   }
@@ -1155,19 +1055,7 @@ export class IngestService {
     }[]
   > {
     if (arks.length === 0) return []
-    const rows = await prisma.document.findMany({
-      where: { projectId, ark: { in: arks } },
-      select: {
-        ark: true,
-        title: true,
-        year: true,
-        docType: true,
-        subtype: true,
-        lang: true,
-        source: true,
-        iiifManifestUrl: true,
-      },
-    })
+    const rows = await DocumentQueries.clusterRows(projectId, arks)
     return rows.map((doc) => ({
       ark: doc.ark,
       // title/docType are null on stubs whose metadata hasn't resolved yet. The

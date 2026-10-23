@@ -5,6 +5,9 @@
 
 import { LOGIN_METHOD } from "@/models/users/schema"
 
+/** Milliseconds in one minute; the unit of every `N * MS_PER_MINUTE` duration. */
+export const MS_PER_MINUTE = 60_000
+
 // ---------------------------------------------------------------------------
 // Database pool bounds (lib/db.ts) — every query the app sends is bounded
 // (CLAUDE_ERROR_PATTERNS §14), so a hung statement or an exhausted pool fails
@@ -286,6 +289,24 @@ export const CORPUS_REMOVE_PREVIEW_LIMIT = 50
  * the corpus system prompt.
  */
 export const CORPUS_REASON_MAX_LEN = 1_000
+
+/**
+ * REST corpus mutations (POST /corpus/add, /corpus/remove): ARKs per call and
+ * the length of the human-readable reason. The REST bound is tighter than the
+ * agent's CORPUS_REASON_MAX_LEN — a form field, not a model's justification.
+ */
+export const CORPUS_MUTATION_MAX_ARKS = 5_000
+export const CORPUS_MUTATION_REASON_MAX_CHARS = 300
+
+/**
+ * The version note recorded when a librarian removes a document from the
+ * detail panel. A stored audit string, not UI chrome: it stays the same in
+ * every locale, so it is a constant rather than a translation key.
+ */
+export const CORPUS_REMOVE_REASON_DETAIL_PANEL = "Retiré du corpus depuis le panneau de notice"
+
+/** ARKs per "retry resolution" call — a per-document user action, not a bulk import. */
+export const CORPUS_RETRY_RESOLVE_MAX_ARKS = 50
 
 // ---------------------------------------------------------------------------
 // Research buffer ("tampon") — the pre-commit candidate staging area.
@@ -585,6 +606,29 @@ export const QUOTE_MATCH_DEADLINE_STRIDE = 1_024
  */
 export const RESOLVE_MAX_ATTEMPTS = 5
 
+/**
+ * Backoff before a failed resolve is retried: this, doubled per attempt (1, 2,
+ * 4, 8 min), capped at RESOLVE_RETRY_CAP_MS. A broker 429/503 burst is not
+ * burned through in seconds. Mirrors BUFFER_ENRICH_RETRY_BASE_MS.
+ */
+export const RESOLVE_RETRY_BASE_MS = 60_000
+
+/**
+ * Upper bound of the resolve backoff, so a row never waits unboundedly for its
+ * next attempt however the base and the attempt count are tuned. 30 min keeps a
+ * long BnF outage from being retried every few minutes without parking rows for
+ * hours.
+ */
+export const RESOLVE_RETRY_CAP_MS = 30 * 60 * 1_000
+
+/**
+ * Wall-clock ceiling of one resolve drain (all its batches and reruns). Under
+ * the 3-minute RESOLVE_SWEEP_INTERVAL_MS, so a slow drain ends before the next
+ * sweep would start another and drains cannot overlap sweeps. Rows cut off by
+ * the deadline stay pending. Mirrors BUFFER_ENRICH_DRAIN_MAX_MS.
+ */
+export const RESOLVE_DRAIN_MAX_MS = 150_000
+
 /** ARKs resolved per drainer batch (one MCP fan-out; ≤ MCP 50-hit cap). */
 export const RESOLVE_BATCH_SIZE = 30
 
@@ -674,6 +718,20 @@ export const CANONICALIZE_BATCH_SIZE = 25
  * genuinely-undigitized notice. Shares the resolver's 3-min cadence.
  */
 export const CANONICALIZE_SWEEP_INTERVAL_MS = RESOLVE_SWEEP_INTERVAL_MS
+
+/**
+ * Ceiling on one database await in the resolver and canonicalizer drainers.
+ * Prisma takes no per-query signal, so the await is raced against this deadline
+ * (lib/async/deadline.ts) and fails loudly instead of hanging the drain.
+ */
+export const DRAINER_DB_TIMEOUT_MS = 15_000
+
+/**
+ * Ceiling on the canonicalizer's membership swap: it waits for the project's
+ * advisory lock (a concurrent corpus mutation holds it) before it writes, so it
+ * gets a longer budget than a plain read.
+ */
+export const CANONICALIZE_SWAP_TIMEOUT_MS = 60_000
 
 // ---------------------------------------------------------------------------
 // OCR quality (feedback 2026-09-29 #7 — ai-memories/tech/repos/bnf/
@@ -1079,8 +1137,11 @@ export const INGEST_RECENT_JOBS_LIMIT = 20
 // Cost model for transcribing digitized text that has no BnF OCR layer, via
 // the Mistral OCR Batch API (one batch job per document, one entry per folio).
 // Used to estimate the spend shown at the per-ingestion confirmation prompt and
-// to enforce the per-project budget ceiling. The worker reports the actual cost
-// back on completion. See models/ingest/schema.ts estimatePaidOcrCostUsd() and
+// to enforce the per-project budget ceiling. The confirmed estimate is what the
+// project is charged when the job commits; the worker does not report a billed
+// cost back. A document with an unknown page count is held at the per-document
+// maximum (PAID_OCR_MAX_PAGES_PER_DOC), so the amount shown is an upper bound.
+// See models/ingest/schema.ts estimatePaidOcrCostUsd() and
 // ai-memories/tech/repos/bnf/mistral-ocr-fallback/.
 
 /**
@@ -1090,16 +1151,12 @@ export const INGEST_RECENT_JOBS_LIMIT = 20
 export const PAID_OCR_USD_PER_1K_PAGES = 2
 
 /**
- * Page count assumed for a `sans_texte` document whose `Document.pages` is null
- * (metadata not yet resolved) when estimating cost. Deliberately conservative —
- * the estimate is labelled as such in the UI and the worker bills the real count.
- */
-export const PAID_OCR_FALLBACK_PAGES = 50
-
-/**
  * Hard ceiling on folios transcribed per document. Caps the blast radius of a
  * single oversized scan; the worker drops (and logs) folios beyond this. Kept in
- * sync with the worker's MISTRAL_OCR_MAX_PAGES default.
+ * sync with the worker's MISTRAL_OCR_MAX_PAGES default. It is also the page
+ * count a `sans_texte` document with a null `Document.pages` (fascicules, whose
+ * folio count is only known from the manifest) is held at, since no document
+ * can cost more than this.
  */
 export const PAID_OCR_MAX_PAGES_PER_DOC = 300
 
@@ -1203,3 +1260,19 @@ export const MEMORY_NEAR_DUP_MAX_EDIT_DISTANCE = 4
  * change cannot be recorded without a new revision.
  */
 export const PROMPT_REVISION = "2026-10-05.quoting-rules.6e9149ff8048"
+
+// ---------------------------------------------------------------------------
+// CSV exports
+// ---------------------------------------------------------------------------
+
+/** The trailing window of the admin usage export's "last week" token columns. */
+export const USAGE_EXPORT_WINDOW_MS = 7 * 24 * 60 * 60 * 1_000
+
+/** The response headers of a CSV download — the admin exports and the corpus export. */
+export function csvDownloadHeaders(filename: string): Record<string, string> {
+  return {
+    "Content-Type": "text/csv; charset=utf-8",
+    "Content-Disposition": `attachment; filename="${filename}"`,
+    "Cache-Control": "no-store",
+  }
+}

@@ -17,6 +17,10 @@ import { BUFFER_STATUS } from "@/models/buffer/schema"
 import { createTestUser, createTestProject, deleteTestUser } from "@/lib/testing/fixtures"
 import { cleanupProject } from "@/lib/testing/project-cleanup"
 import { FilterValueError } from "@/lib/filters"
+import type { BnfMcpResolveResult } from "@/lib/bnf/types"
+import { enrichPendingForProject } from "@/lib/buffer/enricher"
+import { resolvePendingForProject, type CommitResolveOptions } from "@/lib/documents/resolver"
+import { DOCUMENT_RESOLVE_STATUS } from "@/models/documents/schema"
 
 let user: User
 const projects: string[] = []
@@ -36,6 +40,7 @@ before(async () => {
 
 after(async () => {
   for (const id of projects) await cleanupProject(id)
+  await prisma.bnfRecord.deleteMany({ where: { ark: ARK(9_600_001) } })
   await deleteTestUser(user.id)
 })
 
@@ -201,6 +206,50 @@ test("commit moves candidates into the corpus, advancing the version exactly onc
   })
   assert.equal(candidatesLeft, 0, "committed candidates left the active buffer")
   assert.equal(committedRows, 2, "rows kept as committed provenance")
+})
+
+test("commit resolves from the BnF record cache: the OAI record is fetched once, however many times the ARK is added", async () => {
+  const ark = ARK(9_600_001)
+  const oai = { ark: ark.replace("ark:/12148/", ""), title: "Le Matin", doc_type: "texte", gallica_typedoc: "periodiques:fascicules", ocr_available: true }
+  const stagingCalls: string[] = []
+  const staging = {
+    async resolveArks(arks: string[], _opts: { mode: "staging" }) {
+      stagingCalls.push(...arks)
+      return arks.map((a): BnfMcpResolveResult => ({ ark: a, ok: true, document: oai }))
+    },
+  }
+  const commitCalls: Array<{ arks: string[]; opts: CommitResolveOptions }> = []
+  const commitClient = () => ({
+    async resolveArks(arks: string[], opts: CommitResolveOptions) {
+      commitCalls.push({ arks, opts })
+      return arks.map((a): BnfMcpResolveResult => ({ ark: a, ok: true, document: { ...oai, ocr_source: "oai" as const } }))
+    },
+  })
+
+  // Project one: stage bare, enrich (OAI once, cached STAGED), commit, resolve.
+  const first = await freshProject("commit-cache-1")
+  await BufferService.registerCandidates({ projectId: first.id, originTool: "buffer_add", restageDiscarded: true, candidates: [{ ark }] })
+  await enrichPendingForProject(first.id, { client: () => staging })
+  assert.deepEqual(stagingCalls, [ark])
+  await BufferService.commit(first, user, { reason: "cache commit" })
+  await resolvePendingForProject(first.id, { client: commitClient })
+  assert.equal(commitCalls.length, 1)
+  assert.deepEqual([...commitCalls[0]!.opts.staged!.keys()], [ark], "the staged OAI record rides along: only the OCR rule runs")
+  assert.equal(stagingCalls.length, 1, "the commit-time resolve did not fetch the OAI record again")
+  const resolved = await prisma.document.findUniqueOrThrow({ where: { projectId_ark: { projectId: first.id, ark } } })
+  assert.equal(resolved.resolveStatus, DOCUMENT_RESOLVE_STATUS.RESOLVED)
+
+  // Project two: the entry is now complete — zero client calls of any kind.
+  const second = await freshProject("commit-cache-2")
+  await BufferService.registerCandidates({ projectId: second.id, originTool: "buffer_add", restageDiscarded: true, candidates: [{ ark }] })
+  await enrichPendingForProject(second.id, { client: () => staging })
+  await BufferService.commit(second, user, { reason: "cache commit" })
+  await resolvePendingForProject(second.id, { client: commitClient })
+  assert.equal(stagingCalls.length, 1, "the enricher read the cache")
+  assert.equal(commitCalls.length, 1, "the resolver read the cache")
+  const again = await prisma.document.findUniqueOrThrow({ where: { projectId_ark: { projectId: second.id, ark } } })
+  assert.equal(again.resolveStatus, DOCUMENT_RESOLVE_STATUS.RESOLVED)
+  assert.equal(again.title, "Le Matin")
 })
 
 test("commit with an empty buffer does NOT advance a version", async () => {

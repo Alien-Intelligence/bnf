@@ -91,8 +91,10 @@ data:
   # and derives its gates below the broker's: ALTO = presentation ∧ bulk ∧
   # global, images = image ∧ bulk ∧ global, bulk = global − manifest − catalogue
   # − grapheData; manifests = 75 % of manifest ∧ presentation ∧ global
-  # (worker-v2/src/config.ts gateRates). Raising catalogue or grapheData lowers
-  # the worker's fetch throughput; dropping a bucket stops it at boot.
+  # (worker-v2/src/config.ts gateRates). The other 25 % is the app's: its
+  # corpus resolver reads a manifest only for a text-like document whose OAI
+  # record lacks "mode texte" (SDS-945 rule 4). Raising catalogue or grapheData
+  # lowers the worker's fetch throughput; dropping a bucket stops it at boot.
   BNF_RATES: {{ include "bnf-demo.ratesJson" . | quote }}
   # In-flight fetches per stage (REQUIRED) — see values.yaml for the sizing.
   BNF_ALTO_FETCH_CONCURRENCY: {{ required "worker.config.altoFetchConcurrency is required" .Values.worker.config.altoFetchConcurrency | quote }}

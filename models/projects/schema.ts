@@ -106,3 +106,25 @@ export type ShareWithGroup = Prisma.ProjectShareGetPayload<
   /** Derived projects reading this project's corpus through this grant. */
   derivedCount: number
 }
+
+/**
+ * A project with its owner's email and the usage column of every message of
+ * every session: what the admin usage export aggregates (MessageService).
+ */
+export const projectWithMessageUsage = {
+  select: {
+    id: true,
+    name: true,
+    ownerId: true,
+    owner: { select: { email: true } },
+    appSessions: {
+      select: {
+        messages: { select: { usage: true, createdAt: true } },
+      },
+    },
+  },
+} satisfies Prisma.ProjectDefaultArgs
+
+export type ProjectWithMessageUsage = Prisma.ProjectGetPayload<
+  typeof projectWithMessageUsage
+>

@@ -2,7 +2,14 @@
 // Vocabulary mapping tables for the BnF MCP normalization layer.
 // Pure data + pure functions — no server-only import, safe on either side.
 // See playbook/mcp-client.md and ai-memories/…/persistence-architecture/research/bnf-mcp-contract.md
-import { DOCUMENT_SOURCE, type DocTypeCode, type DocumentSource } from "@/models/documents/schema"
+import {
+  DOC_TYPE_CODE,
+  DOCUMENT_SOURCE,
+  type DocTypeCode,
+  type DocumentSource,
+} from "@/models/documents/schema"
+import { IIIF_MANIFEST_URL } from "@/lib/constants"
+import { fullBnfArk } from "@/lib/validation/ark"
 
 /**
  * MARC 639-2 → ISO 639-1 language code mapping.
@@ -113,17 +120,17 @@ export function canonicalLang(raw: string | null | undefined): string | null {
  * even where they are no longer usable as a search filter.
  */
 export const GALLICA_DOC_TYPE: Record<string, DocTypeCode> = {
-  monographie: "book",
-  image: "image",
-  carte: "map",
-  manuscrit: "manuscript",
-  fascicule: "press",
-  partition: "score",
-  objet: "object",
-  sonore: "audio",
-  video: "video",
-  son: "audio",
-  typeAffiche: "poster",
+  monographie: DOC_TYPE_CODE.BOOK,
+  image: DOC_TYPE_CODE.IMAGE,
+  carte: DOC_TYPE_CODE.MAP,
+  manuscrit: DOC_TYPE_CODE.MANUSCRIPT,
+  fascicule: DOC_TYPE_CODE.PRESS,
+  partition: DOC_TYPE_CODE.SCORE,
+  objet: DOC_TYPE_CODE.OBJECT,
+  sonore: DOC_TYPE_CODE.AUDIO,
+  video: DOC_TYPE_CODE.VIDEO,
+  son: DOC_TYPE_CODE.AUDIO,
+  typeAffiche: DOC_TYPE_CODE.POSTER,
 }
 
 /**
@@ -181,14 +188,14 @@ export const GALLICA_COLLAPSING_DEFAULT = true
  * makes a new searchable value without a mapping a type error.
  */
 export const GALLICA_FILTER_DOC_TYPE = {
-  fascicule: "press",
-  monographie: "book",
-  image: "image",
-  objet: "object",
-  manuscrit: "manuscript",
-  carte: "map",
-  partition: "score",
-  sonore: "audio",
+  fascicule: DOC_TYPE_CODE.PRESS,
+  monographie: DOC_TYPE_CODE.BOOK,
+  image: DOC_TYPE_CODE.IMAGE,
+  objet: DOC_TYPE_CODE.OBJECT,
+  manuscrit: DOC_TYPE_CODE.MANUSCRIPT,
+  carte: DOC_TYPE_CODE.MAP,
+  partition: DOC_TYPE_CODE.SCORE,
+  sonore: DOC_TYPE_CODE.AUDIO,
 } as const satisfies Record<(typeof GALLICA_SEARCHABLE_DOC_TYPE)[number], DocTypeCode>
 
 /** GALLICA_DOC_TYPE keyed by its folded label, for a case-insensitive lookup. */
@@ -225,22 +232,22 @@ export function canonicalDocTypeFromLabel(
   if (enumMatch !== undefined) return { code: enumMatch, known: true }
 
   const rules: Array<[RegExp, DocTypeCode]> = [
-    [/cartograph|^carte|^map$|^plan$/, "map"],
-    [/^genre musical|musique|notated music|partition|manuscript music/, "score"],
-    [/manuscri/, "manuscript"],
-    [/affiche/, "poster"],
-    [/^image|still image|photograph|estampe|dessin/, "image"],
-    [/^sound|sonore|enregistrement sonore/, "audio"],
-    [/^objet|^object|three dimensional/, "object"],
-    [/^video|moving image|film/, "video"],
-    [/monographie|livre|colloque/, "book"],
-    [/^text$|^texte$|printed text|texte imprime/, "text"],
-    [/archival material|archives/, "other"],
+    [/cartograph|^carte|^map$|^plan$/, DOC_TYPE_CODE.MAP],
+    [/^genre musical|musique|notated music|partition|manuscript music/, DOC_TYPE_CODE.SCORE],
+    [/manuscri/, DOC_TYPE_CODE.MANUSCRIPT],
+    [/affiche/, DOC_TYPE_CODE.POSTER],
+    [/^image|still image|photograph|estampe|dessin/, DOC_TYPE_CODE.IMAGE],
+    [/^sound|sonore|enregistrement sonore/, DOC_TYPE_CODE.AUDIO],
+    [/^objet|^object|three dimensional/, DOC_TYPE_CODE.OBJECT],
+    [/^video|moving image|film/, DOC_TYPE_CODE.VIDEO],
+    [/monographie|livre|colloque/, DOC_TYPE_CODE.BOOK],
+    [/^text$|^texte$|printed text|texte imprime/, DOC_TYPE_CODE.TEXT],
+    [/archival material|archives/, DOC_TYPE_CODE.OTHER],
   ]
   for (const [re, code] of rules) {
     if (re.test(label)) return { code, known: true }
   }
-  return { code: "other", known: false }
+  return { code: DOC_TYPE_CODE.OTHER, known: false }
 }
 
 /**
@@ -256,15 +263,15 @@ export function canonicalDocTypeFromLabel(
  * top-level vocabulary is the live ListSets output (same date).
  */
 export const GALLICA_TYPEDOC: Record<string, DocTypeCode> = {
-  periodiques: "press",
-  monographies: "book",
-  cartes: "map",
-  manuscrits: "manuscript",
-  images: "image",
-  objets: "image",
-  partitions: "score",
-  videos: "video",
-  audio: "audio",
+  periodiques: DOC_TYPE_CODE.PRESS,
+  monographies: DOC_TYPE_CODE.BOOK,
+  cartes: DOC_TYPE_CODE.MAP,
+  manuscrits: DOC_TYPE_CODE.MANUSCRIPT,
+  images: DOC_TYPE_CODE.IMAGE,
+  objets: DOC_TYPE_CODE.IMAGE,
+  partitions: DOC_TYPE_CODE.SCORE,
+  videos: DOC_TYPE_CODE.VIDEO,
+  audio: DOC_TYPE_CODE.AUDIO,
 }
 
 /**
@@ -295,6 +302,44 @@ export function gallicaSubtype(
   return parts.length > 1 && parts[1] !== "" ? parts[1] : null
 }
 
+/** The Gallica typedoc whose records are single periodical issues. */
+const FASCICULE_TYPEDOC = "periodiques:fascicules"
+
+/**
+ * Press markers in a free-text doc_type / dc:type. "publication en série
+ * imprimée" is the press label of records that carry no typedoc setSpec; the
+ * catalogue SRU never has a typedoc at all. Shared by mapCatalogueDocType and
+ * gallicaPageCount so the two cannot disagree on what a periodical is.
+ */
+export const PRESS_MARKER = /p[ée]riodique|presse|journal|publication en s[ée]rie|s[ée]rie imprim/
+
+/**
+ * The page count of a Gallica record, or null when none can be trusted.
+ *
+ * OAI's "Nombre total de vues" is collection-level for a periodical issue
+ * (bpt6k268418n has 4 folios, OAI says 3197), so it is never a page count
+ * there:
+ *   - `periodiques:fascicules` → null;
+ *   - no typedoc AND a press dcType (a fascicule without a setSpec) → null;
+ *   - otherwise `totalViews` when it is a finite positive integer, else null.
+ *
+ * When the IIIF manifest was fetched, its canvas count is authoritative and
+ * replaces this value (see normalizeDocument).
+ */
+export function gallicaPageCount(
+  typedoc: string | undefined,
+  totalViews: number | undefined,
+  dcType: string | undefined,
+): number | null {
+  const normalizedTypedoc = typedoc?.trim().toLowerCase() ?? ""
+  if (normalizedTypedoc === FASCICULE_TYPEDOC) return null
+  if (normalizedTypedoc === "" && PRESS_MARKER.test(dcType?.toLowerCase() ?? ""))
+    return null
+  return typeof totalViews === "number" && Number.isInteger(totalViews) && totalViews > 0
+    ? totalViews
+    : null
+}
+
 /**
  * Map a Catalogue free-text doc_type string to our canonical docType.
  * Best-effort regex; returns null when nothing matches — caller falls back to
@@ -302,20 +347,18 @@ export function gallicaSubtype(
  */
 export function mapCatalogueDocType(raw: string): string | null {
   const s = raw.toLowerCase()
-  // "publication en série imprimée" is the IIIF manifest's press marker — it has no
-  // typedoc setSpec, so without this the periodical falls through to "texte" →
-  // "book" (the press misclassification bug). Order matters: press is tested before
-  // the "texte"→book rule. See ai-memories bnf-metadata-via-manifest.
-  if (/p[ée]riodique|presse|journal|publication en s[ée]rie|s[ée]rie imprim/.test(s))
-    return "press"
-  if (/carte|plan/.test(s)) return "map"
+  // Press is tested before the "texte"→book rule below: the catalogue SRU and
+  // Gallica records without a typedoc setSpec carry only a free-text label, and
+  // "publication en série imprimée" would otherwise fall through to "book".
+  if (PRESS_MARKER.test(s)) return DOC_TYPE_CODE.PRESS
+  if (/carte|plan/.test(s)) return DOC_TYPE_CODE.MAP
   // Scores: the manifest labels them "Musique notée" / "musique manuscrite" — no
   // "partition" token. Tested BEFORE manuscript: "musique manuscrite" contains the
   // "manuscrit" substring, but a notated-music document is a score, not a codex.
-  if (/musique|partition/.test(s)) return "score"
-  if (/manuscrit/.test(s)) return "manuscript"
-  if (/image|photo|estampe/.test(s)) return "image"
-  if (/livre|imprim[eé]|texte|monographie/.test(s)) return "book"
+  if (/musique|partition/.test(s)) return DOC_TYPE_CODE.SCORE
+  if (/manuscrit/.test(s)) return DOC_TYPE_CODE.MANUSCRIPT
+  if (/image|photo|estampe/.test(s)) return DOC_TYPE_CODE.IMAGE
+  if (/livre|imprim[eé]|texte|monographie/.test(s)) return DOC_TYPE_CODE.BOOK
   return null
 }
 
@@ -346,6 +389,7 @@ export function sourceFromArk(ark: string): DocumentSource {
  */
 export function iiifManifestUrl(ark: string, source: string): string | null {
   if (source !== DOCUMENT_SOURCE.GALLICA) return null
-  const full = ark.startsWith("ark:/") ? ark : `ark:/12148/${ark}`
-  return `https://gallica.bnf.fr/iiif/${full}/manifest.json`
+  const full = fullBnfArk(ark)
+  if (full === null) return null
+  return IIIF_MANIFEST_URL(full)
 }

@@ -8,14 +8,20 @@
 // filter the librarian asked for — "garde la presse métropolitaine" — had
 // nothing to work on (feedback #10a).
 //
-// Order per batch (Decision 8 of the Track E plan):
+// Order per batch (Decision 8 of the Track E plan, SDS-945):
 //   1. Copy from a resolved Document of the same project — zero BnF cost.
-//   2. The rest through BnfDirectClient.resolveArksForStaging: the broker-routed
-//      OAI-PMH record for Gallica (carries the typedoc, the only press
-//      discriminator), the catalogue SRU for `cb…`. Never the MCP (new app
+//   2. The global BnF record cache (models/bnf-records, read through its
+//      queries): a record any project already resolved — zero BnF cost.
+//   3. The rest through BnfDirectClient.resolveArks({ mode: "staging" }): the
+//      broker-routed OAI-PMH record for Gallica (carries the typedoc, the only
+//      press discriminator), the catalogue SRU for `cb…`. Never the MCP (new app
 //      egress belongs on the broker — playbook/mcp-client.md) and never the
-//      manifest (its bucket is the ingestion bottleneck).
-//   3. A failure increments enrichAttempts and sets a doubling backoff
+//      manifest (its bucket is the ingestion bottleneck, and a buffer row needs
+//      no OCR flag before commit). What the BnF answers is written to the cache
+//      as a STAGED entry (no `ocr_source`), WITHOUT overwriting a complete one;
+//      the commit-time resolve (lib/documents/resolver.ts) then finds it in the
+//      cache and runs only the OCR rule on it — no second OAI fetch.
+//   4. A failure increments enrichAttempts and sets a doubling backoff
 //      (enrichNextAttemptAt); the row is failed at the ceiling, or at once when
 //      the BnF does not know the ARK. A failure of a whole batch (the client
 //      threw) is persisted on each of its rows the same way. The drain's OWN
@@ -50,18 +56,25 @@ import {
 } from "@/lib/constants"
 import { BnfDirectClient } from "@/lib/bnf/direct"
 import type { BnfMcpResolveError, BnfMcpResolveResult } from "@/lib/bnf/types"
+import { recordsFromCacheRows } from "@/lib/bnf/cached-records"
+import { causedByOwnCeiling } from "@/lib/async/abort"
 import { BnfMcpNotFoundError } from "@/lib/mcp/errors"
 import { normalizeMany } from "@/lib/mcp/normalize"
-import type { Prisma } from "@/lib/generated/prisma/client"
+import { BnfRecordQueries } from "@/models/bnf-records/queries"
+import { BnfRecordService } from "@/models/bnf-records/service"
 import { BufferQueries } from "@/models/buffer/queries"
-import { BUFFER_ENRICH_STATUS } from "@/models/buffer/schema"
+import { BUFFER_ENRICH_STATUS, type BufferEnrichmentWrite } from "@/models/buffer/schema"
+import { BufferService } from "@/models/buffer/service"
 import { DocumentQueries } from "@/models/documents/queries"
 import { bufferMetadataFromDocument, type ResolvedDocumentFields } from "./classify"
 
 /** The one method the drain needs — BnfDirectClient in production, a counting
  *  fake in tests. */
 export interface BufferEnrichClient {
-  resolveArksForStaging(arks: string[]): Promise<Array<BnfMcpResolveResult | BnfMcpResolveError>>
+  resolveArks(
+    arks: string[],
+    opts: { mode: "staging" },
+  ): Promise<Array<BnfMcpResolveResult | BnfMcpResolveError>>
 }
 
 /** Builds the drain's client, bound to the drain's abort signal. */
@@ -96,32 +109,13 @@ function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-/** How deep `causedByOwnCeiling` follows an error's `cause` chain. */
-const MAX_CAUSE_DEPTH = 5
-
-/**
- * True when `error` IS the drain's own abort — the signal's reason, or an
- * AbortError — directly or through its `cause` chain. Classified by CAUSE, not
- * by the signal's state: a 404 that happens to land after the ceiling fired is
- * still the BnF's answer, and counts.
- */
-function causedByOwnCeiling(error: unknown, signal: AbortSignal): boolean {
-  let current: unknown = error
-  for (let depth = 0; depth < MAX_CAUSE_DEPTH && current !== undefined && current !== null; depth++) {
-    if (signal.aborted && current === signal.reason) return true
-    if (current instanceof Error && current.name === "AbortError") return true
-    current = current instanceof Error ? current.cause : undefined
-  }
-  return false
-}
-
 /** The backoff after the `attempts`-th failure: base × 2^(attempts − 1). */
 function retryAt(now: Date, attempts: number): Date {
   return new Date(now.getTime() + BUFFER_ENRICH_RETRY_BASE_MS * 2 ** Math.max(0, attempts - 1))
 }
 
 /** The columns a resolved record fills, in the current classification. */
-function resolvedData(doc: ResolvedDocumentFields): Prisma.BufferItemUpdateManyMutationInput {
+function resolvedData(doc: ResolvedDocumentFields): BufferEnrichmentWrite {
   return {
     ...bufferMetadataFromDocument(doc, logUnknownDocType),
     classifierVersion: BUFFER_CLASSIFIER_VERSION,
@@ -137,7 +131,7 @@ function failedAttemptData(
   reason: string,
   terminal: boolean,
   now: Date,
-): Prisma.BufferItemUpdateManyMutationInput {
+): BufferEnrichmentWrite {
   return {
     enrichAttempts: attempts,
     enrichError: reason,
@@ -149,6 +143,7 @@ function failedAttemptData(
 
 type DrainTally = {
   fromDocuments: number
+  fromCache: number
   fromBnf: number
   failed: number
   retry: number
@@ -206,10 +201,10 @@ async function drainOnce(
 
   log(`project ${projectId}: enriching ${pending.length} bare candidate(s)`)
   const attemptsByArk = new Map(pending.map((p) => [p.ark, p.enrichAttempts]))
-  const tally: DrainTally = { fromDocuments: 0, fromBnf: 0, failed: 0, retry: 0, skipped: 0, deferred: 0 }
+  const tally: DrainTally = { fromDocuments: 0, fromCache: 0, fromBnf: 0, failed: 0, retry: 0, skipped: 0, deferred: 0 }
 
-  const write = async (ark: string, data: Prisma.BufferItemUpdateManyMutationInput) => {
-    if (!(await BufferQueries.writeEnrichment(projectId, ark, data))) tally.skipped += 1
+  const write = async (ark: string, data: BufferEnrichmentWrite) => {
+    if (!(await BufferService.writeEnrichment(projectId, ark, data))) tally.skipped += 1
   }
   const fail = async (ark: string, reason: string, notFound: boolean) => {
     const before = attemptsByArk.get(ark)
@@ -239,26 +234,47 @@ async function drainOnce(
     for (const d of docs) await write(d.ark, resolvedData(d))
     tally.fromDocuments += docs.length
 
-    // 2. The rest through the broker.
+    // 2. The global record cache: any entry (staged or complete) carries the
+    //    metadata a buffer row needs.
     const rest = batch.filter((ark) => !fromDoc.has(ark))
     if (rest.length === 0) continue
-    let results: Array<BnfMcpResolveResult | BnfMcpResolveError>
-    try {
-      results = await client.resolveArksForStaging(rest)
-    } catch (err) {
-      if (causedByOwnCeiling(err, signal)) {
-        // Our own ceiling, not a BnF failure: nothing refused these rows.
-        for (const ark of rest) await defer(ark)
-        break
+    const cached = recordsFromCacheRows(await BnfRecordQueries.foundAmong(rest), (ark) =>
+      console.warn(`[bnf-record] corrupt cache entry ignored: ${ark}`),
+    )
+    const fromCache: BnfMcpResolveResult[] = rest.flatMap((ark) => {
+      const document = cached.get(ark)
+      return document ? [{ ark, ok: true as const, document }] : []
+    })
+
+    // 3. The rest through the broker.
+    const misses = rest.filter((ark) => !cached.has(ark))
+    let fetched: Array<BnfMcpResolveResult | BnfMcpResolveError> = []
+    let ceilingHit = false
+    if (misses.length > 0) {
+      try {
+        fetched = await client.resolveArks(misses, { mode: "staging" })
+      } catch (err) {
+        if (causedByOwnCeiling(err, signal)) {
+          // Our own ceiling, not a BnF failure: nothing refused these rows.
+          for (const ark of misses) await defer(ark)
+          ceilingHit = true
+        } else {
+          // The whole batch failed (broker down): every row counts the attempt
+          // and backs off — never an uncounted, endless retry.
+          console.error(`[buffer-enrich] project ${projectId}: batch of ${misses.length} failed:`, err)
+          for (const ark of misses) await fail(ark, describeError(err), false)
+        }
       }
-      // The whole batch failed (broker down): every row counts the attempt
-      // and backs off — never an uncounted, endless retry.
-      console.error(`[buffer-enrich] project ${projectId}: batch of ${rest.length} failed:`, err)
-      for (const ark of rest) await fail(ark, describeError(err), false)
-      continue
     }
-    const normalised = normalizeMany(results.filter((r) => r.ok).map((r) => r.document))
+
+    const freshArks = new Set(fetched.map((r) => r.ark))
+    const results = [...fromCache, ...fetched]
+    const normalised = normalizeMany(results.filter((r) => r.ok).map((r) => r.document), {
+      onRejected: (ark, reason) =>
+        console.warn(`[buffer-enrich] project ${projectId}: record refused by normalize`, { ark, reason }),
+    })
     const byArk = new Map(normalised.map((n) => [n.ark, n]))
+    const fresh: BnfMcpResolveResult[] = []
 
     for (const r of results) {
       const doc = byArk.get(r.ark)
@@ -276,7 +292,12 @@ async function drainOnce(
             rawMetadata: doc.rawMetadata,
           }),
         )
-        tally.fromBnf += 1
+        if (freshArks.has(r.ark)) {
+          tally.fromBnf += 1
+          fresh.push(r)
+        } else {
+          tally.fromCache += 1
+        }
         continue
       }
       // A per-ARK failure caused by our own ceiling is not an attempt.
@@ -284,14 +305,19 @@ async function drainOnce(
         await defer(r.ark)
         continue
       }
-      // The call failed, or it succeeded with an unusable record (no title).
+      // The call failed, or it succeeded with an unusable record (no title):
+      // such a record is never cached, so a retry can see a better one.
       const reason = r.ok ? "métadonnées incomplètes (titre manquant)" : describeError(r.error)
       await fail(r.ark, reason, !r.ok && r.error instanceof BnfMcpNotFoundError)
     }
+    // Insert-only: a complete entry stored meanwhile (a commit-time resolve)
+    // must never be downgraded to this staged one.
+    await BnfRecordService.insertMissing(fresh)
+    if (ceilingHit) break
   }
 
   log(
-    `project ${projectId}: drain done — from-documents=${tally.fromDocuments}, from-bnf=${tally.fromBnf}, ` +
+    `project ${projectId}: drain done — from-documents=${tally.fromDocuments}, from-cache=${tally.fromCache}, from-bnf=${tally.fromBnf}, ` +
       `failed=${tally.failed}, still-pending=${tally.retry}, deferred-by-ceiling=${tally.deferred}, ` +
       `gone-meanwhile=${tally.skipped}`,
   )

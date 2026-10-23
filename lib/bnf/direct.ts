@@ -15,27 +15,41 @@
 // gallica.bnf.fr calls through the same curl_cffi sidecar the ingest worker
 // uses. See lib/bnf/gallica-relay.ts. Only gallica.bnf.fr is relayed.
 //
-// Endpoints (confirmed by reading MCPs/mcp-bnf and curling the live APIs). With
-// the broker (prod), Gallica metadata comes from the IIIF v3 manifest on the
-// BnF Presentation API (BNF_IIIF_PRESENTATION_BASE_URL/presentation/v3/<ark>/
-// manifest.json) and the catalogue/SPARQL calls go to their proext APIs (see
-// "Two transports" below). Without it (dev), the ungated hosts:
+// Endpoints (confirmed by reading MCPs/mcp-bnf and curling the live APIs):
 //   Gallica:   GET http://oai.bnf.fr/oai2/OAIHandler?verb=GetRecord
 //                  &metadataPrefix=oai_dc&identifier=oai:bnf.fr:gallica/<ark>
-//              → Dublin Core (oai_dc). UNGATED (no auth, no Cloudflare, no
-//                partner quota). OCR availability = the "Avec mode texte"
-//                description flag (replaces the old <nqamoyen> score); page
-//                count = the "Nombre total de vues" format note. The new BnF
-//                IIIF v3 manifest itself points here via seeAlso.
+//              → Dublin Core (oai_dc), parsed by lib/bnf/oai-record.ts. UNGATED
+//                (no auth, no Cloudflare, no partner quota); through the broker
+//                it spends the `external` bucket. It supplies title/creator/date/
+//                language/publisher/subject, the typedoc (docType + subtype) and
+//                the raw view count.
+//   Manifest:  GET <BNF_IIIF_PRESENTATION_BASE_URL>/presentation/v3/<ark>/manifest.json
+//              → IIIF v3 manifest on the BnF Presentation API (broker `manifest`
+//                bucket, authenticated). Fetched ONLY by the hybrid rule below.
 //   Catalogue: GET http://catalogue.bnf.fr/api/SRU ... bib.persistentId all "<ark>"
 //              recordSchema=dublincore → Dublin Core.
+//
+// HYBRID GALLICA RESOLVER (SDS-945). OAI is always fetched first; the manifest is
+// the exception, not the rule, because its bucket is the ingestion bottleneck:
+//   1. OAI record fetched (external bucket).
+//   2. OAI says "mode texte"            → ocr_available true,  no manifest call.
+//      (100 % precise: 0 false positives over 276 sampled records.)
+//   3. else the OAI docType is image-like → ocr_available false, no manifest call
+//      (INGESTION_IMAGE_LIKE_TYPES: the flag is irrelevant to the image lanes).
+//   4. else (a text-like document OAI is silent on: every press issue, ~4 % of
+//      monographs, manuscripts, scores…) → fetch the manifest. OAI recall is not
+//      good enough to decide "no text layer": a false verdict routes the document
+//      to paid OCR. The manifest supplies ONLY the OCR flag, the authoritative
+//      page count (canvas count) and the OCR rate; docType/subtype stay OAI's.
+// Provenance is recorded on the returned record (`ocr_source`, `pages_source`).
+// `mode: "staging"` (the research buffer) stops after step 2: buffer rows do not
+// need the OCR flag before commit, and the commit-time resolve applies step 4.
 //
 // Returns BnfMcpResolveResult/Error (lib/bnf/types.ts) so the resolver and the
 // normalize layer (lib/mcp/normalize.ts) are unchanged. Search stays on the MCP
 // (in-band, agent-driven); only resolution lives here.
 import "server-only"
 
-import { XMLParser } from "fast-xml-parser"
 import { Agent, fetch as undiciFetch } from "undici"
 
 import {
@@ -46,15 +60,33 @@ import {
   BNF_MCP_RETRY_CAP_MS,
   BNF_USER_AGENT,
 } from "@/lib/constants"
-import { brokerGetText, brokerUrl } from "@/lib/bnf/broker-client"
+import {
+  brokerGetText,
+  brokerUrl,
+  type ResponseHeaders,
+} from "@/lib/bnf/broker-client"
 import { presentationManifestUrl } from "@/lib/bnf/endpoints"
 import { relayGetText, shouldRelay } from "@/lib/bnf/gallica-relay"
+import { parseGallicaOaiRecord } from "@/lib/bnf/oai-record"
+import {
+  assertFullArk,
+  bnfXmlParser,
+  localArk,
+  nodeText,
+  XML_ATTR_PREFIX,
+  type XmlNode,
+} from "@/lib/bnf/wire"
 import { env } from "@/lib/env"
 import { withTimeout } from "@/lib/mcp/abort"
-import type {
-  BnfMcpDocumentDetail,
-  BnfMcpResolveError,
-  BnfMcpResolveResult,
+import {
+  CANONICAL_OUTCOME_STATUS,
+  OCR_SOURCE,
+  PAGES_SOURCE,
+  RESOLVE_MODE,
+  type BnfMcpDocumentDetail,
+  type BnfMcpResolveError,
+  type BnfMcpResolveResult,
+  type ResolveMode,
 } from "@/lib/bnf/types"
 import {
   BnfMcpAuthError,
@@ -62,9 +94,12 @@ import {
   BnfMcpNotFoundError,
   BnfMcpRateLimitError,
 } from "@/lib/mcp/errors"
-import { type Settled, withConcurrency, withRetry } from "@/lib/mcp/retry"
+import { normalizeDocument } from "@/lib/mcp/normalize"
+import { type RetryOptions, type Settled, withConcurrency, withRetry } from "@/lib/mcp/retry"
 import { GALLICA_DOC_TYPE, sourceFromArk } from "@/lib/mcp/vocab"
-import { DOCUMENT_SOURCE } from "@/models/documents/schema"
+import { DOCUMENT_SOURCE, INGESTION_IMAGE_LIKE_TYPES } from "@/models/documents/schema"
+
+export { RESOLVE_MODE, type ResolveMode }
 
 /**
  * Outcome of classifying a catalogue (`cb…`) ARK against its digitized Gallica
@@ -72,23 +107,27 @@ import { DOCUMENT_SOURCE } from "@/models/documents/schema"
  * two record why the notice stayed a notice (see Document.canonicalStatus).
  */
 export type CanonicalizeOutcome =
-  | { ark: string; status: "upgraded"; canonical: string }
-  | { ark: string; status: "not_digitized" }
-  | { ark: string; status: "api_error" }
+  | { ark: string; status: typeof CANONICAL_OUTCOME_STATUS.UPGRADED; canonical: string }
+  | { ark: string; status: typeof CANONICAL_OUTCOME_STATUS.NOT_DIGITIZED }
+  | { ark: string; status: typeof CANONICAL_OUTCOME_STATUS.API_ERROR }
 
 // Two transports per endpoint (dual-path):
 //   • proext  — the authenticated partner gateway (openapiproext.bnf.fr). Used
 //     whenever the broker is configured: the broker mints the OAuth bearer and
 //     counts the call against the BnF API's own bucket and the global one (it
 //     only tokenises the proext host and classifies by path — broker plan.ts).
-//     The manifest is on the Presentation API (BNF_IIIF_PRESENTATION_BASE_URL);
-//     catalogue SRU and SPARQL are on PROEXT_BASE below. This is the prod path.
+//     The IIIF manifest (hybrid step 4) is on the Presentation API
+//     (BNF_IIIF_PRESENTATION_BASE_URL); catalogue SRU and SPARQL are on
+//     PROEXT_BASE below. This is the prod path.
 //   • ungated — the legacy tokenless hosts (oai/catalogue/data.bnf.fr). The
 //     no-broker dev fallback: proext needs creds the broker holds, so without a
-//     broker we keep hitting the ungated hosts directly.
-// `viaPartner()` picks per call; it mirrors httpGetText's own broker check so the
-// URL and the transport always agree. All proext endpoints + their quirks were
-// verified live through the broker on platform-prod (2026-06-26).
+//     broker we keep hitting the ungated hosts directly. The Presentation API is
+//     unreachable there, so hybrid step 4 cannot run (see resolveGallica).
+// OAI-PMH has no proext equivalent: Gallica metadata is read from the ungated
+// oai.bnf.fr on BOTH paths. `egress.viaPartner` picks per call; it mirrors the
+// broker check in the default egress so the URL and the transport always agree.
+// All proext endpoints + their quirks were verified live through the broker on
+// platform-prod (2026-06-26).
 const PROEXT_BASE = env.BNF_API_BASE_URL.replace(/\/$/, "")
 
 // data.bnf.fr SPARQL — a pure host swap on proext (same query, same params, same
@@ -117,8 +156,6 @@ const CATALOGUE_SRU = {
 }
 // Ungated OAI-PMH metadata endpoint (oai.bnf.fr) — NOT gallica.bnf.fr, which is
 // Cloudflare-403'd from the server. No auth, no partner quota, no Cloudflare.
-// NOTE: OAI-PMH has no partner-API (proext) equivalent; Gallica metadata is the
-// one path still bound to an ungated host even through the broker.
 const GALLICA_OAI_PMH_URL = "http://oai.bnf.fr/oai2/OAIHandler"
 
 // The RDA predicate data.bnf.fr puts on a manifestation node to link it to its
@@ -135,59 +172,144 @@ const ELECTRONIC_REPRODUCTION =
 // `…/date` periodical-collection URL, which we must NOT treat as canonical.
 const GALLICA_ARK_FAMILY = /^(bpt6k|btv1b|bd6t)/
 
-/**
- * Whether to target the authenticated partner gateway (proext) for this call.
- * True exactly when the broker is configured — the broker is the only holder of
- * the OAuth credential, so proext is reachable only through it. Mirrors the
- * broker check in `httpGetText` so the chosen URL and the chosen transport never
- * disagree (proext URL ⇒ broker transport ⇒ bearer attached).
- */
-function viaPartner(): boolean {
-  return brokerUrl() !== undefined
+// The manifest metadata labels carrying the text-layer rate ("Taux OCR": "78.21 %").
+const TAUX_OCR_LABELS = ["taux ocr", "taux d'ocr"]
+
+const SRU_VERSION = "1.2"
+const SRU_OPERATION_SEARCH_RETRIEVE = "searchRetrieve"
+const SRU_SINGLE_RECORD = "1"
+
+/** SRU query for the one catalogue record whose persistent id is `ark`, in `recordSchema`. */
+function catalogueSruParams(ark: string, recordSchema: string): Record<string, string> {
+  return {
+    version: SRU_VERSION,
+    operation: SRU_OPERATION_SEARCH_RETRIEVE,
+    query: `bib.persistentId all "${ark}"`,
+    recordSchema,
+    maximumRecords: SRU_SINGLE_RECORD,
+  }
 }
 
-/** ARK short form: strip the `ark:/<naan>/` prefix. */
-function localArk(ark: string): string {
-  return ark.replace(/^ark:\/\d+\//, "")
+const IMAGE_LIKE_DOC_TYPES: ReadonlySet<string> = new Set(INGESTION_IMAGE_LIKE_TYPES)
+
+
+// ---------------------------------------------------------------------------
+// Egress (the HTTP seam)
+// ---------------------------------------------------------------------------
+
+/** One HTTP response, as every transport returns it. */
+export interface BnfHttpResponse {
+  status: number
+  body: string
+  headers: ResponseHeaders
 }
-/** Full canonical ARK form. */
-function fullArk(ark: string): string {
-  return ark.startsWith("ark:/") ? ark : `ark:/12148/${ark}`
+
+/**
+ * Where BnF requests leave the process. The default (`envEgress`) picks
+ * broker → relay → direct from the environment; tests inject a stub so the
+ * resolver runs without a network.
+ */
+export interface BnfEgress {
+  /** True when the authenticated partner gateway is reachable (a broker is
+   *  configured): proext URLs and the Presentation API manifest. */
+  readonly viaPartner: boolean
+  /** Base of the Presentation API (version included); needed for manifests. */
+  readonly presentationBaseUrl: string | undefined
+  /** GET `url`. Resolves for ANY HTTP status; rejects on transport failure. */
+  getText(url: string, accept: string, signal: AbortSignal | undefined): Promise<BnfHttpResponse>
+}
+
+/** Relay responses carry no headers (the sidecar returns status + body only). */
+const NO_HEADERS: ResponseHeaders = { get: () => null }
+
+/**
+ * Three transports, in priority order:
+ *   1. broker (BNF_BROKER_URL) — the single egress chokepoint that owns the
+ *      OAuth token + shared rate caps (broker/ service). Preferred whenever
+ *      configured; supersedes the relay.
+ *   2. relay (GALLICA_RELAY_URL) — curl_cffi browser-handshake sidecar for
+ *      Cloudflare-gated gallica.bnf.fr. The resolver itself no longer hits
+ *      gallica.bnf.fr (OAI is on oai.bnf.fr), so this rarely applies.
+ *   3. direct undici — browser UA + IPv4-pinned dispatcher.
+ * All three mirror the upstream status verbatim, so retry/terminal behaviour is
+ * identical. A transport failure (DNS, reset, timeout) is wrapped in a transient
+ * BnfMcpError so callers can tell it from a programming error; a caller abort
+ * is rethrown untouched.
+ */
+function envEgress(dispatcher: Agent): BnfEgress {
+  return {
+    viaPartner: brokerUrl() !== undefined,
+    presentationBaseUrl: env.BNF_IIIF_PRESENTATION_BASE_URL,
+    async getText(url, accept, signal) {
+      try {
+        if (brokerUrl() !== undefined) {
+          return await brokerGetText(url, accept, signal, BNF_HTTP_TIMEOUT_MS)
+        }
+        if (shouldRelay(url)) {
+          const relayed = await relayGetText(url, accept, signal, BNF_HTTP_TIMEOUT_MS)
+          return { ...relayed, headers: NO_HEADERS }
+        }
+        return await directGetText(dispatcher, url, accept, signal)
+      } catch (err) {
+        if (signal?.aborted || err instanceof BnfMcpError) throw err
+        throw new BnfMcpError(
+          `BnF transport failure for ${url}: ${err instanceof Error ? err.message : String(err)}`,
+          err,
+        )
+      }
+    },
+  }
+}
+
+/** Direct undici GET: browser UA + the shared IPv4-pinned dispatcher. */
+async function directGetText(
+  dispatcher: Agent,
+  url: string,
+  accept: string,
+  signal: AbortSignal | undefined,
+): Promise<BnfHttpResponse> {
+  const res = await undiciFetch(url, {
+    method: "GET",
+    headers: { "User-Agent": BNF_USER_AGENT, Accept: accept },
+    dispatcher,
+    signal: withTimeout(signal, BNF_HTTP_TIMEOUT_MS),
+  })
+  return { status: res.status, body: await res.text(), headers: res.headers }
+}
+
+/**
+ * `Retry-After` → milliseconds, or undefined when absent or unparsable.
+ * RFC 9110 allows delta-seconds or an HTTP-date; a date in the past is 0.
+ * (lib/mcp/call.ts reads the delta-seconds form only, and keeps its parser
+ * private; the BnF brokers and Cloudflare may send either form.)
+ */
+export function parseRetryAfter(header: string | null, nowMs: number): number | undefined {
+  if (header === null) return undefined
+  const value = header.trim()
+  if (/^\d+(\.\d+)?$/.test(value)) return Number(value) * 1000
+  const at = Date.parse(value)
+  return Number.isNaN(at) ? undefined : Math.max(0, at - nowMs)
 }
 
 // ---------------------------------------------------------------------------
 // XML helpers
 // ---------------------------------------------------------------------------
-// removeNSPrefix turns <dc:title> → "title" and the <oai_dc:dc>/<srw:*> wrappers
-// into plain keys, so we navigate by local name. Attributes are kept (we need
-// xml:lang on <dc:type> to prefer the French label). Values stay strings.
-const parser = new XMLParser({
-  ignoreAttributes: false,
-  attributeNamePrefix: "@_",
-  removeNSPrefix: true,
-  trimValues: true,
-  parseTagValue: false,
-})
+// The parser and node helpers are shared with the Gallica OAI record parser
+// (lib/bnf/oai-record.ts), which reads by direct path; the SRU responses here
+// are searched by local name (findAll).
 
-type XmlNode = unknown
-
-/** Coerce a parsed node (string | number | {#text,attrs} | array) to text. */
-function nodeText(node: XmlNode): string | null {
-  if (node === null || node === undefined) return null
-  if (typeof node === "string") return node.trim() || null
-  if (typeof node === "number") return String(node)
-  if (Array.isArray(node)) {
-    for (const n of node) {
-      const t = nodeText(n)
-      if (t) return t
-    }
-    return null
+/** Parse an SRU response; a parser failure is a transient upstream glitch. */
+function parseXml(xml: string, what: string): XmlNode {
+  try {
+    return bnfXmlParser.parse(xml)
+  } catch (e) {
+    throw new BnfMcpError(
+      `${what} is not parseable XML: ${e instanceof Error ? e.message : String(e)}`,
+      e,
+    )
   }
-  if (typeof node === "object" && "#text" in (node as Record<string, unknown>)) {
-    return nodeText((node as Record<string, unknown>)["#text"])
-  }
-  return null
 }
+
 
 /** Recursively collect every node stored under `key`, at any depth. */
 function findAll(root: XmlNode, key: string, out: XmlNode[] = []): XmlNode[] {
@@ -214,27 +336,31 @@ function firstText(root: XmlNode, key: string): string | undefined {
   return undefined
 }
 
+/** Trimmed, deduplicated text of every `key` node, in document order. */
+function uniqueTexts(root: XmlNode, key: string): string[] {
+  const out = new Set<string>()
+  for (const n of findAll(root, key)) {
+    const t = nodeText(n)
+    if (t) out.add(t)
+  }
+  return [...out]
+}
+
 /** The `xml:lang` attribute of a parsed element, if any (removeNSPrefix may
  *  drop the `xml:` prefix, so check both forms). */
 function langAttr(node: XmlNode): string | undefined {
   if (node === null || typeof node !== "object" || Array.isArray(node)) return undefined
   const o = node as Record<string, unknown>
-  const v = o["@_xml:lang"] ?? o["@_lang"]
+  const v = o[`${XML_ATTR_PREFIX}xml:lang`] ?? o[`${XML_ATTR_PREFIX}lang`]
   return typeof v === "string" ? v : undefined
 }
 
 /**
  * Choose a doc_type from the (often multi-valued, multi-lingual) <dc:type>
- * elements.
- *
- * Safety net (does not override the authoritative typedoc — see pickTypedoc):
- * first prefer any value that is itself a known Gallica enum key ("fascicule",
- * "monographie", …) — the discriminating token — over the generic French
- * physical-form label ("texte", "publication en série imprimée") the OAI lists
- * first, which normalize.ts collapses to "book". This catches catalogue-SRU
- * records (and any OAI record) that carry a clean enum dc:type; the OAI-PMH
- * Gallica record usually does NOT, so the typedoc setSpec is the real fix.
- * Falls back to the French label, then the first value.
+ * elements of a CATALOGUE record: first prefer any value that is itself a known
+ * Gallica enum key ("fascicule", "monographie", …) over the generic French
+ * physical-form label, then the French label, then the first value. (Gallica
+ * records are typed from their OAI typedoc setSpec instead — oai-record.ts.)
  */
 function pickDocType(root: XmlNode): string | undefined {
   const types = findAll(root, "type")
@@ -247,48 +373,10 @@ function pickDocType(root: XmlNode): string | undefined {
   return nodeText(fr) ?? nodeText(types[0]) ?? undefined
 }
 
-/**
- * The Gallica typedoc tail from the OAI-PMH record header <setSpec> values
- * ("gallica:typedoc:periodiques:fascicules" → "periodiques:fascicules"), or
- * undefined when absent. This is the authoritative docType discriminator: the
- * <dc:type> values are generic physical-form labels that collapse periodicals
- * to "book" (verified live 2026-06-24). Drives both docType and Document.subtype
- * via mapGallicaTypedoc / gallicaSubtype in normalize.ts.
- */
-function pickTypedoc(root: XmlNode): string | undefined {
-  for (const s of findAll(root, "setSpec")) {
-    const m = nodeText(s)?.match(/^gallica:typedoc:(.+)$/)
-    if (m) return m[1]
-  }
-  return undefined
-}
-
-/**
- * True if any <dc:description> announces a text layer ("Avec mode texte").
- * BnF's OAI marks OCR'd documents this way; it is the migration replacement for
- * the old <nqamoyen> score as the OCR-availability signal (verified live: present
- * on text docs, absent on image-only docs). See ai-memories partner-api-migration.
- */
-function hasTextMode(root: XmlNode): boolean {
-  return findAll(root, "description").some((n) => {
-    const t = nodeText(n)
-    return t !== null && /mode\s+texte/i.test(t)
-  })
-}
-
-/** Total view (page/folio) count from <dc:format>"Nombre total de vues : N". */
-function totalViews(root: XmlNode): number | undefined {
-  for (const n of findAll(root, "format")) {
-    const m = nodeText(n)?.match(/Nombre total de vues\s*:\s*(\d+)/i)
-    if (m) return Number(m[1])
-  }
-  return undefined
-}
-
 /** Read a string attribute (e.g. "tag", "code") off a parsed element. */
 function attrText(node: XmlNode, name: string): string | undefined {
   if (node === null || typeof node !== "object" || Array.isArray(node)) return undefined
-  const v = (node as Record<string, unknown>)[`@_${name}`]
+  const v = (node as Record<string, unknown>)[`${XML_ATTR_PREFIX}${name}`]
   return typeof v === "string" ? v : typeof v === "number" ? String(v) : undefined
 }
 
@@ -324,7 +412,7 @@ function extractGallicaArk(url: string): string | null {
 }
 
 // ---------------------------------------------------------------------------
-// IIIF v3 manifest helpers (JSON) — for the brokered/proext Gallica metadata path
+// IIIF v3 manifest helpers (JSON) — hybrid step 4 only
 // ---------------------------------------------------------------------------
 
 /** Every string in a v3 language map ({"fr":["a","b"]} → ["a","b"]); fr preferred. */
@@ -342,18 +430,7 @@ function iiifValues(v: unknown): string[] {
   return []
 }
 
-/** The manifest's top-level `label` as one string (fr preferred), or null. */
-function iiifLabel(manifest: unknown): string | null {
-  if (manifest === null || typeof manifest !== "object") return null
-  return iiifValues((manifest as Record<string, unknown>).label)[0] ?? null
-}
-
-/**
- * Flatten a manifest `metadata[]` to label/value pairs. The value keeps EVERY
- * element of a multi-valued field (joined " | "): BnF puts the discriminating
- * token in the tail — `Type = [texte, publication en série imprimée]` (press) —
- * which a first-element-only read would drop.
- */
+/** Flatten a manifest `metadata[]` to label/value pairs. */
 function parseManifestMetadata(
   manifest: unknown,
 ): Array<{ label: string; value: string }> {
@@ -383,6 +460,13 @@ function metaValue(
   return null
 }
 
+/** "78.21 %" → 78.21; undefined when unparsable or outside 0–100. */
+function parseTauxOcr(raw: string | null): number | undefined {
+  if (raw === null) return undefined
+  const n = Number.parseFloat(raw.replace(",", "."))
+  return Number.isFinite(n) && n >= 0 && n <= 100 ? n : undefined
+}
+
 /**
  * Page count = the number of distinct folio canvases (deduped by the `f<N>` ordre
  * in each canvas id), or undefined when the manifest has no canvas array. This is
@@ -409,6 +493,16 @@ function manifestPageCount(manifest: unknown): number | undefined {
   return seen.size
 }
 
+/** What the manifest decides in hybrid step 4 — and nothing else. */
+interface ManifestSignals {
+  /** The manifest carries a "Taux OCR" row (the label is present). */
+  ocr_available: boolean
+  /** Canvas count; null when the manifest has no canvas array. */
+  pages: number | null
+  /** Text-layer rate in percent, when the row parses to 0–100. */
+  taux_ocr?: number
+}
+
 // ---------------------------------------------------------------------------
 // Client
 // ---------------------------------------------------------------------------
@@ -420,49 +514,46 @@ function manifestPageCount(manifest: unknown): number | undefined {
  */
 export class BnfDirectClient {
   private readonly signal: AbortSignal | undefined
-  private readonly dispatcher: Agent
+  private readonly egress: BnfEgress
+  private readonly retry: Pick<RetryOptions, "attempts" | "baseMs" | "capMs">
 
-  constructor(opts?: { signal?: AbortSignal }) {
+  constructor(opts?: {
+    signal?: AbortSignal
+    /** Test seam: replaces the broker/relay/direct transport. */
+    egress?: BnfEgress
+    /** Test seam: replaces the retry/backoff constants. */
+    retry?: Pick<RetryOptions, "attempts" | "baseMs" | "capMs">
+  }) {
     this.signal = opts?.signal
-    this.dispatcher = new Agent({ connect: { family: 4 } })
-  }
-
-  /** Resolve many ARKs with bounded concurrency: one entry per input ARK, in
-   *  input order. */
-  async resolveArks(
-    arks: string[],
-  ): Promise<Array<BnfMcpResolveResult | BnfMcpResolveError>> {
-    const settled: Settled<BnfMcpDocumentDetail>[] = await withConcurrency(
-      arks,
-      (ark) => this.resolveArk(ark),
-      BNF_DIRECT_CONCURRENCY,
-    )
-    return arks.map((ark, i) => {
-      const s = settled[i]
-      return s.ok
-        ? { ark, ok: true as const, document: s.value }
-        : { ark, ok: false as const, error: s.error }
-    })
+    this.egress = opts?.egress ?? envEgress(new Agent({ connect: { family: 4 } }))
+    this.retry = opts?.retry ?? {
+      attempts: BNF_MCP_RETRY_ATTEMPTS,
+      baseMs: BNF_MCP_RETRY_BASE_MS,
+      capMs: BNF_MCP_RETRY_CAP_MS,
+    }
   }
 
   /**
-   * Resolve ARKs STAGED in the research buffer (buffer_add enrichment,
-   * lib/buffer/enricher.ts). Same bounded concurrency and per-attempt timeouts
-   * as resolveArks, but Gallica ARKs always go through the ungated OAI-PMH
-   * record (oai.bnf.fr, broker `external` bucket) regardless of viaPartner():
-   *   - the IIIF manifest path is skipped on purpose — its 40/min bucket is
-   *     the ingestion bottleneck, and staging must never starve ingestion;
-   *   - OAI carries `gallica_typedoc` (periodiques:fascicules, …), the only
-   *     metadata-level press discriminator, which the manifest lacks.
-   * Catalogue ARKs use the catalogue SRU, as resolveArk does.
+   * Resolve many ARKs with bounded concurrency: one entry per input ARK, in
+   * input order. `mode` is required (see ResolveMode): a caller must say whether
+   * the ARKs are being committed to a corpus or staged in the buffer.
+   *
+   * `staged` holds cached OAI-only records (see BnfRecordService): for those
+   * ARKs the OAI fetch is skipped and only the OCR rules run on the record.
+   *
+   * Once the client's signal aborts, ARKs not yet started are not started: each
+   * settles as a failure carrying the signal's reason.
    */
-  async resolveArksForStaging(
+  async resolveArks(
     arks: string[],
+    opts: { mode: ResolveMode; staged?: ReadonlyMap<string, BnfMcpDocumentDetail> },
   ): Promise<Array<BnfMcpResolveResult | BnfMcpResolveError>> {
     const settled: Settled<BnfMcpDocumentDetail>[] = await withConcurrency(
       arks,
-      (ark) =>
-        sourceFromArk(ark) === DOCUMENT_SOURCE.CATALOGUE ? this.resolveCatalogue(ark) : this.resolveGallicaViaOai(ark),
+      async (ark) => {
+        this.signal?.throwIfAborted()
+        return this.resolveArk(ark, { mode: opts.mode, staged: opts.staged?.get(ark) })
+      },
       BNF_DIRECT_CONCURRENCY,
     )
     return arks.map((ark, i) => {
@@ -474,10 +565,14 @@ export class BnfDirectClient {
   }
 
   /** Resolve one ARK to BnfMcpDocumentDetail (the shape normalize.ts consumes). */
-  async resolveArk(ark: string): Promise<BnfMcpDocumentDetail> {
+  async resolveArk(
+    ark: string,
+    opts: { mode: ResolveMode; staged?: BnfMcpDocumentDetail },
+  ): Promise<BnfMcpDocumentDetail> {
+    assertFullArk(ark)
     return sourceFromArk(ark) === DOCUMENT_SOURCE.CATALOGUE
       ? this.resolveCatalogue(ark)
-      : this.resolveGallica(ark)
+      : this.resolveGallica(ark, opts.mode, opts.staged)
   }
 
   // ---- Catalogue → Gallica canonicalization ---------------------------------
@@ -497,28 +592,39 @@ export class BnfDirectClient {
    * Distinguishes the three outcomes the UI needs:
    *   - `upgraded`      — a digitized Gallica ARK was found.
    *   - `not_digitized` — BOTH routes ran cleanly and found no reproduction.
-   *   - `api_error`     — at least one route threw (timeout/transport/parse) and
+   *   - `api_error`     — at least one route failed with a BnF error (timeout,
+   *                       transport, HTTP status, unparsable body; logged) and
    *                       none produced an ARK, so absence is unconfirmed → a
    *                       later retry may succeed.
-   * Never throws.
+   *
+   * Only BnfMcpError is classified. Anything else (a caller abort, a programming
+   * error) is rethrown: an `api_error` verdict would hide it behind a retry.
    */
   async classifyCanonical(ark: string): Promise<CanonicalizeOutcome> {
+    assertFullArk(ark)
+    const routes = [
+      ["sparql", () => this.canonicalViaSparql(ark)],
+      ["unimarc", () => this.canonicalViaUnimarc(ark)],
+    ] as const
     let apiError = false
-    try {
-      const g = await this.canonicalViaSparql(ark)
-      if (g) return { ark, status: "upgraded", canonical: g }
-    } catch {
-      apiError = true
-    }
-    try {
-      const g = await this.canonicalViaUnimarc(ark)
-      if (g) return { ark, status: "upgraded", canonical: g }
-    } catch {
-      apiError = true
+    for (const [route, lookup] of routes) {
+      try {
+        const g = await lookup()
+        if (g) return { ark, status: CANONICAL_OUTCOME_STATUS.UPGRADED, canonical: g }
+      } catch (err) {
+        if (!(err instanceof BnfMcpError)) throw err
+        console.warn(`[bnf-direct] canonical via ${route} failed`, { ark, err })
+        apiError = true
+      }
     }
     // Neither route produced an ARK. If a route errored we cannot trust the
     // "absent" verdict — treat it as retryable rather than "not on Gallica".
-    return { ark, status: apiError ? "api_error" : "not_digitized" }
+    return {
+      ark,
+      status: apiError
+        ? CANONICAL_OUTCOME_STATUS.API_ERROR
+        : CANONICAL_OUTCOME_STATUS.NOT_DIGITIZED,
+    }
   }
 
   /**
@@ -532,14 +638,20 @@ export class BnfDirectClient {
 
     const settled: Settled<CanonicalizeOutcome>[] = await withConcurrency(
       cbArks,
-      (ark) => this.classifyCanonical(ark),
+      async (ark) => {
+        this.signal?.throwIfAborted()
+        return this.classifyCanonical(ark)
+      },
       BNF_DIRECT_CONCURRENCY,
     )
-    // classifyCanonical never throws, but withConcurrency wraps regardless; a
-    // wrapped rejection is the same unconfirmed-absence case → api_error.
+    // classifyCanonical rethrows what is not a BnF error, and withConcurrency
+    // wraps that (and an abort) per ARK. Absence stays unconfirmed → api_error,
+    // but the cause is logged so it is never silent.
     return cbArks.map((ark, i) => {
       const s = settled[i]
-      return s.ok ? s.value : { ark, status: "api_error" as const }
+      if (s.ok) return s.value
+      console.warn("[bnf-direct] canonicalize failed", { ark, err: s.error })
+      return { ark, status: CANONICAL_OUTCOME_STATUS.API_ERROR }
     })
   }
 
@@ -548,15 +660,21 @@ export class BnfDirectClient {
     // data.bnf.fr resource URIs MUST be http:// (https:// yields zero results).
     const query =
       `SELECT ?gallica WHERE { ` +
-      `<http://data.bnf.fr/${fullArk(ark)}#about> ` +
+      `<http://data.bnf.fr/${ark}#about> ` +
       `<${ELECTRONIC_REPRODUCTION}> ?gallica } LIMIT 1`
     const body = await this.httpGetText(
-      viaPartner() ? DATABNF_SPARQL.proext : DATABNF_SPARQL.ungated,
+      this.egress.viaPartner ? DATABNF_SPARQL.proext : DATABNF_SPARQL.ungated,
       { query, format: "json" },
       "application/sparql-results+json",
     )
-    const parsed = JSON.parse(body) as {
-      results?: { bindings?: Array<{ gallica?: { value?: string } }> }
+    let parsed: { results?: { bindings?: Array<{ gallica?: { value?: string } }> } }
+    try {
+      parsed = JSON.parse(body)
+    } catch (e) {
+      throw new BnfMcpError(
+        `data.bnf.fr SPARQL response is not valid JSON for ${ark}: ${e instanceof Error ? e.message : String(e)}`,
+        e,
+      )
     }
     const value = parsed.results?.bindings?.[0]?.gallica?.value
     return value ? extractGallicaArk(value) : null
@@ -564,52 +682,97 @@ export class BnfDirectClient {
 
   /** Route 2: Catalogue SRU (UNIMARC) — field 856 $u, then 325 $u. */
   private async canonicalViaUnimarc(ark: string): Promise<string | null> {
-    const cat = viaPartner() ? CATALOGUE_SRU.proext : CATALOGUE_SRU.ungated
-    const xml = await this.httpGetText(cat.url, {
-      version: "1.2",
-      operation: "searchRetrieve",
-      query: `bib.persistentId all "${fullArk(ark)}"`,
-      recordSchema: cat.unimarc,
-      maximumRecords: "1",
-    })
-    const root = parser.parse(xml)
+    const cat = this.egress.viaPartner ? CATALOGUE_SRU.proext : CATALOGUE_SRU.ungated
+    const xml = await this.httpGetText(cat.url, catalogueSruParams(ark, cat.unimarc))
+    const root = parseXml(xml, `Catalogue SRU (UNIMARC) response for ${ark}`)
     const url =
       datafieldSubfield(root, "856", "u") ?? datafieldSubfield(root, "325", "u")
     return url ? extractGallicaArk(url) : null
   }
 
-  // ---- Gallica metadata (dual-path) -----------------------------------------
-  // PRIMARY (brokered/proext): the IIIF v3 manifest on the BnF Presentation API,
-  // on the authenticated ingestion quota. It carries title/creator/date/lang, the `Taux OCR`
-  // text-layer signal, the doc type (`Type document` + the "publication en série"
-  // press marker) and the authoritative page count (canvas count). FALLBACK
-  // (no broker / dev): the ungated OAI-PMH record on oai.bnf.fr, which needs no
-  // credential. See ai-memories bnf-metadata-via-manifest.
-  private async resolveGallica(ark: string): Promise<BnfMcpDocumentDetail> {
-    return viaPartner()
-      ? this.resolveGallicaViaManifest(ark)
-      : this.resolveGallicaViaOai(ark)
+  // ---- Gallica metadata: the hybrid resolver --------------------------------
+  // See the header for the four rules. `mode` only decides whether rule 4 (the
+  // manifest) may run.
+  private async resolveGallica(
+    ark: string,
+    mode: ResolveMode,
+    staged?: BnfMcpDocumentDetail,
+  ): Promise<BnfMcpDocumentDetail> {
+    const oai = staged ?? (await this.fetchOaiRecord(ark))
+    const base: BnfMcpDocumentDetail = {
+      ...oai,
+      pages_source: oai.oai_total_views !== undefined ? PAGES_SOURCE.OAI : null,
+    }
+
+    // Rule 2: OAI marks a text layer. 100 % precise, so no manifest call.
+    if (oai.ocr_available === true) return { ...base, ocr_source: OCR_SOURCE.OAI }
+
+    // Staging stops here: OAI silence is left as "unknown" (ocr_available unset).
+    if (mode === RESOLVE_MODE.STAGING) return base
+
+    // Rule 3: an image-like document has no native text either way; the flag is
+    // irrelevant to its lanes, so don't spend a manifest call on it.
+    if (isImageLike(oai)) {
+      return { ...base, ocr_available: false, ocr_source: OCR_SOURCE.IMAGE_LIKE }
+    }
+
+    // No broker (dev): the Presentation API needs credentials only the broker
+    // holds, so the manifest is unreachable. OAI silence proves nothing (it
+    // misses the text layer of every OCR'd press issue), so the verdict stays
+    // UNKNOWN (null) — never false, which would route the document to paid OCR.
+    if (!this.egress.viaPartner) {
+      return { ...base, ocr_available: null, ocr_source: OCR_SOURCE.OAI }
+    }
+
+    // Rule 4: a text-like document OAI is silent on. The manifest decides.
+    let signals: ManifestSignals
+    try {
+      signals = await this.fetchManifestSignals(ark)
+    } catch (err) {
+      // Not-found is terminal for the manifest but not for the document: OAI
+      // knows it. The text-layer verdict stays UNKNOWN (null) — never false,
+      // which would route the document to paid OCR. Anything else (transient,
+      // auth, rate limit) propagates so the resolver retries with backoff.
+      if (!(err instanceof BnfMcpNotFoundError)) throw err
+      console.warn("[bnf-direct] manifest not found", { ark })
+      return { ...base, ocr_available: null }
+    }
+    return {
+      ...base,
+      ocr_available: signals.ocr_available,
+      ocr_source: OCR_SOURCE.MANIFEST,
+      ...(signals.pages !== null ? { pages: signals.pages, pages_source: PAGES_SOURCE.MANIFEST } : {}),
+      ...(signals.taux_ocr !== undefined ? { taux_ocr: signals.taux_ocr } : {}),
+    }
+  }
+
+  /** GET + parse the Gallica OAI-PMH record (external bucket). */
+  private async fetchOaiRecord(ark: string): Promise<BnfMcpDocumentDetail> {
+    const xml = await this.httpGetText(GALLICA_OAI_PMH_URL, {
+      verb: "GetRecord",
+      metadataPrefix: "oai_dc",
+      identifier: `oai:bnf.fr:gallica/${ark}`,
+    })
+    return parseGallicaOaiRecord(xml, ark)
   }
 
   /**
-   * PRIMARY: derive Gallica metadata from the IIIF v3 manifest, on the BnF
-   * Presentation API (BNF_IIIF_PRESENTATION_BASE_URL — its own quota, the
-   * broker's `manifest` + `presentation` buckets).
+   * GET the IIIF v3 manifest from the Presentation API (broker `manifest`
+   * bucket) and read ONLY the OCR flag, the canvas count and the OCR rate.
+   * Throws BnfMcpNotFoundError on a 404, a transient BnfMcpError otherwise.
    */
-  private async resolveGallicaViaManifest(
-    ark: string,
-  ): Promise<BnfMcpDocumentDetail> {
-    const presentationBase = env.BNF_IIIF_PRESENTATION_BASE_URL
+  private async fetchManifestSignals(ark: string): Promise<ManifestSignals> {
+    const presentationBase = this.egress.presentationBaseUrl
     if (presentationBase === undefined) {
       // lib/env.ts refuses to boot with a broker and no Presentation base, and
-      // this path runs only with a broker (viaPartner) — reaching here means
-      // that invariant broke. Fail the resolution loudly, never guess a URL.
+      // this path runs only with a broker — reaching here means that invariant
+      // broke. Fail the resolution loudly, never guess a URL.
       throw new BnfMcpError(
         "broker configured without the Presentation base (BNF_IIIF_PRESENTATION_BASE_URL)",
       )
     }
     const body = await this.httpGetText(
-      presentationManifestUrl(presentationBase, fullArk(ark)),
+      presentationManifestUrl(presentationBase, ark),
       {},
       "application/json, application/ld+json",
     )
@@ -621,104 +784,29 @@ export class BnfDirectClient {
       // glitch (truncated body / error page), not a terminal per-doc condition.
       throw new BnfMcpError(
         `Gallica manifest is not valid JSON for ${ark}: ${e instanceof Error ? e.message : String(e)}`,
+        e,
       )
     }
-    const meta = parseManifestMetadata(manifest)
-    const title = metaValue(meta, ["titre", "title"]) ?? iiifLabel(manifest)
-    if (!title) {
-      // A live manifest always carries a label or Titre; its absence means the
-      // ARK is unknown / not digitized. Terminal — do not retry.
-      throw new BnfMcpNotFoundError(`Gallica manifest has no title for ${ark}`)
-    }
-    const typeDocument = metaValue(meta, ["type document"])
-    const typeGeneric = metaValue(meta, ["type", "nature"])
-    const docType =
-      [typeDocument, typeGeneric].filter(Boolean).join(" | ").toLowerCase() ||
-      undefined
-    const pages = manifestPageCount(manifest)
-
+    const tauxOcr = metaValue(parseManifestMetadata(manifest), TAUX_OCR_LABELS)
+    const taux = parseTauxOcr(tauxOcr)
     return {
-      ark: localArk(ark),
-      title,
-      creator:
-        metaValue(meta, [
-          "créateur",
-          "createur",
-          "creator",
-          "auteur",
-          "author",
-          "contributeur",
-        ]) ?? undefined,
-      date: metaValue(meta, ["date", "date d'édition", "date d'edition"]) ?? undefined,
-      // No typedoc setSpec in the manifest, so `gallica_typedoc` is absent and
-      // normalize.ts maps `doc_type` via mapCatalogueDocType (which now knows the
-      // "publication en série" press marker). `subtype` is consequently null —
-      // the fine fascicules/titres facet lives only in OAI's setSpec.
-      doc_type: docType,
-      gallica_typedoc: undefined,
-      language: metaValue(meta, ["langue", "language"]) ?? undefined,
-      publisher: metaValue(meta, ["editeur", "éditeur", "publisher"]) ?? undefined,
-      ocr_available: metaValue(meta, ["taux ocr", "taux d'ocr"]) !== null,
-      ...(pages !== undefined ? { pages } : {}),
-      gallica_url: `https://gallica.bnf.fr/${fullArk(ark)}`,
-    }
-  }
-
-  // ---- Gallica: OAI-PMH (oai.bnf.fr) — no-broker dev fallback ---------------
-  private async resolveGallicaViaOai(ark: string): Promise<BnfMcpDocumentDetail> {
-    // Metadata from the UNGATED OAI-PMH endpoint (oai.bnf.fr) — no auth, no
-    // Cloudflare, no partner quota — NOT gallica.bnf.fr/services/OAIRecord
-    // (Cloudflare-403 from the server). OCR availability is the "Avec mode
-    // texte" flag (replaces the old <nqamoyen> score); page count is the
-    // "Nombre total de vues" note. See ai-memories partner-api-migration.
-    const xml = await this.httpGetText(GALLICA_OAI_PMH_URL, {
-      verb: "GetRecord",
-      metadataPrefix: "oai_dc",
-      identifier: `oai:bnf.fr:gallica/${fullArk(ark)}`,
-    })
-    const root = parser.parse(xml)
-
-    const title = firstText(root, "title")
-    if (!title) {
-      // A live OAI record always carries a title; its absence (or an
-      // <error code="idDoesNotExist">) means the ARK is unknown / not
-      // digitized. Terminal — do not retry.
-      throw new BnfMcpNotFoundError(`Gallica OAI record has no title for ${ark}`)
-    }
-
-    const pages = totalViews(root)
-
-    return {
-      ark: localArk(ark),
-      title,
-      creator: firstText(root, "creator"),
-      date: firstText(root, "date"),
-      doc_type: pickDocType(root),
-      gallica_typedoc: pickTypedoc(root),
-      language: firstText(root, "language"),
-      publisher: firstText(root, "publisher"),
-      ocr_available: hasTextMode(root),
-      ...(pages !== undefined ? { pages } : {}),
-      gallica_url: `https://gallica.bnf.fr/${fullArk(ark)}`,
+      ocr_available: tauxOcr !== null,
+      pages: manifestPageCount(manifest) ?? null,
+      ...(taux !== undefined ? { taux_ocr: taux } : {}),
     }
   }
 
   // ---- Catalogue: SRU -------------------------------------------------------
   private async resolveCatalogue(ark: string): Promise<BnfMcpDocumentDetail> {
-    const cat = viaPartner() ? CATALOGUE_SRU.proext : CATALOGUE_SRU.ungated
-    const xml = await this.httpGetText(cat.url, {
-      version: "1.2",
-      operation: "searchRetrieve",
-      query: `bib.persistentId all "${fullArk(ark)}"`,
-      recordSchema: cat.dc,
-      maximumRecords: "1",
-    })
-    const root = parser.parse(xml)
+    const cat = this.egress.viaPartner ? CATALOGUE_SRU.proext : CATALOGUE_SRU.ungated
+    const xml = await this.httpGetText(cat.url, catalogueSruParams(ark, cat.dc))
+    const root = parseXml(xml, `Catalogue SRU response for ${ark}`)
 
     const title = firstText(root, "title")
     if (!title) {
       throw new BnfMcpNotFoundError(`Catalogue SRU returned no record for ${ark}`)
     }
+    const subject = uniqueTexts(root, "subject")
 
     return {
       ark: localArk(ark),
@@ -728,63 +816,40 @@ export class BnfDirectClient {
       doc_type: pickDocType(root),
       language: firstText(root, "language"),
       publisher: firstText(root, "publisher"),
-      catalogue_url: `http://catalogue.bnf.fr/${fullArk(ark)}`,
+      ...(subject.length > 0 ? { subject } : {}),
+      catalogue_url: `http://catalogue.bnf.fr/${ark}`,
     }
   }
 
   // ---- transport ------------------------------------------------------------
-  // Three transports, in priority order:
-  //   1. broker (BNF_BROKER_URL) — the single egress chokepoint that owns the
-  //      OAuth token + shared rate caps (broker/ service). Preferred whenever
-  //      configured; supersedes the relay.
-  //   2. relay (GALLICA_RELAY_URL) — curl_cffi browser-handshake sidecar for
-  //      Cloudflare-gated gallica.bnf.fr (legacy demo stopgap; post-OAI-cutover
-  //      the resolver no longer hits gallica.bnf.fr, so this rarely applies).
-  //   3. direct undici — browser UA + IPv4-pinned dispatcher.
-  // All three feed the same status classification (each transport mirrors the
-  // upstream status verbatim), so retry/terminal behaviour is identical.
+  // The egress picks the transport (broker → relay → direct) and mirrors the
+  // upstream status verbatim, so retry/terminal behaviour is identical on all
+  // three. The caller's signal bounds the retry loop too: once it aborts, no
+  // attempt starts and no backoff is waited out.
   private async httpGetText(
     baseUrl: string,
     query: Record<string, string>,
     accept = "application/xml",
   ): Promise<string> {
     const url = `${baseUrl}?${new URLSearchParams(query).toString()}`
-    const viaBroker = brokerUrl() !== undefined
-    const viaRelay = !viaBroker && shouldRelay(url)
     return withRetry(
       async () => {
-        const { status, body } = viaBroker
-          ? await brokerGetText(url, accept, this.signal, BNF_HTTP_TIMEOUT_MS)
-          : viaRelay
-            ? await relayGetText(url, accept, this.signal, BNF_HTTP_TIMEOUT_MS)
-            : await this.directGetText(url, accept)
-        return this.classifyResponse(url, status, body)
+        const { status, body, headers } = await this.egress.getText(url, accept, this.signal)
+        return this.classifyResponse(url, status, body, headers)
       },
-      {
-        attempts: BNF_MCP_RETRY_ATTEMPTS,
-        baseMs: BNF_MCP_RETRY_BASE_MS,
-        capMs: BNF_MCP_RETRY_CAP_MS,
-      },
+      { ...this.retry, signal: this.signal },
     )
   }
 
-  /** Direct undici GET: browser UA + the shared IPv4-pinned dispatcher. */
-  private async directGetText(
-    url: string,
-    accept: string,
-  ): Promise<{ status: number; body: string }> {
-    const res = await undiciFetch(url, {
-      method: "GET",
-      headers: { "User-Agent": BNF_USER_AGENT, Accept: accept },
-      dispatcher: this.dispatcher,
-      signal: withTimeout(this.signal, BNF_HTTP_TIMEOUT_MS),
-    })
-    return { status: res.status, body: await res.text() }
-  }
-
   /** Map an HTTP status to the shared BnF error taxonomy, or return the body on
-   *  2xx. Applied identically to direct and relayed responses. */
-  private classifyResponse(url: string, status: number, body: string): string {
+   *  2xx. Applied identically to every transport's response. A 429 carries the
+   *  upstream `Retry-After` so withRetry waits the real delay. */
+  private classifyResponse(
+    url: string,
+    status: number,
+    body: string,
+    headers: ResponseHeaders,
+  ): string {
     if (status === 401 || status === 403) {
       // 403 from Cloudflare (UA/fingerprint, or a rejected relay handshake).
       // Terminal — retrying the same call won't help.
@@ -794,11 +859,23 @@ export class BnfDirectClient {
       throw new BnfMcpNotFoundError(`BnF HTTP 404 for ${url}`)
     }
     if (status === 429) {
-      throw new BnfMcpRateLimitError("BnF direct rate limited")
+      throw new BnfMcpRateLimitError(
+        "BnF direct rate limited",
+        parseRetryAfter(headers.get("retry-after"), Date.now()),
+      )
     }
     if (status < 200 || status >= 300) {
       throw new BnfMcpError(`BnF HTTP ${status} for ${url}`)
     }
     return body
   }
+}
+
+/**
+ * Whether the record's docType (the same mapping normalize applies: typedoc,
+ * else dc:type) is one of the image-like ingestion types.
+ */
+function isImageLike(oai: BnfMcpDocumentDetail): boolean {
+  const docType = normalizeDocument(oai)?.docType
+  return docType !== undefined && IMAGE_LIKE_DOC_TYPES.has(docType)
 }

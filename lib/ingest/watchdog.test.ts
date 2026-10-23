@@ -19,10 +19,10 @@ import {
   type WatchdogJobInput,
 } from "./watchdog"
 import {
-  CLUSTER_POLL,
   type ClusterProgressPoll,
   type ClusterQueueProgress,
 } from "@/lib/cluster/contracts"
+import { CLUSTER_POLL, INGEST_STATUS } from "@/models/ingest/schema"
 
 const UNKNOWN: ClusterProgressPoll = { kind: CLUSTER_POLL.RUN_UNKNOWN }
 function polled(progress: ClusterQueueProgress): ClusterProgressPoll {
@@ -53,7 +53,7 @@ function progress(overrides: Partial<ClusterQueueProgress> = {}): ClusterQueuePr
 function runningJob(overrides: Partial<WatchdogJobInput> = {}): WatchdogJobInput {
   return {
     id: "job-1",
-    status: "running",
+    status: INGEST_STATUS.RUNNING,
     clusterJobId: "run-1",
     createdAt: minutesAgo(45),
     ...overrides,
@@ -63,7 +63,7 @@ function runningJob(overrides: Partial<WatchdogJobInput> = {}): WatchdogJobInput
 function queuedJob(overrides: Partial<WatchdogJobInput> = {}): WatchdogJobInput {
   return {
     id: "job-2",
-    status: "queued",
+    status: INGEST_STATUS.QUEUED,
     clusterJobId: null,
     createdAt: minutesAgo(45),
     ...overrides,
@@ -216,4 +216,11 @@ test("a FAILED write that throws keeps the staleness clock: the next tick fails 
     ClusterRunner.progress = original.progress
     IngestService.failStuckJob = original.failStuckJob
   }
+})
+
+test("a job in a terminal status is never judged by the RUNNING rules", () => {
+  const job = runningJob({ status: INGEST_STATUS.DONE, createdAt: minutesAgo(600) })
+  const { action, nullSince } = decideWatchdogAction(job, UNKNOWN, NOW, minutesAgo(600))
+  assert.deepEqual(action, { kind: "none" })
+  assert.equal(nullSince, null)
 })

@@ -42,11 +42,13 @@ import { brokerGet, brokerUrl } from "./broker-client.js";
 import {
   altoFolioFromParse,
   arkToSlug,
+  BNF_ARK_PREFIX,
   descriptionsHaveModeTexte,
   emptyAltoFolio,
   ensureCanonicalArk,
   extractPageCountFromFormat,
   firstOrNull,
+  gallicaPageCount,
   metadataValue,
   oaiParser,
   ocrRateValue,
@@ -56,6 +58,14 @@ import {
   pickDcType,
   pickFirstLanguage,
   pickTypedocFromHeader,
+  RAW_GALLICA_TYPEDOC,
+  RAW_LANGUAGE,
+  RAW_METADATA,
+  RAW_OAI_TOTAL_VIEWS,
+  RAW_PAGE_NUMBER,
+  RAW_SOURCE,
+  RAW_TYPE,
+  RAW_TYPE_DOCUMENT,
   textOf,
   typedocSubtype,
 } from "./parse.js";
@@ -97,6 +107,17 @@ function optionalIntEnv(name: string, fallback: number): number {
 //     NOT openapi.bnf.fr — that public host serves IIIF from a no-token,
 //     anonymous-per-IP pool that is not our subscription.
 const OAI_PMH = "http://oai.bnf.fr/oai2/OAIHandler";
+
+// Accept headers, one per payload kind (a typo in one copy would silently change
+// content negotiation for a single path).
+const ACCEPT_XML = "application/xml, text/xml, */*";
+const ACCEPT_MANIFEST_JSON = "application/json, application/ld+json";
+const ACCEPT_JPEG = "image/jpeg";
+
+/** The ARK path segment both IIIF APIs (Presentation and Image) key a document by. */
+function iiifArkPath(canonicalArk: string): string {
+  return `${BNF_ARK_PREFIX}${arkToSlug(canonicalArk)}`;
+}
 
 interface FetchResult {
   status: number;
@@ -245,8 +266,12 @@ function classifyStatus(
  *   • pageCount— the canvas count (manifest.totalPages) — authoritative AND
  *                independent of maxCanvases (parseV3Manifest computes totalPages
  *                from the full canvas list, before slicing it to maxCanvases).
- *   • subtype  — null: the fine Gallica typedoc sub-category (fascicules/titres)
- *                lives only in OAI's setSpec, which the manifest does not carry.
+ *   • subtype  — null: the manifest does not carry the Gallica typedoc. The
+ *                subtype that reaches the index comes from ClusterDoc.subtype on
+ *                the ingest contract (the app resolved it from OAI); this
+ *                manifest path makes no OAI fetch for it. Only the OAI fallback
+ *                (getDocumentInfoViaOai) derives a subtype itself, from the
+ *                record's typedoc setSpec.
  *   • iiifManifestUrl — the caller's (BnfClient.manifestUrl), so this function
  *                stays pure and the API base lives in the client alone.
  */
@@ -297,12 +322,12 @@ export function docInfoFromManifest(
     iiifManifestUrl,
     lang,
     raw: {
-      source: DOC_INFO_SOURCE.IIIF_MANIFEST,
-      type_document: typeDocument,
-      type: typeGeneric,
-      language: lang,
-      pageNumber: pageCount,
-      metadata: manifest.metadata,
+      [RAW_SOURCE]: DOC_INFO_SOURCE.IIIF_MANIFEST,
+      [RAW_TYPE_DOCUMENT]: typeDocument,
+      [RAW_TYPE]: typeGeneric,
+      [RAW_LANGUAGE]: lang,
+      [RAW_PAGE_NUMBER]: pageCount,
+      [RAW_METADATA]: manifest.metadata,
     },
   };
 }
@@ -315,9 +340,9 @@ export class LiveBnfClient implements BnfClient {
     return `${this.presentationArkBase(canonicalArk)}/manifest.json`;
   }
 
-  /** `<presentation base>/presentation/v3/ark:/12148/<slug>` — manifest and ALTO hang off it. */
+  /** `<presentation base>/presentation/v3/<ark path>` — manifest and ALTO hang off it. */
   private presentationArkBase(canonicalArk: string): string {
-    return `${this.iiif.presentationBaseUrl}/presentation/v3/ark:/12148/${arkToSlug(canonicalArk)}`;
+    return `${this.iiif.presentationBaseUrl}/presentation/v3/${iiifArkPath(canonicalArk)}`;
   }
 
   // ---------------- getDocumentInfoViaOai ----------------
@@ -329,10 +354,14 @@ export class LiveBnfClient implements BnfClient {
    * manifest); the manifest is the PRIMARY path (see docInfoFromManifest).
    * Dublin Core fields under <OAI-PMH><GetRecord><record><metadata><oai_dc:dc>.
    * OCR availability is the "Avec mode texte" <dc:description> flag (scanning
-   * ALL descriptions); page count is the "Nombre total de vues" <dc:format>
-   * note — collection-level and occasionally wildly wrong for periodical issues
-   * (e.g. bpt6k268418n: 4 real folios, OAI claims 3197), which is exactly why
-   * the manifest's canvas count is authoritative when it's available.
+   * ALL descriptions).
+   *
+   * Page count: the "Nombre total de vues" <dc:format> note is title-level for
+   * press and so wildly wrong for periodical issues (bpt6k268418n: 4 real
+   * folios, OAI claims 3197). gallicaPageCount (parse.ts) drops it for a
+   * fascicule or an untyped press record, so pageCount is null and the text
+   * lane yields PAGE_COUNT_UNKNOWN instead of fanning out up to 1000 ALTO
+   * requests. The manifest's canvas count stays authoritative when available.
    */
   async getDocumentInfoViaOai(ark: string): Promise<BnfDocInfo> {
     const canonicalArk = ensureCanonicalArk(ark);
@@ -341,7 +370,7 @@ export class LiveBnfClient implements BnfClient {
 
     const { status, bytes, contentType } = await brokerFetch(
       url,
-      "application/xml, text/xml, */*",
+      ACCEPT_XML,
       DEFAULT_TIMEOUT_MS,
     );
     const body = decodeForStatus(status, bytes, contentType);
@@ -397,7 +426,10 @@ export class LiveBnfClient implements BnfClient {
     const subtype = typedocSubtype(typedoc);
     const lang = pickFirstLanguage(dc["dc:language"]);
     const ocrAvailable = descriptionsHaveModeTexte(dc["dc:description"]);
-    const pageCount = extractPageCountFromFormat(dc["dc:format"]);
+    const totalViews = extractPageCountFromFormat(dc["dc:format"]);
+    // OAI's view count is title-level for press issues; the page rule drops it
+    // there so the text lane reports PAGE_COUNT_UNKNOWN rather than fanning out.
+    const pageCount = gallicaPageCount(typedoc, totalViews, dc["dc:type"]);
     const iiifManifestUrl = this.manifestUrl(canonicalArk);
 
     return {
@@ -414,10 +446,11 @@ export class LiveBnfClient implements BnfClient {
       lang,
       raw: {
         ...(dc as Record<string, unknown>),
-        language: lang,
-        source: DOC_INFO_SOURCE.OAI_PMH,
-        gallica_typedoc: typedoc,
-        pageNumber: pageCount,
+        [RAW_LANGUAGE]: lang,
+        [RAW_SOURCE]: DOC_INFO_SOURCE.OAI_PMH,
+        [RAW_GALLICA_TYPEDOC]: typedoc,
+        [RAW_OAI_TOTAL_VIEWS]: totalViews,
+        [RAW_PAGE_NUMBER]: pageCount,
       },
     };
   }
@@ -434,7 +467,7 @@ export class LiveBnfClient implements BnfClient {
     // and usually lost against the broker's own legitimate 120s upstream wait).
     const { status, bytes, contentType } = await brokerFetch(
       url,
-      "application/json, application/ld+json",
+      ACCEPT_MANIFEST_JSON,
       PAGE_TIMEOUT_MS,
     );
     const body = decodeForStatus(status, bytes, contentType);
@@ -467,7 +500,7 @@ export class LiveBnfClient implements BnfClient {
     signal?.throwIfAborted();
     const { status, bytes, contentType } = await brokerFetch(
       url,
-      "application/xml, text/xml, */*",
+      ACCEPT_XML,
       PAGE_TIMEOUT_MS,
     );
     signal?.throwIfAborted(); // an answer arriving after the caller's ceiling is discarded
@@ -489,12 +522,11 @@ export class LiveBnfClient implements BnfClient {
    */
   async fetchImageFolio(ark: string, ordre: number, size: string): Promise<Buffer> {
     const canonicalArk = ensureCanonicalArk(ark);
-    const slug = arkToSlug(canonicalArk);
-    const url = `${this.iiif.imageBaseUrl}/image/v3/ark:/12148/${slug}/f${ordre}/full/${size}/0/default.jpg`;
+    const url = `${this.iiif.imageBaseUrl}/image/v3/${iiifArkPath(canonicalArk)}/f${ordre}/full/${size}/0/default.jpg`;
 
     const { status, bytes, contentType } = await brokerFetch(
       url,
-      "image/jpeg",
+      ACCEPT_JPEG,
       PAGE_TIMEOUT_MS,
     );
     if (status < 200 || status >= 300) {

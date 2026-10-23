@@ -4,9 +4,114 @@
 // No imports from other model directories — schema.ts is the foundation layer.
 // The filter types are inferred from their zod schema in types.ts.
 // See playbook/models.md import diagram.
-import type { BufferItem } from "@/lib/generated/prisma/client"
+import type { BufferItem, Prisma } from "@/lib/generated/prisma/client"
 
 export type { BufferItem }
+
+// ---------------------------------------------------------------------------
+// Prisma-derived write/filter types — queries.ts imports only @/lib/db and
+// this file, so the Prisma input types it needs are named here.
+// ---------------------------------------------------------------------------
+
+/** A Prisma `where` over buffer rows (built by BufferService.where). */
+export type BufferWhere = Prisma.BufferItemWhereInput
+
+/** The row a never-seen hit becomes. */
+export type BufferInsert = Prisma.BufferItemCreateManyInput
+
+/** The metadata refresh of an existing row. */
+export type BufferRefresh = Prisma.BufferItemUpdateInput
+
+/** One reclassification of a row below the classifier version. */
+export type BufferReclassificationUpdate = {
+  id: string
+  data: Prisma.BufferItemUpdateManyMutationInput
+  /** Queue the row for the enrichment drain, only while never enriched. */
+  queueEnrich: boolean
+}
+
+/** The columns the reclassifier reads off a row below the classifier version. */
+export const legacyRow = {
+  select: {
+    id: true,
+    projectId: true,
+    ark: true,
+    title: true,
+    docType: true,
+    lang: true,
+    originTool: true,
+    originQuery: true,
+    source: true,
+    status: true,
+    enrichStatus: true,
+  },
+} satisfies Prisma.BufferItemDefaultArgs
+
+export type LegacyBufferItem = Prisma.BufferItemGetPayload<typeof legacyRow>
+
+/** Fields projected for the buffer panel + buffer_list tool. */
+export const bufferRow = {
+  select: {
+    id: true,
+    ark: true,
+    title: true,
+    year: true,
+    docType: true,
+    lang: true,
+    source: true,
+    snippet: true,
+    originQuery: true,
+    createdAt: true,
+    creator: true,
+    dateLabel: true,
+    arkKind: true,
+    subjects: true,
+    enrichStatus: true,
+  },
+} satisfies Prisma.BufferItemDefaultArgs
+
+/** One candidate as shown in the buffer panel + the buffer_list tool. */
+export type BufferRow = Prisma.BufferItemGetPayload<typeof bufferRow>
+
+/** The columns registerCandidates reads back for an existing row. */
+export const existingRow = {
+  select: {
+    ark: true,
+    status: true,
+    title: true,
+    enrichStatus: true,
+  },
+} satisfies Prisma.BufferItemDefaultArgs
+
+export type ExistingBufferRow = Prisma.BufferItemGetPayload<typeof existingRow>
+
+/** A row a registration inserted: which ARK, and the status it landed in. */
+export type InsertedBufferRow = Pick<BufferItem, "ark" | "status">
+
+/** A metadata refresh of one existing row, addressed by ARK. */
+export type BufferRowRefresh = { ark: string; data: BufferRefresh }
+
+/**
+ * The status transitions of one registration. Each list is guarded in the
+ * statement by the status it leaves, so a concurrent change is never overwritten.
+ */
+export type BufferRegistrationTransitions = {
+  refreshes: BufferRowRefresh[]
+  /** In the head corpus, not yet marked committed. */
+  toCommitted: string[]
+  /** Committed rows that left the corpus: candidates again. */
+  toRestage: string[]
+  /** Discarded rows an explicit buffer_add names: candidates again. */
+  toUndiscard: string[]
+  /**
+   * Rows to queue for the enrichment drain (decided by BufferService). The
+   * statement still queues a row only while it is bare and never enriched.
+   */
+  toEnrich: string[]
+}
+
+/** How many rows the guarded transitions of a registration actually moved. */
+export type BufferRegistrationCounts = { restaged: number; undiscarded: number }
 
 // ---------------------------------------------------------------------------
 // Domain status enum (String column in prisma/schema.prisma — no native enum)
@@ -47,6 +152,35 @@ export type BufferEnrichStatus = (typeof BUFFER_ENRICH_STATUS)[keyof typeof BUFF
  */
 export const BUFFER_UNRESOLVED_ENRICH_STATUSES = [BUFFER_ENRICH_STATUS.PENDING, BUFFER_ENRICH_STATUS.FAILED] as const
 
+/**
+ * What the enrichment drain writes on one row: the classified metadata of a
+ * resolved record, or the bookkeeping of a failed, deferred or resolved attempt.
+ * Only these columns — a drain never touches a row's provenance or lifecycle.
+ */
+export type BufferEnrichmentWrite = Partial<
+  Pick<
+    BufferItem,
+    | "title"
+    | "creator"
+    | "year"
+    | "yearEnd"
+    | "dateLabel"
+    | "docType"
+    | "docTypeRaw"
+    | "lang"
+    | "publisher"
+    | "subjects"
+    | "gallicaUrl"
+    | "catalogueUrl"
+    | "arkKind"
+    | "classifierVersion"
+    | "enrichStatus"
+    | "enrichAttempts"
+    | "enrichError"
+    | "enrichNextAttemptAt"
+  >
+>
+
 /** DELETE /api/projects/:id/buffer — how many candidates were discarded. */
 export type BufferDiscardResult = { discarded: number }
 
@@ -57,26 +191,6 @@ export type BufferFacetDimension = "period" | "type" | "lang" | "source" | "kind
 // ---------------------------------------------------------------------------
 // Composite shapes returned to the API / agent-tool layer
 // ---------------------------------------------------------------------------
-
-/** One candidate as shown in the buffer panel + the buffer_list tool. */
-export type BufferRow = Pick<
-  BufferItem,
-  | "id"
-  | "ark"
-  | "title"
-  | "year"
-  | "docType"
-  | "lang"
-  | "source"
-  | "snippet"
-  | "originQuery"
-  | "createdAt"
-  | "creator"
-  | "dateLabel"
-  | "arkKind"
-  | "subjects"
-  | "enrichStatus"
->
 
 /**
  * Facet distribution over the candidate set — the buffer's counterpart to

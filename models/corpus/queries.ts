@@ -6,7 +6,6 @@
 import "server-only"
 
 import { prisma } from "@/lib/db"
-import type { Prisma } from "@/lib/generated/prisma/client"
 import {
   corpusVersionWithArks,
   documentRow,
@@ -15,6 +14,7 @@ import {
   type CorpusFacetDimension,
   type CorpusListPage,
   type DocumentRow,
+  type DocumentWhere,
   type CorpusVersionStatus,
   type CorpusVersionWithArks,
   type CorpusSnapshotRead,
@@ -22,6 +22,19 @@ import {
 } from "./schema"
 
 export class CorpusQueries {
+  /** A corpus version of a project by its sequence number, with its membership ARKs. */
+  static async versionBySeq(projectId: string, seq: number): Promise<CorpusVersionWithArks> {
+    return prisma.corpusVersion.findUniqueOrThrow({
+      where: { projectId_seq: { projectId, seq } },
+      ...corpusVersionWithArks,
+    })
+  }
+
+  /** Statement: set a corpus version's status (for composition in a batch transaction). */
+  static versionStatusOp(versionId: string, status: CorpusVersionStatus) {
+    return prisma.corpusVersion.update({ where: { id: versionId }, data: { status } })
+  }
+
   /**
    * Whether the project pays for fallback OCR. It decides whether a digitized,
    * OCR-less, Latin-script document counts as `excluded` ("nothing to index")
@@ -212,6 +225,7 @@ export class CorpusQueries {
       pendingCount,
       failedCount,
       typeRows,
+      subtypeRows,
       langRows,
       sourceRows,
       sessionRows,
@@ -236,6 +250,12 @@ export class CorpusQueries {
       prisma.document.groupBy({
         by: ["docType"],
         where: { ...resolvedWhere, docType: { not: null } },
+        _count: { ark: true },
+      }),
+      // Facet: subtype (resolved; most documents have none — they stay out)
+      prisma.document.groupBy({
+        by: ["subtype"],
+        where: { ...resolvedWhere, subtype: { not: null } },
         _count: { ark: true },
       }),
       // Facet: lang (resolved; skip null lang values)
@@ -288,6 +308,11 @@ export class CorpusQueries {
       // docType is nullable in the schema; resolvedWhere + `not: null` already
       // exclude nulls, but guard for the type-checker.
       if (r.docType !== null) typeFacet[r.docType] = r._count.ark
+    }
+
+    const subtypeFacet: Record<string, number> = {}
+    for (const r of subtypeRows) {
+      if (r.subtype !== null) subtypeFacet[r.subtype] = r._count.ark
     }
 
     const langFacet: Record<string, number> = {}
@@ -386,6 +411,7 @@ export class CorpusQueries {
       failedCount,
       facets: {
         type: typeFacet,
+        subtype: subtypeFacet,
         lang: langFacet,
         source: sourceFacet,
         period: periodFacet,
@@ -448,7 +474,7 @@ export class CorpusQueries {
   static async list(
     version: CorpusVersionWithArks,
     paidOcr: boolean,
-    sharedWhere: Prisma.DocumentWhereInput,
+    sharedWhere: DocumentWhere,
     opts: { cursor?: string; limit: number },
   ): Promise<CorpusListPage> {
     const limit = opts.limit
@@ -503,7 +529,7 @@ export class CorpusQueries {
   static async exportRows(
     version: CorpusVersionWithArks,
     paidOcr: boolean,
-    sharedWhere: Prisma.DocumentWhereInput,
+    sharedWhere: DocumentWhere,
   ): Promise<{ versionSeq: number; rows: DocumentRow[]; paidOcrEnabled: boolean }> {
     const rows = await prisma.document.findMany({
       where: sharedWhere,
@@ -529,7 +555,7 @@ export class CorpusQueries {
    * sparse and sorted by count descending.
    */
   static async crossFacets(
-    resolvedWhere: Prisma.DocumentWhereInput,
+    resolvedWhere: DocumentWhere,
     dims: [CorpusFacetDimension, CorpusFacetDimension],
   ): Promise<CorpusCrossFacets> {
     const rows = await prisma.document.findMany({
@@ -635,13 +661,13 @@ export class CorpusQueries {
   }
 
   /** The ARKs matching `where`, in stable ascending order (a reproducible preview). */
-  static async arks(where: Prisma.DocumentWhereInput): Promise<string[]> {
+  static async arks(where: DocumentWhere): Promise<string[]> {
     const rows = await prisma.document.findMany({ where, select: { ark: true }, orderBy: { ark: "asc" } })
     return rows.map((r) => r.ark)
   }
 
   /** One count per predicate, in one transaction (one state of the corpus). */
-  static async counts(wheres: ReadonlyArray<Prisma.DocumentWhereInput>): Promise<number[]> {
+  static async counts(wheres: ReadonlyArray<DocumentWhere>): Promise<number[]> {
     if (wheres.length === 0) return []
     return prisma.$transaction(wheres.map((where) => prisma.document.count({ where })))
   }

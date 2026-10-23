@@ -151,6 +151,8 @@ export interface BrokerConfig {
   upstreamTimeoutMs: number;
   tokenTimeoutMs: number;
   acquireMaxWaitMs: number;
+  /** Freeze window for a 429 that carries no usable Retry-After. */
+  rateLimitFallbackMs: number;
   forbiddenBackoffMs: number;
   tokenFailCooldownMs: number;
   maxBodyBytes: number;
@@ -206,6 +208,11 @@ export function loadConfig(env: Env): BrokerConfig {
      * page), so the honest shed 429 always beats an opaque client abort.
      */
     acquireMaxWaitMs: num(env, "BNF_ACQUIRE_MAX_WAIT_MS", 10_000),
+    /**
+     * Freeze window applied to the penalized bucket when an upstream 429
+     * carries no usable Retry-After (rate.ts retryAfterToEpochMs fallback).
+     */
+    rateLimitFallbackMs: num(env, "BNF_429_FALLBACK_MS", 60_000),
     /**
      * Fixed back-off applied when an UNGATED host (gallica/oai/catalogue/data)
      * returns a captcha 403 — a Cloudflare/IP throttle with no Retry-After, NOT

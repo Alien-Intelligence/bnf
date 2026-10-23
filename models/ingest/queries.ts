@@ -4,18 +4,64 @@ import "server-only"
 import { prisma } from "@/lib/db"
 import { Prisma } from "@/lib/generated/prisma/client"
 import type { IngestJob } from "@/lib/generated/prisma/client"
-import { PAID_OCR_USD_PER_1K_PAGES } from "@/lib/constants"
-import type { AdminOcrUsage } from "./schema"
-
-/** An IngestJob row with its base/target version seqs joined (for the history). */
-export type IngestJobWithVersions = Prisma.IngestJobGetPayload<{
-  include: {
-    targetVersion: { select: { seq: true } }
-    baseVersion: { select: { seq: true } }
-  }
-}>
+import { INGEST_RECENT_JOBS_LIMIT, PAID_OCR_USD_PER_1K_PAGES } from "@/lib/constants"
+import {
+  INGEST_ACTIVE_STATUSES,
+  INGEST_STATUS,
+  ingestJobWithVersions,
+  type AdminOcrUsage,
+  type IngestJobWithVersions,
+  type IngestStatus,
+} from "./schema"
 
 export class IngestQueries {
+  /** Returns a single job by id; throws when it does not exist. */
+  static async getOrThrow(id: string): Promise<IngestJob> {
+    return prisma.ingestJob.findUniqueOrThrow({ where: { id } })
+  }
+
+  /** Inserts a job row. */
+  static async create(data: Prisma.IngestJobUncheckedCreateInput): Promise<IngestJob> {
+    return prisma.ingestJob.create({ data })
+  }
+
+  /** Updates a job row by id; throws when it does not exist. */
+  static async update(id: string, data: Prisma.IngestJobUncheckedUpdateInput): Promise<IngestJob> {
+    return prisma.ingestJob.update({ where: { id }, data })
+  }
+
+  /**
+   * Updates a job row only while it is still in `expectedStatus`, so a job that
+   * went terminal since the caller looked is never overwritten. Matching no row
+   * is not an error.
+   */
+  static async updateIfStatus(
+    id: string,
+    expectedStatus: IngestStatus,
+    data: Prisma.IngestJobUncheckedUpdateManyInput,
+  ): Promise<void> {
+    await prisma.ingestJob.updateMany({ where: { id, status: expectedStatus }, data })
+  }
+
+  /**
+   * Runs the given statements as one atomic batch transaction and returns
+   * their results in order. The statements are built by the owning models'
+   * queries; this model only opens the transaction.
+   */
+  static batch<P extends Prisma.PrismaPromise<unknown>[]>(ops: [...P]) {
+    return prisma.$transaction(ops)
+  }
+
+  /** Statement: insert a job row (for composition in {@link batch}). */
+  static createOp(data: Prisma.IngestJobUncheckedCreateInput) {
+    return prisma.ingestJob.create({ data })
+  }
+
+  /** Statement: update a job row (for composition in {@link batch}). */
+  static updateOp(id: string, data: Prisma.IngestJobUncheckedUpdateInput) {
+    return prisma.ingestJob.update({ where: { id }, data })
+  }
+
   /** Returns a single job by id, or null if not found. */
   static async get(id: string): Promise<IngestJob | null> {
     return prisma.ingestJob.findUnique({ where: { id } })
@@ -27,17 +73,13 @@ export class IngestQueries {
    */
   static async listForProject(
     projectId: string,
-    limit = 20,
+    limit = INGEST_RECENT_JOBS_LIMIT,
   ): Promise<IngestJobWithVersions[]> {
     return prisma.ingestJob.findMany({
       where: { projectId },
       orderBy: { createdAt: "desc" },
       take: limit,
-      // Join the base/target version seqs so the history can show "v10 → v15".
-      include: {
-        targetVersion: { select: { seq: true } },
-        baseVersion: { select: { seq: true } },
-      },
+      ...ingestJobWithVersions,
     })
   }
 
@@ -47,7 +89,7 @@ export class IngestQueries {
    */
   static async activeForProject(projectId: string): Promise<IngestJob | null> {
     return prisma.ingestJob.findFirst({
-      where: { projectId, status: { in: ["queued", "running"] } },
+      where: { projectId, status: { in: [...INGEST_ACTIVE_STATUSES] } },
     })
   }
 
@@ -63,7 +105,7 @@ export class IngestQueries {
       where: {
         projectId,
         targetVersionId,
-        status: { in: ["queued", "running"] },
+        status: { in: [...INGEST_ACTIVE_STATUSES] },
       },
     })
   }
@@ -81,8 +123,8 @@ export class IngestQueries {
     return prisma.ingestJob.findMany({
       where: {
         OR: [
-          { status: "running", clusterJobId: { not: null } },
-          { status: "queued", createdAt: { lt: queuedCutoff } },
+          { status: INGEST_STATUS.RUNNING, clusterJobId: { not: null } },
+          { status: INGEST_STATUS.QUEUED, createdAt: { lt: queuedCutoff } },
         ],
       },
     })

@@ -30,9 +30,9 @@ The ingest worker is a third egress (IIIF manifest/ALTO/image via
 
 | Need | Path | Through the broker? |
 |---|---|---|
-| Resolve ARK → metadata (corpus add) | `BnfDirectClient.resolveArks` → broker → the manifest on the Presentation API (`BNF_IIIF_PRESENTATION_BASE_URL`), catalogue SRU; dev without a broker: `oai.bnf.fr` / `catalogue.bnf.fr` | ✅ |
+| Resolve ARK → metadata (corpus add) | `BnfDirectClient.resolveArks(arks, { mode: "commit" })` → broker → `oai.bnf.fr` (`external` bucket) first; the manifest on the Presentation API (`BNF_IIIF_PRESENTATION_BASE_URL`) **only** for a text-like docType that OAI does not mark "mode texte" (press issues, a few monographs); catalogue SRU for `cb…`; dev without a broker: OAI and the catalogue are reached directly, but the manifest step is skipped (the Presentation API needs broker-held credentials), so the OCR verdict stays unknown (`ocr_available: null`). A `BnfRecord` cache entry (keyed by ARK, no TTL, holding the resolved record and its OCR provenance: `oai` / `image_like` / `manifest`) is COMPLETE once it carries `ocr_source`; a COMPLETE entry makes a re-add zero-call. A STAGED entry (OAI-only, written by the buffer enricher, no `ocr_source`) skips only the OAI fetch: the OCR rules, manifest included, still run on commit (what the cache may hold: [sharing.md](sharing.md)) | ✅ |
 | `cb…` notice → digitized `bpt6k…` ARK | `BnfDirectClient.canonicalizeArks` → broker → `data.bnf.fr` SPARQL + catalogue SRU | ✅ |
-| Stage bare ARK → metadata (buffer_add) | `BnfDirectClient.resolveArksForStaging` → broker → `oai.bnf.fr` / catalogue SRU (never the manifest: its bucket is ingestion's) | ✅ |
+| Stage bare ARK → metadata (buffer_add) | `BnfDirectClient.resolveArks(arks, { mode: "staging" })` → broker → `oai.bnf.fr` / catalogue SRU only (never the manifest: its OCR flag is not needed before commit, and the commit-time resolve applies the manifest rule) | ✅ |
 | Worker ingest (manifest/ALTO → Presentation API, images → Image API) | `worker-v2/src/bnf/client.ts` → broker → `openapiproext.bnf.fr/{presentation,image}/iiif/gallica/<version>` | ✅ |
 | Agent search / browse / read | chat-sdk `mcpServers` → **BnF MCP server** | ❌ (separate egress) |
 | User-facing Gallica links / `<img>` | derived URLs (`lib/constants.ts`) → public `gallica.bnf.fr`, in the browser | ❌ (by design) |
@@ -50,11 +50,22 @@ credentials. See [ingestion-jobs.md](ingestion-jobs.md).
 ```ts
 // lib/bnf/direct.ts — import "server-only" is the first line.
 export class BnfDirectClient {
-  resolveArk(ark: string): Promise<BnfMcpDocumentDetail>
-  resolveArks(arks: string[]): Promise<Array<BnfMcpResolveResult | BnfMcpResolveError>>
+  // `mode` is required: "commit" (resolver/backfill: manifest allowed by the
+  // hybrid rule) or "staging" (research buffer: OAI only, never the manifest).
+  // `staged` is a cached OAI-only record: its OAI fetch is skipped and only the
+  // OCR rules run on it (resolver.ts passes it for STAGED BnfRecord hits).
+  resolveArk(ark: string, opts: { mode: ResolveMode; staged?: BnfMcpDocumentDetail }): Promise<BnfMcpDocumentDetail>
+  resolveArks(
+    arks: string[],
+    opts: { mode: ResolveMode; staged?: ReadonlyMap<string, BnfMcpDocumentDetail> },
+  ): Promise<Array<BnfMcpResolveResult | BnfMcpResolveError>>
   classifyCanonical(ark: string): Promise<CanonicalizeOutcome>
   canonicalizeArks(arks: string[]): Promise<CanonicalizeOutcome[]>
 }
+
+// lib/bnf/types.ts
+export const RESOLVE_MODE = { COMMIT: "commit", STAGING: "staging" } as const
+export type ResolveMode = (typeof RESOLVE_MODE)[keyof typeof RESOLVE_MODE]
 ```
 
 Rules:
@@ -145,6 +156,24 @@ export const arkSchema = z.string().regex(/^ark:\/\d+\/[A-Za-z0-9]+$/, "invalid 
 This protects route handlers from junk ARKs; it is **not** the canonical format
 spec. The BnF uses extensions like `ark:/12148/btv1b8470216w` (the regex matches
 them). Extend the regex when you hit a real ARK it rejects, not preemptively.
+
+### The one boundary exception: bare ids from the BnF MCP
+
+The BnF MCP wire contract sends **bare ids** (`bpt6k2839841`), not ARKs, and
+the parsers and the cached `BnfRecord` payloads are keyed by them. Removing that
+needs an mcp-bnf contract change. Until then the rule is satisfied **at the
+boundary**: the full ARK is built in exactly one helper per runtime, and from
+there on it is an opaque token.
+
+- App: `fullBnfArk` in `lib/validation/ark.ts`, with the one NAAN constant
+  (`BNF_NAAN`, not exported). Callers: `toFullArk` (`lib/agent/tools/buffer.ts`),
+  `lib/mcp/normalize.ts`, `lib/mcp/vocab.ts`. The result must pass `arkSchema`,
+  else `null` (refused, never guessed).
+- Worker: `BNF_ARK_PREFIX` / `BNF_NAAN` in `worker-v2/src/bnf/parse.ts` (a
+  separate package, so its own single definition).
+- No other code builds an ARK. A new `ark:/…${x}` template anywhere else is
+  still forbidden. A hit whose ARK `fullBnfArk` refuses is **logged and counted**
+  in the tool result, never silently dropped.
 
 ## IIIF & Gallica links — derived, not stored
 
@@ -299,7 +328,7 @@ service. Keep the boundary crisp.
 // ❌ Calling BnF from a route handler
 export const POST = withAuth(async (req, user, bouncer, ctx) => {
   const client = new BnfDirectClient()
-  await client.resolveArks(arks)        // ← BnF egress from a route
+  await client.resolveArks(arks, { mode: "commit" })  // ← BnF egress from a route
 })
 // → resolution runs in the service/resolver layer (kickResolve); search is the agent's MCP tool
 

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8" ?><OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.openarchives.org/OAI/2.0/ http://www.openarchives.org/OAI/2.0/OAI-PMH.xsd"><responseDate>2026-10-22T11:02:30Z</responseDate><request verb="GetRecord" metadataPrefix="oai_dc" identifier="oai:bnf.fr:gallica/ark:/12148/bpt6k9618082w">http://oai.bnf.fr/oai2/OAIHandler</request><GetRecord><record><header><identifier>oai:bnf.fr:gallica/ark:/12148/bpt6k9618082w</identifier><datestamp>2025-05-07</datestamp><setSpec>gallica:theme:8:87</setSpec><setSpec>gallica:typedoc:monographies</setSpec></header><metadata><oai_dc:dc xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:oai_dc="http://www.openarchives.org/OAI/2.0/oai_dc/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.openarchives.org/OAI/2.0/oai_dc/ http://www.openarchives.org/OAI/2.0/oai_dc.xsd">
+<dc:identifier>http://gallica.bnf.fr/ark:/12148/bpt6k9618082w</dc:identifier>
+<dc:identifier>NUMM-9618082</dc:identifier>
+<dc:title>Élégies de Tibulle. Tome 3 / , avec des notes et recherches de mythologie, d'histoire et de philosophie, suivies des Baisers de Jean Second. Traduction nouvelle adressée du Donjeon de Vincennes, par Mirabeau l'aîné, à Sophie Ruffey...</dc:title>
+<dc:relation>Notice d'ensemble : http://catalogue.bnf.fr/ark:/12148/cb31468651x</dc:relation>
+<dc:creator>Tibulle (0050?-0018? av. J.-C.). Auteur du texte</dc:creator>
+<dc:creator>Second, Jean (1511-1536). Auteur du texte</dc:creator>
+<dc:contributor>Mirabeau, Honoré-Gabriel Riquetti comte de (1749-1791). Traducteur</dc:contributor>
+<dc:publisher>Letourmy le jeune (Tours)</dc:publisher>
+<dc:publisher>Berry, Deroy (Paris)</dc:publisher>
+<dc:description>[Élégies (français)]</dc:description>
+<dc:relation>Notice d’oeuvre : http://catalogue.bnf.fr/ark:/12148/cb12366908w</dc:relation>
+<dc:date>1794-1795</dc:date>
+<dc:description>Comprend : Les Baisers... traduction nouvelle adressée, du donjon de Vincennes, par Mirabeau l'aîné à Sophie Ruffey</dc:description>
+<dc:format>3 vol., portraits gr. par E. Voysard et Delignon, pl. gr. par Eluin d'après F. Borel ; in-8</dc:format>
+<dc:language>fre</dc:language>
+<dc:relation>Notice du catalogue : http://catalogue.bnf.fr/ark:/12148/cb31468651x</dc:relation>
+<dc:type xml:lang="eng">text</dc:type>
+<dc:type xml:lang="fre">monographie imprimée</dc:type>
+<dc:type xml:lang="eng">printed monograph</dc:type>
+<dc:source>Bibliothèque nationale de France, département Littérature et art, YC-5772</dc:source>
+<dc:rights xml:lang="fre">domaine public</dc:rights>
+<dc:rights xml:lang="eng">public domain</dc:rights>
+<dc:format>Nombre total de vues :  406</dc:format>
+<dc:description>Avec mode texte</dc:description>
+</oai_dc:dc>
+</metadata></record></GetRecord></OAI-PMH>

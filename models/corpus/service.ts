@@ -29,16 +29,17 @@ import { buildCorpusWhere, notUnknownWheres, numerisationOf } from "@/lib/corpus
 import { CORPUS_SAMPLE_SIZE } from "@/lib/constants"
 import { DocumentQueries } from "@/models/documents/queries"
 import { CorpusQueries } from "./queries"
-import type {
-  CorpusAddResult,
-  CorpusPromoteResult,
-  CorpusCrossFacets,
-  CorpusFacetDimension,
-  CorpusListPage,
-  CorpusMutationResult,
-  CorpusSnapshot,
-  NonIngestableDocument,
-  DocumentRow,
+import {
+  CORPUS_SYSTEM_ACTOR,
+  type CorpusAddResult,
+  type CorpusPromoteResult,
+  type CorpusCrossFacets,
+  type CorpusFacetDimension,
+  type CorpusListPage,
+  type CorpusMutationResult,
+  type CorpusSnapshot,
+  type NonIngestableDocument,
+  type DocumentRow,
 } from "./schema"
 import type { CorpusFilterSet } from "./types"
 import { REMOVE_BY_FILTER_STATUS, assertLangsHeld, filterLangs } from "@/lib/filters"
@@ -452,6 +453,50 @@ export class CorpusService {
   }
 
   /**
+   * Swaps catalogue notices for their digitized Gallica documents in ONE new
+   * version (promoteNotice, batched), under the project's advisory lock.
+   * `upgrades` maps notice ARK → canonical ARK; the canonical documents must
+   * already have rows (the membership FK). Only notices STILL members of the
+   * head are swapped — one the librarian removed meanwhile is not resurrected
+   * as its Gallica doc — and a canonical already a member is not added twice.
+   * The swapped notices' stale `pending` status is cleared in the same
+   * transaction, so a notice is never left queued once it is gone.
+   * Returns how many notices were swapped.
+   */
+  static async swapCanonicalNotices(
+    projectId: string,
+    upgrades: ReadonlyMap<string, string>,
+  ): Promise<number> {
+    return prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`project:${projectId}`}))`
+
+      const head = await CorpusQueries.headVersion(projectId)
+      const memberSet = new Set(head.membership.map((m) => m.ark))
+
+      const removeArks: string[] = []
+      const addArks = new Set<string>()
+      for (const [notice, canonical] of upgrades) {
+        if (!memberSet.has(notice)) continue
+        removeArks.push(notice)
+        if (!memberSet.has(canonical)) addArks.add(canonical)
+      }
+
+      await advanceVersion(tx, projectId, head, {
+        addArks: [...addArks],
+        removeArks,
+        createdBy: CORPUS_SYSTEM_ACTOR.CANONICALIZE,
+        note: `Canonicalisation : ${removeArks.length} notice(s) remplacée(s) par leur document numérisé`,
+      })
+
+      await tx.document.updateMany({
+        where: { projectId, ark: { in: [...upgrades.keys()] } },
+        data: { canonicalStatus: null },
+      })
+      return removeArks.length
+    })
+  }
+
+  /**
    * Removes ARKs from the project's corpus.
    *
    * Steps:
@@ -593,6 +638,7 @@ export class CorpusService {
     const hasArray = (a?: string[]) => Array.isArray(a) && a.length > 0
     return !(
       hasArray(filters.type) ||
+      hasArray(filters.subtype) ||
       hasArray(filters.lang) ||
       hasArray(filters.source) ||
       hasArray(filters.session) ||

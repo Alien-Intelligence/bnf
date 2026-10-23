@@ -10,9 +10,13 @@ import assert from "node:assert/strict"
 import {
   GALLICA_FILTER_DOC_TYPE,
   GALLICA_SEARCHABLE_DOC_TYPE,
+  PRESS_MARKER,
   canonicalDocTypeFromLabel,
   canonicalLang,
+  gallicaPageCount,
+  gallicaSubtype,
 } from "./vocab"
+import { KNOWN_SUBTYPES } from "@/models/documents/schema"
 
 test("every raw prod doc_type label maps to a canonical code", () => {
   const table: Array<[string, string]> = [
@@ -106,4 +110,92 @@ test("every searchable Gallica doc_type has a strict canonical mapping", () => {
   assert.equal(GALLICA_FILTER_DOC_TYPE.fascicule, "press")
   assert.equal(GALLICA_FILTER_DOC_TYPE.monographie, "book")
   assert.equal(GALLICA_FILTER_DOC_TYPE.objet, "object")
+})
+
+test("gallicaPageCount: a periodical issue never takes OAI's view count", () => {
+  const table: Array<[string | undefined, number | undefined, string | undefined, number | null]> = [
+    ["periodiques:fascicules", 3197, "texte", null],
+    ["Periodiques:Fascicules", 3197, undefined, null],
+    ["periodiques:fascicules", undefined, undefined, null],
+    // No typedoc + press marker: a fascicule without a setSpec.
+    [undefined, 3197, "publication en série imprimée", null],
+    ["", 3197, "Périodique", null],
+    // A typedoc wins over the dcType: a monograph labelled as a series keeps its count.
+    ["monographies", 406, "publication en série imprimée", 406],
+    // Everything else: the count when it is a positive integer.
+    ["monographies", 406, "texte", 406],
+    [undefined, 12, "texte", 12],
+    [undefined, 12, undefined, 12],
+    ["images:estampes", 1, undefined, 1],
+    ["monographies", undefined, "texte", null],
+    ["monographies", 0, "texte", null],
+    ["monographies", -3, "texte", null],
+    ["monographies", 3.5, "texte", null],
+    ["monographies", Number.NaN, "texte", null],
+    ["monographies", Number.POSITIVE_INFINITY, "texte", null],
+  ]
+  for (const [typedoc, views, dcType, expected] of table) {
+    assert.equal(
+      gallicaPageCount(typedoc, views, dcType),
+      expected,
+      `typedoc=${typedoc} views=${views} dcType=${dcType}`,
+    )
+  }
+})
+
+test("KNOWN_SUBTYPES: the closed Gallica subtype vocabulary", () => {
+  assert.deepEqual(
+    [...KNOWN_SUBTYPES].sort(),
+    [
+      "atlas", "carte", "cartes", "coupe", "dessins", "diagramme", "estampes",
+      "fascicules", "globe", "maquette", "objets", "photographies", "plan",
+      "teledetection", "titres", "vue",
+    ],
+  )
+  assert.equal(new Set(KNOWN_SUBTYPES).size, KNOWN_SUBTYPES.length)
+})
+
+test("KNOWN_SUBTYPES covers the subtypes of the typedocs seen in the parity sample", () => {
+  for (const typedoc of [
+    "periodiques:fascicules",
+    "images:estampes",
+    "images:dessins",
+    "images:photographies",
+    "cartes:carte",
+    "cartes:atlas",
+    "cartes:diagramme",
+    "cartes:vue",
+  ]) {
+    const subtype = gallicaSubtype(typedoc)
+    assert.ok(
+      subtype !== null && (KNOWN_SUBTYPES as readonly string[]).includes(subtype),
+      `${typedoc} → ${subtype}`,
+    )
+  }
+  for (const typedoc of ["monographies", "manuscrits", "partitions", "audio", "objets"]) {
+    assert.equal(gallicaSubtype(typedoc), null, typedoc)
+  }
+})
+
+// The worker's PRESS_DC_TYPE (worker-v2/src/bnf/parse.ts) is the same pattern
+// and the worker cannot import app code. This table is repeated verbatim in
+// worker-v2/src/bnf/parse.test.ts (PRESS_LABEL_FIXTURES); PRESS_MARKER is
+// applied to the lowercased label, as gallicaPageCount does.
+const PRESS_LABEL_FIXTURES: ReadonlyArray<readonly [label: string, isPress: boolean]> = [
+  ["publication en série imprimée", true],
+  ["Publication en Série Imprimée", true],
+  ["périodique", true],
+  ["periodique", true],
+  ["presse", true],
+  ["journal", true],
+  ["série imprimée", true],
+  ["monographie imprimée", false],
+  ["texte", false],
+  ["carte", false],
+]
+
+test("PRESS_MARKER classifies the press-label fixture table the worker's PRESS_DC_TYPE also satisfies", () => {
+  for (const [label, isPress] of PRESS_LABEL_FIXTURES) {
+    assert.equal(PRESS_MARKER.test(label.toLowerCase()), isPress, label)
+  }
 })

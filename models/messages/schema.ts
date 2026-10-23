@@ -27,3 +27,16 @@ export const TOOL_CALL_STATUS = {
 export type ToolCallStatus = (typeof TOOL_CALL_STATUS)[keyof typeof TOOL_CALL_STATUS]
 
 export type { Message, ToolCall }
+
+/** One project's token totals: all-time and inside the trailing window. */
+export type ProjectUsageTotals = {
+  projectId: string
+  projectName: string
+  ownerId: string
+  ownerEmail: string
+  tokensIn: number
+  tokensOut: number
+  messageCount: number
+  windowTokensIn: number
+  windowTokensOut: number
+}

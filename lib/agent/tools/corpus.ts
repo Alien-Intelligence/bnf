@@ -65,6 +65,7 @@ const corpusListFieldEnum = z.enum([
   "year",
   "dateLabel",
   "docType",
+  "subtype",
   "lang",
   "source",
   "pages",

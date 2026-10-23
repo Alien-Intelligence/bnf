@@ -81,13 +81,22 @@ export interface MetadataOpts {
   concurrency?: number;
 }
 
-function toMeta(info: BnfDocInfo): DocMeta {
+/**
+ * The metadata carried to the index. `subtype` and `docType` come from the
+ * app's ingest contract (the DocRef) — the app derives them from the OAI
+ * typedoc, so the index agrees with the corpus. They are applied here, per
+ * request, and never written to the global keys.metadata(ark) blob. Without
+ * them (seed-CLI docs) the resolved `info` stands: the manifest publishes no
+ * subtype, so it is null unless the OAI fallback path supplied one. Lane
+ * routing (`classifyLane`) keeps reading the manifest-derived `info`.
+ */
+function toMeta(info: BnfDocInfo, doc: DocRef): DocMeta {
   return {
     title: info.title,
     creator: info.creator,
     date: info.date,
-    docType: info.docType,
-    subtype: info.subtype,
+    docType: doc.docType ?? info.docType,
+    subtype: doc.subtype ?? info.subtype,
     lang: info.lang,
     pageCount: info.pageCount,
     ocrAvailable: info.ocrAvailable,
@@ -167,7 +176,7 @@ export class MetadataStage extends PipelineStage<DocRef, never> {
       throw e;
     }
 
-    const meta = toMeta(info);
+    const meta = toMeta(info, doc);
     const decision = classifyLane(info, { mistralEnabled: this.mistralEnabled });
     if (decision.kind === "skip") {
       await this.docState.setStatus(doc.docJobId, "skipped", { skipReason: decision.reason });

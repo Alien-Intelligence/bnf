@@ -238,6 +238,53 @@ The general shape: when a role widens what someone can *reach*, check separately
 what it should widen about what they are *shown*. Those are different questions
 and the honest answer is usually different.
 
+## `BnfRecord` — shared public data, never project state
+
+A table that is global on purpose (the other is `DocumentOcr`, below).
+`BnfRecord` (`models/bnf-records/`) holds the public BnF record of an ARK, keyed
+by ARK alone, so a project adding an ARK another project already resolved reads
+the record instead of asking the BnF again. The metadata resolver, the buffer
+enricher and `scripts/fix-doc-types.ts` are the only readers: the resolver and
+the script read through `BnfRecordService.foundAmong`, the enricher through
+`BnfRecordQueries.foundAmong`. The writers are the resolver (the upserts ride
+`DocumentService`'s batch write, via `BnfRecordService.upsertStatements`), the
+script (`BnfRecordService.upsertMany`) and the enricher
+(`BnfRecordService.insertMissing`, insert-only: it never overwrites a record).
+
+- **Public BnF data only.** The payload is what the BnF published; nothing
+  about a project is ever written to it — no membership, `indexedAt`,
+  `indexError` or `canonicalStatus`. A project's `Document` row is written from
+  the record by the resolver and carries only that project's own state.
+- **Never joined to a project table.** No `BnfRecord` query takes a project id
+  or reads `Document`/`CorpusMembership`; the guarantee is per query. The one
+  place the two meet is the resolver's write `$transaction`, which stores the
+  `Document` updates and the `BnfRecord` upserts together and carries no
+  project id into `BnfRecord`. Readers cannot learn which project holds an ARK.
+- **`DocumentOcr` follows the opposite rule.** It is also keyed by ARK alone,
+  but every read of it takes the reader's corpus project, so it is never an
+  oracle for another project's corpus. `BnfRecord` has no such project filter
+  because it holds nothing project-specific.
+- **Accepted side channel: timing.** A resolve that hits the cache returns
+  faster than one that asks the BnF, so a patient observer could infer that
+  *someone* resolved an ARK before. The payload is public and the observer
+  learns neither who nor where; this is accepted, not mitigated.
+- **No TTL.** An entry changes only through an explicit refresh
+  (`scripts/fix-doc-types.ts --refresh`). See [mcp-client.md](mcp-client.md) for
+  the egress path the cache short-circuits.
+
+⛔ **Forbidden**: copying a project field into `BnfRecord`, and adding a
+`projectId` to it. Copying another project's `Document` row to resolve an ARK
+is forbidden for the same reason (it carries that project's state and needs a
+cross-project read). The only thing that may be copied out of a `Document` is
+its `raw_metadata`, and only as the one-time seed in migration
+`20261022110646_bnf_record_cache`. The seed is not a verbatim copy: it removes
+the OCR-verdict keys (`ocr_available`, `ocr_source`, `pages`, `pages_source`,
+`taux_ocr`), puts `ocr_available` back only when it was `true`, and carries the
+raw OAI view count (`pages`) as `oai_total_views`, so every seeded entry is a
+clean staged entry that the OCR and page rules re-apply to at commit time. It
+never copies project state: `indexedAt`, `indexError`, `canonicalStatus`, or
+which project holds the ARK.
+
 ## Deletion
 
 `Project.corpusSourceId` is `onDelete: Restrict`. A source cannot be deleted
@@ -303,6 +350,9 @@ mutate(p) { return canWriteProject(this.user, p) }
 - [ ] User-facing lists use `personalVisibilityScope` — a role widens what you
       may reach, not what belongs to you.
 - [ ] New reach over shared data tested from an account granted **nothing**.
+- [ ] Data shared across projects without a grant is public BnF data only:
+      `BnfRecord` (no project id, never joined to a project table) or
+      `DocumentOcr` (every read takes the reader's corpus project).
 
 
 ## Relation to other rules
@@ -323,3 +373,8 @@ mutate(p) { return canWriteProject(this.user, p) }
 - [corpus-versioning.md](corpus-versioning.md): concurrent writes from two
   `write`-shared members are already safe; `advanceVersion` takes a per-project
   advisory lock, so sharing needed no new machinery.
+- [mcp-client.md](mcp-client.md): the `BnfRecord` cache sits on the resolution
+  egress path and makes a re-add zero-call; this file owns what may be stored.
+- [models.md](models.md): `models/bnf-records/` follows the five-file
+  structure, with `policy.ts` an empty stub because only background drains
+  touch the cache.

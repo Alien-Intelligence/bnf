@@ -486,6 +486,27 @@
       "facetTypeTitle": "By document type",
       "facetLangTitle": "By language",
       "facetSourceTitle": "By source",
+      "subtypes": {
+        "atlas": "Atlases",
+        "carte": "Map",
+        "cartes": "Maps",
+        "coupe": "Section",
+        "dessins": "Drawings",
+        "diagramme": "Diagram",
+        "estampes": "Prints",
+        "fascicules": "Issues",
+        "globe": "Globe",
+        "maquette": "Model",
+        "objets": "Objects",
+        "photographies": "Photographs",
+        "plan": "Plan",
+        "teledetection": "Remote sensing",
+        "titres": "Press titles",
+        "vue": "View"
+      },
+      "facetSubtypeTitle": "By subtype",
+      "subtypeNote": "Subtypes are Gallica's finer categories. Monographs have none, so they never match a subtype filter.",
+      "changeRefused": "That filter change was not applied: the value is not recognised, or a filter holds at most {max} values.",
       "facetSessionTitle": "By session",
       "chrono": {
         "title": "Chronological distribution",
@@ -560,6 +581,7 @@
         "notOnGallica": "This document is not digitized on Gallica — catalogue notice only.",
         "fields": {
           "type": "Type",
+          "subtype": "Subtype",
           "date": "Date",
           "pages": "Pages",
           "lang": "Language",
@@ -568,6 +590,7 @@
           "ocr": "OCR",
           "ingestion": "Ingestion"
         },
+        "subtypeNone": "No subtype (monographs have none)",
         "values": {
           "digitized": "Digitized",
           "notDigitized": "Not digitized",
@@ -1030,12 +1053,12 @@
         "title": "Have documents without text read",
         "explain": "{count, plural, one {# text document in your selection has no readable text} other {# text documents in your selection have no readable text}}. A paid OCR service can make them consultable.",
         "docsLabel": "Documents concerned",
-        "costLabel": "Estimated cost",
-        "cost": "≈ ${cost}",
+        "costLabel": "Maximum cost",
+        "cost": "up to ${cost}",
         "enable": "Enable",
         "enabled": "OCR included ✓",
         "overBudget": "Cost exceeds the budget (${ceiling})",
-        "footnote": "Billed per page, outside your subscription. Off by default.",
+        "footnote": "Billed per page, outside your subscription. The amount is a maximum: a document whose page count is not known yet (such as a press issue) is counted at 300 folios, and the confirmed amount is what is charged. Off by default.",
         "budget": "Platform budget: ${spent} / ${ceiling} used"
       },
       "tech": {
@@ -1065,12 +1088,12 @@
     },
     "paidOcr": {
       "confirmTitle": "On-demand OCR",
-      "confirmBody": "{count, plural, one {# digitized document without an OCR layer will be transcribed} other {# digitized documents without an OCR layer will be transcribed}} via Mistral OCR. This has a cost for the platform (≈ ${cost}) — please use it sparingly. Start OCR?",
+      "confirmBody": "{count, plural, one {# digitized document without an OCR layer will be transcribed} other {# digitized documents without an OCR layer will be transcribed}} via Mistral OCR. This has a cost for the platform of up to ${cost} (a document with an unknown page count is counted at 300 folios, and the confirmed amount is what is charged) — please use it sparingly. Start OCR?",
       "confirm": "Confirm & start",
       "confirming": "Starting…",
       "dismiss": "Cancel",
       "budgetTitle": "OCR budget exceeded",
-      "budgetBody": "This transcription (~${cost}) would exceed the project's OCR budget (already spent ${spent} of a ${ceiling} cap).",
+      "budgetBody": "This transcription (up to ${cost}) would exceed the project's OCR budget (already spent ${spent} of a ${ceiling} cap).",
       "close": "Close"
     },
     "queue": {

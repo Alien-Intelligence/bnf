@@ -21,6 +21,11 @@
  * identical whether or not the broker is in the path. On 429 the broker BOTH
  * freezes the offending bucket (so it stops sending) AND returns the 429 to the
  * caller (which also backs off) — belt and suspenders.
+ *
+ * `Retry-After`: an upstream's header is forwarded verbatim (whatever the
+ * status), and a request the broker sheds itself carries the shedding bucket's
+ * refill time in whole seconds (>= 1), so callers back off by the real wait
+ * instead of guessing. No header otherwise.
  */
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 
@@ -39,10 +44,33 @@ const buckets = createBuckets(config.rates);
 const monotonicNow = (): number => performance.now();
 const calls = new CallLog(config.callsLogSize);
 
-function send(res: ServerResponse, status: number, contentType: string, body: Buffer | string): void {
+/**
+ * Write a response. `retryAfter` is the `Retry-After` header value to send, or
+ * null for none: the upstream's own value on a mirrored response, the bucket's
+ * refill time (`shedRetryAfterSeconds`) when the broker sheds the request.
+ */
+function send(
+  res: ServerResponse,
+  status: number,
+  contentType: string,
+  body: Buffer | string,
+  retryAfter: string | null = null,
+): void {
   const buf = typeof body === "string" ? Buffer.from(body) : body;
-  res.writeHead(status, { "content-type": contentType, "content-length": String(buf.length) });
+  const headers: Record<string, string> = { "content-type": contentType, "content-length": String(buf.length) };
+  if (retryAfter !== null) headers["retry-after"] = retryAfter;
+  res.writeHead(status, headers);
   res.end(buf);
+}
+
+/**
+ * `Retry-After` (delta-seconds) for a request the broker shed: the time until
+ * the shedding bucket can grant a token (`BucketShedError.neededMs` — the
+ * refill deficit, or the remaining 429 freeze), rounded UP to whole seconds
+ * and never below 1 so a caller never reads "retry now" off a shed.
+ */
+function shedRetryAfterSeconds(neededMs: number): string {
+  return String(Math.max(1, Math.ceil(neededMs / 1000)));
 }
 
 /** Request body exceeded `maxBodyBytes` → mapped to HTTP 413. */
@@ -152,7 +180,13 @@ async function handleFetch(req: IncomingMessage, res: ServerResponse): Promise<v
       // tokens the plan had already taken were refunded (acquireAll).
       const shedBy = BUCKET_NAMES.find((b) => b === e.shedBy) ?? null;
       log(429, "shed", Date.now() - tAcquireStart, 0, null, shedBy);
-      return send(res, 429, "text/plain", `broker rate budget exhausted (${e.shedBy}): ${e.message}`);
+      return send(
+        res,
+        429,
+        "text/plain",
+        `broker rate budget exhausted (${e.shedBy}): ${e.message}`,
+        shedRetryAfterSeconds(e.neededMs),
+      );
     }
     throw e;
   }
@@ -202,7 +236,7 @@ async function handleFetch(req: IncomingMessage, res: ServerResponse): Promise<v
   let note = reminted ? "remint" : "ok";
   if (upstream.status === 429) {
     // The most specific bucket only, never `global` (plan.ts planFor).
-    const until = retryAfterToEpochMs(retryAfter ?? undefined, 60_000);
+    const until = retryAfterToEpochMs(retryAfter ?? undefined, config.rateLimitFallbackMs);
     buckets[plan.penalize].penalizeUntil(until);
     console.warn(`[broker] 429 from ${target.host}${target.pathname} — bucket ${plan.penalize} frozen until ${new Date(until).toISOString()}`);
     note = "freeze";
@@ -237,7 +271,7 @@ async function handleFetch(req: IncomingMessage, res: ServerResponse): Promise<v
     return send(res, 502, "text/plain", truncated);
   }
   const ct = upstream.headers.get("content-type") ?? "application/octet-stream";
-  send(res, upstream.status, ct, bytes);
+  send(res, upstream.status, ct, bytes, retryAfter);
 }
 
 const server = createServer((req, res) => {
@@ -266,6 +300,8 @@ const server = createServer((req, res) => {
   }
   send(res, 404, "text/plain", "not found");
 });
+
+export { server };
 
 server.listen(config.port, () => {
   const caps = BUCKET_NAMES.map((b) => `${b}=${config.rates[b].rpm}/${config.rates[b].burst}`).join(" ");

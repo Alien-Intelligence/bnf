@@ -62,7 +62,9 @@ checked at startup): ALTO fetches take presentation ∧ bulk ∧ global, image
 fetches image ∧ bulk ∧ global, manifests the worker's manifest share ∧
 presentation ∧ global. Bulk is global minus the manifest, catalogue and graphe
 rpm, so a large ingest's fetches always leave global room for its own metadata
-lookups; the manifest share is 75 % of the bucket, the rest being the app's. ALTO and images run as two stages on two queues (`v2.fetch`,
+lookups; the manifest share is 75 % of the bucket, the rest being the app's,
+which fetches manifests only for text-like documents that OAI does not mark
+"mode texte". ALTO and images run as two stages on two queues (`v2.fetch`,
 `v2.fetch.image`) with their own concurrency, so images waiting on the scarce
 Image quota never hold ALTO's slots. Image sizes are chosen per canvas from the
 manifest's dims: Mistral `max` up to 4096 px on the long edge, else

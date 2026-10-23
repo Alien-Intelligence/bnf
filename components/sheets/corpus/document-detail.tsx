@@ -40,6 +40,7 @@ import {
   GALLICA_OAI_URL,
   IIIF_MANIFEST_URL,
   TYPE_DATASET_COLOR,
+  CORPUS_REMOVE_REASON_DETAIL_PANEL,
 } from "@/lib/constants"
 import { usePromoteNotice, useRemoveFromCorpus, useRetryResolve } from "@/hooks/api/corpus"
 import { useDocumentOcr } from "@/hooks/api/documents"
@@ -66,11 +67,24 @@ interface Props {
 }
 
 // One label/value pair in the metadata grid.
-function Field({ label, value }: { label: string; value: string }) {
+function Field({
+  label,
+  value,
+  hint,
+}: {
+  label: string
+  value: string
+  hint?: string
+}) {
   return (
     <div className="flex flex-col gap-1">
       <span className="mono-eyebrow">{label}</span>
       <span className="text-[12.5px] text-foreground">{value}</span>
+      {hint && (
+        <span className="text-[11px] leading-snug text-muted-foreground">
+          {hint}
+        </span>
+      )}
     </div>
   )
 }
@@ -177,7 +191,8 @@ function LinkCard({
 }
 
 export function SheetDocumentDetail({ doc, projectId, open, onOpenChange }: Props) {
-  const t = useTranslations("corpus.documents")
+  const t = useTranslations("corpus.documents.detail")
+  const tSubtype = useTranslations("corpus.filters.subtypes")
   const remove = useRemoveFromCorpus(projectId)
   const retry = useRetryResolve(projectId)
   const promote = usePromoteNotice(projectId)
@@ -207,10 +222,10 @@ export function SheetDocumentDetail({ doc, projectId, open, onOpenChange }: Prop
         <SheetContent side="right" className="w-full sm:max-w-md">
           <SheetHeader>
             <SheetTitle className="mono-eyebrow font-mono text-[10px]">
-              {t("detail.eyebrow")}
+              {t("eyebrow")}
             </SheetTitle>
             <SheetDescription className="sr-only">
-              {t("detail.eyebrow")}
+              {t("eyebrow")}
             </SheetDescription>
           </SheetHeader>
         </SheetContent>
@@ -225,26 +240,35 @@ export function SheetDocumentDetail({ doc, projectId, open, onOpenChange }: Prop
     digitized,
   })
 
+  // One empty-value text for every field the BnF record leaves blank.
+  const emptyValue = t("values.unknown")
   const typeLabel = doc.docType
     ? (DOC_TYPE[doc.docType]?.label ?? doc.docType)
-    : t("detail.values.unknown")
-  const langLabel = doc.lang ? (LANG[doc.lang]?.label ?? doc.lang) : "—"
+    : emptyValue
+  // Subtype is Gallica's vocabulary; a value added after our label set shipped
+  // renders as its raw code rather than a missing-message error.
+  const subtypeLabel = doc.subtype
+    ? tSubtype.has(doc.subtype)
+      ? tSubtype(doc.subtype)
+      : doc.subtype
+    : emptyValue
+  const langLabel = doc.lang ? (LANG[doc.lang]?.label ?? doc.lang) : emptyValue
   const sourceLabel = doc.source
     ? (SOURCE[doc.source]?.label ?? doc.source)
-    : "—"
-  const dateLabel = doc.dateLabel ?? (doc.year != null ? String(doc.year) : "—")
+    : emptyValue
+  const dateLabel = doc.dateLabel ?? (doc.year != null ? String(doc.year) : emptyValue)
 
   const ocrLabel = (() => {
-    if (doc.ocrAvailable === true) return t("detail.values.ocrAvailable")
-    if (cls === INGESTION_CLASS.VISION) return t("detail.values.noOcrImage")
-    return t("detail.values.noOcr")
+    if (doc.ocrAvailable === true) return t("values.ocrAvailable")
+    if (cls === INGESTION_CLASS.VISION) return t("values.noOcrImage")
+    return t("values.noOcr")
   })()
 
   const ingestionLabel = {
-    [INGESTION_CLASS.OCR]: t("detail.values.ingestOcr"),
-    [INGESTION_CLASS.VISION]: t("detail.values.ingestVision"),
-    [INGESTION_CLASS.SANS_TEXTE]: t("detail.values.ingestSansTexte"),
-    [INGESTION_CLASS.NON_NUMERISE]: t("detail.values.ingestNonNumerise"),
+    [INGESTION_CLASS.OCR]: t("values.ingestOcr"),
+    [INGESTION_CLASS.VISION]: t("values.ingestVision"),
+    [INGESTION_CLASS.SANS_TEXTE]: t("values.ingestSansTexte"),
+    [INGESTION_CLASS.NON_NUMERISE]: t("values.ingestNonNumerise"),
   }[cls]
 
   // Document-level external links. Gallica/IIIF/OAI links only resolve for a
@@ -271,7 +295,7 @@ export function SheetDocumentDetail({ doc, projectId, open, onOpenChange }: Prop
   function onRemove() {
     if (!doc) return
     remove.mutate(
-      { arks: [doc.ark], reason: "Retiré du corpus depuis le panneau de notice" },
+      { arks: [doc.ark], reason: CORPUS_REMOVE_REASON_DETAIL_PANEL },
       { onSuccess: () => onOpenChange(false) },
     )
   }
@@ -299,7 +323,7 @@ export function SheetDocumentDetail({ doc, projectId, open, onOpenChange }: Prop
         <SheetHeader className="border-b">
           <SheetTitle className="flex items-center gap-2 font-mono text-[10px] font-normal tracking-wider text-muted-foreground uppercase">
             <FileText className="size-3.5" />
-            {t("detail.eyebrow")}
+            {t("eyebrow")}
           </SheetTitle>
           <SheetDescription className="sr-only">{doc.title ?? doc.ark}</SheetDescription>
         </SheetHeader>
@@ -326,36 +350,41 @@ export function SheetDocumentDetail({ doc, projectId, open, onOpenChange }: Prop
           <DocumentMetadataRegion pending={isPending} failed={isFailed} onRetry={onRetry}>
               {/* Metadata grid */}
               <div className="mt-5 grid grid-cols-2 gap-x-3 gap-y-3.5">
-                <Field label={t("detail.fields.type")} value={typeLabel} />
-                <Field label={t("detail.fields.date")} value={dateLabel} />
+                <Field label={t("fields.type")} value={typeLabel} />
                 <Field
-                  label={t("detail.fields.pages")}
-                  value={doc.pages != null ? String(doc.pages) : "—"}
+                  label={t("fields.subtype")}
+                  value={subtypeLabel}
+                  hint={doc.subtype ? undefined : t("subtypeNone")}
                 />
-                <Field label={t("detail.fields.lang")} value={langLabel} />
-                <Field label={t("detail.fields.deposit")} value={sourceLabel} />
+                <Field label={t("fields.date")} value={dateLabel} />
                 <Field
-                  label={t("detail.fields.digitization")}
+                  label={t("fields.pages")}
+                  value={doc.pages != null ? String(doc.pages) : emptyValue}
+                />
+                <Field label={t("fields.lang")} value={langLabel} />
+                <Field label={t("fields.deposit")} value={sourceLabel} />
+                <Field
+                  label={t("fields.digitization")}
                   value={
                     digitized
-                      ? t("detail.values.digitized")
-                      : t("detail.values.notDigitized")
+                      ? t("values.digitized")
+                      : t("values.notDigitized")
                   }
                 />
                 <FieldOcr
-                  label={t("detail.fields.ocr")}
+                  label={t("fields.ocr")}
                   value={ocrLabel}
                   ocr={ocrQuery.data}
                   isError={ocrQuery.isError}
                   onRetry={() => void ocrQuery.refetch()}
                 />
-                <Field label={t("detail.fields.ingestion")} value={ingestionLabel} />
+                <Field label={t("fields.ingestion")} value={ingestionLabel} />
               </div>
 
               {/* OCR excerpt */}
               {doc.excerpt && (
                 <div className="mt-5">
-                  <span className="mono-eyebrow">{t("detail.excerptOcr")}</span>
+                  <span className="mono-eyebrow">{t("excerptOcr")}</span>
                   <p className="mt-2 border-l-2 pl-3.5 text-[13px] leading-relaxed whitespace-pre-line text-muted-foreground">
                     {doc.excerpt}
                   </p>
@@ -365,7 +394,7 @@ export function SheetDocumentDetail({ doc, projectId, open, onOpenChange }: Prop
 
           {/* ARK box */}
           <div className="mt-5 rounded-md border bg-input/20 px-3 py-2.5">
-            <span className="mono-eyebrow">{t("detail.arkIdentifier")}</span>
+            <span className="mono-eyebrow">{t("arkIdentifier")}</span>
             <p className="mt-1 font-mono text-[11.5px] break-all text-brand-teal select-all">
               {doc.ark}
             </p>
@@ -373,7 +402,7 @@ export function SheetDocumentDetail({ doc, projectId, open, onOpenChange }: Prop
 
           {/* External links */}
           <div className="mt-5">
-            <span className="mono-eyebrow">{t("detail.consultBnf")}</span>
+            <span className="mono-eyebrow">{t("consultBnf")}</span>
             <div className="mt-2.5 flex flex-col gap-2">
               {digitized ? (
                 <>
@@ -381,28 +410,28 @@ export function SheetDocumentDetail({ doc, projectId, open, onOpenChange }: Prop
                     href={GALLICA_IIIF_VIEWER_URL(doc.ark)}
                     accent
                     icon={<Eye className="size-4" />}
-                    title={t("detail.iiifViewer")}
-                    subtitle={t("detail.iiifViewerSub")}
+                    title={t("iiifViewer")}
+                    subtitle={t("iiifViewerSub")}
                   />
                   <LinkCard
                     href={manifestUrl}
                     icon={<Braces className="size-4" />}
-                    title={t("detail.iiifManifest")}
-                    subtitle={t("detail.iiifManifestSub")}
+                    title={t("iiifManifest")}
+                    subtitle={t("iiifManifestSub")}
                   />
                   <LinkCard
                     href={GALLICA_OAI_URL(doc.ark)}
                     icon={<Code2 className="size-4" />}
-                    title={t("detail.oai")}
-                    subtitle={t("detail.oaiSub")}
+                    title={t("oai")}
+                    subtitle={t("oaiSub")}
                   />
                 </>
               ) : (
                 <LinkCard
                   href={CATALOGUE_RECORD_URL(doc.ark)}
                   icon={<FileText className="size-4" />}
-                  title={t("detail.catalogueRecord")}
-                  subtitle={t("detail.catalogueRecordSub")}
+                  title={t("catalogueRecord")}
+                  subtitle={t("catalogueRecordSub")}
                 />
               )}
             </div>
@@ -414,7 +443,7 @@ export function SheetDocumentDetail({ doc, projectId, open, onOpenChange }: Prop
           {canPromote && (
             <div className="mt-5 rounded-md border border-brand-teal/30 bg-brand-teal/5 px-3 py-3">
               <p className="text-[12px] leading-relaxed text-muted-foreground">
-                {t("detail.promoteHint")}
+                {t("promoteHint")}
               </p>
               <Button
                 variant="outline"
@@ -428,14 +457,14 @@ export function SheetDocumentDetail({ doc, projectId, open, onOpenChange }: Prop
                 ) : (
                   <Sparkles className="size-3.5" />
                 )}
-                {t("detail.promote")}
+                {t("promote")}
               </Button>
             </div>
           )}
           {notOnGallica && (
             <p className="mt-5 flex items-start gap-2 text-[12px] leading-relaxed text-muted-foreground">
               <TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-muted-foreground/70" />
-              {t("detail.notOnGallica")}
+              {t("notOnGallica")}
             </p>
           )}
 
@@ -447,7 +476,7 @@ export function SheetDocumentDetail({ doc, projectId, open, onOpenChange }: Prop
             disabled={remove.isPending}
           >
             <Trash2 className="size-3.5" />
-            {remove.isPending ? t("detail.removing") : t("detail.remove")}
+            {remove.isPending ? t("removing") : t("remove")}
           </Button>
         </div>
       </SheetContent>
@@ -471,19 +500,19 @@ function DocumentMetadataRegion({
   onRetry: () => void
   children: ReactNode
 }) {
-  const t = useTranslations("corpus.documents")
+  const t = useTranslations("corpus.documents.detail")
   if (pending) {
     return (
       <div className="mt-5 flex flex-col items-center gap-2.5 rounded-md border border-dashed bg-input/10 px-4 py-8 text-center">
         <Loader2 className="size-5 animate-spin text-muted-foreground" />
-        <p className="text-[12.5px] text-muted-foreground">{t("detail.resolvingMeta")}</p>
+        <p className="text-[12.5px] text-muted-foreground">{t("resolvingMeta")}</p>
       </div>
     )
   }
   if (failed) {
     return (
       <div className="mt-5">
-        <CardSharedLoadError layout="block" message={t("detail.metaFailed")} onRetry={onRetry} />
+        <CardSharedLoadError layout="block" message={t("metaFailed")} onRetry={onRetry} />
       </div>
     )
   }

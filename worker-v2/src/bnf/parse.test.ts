@@ -9,6 +9,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import { PermanentBnfError, TransientBnfError } from "./errors.js";
 import {
@@ -16,6 +17,7 @@ import {
   descriptionsHaveModeTexte,
   ensureCanonicalArk,
   extractPageCountFromFormat,
+  gallicaPageCount,
   iiifV3Label,
   isCatalogueNotice,
   oaiParser,
@@ -25,6 +27,8 @@ import {
   parseOcrRate,
   parseV3Manifest,
   pickDcType,
+  pickTypedocFromHeader,
+  PRESS_DC_TYPE,
 } from "./parse.js";
 
 // ---------------------------------------------------------------------------
@@ -468,5 +472,82 @@ test("parseAlto: <String> text content, mixed content and a missing <Layout> are
       (e: unknown) => e instanceof TransientBnfError && e.cause === "alto_parse_failed",
       xml,
     );
+  }
+});
+
+// ---------------------------------------------------------------------------
+// gallicaPageCount — OAI's view count is dropped for press issues
+// ---------------------------------------------------------------------------
+
+/** Parse a captured OAI record and return what getDocumentInfoViaOai feeds the rule. */
+function pageRuleInputs(fixture: string) {
+  const xml = readFileSync(new URL(`./fixtures/${fixture}`, import.meta.url), "utf8");
+  const pmh = oaiParser.parse(xml)["OAI-PMH"];
+  const record = pmh.GetRecord.record;
+  const dc = record.metadata["oai_dc:dc"];
+  return {
+    typedoc: pickTypedocFromHeader(record.header),
+    totalViews: extractPageCountFromFormat(dc["dc:format"]),
+    dcTypes: dc["dc:type"],
+  };
+}
+
+test("gallicaPageCount: the 4-folio fascicule bpt6k268418n (OAI says 3197) has no trusted count", () => {
+  const { typedoc, totalViews, dcTypes } = pageRuleInputs("oai-bpt6k268418n.xml");
+  assert.equal(typedoc, "periodiques:fascicules");
+  assert.equal(totalViews, 3197);
+  assert.equal(gallicaPageCount(typedoc, totalViews, dcTypes), null);
+});
+
+test("gallicaPageCount: a monograph keeps its view count", () => {
+  const { typedoc, totalViews, dcTypes } = pageRuleInputs("oai-monographie-bpt6k9618082w.xml");
+  assert.equal(typedoc, "monographies");
+  assert.equal(gallicaPageCount(typedoc, totalViews, dcTypes), 406);
+});
+
+test("gallicaPageCount: an image record keeps its view count", () => {
+  const { typedoc, totalViews, dcTypes } = pageRuleInputs("oai-estampe-btv1b69497161.xml");
+  assert.equal(typedoc, "images:estampes");
+  assert.equal(gallicaPageCount(typedoc, totalViews, dcTypes), 1);
+});
+
+test("gallicaPageCount: no typedoc + a press dc:type label → null, even though pickDcType prefers 'texte'", () => {
+  const dcTypes = [
+    { "#text": "texte", "@_xml:lang": "fre" },
+    { "#text": "publication en série imprimée", "@_xml:lang": "fre" },
+  ];
+  assert.equal(pickDcType(dcTypes), "texte");
+  assert.equal(gallicaPageCount(null, 3197, dcTypes), null);
+});
+
+test("gallicaPageCount: no typedoc + a non-press dc:type keeps the count", () => {
+  assert.equal(gallicaPageCount(null, 120, [{ "#text": "monographie imprimée", "@_xml:lang": "fre" }]), 120);
+  assert.equal(gallicaPageCount(null, 120, undefined), 120);
+});
+
+test("gallicaPageCount: an absent or non-positive count is null, never 0", () => {
+  assert.equal(gallicaPageCount("monographies", null, "texte"), null);
+  assert.equal(gallicaPageCount("monographies", 0, "texte"), null);
+});
+
+// The app's PRESS_MARKER (lib/mcp/vocab.ts) is the same pattern, and the worker
+// cannot import app code; this table is what both copies must satisfy. It is
+// repeated verbatim in lib/mcp/vocab.test.ts, which runs it through PRESS_MARKER.
+const PRESS_LABEL_FIXTURES: ReadonlyArray<readonly [label: string, isPress: boolean]> = [
+  ["publication en série imprimée", true],
+  ["Publication en Série Imprimée", true],
+  ["périodique", true],
+  ["periodique", true],
+  ["presse", true],
+  ["journal", true],
+  ["série imprimée", true],
+  ["monographie imprimée", false],
+  ["texte", false],
+  ["carte", false],
+];
+
+test("PRESS_DC_TYPE classifies the press-label fixture table", () => {
+  for (const [label, isPress] of PRESS_LABEL_FIXTURES) {
+    assert.equal(PRESS_DC_TYPE.test(label), isPress, label);
   }
 });

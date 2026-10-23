@@ -9,6 +9,7 @@ import type { CorpusFilterFields } from "@/models/corpus/types"
 
 const CORPUS_FILTER_FIELDS = {
   type: "codes",
+  subtype: "codes",
   lang: "codes",
   source: "codes",
   session: "codes",
