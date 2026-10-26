@@ -39,6 +39,12 @@ export const LOGIN_METHOD = { EMAIL: "email", AUTHENTIK: "authentik" } as const
 export const SIGNED_OUT_NOTICE = { DONE: "done", SSO_UNAVAILABLE: "sso-unavailable" } as const
 
 /**
+ * What the sign-in page says after a failed Alien sign-in, from better-auth's
+ * `?error=` (lib/auth-redirect.ts ssoSignInError). Zod enum and type: ./types.ts.
+ */
+export const SSO_SIGN_IN_ERROR = { ACCOUNT_NOT_LINKED: "account-not-linked", FAILED: "failed" } as const
+
+/**
  * The one column sign-out needs from an OAuth account row: the id_token
  * better-auth stored at the last SSO sign-in, passed to Authentik as
  * `id_token_hint`. Query shape, so it lives here beside the others.

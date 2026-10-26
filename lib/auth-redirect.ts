@@ -7,16 +7,18 @@
 // query value, so `?next=https://evil.example` sent a freshly signed-in user
 // off-site (an open redirect).
 //
-// It also reads the `?signedOut=` notice and renders locale-prefixed paths for
-// code that cannot load next-intl's navigation (scripts, node tests).
+// It also reads the `?signedOut=` notice and the `?error=` of a failed Alien
+// sign-in, and renders locale-prefixed paths for code that cannot load
+// next-intl's navigation (scripts, node tests).
 //
 // No `server-only`: the sign-in page (server) and the sign-in client both use
 // it, and it is pure. It imports `@/i18n/routing` (the locale list), never
 // `@/i18n/navigation`, so it also runs under `node --test`.
 
 import { routing, type AppLocale } from "@/i18n/routing"
-import { ROUTES, SAFE_NEXT_MAX_LENGTH } from "@/lib/constants"
-import { signedOutNoticeSchema, type SignedOutNotice } from "@/models/users/types"
+import { BETTER_AUTH_OAUTH_ERROR, ROUTES, SAFE_NEXT_MAX_LENGTH } from "@/lib/constants"
+import { SSO_SIGN_IN_ERROR } from "@/models/users/schema"
+import { signedOutNoticeSchema, type SignedOutNotice, type SsoSignInError } from "@/models/users/types"
 
 // A base that can never match a real origin, so "did parsing keep us on it?"
 // is the same-origin test.
@@ -85,6 +87,17 @@ export function singleSearchParam(
 export function signedOutNotice(raw: string | null): SignedOutNotice | null {
   const parsed = signedOutNoticeSchema.safeParse(raw)
   return parsed.success ? parsed.data : null
+}
+
+/**
+ * The notice the sign-in page shows for better-auth's `?error=` after a failed
+ * Alien sign-in, or null when there is none. Only matched, never rendered.
+ */
+export function ssoSignInError(raw: string | null): SsoSignInError | null {
+  if (raw === null || raw.length === 0) return null
+  return raw === BETTER_AUTH_OAUTH_ERROR.ACCOUNT_NOT_LINKED
+    ? SSO_SIGN_IN_ERROR.ACCOUNT_NOT_LINKED
+    : SSO_SIGN_IN_ERROR.FAILED
 }
 
 /**

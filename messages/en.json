@@ -251,7 +251,9 @@
       "ssoButton": "Sign in with Alien",
       "or": "or",
       "signedOut": "You are signed out.",
-      "signedOutSsoUnavailable": "You are signed out of the app, but your Alien session could not be closed. On a shared computer, also sign out of your Alien account."
+      "signedOutSsoUnavailable": "You are signed out of the app, but your Alien session could not be closed. On a shared computer, also sign out of your Alien account.",
+      "ssoErrorAccountNotLinked": "An account already uses this email address. Sign in below with your email and password.",
+      "ssoErrorFailed": "Sign-in with Alien failed. Please try again, or sign in with your email and password."
     },
     "signOut": {
       "action": "Sign out",

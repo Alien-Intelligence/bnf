@@ -3,6 +3,7 @@ import { APP_LOCALES } from "@/lib/constants"
 import {
   LOGIN_METHOD,
   SIGNED_OUT_NOTICE,
+  SSO_SIGN_IN_ERROR,
   USER_ROLE,
   type SsoLogout,
 } from "./schema"
@@ -40,6 +41,9 @@ export type LoginMethod = z.infer<typeof loginMethodSchema>
 /** `?signedOut=` on the sign-in page. */
 export const signedOutNoticeSchema = z.enum(SIGNED_OUT_NOTICE)
 export type SignedOutNotice = z.infer<typeof signedOutNoticeSchema>
+
+export const ssoSignInErrorSchema = z.enum(SSO_SIGN_IN_ERROR)
+export type SsoSignInError = z.infer<typeof ssoSignInErrorSchema>
 
 /** POST /api/sign-out body: the UI locale the sign-in URLs are built in (a
  *  route handler has no request locale of its own). */
