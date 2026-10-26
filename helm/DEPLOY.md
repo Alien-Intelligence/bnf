@@ -58,8 +58,8 @@ it doesn't crash-loop on boot (the worker connects to pg-boss immediately and
 has no in-process retry/wait of its own).
 
 **Auth**: better-auth, email/password plus Alien Auth (Authentik) SSO through
-the genericOAuth plugin when `config.authentikBaseUrl` and the shared
-`authentik-prod` credentials are present (see `values.yaml`). The better-auth
+the genericOAuth plugin when `config.authentikBaseUrl` is set and the `demo-bnf`
+application's credentials are in `bnf-demo-prod` (see `values.yaml`). The better-auth
 tables live in the same Prisma schema as the domain tables, so the entrypoint's
 single `prisma migrate deploy` covers the whole schema (no separate migrate-auth
 step). Each `session` row records how it was opened (`login_method`), which
@@ -144,6 +144,7 @@ ExternalSecrets project the subsets each workload needs.
 | `SCW_API_KEY` | worker | Scaleway GenAI (Holo2 vision) |
 | `GOOGLE_AI_API_KEY` | worker | Gemini vision |
 | `RUNPOD_API_KEY` | worker | bge-m3 embeddings |
+| `AUTHENTIK_CLIENT_ID` / `AUTHENTIK_CLIENT_SECRET` | app | Alien Auth SSO, the `demo-bnf` Authentik application (copy them from its provider) |
 
 Property names are configurable in `values.yaml` under `secrets.*Property`.
 
@@ -302,26 +303,23 @@ through Authentik it also sends the browser to the application's OIDC
 never guessed), with `id_token_hint`, `client_id` and
 `post_logout_redirect_uri = <publicUrl>/sign-in?signedOut=done` (or
 `/en/sign-in?signedOut=done`). No new value or secret: it reuses
-`config.authentikBaseUrl`, `config.authentikAppSlug`, the shared client id and
+`config.authentikBaseUrl`, `config.authentikAppSlug`, the `demo-bnf` client id and
 `config.publicUrl`. If discovery is unreachable (5 s bound), the app session
 still ends and the sign-in page says the Alien session could not be closed.
 
 Two Authentik-side changes are needed for the SSO half to do what users expect.
 They are **not** made from this repo:
 
-1. **Required — a User Logout stage.** Authentik's
+1. **Required — a User Logout stage. Done.** Authentik's
    `default-provider-invalidation-flow` has no User Logout stage, so
-   end-session closes the provider session only and the Authentik session
-   survives: « Se connecter avec Alien » signs the user straight back in.
-   Create a dedicated invalidation flow containing a User Logout stage and bind
-   it to the `datastreaming` provider. Do not edit the default flow, which every
-   provider shares. The `datastreaming` application is shared with the
-   alien-agents demo, so its logout changes the same way.
+   end-session would close the provider session only and « Se connecter avec
+   Alien » would sign the user straight back in. The `demo-bnf` provider uses
+   the `logout` invalidation flow, which has one (checked 2026-10-23).
 2. **For the redirect back to BnF — Authentik ≥ 2026.5.3.** Prod pins chart
    `2026.2.2` (`k8s-charts/helm/cluster-infrastructure/templates/authentik.yaml`).
    `post_logout_redirect_uri` is honoured from 2026.5 (2026.5.3 fixes a matching
-   regression), and must be registered on the provider as a **Logout**-type
-   redirect URI, e.g. the regex
+   regression), and must be registered on the `demo-bnf` provider as a
+   **Logout**-type redirect URI, e.g. the regex
    `^https://bnf\.demo\.alien\.club/(en/)?sign-in\?signedOut=done$`.
    Avoid 2026.8.0+ until goauthentik/authentik#26561 (blank 200 at
    end-session) is fixed. Until the upgrade, the browser stops on Authentik's
@@ -332,13 +330,13 @@ These facts come from Authentik's docs and issue tracker, not from a probe of
 
 ```bash
 # The discovery document must carry end_session_endpoint:
-curl -sS https://auth.alien.club/application/o/datastreaming/.well-known/openid-configuration \
+curl -sS https://auth.alien.club/application/o/demo-bnf/.well-known/openid-configuration \
   | jq -r .end_session_endpoint
 ```
 
 Then, in a browser: sign in with « Se connecter avec Alien », sign out, and
 check that the address bar passes through `…/end-session/?id_token_hint=…`,
-and that signing in again asks for credentials (it will not until step 1).
+and that signing in again asks for credentials.
 
 ### Adopting into ArgoCD later
 

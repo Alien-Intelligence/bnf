@@ -1,6 +1,6 @@
 apiVersion: v2
 name: bnf-demo
-version: 0.20.0
+version: 0.20.1
 description: BnF Corpus Research — Alien Intelligence × BnF demo (Next.js app + ingest worker + BnF broker + Postgres)
 type: application
 # 0.9.0 — worker+broker hardening pass 2: pg-boss sliding-window fetch (the ~600/min
@@ -96,4 +96,7 @@ type: application
 # forwarded by the broker and honoured by the app. Worker manifest share stays
 # 75 %; BNF_IIIF_PRESENTATION_BASE_URL stays on the app. No new config. The
 # legacy-row backfill (scripts/fix-doc-types.ts) is not run by the deploy.
+# 0.20.1 — chart-only: Alien Auth SSO uses the demo's own Authentik application,
+# `demo-bnf`, instead of the shared `datastreaming` one; its client id/secret are two
+# new properties of `bnf-demo-prod`. No image change, but all three pods roll.
 appVersion: "0.20.0"

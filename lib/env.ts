@@ -38,8 +38,7 @@ export const bootEnvSchema = z.object({
   // sign-in page and sign-out ends the Authentik session too. With none set
   // the app boots in email/password-only mode. Any other combination refuses
   // to boot (superRefine below): a half-configured SSO used to read as "off"
-  // and hide the typo. The Authentik application (`datastreaming`) is shared
-  // with the alien-agents demo; the client id/secret are the same credentials.
+  // and hide the typo. Prod uses its own Authentik application, `demo-bnf`.
   AUTHENTIK_BASE_URL: z.string().url().optional(),
   AUTHENTIK_APP_SLUG: z.string().min(1).optional(),
   AUTHENTIK_CLIENT_ID: z.string().min(1).optional(),
