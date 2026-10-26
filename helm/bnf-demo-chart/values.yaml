@@ -108,13 +108,11 @@ config:
   # deep-links (admin feedback tab). 1:1 with the public key above.
   langfuseProjectId: "cmqoadeo80003vf07cwn7dfpr"
 
-  # Alien Auth (Authentik) SSO. Base URL + app slug are non-secret (here); the
-  # client id/secret are pulled from Scaleway via the ExternalSecret below.
-  # Shared with the alien-agents demo (same Authentik application). The OAuth
-  # callback `https://bnf.demo.alien.club/api/auth/oauth2/callback/authentik`
-  # must be registered on that application or Authentik rejects the flow.
+  # Alien Auth (Authentik) SSO, the demo's own `demo-bnf` application, whose only
+  # redirect URI is `https://bnf.demo.alien.club/api/auth/oauth2/callback/authentik`.
+  # The client id/secret come from Scaleway (secrets.authentikScalewaySecretName).
   authentikBaseUrl: https://auth.alien.club
-  authentikAppSlug: datastreaming
+  authentikAppSlug: demo-bnf
 
   # Service name reported to SigNoz. Keep stable across deploys.
   otelServiceName: "bnf-demo-prod"
@@ -511,12 +509,10 @@ secrets:
   openrouterApiKeyProperty: OPENROUTER_API_KEY
 
   # --- Alien Auth (Authentik) SSO credentials ---
-  # AUTHENTIK_CLIENT_ID / AUTHENTIK_CLIENT_SECRET live in a SHARED Scaleway
-  # secret (`authentik-prod`), NOT the per-demo `bnf-demo-prod` secret — the
-  # same OAuth application is reused across all demos (openaire, agents, bnf).
-  # Pulled into a dedicated ExternalSecret and projected via envFrom only when
-  # config.authentikBaseUrl is set. Mirrors the openaire-chart pattern.
-  authentikScalewaySecretName: authentik-prod
+  # The `demo-bnf` application's AUTHENTIK_CLIENT_ID / AUTHENTIK_CLIENT_SECRET,
+  # kept with the other credentials in `bnf-demo-prod`. Projected through their
+  # own ExternalSecret, only when config.authentikBaseUrl is set.
+  authentikScalewaySecretName: bnf-demo-prod
 
   # --- Worker credentials ---
   scwS3AccessKeyProperty: SCW_S3_ACCESS_KEY
