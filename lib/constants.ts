@@ -148,7 +148,7 @@ export const AUTHENTIK_OAUTH = {
  * UserService.signOut, read by the sign-in page. The auth e2e script asserts
  * on both.
  */
-export const AUTH_QUERY = { NEXT: "next", SIGNED_OUT: "signedOut" } as const
+export const AUTH_QUERY = { NEXT: "next", SIGNED_OUT: "signedOut", ERROR: "error" } as const
 
 /**
  * better-auth's catch-all mount and the email endpoints under it, as
@@ -185,6 +185,12 @@ export const BETTER_AUTH_ERROR = {
   USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL: "USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL",
   EMAIL_ALREADY_EXISTS: "EMAIL_ALREADY_EXISTS",
 } as const
+
+/**
+ * The `?error=` codes better-auth appends to the errorCallbackURL when an OAuth
+ * sign-in fails at the callback, the ones the sign-in page names on their own.
+ */
+export const BETTER_AUTH_OAUTH_ERROR = { ACCOUNT_NOT_LINKED: "account_not_linked" } as const
 
 /**
  * The UI locales, French first and default. i18n/routing.ts builds next-intl's

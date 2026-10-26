@@ -251,7 +251,9 @@
       "ssoButton": "Se connecter avec Alien",
       "or": "ou",
       "signedOut": "Vous êtes déconnecté.",
-      "signedOutSsoUnavailable": "Vous êtes déconnecté de l'application, mais votre session Alien n'a pas pu être fermée. Sur un poste partagé, déconnectez-vous aussi de votre compte Alien."
+      "signedOutSsoUnavailable": "Vous êtes déconnecté de l'application, mais votre session Alien n'a pas pu être fermée. Sur un poste partagé, déconnectez-vous aussi de votre compte Alien.",
+      "ssoErrorAccountNotLinked": "Un compte utilise déjà cette adresse e-mail. Connectez-vous ci-dessous avec votre e-mail et votre mot de passe.",
+      "ssoErrorFailed": "La connexion avec Alien a échoué. Réessayez, ou connectez-vous avec votre e-mail et votre mot de passe."
     },
     "signOut": {
       "action": "Se déconnecter",

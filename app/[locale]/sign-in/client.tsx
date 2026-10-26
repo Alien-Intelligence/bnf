@@ -7,10 +7,10 @@ import { useLocale, useTranslations } from "next-intl"
 import { Link, getPathname, useRouter } from "@/i18n/navigation"
 import { apiFetch } from "@/lib/api-fetch"
 import { authClient } from "@/lib/auth-client"
-import { AUTH_ENDPOINT, OAUTH_PROVIDER_ID, ROUTES } from "@/lib/constants"
+import { AUTH_ENDPOINT, AUTH_QUERY, OAUTH_PROVIDER_ID, ROUTES } from "@/lib/constants"
 import { INVALID_CREDENTIAL_CODES, betterAuthErrorCode } from "@/lib/auth-error"
-import { SIGNED_OUT_NOTICE } from "@/models/users/schema"
-import type { SignedOutNotice } from "@/models/users/types"
+import { SIGNED_OUT_NOTICE, SSO_SIGN_IN_ERROR } from "@/models/users/schema"
+import type { SignedOutNotice, SsoSignInError } from "@/models/users/types"
 import { signInSchema, type SignInInput } from "@/models/users/types"
 import {
   Form,
@@ -42,12 +42,15 @@ interface SignInClientProps {
   nextPath: string
   /** How the previous session ended, from `?signedOut=` (validated by the page). */
   signedOutNotice: SignedOutNotice | null
+  /** Why the last Alien sign-in failed, from better-auth's `?error=` (validated by the page). */
+  ssoError: SsoSignInError | null
 }
 
 export function SignInClient({
   ssoEnabled,
   nextPath,
   signedOutNotice,
+  ssoError,
 }: SignInClientProps) {
   const t = useTranslations("auth.signIn")
   const tSignUp = useTranslations("auth.signUp")
@@ -68,11 +71,14 @@ export function SignInClient({
     // lands after the round-trip. Same safe `next` as the email flow, with the
     // locale prefix applied here because this is a full-page hop, not an i18n
     // router navigation. On success the page unloads, so the button stays busy;
-    // on a refusal or a throw it is released and the failure is shown.
+    // on a refusal or a throw it is released and the failure is shown. A failure
+    // at the callback comes back here with `?error=`, keeping the same `next`.
+    const errorQuery = new URLSearchParams({ [AUTH_QUERY.NEXT]: nextPath })
     try {
       const { error } = await authClient.signIn.oauth2({
         providerId: OAUTH_PROVIDER_ID,
         callbackURL: getPathname({ href: nextPath, locale }),
+        errorCallbackURL: `${getPathname({ href: ROUTES.signIn, locale })}?${errorQuery}`,
       })
       if (error) {
         console.error("[sign-in] SSO refused", error)
@@ -129,6 +135,16 @@ export function SignInClient({
             <AlertAuthMessage
               tone={AUTH_MESSAGE_TONE.ERROR}
               message={t("signedOutSsoUnavailable")}
+            />
+          )}
+          {ssoError !== null && (
+            <AlertAuthMessage
+              tone={AUTH_MESSAGE_TONE.ERROR}
+              message={
+                ssoError === SSO_SIGN_IN_ERROR.ACCOUNT_NOT_LINKED
+                  ? t("ssoErrorAccountNotLinked")
+                  : t("ssoErrorFailed")
+              }
             />
           )}
           {serverError !== null && (

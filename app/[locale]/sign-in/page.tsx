@@ -9,7 +9,7 @@ import { getTranslations } from "next-intl/server"
 import type { Metadata } from "next"
 import { redirect } from "@/i18n/navigation"
 import { findSessionUser } from "@/lib/auth-helpers"
-import { safeNextPath, signedOutNotice, singleSearchParam } from "@/lib/auth-redirect"
+import { safeNextPath, signedOutNotice, singleSearchParam, ssoSignInError } from "@/lib/auth-redirect"
 import { AUTH_QUERY } from "@/lib/constants"
 import { ssoEnabled } from "@/lib/env"
 import { SignInClient } from "./client"
@@ -30,6 +30,8 @@ export default async function SignInPage({
   const nextPath = safeNextPath(singleSearchParam(query[AUTH_QUERY.NEXT]))
   // Set by POST /api/sign-out.
   const notice = signedOutNotice(singleSearchParam(query[AUTH_QUERY.SIGNED_OUT]))
+  // Set by better-auth when an Alien sign-in fails at the callback (errorCallbackURL).
+  const ssoError = ssoSignInError(singleSearchParam(query[AUTH_QUERY.ERROR]))
 
   const user = await findSessionUser()
   if (user) redirect({ href: nextPath, locale })
@@ -42,6 +44,7 @@ export default async function SignInPage({
       ssoEnabled={ssoEnabled}
       nextPath={nextPath}
       signedOutNotice={notice}
+      ssoError={ssoError}
     />
   )
 }

@@ -6,10 +6,10 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 
-import { localePrefixedPath, safeNextPath, signedOutNotice, singleSearchParam } from "./auth-redirect"
-import { ROUTES, SAFE_NEXT_MAX_LENGTH } from "./constants"
+import { localePrefixedPath, safeNextPath, signedOutNotice, singleSearchParam, ssoSignInError } from "./auth-redirect"
+import { BETTER_AUTH_OAUTH_ERROR, ROUTES, SAFE_NEXT_MAX_LENGTH } from "./constants"
 import { routing } from "@/i18n/routing"
-import { SIGNED_OUT_NOTICE } from "@/models/users/schema"
+import { SIGNED_OUT_NOTICE, SSO_SIGN_IN_ERROR } from "@/models/users/schema"
 
 test("absent or empty → the projects list", () => {
   assert.equal(safeNextPath(null), ROUTES.projects)
@@ -63,6 +63,14 @@ test("signedOutNotice: a known value is the notice, anything else is none", () =
   assert.equal(signedOutNotice(SIGNED_OUT_NOTICE.SSO_UNAVAILABLE), SIGNED_OUT_NOTICE.SSO_UNAVAILABLE)
   assert.equal(signedOutNotice("pwned"), null)
   assert.equal(signedOutNotice(null), null)
+})
+
+test("ssoSignInError: an unlinked account has its own notice, any other callback error the generic one", () => {
+  assert.equal(ssoSignInError(BETTER_AUTH_OAUTH_ERROR.ACCOUNT_NOT_LINKED), SSO_SIGN_IN_ERROR.ACCOUNT_NOT_LINKED)
+  assert.equal(ssoSignInError("issuer_mismatch"), SSO_SIGN_IN_ERROR.FAILED)
+  assert.equal(ssoSignInError("<script>"), SSO_SIGN_IN_ERROR.FAILED)
+  assert.equal(ssoSignInError(""), null)
+  assert.equal(ssoSignInError(null), null)
 })
 
 test("localePrefixedPath: no prefix for the default locale, a prefix otherwise", () => {
