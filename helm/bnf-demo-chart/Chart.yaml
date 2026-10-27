@@ -1,6 +1,6 @@
 apiVersion: v2
 name: bnf-demo
-version: 0.20.1
+version: 0.20.2
 description: BnF Corpus Research — Alien Intelligence × BnF demo (Next.js app + ingest worker + BnF broker + Postgres)
 type: application
 # 0.9.0 — worker+broker hardening pass 2: pg-boss sliding-window fetch (the ~600/min
@@ -99,4 +99,8 @@ type: application
 # 0.20.1 — chart-only: Alien Auth SSO uses the demo's own Authentik application,
 # `demo-bnf`, instead of the shared `datastreaming` one; its client id/secret are two
 # new properties of `bnf-demo-prod`. No image change, but all three pods roll.
-appVersion: "0.20.0"
+# 0.20.2 — app fix: a failed « Se connecter avec Alien » now says why on the sign-in
+# page (errorCallbackURL + `?error=`) instead of silently reloading it; an unlinked
+# password account gets its own message. Worker and broker sources are unchanged;
+# their images are rebuilt only to keep the tags in step.
+appVersion: "0.20.2"
