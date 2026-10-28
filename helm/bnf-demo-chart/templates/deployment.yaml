@@ -54,14 +54,29 @@ spec:
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "bnf-demo.fullname" . }}-postgres
+                  name: {{ include "bnf-demo.databaseSecretName" . }}
                   key: DATABASE_URL
+          {{- if eq (include "bnf-demo.postgresMode" .) "external" }}
+          volumeMounts:
+            - name: database-ca
+              mountPath: {{ include "bnf-demo.databaseCaDir" . }}
+              readOnly: true
+          {{- end }}
           livenessProbe:
             {{- toYaml .Values.livenessProbe | nindent 12 }}
           readinessProbe:
             {{- toYaml .Values.readinessProbe | nindent 12 }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+      {{- if eq (include "bnf-demo.postgresMode" .) "external" }}
+      volumes:
+        - name: database-ca
+          secret:
+            secretName: {{ include "bnf-demo.databaseSecretName" . }}
+            items:
+              - key: ca.pem
+                path: ca.pem
+      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

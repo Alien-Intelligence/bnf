@@ -420,12 +420,17 @@ broker:
       memory: 2Gi
 
 # ===========================================================================
-# Bundled Postgres — single replica, PVC-backed, no replication. Shared by the
-# app (domain tables + better-auth) and the worker (pg-boss queue, own schema).
-# Fine for a demo; not for real production data.
+# Postgres — shared by the app (domain tables + better-auth) and the worker
+# (pg-boss queue, own schema).
+#
+# mode (required):
+#   bundled  — the in-cluster StatefulSet below: single replica, PVC-backed,
+#              no backup. Fine for local or disposable installs.
+#   external — a managed instance (postgres.external). The StatefulSet and its
+#              Service are not rendered; its PVC and generated Secret are kept.
 # ===========================================================================
 postgres:
-  enabled: true
+  mode: bundled
   image:
     repository: postgres
     tag: "16-alpine"
@@ -453,6 +458,18 @@ postgres:
     limits:
       cpu: "2"
       memory: 2Gi
+
+  # External mode: the Scaleway managed instance bnf-prod-database, reached over
+  # the platform-prod Private Network. The password and CA live in the Scaleway
+  # secret below (not the app's bnf-demo-prod secret).
+  external:
+    host: 172.16.8.5
+    port: 5432
+    database: bnf_demo
+    username: bnf_demo
+    scalewaySecretName: bnf-demo-prod-database
+    passwordProperty: DATABASE_PASSWORD
+    caProperty: DATABASE_CA
 
 # ===========================================================================
 # Istio ingress. bnf.demo.alien.club is a dedicated subdomain served at root
