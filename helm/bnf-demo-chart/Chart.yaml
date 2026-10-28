@@ -1,6 +1,6 @@
 apiVersion: v2
 name: bnf-demo
-version: 0.20.3
+version: 0.20.4
 description: BnF Corpus Research — Alien Intelligence × BnF demo (Next.js app + ingest worker + BnF broker + Postgres)
 type: application
 # 0.9.0 — worker+broker hardening pass 2: pg-boss sliding-window fetch (the ~600/min
@@ -107,4 +107,8 @@ type: application
 # was grown in place on 2026-10-28). No image change. The volumeClaimTemplates edit
 # makes a plain upgrade fail; orphan the StatefulSet first (DEPLOY.md, "Growing the
 # Postgres volume").
+# 0.20.4 — worker-only: each pg-boss queue gets the index its fetch orders by
+# (priority DESC, created_on, id). pg-boss creates none, so under the 3.06M-page
+# L'Oréal ingest every fetch sorted the whole backlog (1.6 s, ~1 GB read) and starved
+# the ALTO pool; indexed, ALTO throughput rose 3.6x. App and broker stay 0.20.2.
 appVersion: "0.20.2"
