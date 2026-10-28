@@ -370,7 +370,7 @@ truth to avoid churn.)
 | `bnfIiif.presentationBaseUrl` / `bnfIiif.imageBaseUrl` | BnF Presentation API (manifests, ALTO; worker + app resolver) and Image API (images; worker) bases, version included (required) | `…/presentation/iiif/gallica/1.0.0` / `…/image/iiif/gallica/1.0.0` |
 | `broker.config.rates.<bucket>.{quota,rpm,burst}` | THE BnF rates: every bucket of the ingestion subscription (global, presentation, image, iiifLegacy, catalogue, gallicaSru, grapheData, datePeriodique, documentTdm, manifest, external). The broker renders all of them; the worker reads six and derives its gates below them (bulk ALTO + image = global − manifest − catalogue − graphe; 75 % of manifest). Required; the render fails unless `rpm + burst <= quota`. Raising a quota: `broker/README.md` | see values.yaml (global 1000/950/20) |
 | `istio.hosts[].gateway` | `own` (provision gateway+cert) or `shared` | `own` |
-| `postgres.persistence.size` | Postgres PVC size | `10Gi` |
+| `postgres.persistence.size` | Postgres PVC size (changing it needs the steps in "Growing the Postgres volume") | `20Gi` |
 
 **`config.clusterMode=fake`** disables the worker entirely (no worker Deployment,
 Service, ConfigMap, or ExternalSecret rendered) — handy for a UI-only deploy.
@@ -661,3 +661,28 @@ rewrite. The dedicated subdomain avoids all of that.
 - The StatefulSet PVC + generated Secrets are `helm.sh/resource-policy: keep` —
   uninstalling the chart leaves them in place. To fully wipe state, delete the
   PVC and Secrets manually after `helm uninstall`.
+
+### Growing the Postgres volume
+
+`postgres.persistence.size` is rendered into the StatefulSet's
+`volumeClaimTemplates`. Kubernetes forbids changing that field, so editing the
+value alone makes the next `helm upgrade` fail with `updates to statefulset spec
+for fields other than ... are forbidden`. It also never resizes the existing PVC.
+`sbs-default` allows online expansion, so the database stays up throughout:
+
+```bash
+# 1. Grow the live PVC. The Scaleway CSI resizes the disk and the filesystem
+#    with no pod restart. Sizes only go up: a PVC cannot shrink.
+kubectl --context platform-prod -n bnf patch pvc data-bnf-demo-prod-postgres-0 \
+  -p '{"spec":{"resources":{"requests":{"storage":"20Gi"}}}}'
+kubectl --context platform-prod -n bnf get pvc data-bnf-demo-prod-postgres-0   # CAPACITY = new size
+
+# 2. Set postgres.persistence.size to the same value and bump the chart version.
+
+# 3. Delete the StatefulSet object ONLY. --cascade=orphan leaves the pod and PVC
+#    running; the upgrade recreates the StatefulSet with the new template and
+#    adopts both. Never drop --cascade=orphan here: it would stop Postgres.
+kubectl --context platform-prod -n bnf delete statefulset bnf-demo-prod-postgres --cascade=orphan
+
+# 4. Upgrade as usual (see "Direct Helm Release").
+```
