@@ -37,7 +37,12 @@ interface QueuePolicy {
 const GRACEFUL_STOP_TIMEOUT_MS = 110_000;
 
 /** pg-boss's schema: its default, as PgBoss is constructed without `schema`. */
-const PGBOSS_SCHEMA = "pgboss";
+export const PGBOSS_SCHEMA = "pgboss";
+
+/** The fetch-order index of a pg-boss queue partition (see ensureFetchOrderIndex). */
+export function fetchOrderIndexName(partition: string): string {
+  return `${partition}_fetch`;
+}
 
 /** Postgres truncates longer identifiers silently; an index name must fit. */
 const MAX_IDENTIFIER_LENGTH = 63;
@@ -222,7 +227,7 @@ export class PgBossQueue implements QueueClient {
         throw new Error(`PgBossQueue: queue ${queue} has no pg-boss partition`);
       }
       const table = row.partition_name;
-      const index = `${table}_fetch`;
+      const index = fetchOrderIndexName(table);
       if (index.length > MAX_IDENTIFIER_LENGTH) {
         throw new Error(`PgBossQueue: index name ${index} is over ${MAX_IDENTIFIER_LENGTH} characters`);
       }

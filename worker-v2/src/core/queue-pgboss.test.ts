@@ -25,7 +25,7 @@ import { pgPoolConfig } from "../config.js";
 import { shutdownWorker } from "../shutdown.js";
 import { MemoryBlobStore } from "./blob.js";
 import { createMemoryLogger } from "./logger.js";
-import { PgBossQueue } from "./queue-pgboss.js";
+import { fetchOrderIndexName, PGBOSS_SCHEMA, PgBossQueue } from "./queue-pgboss.js";
 import { RateLimiter } from "./rate.js";
 import { PipelineStage, type StageDeps } from "./stage.js";
 import type { RateGate, StageContext, StageOutcome } from "./types.js";
@@ -67,16 +67,20 @@ async function fetchOrderIndex(
   db: Pool,
   queue: string,
 ): Promise<{ oid: number; qualified: string; valid: boolean; def: string } | undefined> {
+  const partition = await db.query<{ partition_name: string }>(
+    `SELECT partition_name FROM ${PGBOSS_SCHEMA}.queue WHERE name = $1`,
+    [queue],
+  );
+  const table = partition.rows[0]?.partition_name;
+  if (table === undefined) throw new Error(`queue ${queue} has no pg-boss partition`);
   const { rows } = await db.query<{ oid: number; qualified: string; valid: boolean; def: string }>(
     `SELECT i.indexrelid::int AS oid, i.indexrelid::regclass::text AS qualified, i.indisvalid AS valid,
             pg_get_indexdef(i.indexrelid) AS def
-     FROM pgboss.queue q
-     JOIN pg_class t ON t.relname = q.partition_name
-     JOIN pg_namespace n ON n.oid = t.relnamespace AND n.nspname = 'pgboss'
-     JOIN pg_index i ON i.indrelid = t.oid
+     FROM pg_index i
      JOIN pg_class c ON c.oid = i.indexrelid
-     WHERE q.name = $1 AND c.relname = q.partition_name || '_fetch'`,
-    [queue],
+     JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = $1 AND c.relname = $2`,
+    [PGBOSS_SCHEMA, fetchOrderIndexName(table)],
   );
   return rows[0];
 }
@@ -144,7 +148,12 @@ describe("PgBossQueue on a real pg-boss", { skip: pool ? undefined : "WORKER_TES
       await queue.send(name, { ark: "ark:/12148/f" });
       const index = await fetchOrderIndex(pool, name);
       assert.equal(index?.valid, true);
-      assert.match(index?.def ?? "", /\(name, priority DESC, created_on, id\) WHERE \(state < 'active'::pgboss\.job_state\)/);
+      assert.ok(
+        index?.def.includes(
+          `(name, priority DESC, created_on, id) WHERE (state < 'active'::${PGBOSS_SCHEMA}.job_state)`,
+        ),
+        `unexpected definition: ${index?.def}`,
+      );
     } finally {
       await queue.stop();
     }
