@@ -1,6 +1,6 @@
 apiVersion: v2
 name: bnf-demo
-version: 0.20.4
+version: 0.21.0
 description: BnF Corpus Research — Alien Intelligence × BnF demo (Next.js app + ingest worker + BnF broker + Postgres)
 type: application
 # 0.9.0 — worker+broker hardening pass 2: pg-boss sliding-window fetch (the ~600/min
@@ -111,4 +111,10 @@ type: application
 # (priority DESC, created_on, id). pg-boss creates none, so under the 3.06M-page
 # L'Oréal ingest every fetch sorted the whole backlog (1.6 s, ~1 GB read) and starved
 # the ALTO pool; indexed, ALTO throughput rose 3.6x. App and broker stay 0.20.2.
+# 0.21.0 — chart-only: postgres.mode (bundled | external, required) replaces
+# postgres.enabled. External mode reads a Scaleway managed instance over the
+# Private Network: DATABASE_URL is built by external-secrets from its own secret,
+# TLS verify-ca against the instance CA. Bundled mode gains logicalReplication and
+# a replicationEndpoint (NodePort, Local traffic policy, NetworkPolicy) to move the
+# data there. No image change.
 appVersion: "0.20.2"
