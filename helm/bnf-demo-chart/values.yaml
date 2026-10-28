@@ -434,8 +434,11 @@ postgres:
   username: bnf_demo
   # Password generated once and preserved across upgrades (see postgres-secret.yaml).
   port: 5432
+  # The size lives in the StatefulSet's volumeClaimTemplates, which cannot change in
+  # place: grow the PVC by hand first, then upgrade (helm/DEPLOY.md, "Growing the
+  # Postgres volume"). 10Gi reached 84% full on 2026-10-28.
   persistence:
-    size: 10Gi
+    size: 20Gi
     accessModes:
       - ReadWriteOnce
     # storageClassName: leave unset to use the cluster default (sbs-default on Scaleway)
