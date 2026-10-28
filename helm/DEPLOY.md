@@ -370,7 +370,10 @@ truth to avoid churn.)
 | `bnfIiif.presentationBaseUrl` / `bnfIiif.imageBaseUrl` | BnF Presentation API (manifests, ALTO; worker + app resolver) and Image API (images; worker) bases, version included (required) | `…/presentation/iiif/gallica/1.0.0` / `…/image/iiif/gallica/1.0.0` |
 | `broker.config.rates.<bucket>.{quota,rpm,burst}` | THE BnF rates: every bucket of the ingestion subscription (global, presentation, image, iiifLegacy, catalogue, gallicaSru, grapheData, datePeriodique, documentTdm, manifest, external). The broker renders all of them; the worker reads six and derives its gates below them (bulk ALTO + image = global − manifest − catalogue − graphe; 75 % of manifest). Required; the render fails unless `rpm + burst <= quota`. Raising a quota: `broker/README.md` | see values.yaml (global 1000/950/20) |
 | `istio.hosts[].gateway` | `own` (provision gateway+cert) or `shared` | `own` |
-| `postgres.persistence.size` | Postgres PVC size (changing it needs the steps in "Growing the Postgres volume") | `20Gi` |
+| `postgres.mode` | `bundled` (in-cluster StatefulSet) or `external` (managed instance, `postgres.external.*`). Required | see values.yaml |
+| `postgres.external.*` | Managed instance host/port/database/user and the Scaleway secret holding its password + CA | `bnf-prod-database` |
+| `postgres.logicalReplication` / `postgres.replicationEndpoint.*` | Bundled only: publish to a managed instance during a move (see "Moving to a managed instance") | off |
+| `postgres.persistence.size` | Bundled Postgres PVC size (changing it needs the steps in "Growing the Postgres volume") | `20Gi` |
 
 **`config.clusterMode=fake`** disables the worker entirely (no worker Deployment,
 Service, ConfigMap, or ExternalSecret rendered) — handy for a UI-only deploy.
@@ -655,9 +658,13 @@ rewrite. The dedicated subdomain avoids all of that.
 
 ## Data Persistence Notes
 
-- Bundled Postgres has **no replication and no backup** — fine for a demo, not
-  for real production data. Both the app schema and the worker's pg-boss queue
-  live in it.
+- **Bundled** Postgres has **no replication and no backup** — fine for a local or
+  disposable install, not for real data. Both the app schema and the worker's
+  pg-boss queue live in it.
+- **External** (prod's target): Scaleway managed `bnf-prod-database` (PG17,
+  db-play2-nano, 20GB, no HA), Private Network only at `172.16.8.5`. Snapshots
+  every 1h kept 7 days; Scaleway has no PITR, so RPO is 1h. Admin credentials are
+  in the Scaleway secret `bnf-prod-database-admin` (not mounted anywhere).
 - The StatefulSet PVC + generated Secrets are `helm.sh/resource-policy: keep` —
   uninstalling the chart leaves them in place. To fully wipe state, delete the
   PVC and Secrets manually after `helm uninstall`.
@@ -686,3 +693,88 @@ kubectl --context platform-prod -n bnf delete statefulset bnf-demo-prod-postgres
 
 # 4. Upgrade as usual (see "Direct Helm Release").
 ```
+
+### Moving to a managed instance
+
+The bundled Postgres publishes to the managed instance with logical
+replication. Writes keep flowing until the cutover, which pauses them for a few
+minutes. Plan and spike results: ai-memories
+`tech/repos/bnf/postgres-to-scaleway-rdb/`.
+
+Notes:
+
+- No DDL while it runs: no deploy, no Prisma migration, and no new pg-boss
+  queue (a queue is a partition, which is DDL). DDL does not replicate.
+- Text sorts differently on the managed instance (glibc) than on the bundled
+  one (Alpine/musl sorts `en_US.utf8` as bytes). The data is the same. Compare
+  with `COLLATE "C"`. Corpus page cursors issued just before the cutover can
+  skip or repeat a few mixed-case ARKs until the page reloads.
+- The subscription is owned by `bnf_demo`, which owns the tables, so the
+  changes are applied as the owner. `bnf_demo` holds `pg_create_subscription`
+  only until the cutover.
+- From a pod, `psql` reaches the instance with `sslmode=require` (encrypted, not
+  verified). The app and the worker verify the CA (see
+  `database-externalsecret.yaml`).
+
+**1. Publish.** Deploy with `postgres.logicalReplication=true` and
+`postgres.replicationEndpoint={enabled: true, allowedCidr: <instance IP>/32}`.
+The Postgres pod restarts once to apply `wal_level=logical` (about 30 s
+without the DB). If the volumeClaimTemplates changed since the last deploy,
+first run `kubectl delete statefulset … --cascade=orphan` ("Growing the Postgres
+volume").
+
+**2. Schema.** Run these as the instance's admin (`bnf-prod-database-admin`) or
+as `bnf_demo`:
+
+```bash
+# Admin, once: pgcrypto (dumped with the schema) and the subscription right.
+#   CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public;
+#   GRANT pg_create_subscription TO bnf_demo;
+kubectl --context platform-prod -n bnf exec bnf-demo-prod-postgres-0 -- sh -c \
+  'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --schema-only --no-owner --no-privileges --no-publications --no-subscriptions' > schema.sql
+# Apply as bnf_demo, so it owns every object:
+psql "host=<instance IP> sslmode=require dbname=bnf_demo user=bnf_demo" -v ON_ERROR_STOP=1 -f schema.sql
+```
+
+**3. Replicate.**
+
+```sql
+-- On the bundled Postgres:
+CREATE PUBLICATION bnf_migration FOR ALL TABLES WITH (publish_via_partition_root = true);
+-- On the instance, as bnf_demo. <node PN IP> is the node that runs
+-- bnf-demo-prod-postgres-0 (its InternalIP). <nodePort> is from
+-- bnf-demo-prod-postgres-replication.
+CREATE SUBSCRIPTION bnf_migration
+  CONNECTION 'host=<node PN IP> port=<nodePort> dbname=bnf_demo user=bnf_demo password=<bundled password>'
+  PUBLICATION bnf_migration WITH (copy_data = true);
+```
+
+Watch it until every table is `r`:
+
+- on the instance: `pg_subscription_rel.srsubstate` and `pg_stat_subscription`;
+- on the bundled Postgres: the WAL the slot retains, `pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)` in `pg_replication_slots`.
+
+If the retained WAL keeps growing toward the bundled disk's free space, drop the
+subscription instead of letting it fill the disk.
+
+**4. Cutover** (minutes without writes; the broker stays up):
+
+1. Scale `bnf-demo-prod` and `bnf-demo-prod-worker` to 0.
+2. Wait until the slot's `confirmed_flush_lsn` equals `pg_current_wal_lsn()` on
+   the bundled Postgres.
+3. Compare row counts and `md5(string_agg(… ORDER BY <pk> COLLATE "C"))` for
+   every table on both sides. They must match exactly. Assert that
+   `pg_sequences` is still empty.
+4. On the instance: `DROP SUBSCRIPTION bnf_migration;` and
+   `REVOKE pg_create_subscription FROM bnf_demo;`. On the bundled Postgres:
+   `DROP PUBLICATION bnf_migration;`.
+5. Deploy with `postgres.mode=external`, `logicalReplication=false` and the
+   endpoint off. The StatefulSet, its Service and the endpoint are removed. The
+   PVC and the generated `bnf-demo-prod-postgres` Secret are kept.
+6. Smoke-test: password and SSO sign-in, a project's corpus, a research turn,
+   a one-document ingest that pg-boss picks up.
+
+**Rollback,** until the go/no-go: scale to 0 and deploy with
+`postgres.mode=bundled`. The StatefulSet comes back on the untouched PVC with
+the data as of step 1. After writes have landed on the instance, rolling back
+loses them, so fix forward instead.
