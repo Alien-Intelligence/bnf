@@ -27,6 +27,11 @@ spec:
         - name: postgres
           image: "{{ .Values.postgres.image.repository }}:{{ .Values.postgres.image.tag }}"
           imagePullPolicy: {{ .Values.postgres.image.pullPolicy }}
+          {{- if .Values.postgres.logicalReplication }}
+          # Publish to a logical-replication subscriber (moving to a managed
+          # instance, helm/DEPLOY.md). Takes effect on a Postgres restart.
+          args: ["-c", "wal_level=logical"]
+          {{- end }}
           ports:
             - name: postgres
               containerPort: {{ .Values.postgres.port }}

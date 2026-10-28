@@ -459,6 +459,15 @@ postgres:
       cpu: "2"
       memory: 2Gi
 
+  # Bundled mode, while moving the data to a managed instance (helm/DEPLOY.md,
+  # "Moving to a managed instance"). logicalReplication sets wal_level=logical,
+  # applied on the next Postgres restart. replicationEndpoint exposes the bundled
+  # Postgres to the subscriber at allowedCidr only (postgres-replication.yaml).
+  logicalReplication: false
+  replicationEndpoint:
+    enabled: false
+    # allowedCidr: the subscriber's IP as a /32, required when enabled.
+
   # External mode: the Scaleway managed instance bnf-prod-database, reached over
   # the platform-prod Private Network. The password and CA live in the Scaleway
   # secret below (not the app's bnf-demo-prod secret).
