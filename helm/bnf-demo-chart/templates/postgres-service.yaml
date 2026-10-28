@@ -1,4 +1,4 @@
-{{- if .Values.postgres.enabled }}
+{{- if eq (include "bnf-demo.postgresMode" .) "bundled" }}
 apiVersion: v1
 kind: Service
 metadata:

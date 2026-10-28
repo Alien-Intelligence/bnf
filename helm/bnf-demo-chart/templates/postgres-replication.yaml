@@ -1,0 +1,61 @@
+{{- if .Values.postgres.replicationEndpoint.enabled }}
+{{- /*
+Temporary: lets a managed instance on the cluster's Private Network subscribe to
+the bundled Postgres while the data moves to it (helm/DEPLOY.md, "Moving to a
+managed instance"). Off otherwise.
+
+Some platform-prod nodes have public IPs, so the NodePort is kept off them two
+ways: externalTrafficPolicy Local (only the node running Postgres answers, and
+the client IP is preserved) and a NetworkPolicy admitting the subscriber's IP
+plus this namespace's own pods (the app and the worker) — nothing else.
+*/}}
+{{- if ne (include "bnf-demo.postgresMode" .) "bundled" }}
+{{- fail "postgres.replicationEndpoint needs postgres.mode=bundled (it exposes the bundled Postgres)" }}
+{{- end }}
+{{- if not .Values.postgres.logicalReplication }}
+{{- fail "postgres.replicationEndpoint needs postgres.logicalReplication=true (wal_level=logical)" }}
+{{- end }}
+{{- $cidr := required "postgres.replicationEndpoint.allowedCidr is required (the subscriber's IP, e.g. 172.16.8.5/32)" .Values.postgres.replicationEndpoint.allowedCidr }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "bnf-demo.fullname" . }}-postgres-replication
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "bnf-demo.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+spec:
+  type: NodePort
+  externalTrafficPolicy: Local
+  ports:
+    - port: {{ .Values.postgres.port }}
+      targetPort: postgres
+      protocol: TCP
+      name: postgres
+  selector:
+    {{- include "bnf-demo.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "bnf-demo.fullname" . }}-postgres-ingress
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "bnf-demo.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "bnf-demo.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: postgres
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: {}
+        - ipBlock:
+            cidr: {{ $cidr }}
+      ports:
+        - port: {{ .Values.postgres.port }}
+          protocol: TCP
+{{- end }}

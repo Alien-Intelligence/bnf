@@ -222,3 +222,66 @@ the rates (broker, worker).
 {{- end -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+Where the app database lives — postgres.mode, REQUIRED:
+  bundled  — the in-cluster StatefulSet (postgres-*.yaml), PVC-backed, no backup.
+  external — a managed instance (postgres.external); no StatefulSet is rendered.
+Any other value fails the render.
+*/}}
+{{- define "bnf-demo.postgresMode" -}}
+{{- $mode := required "postgres.mode is required (bundled or external)" .Values.postgres.mode -}}
+{{- if not (has $mode (list "bundled" "external")) -}}
+{{- fail (printf "postgres.mode must be bundled or external (got %q)" $mode) -}}
+{{- end -}}
+{{- $mode -}}
+{{- end -}}
+
+{{/*
+The Secret whose DATABASE_URL key the app and the worker read, in either mode:
+the chart-generated one (postgres-secret.yaml) or the one external-secrets
+builds from Scaleway (database-externalsecret.yaml).
+*/}}
+{{- define "bnf-demo.databaseSecretName" -}}
+{{- if eq (include "bnf-demo.postgresMode" .) "external" -}}
+{{- printf "%s-database" (include "bnf-demo.fullname" .) -}}
+{{- else -}}
+{{- printf "%s-postgres" (include "bnf-demo.fullname" .) -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Host, port and user of the app database, for the worker's pg_isready gate.
+External mode requires each of postgres.external.{host,port,username}.
+*/}}
+{{- define "bnf-demo.databaseHost" -}}
+{{- if eq (include "bnf-demo.postgresMode" .) "external" -}}
+{{- required "postgres.external.host is required in external mode" .Values.postgres.external.host -}}
+{{- else -}}
+{{- printf "%s-postgres.%s.svc.cluster.local" (include "bnf-demo.fullname" .) .Values.namespace -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "bnf-demo.databasePort" -}}
+{{- if eq (include "bnf-demo.postgresMode" .) "external" -}}
+{{- required "postgres.external.port is required in external mode" .Values.postgres.external.port -}}
+{{- else -}}
+{{- .Values.postgres.port -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "bnf-demo.databaseUser" -}}
+{{- if eq (include "bnf-demo.postgresMode" .) "external" -}}
+{{- required "postgres.external.username is required in external mode" .Values.postgres.external.username -}}
+{{- else -}}
+{{- .Values.postgres.username -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Directory where external mode mounts the managed instance's CA (ca.pem). The
+DATABASE_URL built in database-externalsecret.yaml points sslrootcert here.
+*/}}
+{{- define "bnf-demo.databaseCaDir" -}}
+/etc/bnf-database
+{{- end -}}
