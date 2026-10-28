@@ -62,6 +62,25 @@ async function until(what: string, check: () => Promise<boolean>, ms = 30_000): 
   }
 }
 
+/** The fetch-order index on `queue`'s pg-boss partition, or undefined when there is none. */
+async function fetchOrderIndex(
+  db: Pool,
+  queue: string,
+): Promise<{ oid: number; qualified: string; valid: boolean; def: string } | undefined> {
+  const { rows } = await db.query<{ oid: number; qualified: string; valid: boolean; def: string }>(
+    `SELECT i.indexrelid::int AS oid, i.indexrelid::regclass::text AS qualified, i.indisvalid AS valid,
+            pg_get_indexdef(i.indexrelid) AS def
+     FROM pgboss.queue q
+     JOIN pg_class t ON t.relname = q.partition_name
+     JOIN pg_namespace n ON n.oid = t.relnamespace AND n.nspname = 'pgboss'
+     JOIN pg_index i ON i.indrelid = t.oid
+     JOIN pg_class c ON c.oid = i.indexrelid
+     WHERE q.name = $1 AND c.relname = q.partition_name || '_fetch'`,
+    [queue],
+  );
+  return rows[0];
+}
+
 /** Always fails (non-terminal); records the attempts it saw and when it was exhausted. */
 class FlakyStage extends PipelineStage<{ ark: string }, never> {
   readonly name = "flaky";
@@ -112,6 +131,51 @@ describe("PgBossQueue on a real pg-boss", { skip: pool ? undefined : "WORKER_TES
       assert.deepEqual(rows, [{ retry_limit: 5, expire_seconds: 77 }]);
     } finally {
       await queue.stop();
+    }
+  });
+
+  test("a queue's partition gets the index pg-boss's fetch orders by (it creates none)", async () => {
+    if (!pool || !PG_URL) throw new Error("unreachable: skipped without a database");
+    const queue = new PgBossQueue(pgPoolConfig(PG_URL));
+    await queue.start();
+    try {
+      const name = freshQueue("fetch-index");
+      queue.declare(name, {});
+      await queue.send(name, { ark: "ark:/12148/f" });
+      const index = await fetchOrderIndex(pool, name);
+      assert.equal(index?.valid, true);
+      assert.match(index?.def ?? "", /\(name, priority DESC, created_on, id\) WHERE \(state < 'active'::pgboss\.job_state\)/);
+    } finally {
+      await queue.stop();
+    }
+  });
+
+  test("an INVALID fetch-order index left by a failed build is rebuilt on the next start", async () => {
+    if (!pool || !PG_URL) throw new Error("unreachable: skipped without a database");
+    const name = freshQueue("fetch-index-invalid");
+    const first = new PgBossQueue(pgPoolConfig(PG_URL));
+    await first.start();
+    try {
+      first.declare(name, {});
+      await first.send(name, { ark: "ark:/12148/g" });
+    } finally {
+      await first.stop();
+    }
+    const built = await fetchOrderIndex(pool, name);
+    assert.equal(built?.valid, true);
+    // What an interrupted CREATE INDEX CONCURRENTLY leaves behind (needs a superuser).
+    await pool.query("UPDATE pg_index SET indisvalid = false WHERE indexrelid = $1::regclass", [built?.qualified]);
+
+    const second = new PgBossQueue(pgPoolConfig(PG_URL));
+    await second.start();
+    try {
+      second.declare(name, {});
+      await second.send(name, { ark: "ark:/12148/h" });
+      const rebuilt = await fetchOrderIndex(pool, name);
+      assert.equal(rebuilt?.valid, true);
+      assert.notEqual(rebuilt?.oid, built?.oid, "the invalid index was dropped and built again");
+    } finally {
+      await second.stop();
     }
   });
 
