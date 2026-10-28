@@ -10,7 +10,7 @@
  *  - `counts()` reads the `pgboss.job` table by state for the progress read-model.
  */
 import PgBoss from "pg-boss";
-import { Pool, type PoolConfig } from "pg";
+import { Client, Pool, type PoolConfig } from "pg";
 
 import { assertAttemptsSpent, spentFromRetryLimit } from "./queue-attempts.js";
 import type { QueueClient, QueueCounts, QueueMessage, QueuePolicyOpts, SendOpts } from "./types.js";
@@ -35,6 +35,33 @@ interface QueuePolicy {
  * leaves ~10s for the rest of shutdown inside the pod's grace window.
  */
 const GRACEFUL_STOP_TIMEOUT_MS = 110_000;
+
+/** pg-boss's schema: its default, as PgBoss is constructed without `schema`. */
+export const PGBOSS_SCHEMA = "pgboss";
+
+/** The fetch-order index of a pg-boss queue partition (see ensureFetchOrderIndex). */
+export function fetchOrderIndexName(partition: string): string {
+  return `${partition}_fetch`;
+}
+
+/** The order pg-boss v10's fetch reads a queue in (plans.js fetchNextJob), name first. */
+export const FETCH_ORDER_COLUMNS = "name, priority DESC, created_on, id";
+
+/**
+ * The pg-boss job state the fetch reads below: it takes `state < 'active'`
+ * (created and retry), so the index covers exactly those rows.
+ */
+export const FETCHABLE_BELOW_STATE = "active";
+
+/** Postgres truncates longer identifiers silently; an index name must fit. */
+const MAX_IDENTIFIER_LENGTH = 63;
+
+/**
+ * Wall-clock ceiling of one fetch-order index build. It reads the whole queue
+ * partition: 22 s for the 3.06M-job v2.fetch partition on 2026-10-28. A build
+ * cut off by it leaves an INVALID index, which the next start rebuilds.
+ */
+const FETCH_ORDER_INDEX_BUILD_TIMEOUT_MS = 15 * 60_000;
 
 /** The policy a caller declares, with the transport's chosen defaults filled in. */
 function toPolicy(opts: QueuePolicyOpts): QueuePolicy {
@@ -172,6 +199,7 @@ export class PgBossQueue implements QueueClient {
         .catch((e: unknown) => {
           if (!isAlreadyExists(e)) throw e;
         });
+      await this.ensureFetchOrderIndex(name);
       this.created.add(name);
     }
     // A failed policy write throws: the queue is not recorded as applied, so
@@ -179,6 +207,65 @@ export class PgBossQueue implements QueueClient {
     await this.b().updateQueue(name, queueOpts);
     this.applied.set(name, p);
     return p;
+  }
+
+  /**
+   * The index pg-boss v10's fetch needs and does not create. Its fetch orders a
+   * queue by `priority desc, created_on, id` (plans.js fetchNextJob), but its
+   * partition indexes cover (name, start_after) only, so every fetch sorted the
+   * whole backlog: 1.6 s and ~1 GB read per call at 3M queued jobs, which starved
+   * the work() pools. Indexed, the call takes 0.5 ms and ALTO throughput rose
+   * 3.6× (2026-10-28, ai-memories tech/repos/bnf/ingest-throughput-large-backlog).
+   *
+   * Built CONCURRENTLY so jobs keep flowing, on a client of its own: CONCURRENTLY
+   * cannot run in a transaction (no SET LOCAL), the pool's statement_timeout
+   * would cut a large build, and a session SET on a pooled connection would
+   * outlive this call. An INVALID index (a build that failed earlier) is dropped
+   * and rebuilt. A session advisory lock keeps replicas from building it twice.
+   */
+  private async ensureFetchOrderIndex(queue: string): Promise<void> {
+    const client = new Client({ ...this.poolConfig, statement_timeout: FETCH_ORDER_INDEX_BUILD_TIMEOUT_MS });
+    await client.connect();
+    try {
+      const partition = await client.query<{ partition_name: string }>(
+        `SELECT partition_name FROM ${PGBOSS_SCHEMA}.queue WHERE name = $1`,
+        [queue],
+      );
+      const row = partition.rows[0];
+      if (partition.rows.length !== 1 || row === undefined) {
+        throw new Error(`PgBossQueue: queue ${queue} has no pg-boss partition`);
+      }
+      const table = row.partition_name;
+      const index = fetchOrderIndexName(table);
+      if (index.length > MAX_IDENTIFIER_LENGTH) {
+        throw new Error(`PgBossQueue: index name ${index} is over ${MAX_IDENTIFIER_LENGTH} characters`);
+      }
+      const schema = client.escapeIdentifier(PGBOSS_SCHEMA);
+      await client.query("SELECT pg_advisory_lock(hashtext($1))", [index]);
+      try {
+        const existing = await client.query<{ valid: boolean }>(
+          `SELECT i.indisvalid AS valid
+           FROM pg_index i
+           JOIN pg_class c ON c.oid = i.indexrelid
+           JOIN pg_namespace n ON n.oid = c.relnamespace
+           WHERE n.nspname = $1 AND c.relname = $2`,
+          [PGBOSS_SCHEMA, index],
+        );
+        if (existing.rows[0]?.valid === true) return;
+        if (existing.rows.length === 1) {
+          await client.query(`DROP INDEX CONCURRENTLY ${schema}.${client.escapeIdentifier(index)}`);
+        }
+        await client.query(
+          `CREATE INDEX CONCURRENTLY ${client.escapeIdentifier(index)}
+           ON ${schema}.${client.escapeIdentifier(table)} (${FETCH_ORDER_COLUMNS})
+           WHERE state < ${client.escapeLiteral(FETCHABLE_BELOW_STATE)}`,
+        );
+      } finally {
+        await client.query("SELECT pg_advisory_unlock(hashtext($1))", [index]);
+      }
+    } finally {
+      await client.end();
+    }
   }
 
   declare(queue: string, policy: QueuePolicyOpts): void {

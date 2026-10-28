@@ -25,7 +25,13 @@ import { pgPoolConfig } from "../config.js";
 import { shutdownWorker } from "../shutdown.js";
 import { MemoryBlobStore } from "./blob.js";
 import { createMemoryLogger } from "./logger.js";
-import { PgBossQueue } from "./queue-pgboss.js";
+import {
+  FETCH_ORDER_COLUMNS,
+  FETCHABLE_BELOW_STATE,
+  fetchOrderIndexName,
+  PGBOSS_SCHEMA,
+  PgBossQueue,
+} from "./queue-pgboss.js";
 import { RateLimiter } from "./rate.js";
 import { PipelineStage, type StageDeps } from "./stage.js";
 import type { RateGate, StageContext, StageOutcome } from "./types.js";
@@ -60,6 +66,29 @@ async function until(what: string, check: () => Promise<boolean>, ms = 30_000): 
     if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
     await new Promise((r) => setTimeout(r, 100));
   }
+}
+
+/** The fetch-order index on `queue`'s pg-boss partition, or undefined when there is none. */
+async function fetchOrderIndex(
+  db: Pool,
+  queue: string,
+): Promise<{ oid: number; qualified: string; valid: boolean; def: string } | undefined> {
+  const partition = await db.query<{ partition_name: string }>(
+    `SELECT partition_name FROM ${PGBOSS_SCHEMA}.queue WHERE name = $1`,
+    [queue],
+  );
+  const table = partition.rows[0]?.partition_name;
+  if (table === undefined) throw new Error(`queue ${queue} has no pg-boss partition`);
+  const { rows } = await db.query<{ oid: number; qualified: string; valid: boolean; def: string }>(
+    `SELECT i.indexrelid::int AS oid, i.indexrelid::regclass::text AS qualified, i.indisvalid AS valid,
+            pg_get_indexdef(i.indexrelid) AS def
+     FROM pg_index i
+     JOIN pg_class c ON c.oid = i.indexrelid
+     JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = $1 AND c.relname = $2`,
+    [PGBOSS_SCHEMA, fetchOrderIndexName(table)],
+  );
+  return rows[0];
 }
 
 /** Always fails (non-terminal); records the attempts it saw and when it was exhausted. */
@@ -112,6 +141,56 @@ describe("PgBossQueue on a real pg-boss", { skip: pool ? undefined : "WORKER_TES
       assert.deepEqual(rows, [{ retry_limit: 5, expire_seconds: 77 }]);
     } finally {
       await queue.stop();
+    }
+  });
+
+  test("a queue's partition gets the index pg-boss's fetch orders by (it creates none)", async () => {
+    if (!pool || !PG_URL) throw new Error("unreachable: skipped without a database");
+    const queue = new PgBossQueue(pgPoolConfig(PG_URL));
+    await queue.start();
+    try {
+      const name = freshQueue("fetch-index");
+      queue.declare(name, {});
+      await queue.send(name, { ark: "ark:/12148/f" });
+      const index = await fetchOrderIndex(pool, name);
+      assert.equal(index?.valid, true);
+      assert.ok(
+        index?.def.includes(
+          `(${FETCH_ORDER_COLUMNS}) WHERE (state < '${FETCHABLE_BELOW_STATE}'::${PGBOSS_SCHEMA}.job_state)`,
+        ),
+        `unexpected definition: ${index?.def}`,
+      );
+    } finally {
+      await queue.stop();
+    }
+  });
+
+  test("an INVALID fetch-order index left by a failed build is rebuilt on the next start", async () => {
+    if (!pool || !PG_URL) throw new Error("unreachable: skipped without a database");
+    const name = freshQueue("fetch-index-invalid");
+    const first = new PgBossQueue(pgPoolConfig(PG_URL));
+    await first.start();
+    try {
+      first.declare(name, {});
+      await first.send(name, { ark: "ark:/12148/g" });
+    } finally {
+      await first.stop();
+    }
+    const built = await fetchOrderIndex(pool, name);
+    assert.equal(built?.valid, true);
+    // What an interrupted CREATE INDEX CONCURRENTLY leaves behind (needs a superuser).
+    await pool.query("UPDATE pg_index SET indisvalid = false WHERE indexrelid = $1::regclass", [built?.qualified]);
+
+    const second = new PgBossQueue(pgPoolConfig(PG_URL));
+    await second.start();
+    try {
+      second.declare(name, {});
+      await second.send(name, { ark: "ark:/12148/h" });
+      const rebuilt = await fetchOrderIndex(pool, name);
+      assert.equal(rebuilt?.valid, true);
+      assert.notEqual(rebuilt?.oid, built?.oid, "the invalid index was dropped and built again");
+    } finally {
+      await second.stop();
     }
   });
 
