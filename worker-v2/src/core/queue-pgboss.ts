@@ -44,6 +44,15 @@ export function fetchOrderIndexName(partition: string): string {
   return `${partition}_fetch`;
 }
 
+/** The order pg-boss v10's fetch reads a queue in (plans.js fetchNextJob), name first. */
+export const FETCH_ORDER_COLUMNS = "name, priority DESC, created_on, id";
+
+/**
+ * The pg-boss job state the fetch reads below: it takes `state < 'active'`
+ * (created and retry), so the index covers exactly those rows.
+ */
+export const FETCHABLE_BELOW_STATE = "active";
+
 /** Postgres truncates longer identifiers silently; an index name must fit. */
 const MAX_IDENTIFIER_LENGTH = 63;
 
@@ -248,8 +257,8 @@ export class PgBossQueue implements QueueClient {
         }
         await client.query(
           `CREATE INDEX CONCURRENTLY ${client.escapeIdentifier(index)}
-           ON ${schema}.${client.escapeIdentifier(table)} (name, priority DESC, created_on, id)
-           WHERE state < 'active'`,
+           ON ${schema}.${client.escapeIdentifier(table)} (${FETCH_ORDER_COLUMNS})
+           WHERE state < ${client.escapeLiteral(FETCHABLE_BELOW_STATE)}`,
         );
       } finally {
         await client.query("SELECT pg_advisory_unlock(hashtext($1))", [index]);

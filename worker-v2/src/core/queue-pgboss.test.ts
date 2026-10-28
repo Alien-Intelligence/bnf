@@ -25,7 +25,13 @@ import { pgPoolConfig } from "../config.js";
 import { shutdownWorker } from "../shutdown.js";
 import { MemoryBlobStore } from "./blob.js";
 import { createMemoryLogger } from "./logger.js";
-import { fetchOrderIndexName, PGBOSS_SCHEMA, PgBossQueue } from "./queue-pgboss.js";
+import {
+  FETCH_ORDER_COLUMNS,
+  FETCHABLE_BELOW_STATE,
+  fetchOrderIndexName,
+  PGBOSS_SCHEMA,
+  PgBossQueue,
+} from "./queue-pgboss.js";
 import { RateLimiter } from "./rate.js";
 import { PipelineStage, type StageDeps } from "./stage.js";
 import type { RateGate, StageContext, StageOutcome } from "./types.js";
@@ -150,7 +156,7 @@ describe("PgBossQueue on a real pg-boss", { skip: pool ? undefined : "WORKER_TES
       assert.equal(index?.valid, true);
       assert.ok(
         index?.def.includes(
-          `(name, priority DESC, created_on, id) WHERE (state < 'active'::${PGBOSS_SCHEMA}.job_state)`,
+          `(${FETCH_ORDER_COLUMNS}) WHERE (state < '${FETCHABLE_BELOW_STATE}'::${PGBOSS_SCHEMA}.job_state)`,
         ),
         `unexpected definition: ${index?.def}`,
       );
