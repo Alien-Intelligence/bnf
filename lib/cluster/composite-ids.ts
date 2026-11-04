@@ -17,15 +17,28 @@
 
 import { z } from "zod"
 
+/** Joins the platform ids of a composite id. */
+export const COMPOSITE_ID_SEPARATOR = ":"
+/** Platform ids in a dataset id ("cluster:dataset"). */
+export const DATASET_ID_SEGMENTS = 2
+/** Platform ids in an entry id ("cluster:dataset:entry"): its dataset's, then the entry's. */
+export const ENTRY_ID_SEGMENTS = 3
+
+/** `segments` unsigned integers joined by the separator: the one place the format is written down. */
+function compositeIdPattern(segments: number): RegExp {
+  const number = "\\d+"
+  return new RegExp(`^${Array.from({ length: segments }, () => number).join(COMPOSITE_ID_SEPARATOR)}$`)
+}
+
 export const datasetIdSchema = z
   .string()
-  .regex(/^\d+:\d+$/, 'a dataset id is "cluster:dataset" (e.g. "113:6363")')
+  .regex(compositeIdPattern(DATASET_ID_SEGMENTS), 'a dataset id is "cluster:dataset" (e.g. "113:6363")')
   .brand<"DatasetId">()
 export type DatasetId = z.infer<typeof datasetIdSchema>
 
 export const entryIdSchema = z
   .string()
-  .regex(/^\d+:\d+:\d+$/, 'an entry id is "cluster:dataset:entry" (e.g. "113:6363:9195583")')
+  .regex(compositeIdPattern(ENTRY_ID_SEGMENTS), 'an entry id is "cluster:dataset:entry" (e.g. "113:6363:9195583")')
   .brand<"EntryId">()
 export type EntryId = z.infer<typeof entryIdSchema>
 
@@ -39,5 +52,5 @@ export type EntryId = z.infer<typeof entryIdSchema>
  * string of any length.
  */
 export function entryOrdinal(id: EntryId): bigint {
-  return BigInt(id.slice(id.lastIndexOf(":") + 1))
+  return BigInt(id.split(COMPOSITE_ID_SEPARATOR)[ENTRY_ID_SEGMENTS - 1])
 }
