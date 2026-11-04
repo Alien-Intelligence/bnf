@@ -10,12 +10,14 @@ import "server-only"
 // A payload that breaks its contract throws DataclusterMcpProtocolError; it is
 // never patched into something that merely looks valid.
 
+import { z } from "zod"
 import { entryOrdinal } from "./composite-ids"
-import type { EntryId } from "./composite-ids"
+import type { DatasetId, EntryId } from "./composite-ids"
 import { DataclusterMcpProtocolError } from "./datacluster-mcp-client"
 import type { DataclusterChunk, DataclusterEntryContent } from "./datacluster-mcp-client"
 import { EntryFolioFormatError, codePointLength, foliosFromChunks, splitEntryFolios } from "./folio-text"
 import type { DocumentFolios, FolioChunk } from "./folio-text"
+import { RAG_LOOKUP_STATUS } from "./rag"
 import type { RagEntryContent, RagPassage } from "./rag"
 
 /**
@@ -206,58 +208,127 @@ function incomplete(
   )
 }
 
+/** What an ARK lookup established about the ARK's entries in the project's dataset. */
+export type ArkLookup =
+  | { status: typeof RAG_LOOKUP_STATUS.FOUND; entries: ArkEntry[] }
+  | { status: typeof RAG_LOOKUP_STATUS.ENTRY_REINDEXING; reason: string }
+
+/** One entry of an ARK, with the creation time that tells the live one from a stale one. */
+export interface ArkEntry {
+  entryId: EntryId
+  /** Milliseconds since the epoch, from the entry's `metadata.created_at`. */
+  createdAt: number
+}
+
+/** The cluster stamps `created_at` as an ISO 8601 datetime with an offset ("2026-11-04T16:44:28.162573+00:00"). */
+const createdAtSchema = z.iso.datetime({ offset: true })
+
 /**
- * The entry ids an ARK lookup proves belong to `ark` in the dataset searched.
- *
- * The lookup is an exact `metadata_filters: {ark}` keyword search scoped to
- * the corpus project's dataset, so every hit must carry exactly this ARK —
- * anything else means the filter was not applied, and trusting it would read
- * another document. (A hit's entry id is a composite id by the client schema.) `total` is the
- * cluster's own count of matches and the hits are every page the caller
- * fetched: a count that disagrees with them means the set is incomplete, and
- * the live entry cannot be told — a protocol error, never a guess.
+ * Throw unless every hit belongs to `datasetId`, the project's own dataset.
+ * The searches are scoped with `dataset_ids`, but the app does not trust that
+ * scoping to hold: a result of another dataset — another project's, another
+ * client's — must never reach the agent or `rag_get_text`, whatever the MCP
+ * does with the filter.
  */
-export function liveEntryIds(
-  hits: ReadonlyArray<{ entry_id: EntryId; metadata?: { ark?: unknown } }>,
-  total: number | undefined,
-  ark: string,
-): EntryId[] {
-  if (total === undefined) {
-    throw new DataclusterMcpProtocolError(`ARK lookup for ${ark} returned no pagination.total`)
-  }
-  if (total !== hits.length) {
+export function assertInDataset(
+  hits: ReadonlyArray<{ entry_id: EntryId; dataset_id: DatasetId }>,
+  datasetId: DatasetId,
+  tool: string,
+): void {
+  const foreign = hits.find((h) => h.dataset_id !== datasetId)
+  if (foreign !== undefined) {
     throw new DataclusterMcpProtocolError(
-      `ARK lookup for ${ark} counted ${total} entries but its pages held ${hits.length}: the live entry cannot be told`,
+      `${tool} returned entry ${foreign.entry_id} of dataset ${foreign.dataset_id}, ` +
+        `outside the project's dataset ${datasetId}`,
     )
   }
-  const ids = hits.map((h) => {
+}
+
+/**
+ * What an ARK lookup proves about the ARK's entries in `datasetId`.
+ *
+ * The lookup is an exact `metadata_filters: {ark}` keyword search scoped to
+ * the corpus project's dataset, so every hit must be of that dataset (tenancy,
+ * assertInDataset), carry exactly this ARK, and carry a valid `created_at` —
+ * anything else breaks the contract and is a protocol error, since trusting it
+ * would read another document or guess the live entry.
+ *
+ * The other failure is not a contract violation but a moment: the cluster
+ * counted matches the pages do not hold — `total` above the hits, matches it
+ * could not address (`unaddressable`), or a page shifted by a write mid-walk
+ * (the same entry twice). That is how a re-ingest looks while it replaces the
+ * stale entry with the new one, and the live entry cannot be told from the
+ * stale one, so the answer is ENTRY_REINDEXING — never a guess. Retrying
+ * later succeeds. A missing `total` is a protocol error: nothing says whether
+ * the set is complete.
+ */
+export function arkLookup(
+  hits: ReadonlyArray<{
+    entry_id: EntryId
+    dataset_id: DatasetId
+    metadata?: { ark?: unknown; created_at?: unknown }
+  }>,
+  page: { total: number | undefined; unaddressable: number | undefined },
+  ark: string,
+  datasetId: DatasetId,
+): ArkLookup {
+  assertInDataset(hits, datasetId, "ARK lookup")
+  const entries = hits.map((h): ArkEntry => {
     if (h.metadata?.ark !== ark) {
       throw new DataclusterMcpProtocolError(
         `ARK lookup for ${ark} returned an entry of ${JSON.stringify(h.metadata?.ark)}`,
       )
     }
-    return h.entry_id
+    const createdAt = createdAtSchema.safeParse(h.metadata.created_at)
+    if (!createdAt.success) {
+      throw new DataclusterMcpProtocolError(
+        `ARK lookup for ${ark} returned entry ${h.entry_id} with no valid created_at ` +
+          `(${JSON.stringify(h.metadata.created_at)}): the live entry cannot be told`,
+        createdAt.error,
+      )
+    }
+    return { entryId: h.entry_id, createdAt: Date.parse(createdAt.data) }
   })
-  if (new Set(ids).size !== ids.length) {
-    throw new DataclusterMcpProtocolError(`ARK lookup for ${ark} returned the same entry twice across pages`)
+  if (page.total === undefined) {
+    throw new DataclusterMcpProtocolError(`ARK lookup for ${ark} returned no pagination.total`)
   }
-  return ids
+  const reindexing = (reason: string): ArkLookup => ({
+    status: RAG_LOOKUP_STATUS.ENTRY_REINDEXING,
+    reason: `ARK lookup for ${ark}: ${reason}`,
+  })
+  if (page.unaddressable !== undefined && page.unaddressable > 0) {
+    return reindexing(`${page.unaddressable} match(es) have no addressable entry id`)
+  }
+  if (page.total !== entries.length) {
+    return reindexing(`the cluster counted ${page.total} entries but its pages held ${entries.length}`)
+  }
+  if (new Set(entries.map((e) => e.entryId)).size !== entries.length) {
+    return reindexing("the same entry came back twice across pages")
+  }
+  return { status: RAG_LOOKUP_STATUS.FOUND, entries }
 }
 
 /**
- * The live entry among an ARK's entry ids: the one with the highest entry
- * number. A re-ingest deletes the stale entry and then creates the new one
- * (worker-v2 LiveClusterSink.upsert), so when a tombstone lags the newest id is
- * the one the index serves (D13). The ids all come from one dataset's ARK
- * lookup, so comparing their entry numbers (entryOrdinal) is comparing creation
- * order. `null` when the ARK has no entry.
+ * The live entry among an ARK's entries: the most recently CREATED. A
+ * re-ingest deletes the stale entry and then creates the new one (worker-v2
+ * LiveClusterSink.upsert), so while a tombstone lags the newest entry is the
+ * one the index serves (D13). The platform entry number is not an order — the
+ * backend batch sync assigns ids by version — so it only breaks a tie between
+ * equal creation times (the timestamp is read to the millisecond), keeping the
+ * choice deterministic. `null` when the ARK has no entry.
  */
-export function pickLiveEntryId(ids: readonly EntryId[]): EntryId | null {
-  let live: EntryId | null = null
-  for (const id of ids) {
-    if (live === null || entryOrdinal(id) > entryOrdinal(live)) live = id
+export function pickLiveEntryId(entries: readonly ArkEntry[]): EntryId | null {
+  let live: ArkEntry | null = null
+  for (const e of entries) {
+    if (
+      live === null ||
+      e.createdAt > live.createdAt ||
+      (e.createdAt === live.createdAt && entryOrdinal(e.entryId) > entryOrdinal(live.entryId))
+    ) {
+      live = e
+    }
   }
-  return live
+  return live === null ? null : live.entryId
 }
 
 /**

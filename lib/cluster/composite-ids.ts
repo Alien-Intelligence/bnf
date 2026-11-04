@@ -9,10 +9,11 @@
 //
 // The MCP returns them in `dataset_id` / `entry_id` and accepts them back, byte
 // for byte, in `dataset_id`, `entry_id`, `dataset_ids` and `entry_ids`; an
-// integer id is refused. They are opaque handles: the only thing this app does
-// with one besides passing it back is order the entries of one dataset
-// (entryOrdinal). Branded so a free string — or a number left over from the
-// old contract — cannot be passed where an id is required.
+// integer id is refused. They are opaque handles: the app passes them back
+// untouched and only breaks a creation-time tie between two entries of one
+// dataset with the entry number (entryOrdinal). Branded so a free string — or a
+// number left over from the old contract — cannot be passed where an id is
+// required.
 
 import { z } from "zod"
 
@@ -29,10 +30,13 @@ export const entryIdSchema = z
 export type EntryId = z.infer<typeof entryIdSchema>
 
 /**
- * The platform entry number inside an entry id — the part that grows with each
- * ingest. Only meaningful between entries of the SAME dataset (same
- * cluster:dataset prefix), which is where it is used: the entries one ARK has
- * in the project's dataset. BigInt, because the id is a string of any length.
+ * The platform entry number inside an entry id. It is NOT a creation order —
+ * the backend's batch sync assigns platform ids by version, not by the order
+ * the cluster created the entries — so it never decides which entry is newer
+ * (that is the entry's `created_at`, rag-wire.ts pickLiveEntryId); it only
+ * makes the choice deterministic when two entries share a creation time. Only
+ * comparable between entries of the SAME dataset. BigInt, because the id is a
+ * string of any length.
  */
 export function entryOrdinal(id: EntryId): bigint {
   return BigInt(id.slice(id.lastIndexOf(":") + 1))

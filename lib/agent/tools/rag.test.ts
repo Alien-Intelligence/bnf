@@ -13,7 +13,7 @@ import { ClusterRagClient, RAG_LOOKUP_STATUS } from "@/lib/cluster/rag"
 import { entryIdSchema } from "@/lib/cluster/composite-ids"
 import type { RagEntryContentRequest } from "@/lib/cluster/rag"
 import { RAG_DEFAULT_K, RAG_GET_TEXT_DEFAULT_CHAR_LIMIT, RAG_KEYWORD_DEFAULT_LIMIT } from "@/lib/constants"
-import { entryNotInCorpusError, ragGetTextTool, ragKeywordSearchTool, ragQueryTool } from "./rag"
+import { entryNotInCorpusError, entryReindexingError, ragGetTextTool, ragKeywordSearchTool, ragQueryTool } from "./rag"
 import { toolCallErrored } from "@/lib/tools/display"
 import type { TurnScopedCtx } from "./registry-factory"
 import {
@@ -243,4 +243,18 @@ test("rag_get_text's schema requires an ARK and a composite entry id", () => {
   assert.equal(schema.safeParse({ ark: ARK, entryId: "3" }).success, false, "so is its string form")
   assert.equal(schema.safeParse({ ark: ARK, entryId: "113:6363" }).success, false, "a dataset id is not an entry id")
   assert.equal(schema.safeParse({ ark: ARK, entryId: "113:6363:abc" }).success, false)
+})
+
+test("rag_get_text tells the agent a document is being re-indexed, and to retry later or use another passage", async () => {
+  const original = ClusterRagClient.getEntryContent
+  ClusterRagClient.getEntryContent = async () => ({ status: RAG_LOOKUP_STATUS.ENTRY_REINDEXING })
+  let out: unknown
+  try {
+    out = await ragGetTextTool.handler({ ark: ARK, entryId: ENTRY }, ctxFor())
+  } finally {
+    ClusterRagClient.getEntryContent = original
+  }
+  assert.deepEqual(out, { success: false, error: entryReindexingError(ARK) })
+  assert.match(entryReindexingError(ARK), /en cours de réindexation[\s\S]*Réessaie[\s\S]*plus tard[\s\S]*un autre passage/)
+  assert.equal(toolCallErrored(false, out), true)
 })

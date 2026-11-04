@@ -248,6 +248,17 @@ export function entryNotInCorpusError(ark: string, entryId: EntryId, liveEntryId
         `son entrée actuelle est "${liveEntryId}". Relance ${AGENT_TOOLS.ragGetText} avec entryId "${liveEntryId}".`
 }
 
+/**
+ * Refusal while the cluster is re-indexing the document: its entries cannot be
+ * told apart, so none is read. Transient — the agent is told to wait or move on.
+ */
+export function entryReindexingError(ark: string): string {
+  return (
+    `Le document ${ark} est en cours de réindexation dans le corpus : son texte ne peut pas être lu pour le moment. ` +
+    `Réessaie ${AGENT_TOOLS.ragGetText} plus tard, ou appuie-toi sur un autre passage.`
+  )
+}
+
 const ragGetTextInputSchema = z.object({
   ark: arkSchema.describe(
     "The ARK of the SAME search result the entryId comes from, verbatim. The entry is read " +
@@ -320,6 +331,9 @@ export const ragGetTextTool = defineTool<typeof ragGetTextInputSchema, TurnScope
       charLimit: input.charLimit ?? RAG_GET_TEXT_DEFAULT_CHAR_LIMIT,
       signal: ctx.signal,
     })
+    if (result.status === RAG_LOOKUP_STATUS.ENTRY_REINDEXING) {
+      return toolFailure(entryReindexingError(input.ark))
+    }
     if (result.status === RAG_LOOKUP_STATUS.ENTRY_NOT_IN_CORPUS) {
       return toolFailure(entryNotInCorpusError(input.ark, input.entryId, result.liveEntryId))
     }

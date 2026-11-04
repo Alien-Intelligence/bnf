@@ -7,7 +7,9 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import { datasetIdSchema, entryIdSchema } from "./composite-ids"
 import { DataclusterMcpProtocolError } from "./datacluster-mcp-client"
-import { chunkToPassage, liveEntryIds, pickLiveEntryId, toEntryContent } from "./rag-wire"
+import { RAG_LOOKUP_STATUS } from "./rag"
+import { arkLookup, assertInDataset, chunkToPassage, pickLiveEntryId, toEntryContent } from "./rag-wire"
+import type { ArkLookup } from "./rag-wire"
 
 const ARK = "ark:/12148/bpt6k822781z"
 const DATASET = datasetIdSchema.parse("113:6363")
@@ -130,33 +132,87 @@ test("toEntryContent: offset-only mode needs char_offset, total_length and has_m
   )
 })
 
-test("liveEntryIds returns the ARK's entry ids; pickLiveEntryId takes the highest (newest after a re-ingest)", () => {
-  const hit = (entry_id: ReturnType<typeof entry>) => ({ entry_id, metadata: { ark: ARK } })
-  const ids = liveEntryIds([hit(entry(12)), hit(entry(40)), hit(entry(7))], 3, ARK)
-  assert.deepEqual(ids, [entry(12), entry(40), entry(7)])
-  assert.equal(pickLiveEntryId(ids), entry(40))
-  assert.deepEqual(liveEntryIds([], 0, ARK), [])
-  assert.equal(pickLiveEntryId([]), null)
+/** A keyword hit of the ARK lookup, created at `createdAt`. */
+const hit = (n: number, createdAt: string | undefined, over: Record<string, unknown> = {}) => ({
+  entry_id: entry(n),
+  dataset_id: DATASET,
+  metadata: { ark: ARK, created_at: createdAt },
+  ...over,
+})
+const OLD = "2026-11-01T10:00:00.000000+00:00"
+const NEW = "2026-11-04T16:44:28.162573+00:00"
+const complete = (hits: ReturnType<typeof hit>[]) => arkLookup(hits, { total: hits.length, unaddressable: 0 }, ARK, DATASET)
+
+function entriesOf(lookup: ArkLookup) {
+  assert.equal(lookup.status, RAG_LOOKUP_STATUS.FOUND, JSON.stringify(lookup))
+  if (lookup.status !== RAG_LOOKUP_STATUS.FOUND) throw new Error("unreachable after the assertion")
+  return lookup.entries
+}
+
+test("pickLiveEntryId takes the most recently CREATED entry, whatever its entry number", () => {
+  // The platform entry number follows the backend's version order, not the
+  // cluster's creation order: the NEW entry may carry the LOWER number.
+  const entries = entriesOf(complete([hit(900, OLD), hit(12, NEW), hit(40, OLD)]))
+  assert.deepEqual(entries.map((e) => e.entryId), [entry(900), entry(12), entry(40)])
+  assert.equal(pickLiveEntryId(entries), entry(12))
+  assert.equal(pickLiveEntryId(entriesOf(complete([]))), null)
 })
 
-test("pickLiveEntryId orders by entry NUMBER, not lexicographically (9 < 10 < 100)", () => {
-  assert.equal(pickLiveEntryId([entry(9), entry(100), entry(10)]), entry(100))
-  assert.equal(pickLiveEntryId([entry(9_195_583), entry(9_195_584)]), entry(9_195_584))
+test("pickLiveEntryId breaks a creation-time tie by entry NUMBER, numerically (9 < 10 < 100)", () => {
+  assert.equal(pickLiveEntryId(entriesOf(complete([hit(9, NEW), hit(100, NEW), hit(10, NEW)]))), entry(100))
+  assert.equal(pickLiveEntryId(entriesOf(complete([hit(9_195_584, NEW), hit(9_195_583, NEW)]))), entry(9_195_584))
 })
 
-test("liveEntryIds refuses a hit of another ARK or one without an ARK", () => {
+test("arkLookup refuses a hit of another ARK or one without an ARK", () => {
   assert.throws(
-    () => liveEntryIds([{ entry_id: entry(3), metadata: { ark: "ark:/12148/bpt6k0000000" } }], 1, ARK),
+    () => complete([hit(3, NEW, { metadata: { ark: "ark:/12148/bpt6k0000000", created_at: NEW } })]),
     DataclusterMcpProtocolError,
   )
-  assert.throws(() => liveEntryIds([{ entry_id: entry(3) }], 1, ARK), DataclusterMcpProtocolError)
+  assert.throws(() => complete([hit(3, NEW, { metadata: undefined })]), DataclusterMcpProtocolError)
 })
 
-test("liveEntryIds refuses an incomplete or duplicated lookup, or one with no total", () => {
-  const hit = { entry_id: entry(12), metadata: { ark: ARK } }
-  assert.throws(() => liveEntryIds([hit], 6, ARK), /counted 6 entries but its pages held 1/)
-  assert.throws(() => liveEntryIds([hit, hit], 2, ARK), /same entry twice/)
-  assert.throws(() => liveEntryIds([hit], undefined, ARK), /no pagination.total/)
+test("arkLookup refuses a hit with no created_at or one that is not an ISO datetime — the live entry cannot be told", () => {
+  for (const createdAt of [undefined, "", "yesterday", "2026-11-04", 1_793_800_000]) {
+    assert.throws(
+      () => complete([hit(3, createdAt as string | undefined)]),
+      (err: unknown) => err instanceof DataclusterMcpProtocolError && /no valid created_at/.test(err.message),
+      String(createdAt),
+    )
+  }
+})
+
+test("arkLookup refuses a hit of another dataset: a cross-project entry is never offered as the ARK's", () => {
+  const foreign = hit(3, NEW, { dataset_id: datasetIdSchema.parse("113:6352"), entry_id: entryIdSchema.parse("113:6352:3") })
+  assert.throws(
+    () => complete([hit(12, NEW), foreign]),
+    (err: unknown) => err instanceof DataclusterMcpProtocolError && /outside the project's dataset 113:6363/.test(err.message),
+  )
+})
+
+test("arkLookup says REINDEXING, not error, when the pages do not add up (a re-ingest in flight)", () => {
+  const one = hit(12, NEW)
+  const expectReindexing = (lookup: ArkLookup, why: RegExp) => {
+    assert.equal(lookup.status, RAG_LOOKUP_STATUS.ENTRY_REINDEXING)
+    assert.ok(lookup.status === RAG_LOOKUP_STATUS.ENTRY_REINDEXING && why.test(lookup.reason), JSON.stringify(lookup))
+  }
+  expectReindexing(arkLookup([one], { total: 6, unaddressable: 0 }, ARK, DATASET), /counted 6 entries but its pages held 1/)
+  expectReindexing(arkLookup([one], { total: 2, unaddressable: 1 }, ARK, DATASET), /1 match\(es\) have no addressable entry id/)
+  expectReindexing(arkLookup([one, one], { total: 2, unaddressable: 0 }, ARK, DATASET), /same entry came back twice/)
+})
+
+test("arkLookup refuses a lookup with no total: nothing says the set is complete", () => {
+  assert.throws(() => arkLookup([hit(12, NEW)], { total: undefined, unaddressable: undefined }, ARK, DATASET), /no pagination.total/)
+})
+
+test("assertInDataset passes the project's own hits and names the first foreign one", () => {
+  const own = { entry_id: entry(1), dataset_id: DATASET }
+  assertInDataset([own, own], DATASET, "tool")
+  assertInDataset([], DATASET, "tool")
+  const foreign = { entry_id: entryIdSchema.parse("113:766:2038356"), dataset_id: datasetIdSchema.parse("113:766") }
+  assert.throws(
+    () => assertInDataset([own, foreign], DATASET, "datacluster_keyword_search"),
+    /datacluster_keyword_search returned entry 113:766:2038356 of dataset 113:766, outside the project's dataset 113:6363/,
+  )
 })
 
 test("toEntryContent: a paginated reply that contradicts itself or the request is a protocol error", () => {

@@ -224,6 +224,8 @@ const dataclusterKeywordHitSchema = z
     metadata: z
       .object({
         ark: z.string().optional(),
+        /** When the cluster created the entry (ISO 8601); validated where it decides the live entry (rag-wire.ts arkLookup). */
+        created_at: z.string().optional(),
         title: z.string().nullable().optional(),
         date: z.string().nullable().optional(),
         docType: z.string().nullable().optional(),

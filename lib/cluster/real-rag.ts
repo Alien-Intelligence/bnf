@@ -20,6 +20,7 @@ import { prisma } from "@/lib/db"
 import { raceAbort } from "@/lib/mcp/abort"
 import { datasetIdSchema } from "./composite-ids"
 import type { DatasetId, EntryId } from "./composite-ids"
+import type { ArkLookup } from "./rag-wire"
 import { countFolioHeadings, pageChunkChecker, type FolioChunk } from "./folio-text"
 import {
   DataclusterMcpClient,
@@ -29,7 +30,7 @@ import {
   DataclusterMcpToolError,
 } from "./datacluster-mcp-client"
 import type { DataclusterChunk, DataclusterKeywordHit } from "./datacluster-mcp-client"
-import { chunkToPassage, folioChunksOf, foliosForEntry, liveEntryIds, pickLiveEntryId, toEntryContent } from "./rag-wire"
+import { arkLookup, assertInDataset, chunkToPassage, folioChunksOf, foliosForEntry, pickLiveEntryId, toEntryContent } from "./rag-wire"
 import { RAG_LOOKUP_STATUS } from "./rag"
 import type {
   DocumentFoliosRequest,
@@ -94,14 +95,24 @@ async function resolveDatasetId(
   // A cached id is checked before use: when the dataset was recreated (the
   // worker re-registers after `register_receipt_stale`), the old id names a
   // dead or foreign dataset, and every read would look like an empty corpus.
-  // The column is plain text; a value that is not a composite id (a leftover
-  // of the integer contract the migration nulls) throws rather than being sent.
+  // The column is plain text. A value that is not a composite id (a leftover
+  // of the integer contract, should the migration have missed one) is never
+  // sent to the MCP: it is a stale cache like any other and falls through to
+  // the slug resolution below, which overwrites it.
   if (project.clusterDatasetId !== null) {
-    const cachedId = datasetIdSchema.parse(project.clusterDatasetId)
-    if (await cachedDatasetStillLive(client, cachedId, slug)) return cachedId
-    console.warn(
-      `[rag] project ${projectId}: cached cluster dataset ${cachedId} is no longer "${slug}"; re-resolving`,
-    )
+    const cachedId = datasetIdSchema.safeParse(project.clusterDatasetId)
+    if (!cachedId.success) {
+      console.warn(
+        `[rag] project ${projectId}: cached cluster dataset ${JSON.stringify(project.clusterDatasetId)} ` +
+          `is not a composite id; re-resolving "${slug}"`,
+      )
+    } else if (await cachedDatasetStillLive(client, cachedId.data, slug)) {
+      return cachedId.data
+    } else {
+      console.warn(
+        `[rag] project ${projectId}: cached cluster dataset ${cachedId.data} is no longer "${slug}"; re-resolving`,
+      )
+    }
   }
 
   for (let page = 0; page < MAX_DATASET_PAGES; page++) {
@@ -191,6 +202,9 @@ export const RealRagRunner = {
       datasetIds: [datasetId],
     })
 
+    // Scoped to this project's dataset above; checked, not trusted.
+    assertInDataset(data.results, datasetId, "datacluster_vector_search_chunks")
+
     const passages = data.results
       .map(chunkToPassage)
       .filter((p): p is RagPassage => p !== null)
@@ -212,6 +226,8 @@ export const RealRagRunner = {
       datasetIds: [datasetId],
       metadataFilters: toMetadataFilters(req.filters),
     })
+
+    assertInDataset(data.results, datasetId, "datacluster_keyword_search")
 
     const hits = data.results
       .map(keywordHitToRag)
@@ -236,7 +252,12 @@ export const RealRagRunner = {
     const datasetId = await resolveDatasetId(req.projectId, client, req.signal)
     // Only the LIVE entry: a lagging tombstone's id would serve stale text
     // that the quote check (which reads the live entry) would then contradict.
-    const liveEntryId = pickLiveEntryId(await lookupLiveEntryIds(client, datasetId, req.ark))
+    const lookup = await lookupArkEntries(client, datasetId, req.ark)
+    if (lookup.status === RAG_LOOKUP_STATUS.ENTRY_REINDEXING) {
+      console.warn(`[rag] ${lookup.reason}`)
+      return { status: RAG_LOOKUP_STATUS.ENTRY_REINDEXING }
+    }
+    const liveEntryId = pickLiveEntryId(lookup.entries)
     if (liveEntryId !== req.entryId) {
       return { status: RAG_LOOKUP_STATUS.ENTRY_NOT_IN_CORPUS, liveEntryId }
     }
@@ -250,12 +271,17 @@ export const RealRagRunner = {
 
   /**
    * ARK → entry → whole processed text → per-folio map, scoped to the corpus
-   * project's dataset (see lookupLiveEntryIds).
+   * project's dataset (see lookupArkEntries).
    */
   async getDocumentFolios(req: DocumentFoliosRequest): Promise<DocumentFoliosResult> {
     const client = new DataclusterMcpClient({ signal: req.signal })
     const datasetId = await resolveDatasetId(req.projectId, client, req.signal)
-    const entryId = pickLiveEntryId(await lookupLiveEntryIds(client, datasetId, req.ark))
+    const lookup = await lookupArkEntries(client, datasetId, req.ark)
+    if (lookup.status === RAG_LOOKUP_STATUS.ENTRY_REINDEXING) {
+      console.warn(`[rag] ${lookup.reason}`)
+      return { status: RAG_LOOKUP_STATUS.ENTRY_REINDEXING }
+    }
+    const entryId = pickLiveEntryId(lookup.entries)
     if (entryId === null) return { status: RAG_LOOKUP_STATUS.ENTRY_NOT_FOUND }
 
     const content = await client.getEntryContent({ entryId, charOffset: 0, charLimit: 0 })
@@ -304,6 +330,7 @@ async function listEntryChunks(
   }
 
   const first = await page(0)
+  assertInDataset(first.results, datasetId, "datacluster_vector_search_chunks")
   const firstChunks = asPages(first.results)
   if (firstChunks === null) return []
   if (first.results.length < CHUNK_LIST_PAGE_SIZE) return firstChunks
@@ -316,6 +343,7 @@ async function listEntryChunks(
   const pages: Array<readonly DataclusterChunk[]> = [first.results]
   for (let i = 0; i < offsets.length; i += CHUNK_LIST_CONCURRENCY) {
     const batch = await Promise.all(offsets.slice(i, i + CHUNK_LIST_CONCURRENCY).map((o) => page(o)))
+    for (const b of batch) assertInDataset(b.results, datasetId, "datacluster_vector_search_chunks")
     pages.push(...batch.map((b) => b.results))
   }
   // More chunks than headings would be odd, but the cluster is the authority:
@@ -327,7 +355,9 @@ async function listEntryChunks(
         `entry ${entryId} (${ark}) returned more than ${CHUNK_LIST_MAX_PAGES} full pages of chunks`,
       )
     }
-    pages.push((await page(offset)).results)
+    const next = await page(offset)
+    assertInDataset(next.results, datasetId, "datacluster_vector_search_chunks")
+    pages.push(next.results)
     offset += CHUNK_LIST_PAGE_SIZE
   }
   const all = asPages(pages.flat())
@@ -335,20 +365,22 @@ async function listEntryChunks(
 }
 
 /**
- * The entry ids of `ark` in the dataset. The ARK is a string field of the
- * entry metadata schema, which data-cluster registers as Meili-filterable, so
- * an empty keyword query with `metadata_filters: {ark}` is the lookup. It
- * pages until it holds every match the cluster counted: an ARK may have
- * several entries (re-ingests whose tombstones lag), and the live one can only
- * be told from the complete set.
+ * The entries of `ark` in the dataset, as the cluster lists them. The ARK is a
+ * string field of the entry metadata schema, which data-cluster registers as
+ * Meili-filterable, so an empty keyword query with `metadata_filters: {ark}` is
+ * the lookup. It pages until it holds every match the cluster counted: an ARK
+ * may have several entries (re-ingests whose tombstones lag), and the live one
+ * can only be told from the complete set. A set that cannot be completed is
+ * ENTRY_REINDEXING, not an error (rag-wire.ts arkLookup).
  */
-async function lookupLiveEntryIds(
+async function lookupArkEntries(
   client: DataclusterMcpClient,
   datasetId: DatasetId,
   ark: string,
-): Promise<EntryId[]> {
+): Promise<ArkLookup> {
   const hits: DataclusterKeywordHit[] = []
   let total: number | undefined
+  let unaddressable: number | undefined
   do {
     const page = await client.keywordSearch({
       query: "",
@@ -358,16 +390,12 @@ async function lookupLiveEntryIds(
       offset: hits.length,
     })
     total = page.pagination?.total
-    // A match without an addressable id is counted in `total` but cannot be
-    // read, so the ARK's live entry cannot be told from the rest.
-    const unaddressable = page.pagination?.unaddressable
-    if (unaddressable !== undefined && unaddressable > 0) {
-      throw new DataclusterMcpProtocolError(
-        `ARK lookup for ${ark} left ${unaddressable} match(es) without an addressable entry id: the live entry cannot be told`,
-      )
+    const pageUnaddressable = page.pagination?.unaddressable
+    if (pageUnaddressable !== undefined) {
+      unaddressable = unaddressable === undefined ? pageUnaddressable : Math.max(unaddressable, pageUnaddressable)
     }
     if (page.results.length === 0) break
     hits.push(...page.results)
   } while (total !== undefined && hits.length < total)
-  return liveEntryIds(hits, total, ark)
+  return arkLookup(hits, { total, unaddressable }, ark, datasetId)
 }

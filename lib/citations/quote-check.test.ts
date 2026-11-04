@@ -209,6 +209,20 @@ test("a cluster error for one ARK is lookup_failed for that ARK only", async () 
   )
 })
 
+test("a document the cluster is re-indexing is entry_reindexing for that ARK only — not lookup_failed, not entry_not_found", async () => {
+  const res = await withFacade(
+    async (req) => (req.ark === arkN(1) ? { status: RAG_LOOKUP_STATUS.ENTRY_REINDEXING } : found([[2, FOLIO_TEXT]])),
+    () => checkNoteQuotes(args({ bodyMd: `« ${QUOTE} » ${cite(arkN(1), 2)}\n\n« ${QUOTE} » ${cite(arkN(2), 2)}` })),
+  )
+  assert.equal(res.status, QUOTE_CHECK_STATUS.PARTIAL)
+  assert.deepEqual(
+    res.warnings.map((w) => [w.citation?.ark, w.reason, w.cause]),
+    [[arkN(1), QUOTE_WARNING_REASON.UNVERIFIABLE, QUOTE_UNVERIFIABLE_CAUSE.ENTRY_REINDEXING]],
+  )
+  assert.notEqual(QUOTE_UNVERIFIABLE_CAUSE.ENTRY_REINDEXING, QUOTE_UNVERIFIABLE_CAUSE.LOOKUP_FAILED)
+  assert.notEqual(QUOTE_UNVERIFIABLE_CAUSE.ENTRY_REINDEXING, QUOTE_UNVERIFIABLE_CAUSE.ENTRY_NOT_FOUND)
+})
+
 test("an entry whose folio map cannot be trusted is folio_map_ambiguous for that ARK only, never a guess", async () => {
   const res = await withFacade(
     async (req) => {

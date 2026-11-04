@@ -7,7 +7,6 @@ import "server-only"
 
 import { test, before, after } from "node:test"
 import assert from "node:assert/strict"
-import { z } from "zod"
 import { prisma } from "@/lib/db"
 import { createTestProject, createTestUser, deleteTestUser } from "@/lib/testing/fixtures"
 import { cleanupProject } from "@/lib/testing/project-cleanup"
@@ -47,6 +46,12 @@ const chunkOffsets: number[] = []
 /** The dataset the cluster currently has for the project; tests swap it. */
 let liveDatasetId = dataset(4242)
 const lookupOffsets: number[] = []
+/** When the cluster created each entry; later entry numbers are created later unless a test says otherwise. */
+const createdAtOf = (n: number) => new Date(Date.UTC(2026, 10, 1, 0, n)).toISOString()
+let createdAt: (n: number) => string = createdAtOf
+/** The dataset the ARK lookup's hits claim, and the pagination extras; tests swap them. */
+let hitDataset = dataset(4242)
+let unaddressable = 0
 
 before(async () => {
   userId = (await createTestUser()).id
@@ -58,8 +63,13 @@ before(async () => {
     lookupOffsets.push(input.offset ?? 0)
     const page = ids.slice(input.offset ?? 0, (input.offset ?? 0) + (input.limit ?? 20))
     return {
-      results: page.map((entry_id) => ({ entry_id, dataset_id: dataset(4242), score: 1, metadata: { ark: ARK } })),
-      pagination: { total: ids.length },
+      results: page.map((entry_id) => ({
+        entry_id,
+        dataset_id: hitDataset,
+        score: 1,
+        metadata: { ark: ARK, created_at: createdAt(Number(entry_id.split(":")[2])) },
+      })),
+      pagination: { total: ids.length, unaddressable },
     }
   }
   proto.getDataset = async function (datasetId) {
@@ -113,8 +123,10 @@ test("rag_get_text reads only the live entry; a stale id of the same ARK is refu
 test("a cached dataset id that no longer exists is re-resolved and re-cached, not read as an empty corpus", async () => {
   liveDatasetId = dataset(5151) // the dataset was recreated under a new id
   try {
-    const live = await RealRagRunner.getEntryContent(request(entryNo(124)))
-    assert.equal(live.status, RAG_LOOKUP_STATUS.FOUND)
+    await withLookup({ hitDataset: dataset(5151) }, async () => {
+      const live = await RealRagRunner.getEntryContent(request(entryNo(124)))
+      assert.equal(live.status, RAG_LOOKUP_STATUS.FOUND)
+    })
     const project = await prisma.project.findUniqueOrThrow({ where: { id: projectId }, select: { clusterDatasetId: true } })
     assert.equal(project.clusterDatasetId, dataset(5151))
   } finally {
@@ -123,24 +135,87 @@ test("a cached dataset id that no longer exists is re-resolved and re-cached, no
   }
 })
 
-test("an ARK lookup that leaves matches without an addressable id is a protocol error, not a guess at the live entry", async () => {
-  const saved = proto.keywordSearch
+/** Run `body` with the ARK lookup's cluster behaviour swapped, restoring it after. */
+async function withLookup(over: { hitDataset?: typeof hitDataset; unaddressable?: number; createdAt?: (n: number) => string }, body: () => Promise<void>) {
+  const saved = { hitDataset, unaddressable, createdAt }
+  hitDataset = over.hitDataset ?? hitDataset
+  unaddressable = over.unaddressable ?? unaddressable
+  createdAt = over.createdAt ?? createdAt
+  try {
+    await body()
+  } finally {
+    ;({ hitDataset, unaddressable, createdAt } = saved)
+  }
+}
+
+test("an ARK lookup that leaves matches unaddressable is ENTRY_REINDEXING for the text and the folio map, never a guess", async () => {
+  await withLookup({ unaddressable: 1 }, async () => {
+    assert.deepEqual(await RealRagRunner.getEntryContent(request(entryNo(124))), { status: RAG_LOOKUP_STATUS.ENTRY_REINDEXING })
+    assert.deepEqual(await RealRagRunner.getDocumentFolios(foliosRequest()), { status: RAG_LOOKUP_STATUS.ENTRY_REINDEXING })
+  })
+})
+
+test("the live entry is the most recently created, not the highest entry number", async () => {
+  // Entry 100 is the newest by creation time though it has the lowest number.
+  await withLookup({ createdAt: (n) => createdAtOf(n === 100 ? 999 : n) }, async () => {
+    const stale = await RealRagRunner.getEntryContent(request(entryNo(124)))
+    assert.deepEqual(stale, { status: RAG_LOOKUP_STATUS.ENTRY_NOT_IN_CORPUS, liveEntryId: entryNo(100) })
+    const live = await RealRagRunner.getEntryContent(request(entryNo(100)))
+    assert.equal(live.status, RAG_LOOKUP_STATUS.FOUND)
+  })
+})
+
+test("an ARK lookup entry without created_at is a protocol error, not a guess at the live entry", async () => {
+  await withLookup({ createdAt: () => "" }, async () => {
+    await assert.rejects(RealRagRunner.getEntryContent(request(entryNo(124))), DataclusterMcpProtocolError)
+  })
+})
+
+test("a hit of another dataset never reaches the agent or rag_get_text: the lookup, the vector search and the keyword search refuse it", async () => {
+  const foreign = dataset(9999)
+  await withLookup({ hitDataset: foreign }, async () => {
+    await assert.rejects(RealRagRunner.getEntryContent(request(entryNo(124))), /outside the project's dataset 113:4242/)
+  })
+  const savedVector = proto.vectorSearchChunks
+  const savedKeyword = proto.keywordSearch
+  const foreignChunk: DataclusterChunk = {
+    entry_id: entryIdSchema.parse("113:9999:1"),
+    dataset_id: foreign,
+    score: 1,
+    chunk_text: "x",
+    metadata: { ark: ARK, folio: 1 },
+  }
+  proto.vectorSearchChunks = async () => ({ results: [foreignChunk], total: 1 })
   proto.keywordSearch = async () => ({
-    results: [{ entry_id: entryNo(100), dataset_id: dataset(4242), score: 1, metadata: { ark: ARK } }],
-    pagination: { total: 2, unaddressable: 1 },
+    results: [{ entry_id: foreignChunk.entry_id, dataset_id: foreign, score: 1, metadata: { ark: ARK } }],
+    pagination: { total: 1 },
   })
   try {
-    await assert.rejects(RealRagRunner.getEntryContent(request(entryNo(100))), /without an addressable entry id/)
+    const signal = new AbortController().signal
+    await assert.rejects(RealRagRunner.query({ projectId, query: "q", k: 5, signal }), DataclusterMcpProtocolError)
+    await assert.rejects(RealRagRunner.keywordSearch({ projectId, query: "q", limit: 5, signal }), DataclusterMcpProtocolError)
   } finally {
-    proto.keywordSearch = saved
+    proto.vectorSearchChunks = savedVector
+    proto.keywordSearch = savedKeyword
   }
 })
 
-test("a cached dataset id that is not composite (an integer left from the old contract) is refused, never sent to the MCP", async () => {
+test("a cached dataset id that is not composite (an integer left from the old contract) is re-resolved by slug and re-cached, never sent to the MCP", async () => {
   await prisma.project.update({ where: { id: projectId }, data: { clusterDatasetId: "4242" } })
+  const asked: unknown[] = []
+  const savedGetDataset = proto.getDataset
+  proto.getDataset = async function (datasetId) {
+    asked.push(datasetId)
+    return savedGetDataset.call(this, datasetId)
+  }
   try {
-    await assert.rejects(RealRagRunner.getEntryContent(request(entryNo(124))), z.ZodError)
+    const live = await RealRagRunner.getEntryContent(request(entryNo(124)))
+    assert.equal(live.status, RAG_LOOKUP_STATUS.FOUND)
+    assert.deepEqual(asked, [], "the malformed value was not used as an id")
+    const project = await prisma.project.findUniqueOrThrow({ where: { id: projectId }, select: { clusterDatasetId: true } })
+    assert.equal(project.clusterDatasetId, dataset(4242), "the slug resolution overwrote it")
   } finally {
+    proto.getDataset = savedGetDataset
     await prisma.project.update({ where: { id: projectId }, data: { clusterDatasetId: dataset(4242) } })
   }
 })

@@ -156,12 +156,22 @@ export const RAG_LOOKUP_STATUS = {
   ENTRY_NOT_FOUND: "entry_not_found",
   /** The requested entry id is not the ARK's live entry in the dataset. */
   ENTRY_NOT_IN_CORPUS: "entry_not_in_corpus",
+  /**
+   * The ARK's entries cannot be listed completely right now — the cluster
+   * counted matches it did not return or could not address, as while a
+   * re-ingest replaces the stale entry with the new one. The live entry cannot
+   * be told, so nothing is read; the same request succeeds once the cluster
+   * settles. Transient, unlike a protocol error.
+   */
+  ENTRY_REINDEXING: "entry_reindexing",
 } as const
 
 export type RagEntryContentResult =
   | { status: typeof RAG_LOOKUP_STATUS.FOUND; content: RagEntryContent }
   /** The requested id is not the ARK's live entry; `liveEntryId` is (null: the ARK has none). */
   | { status: typeof RAG_LOOKUP_STATUS.ENTRY_NOT_IN_CORPUS; liveEntryId: EntryId | null }
+  /** The ARK's entries cannot be told apart right now (see RAG_LOOKUP_STATUS.ENTRY_REINDEXING). */
+  | { status: typeof RAG_LOOKUP_STATUS.ENTRY_REINDEXING }
 
 export interface RagEntryContent {
   entryId: EntryId
@@ -192,6 +202,8 @@ export type DocumentFoliosResult =
   | { status: typeof RAG_LOOKUP_STATUS.FOUND; entryId: EntryId; folios: DocumentFolios }
   /** No cluster entry carries this ARK — not ingested, or dropped since. */
   | { status: typeof RAG_LOOKUP_STATUS.ENTRY_NOT_FOUND }
+  /** The ARK's entries cannot be told apart right now (see RAG_LOOKUP_STATUS.ENTRY_REINDEXING). */
+  | { status: typeof RAG_LOOKUP_STATUS.ENTRY_REINDEXING }
 
 // ---------------------------------------------------------------------------
 // Facade

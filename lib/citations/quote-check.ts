@@ -20,6 +20,10 @@
  *   - the caller's signal (the turn was cancelled) → that ARK's quotes are
  *     `unverifiable / cancelled`;
  *   - the budget → `unverifiable / budget_exceeded`;
+ *   - neither, but a document the cluster is re-indexing (its entries cannot
+ *     be told apart: `RAG_LOOKUP_STATUS.ENTRY_REINDEXING`) →
+ *     `unverifiable / entry_reindexing`, distinct from a lookup that failed
+ *     and from a document that is not there;
  *   - neither, but an entry whose folio boundaries cannot be trusted
  *     (`FolioMapAmbiguousError`: an older entry with no page offsets whose
  *     headings are out of order or whose prefix is not the documented one) →
@@ -161,6 +165,10 @@ async function fetchDocument(
     )
     if (result.status === RAG_LOOKUP_STATUS.ENTRY_NOT_FOUND) {
       return { kind: "unverifiable", cause: QUOTE_UNVERIFIABLE_CAUSE.ENTRY_NOT_FOUND }
+    }
+    if (result.status === RAG_LOOKUP_STATUS.ENTRY_REINDEXING) {
+      console.warn(`[quote check] ${ark}: unverifiable, the document is being re-indexed`)
+      return { kind: "unverifiable", cause: QUOTE_UNVERIFIABLE_CAUSE.ENTRY_REINDEXING }
     }
     const low = args.lowOcrFolios
       ? await raceAbort(args.lowOcrFolios({ corpusProjectId: args.corpusProjectId, ark, folios: citedFolios }), signals.any)

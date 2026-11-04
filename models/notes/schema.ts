@@ -97,6 +97,11 @@ export const QUOTE_UNVERIFIABLE_CAUSE = {
   ENTRY_NOT_FOUND: "entry_not_found",
   FOLIO_ABSENT: "folio_absent",
   LOOKUP_FAILED: "lookup_failed",
+  /**
+   * The cluster is re-indexing the document: its entries cannot be told apart
+   * right now, so no text is attributed to it. Transient — a later check reads it.
+   */
+  ENTRY_REINDEXING: "entry_reindexing",
   BUDGET_EXCEEDED: "budget_exceeded",
   /** The turn was cancelled while the check was running. */
   CANCELLED: "cancelled",
