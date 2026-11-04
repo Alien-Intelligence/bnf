@@ -23,6 +23,7 @@
 // and fake-rag.test.ts pins the 1889 outputs (fake-rag-1889.snapshot.json).
 
 import { OCR_LOW_QUALITY_THRESHOLD } from "@/lib/constants"
+import { BNF_LANGUAGE_LABEL } from "./constants"
 import { FIXTURE_SOURCE } from "./fixture-source"
 import type { RagFixture } from "./rag-fixtures"
 
@@ -70,7 +71,7 @@ export const QUOTE_FIXTURES: QuoteFixture[] = [
     title: POPULAIRE_TITLE,
     year: 1937,
     docType: "press",
-    lang: "Français",
+    lang: BNF_LANGUAGE_LABEL.FRENCH,
     source: FIXTURE_SOURCE,
     subtype: null,
     ocrQuality: 0.93,
@@ -100,7 +101,7 @@ export const QUOTE_FIXTURES: QuoteFixture[] = [
     title: POPULAIRE_TITLE,
     year: 1937,
     docType: "press",
-    lang: "Français",
+    lang: BNF_LANGUAGE_LABEL.FRENCH,
     source: FIXTURE_SOURCE,
     subtype: null,
     ocrQuality: 0.93,
@@ -124,7 +125,7 @@ export const QUOTE_FIXTURES: QuoteFixture[] = [
     title: POPULAIRE_TITLE,
     year: 1937,
     docType: "press",
-    lang: "Français",
+    lang: BNF_LANGUAGE_LABEL.FRENCH,
     source: FIXTURE_SOURCE,
     subtype: null,
     ocrQuality: 0.93,
@@ -148,7 +149,7 @@ export const QUOTE_FIXTURES: QuoteFixture[] = [
     title: LOW_OCR_TITLE,
     year: 1937,
     docType: "press",
-    lang: "Français",
+    lang: BNF_LANGUAGE_LABEL.FRENCH,
     source: FIXTURE_SOURCE,
     subtype: null,
     ocrQuality: 0.61,
@@ -170,7 +171,7 @@ export const QUOTE_FIXTURES: QuoteFixture[] = [
     title: FORET_TITLE,
     year: 1937,
     docType: "press",
-    lang: "Français",
+    lang: BNF_LANGUAGE_LABEL.FRENCH,
     source: FIXTURE_SOURCE,
     subtype: null,
     ocrQuality: 0.9,
@@ -198,7 +199,7 @@ export const QUOTE_FIXTURES: QuoteFixture[] = [
     title: EAUX_FORETS_TITLE,
     year: 1937,
     docType: "press",
-    lang: "Français",
+    lang: BNF_LANGUAGE_LABEL.FRENCH,
     source: FIXTURE_SOURCE,
     subtype: null,
     ocrQuality: 0.95,

@@ -12,6 +12,7 @@ import { entryIdSchema } from "./composite-ids"
 import type { EntryId } from "./composite-ids"
 import { RAG_LOOKUP_STATUS } from "./rag"
 import type { RagEntryContent, RagEntryContentResult } from "./rag"
+import { BNF_LANGUAGE_LABEL } from "./constants"
 import { RAG_FIXTURES } from "./rag-fixtures"
 import FAKE_1889_SNAPSHOT from "./fake-rag-1889.snapshot.json"
 import { codePointLength, sliceCodePoints, splitEntryFolios } from "./folio-text"
@@ -187,9 +188,9 @@ test("keywordSearch applies exact-match facet filters, as the real metadata_filt
   assert.ok(books.hits.every((h) => bookArks.has(h.ark)))
   // The facet is the value the worker stores — the BnF's French label — so the
   // fake agrees with the real cluster on what a filter must say.
-  const french = await FakeRagRunner.keywordSearch({ projectId: PROJECT, query: "exposition", limit: 100, filters: { lang: "Français" }, signal: signal() })
+  const french = await FakeRagRunner.keywordSearch({ projectId: PROJECT, query: "exposition", limit: 100, filters: { lang: BNF_LANGUAGE_LABEL.FRENCH }, signal: signal() })
   assert.ok(french.hits.length > 0 && french.hits.length < all.hits.length, "the English document is excluded")
-  const frenchArks = new Set(RAG_FIXTURES.filter((f) => f.lang === "Français").map((f) => f.ark))
+  const frenchArks = new Set(RAG_FIXTURES.filter((f) => f.lang === BNF_LANGUAGE_LABEL.FRENCH).map((f) => f.ark))
   assert.ok(french.hits.every((h) => frenchArks.has(h.ark)))
   const isoCode = await FakeRagRunner.keywordSearch({ projectId: PROJECT, query: "exposition", limit: 100, filters: { lang: "fr" }, signal: signal() })
   assert.deepEqual(isoCode.hits, [])

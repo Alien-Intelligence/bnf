@@ -14,6 +14,7 @@ import assert from "node:assert/strict"
 import { readFileSync } from "node:fs"
 import { z } from "zod"
 import { datasetIdSchema, entryIdSchema } from "./composite-ids"
+import { BNF_LANGUAGE_LABEL } from "./constants"
 import { DataclusterMcpClient, DataclusterMcpProtocolError } from "./datacluster-mcp-client"
 import { RAG_LOOKUP_STATUS } from "./rag"
 import { arkLookup, assertInDataset, chunkToPassage, folioChunksOf, pickLiveEntryId, toEntryContent } from "./rag-wire"
@@ -145,7 +146,7 @@ test("keyword search: hits carry composite ids at the top level, camelCase entry
   assert.equal(hit.metadata?.ark, "ark:/12148/bpt6k7058455m")
   assert.equal(hit.metadata?.title, "Le Plein air : revue illustrée de tous les sports")
   assert.equal(hit.metadata?.docType, "press")
-  assert.equal(hit.metadata?.lang, "Français", "lang is the BnF's French label, not an ISO code")
+  assert.equal(hit.metadata?.lang, BNF_LANGUAGE_LABEL.FRENCH, "lang is the BnF's French label, not an ISO code")
 })
 
 test("ARK lookup: an empty query filtered on the ark gives the entry's composite id, and it is the live one", async () => {

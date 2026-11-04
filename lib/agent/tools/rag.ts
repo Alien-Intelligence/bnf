@@ -34,6 +34,7 @@ import "server-only"
 import { z, ZodError } from "zod"
 import { defineTool } from "@alien/chat-sdk/claude"
 import { ClusterRagClient, RAG_LOOKUP_STATUS } from "@/lib/cluster/rag"
+import { BNF_LANGUAGE_LABEL } from "@/lib/cluster/constants"
 import { entryIdSchema } from "@/lib/cluster/composite-ids"
 import {
   DataclusterMcpAuthError,
@@ -281,8 +282,8 @@ export const ragKeywordSearchTool = defineTool<
           .min(1)
           .optional()
           .describe(
-            "Restrict to this language, written as the BnF labels it in French — \"Français\" — " +
-              "exactly as stored on the entry. NOT an ISO code: \"fr\" or \"fre\" matches nothing.",
+            `Restrict to this language, written as the BnF labels it in French — "${BNF_LANGUAGE_LABEL.FRENCH}" — ` +
+              'exactly as stored on the entry. NOT an ISO code: "fr" or "fre" matches nothing.',
           ),
         source: z.string().min(1).optional().describe("Restrict to this source (e.g. \"gallica\")."),
       })

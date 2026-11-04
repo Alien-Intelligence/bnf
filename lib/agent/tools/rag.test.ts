@@ -10,6 +10,7 @@ import { test, before, after } from "node:test"
 import assert from "node:assert/strict"
 import { prisma } from "@/lib/db"
 import { ClusterRagClient, RAG_LOOKUP_STATUS } from "@/lib/cluster/rag"
+import { BNF_LANGUAGE_LABEL } from "@/lib/cluster/constants"
 import { entryIdSchema } from "@/lib/cluster/composite-ids"
 import type { RagEntryContentRequest } from "@/lib/cluster/rag"
 import {
@@ -329,7 +330,7 @@ test("what is not a cluster failure still propagates out of a rag tool, and so d
 test("rag_keyword_search's lang filter tells the model the stored value, the BnF's French label, not an ISO code", () => {
   const filters = ragKeywordSearchTool.inputSchema.shape.filters.unwrap().shape
   const description = filters.lang.description ?? ""
-  assert.match(description, /Français/)
+  assert.ok(description.includes(`"${BNF_LANGUAGE_LABEL.FRENCH}"`), description)
   assert.match(description, /NOT an ISO code/)
   assert.doesNotMatch(description, /e\.g\. "fr"\)/)
 })
