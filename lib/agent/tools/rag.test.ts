@@ -258,3 +258,11 @@ test("rag_get_text tells the agent a document is being re-indexed, and to retry 
   assert.match(entryReindexingError(ARK), /en cours de réindexation[\s\S]*Réessaie[\s\S]*plus tard[\s\S]*un autre passage/)
   assert.equal(toolCallErrored(false, out), true)
 })
+
+test("rag_keyword_search's lang filter tells the model the stored value, the BnF's French label, not an ISO code", () => {
+  const filters = ragKeywordSearchTool.inputSchema.shape.filters.unwrap().shape
+  const description = filters.lang.description ?? ""
+  assert.match(description, /Français/)
+  assert.match(description, /NOT an ISO code/)
+  assert.doesNotMatch(description, /e\.g\. "fr"\)/)
+})

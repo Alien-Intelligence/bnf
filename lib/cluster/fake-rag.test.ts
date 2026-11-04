@@ -185,6 +185,14 @@ test("keywordSearch applies exact-match facet filters, as the real metadata_filt
   assert.ok(books.hits.length > 0 && books.hits.length < all.hits.length)
   const bookArks = new Set(RAG_FIXTURES.filter((f) => f.docType === "book").map((f) => f.ark))
   assert.ok(books.hits.every((h) => bookArks.has(h.ark)))
+  // The facet is the value the worker stores — the BnF's French label — so the
+  // fake agrees with the real cluster on what a filter must say.
+  const french = await FakeRagRunner.keywordSearch({ projectId: PROJECT, query: "exposition", limit: 100, filters: { lang: "Français" }, signal: signal() })
+  assert.ok(french.hits.length > 0 && french.hits.length < all.hits.length, "the English document is excluded")
+  const frenchArks = new Set(RAG_FIXTURES.filter((f) => f.lang === "Français").map((f) => f.ark))
+  assert.ok(french.hits.every((h) => frenchArks.has(h.ark)))
+  const isoCode = await FakeRagRunner.keywordSearch({ projectId: PROJECT, query: "exposition", limit: 100, filters: { lang: "fr" }, signal: signal() })
+  assert.deepEqual(isoCode.hits, [])
   const none = await FakeRagRunner.keywordSearch({
     projectId: PROJECT,
     query: "exposition",

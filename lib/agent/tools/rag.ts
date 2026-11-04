@@ -202,7 +202,14 @@ export const ragKeywordSearchTool = defineTool<
     filters: z
       .object({
         type: z.string().min(1).optional().describe("Restrict to this document type (e.g. \"press\", \"book\")."),
-        lang: z.string().min(1).optional().describe("Restrict to this language code (e.g. \"fr\")."),
+        lang: z
+          .string()
+          .min(1)
+          .optional()
+          .describe(
+            "Restrict to this language, written as the BnF labels it in French — \"Français\" — " +
+              "exactly as stored on the entry. NOT an ISO code: \"fr\" or \"fre\" matches nothing.",
+          ),
         source: z.string().min(1).optional().describe("Restrict to this source (e.g. \"gallica\")."),
       })
       .optional()
