@@ -7,6 +7,7 @@ import "server-only"
 
 import { test, before, after } from "node:test"
 import assert from "node:assert/strict"
+import { z } from "zod"
 import { prisma } from "@/lib/db"
 import { createTestProject, createTestUser, deleteTestUser } from "@/lib/testing/fixtures"
 import { cleanupProject } from "@/lib/testing/project-cleanup"
@@ -16,6 +17,8 @@ import {
   DataclusterMcpToolError,
   type DataclusterChunk,
 } from "./datacluster-mcp-client"
+import { datasetIdSchema, entryIdSchema } from "./composite-ids"
+import type { EntryId } from "./composite-ids"
 import { assembleEntryText } from "./folio-text"
 import { RAG_LOOKUP_STATUS } from "./rag"
 import { RealRagRunner } from "./real-rag"
@@ -24,6 +27,9 @@ process.env.DATACLUSTER_MCP_URL ??= "https://cluster.invalid/mcp"
 process.env.CLUSTER_BEARER_TOKEN ??= "test-token"
 
 const ARK = "ark:/12148/bpt6k822781z"
+/** The MCP's composite ids: "cluster:dataset" and "cluster:dataset:entry". */
+const dataset = (n: number) => datasetIdSchema.parse(`113:${n}`)
+const entryNo = (n: number) => entryIdSchema.parse(`113:4242:${n}`)
 let userId: string
 let projectId: string
 const proto = DataclusterMcpClient.prototype
@@ -39,29 +45,29 @@ let entryText = "## Folio 1\n\nTexte"
 let entryChunks: (offset: number) => DataclusterChunk[] = () => []
 const chunkOffsets: number[] = []
 /** The dataset the cluster currently has for the project; tests swap it. */
-let liveDatasetId = 4242
+let liveDatasetId = dataset(4242)
 const lookupOffsets: number[] = []
 
 before(async () => {
   userId = (await createTestUser()).id
   projectId = (await createTestProject(userId, "real-rag-lookup")).id
-  await prisma.project.update({ where: { id: projectId }, data: { clusterDatasetId: 4242 } })
+  await prisma.project.update({ where: { id: projectId }, data: { clusterDatasetId: dataset(4242) } })
   // 25 entries for one ARK (many lagging re-ingests): two pages of 20.
-  const ids = Array.from({ length: 25 }, (_, i) => 100 + i)
+  const ids = Array.from({ length: 25 }, (_, i) => entryNo(100 + i))
   proto.keywordSearch = async function (input) {
     lookupOffsets.push(input.offset ?? 0)
     const page = ids.slice(input.offset ?? 0, (input.offset ?? 0) + (input.limit ?? 20))
     return {
-      results: page.map((entry_id) => ({ entry_id, dataset_id: 4242, score: 1, metadata: { ark: ARK } })),
+      results: page.map((entry_id) => ({ entry_id, dataset_id: dataset(4242), score: 1, metadata: { ark: ARK } })),
       pagination: { total: ids.length },
     }
   }
   proto.getDataset = async function (datasetId) {
     if (datasetId !== liveDatasetId) throw new DataclusterMcpToolError("Dataset not found or access denied")
-    return { id: datasetId, name: "n", slug: `bnf-${projectId}`, entry_count: 1 }
+    return { dataset_id: datasetId, name: "n", slug: `bnf-${projectId}`, entry_count: 1 }
   }
   proto.listDatasets = async function () {
-    return [{ id: liveDatasetId, name: "n", slug: `bnf-${projectId}`, entry_count: 1 }]
+    return [{ dataset_id: liveDatasetId, name: "n", slug: `bnf-${projectId}`, entry_count: 1 }]
   }
   proto.getEntryContent = async function (input) {
     const total = [...entryText].length
@@ -83,7 +89,7 @@ after(async () => {
   await deleteTestUser(userId)
 })
 
-const request = (entryId: number) => ({
+const request = (entryId: EntryId) => ({
   projectId,
   ark: ARK,
   entryId,
@@ -94,26 +100,48 @@ const request = (entryId: number) => ({
 
 test("the ARK lookup pages through more than one page of entries instead of failing", async () => {
   lookupOffsets.length = 0
-  const live = await RealRagRunner.getEntryContent(request(124))
+  const live = await RealRagRunner.getEntryContent(request(entryNo(124)))
   assert.equal(live.status, RAG_LOOKUP_STATUS.FOUND)
   assert.deepEqual(lookupOffsets, [0, 20])
 })
 
 test("rag_get_text reads only the live entry; a stale id of the same ARK is refused with the live id", async () => {
-  const stale = await RealRagRunner.getEntryContent(request(103))
-  assert.deepEqual(stale, { status: RAG_LOOKUP_STATUS.ENTRY_NOT_IN_CORPUS, liveEntryId: 124 })
+  const stale = await RealRagRunner.getEntryContent(request(entryNo(103)))
+  assert.deepEqual(stale, { status: RAG_LOOKUP_STATUS.ENTRY_NOT_IN_CORPUS, liveEntryId: entryNo(124) })
 })
 
 test("a cached dataset id that no longer exists is re-resolved and re-cached, not read as an empty corpus", async () => {
-  liveDatasetId = 5151 // the dataset was recreated under a new id
+  liveDatasetId = dataset(5151) // the dataset was recreated under a new id
   try {
-    const live = await RealRagRunner.getEntryContent(request(124))
+    const live = await RealRagRunner.getEntryContent(request(entryNo(124)))
     assert.equal(live.status, RAG_LOOKUP_STATUS.FOUND)
     const project = await prisma.project.findUniqueOrThrow({ where: { id: projectId }, select: { clusterDatasetId: true } })
-    assert.equal(project.clusterDatasetId, 5151)
+    assert.equal(project.clusterDatasetId, dataset(5151))
   } finally {
-    liveDatasetId = 4242
-    await prisma.project.update({ where: { id: projectId }, data: { clusterDatasetId: 4242 } })
+    liveDatasetId = dataset(4242)
+    await prisma.project.update({ where: { id: projectId }, data: { clusterDatasetId: dataset(4242) } })
+  }
+})
+
+test("an ARK lookup that leaves matches without an addressable id is a protocol error, not a guess at the live entry", async () => {
+  const saved = proto.keywordSearch
+  proto.keywordSearch = async () => ({
+    results: [{ entry_id: entryNo(100), dataset_id: dataset(4242), score: 1, metadata: { ark: ARK } }],
+    pagination: { total: 2, unaddressable: 1 },
+  })
+  try {
+    await assert.rejects(RealRagRunner.getEntryContent(request(entryNo(100))), /without an addressable entry id/)
+  } finally {
+    proto.keywordSearch = saved
+  }
+})
+
+test("a cached dataset id that is not composite (an integer left from the old contract) is refused, never sent to the MCP", async () => {
+  await prisma.project.update({ where: { id: projectId }, data: { clusterDatasetId: "4242" } })
+  try {
+    await assert.rejects(RealRagRunner.getEntryContent(request(entryNo(124))), z.ZodError)
+  } finally {
+    await prisma.project.update({ where: { id: projectId }, data: { clusterDatasetId: dataset(4242) } })
   }
 })
 
@@ -123,10 +151,11 @@ function workerEntry(count: number, pageText: (folio: number) => string) {
   const { text, ranges } = assembleEntryText(pages)
   const cps = [...text]
   const chunks: DataclusterChunk[] = pages.map((p, i) => ({
-    id: String(p.folio),
+    entry_id: entryNo(124),
+    dataset_id: dataset(4242),
     score: 1,
     chunk_text: cps.slice(ranges[i][0], ranges[i][1]).join(""),
-    metadata: { ark: ARK, folio: p.folio, char_start: ranges[i][0], char_end: ranges[i][1], entry_id: 124 },
+    metadata: { ark: ARK, folio: p.folio, char_start: ranges[i][0], char_end: ranges[i][1] },
   }))
   return { text, chunks }
 }
@@ -165,10 +194,11 @@ test("an older entry whose chunks are windows stops listing after one page and f
   // Overlapping windows: offsets present, but not one page per chunk.
   const windows = (offset: number): DataclusterChunk[] =>
     Array.from({ length: 100 }, (_, i) => ({
-      id: `w${offset + i}`,
+      entry_id: entryNo(124),
+      dataset_id: dataset(4242),
       score: 1,
       chunk_text: [...entry.text].slice(offset + i, offset + i + 30).join(""),
-      metadata: { ark: ARK, folio: 1, char_start: offset + i, char_end: offset + i + 30, entry_id: 124 },
+      metadata: { ark: ARK, folio: 1, char_start: offset + i, char_end: offset + i + 30 },
     }))
   const result = await withEntry(entry.text, windows, () => RealRagRunner.getDocumentFolios(foliosRequest()))
   assert.ok(result.status === RAG_LOOKUP_STATUS.FOUND, `expected found, got ${result.status}`)

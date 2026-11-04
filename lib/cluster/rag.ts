@@ -20,6 +20,7 @@ import "server-only"
 // Every request carries the caller's AbortSignal (the turn's `ctx.signal`), and
 // every offset and length is in Unicode code points (folio-text.ts).
 
+import type { EntryId } from "./composite-ids"
 import type { DocumentFolios } from "./folio-text"
 import { CLUSTER_MODE, clusterMode } from "./mode"
 
@@ -53,10 +54,11 @@ export interface RagPassage {
    */
   charRange: [number, number] | null
   /**
-   * Cluster entry id this chunk belongs to (null if the cluster omitted it).
-   * The handle for `rag_get_text` — chain search → full text with it.
+   * Composite id ("cluster:dataset:entry") of the entry this chunk belongs to,
+   * from the chunk's top-level `entry_id` — the cluster always sends it. The
+   * handle for `rag_get_text` — chain search → full text with it.
    */
-  entryId: number | null
+  entryId: EntryId
 }
 
 export interface RagQueryRequest {
@@ -104,8 +106,8 @@ export interface RagKeywordRequest {
 export interface RagKeywordHit {
   /** BnF ARK — the citation/document key. */
   ark: string
-  /** Cluster entry id — the handle for `rag_get_text`. */
-  entryId: number
+  /** Composite entry id — the handle for `rag_get_text`. */
+  entryId: EntryId
   /** Document title, when known. */
   title: string | null
   /** Raw BnF date string (may be a range), when known. */
@@ -130,12 +132,12 @@ export interface RagEntryContentRequest {
   /**
    * The ARK of the search result the entry id came from. The runner reads the
    * entry only if the ARK lookup in the corpus project's dataset returns this
-   * id for it: entry ids are cluster-wide, so a model-supplied id alone could
+   * id for it: an entry id can name any dataset of the cluster, so a model-supplied id alone could
    * name another project's (another client's) document.
    */
   ark: string
-  /** Cluster entry id, obtained from a search result. */
-  entryId: number
+  /** Composite entry id, obtained from a search result. */
+  entryId: EntryId
   /** Start offset into the processed text, in code points. */
   charOffset: number
   /**
@@ -159,10 +161,10 @@ export const RAG_LOOKUP_STATUS = {
 export type RagEntryContentResult =
   | { status: typeof RAG_LOOKUP_STATUS.FOUND; content: RagEntryContent }
   /** The requested id is not the ARK's live entry; `liveEntryId` is (null: the ARK has none). */
-  | { status: typeof RAG_LOOKUP_STATUS.ENTRY_NOT_IN_CORPUS; liveEntryId: number | null }
+  | { status: typeof RAG_LOOKUP_STATUS.ENTRY_NOT_IN_CORPUS; liveEntryId: EntryId | null }
 
 export interface RagEntryContent {
-  entryId: number
+  entryId: EntryId
   text: string
   charOffset: number
   charLimit: number
@@ -187,7 +189,7 @@ export interface DocumentFoliosRequest {
 }
 
 export type DocumentFoliosResult =
-  | { status: typeof RAG_LOOKUP_STATUS.FOUND; entryId: number; folios: DocumentFolios }
+  | { status: typeof RAG_LOOKUP_STATUS.FOUND; entryId: EntryId; folios: DocumentFolios }
   /** No cluster entry carries this ARK — not ingested, or dropped since. */
   | { status: typeof RAG_LOOKUP_STATUS.ENTRY_NOT_FOUND }
 

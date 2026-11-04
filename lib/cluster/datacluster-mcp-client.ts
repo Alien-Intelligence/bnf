@@ -33,6 +33,8 @@ import {
 } from "@/lib/constants"
 import { z } from "zod"
 import { requireClusterEnv } from "@/lib/env"
+import { datasetIdSchema, entryIdSchema } from "./composite-ids"
+import type { DatasetId, EntryId } from "./composite-ids"
 import { withTimeout } from "@/lib/mcp/abort"
 import { withRetry } from "@/lib/mcp/retry"
 
@@ -152,35 +154,42 @@ const dataclusterEnvelopeSchema = z.object({
   error: z.string().optional(),
 })
 
-/** One dataset as returned by `datacluster_list_datasets`. */
+/**
+ * One dataset as returned by `datacluster_list_datasets` / `get_dataset`. Its
+ * handle is the composite `dataset_id`; the MCP no longer carries an integer
+ * `id` (see composite-ids.ts).
+ */
 const dataclusterDatasetSchema = z
-  .object({ id: z.number().int(), name: z.string(), slug: z.string(), entry_count: z.number().int() })
+  .object({ dataset_id: datasetIdSchema, name: z.string(), slug: z.string(), entry_count: z.number().int() })
   .loose()
 export type DataclusterDataset = z.infer<typeof dataclusterDatasetSchema>
 
 const listDatasetsDataSchema = z.object({ datasets: z.array(dataclusterDatasetSchema) }).loose()
 
 /**
- * One chunk hit from `datacluster_vector_search_chunks`. Metadata fields are
- * typed as the worker writes them; chunkToPassage (rag-wire.ts) decides what
- * a chunk without an ARK or offsets means.
+ * One chunk hit from `datacluster_vector_search_chunks`. The entry and dataset
+ * the chunk belongs to are TOP-LEVEL composite ids (the chunk metadata no
+ * longer carries them), and a hit without them breaks the contract. The
+ * metadata keys are snake_case, as the worker writes the chunk payload;
+ * chunkToPassage (rag-wire.ts) decides what a chunk without an ARK or offsets
+ * means.
  */
 const dataclusterChunkSchema = z
   .object({
-    id: z.union([z.string(), z.number()]).transform(String),
+    entry_id: entryIdSchema,
+    dataset_id: datasetIdSchema,
     score: z.number(),
     chunk_text: z.string(),
     metadata: z
       .object({
         ark: z.string().optional(),
+        ark_slug: z.string().optional(),
         folio: z.number().int().optional(),
         char_start: z.number().optional(),
         char_end: z.number().optional(),
-        entry_id: z.number().int().optional(),
-        dataset_id: z.number().int().optional(),
         chunk_index: z.number().int().optional(),
-        docType: z.string().optional(),
-        subtype: z.string().optional(),
+        doc_type: z.string().nullable().optional(),
+        sub_type: z.string().nullable().optional(),
       })
       .loose(),
   })
@@ -197,8 +206,8 @@ export interface VectorSearchChunksInput {
   limit?: number
   offset?: number
   scoreThreshold?: number
-  datasetIds?: number[]
-  entryIds?: number[]
+  datasetIds?: DatasetId[]
+  entryIds?: EntryId[]
 }
 
 /** One snippet inside a keyword-search hit. */
@@ -208,8 +217,8 @@ export type DataclusterSnippet = z.infer<typeof dataclusterSnippetSchema>
 /** One entry-level hit from `datacluster_keyword_search`. */
 const dataclusterKeywordHitSchema = z
   .object({
-    entry_id: z.number().int(),
-    dataset_id: z.number().int(),
+    entry_id: entryIdSchema,
+    dataset_id: datasetIdSchema,
     score: z.number(),
     snippets: z.array(dataclusterSnippetSchema).optional(),
     metadata: z
@@ -231,7 +240,14 @@ export type DataclusterKeywordHit = z.infer<typeof dataclusterKeywordHitSchema>
 const keywordSearchDataSchema = z
   .object({
     results: z.array(dataclusterKeywordHitSchema),
-    pagination: z.object({ total: z.number().int().nonnegative().optional() }).loose().optional(),
+    pagination: z
+      .object({
+        total: z.number().int().nonnegative().optional(),
+        /** Matches the MCP could not give a composite id: counted in `total`, absent from `results`. */
+        unaddressable: z.number().int().nonnegative().optional(),
+      })
+      .loose()
+      .optional(),
   })
   .loose()
 type KeywordSearchData = z.infer<typeof keywordSearchDataSchema>
@@ -240,7 +256,7 @@ export interface KeywordSearchInput {
   query: string
   limit?: number
   offset?: number
-  datasetIds?: number[]
+  datasetIds?: DatasetId[]
   /** Exact-match filters on the dataset metadata schema (docType/lang/source/…). */
   metadataFilters?: Record<string, string | number | string[]>
 }
@@ -260,7 +276,7 @@ export interface KeywordSearchInput {
  */
 export const dataclusterEntryContentSchema = z
   .object({
-    entry_id: z.number().int().positive().optional(),
+    entry_id: entryIdSchema.optional(),
     text: z.string(),
     char_offset: z.number().int().nonnegative().optional(),
     char_limit: z.number().int().nonnegative().optional(),
@@ -273,7 +289,7 @@ export type DataclusterEntryContent = z.infer<typeof dataclusterEntryContentSche
 
 /** Offset and limit are explicit: the caller owns the default, not the MCP. */
 export interface GetEntryContentInput {
-  entryId: number
+  entryId: EntryId
   charOffset: number
   charLimit: number
 }
@@ -338,7 +354,7 @@ export class DataclusterMcpClient {
   }
 
   /** One dataset by id (`datacluster_get_dataset`); a missing id is a tool error. */
-  async getDataset(datasetId: number): Promise<DataclusterDataset> {
+  async getDataset(datasetId: DatasetId): Promise<DataclusterDataset> {
     return this.callData(
       "datacluster_get_dataset",
       { dataset_id: datasetId, response_format: "json" },
@@ -348,7 +364,8 @@ export class DataclusterMcpClient {
 
   /**
    * Semantic similarity search over chunks. Returns chunk-level hits with
-   * ARK/folio in `metadata`. Filters: datasetIds, entryIds, scoreThreshold.
+   * the composite `entry_id` / `dataset_id` at the top level and ARK/folio in
+   * `metadata`. Filters: datasetIds, entryIds, scoreThreshold.
    */
   async vectorSearchChunks(input: VectorSearchChunksInput): Promise<VectorSearchData> {
     const args: Record<string, unknown> = { query: input.query }

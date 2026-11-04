@@ -56,16 +56,16 @@ test("a failed handshake is dropped, so the retry opens a new session instead of
       }
       return session()
     }
-    return toolResult({ success: true, data: { datasets: [{ id: 3, name: "n", slug: "bnf-x", entry_count: 1 }] } })
+    return toolResult({ success: true, data: { datasets: [{ dataset_id: "113:3", name: "n", slug: "bnf-x", entry_count: 1 }] } })
   }
   const datasets = await new DataclusterMcpClient({ signal: new AbortController().signal }).listDatasets(10, 0)
-  assert.deepEqual(datasets.map((d) => d.id), [3])
+  assert.deepEqual(datasets.map((d) => d.dataset_id), ["113:3"])
   assert.equal(initializeCalls, 2)
 })
 
 test("a payload that breaks its schema is a protocol error, not a cast", async () => {
   handler = (body) =>
-    body.method === "initialize" ? session() : toolResult({ success: true, data: { datasets: [{ id: "three" }] } })
+    body.method === "initialize" ? session() : toolResult({ success: true, data: { datasets: [{ dataset_id: "three" }] } })
   await assert.rejects(new DataclusterMcpClient({ signal: new AbortController().signal }).listDatasets(10, 0), DataclusterMcpProtocolError)
 })
 

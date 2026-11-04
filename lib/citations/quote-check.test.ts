@@ -7,6 +7,7 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import { ClusterRagClient, RAG_LOOKUP_STATUS } from "@/lib/cluster/rag"
 import type { DocumentFoliosRequest, DocumentFoliosResult } from "@/lib/cluster/rag"
+import { entryIdSchema } from "@/lib/cluster/composite-ids"
 import { DataclusterMcpError } from "@/lib/cluster/datacluster-mcp-client"
 import { FolioMapAmbiguousError } from "@/lib/cluster/folio-text"
 import { QUOTE_CHECK_MAX_SOURCES, QUOTE_UNBALANCED_MARKS_MAX_PER_BLOCK } from "@/lib/constants"
@@ -59,7 +60,7 @@ async function withFacade<T>(
 
 const found = (folios: Array<[number, string]>): DocumentFoliosResult => ({
   status: RAG_LOOKUP_STATUS.FOUND,
-  entryId: 1,
+  entryId: entryIdSchema.parse("113:6363:1"),
   folios: new Map(folios),
 })
 

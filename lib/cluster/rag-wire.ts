@@ -10,6 +10,8 @@ import "server-only"
 // A payload that breaks its contract throws DataclusterMcpProtocolError; it is
 // never patched into something that merely looks valid.
 
+import { entryOrdinal } from "./composite-ids"
+import type { EntryId } from "./composite-ids"
 import { DataclusterMcpProtocolError } from "./datacluster-mcp-client"
 import type { DataclusterChunk, DataclusterEntryContent } from "./datacluster-mcp-client"
 import { EntryFolioFormatError, codePointLength, foliosFromChunks, splitEntryFolios } from "./folio-text"
@@ -17,8 +19,9 @@ import type { DocumentFolios, FolioChunk } from "./folio-text"
 import type { RagEntryContent, RagPassage } from "./rag"
 
 /**
- * Map a cluster chunk to a RagPassage. Returns null when the chunk carries no
- * ARK — it cannot serve as a citation source, so it is dropped (never cited
+ * Map a cluster chunk to a RagPassage. The entry id is the chunk's top-level
+ * composite `entry_id` (the client schema guarantees it). Returns null when the
+ * chunk carries no ARK — it cannot serve as a citation source, so it is dropped (never cited
  * without an ARK; never an invented one). Folio is preserved when present and
  * left null otherwise. The char range is set only when the chunk carries BOTH
  * offsets (worker-v2 writes them together); a chunk indexed before offsets
@@ -26,7 +29,7 @@ import type { RagEntryContent, RagPassage } from "./rag"
  * document". An offset pair that is not a valid range is a protocol error.
  */
 export function chunkToPassage(chunk: DataclusterChunk): RagPassage | null {
-  const { ark, folio, char_start, char_end, entry_id } = chunk.metadata
+  const { ark, folio, char_start, char_end } = chunk.metadata
   if (typeof ark !== "string" || ark.length === 0) return null
 
   return {
@@ -35,13 +38,13 @@ export function chunkToPassage(chunk: DataclusterChunk): RagPassage | null {
     snippet: chunk.chunk_text,
     score: chunk.score,
     charRange: toCharRange(ark, char_start, char_end),
-    entryId: positiveOrNull(ark, "entry_id", entry_id),
+    entryId: chunk.entry_id,
   }
 }
 
 /**
- * A folio (IIIF vue, ≥ 1) or an entry id (≥ 1): absent → null; present but
- * not a positive safe integer → protocol error, never passed on to the agent.
+ * A folio (IIIF vue, ≥ 1): absent → null; present but not a positive safe
+ * integer → protocol error, never passed on to the agent.
  */
 function positiveOrNull(ark: string, field: string, value: unknown): number | null {
   if (value === undefined) return null
@@ -84,7 +87,7 @@ function toCharRange(ark: string, start: unknown, end: unknown): [number, number
  */
 export function toEntryContent(
   data: DataclusterEntryContent,
-  req: { entryId: number; charOffset: number; charLimit: number },
+  req: { entryId: EntryId; charOffset: number; charLimit: number },
 ): RagEntryContent {
   const missing = (fields: Array<keyof DataclusterEntryContent>) =>
     fields.filter((f) => data[f] === undefined)
@@ -185,7 +188,7 @@ function sliceFits(offset: number, end: number, total: number, hasMore: boolean)
   return end <= total && hasMore === end < total
 }
 
-function inconsistent(req: { entryId: number }, data: DataclusterEntryContent): DataclusterMcpProtocolError {
+function inconsistent(req: { entryId: EntryId }, data: DataclusterEntryContent): DataclusterMcpProtocolError {
   const { text, ...fields } = data
   return new DataclusterMcpProtocolError(
     `datacluster_get_entry_content (entry ${req.entryId}) returned inconsistent pagination ` +
@@ -194,7 +197,7 @@ function inconsistent(req: { entryId: number }, data: DataclusterEntryContent): 
 }
 
 function incomplete(
-  req: { entryId: number },
+  req: { entryId: EntryId },
   mode: string,
   absent: ReadonlyArray<string>,
 ): DataclusterMcpProtocolError {
@@ -207,18 +210,18 @@ function incomplete(
  * The entry ids an ARK lookup proves belong to `ark` in the dataset searched.
  *
  * The lookup is an exact `metadata_filters: {ark}` keyword search scoped to
- * the corpus project's dataset, so every hit must carry exactly this ARK and
- * a positive integer entry id — anything else means the filter was not
- * applied, and trusting it would read another document. `total` is the
+ * the corpus project's dataset, so every hit must carry exactly this ARK —
+ * anything else means the filter was not applied, and trusting it would read
+ * another document. (A hit's entry id is a composite id by the client schema.) `total` is the
  * cluster's own count of matches and the hits are every page the caller
  * fetched: a count that disagrees with them means the set is incomplete, and
  * the live entry cannot be told — a protocol error, never a guess.
  */
 export function liveEntryIds(
-  hits: ReadonlyArray<{ entry_id: unknown; metadata?: { ark?: unknown } }>,
+  hits: ReadonlyArray<{ entry_id: EntryId; metadata?: { ark?: unknown } }>,
   total: number | undefined,
   ark: string,
-): number[] {
+): EntryId[] {
   if (total === undefined) {
     throw new DataclusterMcpProtocolError(`ARK lookup for ${ark} returned no pagination.total`)
   }
@@ -233,11 +236,6 @@ export function liveEntryIds(
         `ARK lookup for ${ark} returned an entry of ${JSON.stringify(h.metadata?.ark)}`,
       )
     }
-    if (typeof h.entry_id !== "number" || !Number.isSafeInteger(h.entry_id) || h.entry_id <= 0) {
-      throw new DataclusterMcpProtocolError(
-        `ARK lookup for ${ark} returned an invalid entry id ${JSON.stringify(h.entry_id)}`,
-      )
-    }
     return h.entry_id
   })
   if (new Set(ids).size !== ids.length) {
@@ -247,13 +245,19 @@ export function liveEntryIds(
 }
 
 /**
- * The live entry among an ARK's entry ids: the highest. A re-ingest deletes
- * the stale entry and then creates the new one (worker-v2
- * LiveClusterSink.upsert), so when a tombstone lags the newest id is the one
- * the index serves (D13). `null` when the ARK has no entry.
+ * The live entry among an ARK's entry ids: the one with the highest entry
+ * number. A re-ingest deletes the stale entry and then creates the new one
+ * (worker-v2 LiveClusterSink.upsert), so when a tombstone lags the newest id is
+ * the one the index serves (D13). The ids all come from one dataset's ARK
+ * lookup, so comparing their entry numbers (entryOrdinal) is comparing creation
+ * order. `null` when the ARK has no entry.
  */
-export function pickLiveEntryId(ids: readonly number[]): number | null {
-  return ids.length === 0 ? null : Math.max(...ids)
+export function pickLiveEntryId(ids: readonly EntryId[]): EntryId | null {
+  let live: EntryId | null = null
+  for (const id of ids) {
+    if (live === null || entryOrdinal(id) > entryOrdinal(live)) live = id
+  }
+  return live
 }
 
 /**
@@ -280,7 +284,7 @@ export function folioChunksOf(chunks: readonly DataclusterChunk[]): FolioChunk[]
  * FolioMapAmbiguousError, which the quote check reports as such.
  */
 export function foliosForEntry(
-  entryId: number,
+  entryId: EntryId,
   ark: string,
   text: string,
   chunks: readonly FolioChunk[],

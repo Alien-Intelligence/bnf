@@ -10,6 +10,7 @@ import { test, before, after } from "node:test"
 import assert from "node:assert/strict"
 import { prisma } from "@/lib/db"
 import { ClusterRagClient, RAG_LOOKUP_STATUS } from "@/lib/cluster/rag"
+import { entryIdSchema } from "@/lib/cluster/composite-ids"
 import type { RagEntryContentRequest } from "@/lib/cluster/rag"
 import { RAG_DEFAULT_K, RAG_GET_TEXT_DEFAULT_CHAR_LIMIT, RAG_KEYWORD_DEFAULT_LIMIT } from "@/lib/constants"
 import { entryNotInCorpusError, ragGetTextTool, ragKeywordSearchTool, ragQueryTool } from "./rag"
@@ -25,6 +26,10 @@ import { markHeadIngested } from "@/lib/testing/mark-ingested"
 import { seedCorpusDocuments } from "@/lib/testing/seed-corpus"
 import { cleanupProject } from "@/lib/testing/project-cleanup"
 import { SESSION_SCOPE } from "@/models/sessions/schema"
+
+const ENTRY = entryIdSchema.parse("113:6363:3")
+const OTHER_ENTRY = entryIdSchema.parse("113:6363:99")
+const LIVE_ENTRY = entryIdSchema.parse("113:6363:12")
 
 let user: TurnScopedCtx["user"]
 let userId: string
@@ -107,21 +112,21 @@ async function captureGetText(
 }
 
 test("rag_get_text forwards charLimit 4000 and offset 0 when the agent omits them", async () => {
-  const req = await captureGetText({ entryId: 3 })
+  const req = await captureGetText({ entryId: ENTRY })
   assert.equal(RAG_GET_TEXT_DEFAULT_CHAR_LIMIT, 4_000)
   assert.equal(req.charLimit, RAG_GET_TEXT_DEFAULT_CHAR_LIMIT)
   assert.equal(req.charOffset, 0)
-  assert.equal(req.entryId, 3)
+  assert.equal(req.entryId, ENTRY)
 })
 
 test("rag_get_text keeps an explicit charLimit, including 0 (the rest of the document)", async () => {
-  assert.equal((await captureGetText({ entryId: 3, charLimit: 0 })).charLimit, 0)
-  assert.equal((await captureGetText({ entryId: 3, charLimit: 1_200 })).charLimit, 1_200)
+  assert.equal((await captureGetText({ entryId: ENTRY, charLimit: 0 })).charLimit, 0)
+  assert.equal((await captureGetText({ entryId: ENTRY, charLimit: 1_200 })).charLimit, 1_200)
 })
 
 test("rag_get_text reads the CORPUS project with the turn's signal", async () => {
   const controller = new AbortController()
-  const req = await captureGetText({ entryId: 3 }, controller.signal)
+  const req = await captureGetText({ entryId: ENTRY }, controller.signal)
   assert.equal(req.projectId, projectId, "corpus project, not the workspace")
   assert.equal(req.ark, ARK, "the ARK the entry must belong to is passed on")
   assert.notEqual(req.projectId, derivedId)
@@ -216,23 +221,26 @@ test("rag_get_text refuses an entry id the ARK lookup does not vouch for in this
   const original = ClusterRagClient.getEntryContent
   ClusterRagClient.getEntryContent = async () => ({
     status: RAG_LOOKUP_STATUS.ENTRY_NOT_IN_CORPUS,
-    liveEntryId: 12,
+    liveEntryId: LIVE_ENTRY,
   })
   let out: unknown
   try {
-    out = await ragGetTextTool.handler({ ark: ARK, entryId: 99 }, ctxFor())
+    out = await ragGetTextTool.handler({ ark: ARK, entryId: OTHER_ENTRY }, ctxFor())
   } finally {
     ClusterRagClient.getEntryContent = original
   }
-  assert.deepEqual(out, { success: false, error: entryNotInCorpusError(ARK, 99, 12) })
-  assert.match(entryNotInCorpusError(ARK, 99, 12), /entrée actuelle est 12/, "the refusal names the live id")
+  assert.deepEqual(out, { success: false, error: entryNotInCorpusError(ARK, OTHER_ENTRY, LIVE_ENTRY) })
+  assert.match(entryNotInCorpusError(ARK, OTHER_ENTRY, LIVE_ENTRY), /entrée actuelle est "113:6363:12"/, "the refusal names the live id")
   assert.equal(toolCallErrored(false, out), true)
 })
 
-test("rag_get_text's schema requires an ARK and a positive entry id", () => {
+test("rag_get_text's schema requires an ARK and a composite entry id", () => {
   const schema = ragGetTextTool.inputSchema
-  assert.equal(schema.safeParse({ entryId: 3 }).success, false, "ark is required")
-  assert.equal(schema.safeParse({ ark: ARK, entryId: 0 }).success, false)
-  assert.equal(schema.safeParse({ ark: ARK, entryId: -4 }).success, false)
-  assert.equal(schema.safeParse({ ark: ARK, entryId: 3 }).success, true)
+  assert.equal(schema.safeParse({ entryId: ENTRY }).success, false, "ark is required")
+  assert.equal(schema.safeParse({ ark: ARK, entryId: ENTRY }).success, true)
+  // The server refuses integer ids: the tool refuses them before the call.
+  assert.equal(schema.safeParse({ ark: ARK, entryId: 3 }).success, false, "a bare number is the old contract")
+  assert.equal(schema.safeParse({ ark: ARK, entryId: "3" }).success, false, "so is its string form")
+  assert.equal(schema.safeParse({ ark: ARK, entryId: "113:6363" }).success, false, "a dataset id is not an entry id")
+  assert.equal(schema.safeParse({ ark: ARK, entryId: "113:6363:abc" }).success, false)
 })

@@ -8,6 +8,8 @@ import "server-only"
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { FakeRagRunner } from "./fake-rag"
+import { entryIdSchema } from "./composite-ids"
+import type { EntryId } from "./composite-ids"
 import { RAG_LOOKUP_STATUS } from "./rag"
 import type { RagEntryContent, RagEntryContentResult } from "./rag"
 import { RAG_FIXTURES } from "./rag-fixtures"
@@ -32,7 +34,7 @@ function contentOf(result: RagEntryContentResult): RagEntryContent {
   return result.content
 }
 
-async function figaroEntryId(): Promise<number> {
+async function figaroEntryId(): Promise<EntryId> {
   const hit = await FakeRagRunner.keywordSearch({
     projectId: PROJECT,
     query: "inauguration figaro",
@@ -43,6 +45,15 @@ async function figaroEntryId(): Promise<number> {
   assert.ok(entry, "the Figaro fixture is a keyword hit")
   return entry.entryId
 }
+
+test("the fake cluster speaks the MCP's composite ids, in the keyword hit and in the passages", async () => {
+  const entryId = await figaroEntryId()
+  assert.equal(entryIdSchema.safeParse(entryId).success, true, `${entryId} is "cluster:dataset:entry"`)
+  const res = await FakeRagRunner.query({ projectId: PROJECT, query: "inauguration de l'Exposition Universelle", k: 20, signal: signal() })
+  const figaro = res.passages.filter((p) => p.ark === ARK)
+  assert.ok(figaro.length >= 1)
+  for (const p of figaro) assert.equal(p.entryId, entryId, "a passage names the same entry as the keyword hit")
+})
 
 test("the fake body is the worker's literal format, and splits back into the fixture pages", async () => {
   assert.deepEqual(FIGARO.map((f) => f.folio), [1, 2])
@@ -93,7 +104,7 @@ test("getEntryContent slices like mcp-datacluster: paginated by code point, with
 test("an entry id the ARK does not own is refused as not in the corpus, as on the real path", async () => {
   const entryId = await figaroEntryId()
   const other = await FakeRagRunner.getEntryContent({
-    projectId: PROJECT, ark: ARK, entryId: entryId + 1, charOffset: 0, charLimit: 0, signal: signal(),
+    projectId: PROJECT, ark: ARK, entryId: entryIdSchema.parse(`${entryId}0`), charOffset: 0, charLimit: 0, signal: signal(),
   })
   assert.deepEqual(other, { status: RAG_LOOKUP_STATUS.ENTRY_NOT_IN_CORPUS, liveEntryId: entryId })
   const unknownArk = await FakeRagRunner.getEntryContent({

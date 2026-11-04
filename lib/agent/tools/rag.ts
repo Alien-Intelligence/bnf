@@ -29,6 +29,8 @@ import "server-only"
 import { z } from "zod"
 import { defineTool } from "@alien/chat-sdk/claude"
 import { ClusterRagClient, RAG_LOOKUP_STATUS } from "@/lib/cluster/rag"
+import { entryIdSchema } from "@/lib/cluster/composite-ids"
+import type { EntryId } from "@/lib/cluster/composite-ids"
 import {
   RAG_DEFAULT_K,
   RAG_GET_TEXT_DEFAULT_CHAR_LIMIT,
@@ -237,13 +239,13 @@ export const ragKeywordSearchTool = defineTool<
  * project's dataset — the agent copied the wrong pair, an outdated id, or
  * invented one. It names the live id so the agent can retry at once.
  */
-export function entryNotInCorpusError(ark: string, entryId: number, liveEntryId: number | null): string {
+export function entryNotInCorpusError(ark: string, entryId: EntryId, liveEntryId: EntryId | null): string {
   return liveEntryId === null
-    ? `Le document ${ark} n'a aucune entrée dans ce corpus : l'entrée ${entryId} ne peut pas être lue. ` +
-        `Reprends un ark et un entryId tels qu'un même résultat de ${AGENT_TOOLS.ragQuery} ou ` +
-        `${AGENT_TOOLS.ragKeywordSearch} les a donnés.`
-    : `L'entrée ${entryId} n'est pas l'entrée actuelle du document ${ark} dans ce corpus : ` +
-        `son entrée actuelle est ${liveEntryId}. Relance ${AGENT_TOOLS.ragGetText} avec entryId ${liveEntryId}.`
+    ? `Le document ${ark} n'a aucune entrée dans ce corpus : l'entrée "${entryId}" ne peut pas être lue. ` +
+        `Reprends un ark et un entryId (chaîne « cluster:dataset:entrée », copiée telle quelle) tels qu'un même ` +
+        `résultat de ${AGENT_TOOLS.ragQuery} ou ${AGENT_TOOLS.ragKeywordSearch} les a donnés.`
+    : `L'entrée "${entryId}" n'est pas l'entrée actuelle du document ${ark} dans ce corpus : ` +
+        `son entrée actuelle est "${liveEntryId}". Relance ${AGENT_TOOLS.ragGetText} avec entryId "${liveEntryId}".`
 }
 
 const ragGetTextInputSchema = z.object({
@@ -251,11 +253,10 @@ const ragGetTextInputSchema = z.object({
     "The ARK of the SAME search result the entryId comes from, verbatim. The entry is read " +
       "only if it belongs to this ARK in the project's corpus.",
   ),
-  entryId: z
-    .number()
-    .int()
-    .positive()
-    .describe("Cluster entry id, taken verbatim from a search result. Never invented."),
+  entryId: entryIdSchema.describe(
+    'Entry id, taken verbatim from a search result (a string like "113:6363:9195583", ' +
+      "never a bare number). Never invented or rebuilt from another number.",
+  ),
   charOffset: z
     .number()
     .int()

@@ -7,7 +7,7 @@ import "server-only"
 // folio + snippet + score), so the research agent can cite by ARK + folio.
 //
 // Dataset resolution: each project owns one cluster dataset, slug `bnf-<id>`.
-// The numeric id is cached on `Project.clusterDatasetId`; the first query
+// The composite dataset id ("cluster:dataset") is cached on `Project.clusterDatasetId`; the first query
 // resolves it by listing datasets and matching the slug, then persists it.
 //
 // Consumed only via ClusterRagClient (lib/cluster/rag.ts) — never directly.
@@ -18,6 +18,8 @@ import {
 } from "@/lib/constants"
 import { prisma } from "@/lib/db"
 import { raceAbort } from "@/lib/mcp/abort"
+import { datasetIdSchema } from "./composite-ids"
+import type { DatasetId, EntryId } from "./composite-ids"
 import { countFolioHeadings, pageChunkChecker, type FolioChunk } from "./folio-text"
 import {
   DataclusterMcpClient,
@@ -62,7 +64,7 @@ const CHUNK_LIST_MAX_PAGES = 100
 const CHUNK_LIST_CONCURRENCY = 4
 
 /**
- * Resolve the project's numeric cluster dataset id, persisting it on first use.
+ * Resolve the project's composite cluster dataset id, persisting it on first use.
  *
  * Reads `Project.clusterDatasetId` first and checks it still names dataset
  * `bnf-<projectId>`; on a miss (or a stale id), pages through the cluster's
@@ -79,7 +81,7 @@ async function resolveDatasetId(
   projectId: string,
   client: DataclusterMcpClient,
   signal: AbortSignal,
-): Promise<number> {
+): Promise<DatasetId> {
   const project = await raceAbort(
     prisma.project.findUniqueOrThrow({
       where: { id: projectId },
@@ -92,11 +94,13 @@ async function resolveDatasetId(
   // A cached id is checked before use: when the dataset was recreated (the
   // worker re-registers after `register_receipt_stale`), the old id names a
   // dead or foreign dataset, and every read would look like an empty corpus.
+  // The column is plain text; a value that is not a composite id (a leftover
+  // of the integer contract the migration nulls) throws rather than being sent.
   if (project.clusterDatasetId !== null) {
-    const cached = await cachedDatasetStillLive(client, project.clusterDatasetId, slug)
-    if (cached) return project.clusterDatasetId
+    const cachedId = datasetIdSchema.parse(project.clusterDatasetId)
+    if (await cachedDatasetStillLive(client, cachedId, slug)) return cachedId
     console.warn(
-      `[rag] project ${projectId}: cached cluster dataset ${project.clusterDatasetId} is no longer "${slug}"; re-resolving`,
+      `[rag] project ${projectId}: cached cluster dataset ${cachedId} is no longer "${slug}"; re-resolving`,
     )
   }
 
@@ -108,11 +112,11 @@ async function resolveDatasetId(
       await raceAbort(
         prisma.project.update({
           where: { id: projectId },
-          data: { clusterDatasetId: match.id },
+          data: { clusterDatasetId: match.dataset_id },
         }),
         signal,
       )
-      return match.id
+      return match.dataset_id
     }
     // Short page → the walk reached the end: the dataset does not exist.
     if (datasets.length < DATACLUSTER_LIST_PAGE_SIZE) {
@@ -134,7 +138,7 @@ async function resolveDatasetId(
  * `datacluster_get_dataset` (the dataset is gone) or another slug means no.
  * Any other failure (transport, auth, protocol) propagates.
  */
-async function cachedDatasetStillLive(client: DataclusterMcpClient, datasetId: number, slug: string): Promise<boolean> {
+async function cachedDatasetStillLive(client: DataclusterMcpClient, datasetId: DatasetId, slug: string): Promise<boolean> {
   try {
     return (await client.getDataset(datasetId)).slug === slug
   } catch (err) {
@@ -224,8 +228,8 @@ export const RealRagRunner = {
   },
 
   async getEntryContent(req: RagEntryContentRequest): Promise<RagEntryContentResult> {
-    // get_entry_content is keyed by entry_id only, and entry ids are
-    // cluster-wide: the id is read only if it is the live entry the ARK lookup
+    // get_entry_content is keyed by entry_id only, and an entry id can name any
+    // dataset of the cluster: the id is read only if it is the live entry the ARK lookup
     // in THIS corpus project's dataset returns for the stated ARK. Offset and limit are
     // explicit on the request: the tool handler owns the defaults.
     const client = new DataclusterMcpClient({ signal: req.signal })
@@ -280,8 +284,8 @@ export const RealRagRunner = {
  */
 async function listEntryChunks(
   client: DataclusterMcpClient,
-  datasetId: number,
-  entryId: number,
+  datasetId: DatasetId,
+  entryId: EntryId,
   ark: string,
   text: string,
 ): Promise<FolioChunk[]> {
@@ -340,9 +344,9 @@ async function listEntryChunks(
  */
 async function lookupLiveEntryIds(
   client: DataclusterMcpClient,
-  datasetId: number,
+  datasetId: DatasetId,
   ark: string,
-): Promise<number[]> {
+): Promise<EntryId[]> {
   const hits: DataclusterKeywordHit[] = []
   let total: number | undefined
   do {
@@ -354,6 +358,14 @@ async function lookupLiveEntryIds(
       offset: hits.length,
     })
     total = page.pagination?.total
+    // A match without an addressable id is counted in `total` but cannot be
+    // read, so the ARK's live entry cannot be told from the rest.
+    const unaddressable = page.pagination?.unaddressable
+    if (unaddressable !== undefined && unaddressable > 0) {
+      throw new DataclusterMcpProtocolError(
+        `ARK lookup for ${ark} left ${unaddressable} match(es) without an addressable entry id: the live entry cannot be told`,
+      )
+    }
     if (page.results.length === 0) break
     hits.push(...page.results)
   } while (total !== undefined && hits.length < total)
