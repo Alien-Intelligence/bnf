@@ -66,3 +66,14 @@ export const DATACLUSTER_RESPONSE_FORMAT = { JSON: "json" } as const
  * otherwise names the MCP tool it checked.
  */
 export const ARK_LOOKUP_LABEL = "ARK lookup"
+
+/**
+ * The two modes of `datacluster_get_entry_content` whose replies must carry
+ * pagination fields (the third, full mode, returns the raw payload). The
+ * values name the mode in protocol-error messages.
+ */
+export const ENTRY_CONTENT_MODE = {
+  PAGINATED: "paginated",
+  OFFSET_ONLY: "offset-only",
+} as const
+export type EntryContentMode = (typeof ENTRY_CONTENT_MODE)[keyof typeof ENTRY_CONTENT_MODE]

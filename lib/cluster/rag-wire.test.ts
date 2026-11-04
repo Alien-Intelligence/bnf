@@ -6,7 +6,7 @@ import "server-only"
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { datasetIdSchema, entryIdSchema } from "./composite-ids"
-import { ARK_LOOKUP_LABEL, DATACLUSTER_MCP_TOOL } from "./constants"
+import { ARK_LOOKUP_LABEL, DATACLUSTER_MCP_TOOL, ENTRY_CONTENT_MODE } from "./constants"
 import { DataclusterMcpProtocolError } from "./datacluster-mcp-client"
 import { RAG_LOOKUP_STATUS } from "./rag"
 import { arkLookup, assertInDataset, chunkToPassage, pickLiveEntryId, toEntryContent } from "./rag-wire"
@@ -116,6 +116,17 @@ test("toEntryContent: a paginated reply missing a pagination field is a protocol
       ),
     (err: unknown) =>
       err instanceof DataclusterMcpProtocolError && /has_more, next_offset/.test(err.message),
+  )
+})
+
+test("an incomplete reply names the mode it was requested in", () => {
+  assert.throws(
+    () => toEntryContent({ text: "abcd" }, { entryId: entry(7), charOffset: 0, charLimit: 4 }),
+    new RegExp(`\\(${ENTRY_CONTENT_MODE.PAGINATED} mode, entry ${entry(7)}\\) omitted`),
+  )
+  assert.throws(
+    () => toEntryContent({ text: "abcd" }, { entryId: entry(7), charOffset: 2, charLimit: 0 }),
+    new RegExp(`\\(${ENTRY_CONTENT_MODE.OFFSET_ONLY} mode, entry ${entry(7)}\\) omitted`),
   )
 })
 

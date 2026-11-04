@@ -12,8 +12,8 @@ import "server-only"
 
 import { z } from "zod"
 import { entryOrdinal } from "./composite-ids"
-import { ARK_LOOKUP_LABEL, DATACLUSTER_MCP_TOOL } from "./constants"
-import type { DataclusterMcpTool } from "./constants"
+import { ARK_LOOKUP_LABEL, DATACLUSTER_MCP_TOOL, ENTRY_CONTENT_MODE } from "./constants"
+import type { DataclusterMcpTool, EntryContentMode } from "./constants"
 import type { DatasetId, EntryId } from "./composite-ids"
 import { DataclusterMcpProtocolError } from "./datacluster-mcp-client"
 import type { DataclusterChunk, DataclusterEntryContent } from "./datacluster-mcp-client"
@@ -112,7 +112,7 @@ export function toEntryContent(
     ) {
       throw incomplete(
         req,
-        "paginated",
+        ENTRY_CONTENT_MODE.PAGINATED,
         missing(["entry_id", "char_offset", "char_limit", "total_length", "has_more", "next_offset"]),
       )
     }
@@ -145,7 +145,7 @@ export function toEntryContent(
   if (req.charOffset > 0) {
     const { char_offset, total_length, has_more } = data
     if (char_offset === undefined || total_length === undefined || has_more === undefined) {
-      throw incomplete(req, "offset-only", missing(["char_offset", "total_length", "has_more"]))
+      throw incomplete(req, ENTRY_CONTENT_MODE.OFFSET_ONLY, missing(["char_offset", "total_length", "has_more"]))
     }
     // Offset-only mode returns everything from the offset: the slice runs to
     // the end, and nothing follows.
@@ -202,7 +202,7 @@ function inconsistent(req: { entryId: EntryId }, data: DataclusterEntryContent):
 
 function incomplete(
   req: { entryId: EntryId },
-  mode: string,
+  mode: EntryContentMode,
   absent: ReadonlyArray<string>,
 ): DataclusterMcpProtocolError {
   return new DataclusterMcpProtocolError(
