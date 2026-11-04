@@ -34,6 +34,8 @@ import {
 import { z } from "zod"
 import { requireClusterEnv } from "@/lib/env"
 import { datasetIdSchema, entryIdSchema } from "./composite-ids"
+import { DATACLUSTER_MCP_TOOL, DATACLUSTER_RESPONSE_FORMAT } from "./constants"
+import type { DataclusterMcpTool } from "./constants"
 import type { DatasetId, EntryId } from "./composite-ids"
 import { withTimeout } from "@/lib/mcp/abort"
 import { withRetry } from "@/lib/mcp/retry"
@@ -348,8 +350,8 @@ export class DataclusterMcpClient {
    */
   async listDatasets(limit: number, offset: number): Promise<DataclusterDataset[]> {
     const data = await this.callData(
-      "datacluster_list_datasets",
-      { limit, offset, include_schema: false, response_format: "json" },
+      DATACLUSTER_MCP_TOOL.LIST_DATASETS,
+      { limit, offset, include_schema: false, response_format: DATACLUSTER_RESPONSE_FORMAT.JSON },
       listDatasetsDataSchema,
     )
     return data.datasets
@@ -358,8 +360,8 @@ export class DataclusterMcpClient {
   /** One dataset by id (`datacluster_get_dataset`); a missing id is a tool error. */
   async getDataset(datasetId: DatasetId): Promise<DataclusterDataset> {
     return this.callData(
-      "datacluster_get_dataset",
-      { dataset_id: datasetId, response_format: "json" },
+      DATACLUSTER_MCP_TOOL.GET_DATASET,
+      { dataset_id: datasetId, response_format: DATACLUSTER_RESPONSE_FORMAT.JSON },
       dataclusterDatasetSchema,
     )
   }
@@ -376,7 +378,7 @@ export class DataclusterMcpClient {
     if (input.scoreThreshold !== undefined) args.score_threshold = input.scoreThreshold
     if (input.datasetIds !== undefined) args.dataset_ids = input.datasetIds
     if (input.entryIds !== undefined) args.entry_ids = input.entryIds
-    return this.callData("datacluster_vector_search_chunks", args, vectorSearchDataSchema)
+    return this.callData(DATACLUSTER_MCP_TOOL.VECTOR_SEARCH_CHUNKS, args, vectorSearchDataSchema)
   }
 
   /**
@@ -387,7 +389,7 @@ export class DataclusterMcpClient {
   async keywordSearch(input: KeywordSearchInput): Promise<KeywordSearchData> {
     const args: Record<string, unknown> = {
       query: input.query,
-      response_format: "json",
+      response_format: DATACLUSTER_RESPONSE_FORMAT.JSON,
     }
     if (input.limit !== undefined) args.limit = input.limit
     if (input.offset !== undefined) args.offset = input.offset
@@ -395,7 +397,7 @@ export class DataclusterMcpClient {
     if (input.metadataFilters && Object.keys(input.metadataFilters).length > 0) {
       args.metadata_filters = input.metadataFilters
     }
-    return this.callData("datacluster_keyword_search", args, keywordSearchDataSchema)
+    return this.callData(DATACLUSTER_MCP_TOOL.KEYWORD_SEARCH, args, keywordSearchDataSchema)
   }
 
   /**
@@ -404,7 +406,7 @@ export class DataclusterMcpClient {
    */
   async getEntryContent(input: GetEntryContentInput): Promise<DataclusterEntryContent> {
     return this.callData(
-      "datacluster_get_entry_content",
+      DATACLUSTER_MCP_TOOL.GET_ENTRY_CONTENT,
       { entry_id: input.entryId, char_offset: input.charOffset, char_limit: input.charLimit },
       dataclusterEntryContentSchema,
     )
@@ -420,7 +422,7 @@ export class DataclusterMcpClient {
    * DataclusterMcpError carrying the cluster's own message; an envelope or
    * payload that breaks its contract is a DataclusterMcpProtocolError.
    */
-  private async callData<T>(tool: string, args: unknown, schema: z.ZodType<T>): Promise<T> {
+  private async callData<T>(tool: DataclusterMcpTool, args: unknown, schema: z.ZodType<T>): Promise<T> {
     const envelope = dataclusterEnvelopeSchema.safeParse(await this.callTool(tool, args))
     if (!envelope.success) {
       throw new DataclusterMcpProtocolError(`${tool} returned a malformed envelope: ${envelope.error.message}`, envelope.error)

@@ -20,6 +20,7 @@ import { ProjectQueries } from "@/models/projects/queries"
 import { ProjectService } from "@/models/projects/service"
 import { raceAbort } from "@/lib/mcp/abort"
 import { datasetIdSchema } from "./composite-ids"
+import { DATACLUSTER_MCP_TOOL } from "./constants"
 import type { DatasetId, EntryId } from "./composite-ids"
 import type { ArkLookup } from "./rag-wire"
 import { countFolioHeadings, pageChunkChecker, type FolioChunk } from "./folio-text"
@@ -192,7 +193,7 @@ export const RealRagRunner = {
     })
 
     // Scoped to this project's dataset above; checked, not trusted.
-    assertInDataset(data.results, datasetId, "datacluster_vector_search_chunks")
+    assertInDataset(data.results, datasetId, DATACLUSTER_MCP_TOOL.VECTOR_SEARCH_CHUNKS)
 
     const passages = data.results
       .map(chunkToPassage)
@@ -216,7 +217,7 @@ export const RealRagRunner = {
       metadataFilters: toMetadataFilters(req.filters),
     })
 
-    assertInDataset(data.results, datasetId, "datacluster_keyword_search")
+    assertInDataset(data.results, datasetId, DATACLUSTER_MCP_TOOL.KEYWORD_SEARCH)
 
     const hits = data.results
       .map(keywordHitToRag)
@@ -227,7 +228,7 @@ export const RealRagRunner = {
     // the contract allows; `hits.length` would understate any paged search.
     const total = data.pagination?.total
     if (total === undefined) {
-      throw new DataclusterMcpProtocolError("datacluster_keyword_search returned no pagination.total")
+      throw new DataclusterMcpProtocolError(`${DATACLUSTER_MCP_TOOL.KEYWORD_SEARCH} returned no pagination.total`)
     }
     return { hits, total }
   },
@@ -319,7 +320,7 @@ async function listEntryChunks(
   }
 
   const first = await page(0)
-  assertInDataset(first.results, datasetId, "datacluster_vector_search_chunks")
+  assertInDataset(first.results, datasetId, DATACLUSTER_MCP_TOOL.VECTOR_SEARCH_CHUNKS)
   const firstChunks = asPages(first.results)
   if (firstChunks === null) return []
   if (first.results.length < CHUNK_LIST_PAGE_SIZE) return firstChunks
@@ -332,7 +333,7 @@ async function listEntryChunks(
   const pages: Array<readonly DataclusterChunk[]> = [first.results]
   for (let i = 0; i < offsets.length; i += CHUNK_LIST_CONCURRENCY) {
     const batch = await Promise.all(offsets.slice(i, i + CHUNK_LIST_CONCURRENCY).map((o) => page(o)))
-    for (const b of batch) assertInDataset(b.results, datasetId, "datacluster_vector_search_chunks")
+    for (const b of batch) assertInDataset(b.results, datasetId, DATACLUSTER_MCP_TOOL.VECTOR_SEARCH_CHUNKS)
     pages.push(...batch.map((b) => b.results))
   }
   // More chunks than headings would be odd, but the cluster is the authority:
@@ -345,7 +346,7 @@ async function listEntryChunks(
       )
     }
     const next = await page(offset)
-    assertInDataset(next.results, datasetId, "datacluster_vector_search_chunks")
+    assertInDataset(next.results, datasetId, DATACLUSTER_MCP_TOOL.VECTOR_SEARCH_CHUNKS)
     pages.push(next.results)
     offset += CHUNK_LIST_PAGE_SIZE
   }

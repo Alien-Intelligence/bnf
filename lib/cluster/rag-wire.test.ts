@@ -6,6 +6,7 @@ import "server-only"
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { datasetIdSchema, entryIdSchema } from "./composite-ids"
+import { ARK_LOOKUP_LABEL, DATACLUSTER_MCP_TOOL } from "./constants"
 import { DataclusterMcpProtocolError } from "./datacluster-mcp-client"
 import { RAG_LOOKUP_STATUS } from "./rag"
 import { arkLookup, assertInDataset, chunkToPassage, pickLiveEntryId, toEntryContent } from "./rag-wire"
@@ -206,11 +207,11 @@ test("arkLookup refuses a lookup with no total: nothing says the set is complete
 
 test("assertInDataset passes the project's own hits and names the first foreign one", () => {
   const own = { entry_id: entry(1), dataset_id: DATASET }
-  assertInDataset([own, own], DATASET, "tool")
-  assertInDataset([], DATASET, "tool")
+  assertInDataset([own, own], DATASET, DATACLUSTER_MCP_TOOL.KEYWORD_SEARCH)
+  assertInDataset([], DATASET, ARK_LOOKUP_LABEL)
   const foreign = { entry_id: entryIdSchema.parse("113:766:2038356"), dataset_id: datasetIdSchema.parse("113:766") }
   assert.throws(
-    () => assertInDataset([own, foreign], DATASET, "datacluster_keyword_search"),
+    () => assertInDataset([own, foreign], DATASET, DATACLUSTER_MCP_TOOL.KEYWORD_SEARCH),
     /datacluster_keyword_search returned entry 113:766:2038356 of dataset 113:766, outside the project's dataset 113:6363/,
   )
 })

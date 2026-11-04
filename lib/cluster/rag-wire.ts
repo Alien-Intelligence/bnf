@@ -12,6 +12,8 @@ import "server-only"
 
 import { z } from "zod"
 import { entryOrdinal } from "./composite-ids"
+import { ARK_LOOKUP_LABEL, DATACLUSTER_MCP_TOOL } from "./constants"
+import type { DataclusterMcpTool } from "./constants"
 import type { DatasetId, EntryId } from "./composite-ids"
 import { DataclusterMcpProtocolError } from "./datacluster-mcp-client"
 import type { DataclusterChunk, DataclusterEntryContent } from "./datacluster-mcp-client"
@@ -193,7 +195,7 @@ function sliceFits(offset: number, end: number, total: number, hasMore: boolean)
 function inconsistent(req: { entryId: EntryId }, data: DataclusterEntryContent): DataclusterMcpProtocolError {
   const { text, ...fields } = data
   return new DataclusterMcpProtocolError(
-    `datacluster_get_entry_content (entry ${req.entryId}) returned inconsistent pagination ` +
+    `${DATACLUSTER_MCP_TOOL.GET_ENTRY_CONTENT} (entry ${req.entryId}) returned inconsistent pagination ` +
       `${JSON.stringify(fields)} for ${codePointLength(text)} characters of text`,
   )
 }
@@ -204,7 +206,7 @@ function incomplete(
   absent: ReadonlyArray<string>,
 ): DataclusterMcpProtocolError {
   return new DataclusterMcpProtocolError(
-    `datacluster_get_entry_content (${mode} mode, entry ${req.entryId}) omitted ${absent.join(", ")}`,
+    `${DATACLUSTER_MCP_TOOL.GET_ENTRY_CONTENT} (${mode} mode, entry ${req.entryId}) omitted ${absent.join(", ")}`,
   )
 }
 
@@ -233,7 +235,7 @@ const createdAtSchema = z.iso.datetime({ offset: true })
 export function assertInDataset(
   hits: ReadonlyArray<{ entry_id: EntryId; dataset_id: DatasetId }>,
   datasetId: DatasetId,
-  tool: string,
+  tool: DataclusterMcpTool | typeof ARK_LOOKUP_LABEL,
 ): void {
   const foreign = hits.find((h) => h.dataset_id !== datasetId)
   if (foreign !== undefined) {
@@ -272,17 +274,17 @@ export function arkLookup(
   ark: string,
   datasetId: DatasetId,
 ): ArkLookup {
-  assertInDataset(hits, datasetId, "ARK lookup")
+  assertInDataset(hits, datasetId, ARK_LOOKUP_LABEL)
   const entries = hits.map((h): ArkEntry => {
     if (h.metadata?.ark !== ark) {
       throw new DataclusterMcpProtocolError(
-        `ARK lookup for ${ark} returned an entry of ${JSON.stringify(h.metadata?.ark)}`,
+        `${ARK_LOOKUP_LABEL} for ${ark} returned an entry of ${JSON.stringify(h.metadata?.ark)}`,
       )
     }
     const createdAt = createdAtSchema.safeParse(h.metadata.created_at)
     if (!createdAt.success) {
       throw new DataclusterMcpProtocolError(
-        `ARK lookup for ${ark} returned entry ${h.entry_id} with no valid created_at ` +
+        `${ARK_LOOKUP_LABEL} for ${ark} returned entry ${h.entry_id} with no valid created_at ` +
           `(${JSON.stringify(h.metadata.created_at)}): the live entry cannot be told`,
         createdAt.error,
       )
@@ -290,11 +292,11 @@ export function arkLookup(
     return { entryId: h.entry_id, createdAt: Date.parse(createdAt.data) }
   })
   if (page.total === undefined) {
-    throw new DataclusterMcpProtocolError(`ARK lookup for ${ark} returned no pagination.total`)
+    throw new DataclusterMcpProtocolError(`${ARK_LOOKUP_LABEL} for ${ark} returned no pagination.total`)
   }
   const reindexing = (reason: string): ArkLookup => ({
     status: RAG_LOOKUP_STATUS.ENTRY_REINDEXING,
-    reason: `ARK lookup for ${ark}: ${reason}`,
+    reason: `${ARK_LOOKUP_LABEL} for ${ark}: ${reason}`,
   })
   if (page.unaddressable !== undefined && page.unaddressable > 0) {
     return reindexing(`${page.unaddressable} match(es) have no addressable entry id`)
