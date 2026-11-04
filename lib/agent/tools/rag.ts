@@ -23,11 +23,14 @@
  * corpus-gated, bounded and tied to the turn's signal.
  *
  * Failures: a handler never throws out of the tool loop (CLAUDE_ERROR_PATTERNS
- * §15). A data-cluster failure (the `DataclusterMcpError` family, or a payload
- * that fails its schema) is logged with its details and returned as a
- * `toolFailure` the model can act on (withClusterFailures); so is a document
- * the cluster is re-indexing. The turn's own cancellation, and a bug or a
- * database failure, still propagate.
+ * §15, playbook/agent-streaming.md). Whatever fails — a data-cluster error
+ * (the `DataclusterMcpError` family, or a payload that fails its schema), a
+ * database failure, a deadline, a bug — is logged server-side with its details
+ * and returned as a `toolFailure` the model can act on (withToolFailures), the
+ * cluster's classes with a specific message and the rest with a generic
+ * internal-error one; so is a document the cluster is re-indexing. The one
+ * exception is the turn's own cancellation (its signal aborted), which
+ * propagates: nothing is listening for a result.
  */
 import "server-only"
 
@@ -79,11 +82,12 @@ import {
 // ---------------------------------------------------------------------------
 
 /**
- * What the agent is told for a data-cluster failure, by its class. The raw
- * error stays in the server log; the model gets what it can act on: retry,
- * change the request, or stop and tell the user.
+ * What the agent is told for a failure, by its class. The raw error stays in
+ * the server log; the model gets what it can act on: retry, change the
+ * request, or stop and tell the user. A failure that is not the cluster's
+ * (database, deadline, a bug) gets the generic internal-error message.
  */
-function clusterFailureMessage(tool: string, err: unknown): string | null {
+function failureMessage(tool: string, err: unknown): string {
   if (err instanceof DataclusterMcpAuthError) {
     return (
       `${tool} : le service de données du corpus a refusé l'accès. Une autre requête n'y changera rien : ` +
@@ -112,24 +116,24 @@ function clusterFailureMessage(tool: string, err: unknown): string | null {
       "Réessaie une fois plus tard ; sinon appuie-toi sur les passages déjà obtenus."
     )
   }
-  return null
+  return (
+    `${tool} : erreur interne ; la lecture du corpus a échoué. Ne relance pas l'appel à l'identique : ` +
+    "dis à l'utilisateur qu'une erreur interne a interrompu la lecture du corpus."
+  )
 }
 
 /**
- * Run a handler body, turning a data-cluster failure into a `toolFailure` and
- * logging it with its details (never swallowed). The turn's own cancellation
- * (`signal` aborted), and any error that is not the cluster's — a bug, a
- * database failure — propagate unchanged.
+ * Run a handler body, turning any failure into a `toolFailure` and logging it
+ * with its details (never swallowed). Only the turn's own cancellation
+ * (`signal` aborted) propagates.
  */
-async function withClusterFailures<T>(tool: string, signal: AbortSignal, run: () => Promise<T>): Promise<T | ToolFailure> {
+async function withToolFailures<T>(tool: string, signal: AbortSignal, run: () => Promise<T>): Promise<T | ToolFailure> {
   try {
     return await run()
   } catch (err) {
     if (signal.aborted) throw err
-    const message = clusterFailureMessage(tool, err)
-    if (message === null) throw err
-    console.error(`[${tool}] data-cluster failure`, err)
-    return toolFailure(message)
+    console.error(`[${tool}] failed`, err)
+    return toolFailure(failureMessage(tool, err))
   }
 }
 
@@ -197,7 +201,7 @@ export const ragQueryTool = defineTool<
       ),
   }),
   handler: (input, ctx) =>
-    withClusterFailures(AGENT_TOOLS.ragQuery, ctx.signal, async () => {
+    withToolFailures(AGENT_TOOLS.ragQuery, ctx.signal, async () => {
       const corpus = await resolveIngestedCorpus(ctx, NOT_INGESTED_ERROR)
       if ("error" in corpus) {
         return toolFailure(corpus.error)
@@ -291,7 +295,7 @@ export const ragKeywordSearchTool = defineTool<
       .describe("Exact-match facet filters applied before ranking."),
   }),
   handler: (input, ctx) =>
-    withClusterFailures(AGENT_TOOLS.ragKeywordSearch, ctx.signal, async () => {
+    withToolFailures(AGENT_TOOLS.ragKeywordSearch, ctx.signal, async () => {
       const corpus = await resolveIngestedCorpus(ctx, NOT_INGESTED_ERROR)
       if ("error" in corpus) {
         return toolFailure(corpus.error)
@@ -385,7 +389,7 @@ export const ragGetTextTool = defineTool<typeof ragGetTextInputSchema, TurnScope
     "(false when the slice starts mid-folio; that folio's quality is then unknown).",
   inputSchema: ragGetTextInputSchema,
   handler: (input, ctx) =>
-    withClusterFailures(AGENT_TOOLS.ragGetText, ctx.signal, async () => {
+    withToolFailures(AGENT_TOOLS.ragGetText, ctx.signal, async () => {
       const corpus = await resolveIngestedCorpus(ctx, NOT_INGESTED_ERROR)
       if ("error" in corpus) {
         return toolFailure(corpus.error)

@@ -20,6 +20,8 @@ import {
   DataclusterMcpToolError,
 } from "@/lib/cluster/datacluster-mcp-client"
 import { z } from "zod"
+import { DeadlineExceededError } from "@/lib/async/deadline"
+import { DocumentQueries } from "@/models/documents/queries"
 import { RAG_DEFAULT_K, RAG_GET_TEXT_DEFAULT_CHAR_LIMIT, RAG_KEYWORD_DEFAULT_LIMIT } from "@/lib/constants"
 import { entryNotInCorpusError, entryReindexingError, ragGetTextTool, ragKeywordSearchTool, ragQueryTool } from "./rag"
 import { toolCallErrored } from "@/lib/tools/display"
@@ -313,11 +315,38 @@ test("a data-cluster failure never throws out of a rag tool: it is logged and re
   assert.ok(logged.mock.calls.every((c) => c.arguments[1] instanceof Error), "the error itself is logged, with its details")
 })
 
-test("what is not a cluster failure still propagates out of a rag tool, and so does the turn's own cancellation", async (t) => {
-  t.mock.method(console, "error", () => undefined)
-  for (const [tool, run] of await callsWithFacadeThrowing(new TypeError("a bug"))) {
-    await assert.rejects(run(), TypeError, `${tool}: a bug is not hidden as a tool failure`)
+test("a failure that is not the cluster's — a bug, a database error — is logged and returned as a generic internal-error failure", async (t) => {
+  const logged = t.mock.method(console, "error", () => undefined)
+  for (const err of [new TypeError("a bug"), new Error("connection terminated unexpectedly")]) {
+    for (const [tool, run] of await callsWithFacadeThrowing(err)) {
+      const out = (await run()) as { success: boolean; error: string }
+      assert.equal(toolCallErrored(false, out), true, `${tool}: ${err.message}`)
+      assert.match(out.error, /erreur interne[\s\S]*Ne relance pas l'appel à l'identique[\s\S]*dis à l'utilisateur/, `${tool}: ${err.message}`)
+    }
   }
+  assert.equal(logged.mock.callCount(), 6)
+  assert.ok(logged.mock.calls.every((c) => c.arguments[1] instanceof Error), "the error is logged with its details")
+})
+
+test("rag_get_text: a database error or a deadline in its corpus check becomes a tool failure, not a throw", async (t) => {
+  const logged = t.mock.method(console, "error", () => undefined)
+  for (const err of [
+    new Error("prisma: connection pool timeout"),
+    new DeadlineExceededError("rag_get_text corpus check", "timeout", 5_000),
+  ]) {
+    const check = t.mock.method(DocumentQueries, "isIndexedInCorpus", async () => {
+      throw err
+    })
+    const out = (await ragGetTextTool.handler({ ark: ARK, entryId: ENTRY }, ctxFor())) as { success: boolean; error: string }
+    assert.equal(toolCallErrored(false, out), true, err.message)
+    assert.match(out.error, /^rag_get_text : erreur interne/, err.message)
+    check.mock.restore()
+  }
+  assert.equal(logged.mock.callCount(), 2)
+})
+
+test("only the turn's own cancellation propagates out of a rag tool", async (t) => {
+  t.mock.method(console, "error", () => undefined)
   // The turn is cancelled while the cluster call is in flight, which then fails.
   for (const tool of ["rag_query", "rag_keyword_search", "rag_get_text"]) {
     const controller = new AbortController()
