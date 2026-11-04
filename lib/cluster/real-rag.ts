@@ -16,7 +16,8 @@ import {
   DATACLUSTER_DATASET_SLUG_PREFIX,
   DATACLUSTER_LIST_PAGE_SIZE,
 } from "@/lib/constants"
-import { prisma } from "@/lib/db"
+import { ProjectQueries } from "@/models/projects/queries"
+import { ProjectService } from "@/models/projects/service"
 import { raceAbort } from "@/lib/mcp/abort"
 import { datasetIdSchema } from "./composite-ids"
 import type { DatasetId, EntryId } from "./composite-ids"
@@ -83,13 +84,7 @@ async function resolveDatasetId(
   client: DataclusterMcpClient,
   signal: AbortSignal,
 ): Promise<DatasetId> {
-  const project = await raceAbort(
-    prisma.project.findUniqueOrThrow({
-      where: { id: projectId },
-      select: { clusterDatasetId: true },
-    }),
-    signal,
-  )
+  const cachedValue = await raceAbort(ProjectQueries.clusterDatasetId(projectId), signal)
   const slug = `${DATACLUSTER_DATASET_SLUG_PREFIX}${projectId}`
 
   // A cached id is checked before use: when the dataset was recreated (the
@@ -99,11 +94,11 @@ async function resolveDatasetId(
   // of the integer contract, should the migration have missed one) is never
   // sent to the MCP: it is a stale cache like any other and falls through to
   // the slug resolution below, which overwrites it.
-  if (project.clusterDatasetId !== null) {
-    const cachedId = datasetIdSchema.safeParse(project.clusterDatasetId)
+  if (cachedValue !== null) {
+    const cachedId = datasetIdSchema.safeParse(cachedValue)
     if (!cachedId.success) {
       console.warn(
-        `[rag] project ${projectId}: cached cluster dataset ${JSON.stringify(project.clusterDatasetId)} ` +
+        `[rag] project ${projectId}: cached cluster dataset ${JSON.stringify(cachedValue)} ` +
           `is not a composite id; re-resolving "${slug}"`,
       )
     } else if (await cachedDatasetStillLive(client, cachedId.data, slug)) {
@@ -120,13 +115,7 @@ async function resolveDatasetId(
     const datasets = await client.listDatasets(DATACLUSTER_LIST_PAGE_SIZE, offset)
     const match = datasets.find((d) => d.slug === slug)
     if (match) {
-      await raceAbort(
-        prisma.project.update({
-          where: { id: projectId },
-          data: { clusterDatasetId: match.dataset_id },
-        }),
-        signal,
-      )
+      await raceAbort(ProjectService.setClusterDatasetId(projectId, match.dataset_id), signal)
       return match.dataset_id
     }
     // Short page → the walk reached the end: the dataset does not exist.

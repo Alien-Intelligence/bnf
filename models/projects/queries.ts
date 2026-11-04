@@ -32,6 +32,17 @@ export class ProjectQueries {
     return prisma.project.findUniqueOrThrow({ where: { id } })
   }
 
+  /**
+   * The composite id of the project's data-cluster dataset as cached on the
+   * row, or null before the first real RAG read has resolved it. Plain text:
+   * the caller validates it (lib/cluster/real-rag.ts). Throws when the project
+   * does not exist.
+   */
+  static async clusterDatasetId(id: string): Promise<string | null> {
+    const row = await prisma.project.findUniqueOrThrow({ where: { id }, select: { clusterDatasetId: true } })
+    return row.clusterDatasetId
+  }
+
   static async listForOwner(ownerId: string): Promise<Project[]> {
     return prisma.project.findMany({
       where: { ownerId },

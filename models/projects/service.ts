@@ -1,6 +1,7 @@
 import "server-only"
 
 import { prisma } from "@/lib/db"
+import type { DatasetId } from "@/lib/cluster/composite-ids"
 import { SessionQueries } from "@/models/sessions/queries"
 import {
   PROJECT_ACCESS_LEVEL,
@@ -62,6 +63,15 @@ export class SourceIsDerivedError extends Error {
 }
 
 export class ProjectService {
+  /**
+   * Cache the composite id of the project's data-cluster dataset
+   * (`Project.clusterDatasetId`), as resolved by its slug `bnf-<projectId>`.
+   * Overwrites whatever was cached — a stale or malformed value included.
+   */
+  static async setClusterDatasetId(projectId: string, datasetId: DatasetId): Promise<void> {
+    await prisma.project.update({ where: { id: projectId }, data: { clusterDatasetId: datasetId } })
+  }
+
   /**
    * Creates a project and atomically initialises its empty head CorpusVersion
    * (seq=1, status="sealed", parentId=null).
