@@ -12,6 +12,13 @@ import { prisma } from "@/lib/db"
 import { ClusterRagClient, RAG_LOOKUP_STATUS } from "@/lib/cluster/rag"
 import { entryIdSchema } from "@/lib/cluster/composite-ids"
 import type { RagEntryContentRequest } from "@/lib/cluster/rag"
+import {
+  DataclusterMcpAuthError,
+  DataclusterMcpError,
+  DataclusterMcpProtocolError,
+  DataclusterMcpToolError,
+} from "@/lib/cluster/datacluster-mcp-client"
+import { z } from "zod"
 import { RAG_DEFAULT_K, RAG_GET_TEXT_DEFAULT_CHAR_LIMIT, RAG_KEYWORD_DEFAULT_LIMIT } from "@/lib/constants"
 import { entryNotInCorpusError, entryReindexingError, ragGetTextTool, ragKeywordSearchTool, ragQueryTool } from "./rag"
 import { toolCallErrored } from "@/lib/tools/display"
@@ -257,6 +264,66 @@ test("rag_get_text tells the agent a document is being re-indexed, and to retry 
   assert.deepEqual(out, { success: false, error: entryReindexingError(ARK) })
   assert.match(entryReindexingError(ARK), /en cours de réindexation[\s\S]*Réessaie[\s\S]*plus tard[\s\S]*un autre passage/)
   assert.equal(toolCallErrored(false, out), true)
+})
+
+/** The three rag handlers, each called so that the facade method it uses throws `err`. */
+async function callsWithFacadeThrowing(err: unknown, cancelDuringCall?: AbortController): Promise<Array<[string, () => Promise<unknown>]>> {
+  const signal = cancelDuringCall?.signal
+  const throwing = async () => {
+    cancelDuringCall?.abort()
+    throw err
+  }
+  return [
+    ["rag_query", async () => callWith("query", throwing, () => ragQueryTool.handler({ query: "incendie" }, ctxFor(signal)))],
+    ["rag_keyword_search", async () => callWith("keywordSearch", throwing, () => ragKeywordSearchTool.handler({ query: "incendie" }, ctxFor(signal)))],
+    ["rag_get_text", async () => callWith("getEntryContent", throwing, () => ragGetTextTool.handler({ ark: ARK, entryId: ENTRY }, ctxFor(signal)))],
+  ]
+}
+
+async function callWith(method: "query" | "keywordSearch" | "getEntryContent", impl: () => Promise<never>, call: () => unknown) {
+  const facade: Record<string, unknown> = ClusterRagClient
+  const original = facade[method]
+  facade[method] = impl
+  try {
+    return await call()
+  } finally {
+    facade[method] = original
+  }
+}
+
+test("a data-cluster failure never throws out of a rag tool: it is logged and returned as a failure the model can act on", async (t) => {
+  const logged = t.mock.method(console, "error", () => undefined)
+  const cases: Array<[string, unknown, RegExp]> = [
+    ["auth", new DataclusterMcpAuthError(), /refusé l'accès[\s\S]*indisponible/],
+    ["tool error", new DataclusterMcpToolError("invalid filter"), /refusé la requête \(invalid filter\)[\s\S]*Corrige/],
+    ["protocol", new DataclusterMcpProtocolError("no pagination.total"), /répondu de façon inattendue/],
+    ["parse", z.string().safeParse(1).error, /répondu de façon inattendue/],
+    ["transient", new DataclusterMcpError("HTTP 503"), /momentanément indisponible[\s\S]*Réessaie/],
+  ]
+  for (const [label, err, message] of cases) {
+    for (const [tool, run] of await callsWithFacadeThrowing(err)) {
+      const out = await run()
+      assert.equal(toolCallErrored(false, out), true, `${tool} / ${label}`)
+      assert.match(String((out as { error: string }).error), message, `${tool} / ${label}`)
+      assert.ok((out as { error: string }).error.startsWith(tool), `${tool} names itself`)
+    }
+  }
+  assert.equal(logged.mock.callCount(), cases.length * 3, "every failure is logged server-side, none swallowed")
+  assert.ok(logged.mock.calls.every((c) => c.arguments[1] instanceof Error), "the error itself is logged, with its details")
+})
+
+test("what is not a cluster failure still propagates out of a rag tool, and so does the turn's own cancellation", async (t) => {
+  t.mock.method(console, "error", () => undefined)
+  for (const [tool, run] of await callsWithFacadeThrowing(new TypeError("a bug"))) {
+    await assert.rejects(run(), TypeError, `${tool}: a bug is not hidden as a tool failure`)
+  }
+  // The turn is cancelled while the cluster call is in flight, which then fails.
+  for (const tool of ["rag_query", "rag_keyword_search", "rag_get_text"]) {
+    const controller = new AbortController()
+    const run = (await callsWithFacadeThrowing(new DataclusterMcpError("aborted"), controller)).find(([name]) => name === tool)?.[1]
+    assert.ok(run)
+    await assert.rejects(run(), DataclusterMcpError, `${tool}: a cancelled turn is not turned into a tool failure`)
+  }
 })
 
 test("rag_keyword_search's lang filter tells the model the stored value, the BnF's French label, not an ISO code", () => {
