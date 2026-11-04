@@ -1,0 +1,42 @@
+{
+  "success": true,
+  "data": {
+    "results": [
+      {
+        "entry_id": "113:6352:8665823",
+        "dataset_id": "113:6352",
+        "score": 1,
+        "snippets": [],
+        "match_count": 0,
+        "has_more": false,
+        "metadata": {
+          "dataset_type": "text",
+          "name": "ark:/12148/bpt6k7058455m",
+          "description": "## Folio 1\n\nire Année. — ITo 4\nN û du 5 Novembre 1909\n54 ILLUSTRATIONS\n16 PAGES DE LECTURE\nLa France à vol d’Aéroplane\nUNE ÉCOLE DE COW-BOYS\nUN TOURNOI D’ÉCHECS\nLe Champion de France\ncontre le Champio",
+          "status": "processed",
+          "mime_type": "application/octet-stream",
+          "created_at": "2026-11-04T16:44:28.162573+00:00",
+          "ark": "ark:/12148/bpt6k7058455m",
+          "arkSlug": "bpt6k7058455m",
+          "title": "Le Plein air : revue illustrée de tous les sports",
+          "date": "1909-11-05",
+          "docType": "press",
+          "subtype": "fascicules",
+          "lang": "Français",
+          "source": "gallica",
+          "pageCount": 15,
+          "ocrAvailable": true
+        },
+        "truncated_fields": []
+      }
+    ],
+    "pagination": {
+      "total": 1,
+      "limit": 5,
+      "offset": 0,
+      "has_more": false,
+      "next_offset": null,
+      "unaddressable": 0
+    }
+  }
+}

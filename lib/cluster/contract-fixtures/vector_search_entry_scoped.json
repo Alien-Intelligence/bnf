@@ -1,0 +1,57 @@
+{
+  "success": true,
+  "data": {
+    "results": [
+      {
+        "entry_id": "113:6363:9195583",
+        "dataset_id": "113:6363",
+        "score": 0.5320658,
+        "chunk_text": "A. SECTEUR PUBLIC",
+        "metadata": {
+          "chunk_index": 89,
+          "folio": 103,
+          "char_end": 118353,
+          "sub_type": null,
+          "doc_type": "book",
+          "ark_slug": "bpt6k3361716j",
+          "char_start": 118336,
+          "ark": "ark:/12148/bpt6k3361716j"
+        }
+      },
+      {
+        "entry_id": "113:6363:9195583",
+        "dataset_id": "113:6363",
+        "score": 0.5088204,
+        "chunk_text": "B. SECTEUR PRIVÉ",
+        "metadata": {
+          "chunk_index": 111,
+          "sub_type": null,
+          "doc_type": "book",
+          "char_start": 146651,
+          "folio": 127,
+          "ark_slug": "bpt6k3361716j",
+          "char_end": 146667,
+          "ark": "ark:/12148/bpt6k3361716j"
+        }
+      },
+      {
+        "entry_id": "113:6363:9195583",
+        "dataset_id": "113:6363",
+        "score": 0.4166386,
+        "chunk_text": "© Éditions Albin Michel, S.A., 1993\n22, rue Huyghens, 75014 Paris\nISBN 2-226-05744-7",
+        "metadata": {
+          "chunk_index": 2,
+          "ark_slug": "bpt6k3361716j",
+          "ark": "ark:/12148/bpt6k3361716j",
+          "doc_type": "book",
+          "char_end": 294,
+          "sub_type": null,
+          "char_start": 210,
+          "folio": 10
+        }
+      }
+    ],
+    "total": 3,
+    "unaddressable": 0
+  }
+}

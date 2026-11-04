@@ -1,0 +1,68 @@
+{
+  "success": true,
+  "data": {
+    "results": [
+      {
+        "entry_id": "113:6352:8665823",
+        "dataset_id": "113:6352",
+        "score": 0.6515151515151515,
+        "snippets": [
+          {
+            "field": "text_content",
+            "text": "## Folio 1\n\nire Année. — ITo 4\nN û du 5 Novembre 1909\n54 ILLUSTRATIONS\n16 PAGES DE LECTURE\nLa France à vol d’Aéroplane\nUNE ÉCOLE DE COW-BOYS\nUN TOURNOI D’ÉCHECS\nLe Champion de France\ncontre le Champion du Monde\nLe Championnat Cycliste\nde l’Heure\nLES GRANDES BATAILLES\nDU FOOTBALL\nAnglais contre Français\nLE BASE-BALL\nSport ",
+            "matched_terms": [
+              "ÉCOLE"
+            ],
+            "context": {
+              "type": "cropped",
+              "offset": 0,
+              "cropped_at": "maxLength"
+            },
+            "relevance_score": 1
+          },
+          {
+            "field": "text_content",
+            "text": "UNE ÉCOLE\nDE COÏT-BOTS\nQui se clouterait qu’il existe un collège\nl'élèves cow-boys en Angleterre, tout près\nle Londres, où- les futurs Bas-de-Cuir et\nBuffalo-Bill apprennent bien .studieusement\n‘art de lancer le lasso, de dompter un mus-\n-ang et de tirer au revolver ?...\n",
+            "matched_terms": [
+              "ÉCOLE"
+            ],
+            "context": {
+              "type": "sentence",
+              "offset": 27240
+            },
+            "relevance_score": 1
+          }
+        ],
+        "match_count": 7,
+        "has_more": true,
+        "metadata": {
+          "dataset_type": "text",
+          "name": "ark:/12148/bpt6k7058455m",
+          "description": "## Folio 1\n\nire Année. — ITo 4\nN û du 5 Novembre 1909\n54 ILLUSTRATIONS\n16 PAGES DE LECTURE\nLa France à vol d’Aéroplane\nU",
+          "status": "processed",
+          "mime_type": "application/octet-stream",
+          "created_at": "2026-11-04T16:44:28.162573+00:00",
+          "ark": "ark:/12148/bpt6k7058455m",
+          "arkSlug": "bpt6k7058455m",
+          "title": "Le Plein air : revue illustrée de tous les sports",
+          "date": "1909-11-05",
+          "docType": "press",
+          "subtype": "fascicules",
+          "lang": "Français",
+          "source": "gallica",
+          "pageCount": 15,
+          "ocrAvailable": true
+        },
+        "truncated_fields": []
+      }
+    ],
+    "pagination": {
+      "total": 214,
+      "limit": 1,
+      "offset": 0,
+      "has_more": true,
+      "next_offset": 1,
+      "unaddressable": 0
+    }
+  }
+}
