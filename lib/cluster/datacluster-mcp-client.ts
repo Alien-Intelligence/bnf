@@ -518,7 +518,7 @@ export class DataclusterMcpClient {
    * `result.content[0].text` payload. Handles SSE and plain-JSON transports.
    * An abort of the caller's signal is terminal: no retry, no backoff wait.
    */
-  private async callTool(name: string, args: unknown): Promise<unknown> {
+  private async callTool(name: DataclusterMcpTool, args: unknown): Promise<unknown> {
     // A stale session is recovered from ONCE per call: drop it, re-initialize
     // on the retry. A second rejection is not staleness.
     let sessionRenewed = false
