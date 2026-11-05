@@ -25,9 +25,12 @@ import "server-only"
 
 import {
   BNF_MCP_TIMEOUT_MS,
+  JSON_RPC_VERSION,
+  MCP_ACCEPT_HEADER,
   MCP_CLIENT_NAME,
   MCP_CLIENT_VERSION,
   MCP_PROTOCOL_VERSION,
+  MCP_SESSION_HEADER,
 } from "@/lib/constants"
 import { withTimeout } from "./abort"
 import { BnfMcpAuthError, BnfMcpError } from "./errors"
@@ -52,11 +55,11 @@ export async function openMcpSession(
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Accept: "application/json, text/event-stream",
+      Accept: MCP_ACCEPT_HEADER,
       Authorization: `Bearer ${token}`,
     },
     body: JSON.stringify({
-      jsonrpc: "2.0",
+      jsonrpc: JSON_RPC_VERSION,
       id: crypto.randomUUID(),
       method: "initialize",
       params: {
@@ -80,5 +83,5 @@ export async function openMcpSession(
   }
 
   // Stateless server → no header. Return null; callers omit `Mcp-Session-Id`.
-  return res.headers.get("mcp-session-id")
+  return res.headers.get(MCP_SESSION_HEADER)
 }

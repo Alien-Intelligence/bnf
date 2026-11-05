@@ -457,6 +457,15 @@ export const LOCALE_HEADER = "x-app-locale"
  */
 export const MCP_PROTOCOL_VERSION = "2025-06-18"
 
+/** The `jsonrpc` member of every MCP (JSON-RPC 2.0) request, and of the responses the clients accept. */
+export const JSON_RPC_VERSION = "2.0" as const
+
+/** `Accept` of every MCP POST: the streamable-HTTP transport answers in JSON or as an SSE stream. */
+export const MCP_ACCEPT_HEADER = "application/json, text/event-stream"
+
+/** The streamable-HTTP session header, on `initialize`'s response and on every later request (HTTP headers are case-insensitive). */
+export const MCP_SESSION_HEADER = "mcp-session-id"
+
 /** clientInfo sent in the MCP `initialize` handshake. */
 export const MCP_CLIENT_NAME = "bnf-corpus-research"
 export const MCP_CLIENT_VERSION = "0.1.0"

@@ -27,9 +27,12 @@ import {
   DATACLUSTER_MCP_RETRY_BASE_MS,
   DATACLUSTER_MCP_RETRY_CAP_MS,
   DATACLUSTER_MCP_TIMEOUT_MS,
+  JSON_RPC_VERSION,
+  MCP_ACCEPT_HEADER,
   MCP_CLIENT_NAME,
   MCP_CLIENT_VERSION,
   MCP_PROTOCOL_VERSION,
+  MCP_SESSION_HEADER,
 } from "@/lib/constants"
 import { z } from "zod"
 import { requireClusterEnv } from "@/lib/env"
@@ -305,13 +308,13 @@ export interface GetEntryContentInput {
 
 /** A JSON-RPC error response. */
 const jsonRpcErrorSchema = z
-  .object({ jsonrpc: z.literal("2.0"), error: z.object({ code: z.number(), message: z.string() }).loose() })
+  .object({ jsonrpc: z.literal(JSON_RPC_VERSION), error: z.object({ code: z.number(), message: z.string() }).loose() })
   .loose()
 
 /** A JSON-RPC result response to `tools/call`. */
 const jsonRpcResultSchema = z
   .object({
-    jsonrpc: z.literal("2.0"),
+    jsonrpc: z.literal(JSON_RPC_VERSION),
     result: z
       .object({
         content: z.array(z.object({ type: z.string(), text: z.string() }).loose()).optional(),
@@ -475,11 +478,11 @@ export class DataclusterMcpClient {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Accept: "application/json, text/event-stream",
+        Accept: MCP_ACCEPT_HEADER,
         Authorization: `Bearer ${this.token}`,
       },
       body: JSON.stringify({
-        jsonrpc: "2.0",
+        jsonrpc: JSON_RPC_VERSION,
         id: crypto.randomUUID(),
         method: "initialize",
         params: {
@@ -504,10 +507,10 @@ export class DataclusterMcpClient {
       throw new DataclusterMcpError(message)
     }
 
-    const sessionId = res.headers.get("mcp-session-id")
+    const sessionId = res.headers.get(MCP_SESSION_HEADER)
     if (!sessionId) {
       throw new DataclusterMcpError(
-        "data-cluster MCP initialize returned no mcp-session-id header",
+        `data-cluster MCP initialize returned no ${MCP_SESSION_HEADER} header`,
       )
     }
     return sessionId
@@ -536,12 +539,12 @@ export class DataclusterMcpClient {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            Accept: "application/json, text/event-stream",
+            Accept: MCP_ACCEPT_HEADER,
             Authorization: `Bearer ${this.token}`,
-            "Mcp-Session-Id": sessionId,
+            [MCP_SESSION_HEADER]: sessionId,
           },
           body: JSON.stringify({
-            jsonrpc: "2.0",
+            jsonrpc: JSON_RPC_VERSION,
             id,
             method: "tools/call",
             params: { name, arguments: args },
@@ -556,7 +559,7 @@ export class DataclusterMcpClient {
         }
         if (res.status === 404) {
           // The MCP spec (and the server's SDK) answers an unknown or expired
-          // Mcp-Session-Id with 404: re-initialize once before calling it a
+          // session id with 404: re-initialize once before calling it a
           // missing endpoint.
           const body = await this.failureBody(res, `data-cluster MCP HTTP 404 calling ${name}`)
           if (!sessionRenewed) throw staleSession(`HTTP 404 for session ${sessionId}: ${body}`)

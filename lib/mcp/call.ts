@@ -14,7 +14,7 @@
 
 import "server-only"
 
-import { BNF_MCP_TIMEOUT_MS } from "@/lib/constants"
+import { BNF_MCP_TIMEOUT_MS, JSON_RPC_VERSION, MCP_ACCEPT_HEADER } from "@/lib/constants"
 import { withTimeout } from "./abort"
 import {
   BnfMcpAuthError,
@@ -27,12 +27,12 @@ import { acquireBnfMcp, reportBnfUpstreamRateLimit } from "./rate-limit"
 import type { BnfMcpToolName } from "./tools"
 
 interface JsonRpcOk<T> {
-  jsonrpc: "2.0"
+  jsonrpc: typeof JSON_RPC_VERSION
   id: number | string
   result: T
 }
 interface JsonRpcErr {
-  jsonrpc: "2.0"
+  jsonrpc: typeof JSON_RPC_VERSION
   id: number | string
   error: { code: number; message: string; data?: unknown }
 }
@@ -179,11 +179,11 @@ export async function callBnfTool<T>(
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Accept: "application/json, text/event-stream",
+      Accept: MCP_ACCEPT_HEADER,
       Authorization: `Bearer ${token}`,
     },
     body: JSON.stringify({
-      jsonrpc: "2.0",
+      jsonrpc: JSON_RPC_VERSION,
       id: crypto.randomUUID(),
       method: "tools/call",
       params: { name: toolName, arguments: args },
