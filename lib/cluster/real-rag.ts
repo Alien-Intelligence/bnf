@@ -19,7 +19,7 @@ import {
 } from "@/lib/constants"
 import { raceAbort } from "@/lib/mcp/abort"
 import { datasetIdSchema } from "./composite-ids"
-import { DATACLUSTER_MCP_TOOL } from "./constants"
+import { DATACLUSTER_MCP_TOOL } from "@/lib/mcp/tools"
 import type { DatasetId, EntryId } from "./composite-ids"
 import type { ArkLookup } from "./rag-wire"
 import { countFolioHeadings, pageChunkChecker, type FolioChunk } from "./folio-text"
