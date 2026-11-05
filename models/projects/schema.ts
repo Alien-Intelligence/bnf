@@ -153,3 +153,12 @@ export type VisibilityScope =
 
 /** The input of a project row update (a batch statement composes it: ProjectQueries.updateOp). */
 export type ProjectUpdateInput = Prisma.ProjectUncheckedUpdateInput
+
+/**
+ * The fields a quote audit reads of a project: its name and what
+ * lib/authz/corpus-source.ts needs to resolve whose corpus it reads.
+ */
+export const projectAuditRow = {
+  select: { id: true, name: true, corpusSourceId: true, corpusSourceShareId: true },
+} satisfies Prisma.ProjectDefaultArgs
+export type ProjectAuditRow = Prisma.ProjectGetPayload<typeof projectAuditRow>

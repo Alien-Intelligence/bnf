@@ -2,9 +2,11 @@ import "server-only"
 
 import { prisma } from "@/lib/db"
 import {
+  projectAuditRow,
   projectWithMessageUsage,
   projectWithShares,
   type Project,
+  type ProjectAuditRow,
   type ProjectWithMessageUsage,
   type ProjectUpdateInput,
   type ProjectWithShares,
@@ -41,6 +43,14 @@ export class ProjectQueries {
   static async clusterDatasetId(id: string): Promise<string | null> {
     const row = await prisma.project.findUniqueOrThrow({ where: { id }, select: { clusterDatasetId: true } })
     return row.clusterDatasetId
+  }
+
+  static async listForAudit(onlyProjectId: string | null): Promise<ProjectAuditRow[]> {
+    return prisma.project.findMany({
+      where: onlyProjectId === null ? {} : { id: onlyProjectId },
+      ...projectAuditRow,
+      orderBy: { createdAt: "asc" },
+    })
   }
 
   static async listForOwner(ownerId: string): Promise<Project[]> {

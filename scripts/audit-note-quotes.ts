@@ -27,6 +27,8 @@ import { canReachCorpus, corpusProjectId } from "@/lib/authz/corpus-source"
 import { checkNoteQuotes } from "@/lib/citations/quote-check"
 import { projectClusterDatasetIdCache } from "@/lib/agent/tools/cluster-dataset-cache"
 import { QUOTE_CHECK_BUDGET_MS } from "@/lib/constants"
+import { NoteQueries } from "@/models/notes/queries"
+import { ProjectQueries } from "@/models/projects/queries"
 import { QUOTE_WARNING_REASON, type QuoteWarning, type QuoteWarningReason } from "@/models/notes/schema"
 
 const EXCERPTS_PER_REASON = 5
@@ -50,11 +52,7 @@ function bucketOf(w: QuoteWarning): string {
 async function main(): Promise<void> {
   const target = parseArgs(process.argv.slice(2))
 
-  const projects = await prisma.project.findMany({
-    where: target.all ? {} : { id: target.projectId },
-    select: { id: true, name: true, corpusSourceId: true, corpusSourceShareId: true },
-    orderBy: { createdAt: "asc" },
-  })
+  const projects = await ProjectQueries.listForAudit(target.all ? null : target.projectId)
   if (!target.all && projects.length === 0) throw new Error(`no project with id ${target.projectId}`)
 
   let notesSeen = 0
@@ -66,11 +64,7 @@ async function main(): Promise<void> {
   let projectsRevoked = 0
 
   for (const project of projects) {
-    const notes = await prisma.note.findMany({
-      where: { projectId: project.id },
-      select: { id: true, title: true, body_md: true },
-      orderBy: { createdAt: "asc" },
-    })
+    const notes = await NoteQueries.listBodiesForProject(project.id)
     if (notes.length === 0) continue
     if (!canReachCorpus(project)) {
       // A derived workspace whose grant was revoked may not read the source
