@@ -23,6 +23,7 @@
 // and fake-rag.test.ts pins the 1889 outputs (fake-rag-1889.snapshot.json).
 
 import { OCR_LOW_QUALITY_THRESHOLD } from "@/lib/constants"
+import { DOC_TYPE_CODE } from "@/models/documents/schema"
 import { BNF_LANGUAGE_LABEL } from "./constants"
 import { FIXTURE_SOURCE } from "./fixture-source"
 import type { RagFixture } from "./rag-fixtures"
@@ -70,7 +71,7 @@ export const QUOTE_FIXTURES: QuoteFixture[] = [
       "conclusions de l'enquête avant de prendre la moindre décision. »",
     title: POPULAIRE_TITLE,
     year: 1937,
-    docType: "press",
+    docType: DOC_TYPE_CODE.PRESS,
     lang: BNF_LANGUAGE_LABEL.FRENCH,
     source: FIXTURE_SOURCE,
     subtype: null,
@@ -100,7 +101,7 @@ export const QUOTE_FIXTURES: QuoteFixture[] = [
       "a provoqué le sinistre. Le commissaire central a fait poser les scellés sur le tableau électrique.",
     title: POPULAIRE_TITLE,
     year: 1937,
-    docType: "press",
+    docType: DOC_TYPE_CODE.PRESS,
     lang: BNF_LANGUAGE_LABEL.FRENCH,
     source: FIXTURE_SOURCE,
     subtype: null,
@@ -124,7 +125,7 @@ export const QUOTE_FIXTURES: QuoteFixture[] = [
       "intégrale des accords de juin et la révision des barèmes de manutention.",
     title: POPULAIRE_TITLE,
     year: 1937,
-    docType: "press",
+    docType: DOC_TYPE_CODE.PRESS,
     lang: BNF_LANGUAGE_LABEL.FRENCH,
     source: FIXTURE_SOURCE,
     subtype: null,
@@ -148,7 +149,7 @@ export const QUOTE_FIXTURES: QuoteFixture[] = [
       "témo:n de la grande fête de l'ind.strie\nde 1851, ne sera pas rebât:.",
     title: LOW_OCR_TITLE,
     year: 1937,
-    docType: "press",
+    docType: DOC_TYPE_CODE.PRESS,
     lang: BNF_LANGUAGE_LABEL.FRENCH,
     source: FIXTURE_SOURCE,
     subtype: null,
@@ -170,7 +171,7 @@ export const QUOTE_FIXTURES: QuoteFixture[] = [
       "pendant deux jours. Les habitants des hameaux ont été évacués vers la côte.",
     title: FORET_TITLE,
     year: 1937,
-    docType: "press",
+    docType: DOC_TYPE_CODE.PRESS,
     lang: BNF_LANGUAGE_LABEL.FRENCH,
     source: FIXTURE_SOURCE,
     subtype: null,
@@ -198,7 +199,7 @@ export const QUOTE_FIXTURES: QuoteFixture[] = [
       "l'intérieur et à moins de deux cents mètres des bois et forêts.",
     title: EAUX_FORETS_TITLE,
     year: 1937,
-    docType: "press",
+    docType: DOC_TYPE_CODE.PRESS,
     lang: BNF_LANGUAGE_LABEL.FRENCH,
     source: FIXTURE_SOURCE,
     subtype: null,
