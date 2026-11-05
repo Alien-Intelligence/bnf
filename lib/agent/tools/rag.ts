@@ -38,7 +38,7 @@ import "server-only"
 import { z, ZodError } from "zod"
 import { defineTool } from "@alien/chat-sdk/claude"
 import { ClusterRagClient, RAG_LOOKUP_STATUS } from "@/lib/cluster/rag"
-import { BNF_LANGUAGE_LABEL } from "@/lib/cluster/constants"
+import { BNF_LANGUAGE_LABEL } from "@/models/documents/schema"
 import { entryIdSchema } from "@/lib/cluster/composite-ids"
 import {
   DataclusterMcpAuthError,

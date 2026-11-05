@@ -27,6 +27,7 @@ import {
   DATACLUSTER_MCP_RETRY_BASE_MS,
   DATACLUSTER_MCP_RETRY_CAP_MS,
   DATACLUSTER_MCP_TIMEOUT_MS,
+  DATACLUSTER_RESPONSE_FORMAT,
   JSON_RPC_VERSION,
   MCP_ACCEPT_HEADER,
   MCP_CLIENT_NAME,
@@ -39,7 +40,6 @@ import { requireClusterEnv } from "@/lib/env"
 import { datasetIdSchema, entryIdSchema } from "./composite-ids"
 import { DATACLUSTER_MCP_TOOL } from "@/lib/mcp/tools"
 import type { DataclusterMcpTool } from "@/lib/mcp/tools"
-import { DATACLUSTER_RESPONSE_FORMAT } from "./constants"
 import type { DatasetId, EntryId } from "./composite-ids"
 import { withTimeout } from "@/lib/mcp/abort"
 import { withRetry } from "@/lib/mcp/retry"

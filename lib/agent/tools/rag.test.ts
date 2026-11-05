@@ -10,7 +10,7 @@ import { test, before, after } from "node:test"
 import assert from "node:assert/strict"
 import { prisma } from "@/lib/db"
 import { ClusterRagClient, RAG_LOOKUP_STATUS } from "@/lib/cluster/rag"
-import { BNF_LANGUAGE_LABEL } from "@/lib/cluster/constants"
+import { BNF_LANGUAGE_LABEL } from "@/models/documents/schema"
 import { entryIdSchema } from "@/lib/cluster/composite-ids"
 import type { RagEntryContentRequest } from "@/lib/cluster/rag"
 import {

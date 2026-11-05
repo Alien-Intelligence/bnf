@@ -284,6 +284,17 @@ export const LANG: Record<string, VocabEntry> = {
   he: { label: "he", color: LANG_CHIP },
 } as const
 
+/**
+ * How the BnF names a document's language in the manifest's "Langue" field —
+ * its French label, not an ISO code. worker-v2 copies it onto the entry
+ * unchanged, so `rag_keyword_search`'s `lang` filter must be written this way
+ * (an exact match on the stored value).
+ */
+export const BNF_LANGUAGE_LABEL = {
+  FRENCH: "Français",
+  ENGLISH: "Anglais",
+} as const
+
 // ---------------------------------------------------------------------------
 // Source vocabulary (source column)
 // Derived by sourceFromArk() in lib/mcp/normalize.ts from the ARK identifier

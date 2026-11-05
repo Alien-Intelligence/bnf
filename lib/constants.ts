@@ -521,6 +521,27 @@ export const DATACLUSTER_DATASET_SLUG_PREFIX = "bnf-"
 /** Page size used when listing datasets to resolve a project's dataset id. */
 export const DATACLUSTER_LIST_PAGE_SIZE = 100
 
+/** The `response_format` the app asks the data-cluster MCP's list, get and keyword tools for. */
+export const DATACLUSTER_RESPONSE_FORMAT = { JSON: "json" } as const
+
+/**
+ * What an ARK lookup — an empty keyword search filtered on the ark, scoped to
+ * the project's dataset — is called in errors and in the tenancy check, which
+ * otherwise names the MCP tool it checked.
+ */
+export const ARK_LOOKUP_LABEL = "ARK lookup"
+
+/**
+ * The two modes of `datacluster_get_entry_content` whose replies must carry
+ * pagination fields (the third, full mode, returns the raw payload). The
+ * values name the mode in protocol-error messages.
+ */
+export const ENTRY_CONTENT_MODE = {
+  PAGINATED: "paginated",
+  OFFSET_ONLY: "offset-only",
+} as const
+export type EntryContentMode = (typeof ENTRY_CONTENT_MODE)[keyof typeof ENTRY_CONTENT_MODE]
+
 /** Default number of passages requested per RAG query when the agent omits k. */
 export const RAG_DEFAULT_K = 12
 

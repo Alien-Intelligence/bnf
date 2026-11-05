@@ -23,8 +23,7 @@
 // and fake-rag.test.ts pins the 1889 outputs (fake-rag-1889.snapshot.json).
 
 import { OCR_LOW_QUALITY_THRESHOLD } from "@/lib/constants"
-import { DOC_TYPE_CODE } from "@/models/documents/schema"
-import { BNF_LANGUAGE_LABEL } from "./constants"
+import { BNF_LANGUAGE_LABEL, DOC_TYPE_CODE } from "@/models/documents/schema"
 import { FIXTURE_SOURCE } from "./fixture-source"
 import type { RagFixture } from "./rag-fixtures"
 

@@ -15,8 +15,7 @@
 // OCR output. The quote-integrity harness documents (1937 fires, garbled OCR
 // on purpose) live in rag-fixtures-quotes.ts and are appended at the end.
 
-import { DOC_TYPE_CODE } from "@/models/documents/schema"
-import { BNF_LANGUAGE_LABEL } from "./constants"
+import { BNF_LANGUAGE_LABEL, DOC_TYPE_CODE } from "@/models/documents/schema"
 import { FIXTURE_SOURCE } from "./fixture-source"
 import { QUOTE_FIXTURES } from "./rag-fixtures-quotes"
 
