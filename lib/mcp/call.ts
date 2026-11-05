@@ -14,7 +14,18 @@
 
 import "server-only"
 
-import { BNF_MCP_TIMEOUT_MS, JSON_RPC_VERSION, MCP_ACCEPT_HEADER } from "@/lib/constants"
+import {
+  BNF_MCP_TIMEOUT_MS,
+  HTTP_CONTENT_TYPE_HEADER,
+  JSON_RPC_VERSION,
+  MCP_ACCEPT_HEADER,
+  MCP_DIAGNOSTIC_EXCERPT_CHARS,
+  MCP_HTTP_METHOD,
+  MCP_RPC_METHOD,
+  MEDIA_TYPE_EVENT_STREAM,
+  MEDIA_TYPE_JSON,
+  SSE_DATA_PREFIX,
+} from "@/lib/constants"
 import { withTimeout } from "./abort"
 import {
   BnfMcpAuthError,
@@ -122,7 +133,7 @@ function softFailureError(envelope: McpFailureEnvelope, toolName: BnfMcpToolName
  */
 async function failureBody(res: Response): Promise<string> {
   try {
-    return (await res.text()).slice(0, 200)
+    return (await res.text()).slice(0, MCP_DIAGNOSTIC_EXCERPT_CHARS)
   } catch (err) {
     return `<body unreadable: ${err instanceof Error ? err.message : String(err)}>`
   }
@@ -176,16 +187,16 @@ export async function callBnfTool<T>(
   }
 
   const res = await fetch(url, {
-    method: "POST",
+    method: MCP_HTTP_METHOD,
     headers: {
-      "Content-Type": "application/json",
+      [HTTP_CONTENT_TYPE_HEADER]: MEDIA_TYPE_JSON,
       Accept: MCP_ACCEPT_HEADER,
       Authorization: `Bearer ${token}`,
     },
     body: JSON.stringify({
       jsonrpc: JSON_RPC_VERSION,
       id: crypto.randomUUID(),
-      method: "tools/call",
+      method: MCP_RPC_METHOD.TOOLS_CALL,
       params: { name: toolName, arguments: args },
     }),
     // Bound the call: abort on turn cancel OR a stalled transport.
@@ -193,7 +204,7 @@ export async function callBnfTool<T>(
   })
 
   if (res.status === 401 || res.status === 403) {
-    throw new BnfMcpAuthError(`MCP tools/call auth failed (HTTP ${res.status})`)
+    throw new BnfMcpAuthError(`MCP ${MCP_RPC_METHOD.TOOLS_CALL} auth failed (HTTP ${res.status})`)
   }
   if (res.status === 429) {
     // No caller wraps `callBnfTool` in `withRetry` today, so this does not (yet)
@@ -205,22 +216,22 @@ export async function callBnfTool<T>(
     reportBnfUpstreamRateLimit(toolName, waitMs)
     throw new BnfMcpRateLimitError(
       waitMs === undefined
-        ? "MCP tools/call rate limited (HTTP 429)"
-        : `MCP tools/call rate limited (HTTP 429) — retry in ${Math.ceil(waitMs / 1000)}s`,
+        ? `MCP ${MCP_RPC_METHOD.TOOLS_CALL} rate limited (HTTP 429)`
+        : `MCP ${MCP_RPC_METHOD.TOOLS_CALL} rate limited (HTTP 429) — retry in ${Math.ceil(waitMs / 1000)}s`,
       waitMs,
     )
   }
   if (!res.ok) {
-    throw new BnfMcpError(`MCP tools/call failed (HTTP ${res.status}): ${await failureBody(res)}`)
+    throw new BnfMcpError(`MCP ${MCP_RPC_METHOD.TOOLS_CALL} failed (HTTP ${res.status}): ${await failureBody(res)}`)
   }
 
-  const ctype = res.headers.get("content-type") ?? ""
+  const ctype = res.headers.get(HTTP_CONTENT_TYPE_HEADER) ?? ""
   let envelope: JsonRpcOk<McpToolCallResult> | JsonRpcErr
-  if (ctype.includes("text/event-stream")) {
+  if (ctype.includes(MEDIA_TYPE_EVENT_STREAM)) {
     const body = await res.text()
-    const dataLine = body.split("\n").find((line) => line.startsWith("data: "))
-    if (!dataLine) throw new BnfMcpError("MCP tools/call: SSE response had no data line")
-    envelope = parseJson(dataLine.slice(6), `MCP ${toolName} SSE frame`) as JsonRpcOk<McpToolCallResult> | JsonRpcErr
+    const dataLine = body.split("\n").find((line) => line.startsWith(SSE_DATA_PREFIX))
+    if (!dataLine) throw new BnfMcpError(`MCP ${MCP_RPC_METHOD.TOOLS_CALL}: SSE response had no data line`)
+    envelope = parseJson(dataLine.slice(SSE_DATA_PREFIX.length), `MCP ${toolName} SSE frame`) as JsonRpcOk<McpToolCallResult> | JsonRpcErr
   } else {
     envelope = parseJson(await res.text(), `MCP ${toolName} response`) as JsonRpcOk<McpToolCallResult> | JsonRpcErr
   }
@@ -232,7 +243,7 @@ export async function callBnfTool<T>(
   const result = envelope.result
   if (result.isError) {
     const text = result.content?.find((c) => typeof c.text === "string")?.text ?? "tool error"
-    throw new BnfMcpError(`MCP ${toolName}: ${text.slice(0, 200)}`)
+    throw new BnfMcpError(`MCP ${toolName}: ${text.slice(0, MCP_DIAGNOSTIC_EXCERPT_CHARS)}`)
   }
 
   const textBlock = result.content?.find((c) => c.type === "text" && typeof c.text === "string")

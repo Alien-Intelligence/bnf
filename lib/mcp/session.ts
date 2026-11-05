@@ -25,12 +25,17 @@ import "server-only"
 
 import {
   BNF_MCP_TIMEOUT_MS,
+  HTTP_CONTENT_TYPE_HEADER,
   JSON_RPC_VERSION,
   MCP_ACCEPT_HEADER,
   MCP_CLIENT_NAME,
   MCP_CLIENT_VERSION,
+  MCP_DIAGNOSTIC_EXCERPT_CHARS,
+  MCP_HTTP_METHOD,
   MCP_PROTOCOL_VERSION,
+  MCP_RPC_METHOD,
   MCP_SESSION_HEADER,
+  MEDIA_TYPE_JSON,
 } from "@/lib/constants"
 import { withTimeout } from "./abort"
 import { BnfMcpAuthError, BnfMcpError } from "./errors"
@@ -52,16 +57,16 @@ export async function openMcpSession(
   signal?: AbortSignal,
 ): Promise<string | null> {
   const res = await fetch(url, {
-    method: "POST",
+    method: MCP_HTTP_METHOD,
     headers: {
-      "Content-Type": "application/json",
+      [HTTP_CONTENT_TYPE_HEADER]: MEDIA_TYPE_JSON,
       Accept: MCP_ACCEPT_HEADER,
       Authorization: `Bearer ${token}`,
     },
     body: JSON.stringify({
       jsonrpc: JSON_RPC_VERSION,
       id: crypto.randomUUID(),
-      method: "initialize",
+      method: MCP_RPC_METHOD.INITIALIZE,
       params: {
         protocolVersion: MCP_PROTOCOL_VERSION,
         capabilities: {},
@@ -73,12 +78,12 @@ export async function openMcpSession(
   })
 
   if (res.status === 401 || res.status === 403) {
-    throw new BnfMcpAuthError(`MCP initialize auth failed (HTTP ${res.status})`)
+    throw new BnfMcpAuthError(`MCP ${MCP_RPC_METHOD.INITIALIZE} auth failed (HTTP ${res.status})`)
   }
   if (!res.ok) {
     const body = await res.text().catch(() => "")
     throw new BnfMcpError(
-      `MCP initialize failed (HTTP ${res.status}): ${body.slice(0, 200)}`,
+      `MCP ${MCP_RPC_METHOD.INITIALIZE} failed (HTTP ${res.status}): ${body.slice(0, MCP_DIAGNOSTIC_EXCERPT_CHARS)}`,
     )
   }
 

@@ -460,8 +460,30 @@ export const MCP_PROTOCOL_VERSION = "2025-06-18"
 /** The `jsonrpc` member of every MCP (JSON-RPC 2.0) request, and of the responses the clients accept. */
 export const JSON_RPC_VERSION = "2.0" as const
 
-/** `Accept` of every MCP POST: the streamable-HTTP transport answers in JSON or as an SSE stream. */
-export const MCP_ACCEPT_HEADER = "application/json, text/event-stream"
+/** The media types of the streamable-HTTP transport: requests are JSON; a reply is JSON or an SSE stream. */
+export const MEDIA_TYPE_JSON = "application/json"
+export const MEDIA_TYPE_EVENT_STREAM = "text/event-stream"
+
+/** `Accept` of every MCP POST: the transport answers in JSON or as an SSE stream. */
+export const MCP_ACCEPT_HEADER = `${MEDIA_TYPE_JSON}, ${MEDIA_TYPE_EVENT_STREAM}`
+
+/** The header naming a body's media type, on MCP requests and replies (HTTP headers are case-insensitive). */
+export const HTTP_CONTENT_TYPE_HEADER = "content-type"
+
+/** Every MCP call, handshake or tool call, is a POST. */
+export const MCP_HTTP_METHOD = "POST"
+
+/** The JSON-RPC methods the MCP clients send. */
+export const MCP_RPC_METHOD = {
+  INITIALIZE: "initialize",
+  TOOLS_CALL: "tools/call",
+} as const
+
+/** Prefix of the data line of an SSE frame; the rest of the line is the JSON-RPC envelope. */
+export const SSE_DATA_PREFIX = "data: "
+
+/** Characters of a failed MCP reply (or of text that is not JSON) quoted in an error message. */
+export const MCP_DIAGNOSTIC_EXCERPT_CHARS = 200
 
 /** The streamable-HTTP session header, on `initialize`'s response and on every later request (HTTP headers are case-insensitive). */
 export const MCP_SESSION_HEADER = "mcp-session-id"

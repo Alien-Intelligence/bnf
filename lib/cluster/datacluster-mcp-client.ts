@@ -28,12 +28,19 @@ import {
   DATACLUSTER_MCP_RETRY_CAP_MS,
   DATACLUSTER_MCP_TIMEOUT_MS,
   DATACLUSTER_RESPONSE_FORMAT,
+  HTTP_CONTENT_TYPE_HEADER,
   JSON_RPC_VERSION,
   MCP_ACCEPT_HEADER,
   MCP_CLIENT_NAME,
   MCP_CLIENT_VERSION,
+  MCP_DIAGNOSTIC_EXCERPT_CHARS,
+  MCP_HTTP_METHOD,
   MCP_PROTOCOL_VERSION,
+  MCP_RPC_METHOD,
   MCP_SESSION_HEADER,
+  MEDIA_TYPE_JSON,
+  MEDIA_TYPE_EVENT_STREAM,
+  SSE_DATA_PREFIX,
 } from "@/lib/constants"
 import { z } from "zod"
 import { requireClusterEnv } from "@/lib/env"
@@ -434,7 +441,7 @@ export class DataclusterMcpClient {
     if (!envelope.data.success) {
       throw new DataclusterMcpError(
         envelope.data.error === undefined
-          ? `${tool} failed without an error message (envelope: ${JSON.stringify(envelope.data).slice(0, 200)})`
+          ? `${tool} failed without an error message (envelope: ${JSON.stringify(envelope.data).slice(0, MCP_DIAGNOSTIC_EXCERPT_CHARS)})`
           : `${tool} failed: ${envelope.data.error}`,
       )
     }
@@ -466,7 +473,7 @@ export class DataclusterMcpClient {
   /** The body of a failed response, for the error message; a body that cannot be read is itself reported. */
   private async failureBody(res: Response, what: string): Promise<string> {
     try {
-      return (await res.text()).slice(0, 200)
+      return (await res.text()).slice(0, MCP_DIAGNOSTIC_EXCERPT_CHARS)
     } catch (err) {
       throw new DataclusterMcpError(`${what} (HTTP ${res.status}); its body could not be read`, err)
     }
@@ -475,16 +482,16 @@ export class DataclusterMcpClient {
   /** Perform the `initialize` handshake; return the assigned session id. */
   private async openSession(): Promise<string> {
     const res = await fetch(this.baseUrl, {
-      method: "POST",
+      method: MCP_HTTP_METHOD,
       headers: {
-        "Content-Type": "application/json",
+        [HTTP_CONTENT_TYPE_HEADER]: MEDIA_TYPE_JSON,
         Accept: MCP_ACCEPT_HEADER,
         Authorization: `Bearer ${this.token}`,
       },
       body: JSON.stringify({
         jsonrpc: JSON_RPC_VERSION,
         id: crypto.randomUUID(),
-        method: "initialize",
+        method: MCP_RPC_METHOD.INITIALIZE,
         params: {
           protocolVersion: MCP_PROTOCOL_VERSION,
           capabilities: {},
@@ -496,12 +503,12 @@ export class DataclusterMcpClient {
 
     if (res.status === 401 || res.status === 403) {
       throw new DataclusterMcpAuthError(
-        `data-cluster MCP initialize auth failed (HTTP ${res.status})`,
+        `data-cluster MCP ${MCP_RPC_METHOD.INITIALIZE} auth failed (HTTP ${res.status})`,
       )
     }
     if (!res.ok) {
-      const body = await this.failureBody(res, "data-cluster MCP initialize failed")
-      const message = `data-cluster MCP initialize failed (HTTP ${res.status}): ${body}`
+      const body = await this.failureBody(res, `data-cluster MCP ${MCP_RPC_METHOD.INITIALIZE} failed`)
+      const message = `data-cluster MCP ${MCP_RPC_METHOD.INITIALIZE} failed (HTTP ${res.status}): ${body}`
       // A 400 to `initialize` is our request, not a transient fault.
       if (res.status === 400) throw new DataclusterMcpRequestError(message)
       throw new DataclusterMcpError(message)
@@ -510,7 +517,7 @@ export class DataclusterMcpClient {
     const sessionId = res.headers.get(MCP_SESSION_HEADER)
     if (!sessionId) {
       throw new DataclusterMcpError(
-        `data-cluster MCP initialize returned no ${MCP_SESSION_HEADER} header`,
+        `data-cluster MCP ${MCP_RPC_METHOD.INITIALIZE} returned no ${MCP_SESSION_HEADER} header`,
       )
     }
     return sessionId
@@ -536,9 +543,9 @@ export class DataclusterMcpClient {
         const sessionId = await this.ensureSession()
 
         const res = await fetch(this.baseUrl, {
-          method: "POST",
+          method: MCP_HTTP_METHOD,
           headers: {
-            "Content-Type": "application/json",
+            [HTTP_CONTENT_TYPE_HEADER]: MEDIA_TYPE_JSON,
             Accept: MCP_ACCEPT_HEADER,
             Authorization: `Bearer ${this.token}`,
             [MCP_SESSION_HEADER]: sessionId,
@@ -546,7 +553,7 @@ export class DataclusterMcpClient {
           body: JSON.stringify({
             jsonrpc: JSON_RPC_VERSION,
             id,
-            method: "tools/call",
+            method: MCP_RPC_METHOD.TOOLS_CALL,
             params: { name, arguments: args },
           }),
           signal: withTimeout(this.signal, DATACLUSTER_MCP_TIMEOUT_MS),
@@ -576,11 +583,11 @@ export class DataclusterMcpClient {
           throw new DataclusterMcpError(`data-cluster MCP HTTP ${res.status} calling ${name}: ${body}`)
         }
 
-        const ct = res.headers.get("content-type")
+        const ct = res.headers.get(HTTP_CONTENT_TYPE_HEADER)
         if (ct === null) {
-          throw new DataclusterMcpProtocolError(`data-cluster MCP response for ${name} has no content-type`)
+          throw new DataclusterMcpProtocolError(`data-cluster MCP response for ${name} has no ${HTTP_CONTENT_TYPE_HEADER}`)
         }
-        const raw = ct.includes("text/event-stream") ? sseData(await res.text(), name) : await res.text()
+        const raw = ct.includes(MEDIA_TYPE_EVENT_STREAM) ? sseData(await res.text(), name) : await res.text()
         const json = parseJson(raw, `JSON-RPC envelope for ${name}`)
         const rpcError = jsonRpcErrorSchema.safeParse(json)
         if (rpcError.success) {
@@ -629,11 +636,11 @@ export class DataclusterMcpClient {
 
 /** The `data:` line of a single-event SSE response. */
 function sseData(text: string, tool: string): string {
-  const dataLine = text.split("\n").find((l) => l.startsWith("data: "))
+  const dataLine = text.split("\n").find((l) => l.startsWith(SSE_DATA_PREFIX))
   if (!dataLine) {
     throw new DataclusterMcpProtocolError(`data-cluster MCP SSE response had no data line for ${tool}`)
   }
-  return dataLine.slice("data: ".length)
+  return dataLine.slice(SSE_DATA_PREFIX.length)
 }
 
 /** JSON.parse that reports what it was parsing; a non-JSON reply is a protocol error. */
@@ -641,6 +648,6 @@ function parseJson(text: string, what: string): unknown {
   try {
     return JSON.parse(text)
   } catch (err) {
-    throw new DataclusterMcpProtocolError(`${what} is not JSON: ${text.slice(0, 200)}`, err)
+    throw new DataclusterMcpProtocolError(`${what} is not JSON: ${text.slice(0, MCP_DIAGNOSTIC_EXCERPT_CHARS)}`, err)
   }
 }
