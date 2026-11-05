@@ -14,6 +14,9 @@ export const noteWithCitations = {
   include: { citations: true },
 } satisfies Prisma.NoteDefaultArgs
 export type NoteWithCitations = Prisma.NoteGetPayload<typeof noteWithCitations>
+
+/** One ordering key of a note listing (queries.ts names its sort order with it). */
+export type NoteOrderBy = Prisma.NoteOrderByWithRelationInput
 /** A note's id and body (the quote audit and the e2e harness re-check bodies); `title` for the audit's log line. */
 export type NoteBodyRow = Pick<Note, "id" | "title" | "body_md">
 

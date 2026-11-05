@@ -1,6 +1,5 @@
 import "server-only"
 import { prisma } from "@/lib/db"
-import type { Prisma } from "@/lib/generated/prisma/client"
 import {
   noteWithCitations,
   type CitationUsage,
@@ -8,13 +7,14 @@ import {
   type NoteWithCitations,
   type NoteListItem,
   type NoteVersionListItem,
+  type NoteOrderBy,
 } from "./schema"
 
 /**
  * The note-list order — pinned first, then most recently updated — of every
  * read that lists notes (the note list, note_list): written once.
  */
-const NOTE_LIST_ORDER: Prisma.NoteOrderByWithRelationInput[] = [
+const NOTE_LIST_ORDER: NoteOrderBy[] = [
   { pinned: "desc" },
   { updatedAt: "desc" },
 ]
