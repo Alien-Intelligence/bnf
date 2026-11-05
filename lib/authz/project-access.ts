@@ -16,6 +16,7 @@ import {
   PROJECT_RELATION,
   type ProjectRelation,
   type ProjectWithShares,
+  type VisibilityScope,
 } from "@/models/projects/schema"
 
 /** The access a ProjectShare grants. Stored as a plain String column. */
@@ -131,28 +132,6 @@ export function isProjectOwner(
 ): boolean {
   return projectAccessLevel(user, project) === PROJECT_ACCESS_LEVEL.OWNER
 }
-
-/**
- * The listing counterpart of the access table.
- *
- * `projectAccessLevel` answers "may this user reach THIS project", one row at a
- * time. A list has to answer it for rows it has not loaded yet, so the same
- * decision has to be expressible as a filter — and that filter must be derived
- * HERE, not hand-written into a `where` clause somewhere else.
- *
- * Queries take this value and apply it. They never see the user, so they cannot
- * re-derive the answer — which is the whole point.
- */
-export type VisibilityScope =
-  | { unrestricted: true }
-  | {
-      unrestricted: false
-      userId: string
-      groupIds: string[]
-      /** The share levels that count as a grant (an unrecognised stored value
-       *  grants nothing, as in projectAccessLevel). */
-      shareAccess: ProjectAccess[]
-    }
 
 /**
  * What belongs to a user personally: projects they own, projects shared into one

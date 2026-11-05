@@ -1,19 +1,19 @@
 import "server-only"
 
 import { prisma } from "@/lib/db"
-import type { Prisma } from "@/lib/generated/prisma/client"
-import type { VisibilityScope } from "@/lib/authz/project-access"
 import {
   projectWithMessageUsage,
   projectWithShares,
   type Project,
   type ProjectWithMessageUsage,
+  type ProjectUpdateInput,
   type ProjectWithShares,
+  type VisibilityScope,
 } from "./schema"
 
 export class ProjectQueries {
   /** Statement: update a project row (for composition in a batch transaction). */
-  static updateOp(projectId: string, data: Prisma.ProjectUncheckedUpdateInput) {
+  static updateOp(projectId: string, data: ProjectUpdateInput) {
     return prisma.project.update({ where: { id: projectId }, data })
   }
 
