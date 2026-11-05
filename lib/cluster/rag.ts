@@ -20,13 +20,34 @@ import "server-only"
 // Every request carries the caller's AbortSignal (the turn's `ctx.signal`), and
 // every offset and length is in Unicode code points (folio-text.ts).
 
-import type { EntryId } from "./composite-ids"
+import type { DatasetId, EntryId } from "./composite-ids"
 import type { DocumentFolios } from "./folio-text"
 import { CLUSTER_MODE, clusterMode } from "./mode"
 
 // ---------------------------------------------------------------------------
 // Public types (shared by fake and real implementations)
 // ---------------------------------------------------------------------------
+
+/**
+ * Where a project's resolved cluster dataset id is remembered between calls.
+ * lib/cluster never imports models/: the caller (an agent tool, an entry
+ * point) hands the real runner a cache backed by `Project.clusterDatasetId`
+ * (lib/agent/tools/cluster-dataset-cache.ts). The fake runner ignores it.
+ *
+ * `read` returns the stored value as written — plain text, not yet trusted as
+ * a composite id; the runner validates it before use. Both calls may fail
+ * (a database error); the failure propagates.
+ */
+export interface ClusterDatasetIdCache {
+  read(projectId: string): Promise<string | null>
+  write(projectId: string, datasetId: DatasetId): Promise<void>
+}
+
+/** The cache every request carries, on the field every runner reads it from. */
+interface DatasetIdCached {
+  /** Remembers the project's resolved dataset id (the fake runner ignores it). */
+  datasetIdCache: ClusterDatasetIdCache
+}
 
 export interface RagPassage {
   /** BnF ARK identifier — opaque, verbatim from the cluster index. */
@@ -61,7 +82,7 @@ export interface RagPassage {
   entryId: EntryId
 }
 
-export interface RagQueryRequest {
+export interface RagQueryRequest extends DatasetIdCached {
   /** The CORPUS project id — scopes the search to its dataset. */
   projectId: string
   /** Free-text query issued by the research agent. */
@@ -84,7 +105,7 @@ export interface RagQueryResponse {
 
 // --- Keyword search (entry-level, faceted) ---------------------------------
 
-export interface RagKeywordRequest {
+export interface RagKeywordRequest extends DatasetIdCached {
   /** The CORPUS project id — scopes the search to its dataset. */
   projectId: string
   /** Free-text query — typo-tolerant. May be empty when filtering only. */
@@ -126,7 +147,7 @@ export interface RagKeywordResponse {
 
 // --- Full-text retrieval (selective, paginated) ----------------------------
 
-export interface RagEntryContentRequest {
+export interface RagEntryContentRequest extends DatasetIdCached {
   /** The CORPUS project id — the dataset the entry must belong to. */
   projectId: string
   /**
@@ -185,7 +206,7 @@ export interface RagEntryContent {
 
 // --- Whole-document folio text --------------------------------------------
 
-export interface DocumentFoliosRequest {
+export interface DocumentFoliosRequest extends DatasetIdCached {
   /**
    * The CORPUS project id (`ctx.corpusProjectId`, resolved through
    * lib/authz/corpus-source.ts) — the dataset a derived workspace's citations

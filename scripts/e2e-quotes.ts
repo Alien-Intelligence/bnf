@@ -40,6 +40,7 @@ import { z } from "zod"
 import { prisma } from "@/lib/db"
 import type { AppLocale } from "@/i18n/routing"
 import { checkNoteQuotes } from "@/lib/citations/quote-check"
+import { projectClusterDatasetIdCache } from "@/lib/agent/tools/cluster-dataset-cache"
 import { FAKE_RAG_MODEL_VERSION, QUOTE_CHECK_BUDGET_MS } from "@/lib/constants"
 import { TOOL_CALL_STATUS } from "@/models/messages/schema"
 import { QUOTE_CHECK_STATUS, QUOTE_WARNING_REASON, type QuoteWarning } from "@/models/notes/schema"
@@ -182,6 +183,7 @@ async function fixtureLowFolios(args: { ark: string; folios: ReadonlySet<number>
 async function judge(projectId: string, bodyMd: string, priorBodyMd: string | null): Promise<QuoteWarning[]> {
   const res = await checkNoteQuotes({
     corpusProjectId: projectId,
+    datasetIdCache: projectClusterDatasetIdCache,
     bodyMd,
     priorBodyMd,
     signal: new AbortController().signal,

@@ -17,6 +17,7 @@ import {
   QUOTE_UNVERIFIABLE_CAUSE,
   QUOTE_WARNING_REASON,
 } from "@/models/notes/schema"
+import { inMemoryClusterDatasetIdCache } from "@/lib/testing/cluster-dataset-cache"
 import { checkNoteQuotes } from "./quote-check"
 import type { CheckNoteQuotesArgs, LowOcrFoliosLookup } from "./quote-check"
 
@@ -34,9 +35,12 @@ function cite(ark: string, folio: number): string {
 /** A quality lookup that knows of no low folio. */
 const noLowFolios: LowOcrFoliosLookup = async () => new Set()
 
+const datasetIdCache = inMemoryClusterDatasetIdCache()
+
 function args(over: Partial<CheckNoteQuotesArgs> & Pick<CheckNoteQuotesArgs, "bodyMd">): CheckNoteQuotesArgs {
   return {
     corpusProjectId: PROJECT,
+    datasetIdCache,
     priorBodyMd: null,
     signal: new AbortController().signal,
     lowOcrFolios: noLowFolios,
@@ -77,6 +81,20 @@ test("an exact quote on its cited folio, with quality data, is checked and compl
     () => checkNoteQuotes(args({ bodyMd: `« ${QUOTE} » ${cite(arkN(1), 2)}` })),
   )
   assert.deepEqual(res, { status: QUOTE_CHECK_STATUS.COMPLETE, checked: 1, warnings: [], unevaluated_rules: [] })
+})
+
+test("the cluster read carries the caller's dataset-id cache, so lib/cluster needs no models", async () => {
+  const seen: DocumentFoliosRequest[] = []
+  await withFacade(
+    async (req) => {
+      seen.push(req)
+      return found([[2, FOLIO_TEXT]])
+    },
+    () => checkNoteQuotes(args({ bodyMd: `« ${QUOTE} » ${cite(arkN(1), 2)}` })),
+  )
+  assert.equal(seen.length, 1)
+  assert.equal(seen[0].datasetIdCache, datasetIdCache)
+  assert.equal(seen[0].projectId, PROJECT)
 })
 
 test("without a quality lookup, correction_on_low_ocr is unevaluated and the check is partial, never complete", async () => {

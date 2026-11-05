@@ -7,8 +7,9 @@ import "server-only"
 // folio + snippet + score), so the research agent can cite by ARK + folio.
 //
 // Dataset resolution: each project owns one cluster dataset, slug `bnf-<id>`.
-// The composite dataset id ("cluster:dataset") is cached on `Project.clusterDatasetId`; the first query
-// resolves it by listing datasets and matching the slug, then persists it.
+// The composite dataset id ("cluster:dataset") is remembered through the request's
+// ClusterDatasetIdCache (the app backs it with `Project.clusterDatasetId`); the first query
+// resolves it by listing datasets and matching the slug, then writes it back.
 //
 // Consumed only via ClusterRagClient (lib/cluster/rag.ts) — never directly.
 
@@ -16,8 +17,6 @@ import {
   DATACLUSTER_DATASET_SLUG_PREFIX,
   DATACLUSTER_LIST_PAGE_SIZE,
 } from "@/lib/constants"
-import { ProjectQueries } from "@/models/projects/queries"
-import { ProjectService } from "@/models/projects/service"
 import { raceAbort } from "@/lib/mcp/abort"
 import { datasetIdSchema } from "./composite-ids"
 import { DATACLUSTER_MCP_TOOL } from "./constants"
@@ -35,6 +34,7 @@ import type { DataclusterChunk, DataclusterKeywordHit } from "./datacluster-mcp-
 import { arkLookup, assertInDataset, chunkToPassage, folioChunksOf, foliosForEntry, pickLiveEntryId, toEntryContent } from "./rag-wire"
 import { RAG_LOOKUP_STATUS } from "./rag"
 import type {
+  ClusterDatasetIdCache,
   DocumentFoliosRequest,
   DocumentFoliosResult,
   RagEntryContentRequest,
@@ -69,23 +69,24 @@ const CHUNK_LIST_CONCURRENCY = 4
 /**
  * Resolve the project's composite cluster dataset id, persisting it on first use.
  *
- * Reads `Project.clusterDatasetId` first and checks it still names dataset
+ * Reads the cached id first and checks it still names dataset
  * `bnf-<projectId>`; on a miss (or a stale id), pages through the cluster's
- * dataset list matching that slug, writes the id back to the project, and
+ * dataset list matching that slug, writes the id back to the cache, and
  * returns it.
  *
  * Throws DataclusterMcpNotFoundError when the walk completed and no dataset
  * has the slug — an inconsistency, since the rag tools only call us after an
  * ingestion has been committed — and a plain DataclusterMcpError when it gave
  * up after MAX_DATASET_PAGES without reaching the end (the dataset may exist).
- * The database awaits are raced against the caller's signal.
+ * The cache awaits are raced against the caller's signal.
  */
 async function resolveDatasetId(
   projectId: string,
   client: DataclusterMcpClient,
+  cache: ClusterDatasetIdCache,
   signal: AbortSignal,
 ): Promise<DatasetId> {
-  const cachedValue = await raceAbort(ProjectQueries.clusterDatasetId(projectId), signal)
+  const cachedValue = await raceAbort(cache.read(projectId), signal)
   const slug = `${DATACLUSTER_DATASET_SLUG_PREFIX}${projectId}`
 
   // A cached id is checked before use: when the dataset was recreated (the
@@ -116,7 +117,7 @@ async function resolveDatasetId(
     const datasets = await client.listDatasets(DATACLUSTER_LIST_PAGE_SIZE, offset)
     const match = datasets.find((d) => d.slug === slug)
     if (match) {
-      await raceAbort(ProjectService.setClusterDatasetId(projectId, match.dataset_id), signal)
+      await raceAbort(cache.write(projectId, match.dataset_id), signal)
       return match.dataset_id
     }
     // Short page → the walk reached the end: the dataset does not exist.
@@ -181,7 +182,7 @@ function keywordHitToRag(hit: DataclusterKeywordHit): RagKeywordHit | null {
 export const RealRagRunner = {
   async query(req: RagQueryRequest): Promise<RagQueryResponse> {
     const client = new DataclusterMcpClient({ signal: req.signal })
-    const datasetId = await resolveDatasetId(req.projectId, client, req.signal)
+    const datasetId = await resolveDatasetId(req.projectId, client, req.datasetIdCache, req.signal)
 
     // The cluster's vector search filters by dataset_ids / entry_ids /
     // score_threshold only, so the request carries no facet filters (the
@@ -208,7 +209,7 @@ export const RealRagRunner = {
 
   async keywordSearch(req: RagKeywordRequest): Promise<RagKeywordResponse> {
     const client = new DataclusterMcpClient({ signal: req.signal })
-    const datasetId = await resolveDatasetId(req.projectId, client, req.signal)
+    const datasetId = await resolveDatasetId(req.projectId, client, req.datasetIdCache, req.signal)
 
     const data = await client.keywordSearch({
       query: req.query,
@@ -239,7 +240,7 @@ export const RealRagRunner = {
     // in THIS corpus project's dataset returns for the stated ARK. Offset and limit are
     // explicit on the request: the tool handler owns the defaults.
     const client = new DataclusterMcpClient({ signal: req.signal })
-    const datasetId = await resolveDatasetId(req.projectId, client, req.signal)
+    const datasetId = await resolveDatasetId(req.projectId, client, req.datasetIdCache, req.signal)
     // Only the LIVE entry: a lagging tombstone's id would serve stale text
     // that the quote check (which reads the live entry) would then contradict.
     const lookup = await lookupArkEntries(client, datasetId, req.ark)
@@ -265,7 +266,7 @@ export const RealRagRunner = {
    */
   async getDocumentFolios(req: DocumentFoliosRequest): Promise<DocumentFoliosResult> {
     const client = new DataclusterMcpClient({ signal: req.signal })
-    const datasetId = await resolveDatasetId(req.projectId, client, req.signal)
+    const datasetId = await resolveDatasetId(req.projectId, client, req.datasetIdCache, req.signal)
     const lookup = await lookupArkEntries(client, datasetId, req.ark)
     if (lookup.status === RAG_LOOKUP_STATUS.ENTRY_REINDEXING) {
       console.warn(`[rag] ${lookup.reason}`)

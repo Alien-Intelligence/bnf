@@ -59,6 +59,7 @@ import {
   NOTE_OCR_READ_FAILED_NOTICE,
   NOTE_OCR_UNKNOWN_NOTICE,
 } from "./constants"
+import { projectClusterDatasetIdCache } from "./cluster-dataset-cache"
 import { toolFailure, type ToolFailure } from "./failure"
 import {
   loadOcrIndex,
@@ -209,6 +210,7 @@ async function runQuoteCheck(
   try {
     return await checkNoteQuotes({
       corpusProjectId: ctx.corpusProjectId,
+      datasetIdCache: projectClusterDatasetIdCache,
       bodyMd,
       priorBodyMd,
       signal: ctx.signal,

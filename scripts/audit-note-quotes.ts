@@ -25,6 +25,7 @@
 import { prisma } from "@/lib/db"
 import { canReachCorpus, corpusProjectId } from "@/lib/authz/corpus-source"
 import { checkNoteQuotes } from "@/lib/citations/quote-check"
+import { projectClusterDatasetIdCache } from "@/lib/agent/tools/cluster-dataset-cache"
 import { QUOTE_CHECK_BUDGET_MS } from "@/lib/constants"
 import { QUOTE_WARNING_REASON, type QuoteWarning, type QuoteWarningReason } from "@/models/notes/schema"
 
@@ -85,6 +86,7 @@ async function main(): Promise<void> {
       notesSeen++
       const res = await checkNoteQuotes({
         corpusProjectId: corpusProjectId(project),
+        datasetIdCache: projectClusterDatasetIdCache,
         bodyMd: note.body_md,
         priorBodyMd: null,
         signal: new AbortController().signal,

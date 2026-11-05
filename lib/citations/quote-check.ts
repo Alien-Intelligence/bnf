@@ -48,6 +48,7 @@ import { QUOTE_WARNING_DETAIL } from "@/lib/agent/prompts/quote-warnings"
 import { DataclusterMcpError } from "@/lib/cluster/datacluster-mcp-client"
 import { raceAbort } from "@/lib/mcp/abort"
 import { ClusterRagClient, RAG_LOOKUP_STATUS } from "@/lib/cluster/rag"
+import type { ClusterDatasetIdCache } from "@/lib/cluster/rag"
 import { FolioMapAmbiguousError, type DocumentFolios } from "@/lib/cluster/folio-text"
 import {
   QUOTE_CHECK_STATUS,
@@ -80,6 +81,8 @@ export type LowOcrFoliosLookup = (args: {
 
 export type CheckNoteQuotesArgs = {
   corpusProjectId: string
+  /** Remembers the corpus project's cluster dataset id; wired by the caller (lib/cluster takes no models). */
+  datasetIdCache: ClusterDatasetIdCache
   /** The text whose quotes are in scope (see the tool wiring in note.ts). */
   bodyMd: string
   /** Quotes already here with the same text, marks and citation are skipped — they were not written this turn. */
@@ -160,7 +163,12 @@ async function fetchDocument(
 ): Promise<FetchOutcome> {
   try {
     const result = await raceAbort(
-      ClusterRagClient.getDocumentFolios({ projectId: args.corpusProjectId, ark, signal: signals.any }),
+      ClusterRagClient.getDocumentFolios({
+        projectId: args.corpusProjectId,
+        datasetIdCache: args.datasetIdCache,
+        ark,
+        signal: signals.any,
+      }),
       signals.any,
     )
     if (result.status === RAG_LOOKUP_STATUS.ENTRY_NOT_FOUND) {

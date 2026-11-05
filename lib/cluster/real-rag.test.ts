@@ -7,9 +7,7 @@ import "server-only"
 
 import { test, before, after } from "node:test"
 import assert from "node:assert/strict"
-import { prisma } from "@/lib/db"
-import { createTestProject, createTestUser, deleteTestUser } from "@/lib/testing/fixtures"
-import { cleanupProject } from "@/lib/testing/project-cleanup"
+import { inMemoryClusterDatasetIdCache } from "@/lib/testing/cluster-dataset-cache"
 import {
   DataclusterMcpClient,
   DataclusterMcpProtocolError,
@@ -29,8 +27,11 @@ const ARK = "ark:/12148/bpt6k822781z"
 /** The MCP's composite ids: "cluster:dataset" and "cluster:dataset:entry". */
 const dataset = (n: number) => datasetIdSchema.parse(`113:${n}`)
 const entryNo = (n: number) => entryIdSchema.parse(`113:4242:${n}`)
-let userId: string
-let projectId: string
+/** The project this suite resolves datasets for: an id the cluster stub names by slug, no database row. */
+const projectId = "real-rag-lookup"
+const datasetIdCache = inMemoryClusterDatasetIdCache()
+/** What the cache holds for the project; tests seed it and read it back. */
+const cached = () => datasetIdCache.stored.get(projectId)
 const proto = DataclusterMcpClient.prototype
 const original = {
   keywordSearch: proto.keywordSearch,
@@ -54,9 +55,7 @@ let hitDataset = dataset(4242)
 let unaddressable = 0
 
 before(async () => {
-  userId = (await createTestUser()).id
-  projectId = (await createTestProject(userId, "real-rag-lookup")).id
-  await prisma.project.update({ where: { id: projectId }, data: { clusterDatasetId: dataset(4242) } })
+  datasetIdCache.stored.set(projectId, dataset(4242))
   // 25 entries for one ARK (many lagging re-ingests): two pages of 20.
   const ids = Array.from({ length: 25 }, (_, i) => entryNo(100 + i))
   proto.keywordSearch = async function (input) {
@@ -95,12 +94,11 @@ after(async () => {
   proto.getDataset = original.getDataset
   proto.listDatasets = original.listDatasets
   proto.vectorSearchChunks = original.vectorSearchChunks
-  await cleanupProject(projectId)
-  await deleteTestUser(userId)
 })
 
 const request = (entryId: EntryId) => ({
   projectId,
+  datasetIdCache,
   ark: ARK,
   entryId,
   charOffset: 0,
@@ -127,11 +125,10 @@ test("a cached dataset id that no longer exists is re-resolved and re-cached, no
       const live = await RealRagRunner.getEntryContent(request(entryNo(124)))
       assert.equal(live.status, RAG_LOOKUP_STATUS.FOUND)
     })
-    const project = await prisma.project.findUniqueOrThrow({ where: { id: projectId }, select: { clusterDatasetId: true } })
-    assert.equal(project.clusterDatasetId, dataset(5151))
+    assert.equal(cached(), dataset(5151))
   } finally {
     liveDatasetId = dataset(4242)
-    await prisma.project.update({ where: { id: projectId }, data: { clusterDatasetId: dataset(4242) } })
+    datasetIdCache.stored.set(projectId, dataset(4242))
   }
 })
 
@@ -192,8 +189,8 @@ test("a hit of another dataset never reaches the agent or rag_get_text: the look
   })
   try {
     const signal = new AbortController().signal
-    await assert.rejects(RealRagRunner.query({ projectId, query: "q", k: 5, signal }), DataclusterMcpProtocolError)
-    await assert.rejects(RealRagRunner.keywordSearch({ projectId, query: "q", limit: 5, signal }), DataclusterMcpProtocolError)
+    await assert.rejects(RealRagRunner.query({ projectId, datasetIdCache, query: "q", k: 5, signal }), DataclusterMcpProtocolError)
+    await assert.rejects(RealRagRunner.keywordSearch({ projectId, datasetIdCache, query: "q", limit: 5, signal }), DataclusterMcpProtocolError)
   } finally {
     proto.vectorSearchChunks = savedVector
     proto.keywordSearch = savedKeyword
@@ -201,7 +198,7 @@ test("a hit of another dataset never reaches the agent or rag_get_text: the look
 })
 
 test("a cached dataset id that is not composite (an integer left from the old contract) is re-resolved by slug and re-cached, never sent to the MCP", async () => {
-  await prisma.project.update({ where: { id: projectId }, data: { clusterDatasetId: "4242" } })
+  datasetIdCache.stored.set(projectId, "4242")
   const asked: unknown[] = []
   const savedGetDataset = proto.getDataset
   proto.getDataset = async function (datasetId) {
@@ -212,11 +209,10 @@ test("a cached dataset id that is not composite (an integer left from the old co
     const live = await RealRagRunner.getEntryContent(request(entryNo(124)))
     assert.equal(live.status, RAG_LOOKUP_STATUS.FOUND)
     assert.deepEqual(asked, [], "the malformed value was not used as an id")
-    const project = await prisma.project.findUniqueOrThrow({ where: { id: projectId }, select: { clusterDatasetId: true } })
-    assert.equal(project.clusterDatasetId, dataset(4242), "the slug resolution overwrote it")
+    assert.equal(cached(), dataset(4242), "the slug resolution overwrote it")
   } finally {
     proto.getDataset = savedGetDataset
-    await prisma.project.update({ where: { id: projectId }, data: { clusterDatasetId: dataset(4242) } })
+    datasetIdCache.stored.set(projectId, dataset(4242))
   }
 })
 
@@ -235,7 +231,7 @@ function workerEntry(count: number, pageText: (folio: number) => string) {
   return { text, chunks }
 }
 
-const foliosRequest = () => ({ projectId, ark: ARK, signal: new AbortController().signal })
+const foliosRequest = () => ({ projectId, datasetIdCache, ark: ARK, signal: new AbortController().signal })
 
 async function withEntry<T>(text: string, chunks: (offset: number) => DataclusterChunk[], run: () => Promise<T>): Promise<T> {
   const saved = { entryText, entryChunks }

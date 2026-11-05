@@ -66,6 +66,7 @@ import type { ToolFailure } from "./failure"
 import { withDeadline } from "@/lib/async/deadline"
 import { foliosInSlice } from "@/lib/citations/ocr"
 import { OCR_DB_TIMEOUT_MS } from "@/lib/constants"
+import { projectClusterDatasetIdCache } from "./cluster-dataset-cache"
 import { arkSchema } from "@/lib/validation/ark"
 import { DocumentQueries } from "@/models/documents/queries"
 import { ARK_NOT_IN_CORPUS_ERROR } from "./constants"
@@ -209,6 +210,7 @@ export const ragQueryTool = defineTool<
 
       const result = await ClusterRagClient.query({
         projectId: ctx.corpusProjectId,
+        datasetIdCache: projectClusterDatasetIdCache,
         query: input.query,
         k: input.k ?? RAG_DEFAULT_K,
         signal: ctx.signal,
@@ -303,6 +305,7 @@ export const ragKeywordSearchTool = defineTool<
 
       const result = await ClusterRagClient.keywordSearch({
         projectId: ctx.corpusProjectId,
+        datasetIdCache: projectClusterDatasetIdCache,
         query: input.query,
         limit: input.limit ?? RAG_KEYWORD_DEFAULT_LIMIT,
         filters: input.filters,
@@ -413,6 +416,7 @@ export const ragGetTextTool = defineTool<typeof ragGetTextInputSchema, TurnScope
       // the limit as 0 and return the rest of the document.
       const result = await ClusterRagClient.getEntryContent({
         projectId: ctx.corpusProjectId,
+        datasetIdCache: projectClusterDatasetIdCache,
         ark: input.ark,
         entryId: input.entryId,
         charOffset: input.charOffset ?? 0,
