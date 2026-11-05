@@ -345,15 +345,19 @@ test("rag_get_text: a database error or a deadline in its corpus check becomes a
   assert.equal(logged.mock.callCount(), 2)
 })
 
-test("only the turn's own cancellation propagates out of a rag tool", async (t) => {
-  t.mock.method(console, "error", () => undefined)
+test("a cancelled turn is a tool failure, never a throw, and is not logged as a failure", async (t) => {
+  const logged = t.mock.method(console, "error", () => undefined)
   // The turn is cancelled while the cluster call is in flight, which then fails.
   for (const tool of ["rag_query", "rag_keyword_search", "rag_get_text"]) {
     const controller = new AbortController()
     const run = (await callsWithFacadeThrowing(new DataclusterMcpError("aborted"), controller)).find(([name]) => name === tool)?.[1]
     assert.ok(run)
-    await assert.rejects(run(), DataclusterMcpError, `${tool}: a cancelled turn is not turned into a tool failure`)
+    const out = (await run()) as { success: boolean; error: string }
+    assert.equal(toolCallErrored(false, out), true, `${tool}: the chip shows the call did nothing`)
+    assert.match(out.error, new RegExp(`^${tool} : le tour a été annulé`), tool)
+    assert.doesNotMatch(out.error, /erreur interne|indisponible/, `${tool}: a cancellation is not reported as a fault`)
   }
+  assert.equal(logged.mock.callCount(), 0, "a cancellation is expected: nothing is logged as a failure")
 })
 
 test("rag_keyword_search's lang filter tells the model the stored value, the BnF's French label, not an ISO code", () => {

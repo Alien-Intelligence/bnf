@@ -28,9 +28,10 @@
  * database failure, a deadline, a bug — is logged server-side with its details
  * and returned as a `toolFailure` the model can act on (withToolFailures), the
  * cluster's classes with a specific message and the rest with a generic
- * internal-error one; so is a document the cluster is re-indexing. The one
- * exception is the turn's own cancellation (its signal aborted), which
- * propagates: nothing is listening for a result.
+ * internal-error one; so is a document the cluster is re-indexing. The turn's
+ * own cancellation (its signal aborted) is a `toolFailure` too — a cancelled
+ * message, not logged as a failure — because a tool never throws out of the
+ * loop, whoever is or is not listening for the result.
  */
 import "server-only"
 
@@ -123,16 +124,22 @@ function failureMessage(tool: string, err: unknown): string {
   )
 }
 
+/** What a handler returns when the turn was cancelled before or while it ran: expected, not a fault. */
+function cancelledMessage(tool: string): string {
+  return `${tool} : le tour a été annulé ; la lecture du corpus n'a pas abouti. Ne relance pas l'appel.`
+}
+
 /**
- * Run a handler body, turning any failure into a `toolFailure` and logging it
- * with its details (never swallowed). Only the turn's own cancellation
- * (`signal` aborted) propagates.
+ * Run a handler body, turning any failure into a `toolFailure`; nothing
+ * throws out of it (§15). A failure is logged with its details (never
+ * swallowed); one that happens once the turn's `signal` has aborted is the
+ * cancellation itself, answered with a cancelled message and not logged.
  */
 async function withToolFailures<T>(tool: string, signal: AbortSignal, run: () => Promise<T>): Promise<T | ToolFailure> {
   try {
     return await run()
   } catch (err) {
-    if (signal.aborted) throw err
+    if (signal.aborted) return toolFailure(cancelledMessage(tool))
     console.error(`[${tool}] failed`, err)
     return toolFailure(failureMessage(tool, err))
   }
