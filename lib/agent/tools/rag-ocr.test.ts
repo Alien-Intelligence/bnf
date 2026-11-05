@@ -11,6 +11,7 @@ import assert from "node:assert/strict"
 
 import { OCR_LOW_QUALITY_THRESHOLD, RAG_OCR_LOW_FOLIOS_MAX } from "@/lib/constants"
 import type { RagKeywordHit, RagPassage } from "@/lib/cluster/rag"
+import { entryIdSchema } from "@/lib/cluster/composite-ids"
 import { OCR_INDEX_CHECK_FAILED, OCR_INDEX_REVOKED, buildOcrIndex, toDocumentOcrView } from "@/lib/ocr/quality"
 import { parseCitations } from "@/lib/citations/syntax"
 import {
@@ -72,7 +73,7 @@ const INDEX = buildOcrIndex(
 )
 
 function passage(over: Partial<RagPassage>): RagPassage {
-  return { ark: ARK, folio: 1, snippet: "…", score: 0.5, charRange: [0, 10], entryId: 7, ...over }
+  return { ark: ARK, folio: 1, snippet: "…", score: 0.5, charRange: [0, 10], entryId: entryIdSchema.parse("113:6363:7"), ...over }
 }
 
 // ---------------------------------------------------------------------------
@@ -152,7 +153,7 @@ test("annotatePassages: the threshold itself is not low → no notice", () => {
 // ---------------------------------------------------------------------------
 
 function hit(ark: string): RagKeywordHit {
-  return { ark, entryId: 1, title: "t", date: null, score: 1, snippets: ["s"] }
+  return { ark, entryId: entryIdSchema.parse("113:6363:1"), title: "t", date: null, score: 1, snippets: ["s"] }
 }
 
 test("annotateKeywordHits: status, ocrRate, sorted low folios and their count", () => {

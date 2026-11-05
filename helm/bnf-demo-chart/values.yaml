@@ -19,7 +19,7 @@ replicaCount: 1
 image:
   repository: rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo
   pullPolicy: Always
-  tag: "0.20.2"
+  tag: "0.20.3"
 
 imagePullSecrets: []
 

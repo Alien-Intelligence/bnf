@@ -7,6 +7,7 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import { ClusterRagClient, RAG_LOOKUP_STATUS } from "@/lib/cluster/rag"
 import type { DocumentFoliosRequest, DocumentFoliosResult } from "@/lib/cluster/rag"
+import { entryIdSchema } from "@/lib/cluster/composite-ids"
 import { DataclusterMcpError } from "@/lib/cluster/datacluster-mcp-client"
 import { FolioMapAmbiguousError } from "@/lib/cluster/folio-text"
 import { QUOTE_CHECK_MAX_SOURCES, QUOTE_UNBALANCED_MARKS_MAX_PER_BLOCK } from "@/lib/constants"
@@ -16,6 +17,7 @@ import {
   QUOTE_UNVERIFIABLE_CAUSE,
   QUOTE_WARNING_REASON,
 } from "@/models/notes/schema"
+import { inMemoryClusterDatasetIdCache } from "@/lib/testing/cluster-dataset-cache"
 import { checkNoteQuotes } from "./quote-check"
 import type { CheckNoteQuotesArgs, LowOcrFoliosLookup } from "./quote-check"
 
@@ -33,9 +35,12 @@ function cite(ark: string, folio: number): string {
 /** A quality lookup that knows of no low folio. */
 const noLowFolios: LowOcrFoliosLookup = async () => new Set()
 
+const datasetIdCache = inMemoryClusterDatasetIdCache()
+
 function args(over: Partial<CheckNoteQuotesArgs> & Pick<CheckNoteQuotesArgs, "bodyMd">): CheckNoteQuotesArgs {
   return {
     corpusProjectId: PROJECT,
+    datasetIdCache,
     priorBodyMd: null,
     signal: new AbortController().signal,
     lowOcrFolios: noLowFolios,
@@ -59,7 +64,7 @@ async function withFacade<T>(
 
 const found = (folios: Array<[number, string]>): DocumentFoliosResult => ({
   status: RAG_LOOKUP_STATUS.FOUND,
-  entryId: 1,
+  entryId: entryIdSchema.parse("113:6363:1"),
   folios: new Map(folios),
 })
 
@@ -76,6 +81,20 @@ test("an exact quote on its cited folio, with quality data, is checked and compl
     () => checkNoteQuotes(args({ bodyMd: `« ${QUOTE} » ${cite(arkN(1), 2)}` })),
   )
   assert.deepEqual(res, { status: QUOTE_CHECK_STATUS.COMPLETE, checked: 1, warnings: [], unevaluated_rules: [] })
+})
+
+test("the cluster read carries the caller's dataset-id cache, so lib/cluster needs no models", async () => {
+  const seen: DocumentFoliosRequest[] = []
+  await withFacade(
+    async (req) => {
+      seen.push(req)
+      return found([[2, FOLIO_TEXT]])
+    },
+    () => checkNoteQuotes(args({ bodyMd: `« ${QUOTE} » ${cite(arkN(1), 2)}` })),
+  )
+  assert.equal(seen.length, 1)
+  assert.equal(seen[0].datasetIdCache, datasetIdCache)
+  assert.equal(seen[0].projectId, PROJECT)
 })
 
 test("without a quality lookup, correction_on_low_ocr is unevaluated and the check is partial, never complete", async () => {
@@ -206,6 +225,20 @@ test("a cluster error for one ARK is lookup_failed for that ARK only", async () 
     res.warnings.map((w) => [w.citation?.ark, w.cause]),
     [[arkN(1), QUOTE_UNVERIFIABLE_CAUSE.LOOKUP_FAILED]],
   )
+})
+
+test("a document the cluster is re-indexing is entry_reindexing for that ARK only — not lookup_failed, not entry_not_found", async () => {
+  const res = await withFacade(
+    async (req) => (req.ark === arkN(1) ? { status: RAG_LOOKUP_STATUS.ENTRY_REINDEXING } : found([[2, FOLIO_TEXT]])),
+    () => checkNoteQuotes(args({ bodyMd: `« ${QUOTE} » ${cite(arkN(1), 2)}\n\n« ${QUOTE} » ${cite(arkN(2), 2)}` })),
+  )
+  assert.equal(res.status, QUOTE_CHECK_STATUS.PARTIAL)
+  assert.deepEqual(
+    res.warnings.map((w) => [w.citation?.ark, w.reason, w.cause]),
+    [[arkN(1), QUOTE_WARNING_REASON.UNVERIFIABLE, QUOTE_UNVERIFIABLE_CAUSE.ENTRY_REINDEXING]],
+  )
+  assert.notEqual(QUOTE_UNVERIFIABLE_CAUSE.ENTRY_REINDEXING, QUOTE_UNVERIFIABLE_CAUSE.LOOKUP_FAILED)
+  assert.notEqual(QUOTE_UNVERIFIABLE_CAUSE.ENTRY_REINDEXING, QUOTE_UNVERIFIABLE_CAUSE.ENTRY_NOT_FOUND)
 })
 
 test("an entry whose folio map cannot be trusted is folio_map_ambiguous for that ARK only, never a guess", async () => {

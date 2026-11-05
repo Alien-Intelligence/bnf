@@ -252,6 +252,7 @@ Rules:
   the cluster client, other models' queries when non-cyclic.
 - Services never import from `app/` or `components/`.
 - Services are the only place that calls `lib/mcp/` and `lib/cluster/`.
+- `lib/mcp/` and `lib/cluster/` never import a model's `queries.ts` or `service.ts` (the foundation `schema.ts` and `types.ts` are fine). When one needs model data, it declares a small port (an interface or callback) and the entry point — route handler, drainer or agent tool — wires the model into it (e.g. `ClusterDatasetIdCache`, declared in `lib/cluster/rag.ts` and wired by `lib/agent/tools/cluster-dataset-cache.ts`).
 - Services operate on resources already loaded by the handler for the policy
   check — they do not re-fetch what the handler already loaded.
 

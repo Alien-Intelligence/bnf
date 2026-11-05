@@ -58,9 +58,13 @@ import { docGetTool } from "./doc"
 import { CORPUS_ACCESS_REVOKED_ERROR } from "./ingestion-guard"
 import { NOTE_NOT_FOUND_ERROR, noteCreateTool, noteGetTool, noteListTool } from "./note"
 import { ragGetTextTool, ragKeywordSearchTool, ragQueryTool } from "./rag"
+import { entryIdSchema } from "@/lib/cluster/composite-ids"
+import type { EntryId } from "@/lib/cluster/composite-ids"
 import type { TurnScopedCtx } from "./registry-factory"
 
 const tag = randomBytes(4).toString("hex")
+// A well-formed entry id: these refusals fire before the cluster is read.
+const FIRST_FAKE_ENTRY = entryIdSchema.parse("1:1:1")
 const ARK_SOURCE = `ark:/12148/zzgate${tag}s` // a Document of the source corpus
 const ARK_WORKSPACE = `ark:/12148/zzgate${tag}w` // a Document of the workspace only
 const ARK_BUILDING = `ark:/12148/zzgate${tag}b`
@@ -281,7 +285,7 @@ test("rag_keyword_search on the derived workspace carries the source document's 
 
 test("rag_get_text on the derived workspace refuses an ARK outside the source corpus", async () => {
   const result = (await ragGetTextTool.handler(
-    { entryId: 1, ark: ARK_WORKSPACE },
+    { entryId: FIRST_FAKE_ENTRY, ark: ARK_WORKSPACE },
     await ctxOf(workspaceId, member),
   )) as Record<string, unknown>
   assert.equal(result["refused"], ARK_NOT_IN_CORPUS_ERROR)
@@ -320,7 +324,7 @@ test("note_get and note_list on the derived workspace (live share) carry the sou
 test("rag_get_text on the derived workspace annotates each folio of the slice with the source's quality", async () => {
   const ctx = await ctxOf(workspaceId, member)
   const query = (await ragQueryTool.handler({ query: FIXTURE_QUERY }, ctx)) as {
-    passages: Array<{ ark: string; entryId: number }>
+    passages: Array<{ ark: string; entryId: EntryId }>
   }
   const passage = query.passages.find((p) => p.ark === ARK_FIXTURE)
   assert.ok(passage, "the fake cluster returns the fixture passage")
@@ -342,7 +346,7 @@ test("granted nothing: doc_get and rag_get_text refuse the source ARK", async ()
   assert.equal(doc["refused"], ARK_NOT_IN_CORPUS_ERROR)
   assert.equal(doc["success"], false)
   assert.equal(doc["ocr"], undefined)
-  const text = (await ragGetTextTool.handler({ entryId: 1, ark: ARK_SOURCE }, ctx)) as Record<string, unknown>
+  const text = (await ragGetTextTool.handler({ entryId: FIRST_FAKE_ENTRY, ark: ARK_SOURCE }, ctx)) as Record<string, unknown>
   assert.equal(text["refused"], ARK_NOT_IN_CORPUS_ERROR)
   assert.equal(text["success"], false)
 })
@@ -427,7 +431,7 @@ test("revoked: doc_get, rag_query, rag_keyword_search and rag_get_text answer th
   assert.deepEqual(query, { success: false, error: CORPUS_ACCESS_REVOKED_ERROR })
   const keyword = (await ragKeywordSearchTool.handler({ query: FIXTURE_QUERY }, ctx)) as Record<string, unknown>
   assert.deepEqual(keyword, { success: false, error: CORPUS_ACCESS_REVOKED_ERROR })
-  const text = (await ragGetTextTool.handler({ entryId: 1, ark: ARK_SOURCE }, ctx)) as Record<string, unknown>
+  const text = (await ragGetTextTool.handler({ entryId: FIRST_FAKE_ENTRY, ark: ARK_SOURCE }, ctx)) as Record<string, unknown>
   assert.deepEqual(text, { success: false, error: CORPUS_ACCESS_REVOKED_ERROR })
 })
 

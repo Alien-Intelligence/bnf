@@ -6,7 +6,7 @@ import {
   type Prisma,
   type Project as PrismaProject,
 } from "@/lib/generated/prisma/client"
-import type { ProjectAccessLevel } from "@/lib/authz/project-access"
+import type { ProjectAccess, ProjectAccessLevel } from "@/lib/authz/project-access"
 import type { WorkspaceStep } from "@/lib/constants"
 
 export type Project = PrismaProject
@@ -128,3 +128,37 @@ export const projectWithMessageUsage = {
 export type ProjectWithMessageUsage = Prisma.ProjectGetPayload<
   typeof projectWithMessageUsage
 >
+
+/**
+ * The listing counterpart of the access table.
+ *
+ * `projectAccessLevel` answers "may this user reach THIS project", one row at a
+ * time. A list has to answer it for rows it has not loaded yet, so the same
+ * decision has to be expressible as a filter — and that filter must be derived
+ * HERE, not hand-written into a `where` clause somewhere else.
+ *
+ * Queries take this value and apply it. They never see the user, so they cannot
+ * re-derive the answer — which is the whole point.
+ */
+export type VisibilityScope =
+  | { unrestricted: true }
+  | {
+      unrestricted: false
+      userId: string
+      groupIds: string[]
+      /** The share levels that count as a grant (an unrecognised stored value
+       *  grants nothing, as in projectAccessLevel). */
+      shareAccess: ProjectAccess[]
+    }
+
+/** The input of a project row update (a batch statement composes it: ProjectQueries.updateOp). */
+export type ProjectUpdateInput = Prisma.ProjectUncheckedUpdateInput
+
+/**
+ * The fields a quote audit reads of a project: its name and what
+ * lib/authz/corpus-source.ts needs to resolve whose corpus it reads.
+ */
+export const projectAuditRow = {
+  select: { id: true, name: true, corpusSourceId: true, corpusSourceShareId: true },
+} satisfies Prisma.ProjectDefaultArgs
+export type ProjectAuditRow = Prisma.ProjectGetPayload<typeof projectAuditRow>

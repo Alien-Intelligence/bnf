@@ -6,7 +6,7 @@
 // (spawn → registry-factory → index → spawn).
 import "server-only"
 
-import { BNF_MCP_TIMEOUT_MS } from "@/lib/constants"
+import { BNF_MCP_TIMEOUT_MS, MCP_SESSION_HEADER } from "@/lib/constants"
 import { requireMcpEnv } from "@/lib/env"
 import { openMcpSession } from "@/lib/mcp/session"
 import { BNF_MCP_SERVER_NAME } from "@/lib/mcp/tools"
@@ -31,7 +31,7 @@ export async function resolveMcpServers(signal?: AbortSignal): Promise<McpServer
     // omit the header entirely. See lib/mcp/session.ts.
     const sessionId = await openMcpSession(mcpEnv.BNF_MCP_URL, mcpEnv.BNF_MCP_TOKEN, signal)
     const headers: Record<string, string> = { Authorization: `Bearer ${mcpEnv.BNF_MCP_TOKEN}` }
-    if (sessionId) headers["Mcp-Session-Id"] = sessionId
+    if (sessionId) headers[MCP_SESSION_HEADER] = sessionId
     return [{ name: BNF_MCP_SERVER_NAME, url: mcpEnv.BNF_MCP_URL, headers, timeoutMs: BNF_MCP_TIMEOUT_MS }]
   } catch (err) {
     console.warn(

@@ -457,6 +457,37 @@ export const LOCALE_HEADER = "x-app-locale"
  */
 export const MCP_PROTOCOL_VERSION = "2025-06-18"
 
+/** The `jsonrpc` member of every MCP (JSON-RPC 2.0) request, and of the responses the clients accept. */
+export const JSON_RPC_VERSION = "2.0" as const
+
+/** The media types of the streamable-HTTP transport: requests are JSON; a reply is JSON or an SSE stream. */
+export const MEDIA_TYPE_JSON = "application/json"
+export const MEDIA_TYPE_EVENT_STREAM = "text/event-stream"
+
+/** `Accept` of every MCP POST: the transport answers in JSON or as an SSE stream. */
+export const MCP_ACCEPT_HEADER = `${MEDIA_TYPE_JSON}, ${MEDIA_TYPE_EVENT_STREAM}`
+
+/** The header naming a body's media type, on MCP requests and replies (HTTP headers are case-insensitive). */
+export const HTTP_CONTENT_TYPE_HEADER = "content-type"
+
+/** Every MCP call, handshake or tool call, is a POST. */
+export const MCP_HTTP_METHOD = "POST"
+
+/** The JSON-RPC methods the MCP clients send. */
+export const MCP_RPC_METHOD = {
+  INITIALIZE: "initialize",
+  TOOLS_CALL: "tools/call",
+} as const
+
+/** Prefix of the data line of an SSE frame; the rest of the line is the JSON-RPC envelope. */
+export const SSE_DATA_PREFIX = "data: "
+
+/** Characters of a failed MCP reply (or of text that is not JSON) quoted in an error message. */
+export const MCP_DIAGNOSTIC_EXCERPT_CHARS = 200
+
+/** The streamable-HTTP session header, on `initialize`'s response and on every later request (HTTP headers are case-insensitive). */
+export const MCP_SESSION_HEADER = "mcp-session-id"
+
 /** clientInfo sent in the MCP `initialize` handshake. */
 export const MCP_CLIENT_NAME = "bnf-corpus-research"
 export const MCP_CLIENT_VERSION = "0.1.0"
@@ -511,6 +542,27 @@ export const DATACLUSTER_DATASET_SLUG_PREFIX = "bnf-"
 
 /** Page size used when listing datasets to resolve a project's dataset id. */
 export const DATACLUSTER_LIST_PAGE_SIZE = 100
+
+/** The `response_format` the app asks the data-cluster MCP's list, get and keyword tools for. */
+export const DATACLUSTER_RESPONSE_FORMAT = { JSON: "json" } as const
+
+/**
+ * What an ARK lookup — an empty keyword search filtered on the ark, scoped to
+ * the project's dataset — is called in errors and in the tenancy check, which
+ * otherwise names the MCP tool it checked.
+ */
+export const ARK_LOOKUP_LABEL = "ARK lookup"
+
+/**
+ * The two modes of `datacluster_get_entry_content` whose replies must carry
+ * pagination fields (the third, full mode, returns the raw payload). The
+ * values name the mode in protocol-error messages.
+ */
+export const ENTRY_CONTENT_MODE = {
+  PAGINATED: "paginated",
+  OFFSET_ONLY: "offset-only",
+} as const
+export type EntryContentMode = (typeof ENTRY_CONTENT_MODE)[keyof typeof ENTRY_CONTENT_MODE]
 
 /** Default number of passages requested per RAG query when the agent omits k. */
 export const RAG_DEFAULT_K = 12

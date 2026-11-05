@@ -184,9 +184,10 @@ model Project {
   // Denormalized corpus pointers — see playbook/corpus-versioning.md invariants.
   headVersionId     String?  @unique @map("head_version_id")
   ingestedVersionId String?  @map("ingested_version_id")
-  // Numeric id of this project's dataset in the data cluster (slug `bnf-<id>`).
+  // Composite id ("cluster:dataset", e.g. "113:6363") of this project's dataset
+  // in the data cluster (slug `bnf-<id>`), as the data-cluster MCP names it.
   // Populated lazily on the first real RAG query — see lib/cluster/real-rag.ts.
-  clusterDatasetId  Int?     @map("cluster_dataset_id")
+  clusterDatasetId  String?  @map("cluster_dataset_id")
   // Paid fallback OCR (Mistral) for `sans_texte` documents — digitized text
   // with no BnF OCR layer. ON by default: paid OCR is offered to every project,
   // and the actual spend is still gated per-ingestion by an explicit user

@@ -20,12 +20,34 @@ import "server-only"
 // Every request carries the caller's AbortSignal (the turn's `ctx.signal`), and
 // every offset and length is in Unicode code points (folio-text.ts).
 
+import type { DatasetId, EntryId } from "./composite-ids"
 import type { DocumentFolios } from "./folio-text"
 import { CLUSTER_MODE, clusterMode } from "./mode"
 
 // ---------------------------------------------------------------------------
 // Public types (shared by fake and real implementations)
 // ---------------------------------------------------------------------------
+
+/**
+ * Where a project's resolved cluster dataset id is remembered between calls.
+ * lib/cluster never imports models/: the caller (an agent tool, an entry
+ * point) hands the real runner a cache backed by `Project.clusterDatasetId`
+ * (lib/agent/tools/cluster-dataset-cache.ts). The fake runner ignores it.
+ *
+ * `read` returns the stored value as written — plain text, not yet trusted as
+ * a composite id; the runner validates it before use. Both calls may fail
+ * (a database error); the failure propagates.
+ */
+export interface ClusterDatasetIdCache {
+  read(projectId: string): Promise<string | null>
+  write(projectId: string, datasetId: DatasetId): Promise<void>
+}
+
+/** The cache every request carries, on the field every runner reads it from. */
+interface DatasetIdCached {
+  /** Remembers the project's resolved dataset id (the fake runner ignores it). */
+  datasetIdCache: ClusterDatasetIdCache
+}
 
 export interface RagPassage {
   /** BnF ARK identifier — opaque, verbatim from the cluster index. */
@@ -53,13 +75,14 @@ export interface RagPassage {
    */
   charRange: [number, number] | null
   /**
-   * Cluster entry id this chunk belongs to (null if the cluster omitted it).
-   * The handle for `rag_get_text` — chain search → full text with it.
+   * Composite id ("cluster:dataset:entry") of the entry this chunk belongs to,
+   * from the chunk's top-level `entry_id` — the cluster always sends it. The
+   * handle for `rag_get_text` — chain search → full text with it.
    */
-  entryId: number | null
+  entryId: EntryId
 }
 
-export interface RagQueryRequest {
+export interface RagQueryRequest extends DatasetIdCached {
   /** The CORPUS project id — scopes the search to its dataset. */
   projectId: string
   /** Free-text query issued by the research agent. */
@@ -82,7 +105,7 @@ export interface RagQueryResponse {
 
 // --- Keyword search (entry-level, faceted) ---------------------------------
 
-export interface RagKeywordRequest {
+export interface RagKeywordRequest extends DatasetIdCached {
   /** The CORPUS project id — scopes the search to its dataset. */
   projectId: string
   /** Free-text query — typo-tolerant. May be empty when filtering only. */
@@ -104,8 +127,8 @@ export interface RagKeywordRequest {
 export interface RagKeywordHit {
   /** BnF ARK — the citation/document key. */
   ark: string
-  /** Cluster entry id — the handle for `rag_get_text`. */
-  entryId: number
+  /** Composite entry id — the handle for `rag_get_text`. */
+  entryId: EntryId
   /** Document title, when known. */
   title: string | null
   /** Raw BnF date string (may be a range), when known. */
@@ -124,18 +147,18 @@ export interface RagKeywordResponse {
 
 // --- Full-text retrieval (selective, paginated) ----------------------------
 
-export interface RagEntryContentRequest {
+export interface RagEntryContentRequest extends DatasetIdCached {
   /** The CORPUS project id — the dataset the entry must belong to. */
   projectId: string
   /**
    * The ARK of the search result the entry id came from. The runner reads the
    * entry only if the ARK lookup in the corpus project's dataset returns this
-   * id for it: entry ids are cluster-wide, so a model-supplied id alone could
+   * id for it: an entry id can name any dataset of the cluster, so a model-supplied id alone could
    * name another project's (another client's) document.
    */
   ark: string
-  /** Cluster entry id, obtained from a search result. */
-  entryId: number
+  /** Composite entry id, obtained from a search result. */
+  entryId: EntryId
   /** Start offset into the processed text, in code points. */
   charOffset: number
   /**
@@ -154,15 +177,25 @@ export const RAG_LOOKUP_STATUS = {
   ENTRY_NOT_FOUND: "entry_not_found",
   /** The requested entry id is not the ARK's live entry in the dataset. */
   ENTRY_NOT_IN_CORPUS: "entry_not_in_corpus",
+  /**
+   * The ARK's entries cannot be listed completely right now — the cluster
+   * counted matches it did not return or could not address, as while a
+   * re-ingest replaces the stale entry with the new one. The live entry cannot
+   * be told, so nothing is read; the same request succeeds once the cluster
+   * settles. Transient, unlike a protocol error.
+   */
+  ENTRY_REINDEXING: "entry_reindexing",
 } as const
 
 export type RagEntryContentResult =
   | { status: typeof RAG_LOOKUP_STATUS.FOUND; content: RagEntryContent }
   /** The requested id is not the ARK's live entry; `liveEntryId` is (null: the ARK has none). */
-  | { status: typeof RAG_LOOKUP_STATUS.ENTRY_NOT_IN_CORPUS; liveEntryId: number | null }
+  | { status: typeof RAG_LOOKUP_STATUS.ENTRY_NOT_IN_CORPUS; liveEntryId: EntryId | null }
+  /** The ARK's entries cannot be told apart right now (see RAG_LOOKUP_STATUS.ENTRY_REINDEXING). */
+  | { status: typeof RAG_LOOKUP_STATUS.ENTRY_REINDEXING }
 
 export interface RagEntryContent {
-  entryId: number
+  entryId: EntryId
   text: string
   charOffset: number
   charLimit: number
@@ -173,7 +206,7 @@ export interface RagEntryContent {
 
 // --- Whole-document folio text --------------------------------------------
 
-export interface DocumentFoliosRequest {
+export interface DocumentFoliosRequest extends DatasetIdCached {
   /**
    * The CORPUS project id (`ctx.corpusProjectId`, resolved through
    * lib/authz/corpus-source.ts) — the dataset a derived workspace's citations
@@ -187,9 +220,11 @@ export interface DocumentFoliosRequest {
 }
 
 export type DocumentFoliosResult =
-  | { status: typeof RAG_LOOKUP_STATUS.FOUND; entryId: number; folios: DocumentFolios }
+  | { status: typeof RAG_LOOKUP_STATUS.FOUND; entryId: EntryId; folios: DocumentFolios }
   /** No cluster entry carries this ARK — not ingested, or dropped since. */
   | { status: typeof RAG_LOOKUP_STATUS.ENTRY_NOT_FOUND }
+  /** The ARK's entries cannot be told apart right now (see RAG_LOOKUP_STATUS.ENTRY_REINDEXING). */
+  | { status: typeof RAG_LOOKUP_STATUS.ENTRY_REINDEXING }
 
 // ---------------------------------------------------------------------------
 // Facade

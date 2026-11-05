@@ -10,9 +10,20 @@ import { test, before, after } from "node:test"
 import assert from "node:assert/strict"
 import { prisma } from "@/lib/db"
 import { ClusterRagClient, RAG_LOOKUP_STATUS } from "@/lib/cluster/rag"
+import { BNF_LANGUAGE_LABEL } from "@/models/documents/schema"
+import { entryIdSchema } from "@/lib/cluster/composite-ids"
 import type { RagEntryContentRequest } from "@/lib/cluster/rag"
+import {
+  DataclusterMcpAuthError,
+  DataclusterMcpError,
+  DataclusterMcpProtocolError,
+  DataclusterMcpToolError,
+} from "@/lib/cluster/datacluster-mcp-client"
+import { z } from "zod"
+import { DeadlineExceededError } from "@/lib/async/deadline"
+import { DocumentQueries } from "@/models/documents/queries"
 import { RAG_DEFAULT_K, RAG_GET_TEXT_DEFAULT_CHAR_LIMIT, RAG_KEYWORD_DEFAULT_LIMIT } from "@/lib/constants"
-import { entryNotInCorpusError, ragGetTextTool, ragKeywordSearchTool, ragQueryTool } from "./rag"
+import { entryNotInCorpusError, entryReindexingError, ragGetTextTool, ragKeywordSearchTool, ragQueryTool } from "./rag"
 import { toolCallErrored } from "@/lib/tools/display"
 import type { TurnScopedCtx } from "./registry-factory"
 import {
@@ -25,6 +36,10 @@ import { markHeadIngested } from "@/lib/testing/mark-ingested"
 import { seedCorpusDocuments } from "@/lib/testing/seed-corpus"
 import { cleanupProject } from "@/lib/testing/project-cleanup"
 import { SESSION_SCOPE } from "@/models/sessions/schema"
+
+const ENTRY = entryIdSchema.parse("113:6363:3")
+const OTHER_ENTRY = entryIdSchema.parse("113:6363:99")
+const LIVE_ENTRY = entryIdSchema.parse("113:6363:12")
 
 let user: TurnScopedCtx["user"]
 let userId: string
@@ -107,21 +122,21 @@ async function captureGetText(
 }
 
 test("rag_get_text forwards charLimit 4000 and offset 0 when the agent omits them", async () => {
-  const req = await captureGetText({ entryId: 3 })
+  const req = await captureGetText({ entryId: ENTRY })
   assert.equal(RAG_GET_TEXT_DEFAULT_CHAR_LIMIT, 4_000)
   assert.equal(req.charLimit, RAG_GET_TEXT_DEFAULT_CHAR_LIMIT)
   assert.equal(req.charOffset, 0)
-  assert.equal(req.entryId, 3)
+  assert.equal(req.entryId, ENTRY)
 })
 
 test("rag_get_text keeps an explicit charLimit, including 0 (the rest of the document)", async () => {
-  assert.equal((await captureGetText({ entryId: 3, charLimit: 0 })).charLimit, 0)
-  assert.equal((await captureGetText({ entryId: 3, charLimit: 1_200 })).charLimit, 1_200)
+  assert.equal((await captureGetText({ entryId: ENTRY, charLimit: 0 })).charLimit, 0)
+  assert.equal((await captureGetText({ entryId: ENTRY, charLimit: 1_200 })).charLimit, 1_200)
 })
 
 test("rag_get_text reads the CORPUS project with the turn's signal", async () => {
   const controller = new AbortController()
-  const req = await captureGetText({ entryId: 3 }, controller.signal)
+  const req = await captureGetText({ entryId: ENTRY }, controller.signal)
   assert.equal(req.projectId, projectId, "corpus project, not the workspace")
   assert.equal(req.ark, ARK, "the ARK the entry must belong to is passed on")
   assert.notEqual(req.projectId, derivedId)
@@ -216,23 +231,139 @@ test("rag_get_text refuses an entry id the ARK lookup does not vouch for in this
   const original = ClusterRagClient.getEntryContent
   ClusterRagClient.getEntryContent = async () => ({
     status: RAG_LOOKUP_STATUS.ENTRY_NOT_IN_CORPUS,
-    liveEntryId: 12,
+    liveEntryId: LIVE_ENTRY,
   })
   let out: unknown
   try {
-    out = await ragGetTextTool.handler({ ark: ARK, entryId: 99 }, ctxFor())
+    out = await ragGetTextTool.handler({ ark: ARK, entryId: OTHER_ENTRY }, ctxFor())
   } finally {
     ClusterRagClient.getEntryContent = original
   }
-  assert.deepEqual(out, { success: false, error: entryNotInCorpusError(ARK, 99, 12) })
-  assert.match(entryNotInCorpusError(ARK, 99, 12), /entrée actuelle est 12/, "the refusal names the live id")
+  assert.deepEqual(out, { success: false, error: entryNotInCorpusError(ARK, OTHER_ENTRY, LIVE_ENTRY) })
+  assert.match(entryNotInCorpusError(ARK, OTHER_ENTRY, LIVE_ENTRY), /entrée actuelle est "113:6363:12"/, "the refusal names the live id")
   assert.equal(toolCallErrored(false, out), true)
 })
 
-test("rag_get_text's schema requires an ARK and a positive entry id", () => {
+test("rag_get_text's schema requires an ARK and a composite entry id", () => {
   const schema = ragGetTextTool.inputSchema
-  assert.equal(schema.safeParse({ entryId: 3 }).success, false, "ark is required")
-  assert.equal(schema.safeParse({ ark: ARK, entryId: 0 }).success, false)
-  assert.equal(schema.safeParse({ ark: ARK, entryId: -4 }).success, false)
-  assert.equal(schema.safeParse({ ark: ARK, entryId: 3 }).success, true)
+  assert.equal(schema.safeParse({ entryId: ENTRY }).success, false, "ark is required")
+  assert.equal(schema.safeParse({ ark: ARK, entryId: ENTRY }).success, true)
+  // The server refuses integer ids: the tool refuses them before the call.
+  assert.equal(schema.safeParse({ ark: ARK, entryId: 3 }).success, false, "a bare number is the old contract")
+  assert.equal(schema.safeParse({ ark: ARK, entryId: "3" }).success, false, "so is its string form")
+  assert.equal(schema.safeParse({ ark: ARK, entryId: "113:6363" }).success, false, "a dataset id is not an entry id")
+  assert.equal(schema.safeParse({ ark: ARK, entryId: "113:6363:abc" }).success, false)
+})
+
+test("rag_get_text tells the agent a document is being re-indexed, and to retry later or use another passage", async () => {
+  const original = ClusterRagClient.getEntryContent
+  ClusterRagClient.getEntryContent = async () => ({ status: RAG_LOOKUP_STATUS.ENTRY_REINDEXING })
+  let out: unknown
+  try {
+    out = await ragGetTextTool.handler({ ark: ARK, entryId: ENTRY }, ctxFor())
+  } finally {
+    ClusterRagClient.getEntryContent = original
+  }
+  assert.deepEqual(out, { success: false, error: entryReindexingError(ARK) })
+  assert.match(entryReindexingError(ARK), /en cours de réindexation[\s\S]*Réessaie[\s\S]*plus tard[\s\S]*un autre passage/)
+  assert.equal(toolCallErrored(false, out), true)
+})
+
+/** The three rag handlers, each called so that the facade method it uses throws `err`. */
+async function callsWithFacadeThrowing(err: unknown, cancelDuringCall?: AbortController): Promise<Array<[string, () => Promise<unknown>]>> {
+  const signal = cancelDuringCall?.signal
+  const throwing = async () => {
+    cancelDuringCall?.abort()
+    throw err
+  }
+  return [
+    ["rag_query", async () => callWith("query", throwing, () => ragQueryTool.handler({ query: "incendie" }, ctxFor(signal)))],
+    ["rag_keyword_search", async () => callWith("keywordSearch", throwing, () => ragKeywordSearchTool.handler({ query: "incendie" }, ctxFor(signal)))],
+    ["rag_get_text", async () => callWith("getEntryContent", throwing, () => ragGetTextTool.handler({ ark: ARK, entryId: ENTRY }, ctxFor(signal)))],
+  ]
+}
+
+async function callWith(method: "query" | "keywordSearch" | "getEntryContent", impl: () => Promise<never>, call: () => unknown) {
+  const facade: Record<string, unknown> = ClusterRagClient
+  const original = facade[method]
+  facade[method] = impl
+  try {
+    return await call()
+  } finally {
+    facade[method] = original
+  }
+}
+
+test("a data-cluster failure never throws out of a rag tool: it is logged and returned as a failure the model can act on", async (t) => {
+  const logged = t.mock.method(console, "error", () => undefined)
+  const cases: Array<[string, unknown, RegExp]> = [
+    ["auth", new DataclusterMcpAuthError(), /refusé l'accès[\s\S]*indisponible/],
+    ["tool error", new DataclusterMcpToolError("invalid filter"), /refusé la requête \(invalid filter\)[\s\S]*Corrige/],
+    ["protocol", new DataclusterMcpProtocolError("no pagination.total"), /répondu de façon inattendue/],
+    ["parse", z.string().safeParse(1).error, /répondu de façon inattendue/],
+    ["transient", new DataclusterMcpError("HTTP 503"), /momentanément indisponible[\s\S]*Réessaie/],
+  ]
+  for (const [label, err, message] of cases) {
+    for (const [tool, run] of await callsWithFacadeThrowing(err)) {
+      const out = await run()
+      assert.equal(toolCallErrored(false, out), true, `${tool} / ${label}`)
+      assert.match(String((out as { error: string }).error), message, `${tool} / ${label}`)
+      assert.ok((out as { error: string }).error.startsWith(tool), `${tool} names itself`)
+    }
+  }
+  assert.equal(logged.mock.callCount(), cases.length * 3, "every failure is logged server-side, none swallowed")
+  assert.ok(logged.mock.calls.every((c) => c.arguments[1] instanceof Error), "the error itself is logged, with its details")
+})
+
+test("a failure that is not the cluster's — a bug, a database error — is logged and returned as a generic internal-error failure", async (t) => {
+  const logged = t.mock.method(console, "error", () => undefined)
+  for (const err of [new TypeError("a bug"), new Error("connection terminated unexpectedly")]) {
+    for (const [tool, run] of await callsWithFacadeThrowing(err)) {
+      const out = (await run()) as { success: boolean; error: string }
+      assert.equal(toolCallErrored(false, out), true, `${tool}: ${err.message}`)
+      assert.match(out.error, /erreur interne[\s\S]*Ne relance pas l'appel à l'identique[\s\S]*dis à l'utilisateur/, `${tool}: ${err.message}`)
+    }
+  }
+  assert.equal(logged.mock.callCount(), 6)
+  assert.ok(logged.mock.calls.every((c) => c.arguments[1] instanceof Error), "the error is logged with its details")
+})
+
+test("rag_get_text: a database error or a deadline in its corpus check becomes a tool failure, not a throw", async (t) => {
+  const logged = t.mock.method(console, "error", () => undefined)
+  for (const err of [
+    new Error("prisma: connection pool timeout"),
+    new DeadlineExceededError("rag_get_text corpus check", "timeout", 5_000),
+  ]) {
+    const check = t.mock.method(DocumentQueries, "isIndexedInCorpus", async () => {
+      throw err
+    })
+    const out = (await ragGetTextTool.handler({ ark: ARK, entryId: ENTRY }, ctxFor())) as { success: boolean; error: string }
+    assert.equal(toolCallErrored(false, out), true, err.message)
+    assert.match(out.error, /^rag_get_text : erreur interne/, err.message)
+    check.mock.restore()
+  }
+  assert.equal(logged.mock.callCount(), 2)
+})
+
+test("a cancelled turn is a tool failure, never a throw, and is not logged as a failure", async (t) => {
+  const logged = t.mock.method(console, "error", () => undefined)
+  // The turn is cancelled while the cluster call is in flight, which then fails.
+  for (const tool of ["rag_query", "rag_keyword_search", "rag_get_text"]) {
+    const controller = new AbortController()
+    const run = (await callsWithFacadeThrowing(new DataclusterMcpError("aborted"), controller)).find(([name]) => name === tool)?.[1]
+    assert.ok(run)
+    const out = (await run()) as { success: boolean; error: string }
+    assert.equal(toolCallErrored(false, out), true, `${tool}: the chip shows the call did nothing`)
+    assert.match(out.error, new RegExp(`^${tool} : le tour a été annulé`), tool)
+    assert.doesNotMatch(out.error, /erreur interne|indisponible/, `${tool}: a cancellation is not reported as a fault`)
+  }
+  assert.equal(logged.mock.callCount(), 0, "a cancellation is expected: nothing is logged as a failure")
+})
+
+test("rag_keyword_search's lang filter tells the model the stored value, the BnF's French label, not an ISO code", () => {
+  const filters = ragKeywordSearchTool.inputSchema.shape.filters.unwrap().shape
+  const description = filters.lang.description ?? ""
+  assert.ok(description.includes(`"${BNF_LANGUAGE_LABEL.FRENCH}"`), description)
+  assert.match(description, /NOT an ISO code/)
+  assert.doesNotMatch(description, /e\.g\. "fr"\)/)
 })

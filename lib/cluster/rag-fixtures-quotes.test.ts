@@ -8,6 +8,7 @@ import "server-only"
 
 import { test } from "node:test"
 import assert from "node:assert/strict"
+import { inMemoryClusterDatasetIdCache } from "@/lib/testing/cluster-dataset-cache"
 import { FakeRagRunner } from "./fake-rag"
 import { RAG_LOOKUP_STATUS } from "./rag"
 import { RAG_FIXTURES } from "./rag-fixtures"
@@ -29,6 +30,8 @@ import { OCR_CORRECTION_MARKING_MODE, QUOTE_WARNING_REASON } from "@/models/note
 import type { QuoteWarningReason } from "@/models/notes/schema"
 
 const PROJECT = "fake-project"
+/** The fake runner never reads the cache; the request still carries one. */
+const datasetIdCache = inMemoryClusterDatasetIdCache()
 const QUOTE_ARKS = new Set(QUOTE_FIXTURES.map((f) => f.ark))
 const SEED_FIXTURES = RAG_FIXTURES.filter((f) => !QUOTE_ARKS.has(f.ark))
 
@@ -40,7 +43,7 @@ test("no 1889 seed topic, used as a query, surfaces a quote fixture", async () =
     ...new Set(SEED_FIXTURES.flatMap((f) => f.topics)),
   ]
   for (const query of queries) {
-    const res = await FakeRagRunner.query({ projectId: PROJECT, query, k: 50, signal: new AbortController().signal })
+    const res = await FakeRagRunner.query({ projectId: PROJECT, datasetIdCache, query, k: 50, signal: new AbortController().signal })
     const leaked = res.passages.filter((p) => QUOTE_ARKS.has(p.ark))
     assert.deepEqual(leaked.map((p) => p.ark), [], `query « ${query} » surfaced a quote fixture`)
   }
@@ -55,14 +58,14 @@ test("the harness requests reach their fixture documents", async () => {
     ["Revue des eaux et forêts organisation de la lutte contre les incendies", QUOTE_ARK_EAUX_FORETS],
   ]
   for (const [query, ark] of cases) {
-    const res = await FakeRagRunner.query({ projectId: PROJECT, query, k: 12, signal: new AbortController().signal })
+    const res = await FakeRagRunner.query({ projectId: PROJECT, datasetIdCache, query, k: 12, signal: new AbortController().signal })
     assert.ok(res.passages.some((p) => p.ark === ark), `« ${query} » does not reach ${ark}`)
   }
 })
 
 test("every fixture folio is served whole by getDocumentFolios and has exactly one OCR row", async () => {
   for (const f of QUOTE_FIXTURES) {
-    const doc = await FakeRagRunner.getDocumentFolios({ projectId: PROJECT, ark: f.ark, signal: new AbortController().signal })
+    const doc = await FakeRagRunner.getDocumentFolios({ projectId: PROJECT, datasetIdCache, ark: f.ark, signal: new AbortController().signal })
     assert.equal(doc.status, RAG_LOOKUP_STATUS.FOUND)
     if (doc.status !== RAG_LOOKUP_STATUS.FOUND) continue
     assert.equal(doc.folios.get(f.folio), f.snippet)
@@ -96,7 +99,7 @@ for (const o of QUOTE_FIXTURE_OCR) {
 async function reasonsFor(md: string): Promise<Array<QuoteWarningReason | "ok">> {
   const [q] = scanNoteQuotes(md, { outOfTime: neverOutOfTime, excerptChars: QUOTE_WARNING_EXCERPT_CHARS }).quotes
   assert.ok(q?.citation, "the row quotes one cited span")
-  const doc = await FakeRagRunner.getDocumentFolios({ projectId: PROJECT, ark: q.citation.ark, signal: new AbortController().signal })
+  const doc = await FakeRagRunner.getDocumentFolios({ projectId: PROJECT, datasetIdCache, ark: q.citation.ark, signal: new AbortController().signal })
   assert.equal(doc.status, RAG_LOOKUP_STATUS.FOUND)
   if (doc.status !== RAG_LOOKUP_STATUS.FOUND) return []
   return verifyQuote(q, tokenizeFolios(doc.folios, neverOutOfTime), {

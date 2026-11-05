@@ -14,6 +14,12 @@ export const noteWithCitations = {
   include: { citations: true },
 } satisfies Prisma.NoteDefaultArgs
 export type NoteWithCitations = Prisma.NoteGetPayload<typeof noteWithCitations>
+
+/** One ordering key of a note listing (queries.ts names its sort order with it). */
+export type NoteOrderBy = Prisma.NoteOrderByWithRelationInput
+/** A note's id and body (the quote audit and the e2e harness re-check bodies); `title` for the audit's log line. */
+export type NoteBodyRow = Pick<Note, "id" | "title" | "body_md">
+
 export type NoteListItem = Pick<Note, "id" | "title" | "updatedAt" | "citationCount" | "pinned" | "createdAt">
 
 /** Lightweight row returned by GET /api/notes/:nid/versions */
@@ -97,6 +103,11 @@ export const QUOTE_UNVERIFIABLE_CAUSE = {
   ENTRY_NOT_FOUND: "entry_not_found",
   FOLIO_ABSENT: "folio_absent",
   LOOKUP_FAILED: "lookup_failed",
+  /**
+   * The cluster is re-indexing the document: its entries cannot be told apart
+   * right now, so no text is attributed to it. Transient — a later check reads it.
+   */
+  ENTRY_REINDEXING: "entry_reindexing",
   BUDGET_EXCEEDED: "budget_exceeded",
   /** The turn was cancelled while the check was running. */
   CANCELLED: "cancelled",

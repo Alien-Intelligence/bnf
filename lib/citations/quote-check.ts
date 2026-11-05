@@ -20,6 +20,10 @@
  *   - the caller's signal (the turn was cancelled) → that ARK's quotes are
  *     `unverifiable / cancelled`;
  *   - the budget → `unverifiable / budget_exceeded`;
+ *   - neither, but a document the cluster is re-indexing (its entries cannot
+ *     be told apart: `RAG_LOOKUP_STATUS.ENTRY_REINDEXING`) →
+ *     `unverifiable / entry_reindexing`, distinct from a lookup that failed
+ *     and from a document that is not there;
  *   - neither, but an entry whose folio boundaries cannot be trusted
  *     (`FolioMapAmbiguousError`: an older entry with no page offsets whose
  *     headings are out of order or whose prefix is not the documented one) →
@@ -44,6 +48,7 @@ import { QUOTE_WARNING_DETAIL } from "@/lib/agent/prompts/quote-warnings"
 import { DataclusterMcpError } from "@/lib/cluster/datacluster-mcp-client"
 import { raceAbort } from "@/lib/mcp/abort"
 import { ClusterRagClient, RAG_LOOKUP_STATUS } from "@/lib/cluster/rag"
+import type { ClusterDatasetIdCache } from "@/lib/cluster/rag"
 import { FolioMapAmbiguousError, type DocumentFolios } from "@/lib/cluster/folio-text"
 import {
   QUOTE_CHECK_STATUS,
@@ -76,6 +81,8 @@ export type LowOcrFoliosLookup = (args: {
 
 export type CheckNoteQuotesArgs = {
   corpusProjectId: string
+  /** Remembers the corpus project's cluster dataset id; wired by the caller (lib/cluster takes no models). */
+  datasetIdCache: ClusterDatasetIdCache
   /** The text whose quotes are in scope (see the tool wiring in note.ts). */
   bodyMd: string
   /** Quotes already here with the same text, marks and citation are skipped — they were not written this turn. */
@@ -156,11 +163,20 @@ async function fetchDocument(
 ): Promise<FetchOutcome> {
   try {
     const result = await raceAbort(
-      ClusterRagClient.getDocumentFolios({ projectId: args.corpusProjectId, ark, signal: signals.any }),
+      ClusterRagClient.getDocumentFolios({
+        projectId: args.corpusProjectId,
+        datasetIdCache: args.datasetIdCache,
+        ark,
+        signal: signals.any,
+      }),
       signals.any,
     )
     if (result.status === RAG_LOOKUP_STATUS.ENTRY_NOT_FOUND) {
       return { kind: "unverifiable", cause: QUOTE_UNVERIFIABLE_CAUSE.ENTRY_NOT_FOUND }
+    }
+    if (result.status === RAG_LOOKUP_STATUS.ENTRY_REINDEXING) {
+      console.warn(`[quote check] ${ark}: unverifiable, the document is being re-indexed`)
+      return { kind: "unverifiable", cause: QUOTE_UNVERIFIABLE_CAUSE.ENTRY_REINDEXING }
     }
     const low = args.lowOcrFolios
       ? await raceAbort(args.lowOcrFolios({ corpusProjectId: args.corpusProjectId, ark, folios: citedFolios }), signals.any)

@@ -1,0 +1,55 @@
+{
+  "success": true,
+  "data": {
+    "results": [
+      {
+        "entry_id": "113:6363:9195583",
+        "dataset_id": "113:6363",
+        "score": 0.65777075,
+        "chunk_text": "Ambiance et périodes sensibles\nSelon Maria Montessori, il existerait chez l'enfant des\n« périodes sensibles », c'est-à-dire des phases pendant les-\nquelles les apprentissages et les acquisitions se font plus\naisément : « Par période sensible, il faut entendre des\nmoments décisifs du développement de l'enfant, où il\npeut se développer avec une grande rapidité et un grand\nbonheur 1. » Durant ces pér",
+        "metadata": {
+          "chunk_index": 38,
+          "sub_type": null,
+          "doc_type": "book",
+          "ark": "ark:/12148/bpt6k3361716j",
+          "char_start": 47945,
+          "ark_slug": "bpt6k3361716j",
+          "char_end": 49454,
+          "folio": 50
+        }
+      },
+      {
+        "entry_id": "113:766:2038356",
+        "dataset_id": "113:766",
+        "score": 0.6147195,
+        "chunk_text": "de l'organisme suit son développement progressif\net continu. Les périodes de transition doivent\nêtre surveillées, parce qu'elles sont souvent cause\nde phlyctènes, d'abcès et d'ulcérations de la cornée,\nde névralgies, etc.\nJOUETS ET JEUX. &#8212; Vers l'âge de deux ans,\nl'enfant commence déjà à échapper à la surveil-\nlance maternelle qui le protégeait pendant les\npremières années. Il devient turbul",
+        "metadata": {
+          "chunk_index": 37,
+          "ark": "ark:/12148/bpt6k6454641s",
+          "ark_slug": "bpt6k6454641s",
+          "sub_type": null,
+          "folio": 45,
+          "doc_type": "livre | monographie imprimée"
+        }
+      },
+      {
+        "entry_id": "113:6363:9195595",
+        "dataset_id": "113:6363",
+        "score": 0.614679,
+        "chunk_text": "ne contredit pas cette règle car s'il est prématuré d'enseigner\nrégulièrement les rudiments des sciences à des enfants de\nsix à sept ans, il est possible et désirable qu'à la base des\nexercices de vocabulaire et d'élocution, de calcul, de dessin et\nde travail manuel, il y ait des exercices d'observation nom-\nbreux, variés, bien à la portée des jeunes enfants, conduits\nsuivant la méthode des leçons",
+        "metadata": {
+          "chunk_index": 149,
+          "sub_type": null,
+          "ark": "ark:/12148/bpt6k3343439k",
+          "doc_type": "other",
+          "char_end": 305246,
+          "ark_slug": "bpt6k3343439k",
+          "char_start": 302904,
+          "folio": 159
+        }
+      }
+    ],
+    "total": 3,
+    "unaddressable": 0
+  }
+}

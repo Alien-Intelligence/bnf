@@ -1,6 +1,6 @@
 apiVersion: v2
 name: bnf-demo
-version: 0.21.0
+version: 0.21.1
 description: BnF Corpus Research — Alien Intelligence × BnF demo (Next.js app + ingest worker + BnF broker + Postgres)
 type: application
 # 0.9.0 — worker+broker hardening pass 2: pg-boss sliding-window fetch (the ~600/min
@@ -117,4 +117,8 @@ type: application
 # TLS verify-ca against the instance CA. Bundled mode gains logicalReplication and
 # a replicationEndpoint (NodePort, Local traffic policy, NetworkPolicy) to move the
 # data there. No image change.
-appVersion: "0.20.2"
+# 0.21.1 — app-only: read the datacluster MCP 0.3 contract (composite "cluster:dataset"
+# and "cluster:dataset:entry" ids). RAG search and full-text reads failed since the MCP
+# upgrade. project.cluster_dataset_id becomes TEXT, nulled and re-resolved by slug.
+# App → 0.20.3; worker (0.20.4) and broker (0.20.2) unchanged.
+appVersion: "0.20.3"

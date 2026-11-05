@@ -1,0 +1,127 @@
+{
+  "success": true,
+  "data": {
+    "dataset_id": "113:6363",
+    "name": "BnF 22efccfe-6a5d-4aec-b972-28aab8aa6e72",
+    "slug": "bnf-22efccfe-6a5d-4aec-b972-28aab8aa6e72",
+    "description": "BnF corpus dataset for project 22efccfe-6a5d-4aec-b972-28aab8aa6e72",
+    "dataset_type": "text",
+    "size_bytes": 122502190,
+    "entry_count": 114,
+    "schema_definition": {
+      "schema_id": "bnf_22efccfe_6a5d_4aec_b972_28aab8aa6e72",
+      "version": "v1",
+      "description": "Schema for BnF project 22efccfe-6a5d-4aec-b972-28aab8aa6e72 documents",
+      "original": {
+        "required_files": [
+          "doc.md"
+        ],
+        "optional_files": [
+          "doc.json"
+        ],
+        "metadata_schema": {
+          "type": "object",
+          "properties": {
+            "ark": {
+              "type": "string"
+            },
+            "arkSlug": {
+              "type": "string"
+            },
+            "title": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "creator": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "date": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "docType": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "subtype": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "lang": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "source": {
+              "type": "string"
+            },
+            "iiifManifestUrl": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pageCount": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "ocrAvailable": {
+              "type": "boolean"
+            },
+            "ocrProvider": {
+              "type": "string"
+            },
+            "pipeline": {
+              "type": "string"
+            },
+            "content_hash": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "ark",
+            "arkSlug",
+            "source",
+            "ocrAvailable"
+          ]
+        }
+      },
+      "processed": {
+        "content_schema": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string"
+            }
+          }
+        },
+        "required_files": [],
+        "optional_files": []
+      },
+      "processing": {
+        "intermediate_files": [],
+        "retention_days": 7
+      }
+    },
+    "current_schema_version": "v1",
+    "created_at": "2026-11-04T21:00:04.987Z",
+    "updated_at": "2026-11-04T21:00:04.987Z",
+    "version": 1,
+    "has_manifest_schema": true,
+    "outdated_entries_count": 0
+  }
+}

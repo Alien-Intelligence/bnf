@@ -23,6 +23,7 @@ import { noteGetTool } from "./note"
 import { ragGetTextTool, ragKeywordSearchTool, ragQueryTool } from "./rag"
 import { memoryWriteTool } from "./memory"
 import { TOOL_PROJECT_GONE_ERROR } from "./authorize"
+import { entryIdSchema } from "@/lib/cluster/composite-ids"
 import type { TurnScopedCtx } from "./registry-factory"
 
 let ownerRow: User
@@ -102,7 +103,7 @@ test("the rag_* tools on a corpus never ingested fail with success:false (the ch
   for (const call of [
     () => ragQueryTool.handler({ query: "incendie" }, ctx()),
     () => ragKeywordSearchTool.handler({ query: "incendie" }, ctx()),
-    () => ragGetTextTool.handler({ ark: "ark:/12148/bpt6k2839841", entryId: 1 }, ctx()),
+    () => ragGetTextTool.handler({ ark: "ark:/12148/bpt6k2839841", entryId: entryIdSchema.parse("113:6363:1") }, ctx()),
   ]) {
     const result = await call()
     assert.equal(toolCallErrored(false, JSON.stringify(result)), true, JSON.stringify(result))

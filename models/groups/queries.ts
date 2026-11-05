@@ -1,12 +1,12 @@
 import "server-only"
 
 import { prisma } from "@/lib/db"
-import type { VisibilityScope } from "@/lib/authz/project-access"
 import {
   groupListItem,
   groupWithMembers,
   type Group,
   type GroupListItem,
+  type GroupVisibilityScope,
   type GroupWithMembers,
 } from "./schema"
 
@@ -25,7 +25,7 @@ export class GroupQueries {
    * caller cannot pick the wrong one, and no role check in a file the policy
    * layer never sees.
    */
-  static async listVisible(scope: VisibilityScope): Promise<GroupListItem[]> {
+  static async listVisible(scope: GroupVisibilityScope): Promise<GroupListItem[]> {
     return prisma.group.findMany({
       ...groupListItem,
       where: scope.unrestricted

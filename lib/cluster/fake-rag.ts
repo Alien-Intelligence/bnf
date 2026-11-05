@@ -17,21 +17,26 @@ import "server-only"
 //     the worker's exact format by `assembleEntryText` (folio-text.ts), which
 //     also yields each page's code-point `char_start` / `char_end`;
 //   - passages are shaped by `chunkToPassage` from chunks built like the
-//     worker's (trimmed page text, ark / folio / offsets / entry_id metadata);
+//     cluster's (trimmed page text, ark / folio / offsets metadata, the
+//     composite entry_id / dataset_id at the top level);
 //   - entry slices are cut like mcp-datacluster's get_entry_content (by code
 //     point, per mode) and mapped by `toEntryContent`;
-//   - the ARK lookup goes through `liveEntryIds` / `pickLiveEntryId`, and the
+//   - the ARK lookup goes through `arkLookup` / `pickLiveEntryId`, and the
 //     folio map through `foliosForEntry` from the entry's chunks, exactly as
 //     the real runner; rag_get_text reads only the ARK's live entry;
 //   - a failing entry read is a DataclusterMcpToolError, as on the wire.
-// Since fixtures have no entry ids, a stable synthetic id is derived from each
-// unique ARK (1-based, in first-seen order) and shared across all operations.
+// Since fixtures have no entry ids, a stable synthetic composite id
+// ("<FAKE_DATASET_ID>:<n>", n 1-based in first-seen ARK order) is derived from
+// each unique ARK and shared across all operations.
 
 import { FAKE_RAG_MODEL_VERSION } from "@/lib/constants"
+import { datasetIdSchema, entryIdSchema } from "./composite-ids"
+import type { EntryId } from "./composite-ids"
+import type { ArkEntry } from "./rag-wire"
 import { DataclusterMcpToolError } from "./datacluster-mcp-client"
 import type { DataclusterChunk, DataclusterEntryContent } from "./datacluster-mcp-client"
 import { assembleEntryText, codePointLength, escapeFolioHeadings, sliceCodePoints } from "./folio-text"
-import { chunkToPassage, folioChunksOf, foliosForEntry, liveEntryIds, pickLiveEntryId, toEntryContent } from "./rag-wire"
+import { chunkToPassage, folioChunksOf, foliosForEntry, arkLookup, pickLiveEntryId, toEntryContent } from "./rag-wire"
 import { RAG_LOOKUP_STATUS } from "./rag"
 import type {
   DocumentFoliosRequest,
@@ -50,11 +55,16 @@ import type { RagFixture } from "./rag-fixtures"
 
 // --- Stable synthetic entry ids (ARK ↔ id), in first-seen fixture order. -----
 const ARK_ORDER: string[] = [...new Set(RAG_FIXTURES.map((f) => f.ark))]
-const ARK_TO_ENTRY_ID = new Map(ARK_ORDER.map((ark, i) => [ark, i + 1]))
-const ENTRY_ID_TO_ARK = new Map(ARK_ORDER.map((ark, i) => [i + 1, ark]))
+
+/** The fake cluster's one dataset, in the MCP's "cluster:dataset" form. */
+const FAKE_DATASET_ID = datasetIdSchema.parse("1:1")
+
+const syntheticEntryId = (n: number): EntryId => entryIdSchema.parse(`${FAKE_DATASET_ID}:${n}`)
+const ARK_TO_ENTRY_ID = new Map(ARK_ORDER.map((ark, i) => [ark, syntheticEntryId(i + 1)]))
+const ENTRY_ID_TO_ARK = new Map(ARK_ORDER.map((ark, i) => [syntheticEntryId(i + 1), ark]))
 
 /** The synthetic entry id of a fixture ARK. Every caller holds a fixture's ARK. */
-function entryIdForArk(ark: string): number {
+function entryIdForArk(ark: string): EntryId {
   const id = ARK_TO_ENTRY_ID.get(ark)
   if (id === undefined) throw new Error(`fake cluster: ${ark} is not a fixture ARK`)
   return id
@@ -89,11 +99,12 @@ function chunkOf(f: RagFixture, score: number): DataclusterChunk {
   if (range === undefined) throw new Error(`fake cluster: no range for ${f.ark} f${f.folio}`)
   const entryId = entryIdForArk(f.ark)
   return {
-    id: `fake-${entryId}-${f.folio}`,
+    entry_id: entryId,
+    dataset_id: FAKE_DATASET_ID,
     score,
     // Exactly the stored page text, as the worker writes chunk_text.
     chunk_text: escapeFolioHeadings(f.snippet.trim()),
-    metadata: { ark: f.ark, folio: f.folio, char_start: range[0], char_end: range[1], entry_id: entryId },
+    metadata: { ark: f.ark, folio: f.folio, char_start: range[0], char_end: range[1] },
   }
 }
 
@@ -104,7 +115,7 @@ function chunkOf(f: RagFixture, score: number): DataclusterChunk {
  */
 function entryContentPayload(
   text: string,
-  entryId: number,
+  entryId: EntryId,
   charOffset: number,
   charLimit: number,
 ): DataclusterEntryContent {
@@ -245,7 +256,7 @@ export const FakeRagRunner = {
 
   async getEntryContent(req: RagEntryContentRequest): Promise<RagEntryContentResult> {
     req.signal.throwIfAborted()
-    const liveEntryId = pickLiveEntryId(liveIdsFor(req.ark))
+    const liveEntryId = pickLiveEntryId(arkEntriesFor(req.ark))
     if (liveEntryId !== req.entryId) {
       return { status: RAG_LOOKUP_STATUS.ENTRY_NOT_IN_CORPUS, liveEntryId }
     }
@@ -261,7 +272,7 @@ export const FakeRagRunner = {
 
   async getDocumentFolios(req: DocumentFoliosRequest): Promise<DocumentFoliosResult> {
     req.signal.throwIfAborted()
-    const entryId = pickLiveEntryId(liveIdsFor(req.ark))
+    const entryId = pickLiveEntryId(arkEntriesFor(req.ark))
     if (entryId === null) return { status: RAG_LOOKUP_STATUS.ENTRY_NOT_FOUND }
     const chunks = folioChunksOf(fixturesForArk(req.ark).map((f) => chunkOf(f, 1)))
     return {
@@ -272,8 +283,15 @@ export const FakeRagRunner = {
   },
 }
 
-/** The ARK lookup, as the real runner does it: the dataset's entries for `ark`. */
-function liveIdsFor(ark: string): number[] {
-  const hits = ARK_TO_ENTRY_ID.has(ark) ? [{ entry_id: entryIdForArk(ark), metadata: { ark } }] : []
-  return liveEntryIds(hits, hits.length, ark)
+/** When the fake cluster created every entry: one fixed instant, so the lookup has a valid `created_at`. */
+const FAKE_CREATED_AT = "2026-01-01T00:00:00.000000+00:00"
+
+/** The ARK lookup, as the real runner does it: the dataset's entries for `ark`. The fake is never mid-re-ingest. */
+function arkEntriesFor(ark: string): ArkEntry[] {
+  const hits = ARK_TO_ENTRY_ID.has(ark)
+    ? [{ entry_id: entryIdForArk(ark), dataset_id: FAKE_DATASET_ID, metadata: { ark, created_at: FAKE_CREATED_AT } }]
+    : []
+  const lookup = arkLookup(hits, { total: hits.length, unaddressable: 0 }, ark, FAKE_DATASET_ID)
+  if (lookup.status !== RAG_LOOKUP_STATUS.FOUND) throw new Error(`fake cluster: ${lookup.reason}`)
+  return lookup.entries
 }

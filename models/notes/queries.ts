@@ -1,24 +1,39 @@
 import "server-only"
 import { prisma } from "@/lib/db"
-import type { Prisma } from "@/lib/generated/prisma/client"
 import {
   noteWithCitations,
   type CitationUsage,
+  type NoteBodyRow,
   type NoteWithCitations,
   type NoteListItem,
   type NoteVersionListItem,
+  type NoteOrderBy,
 } from "./schema"
 
 /**
  * The note-list order — pinned first, then most recently updated — of every
  * read that lists notes (the note list, note_list): written once.
  */
-const NOTE_LIST_ORDER: Prisma.NoteOrderByWithRelationInput[] = [
+const NOTE_LIST_ORDER: NoteOrderBy[] = [
   { pinned: "desc" },
   { updatedAt: "desc" },
 ]
 
 export class NoteQueries {
+  /** Every note of a project with its body, oldest first (the quote audit). */
+  static async listBodiesForProject(projectId: string): Promise<NoteBodyRow[]> {
+    return prisma.note.findMany({
+      where: { projectId },
+      select: { id: true, title: true, body_md: true },
+      orderBy: { createdAt: "asc" },
+    })
+  }
+
+  /** The bodies of these notes (the e2e harness); a missing id is simply absent from the result. */
+  static async bodiesByIds(ids: string[]): Promise<Array<Pick<NoteBodyRow, "id" | "body_md">>> {
+    return prisma.note.findMany({ where: { id: { in: ids } }, select: { id: true, body_md: true } })
+  }
+
   static async listForProject(projectId: string): Promise<NoteListItem[]> {
     return prisma.note.findMany({
       where: { projectId },

@@ -20,15 +20,35 @@
  * OCR quality (feedback 2026-09-29 #7 — see rag-ocr.ts): `ocrLow` is decided by
  * code, every folio carries an explicit `ocrState` so "not known" never reads
  * as "fine", and an `ocrNotice` rides along when anything is low. The reads are
- * corpus-gated, bounded and tied to the turn's signal; a failure throws and the
- * chat-sdk turns it into an isError tool result, so the model sees the failure
- * instead of a silently unannotated result.
+ * corpus-gated, bounded and tied to the turn's signal.
+ *
+ * Failures: a handler never throws out of the tool loop (CLAUDE_ERROR_PATTERNS
+ * §15, playbook/agent-streaming.md). Whatever fails — a data-cluster error
+ * (the `DataclusterMcpError` family, or a payload that fails its schema), a
+ * database failure, a deadline, a bug — is logged server-side with its details
+ * and returned as a `toolFailure` the model can act on (withToolFailures), the
+ * cluster's classes with a specific message and the rest with a generic
+ * internal-error one; so is a document the cluster is re-indexing. The turn's
+ * own cancellation (its signal aborted) is a `toolFailure` too — a cancelled
+ * message, not logged as a failure — because a tool never throws out of the
+ * loop, whoever is or is not listening for the result.
  */
 import "server-only"
 
-import { z } from "zod"
+import { z, ZodError } from "zod"
 import { defineTool } from "@alien/chat-sdk/claude"
 import { ClusterRagClient, RAG_LOOKUP_STATUS } from "@/lib/cluster/rag"
+import { BNF_LANGUAGE_LABEL } from "@/models/documents/schema"
+import { entryIdSchema } from "@/lib/cluster/composite-ids"
+import {
+  DataclusterMcpAuthError,
+  DataclusterMcpError,
+  DataclusterMcpNotFoundError,
+  DataclusterMcpProtocolError,
+  DataclusterMcpRequestError,
+  DataclusterMcpToolError,
+} from "@/lib/cluster/datacluster-mcp-client"
+import type { EntryId } from "@/lib/cluster/composite-ids"
 import {
   RAG_DEFAULT_K,
   RAG_GET_TEXT_DEFAULT_CHAR_LIMIT,
@@ -43,9 +63,11 @@ import type { TurnScopedCtx } from "./registry-factory"
 import { AGENT_TOOLS, DOCUMENT_OCR_STATUS_LEGEND, FOLIO_OCR_STATE_LEGEND } from "./constants"
 import { NOT_INGESTED_ERROR, resolveIngestedCorpus } from "./ingestion-guard"
 import { toolFailure, toolRefusal } from "./failure"
+import type { ToolFailure } from "./failure"
 import { withDeadline } from "@/lib/async/deadline"
 import { foliosInSlice } from "@/lib/citations/ocr"
 import { OCR_DB_TIMEOUT_MS } from "@/lib/constants"
+import { projectClusterDatasetIdCache } from "./cluster-dataset-cache"
 import { arkSchema } from "@/lib/validation/ark"
 import { DocumentQueries } from "@/models/documents/queries"
 import { ARK_NOT_IN_CORPUS_ERROR } from "./constants"
@@ -56,6 +78,72 @@ import {
   loadDocOcrIndex,
   loadOcrIndex,
 } from "./rag-ocr"
+
+// ---------------------------------------------------------------------------
+// Cluster failures → tool failures
+// ---------------------------------------------------------------------------
+
+/**
+ * What the agent is told for a failure, by its class. The raw error stays in
+ * the server log; the model gets what it can act on: retry, change the
+ * request, or stop and tell the user. A failure that is not the cluster's
+ * (database, deadline, a bug) gets the generic internal-error message.
+ */
+function failureMessage(tool: string, err: unknown): string {
+  if (err instanceof DataclusterMcpAuthError) {
+    return (
+      `${tool} : le service de données du corpus a refusé l'accès. Une autre requête n'y changera rien : ` +
+      "dis à l'utilisateur que la lecture du corpus est indisponible pour l'instant."
+    )
+  }
+  if (err instanceof DataclusterMcpToolError || err instanceof DataclusterMcpRequestError) {
+    return (
+      `${tool} : le service de données du corpus a refusé la requête (${err.message}). ` +
+      "Corrige les paramètres de l'appel ; ne le relance pas à l'identique."
+    )
+  }
+  if (err instanceof DataclusterMcpNotFoundError) {
+    return `${tool} : ${err.message} Le corpus n'est peut-être pas encore indexé : réessaie plus tard.`
+  }
+  if (err instanceof DataclusterMcpProtocolError || err instanceof ZodError) {
+    return (
+      `${tool} : le service de données du corpus a répondu de façon inattendue ; cette lecture est impossible ` +
+      "pour l'instant. Ne la relance pas à l'identique : appuie-toi sur les passages déjà obtenus, " +
+      "ou dis à l'utilisateur que le corpus est momentanément illisible."
+    )
+  }
+  if (err instanceof DataclusterMcpError) {
+    return (
+      `${tool} : le service de données du corpus est momentanément indisponible. ` +
+      "Réessaie une fois plus tard ; sinon appuie-toi sur les passages déjà obtenus."
+    )
+  }
+  return (
+    `${tool} : erreur interne ; la lecture du corpus a échoué. Ne relance pas l'appel à l'identique : ` +
+    "dis à l'utilisateur qu'une erreur interne a interrompu la lecture du corpus."
+  )
+}
+
+/** What a handler returns when the turn was cancelled before or while it ran: expected, not a fault. */
+function cancelledMessage(tool: string): string {
+  return `${tool} : le tour a été annulé ; la lecture du corpus n'a pas abouti. Ne relance pas l'appel.`
+}
+
+/**
+ * Run a handler body, turning any failure into a `toolFailure`; nothing
+ * throws out of it (§15). A failure is logged with its details (never
+ * swallowed); one that happens once the turn's `signal` has aborted is the
+ * cancellation itself, answered with a cancelled message and not logged.
+ */
+async function withToolFailures<T>(tool: string, signal: AbortSignal, run: () => Promise<T>): Promise<T | ToolFailure> {
+  try {
+    return await run()
+  } catch (err) {
+    if (signal.aborted) return toolFailure(cancelledMessage(tool))
+    console.error(`[${tool}] failed`, err)
+    return toolFailure(failureMessage(tool, err))
+  }
+}
 
 // ---------------------------------------------------------------------------
 // rag_query
@@ -120,34 +208,36 @@ export const ragQueryTool = defineTool<
           "rejected; they come back in ignoredFilters. Filter with rag_keyword_search instead.",
       ),
   }),
-  handler: async (input, ctx) => {
-    const corpus = await resolveIngestedCorpus(ctx, NOT_INGESTED_ERROR)
-    if ("error" in corpus) {
-      return toolFailure(corpus.error)
-    }
+  handler: (input, ctx) =>
+    withToolFailures(AGENT_TOOLS.ragQuery, ctx.signal, async () => {
+      const corpus = await resolveIngestedCorpus(ctx, NOT_INGESTED_ERROR)
+      if ("error" in corpus) {
+        return toolFailure(corpus.error)
+      }
 
-    const result = await ClusterRagClient.query({
-      projectId: ctx.corpusProjectId,
-      query: input.query,
-      k: input.k ?? RAG_DEFAULT_K,
-      signal: ctx.signal,
-    })
-    // The cluster's vector search filters by dataset / entry / score only:
-    // say which requested filters had no effect rather than imply they did.
-    const ignoredFilters = Object.entries(input.filters ?? {})
-      .filter(([, value]) => value !== undefined)
-      .map(([name]) => name)
-    // Passages come from this corpus' own dataset; the read is gated on it too.
-    const index = await loadOcrIndex(
-      ctx,
-      result.passages.flatMap((p) => (p.folio === null ? [] : [{ ark: p.ark, folio: p.folio }])),
-    )
-    return {
-      ...result,
-      ...annotatePassages(result.passages, index),
-      ...(ignoredFilters.length > 0 ? { ignoredFilters } : {}),
-    }
-  },
+      const result = await ClusterRagClient.query({
+        projectId: ctx.corpusProjectId,
+        datasetIdCache: projectClusterDatasetIdCache,
+        query: input.query,
+        k: input.k ?? RAG_DEFAULT_K,
+        signal: ctx.signal,
+      })
+      // The cluster's vector search filters by dataset / entry / score only:
+      // say which requested filters had no effect rather than imply they did.
+      const ignoredFilters = Object.entries(input.filters ?? {})
+        .filter(([, value]) => value !== undefined)
+        .map(([name]) => name)
+      // Passages come from this corpus' own dataset; the read is gated on it too.
+      const index = await loadOcrIndex(
+        ctx,
+        result.passages.flatMap((p) => (p.folio === null ? [] : [{ ark: p.ark, folio: p.folio }])),
+      )
+      return {
+        ...result,
+        ...annotatePassages(result.passages, index),
+        ...(ignoredFilters.length > 0 ? { ignoredFilters } : {}),
+      }
+    }),
 })
 
 // ---------------------------------------------------------------------------
@@ -200,32 +290,41 @@ export const ragKeywordSearchTool = defineTool<
     filters: z
       .object({
         type: z.string().min(1).optional().describe("Restrict to this document type (e.g. \"press\", \"book\")."),
-        lang: z.string().min(1).optional().describe("Restrict to this language code (e.g. \"fr\")."),
+        lang: z
+          .string()
+          .min(1)
+          .optional()
+          .describe(
+            `Restrict to this language, written as the BnF labels it in French — "${BNF_LANGUAGE_LABEL.FRENCH}" — ` +
+              'exactly as stored on the entry. NOT an ISO code: "fr" or "fre" matches nothing.',
+          ),
         source: z.string().min(1).optional().describe("Restrict to this source (e.g. \"gallica\")."),
       })
       .optional()
       .describe("Exact-match facet filters applied before ranking."),
   }),
-  handler: async (input, ctx) => {
-    const corpus = await resolveIngestedCorpus(ctx, NOT_INGESTED_ERROR)
-    if ("error" in corpus) {
-      return toolFailure(corpus.error)
-    }
+  handler: (input, ctx) =>
+    withToolFailures(AGENT_TOOLS.ragKeywordSearch, ctx.signal, async () => {
+      const corpus = await resolveIngestedCorpus(ctx, NOT_INGESTED_ERROR)
+      if ("error" in corpus) {
+        return toolFailure(corpus.error)
+      }
 
-    const result = await ClusterRagClient.keywordSearch({
-      projectId: ctx.corpusProjectId,
-      query: input.query,
-      limit: input.limit ?? RAG_KEYWORD_DEFAULT_LIMIT,
-      filters: input.filters,
-      signal: ctx.signal,
-    })
-    // Hits come from this corpus' own dataset; the read is gated on it too.
-    const docIndex = await loadDocOcrIndex(
-      ctx,
-      result.hits.map((h) => h.ark),
-    )
-    return { ...result, ...annotateKeywordHits(result.hits, docIndex) }
-  },
+      const result = await ClusterRagClient.keywordSearch({
+        projectId: ctx.corpusProjectId,
+        datasetIdCache: projectClusterDatasetIdCache,
+        query: input.query,
+        limit: input.limit ?? RAG_KEYWORD_DEFAULT_LIMIT,
+        filters: input.filters,
+        signal: ctx.signal,
+      })
+      // Hits come from this corpus' own dataset; the read is gated on it too.
+      const docIndex = await loadDocOcrIndex(
+        ctx,
+        result.hits.map((h) => h.ark),
+      )
+      return { ...result, ...annotateKeywordHits(result.hits, docIndex) }
+    }),
 })
 
 // ---------------------------------------------------------------------------
@@ -237,13 +336,24 @@ export const ragKeywordSearchTool = defineTool<
  * project's dataset — the agent copied the wrong pair, an outdated id, or
  * invented one. It names the live id so the agent can retry at once.
  */
-export function entryNotInCorpusError(ark: string, entryId: number, liveEntryId: number | null): string {
+export function entryNotInCorpusError(ark: string, entryId: EntryId, liveEntryId: EntryId | null): string {
   return liveEntryId === null
-    ? `Le document ${ark} n'a aucune entrée dans ce corpus : l'entrée ${entryId} ne peut pas être lue. ` +
-        `Reprends un ark et un entryId tels qu'un même résultat de ${AGENT_TOOLS.ragQuery} ou ` +
-        `${AGENT_TOOLS.ragKeywordSearch} les a donnés.`
-    : `L'entrée ${entryId} n'est pas l'entrée actuelle du document ${ark} dans ce corpus : ` +
-        `son entrée actuelle est ${liveEntryId}. Relance ${AGENT_TOOLS.ragGetText} avec entryId ${liveEntryId}.`
+    ? `Le document ${ark} n'a aucune entrée dans ce corpus : l'entrée "${entryId}" ne peut pas être lue. ` +
+        `Reprends un ark et un entryId (chaîne « cluster:dataset:entrée », copiée telle quelle) tels qu'un même ` +
+        `résultat de ${AGENT_TOOLS.ragQuery} ou ${AGENT_TOOLS.ragKeywordSearch} les a donnés.`
+    : `L'entrée "${entryId}" n'est pas l'entrée actuelle du document ${ark} dans ce corpus : ` +
+        `son entrée actuelle est "${liveEntryId}". Relance ${AGENT_TOOLS.ragGetText} avec entryId "${liveEntryId}".`
+}
+
+/**
+ * Refusal while the cluster is re-indexing the document: its entries cannot be
+ * told apart, so none is read. Transient — the agent is told to wait or move on.
+ */
+export function entryReindexingError(ark: string): string {
+  return (
+    `Le document ${ark} est en cours de réindexation dans le corpus : son texte ne peut pas être lu pour le moment. ` +
+    `Réessaie ${AGENT_TOOLS.ragGetText} plus tard, ou appuie-toi sur un autre passage.`
+  )
 }
 
 const ragGetTextInputSchema = z.object({
@@ -251,11 +361,10 @@ const ragGetTextInputSchema = z.object({
     "The ARK of the SAME search result the entryId comes from, verbatim. The entry is read " +
       "only if it belongs to this ARK in the project's corpus.",
   ),
-  entryId: z
-    .number()
-    .int()
-    .positive()
-    .describe("Cluster entry id, taken verbatim from a search result. Never invented."),
+  entryId: entryIdSchema.describe(
+    'Entry id, taken verbatim from a search result (a string like "113:6363:9195583", ' +
+      "never a bare number). Never invented or rebuilt from another number.",
+  ),
   charOffset: z
     .number()
     .int()
@@ -289,49 +398,54 @@ export const ragGetTextTool = defineTool<typeof ragGetTextInputSchema, TurnScope
     "\"## Folio N\" heading falls inside the slice — and ocr.leadingFolioKnown " +
     "(false when the slice starts mid-folio; that folio's quality is then unknown).",
   inputSchema: ragGetTextInputSchema,
-  handler: async (input, ctx) => {
-    const corpus = await resolveIngestedCorpus(ctx, NOT_INGESTED_ERROR)
-    if ("error" in corpus) {
-      return toolFailure(corpus.error)
-    }
+  handler: (input, ctx) =>
+    withToolFailures(AGENT_TOOLS.ragGetText, ctx.signal, async () => {
+      const corpus = await resolveIngestedCorpus(ctx, NOT_INGESTED_ERROR)
+      if ("error" in corpus) {
+        return toolFailure(corpus.error)
+      }
 
-    // D8/D12: the ARK must be an indexed document of THIS corpus before
-    // anything is read for it.
-    const indexed = await withDeadline(
-      DocumentQueries.isIndexedInCorpus(ctx.corpusProjectId, input.ark),
-      { label: "rag_get_text corpus check", ms: OCR_DB_TIMEOUT_MS, signal: ctx.signal },
-    )
-    if (!indexed) {
-      return toolRefusal(
-        ARK_NOT_IN_CORPUS_ERROR,
-        `${input.ark} n'est pas un document indexé de ce corpus : reprends l'ARK d'un résultat de recherche.`,
+      // D8/D12: the ARK must be an indexed document of THIS corpus before
+      // anything is read for it.
+      const indexed = await withDeadline(
+        DocumentQueries.isIndexedInCorpus(ctx.corpusProjectId, input.ark),
+        { label: "rag_get_text corpus check", ms: OCR_DB_TIMEOUT_MS, signal: ctx.signal },
       )
-    }
+      if (!indexed) {
+        return toolRefusal(
+          ARK_NOT_IN_CORPUS_ERROR,
+          `${input.ark} n'est pas un document indexé de ce corpus : reprends l'ARK d'un résultat de recherche.`,
+        )
+      }
 
-    // The defaults are applied HERE and nowhere else: the facade and both
-    // runners take explicit values. Left undefined, the upstream MCP would read
-    // the limit as 0 and return the rest of the document.
-    const result = await ClusterRagClient.getEntryContent({
-      projectId: ctx.corpusProjectId,
-      ark: input.ark,
-      entryId: input.entryId,
-      charOffset: input.charOffset ?? 0,
-      charLimit: input.charLimit ?? RAG_GET_TEXT_DEFAULT_CHAR_LIMIT,
-      signal: ctx.signal,
-    })
-    if (result.status === RAG_LOOKUP_STATUS.ENTRY_NOT_IN_CORPUS) {
-      return toolFailure(entryNotInCorpusError(input.ark, input.entryId, result.liveEntryId))
-    }
-    const content = result.content
-    const { folios } = foliosInSlice(content.text)
-    const index = await loadOcrIndex(
-      ctx,
-      folios.map((folio) => ({ ark: input.ark, folio })),
-    )
-    // The entry was verified against the ARK above (RAG_LOOKUP_STATUS), so the
-    // OCR quality reported is that entry's own document's.
-    return { ...content, ark: input.ark, ...annotateTextSlice(content.text, input.ark, index) }
-  },
+      // The defaults are applied HERE and nowhere else: the facade and both
+      // runners take explicit values. Left undefined, the upstream MCP would read
+      // the limit as 0 and return the rest of the document.
+      const result = await ClusterRagClient.getEntryContent({
+        projectId: ctx.corpusProjectId,
+        datasetIdCache: projectClusterDatasetIdCache,
+        ark: input.ark,
+        entryId: input.entryId,
+        charOffset: input.charOffset ?? 0,
+        charLimit: input.charLimit ?? RAG_GET_TEXT_DEFAULT_CHAR_LIMIT,
+        signal: ctx.signal,
+      })
+      if (result.status === RAG_LOOKUP_STATUS.ENTRY_REINDEXING) {
+        return toolFailure(entryReindexingError(input.ark))
+      }
+      if (result.status === RAG_LOOKUP_STATUS.ENTRY_NOT_IN_CORPUS) {
+        return toolFailure(entryNotInCorpusError(input.ark, input.entryId, result.liveEntryId))
+      }
+      const content = result.content
+      const { folios } = foliosInSlice(content.text)
+      const index = await loadOcrIndex(
+        ctx,
+        folios.map((folio) => ({ ark: input.ark, folio })),
+      )
+      // The entry was verified against the ARK above (RAG_LOOKUP_STATUS), so the
+      // OCR quality reported is that entry's own document's.
+      return { ...content, ark: input.ark, ...annotateTextSlice(content.text, input.ark, index) }
+    }),
 })
 
 // Convenience array for the registry builder.

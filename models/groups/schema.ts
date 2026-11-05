@@ -3,6 +3,7 @@
 // schema.prisma — see playbook/models.md.
 
 import type { Prisma, Group as PrismaGroup } from "@/lib/generated/prisma/client"
+import type { VisibilityScope } from "@/models/projects/schema"
 
 export type Group = PrismaGroup
 
@@ -24,3 +25,6 @@ export const groupListItem = {
 } satisfies Prisma.GroupDefaultArgs
 
 export type GroupListItem = Prisma.GroupGetPayload<typeof groupListItem>
+
+/** The pre-decided scope a group listing takes (the same value as a project listing's: lib/authz/project-access.ts). */
+export type GroupVisibilityScope = VisibilityScope

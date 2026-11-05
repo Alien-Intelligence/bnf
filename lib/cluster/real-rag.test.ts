@@ -7,15 +7,15 @@ import "server-only"
 
 import { test, before, after } from "node:test"
 import assert from "node:assert/strict"
-import { prisma } from "@/lib/db"
-import { createTestProject, createTestUser, deleteTestUser } from "@/lib/testing/fixtures"
-import { cleanupProject } from "@/lib/testing/project-cleanup"
+import { inMemoryClusterDatasetIdCache } from "@/lib/testing/cluster-dataset-cache"
 import {
   DataclusterMcpClient,
   DataclusterMcpProtocolError,
   DataclusterMcpToolError,
   type DataclusterChunk,
 } from "./datacluster-mcp-client"
+import { datasetIdSchema, entryIdSchema } from "./composite-ids"
+import type { EntryId } from "./composite-ids"
 import { assembleEntryText } from "./folio-text"
 import { RAG_LOOKUP_STATUS } from "./rag"
 import { RealRagRunner } from "./real-rag"
@@ -24,8 +24,14 @@ process.env.DATACLUSTER_MCP_URL ??= "https://cluster.invalid/mcp"
 process.env.CLUSTER_BEARER_TOKEN ??= "test-token"
 
 const ARK = "ark:/12148/bpt6k822781z"
-let userId: string
-let projectId: string
+/** The MCP's composite ids: "cluster:dataset" and "cluster:dataset:entry". */
+const dataset = (n: number) => datasetIdSchema.parse(`113:${n}`)
+const entryNo = (n: number) => entryIdSchema.parse(`113:4242:${n}`)
+/** The project this suite resolves datasets for: an id the cluster stub names by slug, no database row. */
+const projectId = "real-rag-lookup"
+const datasetIdCache = inMemoryClusterDatasetIdCache()
+/** What the cache holds for the project; tests seed it and read it back. */
+const cached = () => datasetIdCache.stored.get(projectId)
 const proto = DataclusterMcpClient.prototype
 const original = {
   keywordSearch: proto.keywordSearch,
@@ -39,29 +45,38 @@ let entryText = "## Folio 1\n\nTexte"
 let entryChunks: (offset: number) => DataclusterChunk[] = () => []
 const chunkOffsets: number[] = []
 /** The dataset the cluster currently has for the project; tests swap it. */
-let liveDatasetId = 4242
+let liveDatasetId = dataset(4242)
 const lookupOffsets: number[] = []
+/** When the cluster created each entry; later entry numbers are created later unless a test says otherwise. */
+const createdAtOf = (n: number) => new Date(Date.UTC(2026, 10, 1, 0, n)).toISOString()
+let createdAt: (n: number) => string = createdAtOf
+/** The dataset the ARK lookup's hits claim, and the pagination extras; tests swap them. */
+let hitDataset = dataset(4242)
+let unaddressable = 0
 
 before(async () => {
-  userId = (await createTestUser()).id
-  projectId = (await createTestProject(userId, "real-rag-lookup")).id
-  await prisma.project.update({ where: { id: projectId }, data: { clusterDatasetId: 4242 } })
+  datasetIdCache.stored.set(projectId, dataset(4242))
   // 25 entries for one ARK (many lagging re-ingests): two pages of 20.
-  const ids = Array.from({ length: 25 }, (_, i) => 100 + i)
+  const ids = Array.from({ length: 25 }, (_, i) => entryNo(100 + i))
   proto.keywordSearch = async function (input) {
     lookupOffsets.push(input.offset ?? 0)
     const page = ids.slice(input.offset ?? 0, (input.offset ?? 0) + (input.limit ?? 20))
     return {
-      results: page.map((entry_id) => ({ entry_id, dataset_id: 4242, score: 1, metadata: { ark: ARK } })),
-      pagination: { total: ids.length },
+      results: page.map((entry_id) => ({
+        entry_id,
+        dataset_id: hitDataset,
+        score: 1,
+        metadata: { ark: ARK, created_at: createdAt(Number(entry_id.split(":")[2])) },
+      })),
+      pagination: { total: ids.length, unaddressable },
     }
   }
   proto.getDataset = async function (datasetId) {
     if (datasetId !== liveDatasetId) throw new DataclusterMcpToolError("Dataset not found or access denied")
-    return { id: datasetId, name: "n", slug: `bnf-${projectId}`, entry_count: 1 }
+    return { dataset_id: datasetId, name: "n", slug: `bnf-${projectId}`, entry_count: 1 }
   }
   proto.listDatasets = async function () {
-    return [{ id: liveDatasetId, name: "n", slug: `bnf-${projectId}`, entry_count: 1 }]
+    return [{ dataset_id: liveDatasetId, name: "n", slug: `bnf-${projectId}`, entry_count: 1 }]
   }
   proto.getEntryContent = async function (input) {
     const total = [...entryText].length
@@ -79,12 +94,11 @@ after(async () => {
   proto.getDataset = original.getDataset
   proto.listDatasets = original.listDatasets
   proto.vectorSearchChunks = original.vectorSearchChunks
-  await cleanupProject(projectId)
-  await deleteTestUser(userId)
 })
 
-const request = (entryId: number) => ({
+const request = (entryId: EntryId) => ({
   projectId,
+  datasetIdCache,
   ark: ARK,
   entryId,
   charOffset: 0,
@@ -94,26 +108,111 @@ const request = (entryId: number) => ({
 
 test("the ARK lookup pages through more than one page of entries instead of failing", async () => {
   lookupOffsets.length = 0
-  const live = await RealRagRunner.getEntryContent(request(124))
+  const live = await RealRagRunner.getEntryContent(request(entryNo(124)))
   assert.equal(live.status, RAG_LOOKUP_STATUS.FOUND)
   assert.deepEqual(lookupOffsets, [0, 20])
 })
 
 test("rag_get_text reads only the live entry; a stale id of the same ARK is refused with the live id", async () => {
-  const stale = await RealRagRunner.getEntryContent(request(103))
-  assert.deepEqual(stale, { status: RAG_LOOKUP_STATUS.ENTRY_NOT_IN_CORPUS, liveEntryId: 124 })
+  const stale = await RealRagRunner.getEntryContent(request(entryNo(103)))
+  assert.deepEqual(stale, { status: RAG_LOOKUP_STATUS.ENTRY_NOT_IN_CORPUS, liveEntryId: entryNo(124) })
 })
 
 test("a cached dataset id that no longer exists is re-resolved and re-cached, not read as an empty corpus", async () => {
-  liveDatasetId = 5151 // the dataset was recreated under a new id
+  liveDatasetId = dataset(5151) // the dataset was recreated under a new id
   try {
-    const live = await RealRagRunner.getEntryContent(request(124))
-    assert.equal(live.status, RAG_LOOKUP_STATUS.FOUND)
-    const project = await prisma.project.findUniqueOrThrow({ where: { id: projectId }, select: { clusterDatasetId: true } })
-    assert.equal(project.clusterDatasetId, 5151)
+    await withLookup({ hitDataset: dataset(5151) }, async () => {
+      const live = await RealRagRunner.getEntryContent(request(entryNo(124)))
+      assert.equal(live.status, RAG_LOOKUP_STATUS.FOUND)
+    })
+    assert.equal(cached(), dataset(5151))
   } finally {
-    liveDatasetId = 4242
-    await prisma.project.update({ where: { id: projectId }, data: { clusterDatasetId: 4242 } })
+    liveDatasetId = dataset(4242)
+    datasetIdCache.stored.set(projectId, dataset(4242))
+  }
+})
+
+/** Run `body` with the ARK lookup's cluster behaviour swapped, restoring it after. */
+async function withLookup(over: { hitDataset?: typeof hitDataset; unaddressable?: number; createdAt?: (n: number) => string }, body: () => Promise<void>) {
+  const saved = { hitDataset, unaddressable, createdAt }
+  hitDataset = over.hitDataset ?? hitDataset
+  unaddressable = over.unaddressable ?? unaddressable
+  createdAt = over.createdAt ?? createdAt
+  try {
+    await body()
+  } finally {
+    ;({ hitDataset, unaddressable, createdAt } = saved)
+  }
+}
+
+test("an ARK lookup that leaves matches unaddressable is ENTRY_REINDEXING for the text and the folio map, never a guess", async () => {
+  await withLookup({ unaddressable: 1 }, async () => {
+    assert.deepEqual(await RealRagRunner.getEntryContent(request(entryNo(124))), { status: RAG_LOOKUP_STATUS.ENTRY_REINDEXING })
+    assert.deepEqual(await RealRagRunner.getDocumentFolios(foliosRequest()), { status: RAG_LOOKUP_STATUS.ENTRY_REINDEXING })
+  })
+})
+
+test("the live entry is the most recently created, not the highest entry number", async () => {
+  // Entry 100 is the newest by creation time though it has the lowest number.
+  await withLookup({ createdAt: (n) => createdAtOf(n === 100 ? 999 : n) }, async () => {
+    const stale = await RealRagRunner.getEntryContent(request(entryNo(124)))
+    assert.deepEqual(stale, { status: RAG_LOOKUP_STATUS.ENTRY_NOT_IN_CORPUS, liveEntryId: entryNo(100) })
+    const live = await RealRagRunner.getEntryContent(request(entryNo(100)))
+    assert.equal(live.status, RAG_LOOKUP_STATUS.FOUND)
+  })
+})
+
+test("an ARK lookup entry without created_at is a protocol error, not a guess at the live entry", async () => {
+  await withLookup({ createdAt: () => "" }, async () => {
+    await assert.rejects(RealRagRunner.getEntryContent(request(entryNo(124))), DataclusterMcpProtocolError)
+  })
+})
+
+test("a hit of another dataset never reaches the agent or rag_get_text: the lookup, the vector search and the keyword search refuse it", async () => {
+  const foreign = dataset(9999)
+  await withLookup({ hitDataset: foreign }, async () => {
+    await assert.rejects(RealRagRunner.getEntryContent(request(entryNo(124))), /outside the project's dataset 113:4242/)
+  })
+  const savedVector = proto.vectorSearchChunks
+  const savedKeyword = proto.keywordSearch
+  const foreignChunk: DataclusterChunk = {
+    entry_id: entryIdSchema.parse("113:9999:1"),
+    dataset_id: foreign,
+    score: 1,
+    chunk_text: "x",
+    metadata: { ark: ARK, folio: 1 },
+  }
+  proto.vectorSearchChunks = async () => ({ results: [foreignChunk], total: 1 })
+  proto.keywordSearch = async () => ({
+    results: [{ entry_id: foreignChunk.entry_id, dataset_id: foreign, score: 1, metadata: { ark: ARK } }],
+    pagination: { total: 1 },
+  })
+  try {
+    const signal = new AbortController().signal
+    await assert.rejects(RealRagRunner.query({ projectId, datasetIdCache, query: "q", k: 5, signal }), DataclusterMcpProtocolError)
+    await assert.rejects(RealRagRunner.keywordSearch({ projectId, datasetIdCache, query: "q", limit: 5, signal }), DataclusterMcpProtocolError)
+  } finally {
+    proto.vectorSearchChunks = savedVector
+    proto.keywordSearch = savedKeyword
+  }
+})
+
+test("a cached dataset id that is not composite (an integer left from the old contract) is re-resolved by slug and re-cached, never sent to the MCP", async () => {
+  datasetIdCache.stored.set(projectId, "4242")
+  const asked: unknown[] = []
+  const savedGetDataset = proto.getDataset
+  proto.getDataset = async function (datasetId) {
+    asked.push(datasetId)
+    return savedGetDataset.call(this, datasetId)
+  }
+  try {
+    const live = await RealRagRunner.getEntryContent(request(entryNo(124)))
+    assert.equal(live.status, RAG_LOOKUP_STATUS.FOUND)
+    assert.deepEqual(asked, [], "the malformed value was not used as an id")
+    assert.equal(cached(), dataset(4242), "the slug resolution overwrote it")
+  } finally {
+    proto.getDataset = savedGetDataset
+    datasetIdCache.stored.set(projectId, dataset(4242))
   }
 })
 
@@ -123,15 +222,16 @@ function workerEntry(count: number, pageText: (folio: number) => string) {
   const { text, ranges } = assembleEntryText(pages)
   const cps = [...text]
   const chunks: DataclusterChunk[] = pages.map((p, i) => ({
-    id: String(p.folio),
+    entry_id: entryNo(124),
+    dataset_id: dataset(4242),
     score: 1,
     chunk_text: cps.slice(ranges[i][0], ranges[i][1]).join(""),
-    metadata: { ark: ARK, folio: p.folio, char_start: ranges[i][0], char_end: ranges[i][1], entry_id: 124 },
+    metadata: { ark: ARK, folio: p.folio, char_start: ranges[i][0], char_end: ranges[i][1] },
   }))
   return { text, chunks }
 }
 
-const foliosRequest = () => ({ projectId, ark: ARK, signal: new AbortController().signal })
+const foliosRequest = () => ({ projectId, datasetIdCache, ark: ARK, signal: new AbortController().signal })
 
 async function withEntry<T>(text: string, chunks: (offset: number) => DataclusterChunk[], run: () => Promise<T>): Promise<T> {
   const saved = { entryText, entryChunks }
@@ -165,10 +265,11 @@ test("an older entry whose chunks are windows stops listing after one page and f
   // Overlapping windows: offsets present, but not one page per chunk.
   const windows = (offset: number): DataclusterChunk[] =>
     Array.from({ length: 100 }, (_, i) => ({
-      id: `w${offset + i}`,
+      entry_id: entryNo(124),
+      dataset_id: dataset(4242),
       score: 1,
       chunk_text: [...entry.text].slice(offset + i, offset + i + 30).join(""),
-      metadata: { ark: ARK, folio: 1, char_start: offset + i, char_end: offset + i + 30, entry_id: 124 },
+      metadata: { ark: ARK, folio: 1, char_start: offset + i, char_end: offset + i + 30 },
     }))
   const result = await withEntry(entry.text, windows, () => RealRagRunner.getDocumentFolios(foliosRequest()))
   assert.ok(result.status === RAG_LOOKUP_STATUS.FOUND, `expected found, got ${result.status}`)

@@ -34,12 +34,11 @@
  *   E2E_QUOTES_OUT          write the full evidence as JSON to this path
  *   E2E_CLEANUP=1           delete the throwaway projects (one per run) afterwards, even after a failure
  */
-import { randomUUID } from "node:crypto"
 import { writeFile } from "node:fs/promises"
 import { z } from "zod"
-import { prisma } from "@/lib/db"
 import type { AppLocale } from "@/i18n/routing"
 import { checkNoteQuotes } from "@/lib/citations/quote-check"
+import { projectClusterDatasetIdCache } from "@/lib/agent/tools/cluster-dataset-cache"
 import { FAKE_RAG_MODEL_VERSION, QUOTE_CHECK_BUDGET_MS } from "@/lib/constants"
 import { TOOL_CALL_STATUS } from "@/models/messages/schema"
 import { QUOTE_CHECK_STATUS, QUOTE_WARNING_REASON, type QuoteWarning } from "@/models/notes/schema"
@@ -67,7 +66,10 @@ import { seedCorpusDocuments } from "@/lib/testing/seed-corpus"
 import { AGENT_TOOLS } from "@/lib/agent/tools/constants"
 import { DOCUMENT_RESOLVE_STATUS } from "@/models/documents/schema"
 import { ProjectService } from "@/models/projects/service"
-import { SESSION_SCOPE, SESSION_STATUS } from "@/models/sessions/schema"
+import { SESSION_SCOPE } from "@/models/sessions/schema"
+import { SessionQueries } from "@/models/sessions/queries"
+import { NoteQueries } from "@/models/notes/queries"
+import { UserQueries } from "@/models/users/queries"
 import {
   type CallRow,
   type ChatMessage,
@@ -182,6 +184,7 @@ async function fixtureLowFolios(args: { ark: string; folios: ReadonlySet<number>
 async function judge(projectId: string, bodyMd: string, priorBodyMd: string | null): Promise<QuoteWarning[]> {
   const res = await checkNoteQuotes({
     corpusProjectId: projectId,
+    datasetIdCache: projectClusterDatasetIdCache,
     bodyMd,
     priorBodyMd,
     signal: new AbortController().signal,
@@ -354,15 +357,7 @@ function fakeRagQueriesIn(calls: CallRow[]): number {
 
 async function runCase(ownerId: string, cookie: string, c: QuoteCase, run: number): Promise<RunReport> {
   const projectId = await createRunProject(ownerId, `${c.id}#${run}`)
-  const session = await prisma.appSession.create({
-    data: {
-      id: randomUUID(),
-      projectId,
-      scope: SESSION_SCOPE.RESEARCH,
-      title: `${c.id} run ${run}`,
-      status: SESSION_STATUS.ACTIVE,
-    },
-  })
+  const session = await SessionQueries.create(projectId, SESSION_SCOPE.RESEARCH, `${c.id} run ${run}`)
 
   const history: ChatMessage[] = []
   const bodies = new Map<string, string>()
@@ -408,7 +403,7 @@ async function runCase(ownerId: string, cookie: string, c: QuoteCase, run: numbe
   }
 
   const noteIds = [...new Set(allWrites.map((w) => w.noteId))]
-  const notes = await prisma.note.findMany({ where: { id: { in: noteIds } }, select: { id: true, body_md: true } })
+  const notes = await NoteQueries.bodiesByIds(noteIds)
   if (notes.length !== noteIds.length) {
     const missing = noteIds.filter((id) => !notes.some((n) => n.id === id))
     throw new Error(`${c.id} run ${run}: written note(s) no longer exist: ${missing.join(", ")}`)
@@ -584,7 +579,8 @@ async function main(): Promise<void> {
   section("SETUP")
   const cases = selectedCases()
   const cookie = await signInCookie(EMAIL, PASSWORD, "E2E Quotes")
-  const user = await prisma.user.findUniqueOrThrow({ where: { email: EMAIL } })
+  const user = await UserQueries.getByEmail(EMAIL)
+  if (user === null) throw new Error(`no user ${EMAIL} after sign-in`)
   console.log(`  BASE_URL=${settings.baseUrl}  MODEL=${settings.model}  REPEAT=${REPEAT}  CONCURRENCY=${CONCURRENCY}`)
   console.log(`  cases=${cases.map((c) => c.id).join(",")}  (one fresh project per run)`)
 

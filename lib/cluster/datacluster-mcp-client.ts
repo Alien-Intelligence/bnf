@@ -27,12 +27,27 @@ import {
   DATACLUSTER_MCP_RETRY_BASE_MS,
   DATACLUSTER_MCP_RETRY_CAP_MS,
   DATACLUSTER_MCP_TIMEOUT_MS,
+  DATACLUSTER_RESPONSE_FORMAT,
+  HTTP_CONTENT_TYPE_HEADER,
+  JSON_RPC_VERSION,
+  MCP_ACCEPT_HEADER,
   MCP_CLIENT_NAME,
   MCP_CLIENT_VERSION,
+  MCP_DIAGNOSTIC_EXCERPT_CHARS,
+  MCP_HTTP_METHOD,
   MCP_PROTOCOL_VERSION,
+  MCP_RPC_METHOD,
+  MCP_SESSION_HEADER,
+  MEDIA_TYPE_JSON,
+  MEDIA_TYPE_EVENT_STREAM,
+  SSE_DATA_PREFIX,
 } from "@/lib/constants"
 import { z } from "zod"
 import { requireClusterEnv } from "@/lib/env"
+import { datasetIdSchema, entryIdSchema } from "./composite-ids"
+import { DATACLUSTER_MCP_TOOL } from "@/lib/mcp/tools"
+import type { DataclusterMcpTool } from "@/lib/mcp/tools"
+import type { DatasetId, EntryId } from "./composite-ids"
 import { withTimeout } from "@/lib/mcp/abort"
 import { withRetry } from "@/lib/mcp/retry"
 
@@ -152,35 +167,42 @@ const dataclusterEnvelopeSchema = z.object({
   error: z.string().optional(),
 })
 
-/** One dataset as returned by `datacluster_list_datasets`. */
+/**
+ * One dataset as returned by `datacluster_list_datasets` / `get_dataset`. Its
+ * handle is the composite `dataset_id`; the MCP no longer carries an integer
+ * `id` (see composite-ids.ts).
+ */
 const dataclusterDatasetSchema = z
-  .object({ id: z.number().int(), name: z.string(), slug: z.string(), entry_count: z.number().int() })
+  .object({ dataset_id: datasetIdSchema, name: z.string(), slug: z.string(), entry_count: z.number().int() })
   .loose()
 export type DataclusterDataset = z.infer<typeof dataclusterDatasetSchema>
 
 const listDatasetsDataSchema = z.object({ datasets: z.array(dataclusterDatasetSchema) }).loose()
 
 /**
- * One chunk hit from `datacluster_vector_search_chunks`. Metadata fields are
- * typed as the worker writes them; chunkToPassage (rag-wire.ts) decides what
- * a chunk without an ARK or offsets means.
+ * One chunk hit from `datacluster_vector_search_chunks`. The entry and dataset
+ * the chunk belongs to are TOP-LEVEL composite ids (the chunk metadata no
+ * longer carries them), and a hit without them breaks the contract. The
+ * metadata keys are snake_case, as the worker writes the chunk payload;
+ * chunkToPassage (rag-wire.ts) decides what a chunk without an ARK or offsets
+ * means.
  */
 const dataclusterChunkSchema = z
   .object({
-    id: z.union([z.string(), z.number()]).transform(String),
+    entry_id: entryIdSchema,
+    dataset_id: datasetIdSchema,
     score: z.number(),
     chunk_text: z.string(),
     metadata: z
       .object({
         ark: z.string().optional(),
+        ark_slug: z.string().optional(),
         folio: z.number().int().optional(),
         char_start: z.number().optional(),
         char_end: z.number().optional(),
-        entry_id: z.number().int().optional(),
-        dataset_id: z.number().int().optional(),
         chunk_index: z.number().int().optional(),
-        docType: z.string().optional(),
-        subtype: z.string().optional(),
+        doc_type: z.string().nullable().optional(),
+        sub_type: z.string().nullable().optional(),
       })
       .loose(),
   })
@@ -197,8 +219,8 @@ export interface VectorSearchChunksInput {
   limit?: number
   offset?: number
   scoreThreshold?: number
-  datasetIds?: number[]
-  entryIds?: number[]
+  datasetIds?: DatasetId[]
+  entryIds?: EntryId[]
 }
 
 /** One snippet inside a keyword-search hit. */
@@ -208,13 +230,15 @@ export type DataclusterSnippet = z.infer<typeof dataclusterSnippetSchema>
 /** One entry-level hit from `datacluster_keyword_search`. */
 const dataclusterKeywordHitSchema = z
   .object({
-    entry_id: z.number().int(),
-    dataset_id: z.number().int(),
+    entry_id: entryIdSchema,
+    dataset_id: datasetIdSchema,
     score: z.number(),
     snippets: z.array(dataclusterSnippetSchema).optional(),
     metadata: z
       .object({
         ark: z.string().optional(),
+        /** When the cluster created the entry (ISO 8601); validated where it decides the live entry (rag-wire.ts arkLookup). */
+        created_at: z.string().optional(),
         title: z.string().nullable().optional(),
         date: z.string().nullable().optional(),
         docType: z.string().nullable().optional(),
@@ -231,7 +255,14 @@ export type DataclusterKeywordHit = z.infer<typeof dataclusterKeywordHitSchema>
 const keywordSearchDataSchema = z
   .object({
     results: z.array(dataclusterKeywordHitSchema),
-    pagination: z.object({ total: z.number().int().nonnegative().optional() }).loose().optional(),
+    pagination: z
+      .object({
+        total: z.number().int().nonnegative().optional(),
+        /** Matches the MCP could not give a composite id: counted in `total`, absent from `results`. */
+        unaddressable: z.number().int().nonnegative().optional(),
+      })
+      .loose()
+      .optional(),
   })
   .loose()
 type KeywordSearchData = z.infer<typeof keywordSearchDataSchema>
@@ -240,7 +271,7 @@ export interface KeywordSearchInput {
   query: string
   limit?: number
   offset?: number
-  datasetIds?: number[]
+  datasetIds?: DatasetId[]
   /** Exact-match filters on the dataset metadata schema (docType/lang/source/…). */
   metadataFilters?: Record<string, string | number | string[]>
 }
@@ -260,7 +291,7 @@ export interface KeywordSearchInput {
  */
 export const dataclusterEntryContentSchema = z
   .object({
-    entry_id: z.number().int().positive().optional(),
+    entry_id: entryIdSchema.optional(),
     text: z.string(),
     char_offset: z.number().int().nonnegative().optional(),
     char_limit: z.number().int().nonnegative().optional(),
@@ -273,7 +304,7 @@ export type DataclusterEntryContent = z.infer<typeof dataclusterEntryContentSche
 
 /** Offset and limit are explicit: the caller owns the default, not the MCP. */
 export interface GetEntryContentInput {
-  entryId: number
+  entryId: EntryId
   charOffset: number
   charLimit: number
 }
@@ -284,13 +315,13 @@ export interface GetEntryContentInput {
 
 /** A JSON-RPC error response. */
 const jsonRpcErrorSchema = z
-  .object({ jsonrpc: z.literal("2.0"), error: z.object({ code: z.number(), message: z.string() }).loose() })
+  .object({ jsonrpc: z.literal(JSON_RPC_VERSION), error: z.object({ code: z.number(), message: z.string() }).loose() })
   .loose()
 
 /** A JSON-RPC result response to `tools/call`. */
 const jsonRpcResultSchema = z
   .object({
-    jsonrpc: z.literal("2.0"),
+    jsonrpc: z.literal(JSON_RPC_VERSION),
     result: z
       .object({
         content: z.array(z.object({ type: z.string(), text: z.string() }).loose()).optional(),
@@ -330,25 +361,26 @@ export class DataclusterMcpClient {
    */
   async listDatasets(limit: number, offset: number): Promise<DataclusterDataset[]> {
     const data = await this.callData(
-      "datacluster_list_datasets",
-      { limit, offset, include_schema: false, response_format: "json" },
+      DATACLUSTER_MCP_TOOL.LIST_DATASETS,
+      { limit, offset, include_schema: false, response_format: DATACLUSTER_RESPONSE_FORMAT.JSON },
       listDatasetsDataSchema,
     )
     return data.datasets
   }
 
   /** One dataset by id (`datacluster_get_dataset`); a missing id is a tool error. */
-  async getDataset(datasetId: number): Promise<DataclusterDataset> {
+  async getDataset(datasetId: DatasetId): Promise<DataclusterDataset> {
     return this.callData(
-      "datacluster_get_dataset",
-      { dataset_id: datasetId, response_format: "json" },
+      DATACLUSTER_MCP_TOOL.GET_DATASET,
+      { dataset_id: datasetId, response_format: DATACLUSTER_RESPONSE_FORMAT.JSON },
       dataclusterDatasetSchema,
     )
   }
 
   /**
    * Semantic similarity search over chunks. Returns chunk-level hits with
-   * ARK/folio in `metadata`. Filters: datasetIds, entryIds, scoreThreshold.
+   * the composite `entry_id` / `dataset_id` at the top level and ARK/folio in
+   * `metadata`. Filters: datasetIds, entryIds, scoreThreshold.
    */
   async vectorSearchChunks(input: VectorSearchChunksInput): Promise<VectorSearchData> {
     const args: Record<string, unknown> = { query: input.query }
@@ -357,7 +389,7 @@ export class DataclusterMcpClient {
     if (input.scoreThreshold !== undefined) args.score_threshold = input.scoreThreshold
     if (input.datasetIds !== undefined) args.dataset_ids = input.datasetIds
     if (input.entryIds !== undefined) args.entry_ids = input.entryIds
-    return this.callData("datacluster_vector_search_chunks", args, vectorSearchDataSchema)
+    return this.callData(DATACLUSTER_MCP_TOOL.VECTOR_SEARCH_CHUNKS, args, vectorSearchDataSchema)
   }
 
   /**
@@ -368,7 +400,7 @@ export class DataclusterMcpClient {
   async keywordSearch(input: KeywordSearchInput): Promise<KeywordSearchData> {
     const args: Record<string, unknown> = {
       query: input.query,
-      response_format: "json",
+      response_format: DATACLUSTER_RESPONSE_FORMAT.JSON,
     }
     if (input.limit !== undefined) args.limit = input.limit
     if (input.offset !== undefined) args.offset = input.offset
@@ -376,7 +408,7 @@ export class DataclusterMcpClient {
     if (input.metadataFilters && Object.keys(input.metadataFilters).length > 0) {
       args.metadata_filters = input.metadataFilters
     }
-    return this.callData("datacluster_keyword_search", args, keywordSearchDataSchema)
+    return this.callData(DATACLUSTER_MCP_TOOL.KEYWORD_SEARCH, args, keywordSearchDataSchema)
   }
 
   /**
@@ -385,7 +417,7 @@ export class DataclusterMcpClient {
    */
   async getEntryContent(input: GetEntryContentInput): Promise<DataclusterEntryContent> {
     return this.callData(
-      "datacluster_get_entry_content",
+      DATACLUSTER_MCP_TOOL.GET_ENTRY_CONTENT,
       { entry_id: input.entryId, char_offset: input.charOffset, char_limit: input.charLimit },
       dataclusterEntryContentSchema,
     )
@@ -401,7 +433,7 @@ export class DataclusterMcpClient {
    * DataclusterMcpError carrying the cluster's own message; an envelope or
    * payload that breaks its contract is a DataclusterMcpProtocolError.
    */
-  private async callData<T>(tool: string, args: unknown, schema: z.ZodType<T>): Promise<T> {
+  private async callData<T>(tool: DataclusterMcpTool, args: unknown, schema: z.ZodType<T>): Promise<T> {
     const envelope = dataclusterEnvelopeSchema.safeParse(await this.callTool(tool, args))
     if (!envelope.success) {
       throw new DataclusterMcpProtocolError(`${tool} returned a malformed envelope: ${envelope.error.message}`, envelope.error)
@@ -409,7 +441,7 @@ export class DataclusterMcpClient {
     if (!envelope.data.success) {
       throw new DataclusterMcpError(
         envelope.data.error === undefined
-          ? `${tool} failed without an error message (envelope: ${JSON.stringify(envelope.data).slice(0, 200)})`
+          ? `${tool} failed without an error message (envelope: ${JSON.stringify(envelope.data).slice(0, MCP_DIAGNOSTIC_EXCERPT_CHARS)})`
           : `${tool} failed: ${envelope.data.error}`,
       )
     }
@@ -441,7 +473,7 @@ export class DataclusterMcpClient {
   /** The body of a failed response, for the error message; a body that cannot be read is itself reported. */
   private async failureBody(res: Response, what: string): Promise<string> {
     try {
-      return (await res.text()).slice(0, 200)
+      return (await res.text()).slice(0, MCP_DIAGNOSTIC_EXCERPT_CHARS)
     } catch (err) {
       throw new DataclusterMcpError(`${what} (HTTP ${res.status}); its body could not be read`, err)
     }
@@ -450,16 +482,16 @@ export class DataclusterMcpClient {
   /** Perform the `initialize` handshake; return the assigned session id. */
   private async openSession(): Promise<string> {
     const res = await fetch(this.baseUrl, {
-      method: "POST",
+      method: MCP_HTTP_METHOD,
       headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json, text/event-stream",
+        [HTTP_CONTENT_TYPE_HEADER]: MEDIA_TYPE_JSON,
+        Accept: MCP_ACCEPT_HEADER,
         Authorization: `Bearer ${this.token}`,
       },
       body: JSON.stringify({
-        jsonrpc: "2.0",
+        jsonrpc: JSON_RPC_VERSION,
         id: crypto.randomUUID(),
-        method: "initialize",
+        method: MCP_RPC_METHOD.INITIALIZE,
         params: {
           protocolVersion: MCP_PROTOCOL_VERSION,
           capabilities: {},
@@ -471,21 +503,21 @@ export class DataclusterMcpClient {
 
     if (res.status === 401 || res.status === 403) {
       throw new DataclusterMcpAuthError(
-        `data-cluster MCP initialize auth failed (HTTP ${res.status})`,
+        `data-cluster MCP ${MCP_RPC_METHOD.INITIALIZE} auth failed (HTTP ${res.status})`,
       )
     }
     if (!res.ok) {
-      const body = await this.failureBody(res, "data-cluster MCP initialize failed")
-      const message = `data-cluster MCP initialize failed (HTTP ${res.status}): ${body}`
+      const body = await this.failureBody(res, `data-cluster MCP ${MCP_RPC_METHOD.INITIALIZE} failed`)
+      const message = `data-cluster MCP ${MCP_RPC_METHOD.INITIALIZE} failed (HTTP ${res.status}): ${body}`
       // A 400 to `initialize` is our request, not a transient fault.
       if (res.status === 400) throw new DataclusterMcpRequestError(message)
       throw new DataclusterMcpError(message)
     }
 
-    const sessionId = res.headers.get("mcp-session-id")
+    const sessionId = res.headers.get(MCP_SESSION_HEADER)
     if (!sessionId) {
       throw new DataclusterMcpError(
-        "data-cluster MCP initialize returned no mcp-session-id header",
+        `data-cluster MCP ${MCP_RPC_METHOD.INITIALIZE} returned no ${MCP_SESSION_HEADER} header`,
       )
     }
     return sessionId
@@ -496,7 +528,7 @@ export class DataclusterMcpClient {
    * `result.content[0].text` payload. Handles SSE and plain-JSON transports.
    * An abort of the caller's signal is terminal: no retry, no backoff wait.
    */
-  private async callTool(name: string, args: unknown): Promise<unknown> {
+  private async callTool(name: DataclusterMcpTool, args: unknown): Promise<unknown> {
     // A stale session is recovered from ONCE per call: drop it, re-initialize
     // on the retry. A second rejection is not staleness.
     let sessionRenewed = false
@@ -511,17 +543,17 @@ export class DataclusterMcpClient {
         const sessionId = await this.ensureSession()
 
         const res = await fetch(this.baseUrl, {
-          method: "POST",
+          method: MCP_HTTP_METHOD,
           headers: {
-            "Content-Type": "application/json",
-            Accept: "application/json, text/event-stream",
+            [HTTP_CONTENT_TYPE_HEADER]: MEDIA_TYPE_JSON,
+            Accept: MCP_ACCEPT_HEADER,
             Authorization: `Bearer ${this.token}`,
-            "Mcp-Session-Id": sessionId,
+            [MCP_SESSION_HEADER]: sessionId,
           },
           body: JSON.stringify({
-            jsonrpc: "2.0",
+            jsonrpc: JSON_RPC_VERSION,
             id,
-            method: "tools/call",
+            method: MCP_RPC_METHOD.TOOLS_CALL,
             params: { name, arguments: args },
           }),
           signal: withTimeout(this.signal, DATACLUSTER_MCP_TIMEOUT_MS),
@@ -534,7 +566,7 @@ export class DataclusterMcpClient {
         }
         if (res.status === 404) {
           // The MCP spec (and the server's SDK) answers an unknown or expired
-          // Mcp-Session-Id with 404: re-initialize once before calling it a
+          // session id with 404: re-initialize once before calling it a
           // missing endpoint.
           const body = await this.failureBody(res, `data-cluster MCP HTTP 404 calling ${name}`)
           if (!sessionRenewed) throw staleSession(`HTTP 404 for session ${sessionId}: ${body}`)
@@ -551,11 +583,11 @@ export class DataclusterMcpClient {
           throw new DataclusterMcpError(`data-cluster MCP HTTP ${res.status} calling ${name}: ${body}`)
         }
 
-        const ct = res.headers.get("content-type")
+        const ct = res.headers.get(HTTP_CONTENT_TYPE_HEADER)
         if (ct === null) {
-          throw new DataclusterMcpProtocolError(`data-cluster MCP response for ${name} has no content-type`)
+          throw new DataclusterMcpProtocolError(`data-cluster MCP response for ${name} has no ${HTTP_CONTENT_TYPE_HEADER}`)
         }
-        const raw = ct.includes("text/event-stream") ? sseData(await res.text(), name) : await res.text()
+        const raw = ct.includes(MEDIA_TYPE_EVENT_STREAM) ? sseData(await res.text(), name) : await res.text()
         const json = parseJson(raw, `JSON-RPC envelope for ${name}`)
         const rpcError = jsonRpcErrorSchema.safeParse(json)
         if (rpcError.success) {
@@ -604,11 +636,11 @@ export class DataclusterMcpClient {
 
 /** The `data:` line of a single-event SSE response. */
 function sseData(text: string, tool: string): string {
-  const dataLine = text.split("\n").find((l) => l.startsWith("data: "))
+  const dataLine = text.split("\n").find((l) => l.startsWith(SSE_DATA_PREFIX))
   if (!dataLine) {
     throw new DataclusterMcpProtocolError(`data-cluster MCP SSE response had no data line for ${tool}`)
   }
-  return dataLine.slice("data: ".length)
+  return dataLine.slice(SSE_DATA_PREFIX.length)
 }
 
 /** JSON.parse that reports what it was parsing; a non-JSON reply is a protocol error. */
@@ -616,6 +648,6 @@ function parseJson(text: string, what: string): unknown {
   try {
     return JSON.parse(text)
   } catch (err) {
-    throw new DataclusterMcpProtocolError(`${what} is not JSON: ${text.slice(0, 200)}`, err)
+    throw new DataclusterMcpProtocolError(`${what} is not JSON: ${text.slice(0, MCP_DIAGNOSTIC_EXCERPT_CHARS)}`, err)
   }
 }
