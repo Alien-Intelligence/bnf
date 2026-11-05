@@ -13,7 +13,7 @@ import { entryIdSchema } from "./composite-ids"
 import type { EntryId } from "./composite-ids"
 import { RAG_LOOKUP_STATUS } from "./rag"
 import type { RagEntryContent, RagEntryContentResult } from "./rag"
-import { BNF_LANGUAGE_LABEL } from "@/models/documents/schema"
+import { BNF_LANGUAGE_LABEL, DOC_TYPE_CODE } from "@/models/documents/schema"
 import { RAG_FIXTURES } from "./rag-fixtures"
 import FAKE_1889_SNAPSHOT from "./fake-rag-1889.snapshot.json"
 import { codePointLength, sliceCodePoints, splitEntryFolios } from "./folio-text"
@@ -183,7 +183,7 @@ test("keywordSearch applies exact-match facet filters, as the real metadata_filt
     projectId: PROJECT, datasetIdCache,
     query: "exposition",
     limit: 100,
-    filters: { type: "book" },
+    filters: { type: DOC_TYPE_CODE.BOOK },
     signal: signal(),
   })
   assert.ok(books.hits.length > 0 && books.hits.length < all.hits.length)
