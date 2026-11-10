@@ -36,7 +36,7 @@ import { createServer, type Server } from "node:http"
 import type { AddressInfo } from "node:net"
 
 import { ClusterClient, refusedArks } from "./client"
-import { CLUSTER_POLL } from "@/models/ingest/schema"
+import { CLUSTER_POLL, CLUSTER_TERMINAL_DELIVERY } from "@/models/ingest/schema"
 import {
   OCR_QUALITY_ARTIFACT_VERSION,
   OCR_SYNC_FAULT_SCOPE,
@@ -346,7 +346,7 @@ test("progress: a 200 that is not a read-model is a contract break and throws", 
 })
 
 test("progress: terminalDelivery is carried through; an unknown value is a contract break", async () => {
-  for (const terminalDelivery of ["pending", "emitted", "abandoned"] as const) {
+  for (const terminalDelivery of Object.values(CLUSTER_TERMINAL_DELIVERY)) {
     await withStubWorker({ status: 200, body: JSON.stringify({ ...READ_MODEL, terminalDelivery }) }, async () => {
       const poll = await ClusterClient.progress("run-1")
       assert.equal(poll.kind === CLUSTER_POLL.PROGRESS && poll.progress.terminalDelivery, terminalDelivery)

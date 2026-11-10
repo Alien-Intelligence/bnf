@@ -19,6 +19,7 @@ import { z } from "zod"
 import { clusterQueueProgressSchema } from "@/models/ingest/types"
 import { ABORT_ERROR_NAME } from "@/lib/async/abort"
 import { CLUSTER_POLL } from "@/models/ingest/schema"
+import { WORKER_HTTP_STATUS } from "./constants"
 import type { ClusterIngestRequest, ClusterProgressPoll } from "./contracts"
 import {
   OCR_SYNC_FAULT_SCOPE,
@@ -223,7 +224,7 @@ export class ClusterClient {
       console.warn(`[cluster] progress ${clusterJobId}: worker unreachable —`, err.message)
       return { kind: CLUSTER_POLL.WORKER_UNREACHABLE, detail: err.message }
     }
-    if (res.status === 404) return { kind: CLUSTER_POLL.RUN_UNKNOWN }
+    if (res.status === WORKER_HTTP_STATUS.NOT_FOUND) return { kind: CLUSTER_POLL.RUN_UNKNOWN }
     if (!res.ok) {
       console.warn(
         `[cluster] progress ${clusterJobId}: worker returned ${res.status} ${res.statusText}: ${res.text}`,
@@ -269,13 +270,13 @@ export class ClusterClient {
       }
       throw err
     }
-    if (res.status >= 500 || res.status === 404) {
+    if (res.status >= WORKER_HTTP_STATUS.INTERNAL_SERVER_ERROR || res.status === WORKER_HTTP_STATUS.NOT_FOUND) {
       throw new OcrSyncUnavailableError(
         `ClusterClient.ocrQualitySync: worker returned ${res.status} ${res.statusText}: ${res.text}`,
       )
     }
     if (!res.ok) {
-      const culprits = res.status === 400 ? refusedArks(arks, res.text) : []
+      const culprits = res.status === WORKER_HTTP_STATUS.BAD_REQUEST ? refusedArks(arks, res.text) : []
       throw new OcrSyncContractError(
         `ClusterClient.ocrQualitySync: worker refused the batch (${res.status} ${res.statusText}): ${res.text}`,
         culprits.length > 0
@@ -312,7 +313,7 @@ export class ClusterClient {
   static async redeliver(clusterJobId: string): Promise<boolean> {
     const res = await postJson(`/ingest/${encodeURIComponent(clusterJobId)}/redeliver`, {})
     if (res.ok) return true
-    if (res.status === 409) return false
+    if (res.status === WORKER_HTTP_STATUS.CONFLICT) return false
     throw new Error(
       `ClusterClient.redeliver: worker returned ${res.status} ${res.statusText}: ${res.text}`,
     )
@@ -320,7 +321,7 @@ export class ClusterClient {
 
   static async cancel(clusterJobId: string): Promise<void> {
     const res = await postJson(`/ingest/${encodeURIComponent(clusterJobId)}/cancel`, {})
-    if (!res.ok && res.status !== 404) {
+    if (!res.ok && res.status !== WORKER_HTTP_STATUS.NOT_FOUND) {
       // 404 is acceptable: the job may have already terminated or never existed.
       throw new Error(
         `ClusterClient.cancel: worker returned ${res.status} ${res.statusText}: ${res.text}`,
