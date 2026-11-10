@@ -60,9 +60,10 @@ export const clusterQueueProgressSchema = z.object({
   reconciles: z.boolean(),
   /**
    * The run's terminal-callback delivery state. A value outside the enum is a
-   * contract break and fails the parse. Optional ONLY because a worker older
-   * than this field does not send it; the watchdog treats absence as "cannot
-   * tell", never as a state of its own.
+   * contract break and fails the parse. Optional ONLY for the rolling deploy:
+   * the app may roll before the worker, and a worker older than this field
+   * does not send it. Absence means "no redeliver decision", nothing more —
+   * the watchdog then behaves as it did before the field existed.
    */
   terminalDelivery: z.enum(CLUSTER_TERMINAL_DELIVERY).optional(),
 })
