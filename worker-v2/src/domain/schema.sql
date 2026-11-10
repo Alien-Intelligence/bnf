@@ -46,6 +46,15 @@ CREATE INDEX IF NOT EXISTS ingest_run_app_job_id_idx
 ALTER TABLE sandbox_ingest_v2.ingest_run
   ADD COLUMN IF NOT EXISTS terminal_post_failures integer NOT NULL DEFAULT 0;
 
+-- terminal_abandoned: the emitter GAVE UP delivering the terminal callback
+-- (set with `canceled` at the maxCallbackFailures give-up). A user cancel sets
+-- `canceled` only, so this flag — never the failure counter — tells the two
+-- apart. The progress read-model reports it as terminalDelivery 'abandoned';
+-- POST /ingest/:runId/redeliver clears it (and `canceled`, the counter and the
+-- latch) so the reconciler re-sends the result.
+ALTER TABLE sandbox_ingest_v2.ingest_run
+  ADD COLUMN IF NOT EXISTS terminal_abandoned boolean NOT NULL DEFAULT false;
+
 CREATE TABLE IF NOT EXISTS sandbox_ingest_v2.document_ingest_job_v2 (
   doc_job_id     text PRIMARY KEY,
   run_id         text,                       -- groups docs by ingest_run (null for seed-CLI docs)

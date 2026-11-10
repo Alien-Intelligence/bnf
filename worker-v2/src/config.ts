@@ -220,8 +220,8 @@ export interface WorkerConfig {
    * app outage, short enough that a permanently-dead callback URL stops
    * spamming the log every sweep. The app-side watchdog independently fails the
    * app job on its own ~30min ceiling, so by the time this fires the app has
-   * already moved on; a human can resurrect via resetTerminalEmitted +
-   * un-canceling the row manually if ever needed. See the dead-callback
+   * already moved on; the give-up is recorded as `terminal_abandoned` and the
+   * app re-opens it via POST /ingest/:runId/redeliver. See the dead-callback
    * give-up item, ai-memories/tech/repos/bnf/ingest-hardening.
    */
   reconcilerMaxCallbackFailures: number;

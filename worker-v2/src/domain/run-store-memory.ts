@@ -14,6 +14,7 @@ export class MemoryRunStore implements RunStore {
       ...input,
       terminalEmitted: false,
       canceled: false,
+      terminalAbandoned: false,
       terminalPostFailures: 0,
     });
   }
@@ -54,6 +55,23 @@ export class MemoryRunStore implements RunStore {
   async markCanceled(runId: string): Promise<void> {
     const r = this.runs.get(runId);
     if (r) r.canceled = true;
+  }
+
+  async markTerminalAbandoned(runId: string): Promise<void> {
+    const r = this.runs.get(runId);
+    if (!r) return;
+    r.canceled = true;
+    r.terminalAbandoned = true;
+  }
+
+  async redeliverAbandoned(runId: string): Promise<boolean> {
+    const r = this.runs.get(runId);
+    if (!r || !r.terminalAbandoned) return false;
+    r.terminalAbandoned = false;
+    r.canceled = false;
+    r.terminalEmitted = false;
+    r.terminalPostFailures = 0;
+    return true;
   }
 
   async incrementTerminalPostFailures(runId: string): Promise<number> {

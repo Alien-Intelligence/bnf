@@ -165,6 +165,7 @@ function run(overrides: Partial<IngestRun> = {}): IngestRun {
     totalDocs: 1,
     terminalEmitted: false,
     canceled: false,
+    terminalAbandoned: false,
     terminalPostFailures: 0,
     ...overrides,
   };
@@ -263,6 +264,7 @@ test("crossing maxCallbackFailures cancels the run and logs terminal_callback_ab
   const finalRun = await runStore.get("run-1");
   assert.equal(finalRun?.terminalPostFailures, 3);
   assert.equal(finalRun?.canceled, true, "abandoned past the cap");
+  assert.equal(finalRun?.terminalAbandoned, true, "recorded as the give-up, not a user cancel");
 
   const abandoned = lines.find((l) => l.event === "terminal_callback_abandoned");
   assert.ok(abandoned, "logs terminal_callback_abandoned");
@@ -274,6 +276,38 @@ test("crossing maxCallbackFailures cancels the run and logs terminal_callback_ab
   // A canceled run is never re-claimed again — the give-up actually sticks.
   const after = (await runStore.get("run-1"))!;
   assert.equal(await runStore.markTerminalEmitted(after.runId), false);
+});
+
+test("an abandoned run, once redelivered, is re-POSTed by the normal emit path", async () => {
+  const docState = new MemoryDocState();
+  await docState.upsertDoc({ docJobId: "d1", projectId: "p1", ark: "ark:/12148/a", runId: "run-1" });
+  await docState.setStatus("d1", "done");
+  const runStore = new MemoryRunStore();
+  await runStore.create(run());
+  const { logger } = createMemoryLogger();
+  let appUp = false;
+  const posted: string[] = [];
+  const fetchFn = (async (_url: string, init: RequestInit) => {
+    if (!appUp) return new Response("nope", { status: 500 });
+    posted.push(String(init.body));
+    return new Response("{}", { status: 200 });
+  }) as typeof fetch;
+  const emitter = new TerminalEmitter(docState, runStore, logger, {
+    fetchFn, maxAttempts: 1, backoffMs: 1, maxCallbackFailures: 1,
+  });
+
+  for (let i = 0; i < 2; i++) {
+    const r = (await runStore.get("run-1"))!;
+    await assert.rejects(() => emitter.emit(r));
+  }
+  assert.equal((await runStore.get("run-1"))?.terminalAbandoned, true);
+  assert.equal(await emitter.emit((await runStore.get("run-1"))!), false, "abandoned: no POST");
+
+  appUp = true;
+  assert.equal(await runStore.redeliverAbandoned("run-1"), true);
+  assert.equal(await emitter.emit((await runStore.get("run-1"))!), true);
+  assert.equal(posted.length, 1);
+  assert.equal(JSON.parse(posted[0]!).stage, "done");
 });
 
 test("emit pulls listDoneWithDrops into the POSTed event's warning channel", async () => {

@@ -21,9 +21,36 @@ export interface IngestRunInput {
   totalDocs: number;
 }
 
+/**
+ * Where the run's terminal callback stands, as the progress read-model reports
+ * it to the app: `emitted` (the app acknowledged it), `abandoned` (the emitter
+ * gave up after `maxCallbackFailures` — the result was never delivered) or
+ * `pending` (not yet delivered, still being driven — or user-canceled).
+ */
+export const TERMINAL_DELIVERY = {
+  PENDING: "pending",
+  EMITTED: "emitted",
+  ABANDONED: "abandoned",
+} as const;
+export type TerminalDelivery = (typeof TERMINAL_DELIVERY)[keyof typeof TERMINAL_DELIVERY];
+
+/** The delivery state of a run — read from the explicit flags, never inferred from counters. */
+export function terminalDeliveryOf(run: IngestRun): TerminalDelivery {
+  if (run.terminalAbandoned) return TERMINAL_DELIVERY.ABANDONED;
+  if (run.terminalEmitted) return TERMINAL_DELIVERY.EMITTED;
+  return TERMINAL_DELIVERY.PENDING;
+}
+
 export interface IngestRun extends IngestRunInput {
   terminalEmitted: boolean;
   canceled: boolean;
+  /**
+   * The emitter gave up delivering the terminal callback (past
+   * `maxCallbackFailures`). Set together with `canceled`, but a distinct fact:
+   * a user cancel sets `canceled` ONLY, so the two are told apart by this flag
+   * and not by the failure counter. Cleared by `redeliverAbandoned`.
+   */
+  terminalAbandoned: boolean;
   /**
    * Consecutive terminal-callback POST failures (TerminalEmitter.emit's catch
    * path). Drives the dead-callback give-up: past
@@ -67,6 +94,20 @@ export interface RunStore {
   resetTerminalEmitted(runId: string): Promise<void>;
   /** Mark the run canceled — suppresses the terminal callback. */
   markCanceled(runId: string): Promise<void>;
+  /**
+   * The emitter's give-up: mark the run canceled (suppressing further emit
+   * attempts) AND record that it was abandoned, not user-canceled, so the app
+   * can ask for a redelivery.
+   */
+  markTerminalAbandoned(runId: string): Promise<void>;
+  /**
+   * Re-open an abandoned run for delivery: ONE atomic conditional update that
+   * resets the failure counter to 0, clears `terminalAbandoned` + `canceled`
+   * and releases the latch, so the reconciler's next sweep re-POSTs through the
+   * normal signed emit path. Returns false — changing nothing — unless the run
+   * exists and is abandoned (a user-canceled or still-pending run is refused).
+   */
+  redeliverAbandoned(runId: string): Promise<boolean>;
   /**
    * Increment the run's terminal-callback failure count and return the new
    * total. Called from TerminalEmitter.emit's catch path on every failed POST
