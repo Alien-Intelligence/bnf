@@ -4,7 +4,11 @@ import "server-only"
 import { prisma } from "@/lib/db"
 import { Prisma } from "@/lib/generated/prisma/client"
 import type { IngestJob } from "@/lib/generated/prisma/client"
-import { INGEST_RECENT_JOBS_LIMIT, PAID_OCR_USD_PER_1K_PAGES } from "@/lib/constants"
+import {
+  DB_LONG_TRANSACTION_OPTIONS,
+  INGEST_RECENT_JOBS_LIMIT,
+  PAID_OCR_USD_PER_1K_PAGES,
+} from "@/lib/constants"
 import {
   INGEST_ACTIVE_STATUSES,
   INGEST_STATUS,
@@ -45,11 +49,12 @@ export class IngestQueries {
 
   /**
    * Runs the given statements as one atomic batch transaction and returns
-   * their results in order. The statements are built by the owning models'
+   * their results in order, under the long-transaction bounds (a terminal
+   * commit on a large run). The statements are built by the owning models'
    * queries; this model only opens the transaction.
    */
   static batch<P extends Prisma.PrismaPromise<unknown>[]>(ops: [...P]) {
-    return prisma.$transaction(ops)
+    return prisma.$transaction(ops, DB_LONG_TRANSACTION_OPTIONS)
   }
 
   /** Statement: insert a job row (for composition in {@link batch}). */

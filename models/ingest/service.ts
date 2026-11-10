@@ -612,8 +612,8 @@ export class IngestService {
     // Applied AFTER the blanket indexError:null above so the annotation
     // survives — indexedAt stays `now` (the doc IS indexed), only indexError
     // carries the warning text.
-    for (const [ark, reason] of warningsByArk) {
-      ops.push(DocumentQueries.updateManyOp(job.projectId, ark, { indexError: reason }))
+    if (warningsByArk.size > 0) {
+      ops.push(DocumentQueries.setIndexErrorsOp(job.projectId, warningsByArk))
     }
     // OCR quality (feedback 2026-09-29 #7): the run's documents may have been
     // re-OCR'd, so their stored quality is due again — persisted in the same
@@ -698,19 +698,24 @@ export class IngestService {
       )
     }
     // Mark each failed doc with its reason; indexedAt stays null so it remains
-    // the outstanding delta. updateMany (not update) so a missing row can't throw.
-    // Warning entries are handled in the SECOND loop below, after
-    // succeededAdded's blanket indexError:null, so their annotation survives.
-    for (const [ark, v] of entriesByArk) {
-      if (v.warning) continue
-      ops.push(DocumentQueries.updateManyOp(job.projectId, ark, { indexError: v.reason }))
+    // the outstanding delta. One bulk statement per pass, never one per ARK; a
+    // missing row is skipped, not an error. Warning entries are applied in the
+    // SECOND pass below, after succeededAdded's blanket indexError:null, so
+    // their annotation survives.
+    const reasonsOf = (warning: boolean) =>
+      new Map(
+        [...entriesByArk].flatMap(([ark, v]) => (v.warning === warning ? [[ark, v.reason] as const] : [])),
+      )
+    const failureReasons = reasonsOf(false)
+    if (failureReasons.size > 0) {
+      ops.push(DocumentQueries.setIndexErrorsOp(job.projectId, failureReasons))
     }
     // F13: a warning doc IS in succeededAdded (indexedAt just set to `now`,
     // indexError cleared, above) — re-apply the warning text afterward, in the
     // same transaction, so the doc stays indexed but the reason survives.
-    for (const [ark, v] of entriesByArk) {
-      if (!v.warning) continue
-      ops.push(DocumentQueries.updateManyOp(job.projectId, ark, { indexError: v.reason }))
+    const warningReasons = reasonsOf(true)
+    if (warningReasons.size > 0) {
+      ops.push(DocumentQueries.setIndexErrorsOp(job.projectId, warningReasons))
     }
     if (job.removedArks.length > 0) {
       ops.push(

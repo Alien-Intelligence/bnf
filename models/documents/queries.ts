@@ -55,6 +55,22 @@ export class DocumentQueries {
     return prisma.document.updateMany({ where: { projectId, ark }, data })
   }
 
+  /**
+   * Statement: set each listed document's `indexError` to its own reason, for
+   * composition in a batch transaction. ONE statement however many ARKs: the
+   * pairs travel as two parallel arrays joined by `unnest`, where a statement
+   * per ARK ran thousands of round trips inside one transaction. Reasons are
+   * bound values, so they are stored verbatim. A missing row is skipped, as with
+   * updateMany; `indexedAt` is left untouched.
+   */
+  static setIndexErrorsOp(projectId: string, reasonByArk: ReadonlyMap<string, string>) {
+    return prisma.$executeRaw`
+      UPDATE document
+      SET index_error = v.reason
+      FROM unnest(${[...reasonByArk.keys()]}::text[], ${[...reasonByArk.values()]}::text[]) AS v(ark, reason)
+      WHERE document.project_id = ${projectId} AND document.ark = v.ark`
+  }
+
   /** The pending rows a resolve pass may try at `now`: under the `maxAttempts` ceiling and past their backoff. */
   private static dueResolveWhere(now: Date, maxAttempts: number): Prisma.DocumentWhereInput {
     return {
