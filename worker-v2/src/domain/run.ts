@@ -92,7 +92,12 @@ export interface RunStore {
   markTerminalEmitted(runId: string): Promise<boolean>;
   /** Release the latch so a later completion check can retry (terminal POST failed). */
   resetTerminalEmitted(runId: string): Promise<void>;
-  /** Mark the run canceled — suppresses the terminal callback. */
+  /**
+   * Mark the run canceled — suppresses the terminal callback. A user cancel
+   * also zeroes terminal_post_failures in the same statement: the counter then
+   * only ever stays above 0 on a canceled run through the give-up, which is
+   * what the schema's abandoned backfill relies on.
+   */
   markCanceled(runId: string): Promise<void>;
   /**
    * The emitter's give-up: mark the run canceled (suppressing further emit

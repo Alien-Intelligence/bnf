@@ -114,7 +114,9 @@ export class PgRunStore implements RunStore {
 
   async markCanceled(runId: string): Promise<void> {
     await this.pool.query(
-      `UPDATE ${RUNS} SET canceled = true, updated_at = now() WHERE run_id = $1`,
+      `UPDATE ${RUNS}
+         SET canceled = true, terminal_post_failures = 0, updated_at = now()
+       WHERE run_id = $1`,
       [runId],
     );
   }

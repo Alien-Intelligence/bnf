@@ -149,6 +149,18 @@ contract(
 );
 
 if (pool) {
+  test("postgres: failed POSTs then a user cancel stay pending across a schema re-apply", async () => {
+    const store = new PgRunStore(pool);
+    await new PgDocState(pool).migrate();
+    const i = input();
+    await store.create(i);
+    for (let n = 0; n < 3; n++) await store.incrementTerminalPostFailures(i.runId);
+    await store.markCanceled(i.runId);
+    assert.equal((await store.get(i.runId))!.terminalPostFailures, 0);
+    await new PgDocState(pool).migrate();
+    assert.equal(terminalDeliveryOf((await store.get(i.runId))!), TERMINAL_DELIVERY.PENDING);
+  });
+
   test("postgres: a row given up before the column existed is reported abandoned after the schema applies; a user cancel stays pending", async () => {
     const store = new PgRunStore(pool);
     await new PgDocState(pool).migrate();
