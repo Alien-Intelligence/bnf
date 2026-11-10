@@ -1,6 +1,6 @@
 apiVersion: v2
 name: bnf-demo
-version: 0.21.1
+version: 0.21.2
 description: BnF Corpus Research — Alien Intelligence × BnF demo (Next.js app + ingest worker + BnF broker + Postgres)
 type: application
 # 0.9.0 — worker+broker hardening pass 2: pg-boss sliding-window fetch (the ~600/min
@@ -121,4 +121,8 @@ type: application
 # and "cluster:dataset:entry" ids). RAG search and full-text reads failed since the MCP
 # upgrade. project.cluster_dataset_id becomes TEXT, nulled and re-resolved by slug.
 # App → 0.20.3; worker (0.20.4) and broker (0.20.2) unchanged.
+# 0.21.2 — chart-only: broker global bucket 1000 → 2000 (rpm 1900). The ingestion
+# subscription has no overall cap, and global capped ALTO well under its Presentation
+# rate (bulk 770 shared with images). Bulk is now 1720, so ALTO runs at Presentation's
+# 1425. No image change; broker and worker roll on the config checksum.
 appVersion: "0.20.3"
