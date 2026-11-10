@@ -240,6 +240,10 @@ export function corpusNotPresence(not: CorpusNotFilterSet) {
  *                       Used for the type/lang/period facets and the period
  *                       histogram, which are meaningless for unresolved stubs.
  *
+ * Every predicate names the version's project as well as the version: the
+ * membership join is correct without it, but it lets the planner start from
+ * THIS project's documents instead of, say, every project's pending stubs.
+ *
  * Extracted from `snapshot()` so `list()`, `crossFacets()`, and
  * `removeByFilter()` resolve membership identically — there is exactly one
  * filter→SQL translation in the codebase. Pure: no I/O, deterministic in its
@@ -252,6 +256,7 @@ export function corpusNotPresence(not: CorpusNotFilterSet) {
  * spread (two `OR` keys at one object level would collide).
  */
 export function buildCorpusWhere(
+  projectId: string,
   versionId: string,
   paidOcrEnabled: boolean,
   filters?: CorpusFilterSet,
@@ -356,11 +361,12 @@ export function buildCorpusWhere(
   // unknown value is neither listed nor removed, and is reported as
   // `notUnknown` (notUnknownWheres).
   if (filters?.not) {
-    const inner = buildCorpusWhere(versionId, paidOcrEnabled, filters.not).sharedWhere
+    const inner = buildCorpusWhere(projectId, versionId, paidOcrEnabled, filters.not).sharedWhere
     andClauses.push(...corpusNotPresence(filters.not).map((p) => p.known), { NOT: inner })
   }
 
   const base: Prisma.DocumentWhereInput = {
+    projectId,
     membership: { some: { versionId } },
     ...typeWhere,
     ...subtypeWhere,
@@ -386,7 +392,7 @@ export function buildCorpusWhere(
     resolveStatus: DOCUMENT_RESOLVE_STATUS.RESOLVED,
   }
 
-  const membership: Prisma.DocumentWhereInput = { membership: { some: { versionId } } }
+  const membership: Prisma.DocumentWhereInput = { projectId, membership: { some: { versionId } } }
   const outcomeOver = (state: IndexationOutcome): Prisma.DocumentWhereInput => {
     const where = outcomeWhere(state, paidOcrEnabled)
     if (where === null) throw new Error(`no predicate for outcome ${state}`)
@@ -444,13 +450,14 @@ export type CorpusWhere = CorpusWherePredicates
  * unknown — the documents `not` left out. Empty when there is no `not`.
  */
 export function notUnknownWheres(
+  projectId: string,
   versionId: string,
   paidOcrEnabled: boolean,
   filters: CorpusFilterSet | undefined,
 ): Array<{ dimension: string; where: Prisma.DocumentWhereInput }> {
   if (filters?.not === undefined) return []
   const { not, ...positive } = filters
-  const { sharedWhere } = buildCorpusWhere(versionId, paidOcrEnabled, positive)
+  const { sharedWhere } = buildCorpusWhere(projectId, versionId, paidOcrEnabled, positive)
   return corpusNotPresence(not).map((p) => ({ dimension: p.dimension, where: { AND: [sharedWhere, p.unknown] } }))
 }
 

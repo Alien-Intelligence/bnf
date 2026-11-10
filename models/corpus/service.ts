@@ -102,7 +102,7 @@ export class CorpusService {
     if (requested.length > 0) {
       assertLangsHeld(requested, await CorpusQueries.langsInVersion(version.id), "du corpus")
     }
-    return { version, paidOcr, where: buildCorpusWhere(version.id, paidOcr, filters) }
+    return { version, paidOcr, where: buildCorpusWhere(projectId, version.id, paidOcr, filters) }
   }
 
   /**
@@ -122,7 +122,7 @@ export class CorpusService {
         cursor: opts.cursor,
         limit: opts.limit ?? CORPUS_SAMPLE_SIZE,
       }),
-      CorpusService.notUnknownIn(version.id, paidOcr, opts.filters),
+      CorpusService.notUnknownIn(projectId, version.id, paidOcr, opts.filters),
     ])
     return { ...read, numerisation: numerisationOf(classRows), ...notUnknown }
   }
@@ -139,7 +139,7 @@ export class CorpusService {
         cursor: opts.cursor,
         limit: opts.limit ?? CORPUS_SAMPLE_SIZE,
       }),
-      CorpusService.notUnknownIn(version.id, paidOcr, opts.filters),
+      CorpusService.notUnknownIn(projectId, version.id, paidOcr, opts.filters),
     ])
     return { ...page, ...notUnknown }
   }
@@ -187,17 +187,18 @@ export class CorpusService {
   ): Promise<Record<string, number>> {
     if (filters?.not === undefined) return {}
     const { version, paidOcr } = await CorpusService.plan(projectId, ref, filters)
-    return (await CorpusService.notUnknownIn(version.id, paidOcr, filters)).notUnknown ?? {}
+    return (await CorpusService.notUnknownIn(projectId, version.id, paidOcr, filters)).notUnknown ?? {}
   }
 
   /** `{ notUnknown }` for a read with a `not`, `{}` without one. */
   private static async notUnknownIn(
+    projectId: string,
     versionId: string,
     paidOcr: boolean,
     filters: CorpusFilterSet | undefined,
   ): Promise<{ notUnknown?: Record<string, number> }> {
     if (filters?.not === undefined) return {}
-    const unknown = notUnknownWheres(versionId, paidOcr, filters)
+    const unknown = notUnknownWheres(projectId, versionId, paidOcr, filters)
     const counts = await CorpusQueries.counts(unknown.map((u) => u.where))
     return { notUnknown: Object.fromEntries(unknown.map((u, i) => [u.dimension, counts[i]])) }
   }

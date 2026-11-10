@@ -23,11 +23,14 @@ import { DOCUMENT_CANONICAL_STATUS, DOCUMENT_RESOLVE_STATUS } from "@/models/doc
 // Past the point where copying the membership through Node outran Prisma's
 // default 5 s interactive-transaction timeout on the test database.
 const LARGE_CORPUS_SIZE = 120_000
+// Enough foreign stubs that a scan of the version per stub cannot finish in time.
+const FOREIGN_PENDING_STUBS = 3_000
 const tag = randomBytes(4).toString("hex")
 const arkOf = (kind: string, i: number) => `ark:/12148/${kind}${tag}${String(i).padStart(6, "0")}`
 
 let user: User
 let project: Project
+let stubsProject: Project
 
 /** Seeds the large head through the same path a real add takes: advanceVersion. */
 async function seedLargeHead(): Promise<void> {
@@ -65,10 +68,20 @@ before(async () => {
   // to it; under load the snapshot counts then plan as if it were empty.
   await prisma.$executeRaw`ANALYZE document`
   await prisma.$executeRaw`ANALYZE corpus_membership`
+  // Other projects' pending stubs, born after the statistics above: the corpus
+  // counts of THIS project must not scale with them (they did, one scan of the
+  // whole version per stub, once a new version has no statistics yet).
+  stubsProject = await createTestProject(user.id, "large-corpus-advance stubs")
+  await prisma.$executeRaw`
+    INSERT INTO document (project_id, ark, resolve_status, source)
+    SELECT ${stubsProject.id}, 'ark:/12148/bpt6kstub' || ${tag} || lpad(g::text, 6, '0'),
+           ${DOCUMENT_RESOLVE_STATUS.PENDING}, 'gallica'
+    FROM generate_series(1, ${FOREIGN_PENDING_STUBS}) AS g`
 })
 
 after(async () => {
   await cleanupProject(project.id)
+  await cleanupProject(stubsProject.id)
   await deleteTestUser(user.id)
 })
 
