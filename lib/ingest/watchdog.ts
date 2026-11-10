@@ -341,7 +341,7 @@ export async function reconcileWatchdogJob(job: WatchdogJobInput, now: Date): Pr
       if (!job.clusterJobId) {
         throw new Error(`[ingest-watchdog] redeliver decided for job ${job.id} without a clusterJobId`)
       }
-      const accepted = await ClusterRunner.redeliver(job.clusterJobId)
+      const accepted = await IngestService.redeliverAbandoned(job.clusterJobId)
       console.warn("[ingest-watchdog] redeliver requested for an abandoned terminal callback", {
         jobId: job.id,
         clusterJobId: job.clusterJobId,

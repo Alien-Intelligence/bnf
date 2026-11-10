@@ -464,6 +464,16 @@ export class IngestService {
   }
 
   /**
+   * Watchdog redeliver (lib/ingest/watchdog.ts): ask the worker to re-send the
+   * terminal result of a run whose callback it gave up on. true: accepted;
+   * false: the worker says the run is no longer abandoned. Worker and
+   * transport errors are raised unchanged.
+   */
+  static async redeliverAbandoned(clusterJobId: string): Promise<boolean> {
+    return ClusterRunner.redeliver(clusterJobId)
+  }
+
+  /**
    * Watchdog give-up (lib/ingest/watchdog.ts, F18): mark a job the lifecycle
    * lost track of FAILED with the watchdog's reason. Guarded by
    * `status: expectedStatus`, so a job that went terminal since the scan (a

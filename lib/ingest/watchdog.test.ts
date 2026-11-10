@@ -265,11 +265,11 @@ test("a QUEUED or terminal job is never redelivered, whatever the worker says", 
 
 test("the shell asks the worker once per window across ticks, and again after it", async () => {
   const job = runningJob({ id: "job-abandoned" })
-  const original = { progress: ClusterRunner.progress, redeliver: ClusterRunner.redeliver, warn: console.warn }
+  const original = { progress: ClusterRunner.progress, redeliver: IngestService.redeliverAbandoned, warn: console.warn }
   const asked: string[] = []
   const warnings: unknown[][] = []
   ClusterRunner.progress = async () => abandoned()
-  ClusterRunner.redeliver = async (id) => {
+  IngestService.redeliverAbandoned = async (id) => {
     asked.push(id)
     return true
   }
@@ -285,17 +285,17 @@ test("the shell asks the worker once per window across ticks, and again after it
     assert.deepEqual(warnings[0]![1], { jobId: "job-abandoned", clusterJobId: "run-1", accepted: true })
   } finally {
     ClusterRunner.progress = original.progress
-    ClusterRunner.redeliver = original.redeliver
+    IngestService.redeliverAbandoned = original.redeliver
     console.warn = original.warn
   }
 })
 
 test("a redeliver request that throws is raised, and waits out the window instead of retrying every tick", async () => {
   const job = runningJob({ id: "job-redeliver-throws" })
-  const original = { progress: ClusterRunner.progress, redeliver: ClusterRunner.redeliver }
+  const original = { progress: ClusterRunner.progress, redeliver: IngestService.redeliverAbandoned }
   let calls = 0
   ClusterRunner.progress = async () => abandoned()
-  ClusterRunner.redeliver = async () => {
+  IngestService.redeliverAbandoned = async () => {
     calls += 1
     throw new Error("worker returned 500")
   }
@@ -305,7 +305,7 @@ test("a redeliver request that throws is raised, and waits out the window instea
     assert.equal(calls, 1)
   } finally {
     ClusterRunner.progress = original.progress
-    ClusterRunner.redeliver = original.redeliver
+    IngestService.redeliverAbandoned = original.redeliver
   }
 })
 
@@ -334,7 +334,7 @@ test("the shell: progress writes between abandonments do not reset the count —
   const job = runningJob({ id: "job-redeliver-cycle" })
   const original = {
     progress: ClusterRunner.progress,
-    redeliver: ClusterRunner.redeliver,
+    redeliver: IngestService.redeliverAbandoned,
     failStuckJob: IngestService.failStuckJob,
     mirror: IngestService.mirrorWatchdogProgress,
     warn: console.warn,
@@ -343,7 +343,7 @@ test("the shell: progress writes between abandonments do not reset the count —
   let asked = 0
   const failed: string[] = []
   ClusterRunner.progress = async () => (abandonedNow ? abandoned() : polled(progress()))
-  ClusterRunner.redeliver = async () => {
+  IngestService.redeliverAbandoned = async () => {
     asked += 1
     return true
   }
@@ -369,9 +369,24 @@ test("the shell: progress writes between abandonments do not reset the count —
     assert.match(failed[0]!, /relancer l'ingestion/)
   } finally {
     ClusterRunner.progress = original.progress
-    ClusterRunner.redeliver = original.redeliver
+    IngestService.redeliverAbandoned = original.redeliver
     IngestService.failStuckJob = original.failStuckJob
     IngestService.mirrorWatchdogProgress = original.mirror
     console.warn = original.warn
+  }
+})
+
+test("IngestService.redeliverAbandoned returns the cluster runner's answer and raises its errors", async () => {
+  const original = ClusterRunner.redeliver
+  try {
+    ClusterRunner.redeliver = async (id) => id === "run-accepted"
+    assert.equal(await IngestService.redeliverAbandoned("run-accepted"), true)
+    assert.equal(await IngestService.redeliverAbandoned("run-refused"), false)
+    ClusterRunner.redeliver = async () => {
+      throw new Error("worker returned 500")
+    }
+    await assert.rejects(IngestService.redeliverAbandoned("run-1"), /worker returned 500/)
+  } finally {
+    ClusterRunner.redeliver = original
   }
 })
