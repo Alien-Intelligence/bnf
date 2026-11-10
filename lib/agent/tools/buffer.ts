@@ -289,10 +289,16 @@ export const bufferRemoveByFilterTool = defineTool<
       if (!gate.ok) return gate.result
       const projectId = gate.project.id
 
-      const result = await BufferService.removeByFilter(projectId, {
-        filters: input.filters,
-        dryRun,
-      })
+      // Reads the matching ARKs, then discards them in ONE statement: a failure
+      // discards nothing (a FilterValueError still reaches the refusal above).
+      const attempt = await attemptWrite(AGENT_TOOLS.bufferRemoveByFilter, WRITE_INTACT.DISCARD, () =>
+        BufferService.removeByFilter(projectId, {
+          filters: input.filters,
+          dryRun,
+        }),
+      )
+      if (!attempt.ok) return attempt.result
+      const result = attempt.value
       if (result.status === REMOVE_BY_FILTER_STATUS.EMPTY_FILTER) {
         return toolRefusal(EMPTY_FILTER_REFUSAL, BUFFER_EMPTY_FILTER_ERROR)
       }
@@ -334,14 +340,18 @@ export const bufferAddTool = defineTool<
     const gate = await authorizeProjectTool(ctx, BufferPolicy, "mutate")
     if (!gate.ok) return gate.result
     const projectId = gate.project.id
-    const result = await BufferService.registerCandidates({
-      projectId,
-      sessionId: ctx.appSessionId,
-      originTool: AGENT_TOOLS.bufferAdd,
-      // The librarian named these ARKs: a discarded one is staged again.
-      restageDiscarded: true,
-      candidates: input.arks.map((ark) => ({ ark })),
-    })
+    const attempt = await attemptWrite(AGENT_TOOLS.bufferAdd, WRITE_INTACT.STAGE, () =>
+      BufferService.registerCandidates({
+        projectId,
+        sessionId: ctx.appSessionId,
+        originTool: AGENT_TOOLS.bufferAdd,
+        // The librarian named these ARKs: a discarded one is staged again.
+        restageDiscarded: true,
+        candidates: input.arks.map((ark) => ({ ark })),
+      }),
+    )
+    if (!attempt.ok) return attempt.result
+    const result = attempt.value
     // A spawn_research child reports what IT staged (never a project-wide delta).
     if (ctx.stagingTally) ctx.stagingTally.added += result.added
     // Bare ARKs: their metadata is resolved out of band, never inline.

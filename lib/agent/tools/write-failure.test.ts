@@ -26,7 +26,7 @@ import { BufferService } from "@/models/buffer/service"
 import { CorpusService } from "@/models/corpus/service"
 import { SESSION_SCOPE } from "@/models/sessions/schema"
 import type { PolicyUser } from "@/models/users/schema"
-import { bufferClearTool, bufferCommitTool, bufferDiscardTool } from "./buffer"
+import { bufferAddTool, bufferClearTool, bufferCommitTool, bufferDiscardTool, bufferRemoveByFilterTool } from "./buffer"
 import { AGENT_TOOLS } from "./constants"
 import { corpusAddTool, corpusRemoveByFilterTool, corpusRemoveTool } from "./corpus"
 import { SYSTEM_FAILURE_CODE } from "./failure"
@@ -103,6 +103,24 @@ const TOOLS: readonly Failing[] = [
       })
     },
     call: () => bufferClearTool.handler({}, ctx()),
+  },
+  {
+    name: AGENT_TOOLS.bufferAdd,
+    arm: (t, err) => {
+      t.mock.method(BufferService, "registerCandidates", async () => {
+        throw err
+      })
+    },
+    call: () => bufferAddTool.handler({ arks: [ARK] }, ctx()),
+  },
+  {
+    name: AGENT_TOOLS.bufferRemoveByFilter,
+    arm: (t, err) => {
+      t.mock.method(BufferService, "removeByFilter", async () => {
+        throw err
+      })
+    },
+    call: () => bufferRemoveByFilterTool.handler({ filters: { lang: ["fr"] }, dry_run: false }, ctx()),
   },
   {
     name: AGENT_TOOLS.corpusAdd,
@@ -205,4 +223,32 @@ test("buffer_commit: a failure AFTER addArks is safe to re-run — the commit is
   assert.deepEqual(members.map((m) => m.ark).sort(), [...arks].sort(), "each ARK is in the head exactly once")
   const rows = await prisma.bufferItem.findMany({ where: { projectId: project.id, ark: { in: arks } } })
   assert.ok(rows.every((r) => r.status === BUFFER_STATUS.COMMITTED), "every row ends committed")
+})
+
+test("buffer_add: a failure AFTER the insert is safe to re-run — each ARK is staged once, nothing discarded", async (t) => {
+  const arks = ["ark:/12148/bpt6k2839851", "ark:/12148/bpt6k2839852"]
+  t.mock.method(console, "error", () => undefined)
+  const failOnce = t.mock.method(BufferQueries, "applyRegistration", async () => {
+    throw new Error("connection reset by peer")
+  })
+
+  const failed = (await bufferAddTool.handler({ arks }, ctx())) as Record<string, unknown>
+
+  assert.equal(failed.success, false)
+  assert.match(String(failed.error), /à l'identique est sans risque/)
+  assert.doesNotMatch(String(failed.error), /inchangé/, "never claims the buffer is untouched")
+  const afterFailure = await prisma.bufferItem.findMany({ where: { projectId: project.id, ark: { in: arks } } })
+  assert.ok(afterFailure.every((r) => r.status !== BUFFER_STATUS.DISCARDED), "the failure discarded nothing")
+
+  failOnce.mock.restore()
+  await BufferService.registerCandidates({
+    projectId: project.id,
+    originTool: AGENT_TOOLS.bufferAdd,
+    restageDiscarded: true,
+    candidates: arks.map((ark) => ({ ark })),
+  })
+
+  const rows = await prisma.bufferItem.findMany({ where: { projectId: project.id, ark: { in: arks } } })
+  assert.deepEqual(rows.map((r) => r.ark).sort(), [...arks].sort(), "each ARK is staged exactly once")
+  assert.ok(rows.every((r) => r.status === BUFFER_STATUS.CANDIDATE))
 })

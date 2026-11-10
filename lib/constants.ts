@@ -1334,7 +1334,7 @@ export const MEMORY_NEAR_DUP_MAX_EDIT_DISTANCE = 4
  * where the seal is content-addressed from the rendered prompts, so a prompt
  * change cannot be recorded without a new revision.
  */
-export const PROMPT_REVISION = "2026-11-10.system-failure-keyed-rule.89f5c1b3e700"
+export const PROMPT_REVISION = "2026-11-10.system-failure-keyed-rule.380cb1d03f7d"
 
 // ---------------------------------------------------------------------------
 // CSV exports

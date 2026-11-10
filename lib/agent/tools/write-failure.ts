@@ -34,6 +34,16 @@ export const WRITE_INTACT = {
   CORPUS: "Le corpus est inchangé : l'opération a été annulée.",
   /** buffer_discard: one UPDATE statement, so it applies to every row or to none. */
   DISCARD: "Aucun candidat n'a été écarté (une seule requête, annulée en bloc) : le tampon est inchangé.",
+  /**
+   * buffer_add: staging is several statements (insert, then one guarded
+   * transaction of refreshes and transitions), so a failure may leave some ARKs
+   * staged. The claims true in every case: nothing was discarded or removed, and
+   * the identical re-run is safe (BufferQueries.insertMany skips duplicates;
+   * existing rows are refreshed and moved by guarded updates).
+   */
+  STAGE:
+    "Cet échec n'a écarté ni retiré aucun candidat ; certains ARK ont pu être déposés avant l'erreur, " +
+    "et relancer le même dépôt à l'identique est sans risque (les ARK déjà déposés sont ignorés ou rafraîchis).",
   /** buffer_clear: one DELETE statement, so it applies to every row or to none. */
   CLEAR: "Aucun candidat n'a été supprimé (une seule requête, annulée en bloc) : le tampon est inchangé.",
 } as const
