@@ -3,7 +3,8 @@
 // advanceVersion copied the parent's whole membership through Node inside one
 // interactive transaction under Prisma's default 5 s timeout, so on a corpus of
 // tens of thousands of documents every mutation died with P2028. The corpus is
-// seeded past that point (head >= LARGE_CORPUS_SIZE members) and each mutation
+// seeded past that point, through seedCorpusDocuments (advanceVersion, the path
+// a real add takes) and torn down by cleanupProject, and each mutation
 // path (add, remove, swap) must advance it, alone and racing another mutation.
 import "server-only"
 
@@ -14,8 +15,8 @@ import { prisma } from "@/lib/db"
 import type { Project, User } from "@/lib/generated/prisma/client"
 import { createTestProject, createTestUser, deleteTestUser } from "@/lib/testing/fixtures"
 import { cleanupProject } from "@/lib/testing/project-cleanup"
+import { seedCorpusDocuments } from "@/lib/testing/seed-corpus"
 import { CorpusQueries } from "@/models/corpus/queries"
-import { CORPUS_VERSION_STATUS } from "@/models/corpus/schema"
 import { CorpusService } from "@/models/corpus/service"
 import { DOCUMENT_CANONICAL_STATUS, DOCUMENT_RESOLVE_STATUS } from "@/models/documents/schema"
 
@@ -28,32 +29,15 @@ const arkOf = (kind: string, i: number) => `ark:/12148/${kind}${tag}${String(i).
 let user: User
 let project: Project
 
-/**
- * Seeds `LARGE_CORPUS_SIZE` resolved documents plus the three notices the swap
- * tests use, and makes them the head's membership. Raw set-based SQL: seeding
- * through the code under test would hit the very timeout being reproduced.
- */
+/** Seeds the large head through the same path a real add takes: advanceVersion. */
 async function seedLargeHead(): Promise<void> {
-  const head = await CorpusQueries.headVersion(project.id)
-  await prisma.$executeRaw`
-    INSERT INTO document (project_id, ark, resolve_status, source, title)
-    SELECT ${project.id}, 'ark:/12148/bpt6k' || ${tag} || lpad(g::text, 6, '0'),
-           ${DOCUMENT_RESOLVE_STATUS.RESOLVED}, 'gallica', 'seed'
-    FROM generate_series(1, ${LARGE_CORPUS_SIZE}) AS g`
-  const next = await prisma.corpusVersion.create({
-    data: {
-      projectId: project.id,
-      seq: head.seq + 1,
-      status: CORPUS_VERSION_STATUS.SEALED,
-      parentId: head.id,
-      createdBy: `user:${user.id}`,
-      note: "large fixture",
-    },
-  })
-  await prisma.$executeRaw`
-    INSERT INTO corpus_membership (version_id, ark, project_id)
-    SELECT ${next.id}, ark, project_id FROM document WHERE project_id = ${project.id}`
-  await prisma.project.update({ where: { id: project.id }, data: { headVersionId: next.id } })
+  const docs = Array.from({ length: LARGE_CORPUS_SIZE }, (_, i) => ({
+    ark: arkOf("bpt6k", i + 1),
+    source: "gallica",
+    title: "seed",
+    resolveStatus: DOCUMENT_RESOLVE_STATUS.RESOLVED,
+  }))
+  await seedCorpusDocuments(project.id, docs, `user:${user.id}`)
 }
 
 async function addDocuments(arks: string[], source: string, canonicalStatus: string | null): Promise<void> {
@@ -77,13 +61,13 @@ before(async () => {
   user = await createTestUser()
   project = await createTestProject(user.id, "large-corpus-advance")
   await seedLargeHead()
+  // A freshly bulk-loaded table has no planner statistics until autovacuum gets
+  // to it; under load the snapshot counts then plan as if it were empty.
+  await prisma.$executeRaw`ANALYZE document`
+  await prisma.$executeRaw`ANALYZE corpus_membership`
 })
 
 after(async () => {
-  // The shared teardown deletes the corpus in one bounded batch; at this size
-  // that exceeds it, so the bulk rows go first, set-based.
-  await prisma.$executeRaw`DELETE FROM corpus_membership WHERE project_id = ${project.id}`
-  await prisma.$executeRaw`DELETE FROM document WHERE project_id = ${project.id}`
   await cleanupProject(project.id)
   await deleteTestUser(user.id)
 })
