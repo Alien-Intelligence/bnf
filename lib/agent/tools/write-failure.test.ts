@@ -27,6 +27,7 @@ import { CorpusService } from "@/models/corpus/service"
 import { SESSION_SCOPE } from "@/models/sessions/schema"
 import type { PolicyUser } from "@/models/users/schema"
 import { bufferCommitTool } from "./buffer"
+import { AGENT_TOOLS } from "./constants"
 import { corpusAddTool, corpusRemoveByFilterTool, corpusRemoveTool } from "./corpus"
 import { SYSTEM_FAILURE_CODE } from "./failure"
 import type { TurnScopedCtx } from "./registry-factory"
@@ -77,7 +78,7 @@ type Failing = { name: string; arm: (t: import("node:test").TestContext, err: Er
 
 const TOOLS: readonly Failing[] = [
   {
-    name: "buffer_commit",
+    name: AGENT_TOOLS.bufferCommit,
     arm: (t, err) => {
       t.mock.method(BufferService, "commit", async () => {
         throw err
@@ -86,7 +87,7 @@ const TOOLS: readonly Failing[] = [
     call: () => bufferCommitTool.handler({ reason: "test" }, ctx()),
   },
   {
-    name: "corpus_add",
+    name: AGENT_TOOLS.corpusAdd,
     arm: (t, err) => {
       t.mock.method(CorpusService, "addArks", async () => {
         throw err
@@ -95,7 +96,7 @@ const TOOLS: readonly Failing[] = [
     call: () => corpusAddTool.handler({ arks: [ARK], reason: "test" }, ctx()),
   },
   {
-    name: "corpus_remove",
+    name: AGENT_TOOLS.corpusRemove,
     arm: (t, err) => {
       t.mock.method(CorpusService, "removeArks", async () => {
         throw err
@@ -104,7 +105,7 @@ const TOOLS: readonly Failing[] = [
     call: () => corpusRemoveTool.handler({ arks: [ARK], reason: "test" }, ctx()),
   },
   {
-    name: "corpus_remove_by_filter",
+    name: AGENT_TOOLS.corpusRemoveByFilter,
     arm: (t, err) => {
       t.mock.method(CorpusService, "removeByFilter", async () => {
         throw err
@@ -160,7 +161,7 @@ for (const tool of TOOLS) {
 test("buffer_commit: a failure AFTER addArks is safe to re-run — the commit is idempotent", async (t) => {
   const arks = [ARK, "ark:/12148/bpt6k2839842"]
   await prisma.bufferItem.createMany({
-    data: arks.map((ark) => ({ projectId: project.id, ark, originTool: "buffer_add", status: BUFFER_STATUS.CANDIDATE })),
+    data: arks.map((ark) => ({ projectId: project.id, ark, originTool: AGENT_TOOLS.bufferAdd, status: BUFFER_STATUS.CANDIDATE })),
   })
   t.mock.method(console, "error", () => undefined)
   const failOnce = t.mock.method(BufferQueries, "markCommitted", async () => {
@@ -181,7 +182,8 @@ test("buffer_commit: a failure AFTER addArks is safe to re-run — the commit is
 
   assert.equal(rerun.duplicates, arks.length, "the ARKs the failed run already versed count as duplicates")
   const head = await prisma.project.findUniqueOrThrow({ where: { id: project.id }, select: { headVersionId: true } })
-  const members = await prisma.corpusMembership.findMany({ where: { versionId: head.headVersionId ?? "" } })
+  assert.ok(head.headVersionId, "the commit moved the project to a head version")
+  const members = await prisma.corpusMembership.findMany({ where: { versionId: head.headVersionId } })
   assert.deepEqual(members.map((m) => m.ark).sort(), [...arks].sort(), "each ARK is in the head exactly once")
   const rows = await prisma.bufferItem.findMany({ where: { projectId: project.id, ark: { in: arks } } })
   assert.ok(rows.every((r) => r.status === BUFFER_STATUS.COMMITTED), "every row ends committed")
