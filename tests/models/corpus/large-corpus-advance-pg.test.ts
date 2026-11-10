@@ -83,9 +83,6 @@ after(async () => {
   // The shared teardown deletes the corpus in one bounded batch; at this size
   // that exceeds it, so the bulk rows go first, set-based.
   await prisma.$executeRaw`DELETE FROM corpus_membership WHERE project_id = ${project.id}`
-  // Reclaim the deleted rows before the document delete: its foreign-key checks
-  // scan corpus_membership (no index on (project_id, ark)), dead rows included.
-  await prisma.$executeRaw`VACUUM ANALYZE corpus_membership`
   await prisma.$executeRaw`DELETE FROM document WHERE project_id = ${project.id}`
   await cleanupProject(project.id)
   await deleteTestUser(user.id)
