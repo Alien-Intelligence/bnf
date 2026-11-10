@@ -56,6 +56,12 @@ export const WATCHDOG_RUNNING_STALE_MS = 30 * MS_PER_MINUTE
  * window would only be asking again for a result already on its way.
  */
 export const WATCHDOG_REDELIVER_MIN_GAP_MS = WATCHDOG_RUNNING_STALE_MS
+/**
+ * Redeliver requests per job before the job is failed. Each one buys the worker
+ * a full round of callback retries (~2 h at its default give-up), so 3 rides out
+ * a ~6 h app outage while still ending a callback that never recovers.
+ */
+export const WATCHDOG_MAX_REDELIVERS = 3
 /** Tick cadence for the interval loop. */
 export const WATCHDOG_TICK_MS = MS_PER_MINUTE
 
@@ -105,6 +111,9 @@ export interface WatchdogDecision {
  * @param lastRedeliverAt - when the caller last asked the worker to redeliver
  *   this job's terminal result, or null if it never has. Rate-limits the
  *   `redeliver` action to one per WATCHDOG_REDELIVER_MIN_GAP_MS.
+ * @param redeliverCount - redeliver requests already made for this job (never
+ *   reset by progress writes); at WATCHDOG_MAX_REDELIVERS an abandoned run
+ *   fails the job instead of being asked again.
  *
  * Only a 404 — the worker is up and does not know the run — advances the
  * give-up clock. A worker that cannot be reached, or answers an error, is an
@@ -117,6 +126,7 @@ export function decideWatchdogAction(
   now: Date,
   nullSince: Date | null,
   lastRedeliverAt: Date | null,
+  redeliverCount: number,
 ): WatchdogDecision {
   if (job.status === INGEST_STATUS.QUEUED) {
     // A QUEUED job that already has a clusterJobId is not this rule's
@@ -154,6 +164,15 @@ export function decideWatchdogAction(
     // progress never changes again, so mirroring it would hide the job forever
     // (prod, 2026-11-03): ask for the result instead, at most once per window.
     if (clusterProgress.terminalDelivery === CLUSTER_TERMINAL_DELIVERY.ABANDONED) {
+      if (redeliverCount >= WATCHDOG_MAX_REDELIVERS) {
+        return {
+          action: {
+            kind: "fail",
+            reason: `le worker a terminé mais son résultat n'a pas pu être livré après ${WATCHDOG_MAX_REDELIVERS} tentatives (watchdog) — relancer l'ingestion`,
+          },
+          nullSince: null,
+        }
+      }
       const due =
         lastRedeliverAt === null ||
         now.getTime() - lastRedeliverAt.getTime() > WATCHDOG_REDELIVER_MIN_GAP_MS
@@ -210,6 +229,14 @@ const nullSinceByJob = new Map<string, Date>()
  * still is gets the same re-open it would have got.
  */
 const lastRedeliverByJob = new Map<string, Date>()
+
+/**
+ * Per-jobId count of redeliver requests, never reset by progress writes (the
+ * cycle abandoned → redeliver → pending → abandoned must end). Cleared when the
+ * job is failed or is no longer RUNNING. A restart resets it: bounded by
+ * restarts, acceptable.
+ */
+const redeliverCountByJob = new Map<string, number>()
 
 /**
  * Start the periodic reconciler. Returns a `stop()` for tests / graceful
@@ -283,6 +310,7 @@ export async function reconcileWatchdogJob(job: WatchdogJobInput, now: Date): Pr
     now,
     nullSince,
     lastRedeliverByJob.get(job.id) ?? null,
+    redeliverCountByJob.get(job.id) ?? 0,
   )
 
   if (action.kind === "fail") {
@@ -294,8 +322,10 @@ export async function reconcileWatchdogJob(job: WatchdogJobInput, now: Date): Pr
     await IngestService.failStuckJob(job.id, job.status, action.reason, now)
     nullSinceByJob.delete(job.id)
     lastRedeliverByJob.delete(job.id)
+    redeliverCountByJob.delete(job.id)
     return
   }
+  if (job.status !== INGEST_STATUS.RUNNING) redeliverCountByJob.delete(job.id)
 
   if (nextNullSince) nullSinceByJob.set(job.id, nextNullSince)
   else nullSinceByJob.delete(job.id)
@@ -307,6 +337,7 @@ export async function reconcileWatchdogJob(job: WatchdogJobInput, now: Date): Pr
       // Stamped BEFORE the call: a request that fails is not retried every
       // tick, it waits out the window like a successful one.
       lastRedeliverByJob.set(job.id, now)
+      redeliverCountByJob.set(job.id, (redeliverCountByJob.get(job.id) ?? 0) + 1)
       if (!job.clusterJobId) {
         throw new Error(`[ingest-watchdog] redeliver decided for job ${job.id} without a clusterJobId`)
       }
