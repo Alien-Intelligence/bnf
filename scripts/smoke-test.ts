@@ -35,6 +35,7 @@ import { ProjectService } from "@/models/projects/service"
 import { DocumentService } from "@/models/documents/service"
 import { CorpusService } from "@/models/corpus/service"
 import { markHeadIngested } from "@/lib/testing/mark-ingested"
+import { cleanupProject } from "@/lib/testing/project-cleanup"
 import type { User } from "@/models/users/schema"
 import { parseBnfDate, normalizeDocument, normalizeMany } from "@/lib/mcp/normalize"
 import { mapCatalogueDocType, sourceFromArk } from "@/lib/mcp/vocab"
@@ -812,19 +813,9 @@ async function testNoteCitationsParsedAndPersisted(owner: User): Promise<void> {
   const versionsAfterNoop = await prisma.noteVersion.count({ where: { noteId: note.id } })
   assert.equal(versionsAfterNoop, 1, "Empty append must not create a NoteVersion")
 
-  // Cleanup: Citations + NoteVersions cascade when Note is deleted via Prisma
-  // but there are no cascade rules in the schema — delete explicitly.
-  await prisma.citation.deleteMany({ where: { noteId: note.id } })
-  await prisma.noteVersion.deleteMany({ where: { noteId: note.id } })
-  await prisma.note.delete({ where: { id: note.id } })
-
-  // Delete the project scaffolding.
-  await prisma.corpusVersion.deleteMany({ where: { projectId: project.id } })
-  await prisma.project.update({
-    where: { id: project.id },
-    data: { headVersionId: null, ingestedVersionId: null },
-  })
-  await prisma.project.delete({ where: { id: project.id } })
+  // Cleanup: the shared helper deletes in FK order (notes and citations, then
+  // membership before the versions that own it, then the project).
+  await cleanupProject(project.id)
 
   console.log("  ✓ note citations parsed + persisted")
 }
