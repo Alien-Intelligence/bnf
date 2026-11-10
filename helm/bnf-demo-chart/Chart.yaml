@@ -1,6 +1,6 @@
 apiVersion: v2
 name: bnf-demo
-version: 0.21.2
+version: 0.21.3
 description: BnF Corpus Research — Alien Intelligence × BnF demo (Next.js app + ingest worker + BnF broker + Postgres)
 type: application
 # 0.9.0 — worker+broker hardening pass 2: pg-boss sliding-window fetch (the ~600/min
@@ -125,4 +125,11 @@ type: application
 # subscription has no overall cap, and global capped ALTO well under its Presentation
 # rate (bulk 770 shared with images). Bulk is now 1720, so ALTO runs at Presentation's
 # 1425. No image change; broker and worker roll on the config checksum.
-appVersion: "0.20.3"
+# 0.21.3 — app + worker: large corpora commit again. A version advance copies its
+# membership in one statement, the ingest commit writes per-ARK errors in bulk, and
+# both run under an explicit transaction bound (the 5 s default failed every commit and
+# terminal callback past ~25k docs). The watchdog redelivers a terminal result the
+# worker gave up on; a failed corpus write reaches the agent as a system error.
+# corpus_membership gains a (project_id, ark) index. App + worker → 0.20.5; broker
+# (0.20.2) unchanged.
+appVersion: "0.20.5"
