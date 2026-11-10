@@ -20,34 +20,53 @@ import { SYSTEM_FAILURE_CODE, toolSystemFailure, type ToolSystemFailure } from "
 
 /** What a failed write left untouched, named in the message the model reads. */
 export const WRITE_INTACT = {
-  /** buffer_commit: the staged candidates are still staged. */
-  BUFFER: "Le tampon est intact : aucun candidat n'a été retiré ni écarté.",
+  /**
+   * buffer_commit: the failure may land after the corpus advanced or the rows
+   * were marked, so the only claim true in EVERY case is idempotence: the
+   * failure discards nothing, and re-running the commit counts the ARKs already
+   * versed as duplicates (CorpusService.addArks dedupes; markCommitted only
+   * moves rows still `candidate`).
+   */
+  BUFFER:
+    "Cet échec n'a écarté ni retiré aucun candidat, et la validation est idempotente " +
+    "(les ARK déjà versés au corpus comptent comme doublons) : la relancer à l'identique est sans risque.",
   /** corpus_add / corpus_remove*: the version advance is one transaction. */
   CORPUS: "Le corpus est inchangé : l'opération a été annulée.",
 } as const
 export type WriteIntact = (typeof WRITE_INTACT)[keyof typeof WRITE_INTACT]
 
-/**
- * Prisma request errors a plain re-issue can outlast: an expired transaction
- * (P2028), a write conflict / deadlock (P2034) and a connection or timeout
- * failure (P1001, P1002, P1008, P1017).
- */
-const TRANSIENT_PRISMA_CODES: ReadonlySet<string> = new Set(["P2028", "P2034", "P1001", "P1002", "P1008", "P1017"])
-const PRISMA_TRANSACTION_TIMEOUT = "P2028"
+/** Every Prisma request-error code this module names, once. */
+const PRISMA_ERROR_CODE = {
+  /** An interactive transaction outlived its timeout. */
+  TRANSACTION_TIMEOUT: "P2028",
+  /** A write conflict or deadlock. */
+  WRITE_CONFLICT: "P2034",
+  /** The database server cannot be reached. */
+  UNREACHABLE: "P1001",
+  /** The database server timed out. */
+  SERVER_TIMEOUT: "P1002",
+  /** An operation timed out. */
+  OPERATION_TIMEOUT: "P1008",
+  /** The server closed the connection. */
+  CONNECTION_CLOSED: "P1017",
+} as const
+
+/** The errors a plain re-issue can outlast. */
+const TRANSIENT_PRISMA_CODES: ReadonlySet<string> = new Set(Object.values(PRISMA_ERROR_CODE))
 
 function prismaCode(err: unknown): string | null {
   return err instanceof Prisma.PrismaClientKnownRequestError ? err.code : null
 }
 
 function failureMessage(intact: WriteIntact, retryable: boolean): string {
-  const retry = retryable
-    ? "Un nouvel essai identique peut réussir : propose-le au bibliothécaire sans modifier le lot. "
-    : ""
+  const next = retryable
+    ? "Propose au bibliothécaire de relancer le MÊME appel à l'identique, puis attends sa réponse."
+    : "Signale l'erreur telle quelle au bibliothécaire et arrête-toi."
   return (
     "ÉCHEC SYSTÈME (erreur interne du serveur) : ce n'est PAS une limite de taille ni de volume, " +
-    `le lot est valide. ${intact} ${retry}` +
-    "N'écarte, ne retire, ne dé-stage et ne découpe AUCUN candidat pour contourner l'erreur : " +
-    "signale-la telle quelle au bibliothécaire et arrête-toi."
+    `le lot est valide. ${intact} ` +
+    "N'écarte, ne retire, ne dé-stage et ne découpe AUCUN candidat pour contourner l'erreur. " +
+    next
   )
 }
 
@@ -57,7 +76,7 @@ export function corpusWriteFailure(tool: string, err: unknown, intact: WriteInta
   const code = prismaCode(err)
   const retryable = code !== null && TRANSIENT_PRISMA_CODES.has(code)
   return toolSystemFailure(
-    code === PRISMA_TRANSACTION_TIMEOUT ? SYSTEM_FAILURE_CODE.TRANSACTION_TIMEOUT : SYSTEM_FAILURE_CODE.SYSTEM_ERROR,
+    code === PRISMA_ERROR_CODE.TRANSACTION_TIMEOUT ? SYSTEM_FAILURE_CODE.TRANSACTION_TIMEOUT : SYSTEM_FAILURE_CODE.SYSTEM_ERROR,
     retryable,
     failureMessage(intact, retryable),
   )

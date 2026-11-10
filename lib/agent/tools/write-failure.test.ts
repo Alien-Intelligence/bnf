@@ -20,6 +20,8 @@ import { Prisma, type Project, type User } from "@/lib/generated/prisma/client"
 import { createTestUser, createTestProject, createTestSession, deleteTestUser } from "@/lib/testing/fixtures"
 import { cleanupProject } from "@/lib/testing/project-cleanup"
 import { toolCallErrored } from "@/lib/tools/display"
+import { BufferQueries } from "@/models/buffer/queries"
+import { BUFFER_STATUS } from "@/models/buffer/schema"
 import { BufferService } from "@/models/buffer/service"
 import { CorpusService } from "@/models/corpus/service"
 import { SESSION_SCOPE } from "@/models/sessions/schema"
@@ -127,6 +129,7 @@ for (const tool of TOOLS) {
     assert.match(String(r.error), /ÉCHEC SYSTÈME/)
     assert.match(String(r.error), /PAS une limite de taille/)
     assert.match(String(r.error), /AUCUN candidat/)
+    assert.match(String(r.error), /MÊME appel à l'identique/, "retryable: propose the identical retry")
     assert.doesNotMatch(String(r.error), /5006|P2028|expired transaction/, "the raw Prisma text never reaches the model")
     assert.equal(toolCallErrored(false, JSON.stringify(result)), true, "persisted as a failure, not ✓")
     assert.equal(logged.mock.callCount(), 1, "the real error is logged server-side")
@@ -146,8 +149,40 @@ for (const tool of TOOLS) {
     assert.equal(r.code, SYSTEM_FAILURE_CODE.SYSTEM_ERROR)
     assert.equal(r.retryable, false)
     assert.match(String(r.error), /PAS une limite de taille/)
+    assert.match(String(r.error), /arrête-toi/, "not retryable: report and stop")
+    assert.doesNotMatch(String(r.error), /MÊME appel/)
     assert.doesNotMatch(String(r.error), /connection reset/)
     assert.equal(toolCallErrored(false, JSON.stringify(result)), true)
     assert.equal(logged.mock.callCount(), 1)
   })
 }
+
+test("buffer_commit: a failure AFTER addArks is safe to re-run — the commit is idempotent", async (t) => {
+  const arks = [ARK, "ark:/12148/bpt6k2839842"]
+  await prisma.bufferItem.createMany({
+    data: arks.map((ark) => ({ projectId: project.id, ark, originTool: "buffer_add", status: BUFFER_STATUS.CANDIDATE })),
+  })
+  t.mock.method(console, "error", () => undefined)
+  const failOnce = t.mock.method(BufferQueries, "markCommitted", async () => {
+    throw new Error("connection reset by peer")
+  })
+
+  const failed = (await bufferCommitTool.handler({ reason: "test" }, ctx())) as Record<string, unknown>
+
+  assert.equal(failed.success, false)
+  assert.match(String(failed.error), /idempotente/)
+  assert.doesNotMatch(String(failed.error), /intact/, "never claims the buffer is untouched")
+  const afterFailure = await prisma.bufferItem.findMany({ where: { projectId: project.id, ark: { in: arks } } })
+  assert.ok(afterFailure.every((r) => r.status === BUFFER_STATUS.CANDIDATE), "no row discarded or removed by the failure")
+
+  failOnce.mock.restore()
+  // The identical re-run (the service, not the tool: the tool would kick a background BnF resolve).
+  const rerun = await BufferService.commit(project, ownerRow, { sessionId: corpusSession, reason: "test" })
+
+  assert.equal(rerun.duplicates, arks.length, "the ARKs the failed run already versed count as duplicates")
+  const head = await prisma.project.findUniqueOrThrow({ where: { id: project.id }, select: { headVersionId: true } })
+  const members = await prisma.corpusMembership.findMany({ where: { versionId: head.headVersionId ?? "" } })
+  assert.deepEqual(members.map((m) => m.ark).sort(), [...arks].sort(), "each ARK is in the head exactly once")
+  const rows = await prisma.bufferItem.findMany({ where: { projectId: project.id, ark: { in: arks } } })
+  assert.ok(rows.every((r) => r.status === BUFFER_STATUS.COMMITTED), "every row ends committed")
+})
