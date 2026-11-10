@@ -9,6 +9,9 @@ import { Prisma } from "@/lib/generated/prisma/client"
 // Domain status enum
 // ---------------------------------------------------------------------------
 
+/** The slice of a Prisma transaction client the corpus queries write through. */
+export type CorpusDb = Pick<Prisma.TransactionClient, "$executeRaw">
+
 export const CORPUS_VERSION_STATUS = {
   DRAFT: "draft",
   SEALED: "sealed",

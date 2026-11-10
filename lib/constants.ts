@@ -26,8 +26,8 @@ export const DB_CONNECTION_TIMEOUT_MS = 10_000
 
 /** Ceiling of the wait for a transaction to start (Prisma `maxWait`). */
 export const DB_TRANSACTION_MAX_WAIT_MS = DB_CONNECTION_TIMEOUT_MS
-/** Ceiling of a transaction's run, lock waits included (Prisma `timeout`). */
-export const DB_TRANSACTION_TIMEOUT_MS = 2 * DB_STATEMENT_TIMEOUT_MS
+/** Ceiling of a transaction's run (Prisma `timeout`): room for a few bounded statements plus the advisory-lock wait. */
+export const DB_TRANSACTION_TIMEOUT_MS = 60_000
 /** The options of a transaction that advances a corpus version or commits an ingest. */
 export const DB_LONG_TRANSACTION_OPTIONS = {
   maxWait: DB_TRANSACTION_MAX_WAIT_MS,

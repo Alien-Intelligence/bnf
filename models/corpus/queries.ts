@@ -5,12 +5,11 @@
 // semantics live here. Imports only from @/lib/db and ./schema.
 import "server-only"
 
-import { DB_LONG_TRANSACTION_OPTIONS } from "@/lib/constants"
 import { prisma } from "@/lib/db"
-import type { Prisma } from "@/lib/generated/prisma/client"
 import {
   corpusVersionWithArks,
   documentRow,
+  type CorpusDb,
   type CorpusCrossFacets,
   type CorpusDiff,
   type CorpusFacetDimension,
@@ -40,7 +39,7 @@ export class CorpusQueries {
    * transaction, so the copy lands atomically with the new version.
    */
   static async copyMembership(
-    db: Prisma.TransactionClient,
+    db: CorpusDb,
     copy: { fromVersionId: string; toVersionId: string; excludeArks: readonly string[] },
   ): Promise<number> {
     return db.$executeRaw`
@@ -690,10 +689,7 @@ export class CorpusQueries {
   /** One count per predicate, in one transaction (one state of the corpus). */
   static async counts(wheres: ReadonlyArray<DocumentWhere>): Promise<number[]> {
     if (wheres.length === 0) return []
-    return prisma.$transaction(
-      wheres.map((where) => prisma.document.count({ where })),
-      DB_LONG_TRANSACTION_OPTIONS,
-    )
+    return prisma.$transaction(wheres.map((where) => prisma.document.count({ where })))
   }
 
   /**

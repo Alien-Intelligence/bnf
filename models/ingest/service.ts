@@ -43,7 +43,7 @@ import { ClusterRunner } from "@/lib/cluster/runner"
 import { requestOcrSync } from "@/lib/documents/ocr-sync-signal"
 import { DocumentQueries } from "@/models/documents/queries"
 import { DocumentService } from "@/models/documents/service"
-import { PAID_OCR_DEFAULT_BUDGET_USD } from "@/lib/constants"
+import { DB_LONG_TRANSACTION_OPTIONS, PAID_OCR_DEFAULT_BUDGET_USD } from "@/lib/constants"
 import { prisma } from "@/lib/db"
 import { env } from "@/lib/env"
 import { toInputJson } from "@/lib/validation/json"
@@ -628,7 +628,7 @@ export class IngestService {
     await IngestQueries.batch([
       ...ops,
       SessionQueries.invalidatePrompts(researchPromptsOf(job.projectId), prisma),
-    ])
+    ], DB_LONG_TRANSACTION_OPTIONS)
     requestOcrSync()
   }
 
@@ -735,7 +735,7 @@ export class IngestService {
     await IngestQueries.batch([
       ...ops,
       SessionQueries.invalidatePrompts(researchPromptsOf(job.projectId), prisma),
-    ])
+    ], DB_LONG_TRANSACTION_OPTIONS)
     requestOcrSync()
   }
 
@@ -898,7 +898,7 @@ export class IngestService {
       CorpusQueries.versionStatusOp(targetVersionId, CORPUS_VERSION_STATUS.INGESTED),
       ProjectQueries.updateOp(project.id, { ingestedVersionId: targetVersionId }),
       SessionQueries.invalidatePrompts(researchPromptsOf(project.id), prisma),
-    ])
+    ], DB_LONG_TRANSACTION_OPTIONS)
     return job
   }
 
