@@ -5,7 +5,9 @@
 // semantics live here. Imports only from @/lib/db and ./schema.
 import "server-only"
 
+import { DB_LONG_TRANSACTION_OPTIONS } from "@/lib/constants"
 import { prisma } from "@/lib/db"
+import type { Prisma } from "@/lib/generated/prisma/client"
 import {
   corpusVersionWithArks,
   documentRow,
@@ -28,6 +30,25 @@ export class CorpusQueries {
       where: { projectId_seq: { projectId, seq } },
       ...corpusVersionWithArks,
     })
+  }
+
+  /**
+   * Copies a version's membership into another version in ONE statement run by
+   * the database, leaving out `excludeArks`. A large corpus is tens of
+   * thousands of rows: reading them into Node and writing them back inside the
+   * advancing transaction is what outran its timeout. `db` is the advancing
+   * transaction, so the copy lands atomically with the new version.
+   */
+  static async copyMembership(
+    db: Prisma.TransactionClient,
+    copy: { fromVersionId: string; toVersionId: string; excludeArks: readonly string[] },
+  ): Promise<number> {
+    return db.$executeRaw`
+      INSERT INTO corpus_membership (version_id, ark, project_id)
+      SELECT ${copy.toVersionId}, ark, project_id
+      FROM corpus_membership
+      WHERE version_id = ${copy.fromVersionId}
+        AND ark <> ALL(${[...copy.excludeArks]}::text[])`
   }
 
   /** Statement: set a corpus version's status (for composition in a batch transaction). */
@@ -669,7 +690,10 @@ export class CorpusQueries {
   /** One count per predicate, in one transaction (one state of the corpus). */
   static async counts(wheres: ReadonlyArray<DocumentWhere>): Promise<number[]> {
     if (wheres.length === 0) return []
-    return prisma.$transaction(wheres.map((where) => prisma.document.count({ where })))
+    return prisma.$transaction(
+      wheres.map((where) => prisma.document.count({ where })),
+      DB_LONG_TRANSACTION_OPTIONS,
+    )
   }
 
   /**

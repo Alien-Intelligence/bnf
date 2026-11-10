@@ -18,6 +18,7 @@ import { BnfDirectClient } from "@/lib/bnf/direct"
 import {
   BNF_CANONICALIZE_BUDGET_MS,
   CORPUS_REMOVE_PREVIEW_LIMIT,
+  DB_LONG_TRANSACTION_OPTIONS,
 } from "@/lib/constants"
 import { prisma } from "@/lib/db"
 import { sourceFromArk } from "@/lib/mcp/vocab"
@@ -323,7 +324,7 @@ export class CorpusService {
         versionStatus: newVersion.status as CorpusSnapshot["versionStatus"],
         total,
       }
-    })
+    }, DB_LONG_TRANSACTION_OPTIONS)
 
     // --- Record session attribution (optional) --------------------------------
     // Tag every supplied (deduped) ARK with the contributing session — including
@@ -434,7 +435,7 @@ export class CorpusService {
         where: { versionId: newVersion.id },
       })
       return { versionSeq: newVersion.seq, total }
-    })
+    }, DB_LONG_TRANSACTION_OPTIONS)
 
     // The notice is no longer a member; clear its stale status to keep the row tidy.
     await prisma.document.update({
@@ -493,7 +494,7 @@ export class CorpusService {
         data: { canonicalStatus: null },
       })
       return removeArks.length
-    })
+    }, DB_LONG_TRANSACTION_OPTIONS)
   }
 
   /**
@@ -547,7 +548,7 @@ export class CorpusService {
         versionStatus: newVersion.status as CorpusSnapshot["versionStatus"],
         total,
       }
-    })
+    }, DB_LONG_TRANSACTION_OPTIONS)
 
     // Build the comprehension snapshot from the committed head; override the
     // counters with the tx-captured values.

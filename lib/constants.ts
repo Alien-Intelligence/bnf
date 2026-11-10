@@ -20,6 +20,20 @@ export const DB_STATEMENT_TIMEOUT_MS = 30_000
 /** Ceiling of the wait for a pooled connection (pg `connectionTimeoutMillis`). */
 export const DB_CONNECTION_TIMEOUT_MS = 10_000
 
+// Prisma's default transaction bounds (2 s wait, 5 s run) are too tight for a
+// commit on a large corpus; the transactions that advance a version or commit
+// an ingest pass this pair instead.
+
+/** Ceiling of the wait for a transaction to start (Prisma `maxWait`). */
+export const DB_TRANSACTION_MAX_WAIT_MS = DB_CONNECTION_TIMEOUT_MS
+/** Ceiling of a transaction's run, lock waits included (Prisma `timeout`). */
+export const DB_TRANSACTION_TIMEOUT_MS = 2 * DB_STATEMENT_TIMEOUT_MS
+/** The options of a transaction that advances a corpus version or commits an ingest. */
+export const DB_LONG_TRANSACTION_OPTIONS = {
+  maxWait: DB_TRANSACTION_MAX_WAIT_MS,
+  timeout: DB_TRANSACTION_TIMEOUT_MS,
+} as const
+
 import { OCR_CORRECTION_MARKING_MODE } from "@/models/notes/schema"
 import type { OcrCorrectionMarking } from "@/models/notes/schema"
 
