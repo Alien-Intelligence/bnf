@@ -65,6 +65,19 @@ export const ClusterRunner = {
     return ClusterClient.workerHealthy(signal)
   },
 
+  /**
+   * Ask the worker to re-send an abandoned run's terminal result (real mode
+   * only: the fake runner never abandons a callback, so reaching this in fake
+   * mode is a wiring bug and throws).
+   */
+  async redeliver(clusterJobId: string): Promise<boolean> {
+    const mode = clusterMode()
+    if (mode !== CLUSTER_MODE.REAL) {
+      throw new Error(`ClusterRunner.redeliver: no worker in CLUSTER_MODE=${mode}`)
+    }
+    return ClusterClient.redeliver(clusterJobId)
+  },
+
   async cancel(clusterJobId: string): Promise<void> {
     return clusterMode() === CLUSTER_MODE.REAL
       ? ClusterClient.cancel(clusterJobId)

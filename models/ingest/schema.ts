@@ -58,6 +58,21 @@ export const CLUSTER_POLL = {
 } as const
 export type ClusterPoll = (typeof CLUSTER_POLL)[keyof typeof CLUSTER_POLL]
 
+/**
+ * Where a run's terminal callback stands, as the worker's progress read-model
+ * reports it (`terminalDelivery`). `abandoned` = the worker gave up delivering
+ * the result after repeated callback failures: the run finished but the app
+ * never heard, and only a redeliver request (POST /ingest/:runId/redeliver)
+ * makes the worker send it again.
+ */
+export const CLUSTER_TERMINAL_DELIVERY = {
+  PENDING: "pending",
+  EMITTED: "emitted",
+  ABANDONED: "abandoned",
+} as const
+export type ClusterTerminalDelivery =
+  (typeof CLUSTER_TERMINAL_DELIVERY)[keyof typeof CLUSTER_TERMINAL_DELIVERY]
+
 /** Cost estimate for transcribing a set of `sans_texte` documents via paid OCR. */
 export interface PaidOcrEstimate {
   /** Number of `sans_texte` documents the estimate covers. */

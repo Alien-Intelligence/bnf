@@ -302,6 +302,22 @@ export class ClusterClient {
     return read.answer
   }
 
+  /**
+   * POST /ingest/:id/redeliver — ask the worker to re-send the terminal result
+   * of a run whose callback it gave up on. true: accepted, the worker re-POSTs
+   * on its next sweep. false: 409, the run is not abandoned (it was already
+   * re-opened, delivered or canceled) — nothing to do. Anything else (404, 5xx,
+   * transport) throws: the watchdog logs it and the next window asks again.
+   */
+  static async redeliver(clusterJobId: string): Promise<boolean> {
+    const res = await postJson(`/ingest/${encodeURIComponent(clusterJobId)}/redeliver`, {})
+    if (res.ok) return true
+    if (res.status === 409) return false
+    throw new Error(
+      `ClusterClient.redeliver: worker returned ${res.status} ${res.statusText}: ${res.text}`,
+    )
+  }
+
   static async cancel(clusterJobId: string): Promise<void> {
     const res = await postJson(`/ingest/${encodeURIComponent(clusterJobId)}/cancel`, {})
     if (!res.ok && res.status !== 404) {

@@ -344,3 +344,32 @@ test("progress: a 200 that is not a read-model is a contract break and throws", 
     await assert.rejects(ClusterClient.progress("run-1"), /invalid worker read-model/)
   })
 })
+
+test("progress: terminalDelivery is carried through; an unknown value is a contract break", async () => {
+  for (const terminalDelivery of ["pending", "emitted", "abandoned"] as const) {
+    await withStubWorker({ status: 200, body: JSON.stringify({ ...READ_MODEL, terminalDelivery }) }, async () => {
+      const poll = await ClusterClient.progress("run-1")
+      assert.equal(poll.kind === CLUSTER_POLL.PROGRESS && poll.progress.terminalDelivery, terminalDelivery)
+    })
+  }
+  await withStubWorker({ status: 200, body: JSON.stringify({ ...READ_MODEL, terminalDelivery: "lost" }) }, async () => {
+    await assert.rejects(ClusterClient.progress("run-1"), /invalid worker read-model/)
+  })
+})
+
+test("redeliver: 2xx → true; 409 (not abandoned) → false; 404 and 5xx throw; stalled body times out", async () => {
+  await withStubWorker({ status: 200, body: '{"redelivering":true}' }, async () => {
+    assert.equal(await ClusterClient.redeliver("run-1"), true)
+  })
+  await withStubWorker({ status: 409, body: '{"error":"run is not abandoned"}' }, async () => {
+    assert.equal(await ClusterClient.redeliver("run-1"), false)
+  })
+  for (const status of [404, 500]) {
+    await withStubWorker({ status, body: "nope" }, async () => {
+      await assert.rejects(ClusterClient.redeliver("run-1"), new RegExp(`returned ${status}`))
+    })
+  }
+  await withStubWorker("stall-body", async () => {
+    await assert.rejects(ClusterClient.redeliver("run-1"), /timed out/)
+  })
+})
