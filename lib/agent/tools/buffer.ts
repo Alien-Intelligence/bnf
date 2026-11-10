@@ -24,6 +24,7 @@ import {
   BUFFER_SAMPLE_SIZE,
   BUFFER_SEARCH_DEFAULT_PAGE_SIZE_BY_SOURCE,
   BUFFER_SEARCH_MAX_PAGE_SIZE_BY_SOURCE,
+  CORPUS_MUTATION_MAX_ARKS,
   CORPUS_REASON_MAX_LEN,
   CORPUS_SEARCH_SAMPLE_SIZE,
 } from "@/lib/constants"
@@ -87,7 +88,7 @@ import {
 } from "@/lib/agent/stream-events"
 import { AGENT_TOOLS } from "./constants"
 import { provisionalTotal } from "./provisional-total"
-import { attemptCorpusWrite, WRITE_INTACT } from "./write-failure"
+import { attemptWrite, WRITE_INTACT } from "./write-failure"
 
 const facetDimensionEnum = z.enum(["period", "type", "kind", "lang", "source"])
 
@@ -326,7 +327,7 @@ export const bufferAddTool = defineTool<
     arks: z
       .array(arkSchema)
       .min(1)
-      .max(5_000)
+      .max(CORPUS_MUTATION_MAX_ARKS)
       .describe('BnF ARK identifiers to stage, e.g. ["ark:/12148/bpt6k2839841"].'),
   }),
   handler: async (input, ctx) => {
@@ -382,14 +383,18 @@ export const bufferDiscardTool = defineTool<
     arks: z
       .array(arkSchema)
       .min(1)
-      .max(5_000)
+      .max(CORPUS_MUTATION_MAX_ARKS)
       .describe("BnF ARK identifiers to discard from the buffer."),
   }),
   handler: async (input, ctx) => {
     const gate = await authorizeProjectTool(ctx, BufferPolicy, "mutate")
     if (!gate.ok) return gate.result
     const projectId = gate.project.id
-    const discarded = await BufferService.discard(projectId, input.arks)
+    const attempt = await attemptWrite(AGENT_TOOLS.bufferDiscard, WRITE_INTACT.DISCARD, () =>
+      BufferService.discard(projectId, input.arks),
+    )
+    if (!attempt.ok) return attempt.result
+    const discarded = attempt.value
     const total = await emitBuffer(ctx, projectId, BUFFER_EVENT_KIND.REMOVED, discarded)
     return { discarded, total }
   },
@@ -437,7 +442,7 @@ export const bufferCommitTool = defineTool<
 
     // A failed commit is a SYSTEM failure the model must read as one, never as a
     // size limit (write-failure.ts): the candidates stay staged.
-    const attempt = await attemptCorpusWrite(AGENT_TOOLS.bufferCommit, WRITE_INTACT.BUFFER, () =>
+    const attempt = await attemptWrite(AGENT_TOOLS.bufferCommit, WRITE_INTACT.BUFFER, () =>
       BufferService.commit(project, ctx.user, {
         sessionId: ctx.appSessionId,
         reason: input.reason,
@@ -500,7 +505,11 @@ export const bufferClearTool = defineTool<z.ZodObject<Record<string, never>>, Tu
     const gate = await authorizeProjectTool(ctx, BufferPolicy, "mutate")
     if (!gate.ok) return gate.result
     const projectId = gate.project.id
-    const cleared = await BufferService.clear(projectId)
+    const attempt = await attemptWrite(AGENT_TOOLS.bufferClear, WRITE_INTACT.CLEAR, () =>
+      BufferService.clear(projectId),
+    )
+    if (!attempt.ok) return attempt.result
+    const cleared = attempt.value
     await emitBuffer(ctx, projectId, BUFFER_EVENT_KIND.CLEARED, cleared)
     return { cleared }
   },

@@ -26,7 +26,7 @@ import { BufferService } from "@/models/buffer/service"
 import { CorpusService } from "@/models/corpus/service"
 import { SESSION_SCOPE } from "@/models/sessions/schema"
 import type { PolicyUser } from "@/models/users/schema"
-import { bufferCommitTool } from "./buffer"
+import { bufferClearTool, bufferCommitTool, bufferDiscardTool } from "./buffer"
 import { AGENT_TOOLS } from "./constants"
 import { corpusAddTool, corpusRemoveByFilterTool, corpusRemoveTool } from "./corpus"
 import { SYSTEM_FAILURE_CODE } from "./failure"
@@ -85,6 +85,24 @@ const TOOLS: readonly Failing[] = [
       })
     },
     call: () => bufferCommitTool.handler({ reason: "test" }, ctx()),
+  },
+  {
+    name: AGENT_TOOLS.bufferDiscard,
+    arm: (t, err) => {
+      t.mock.method(BufferService, "discard", async () => {
+        throw err
+      })
+    },
+    call: () => bufferDiscardTool.handler({ arks: [ARK] }, ctx()),
+  },
+  {
+    name: AGENT_TOOLS.bufferClear,
+    arm: (t, err) => {
+      t.mock.method(BufferService, "clear", async () => {
+        throw err
+      })
+    },
+    call: () => bufferClearTool.handler({}, ctx()),
   },
   {
     name: AGENT_TOOLS.corpusAdd,

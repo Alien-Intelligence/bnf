@@ -1,5 +1,5 @@
 // lib/agent/tools/write-failure.ts
-// A failed corpus write, as the model reads it.
+// A failed corpus or buffer write, as the model reads it.
 //
 // The SDK turns an exception thrown by a handler into the text
 // `Tool "buffer_commit" failed: <raw Prisma message>` — a transaction-timeout
@@ -7,7 +7,7 @@
 // a size cap (prod, 2026-10-27: « le serveur plafonne à ~500 documents »), then
 // discards candidates to route around a limit that does not exist.
 //
-// So every corpus-advancing tool runs its write through `guardCorpusWrite`: a
+// So every tool that mutates the corpus or the buffer runs its write through `guardCorpusWrite`: a
 // failure becomes the one failure shape of failure.ts (`success: false`, a stable
 // `code`, `retryable`, a French message that says it is a SYSTEM error, never a
 // size limit) and is logged with the real error server-side (CLAUDE_ERROR_PATTERNS
@@ -32,6 +32,10 @@ export const WRITE_INTACT = {
     "(les ARK déjà versés au corpus comptent comme doublons) : la relancer à l'identique est sans risque.",
   /** corpus_add / corpus_remove*: the version advance is one transaction. */
   CORPUS: "Le corpus est inchangé : l'opération a été annulée.",
+  /** buffer_discard: one UPDATE statement, so it applies to every row or to none. */
+  DISCARD: "Aucun candidat n'a été écarté (une seule requête, annulée en bloc) : le tampon est inchangé.",
+  /** buffer_clear: one DELETE statement, so it applies to every row or to none. */
+  CLEAR: "Aucun candidat n'a été supprimé (une seule requête, annulée en bloc) : le tampon est inchangé.",
 } as const
 export type WriteIntact = (typeof WRITE_INTACT)[keyof typeof WRITE_INTACT]
 
@@ -71,7 +75,7 @@ function failureMessage(intact: WriteIntact, retryable: boolean): string {
 }
 
 /** The failure result for `err`, after logging it with the real error. */
-export function corpusWriteFailure(tool: string, err: unknown, intact: WriteIntact): ToolSystemFailure {
+export function writeFailure(tool: string, err: unknown, intact: WriteIntact): ToolSystemFailure {
   console.error(`[${tool}] write failed`, err)
   const code = prismaCode(err)
   const retryable = code !== null && TRANSIENT_PRISMA_CODES.has(code)
@@ -92,7 +96,7 @@ export type WriteAttempt<T> = { ok: true; value: T } | { ok: false; result: Tool
  * caller's input being refused (an `invalid_params` refusal built by
  * `refusingBadFilterValues`), not a system failure, so it passes through.
  */
-export async function attemptCorpusWrite<T>(
+export async function attemptWrite<T>(
   tool: string,
   intact: WriteIntact,
   run: () => Promise<T>,
@@ -101,6 +105,6 @@ export async function attemptCorpusWrite<T>(
     return { ok: true, value: await run() }
   } catch (err) {
     if (err instanceof FilterValueError) throw err
-    return { ok: false, result: corpusWriteFailure(tool, err, intact) }
+    return { ok: false, result: writeFailure(tool, err, intact) }
   }
 }

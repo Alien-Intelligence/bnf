@@ -24,7 +24,7 @@ import "server-only"
 
 import { z } from "zod"
 import { defineTool } from "@alien/chat-sdk/claude"
-import { CORPUS_REASON_MAX_LEN } from "@/lib/constants"
+import { CORPUS_MUTATION_MAX_ARKS, CORPUS_REASON_MAX_LEN } from "@/lib/constants"
 import { kickCanonicalize } from "@/lib/documents/canonicalizer"
 import { kickResolve } from "@/lib/documents/resolver"
 import { sourceFromArk } from "@/lib/mcp/vocab"
@@ -42,7 +42,7 @@ import { CORPUS_ACCESS_REVOKED_ERROR } from "./ingestion-guard"
 import { CORPUS_EVENT_KIND, emitDomainEvent, STREAM_DOMAIN_EVENT } from "@/lib/agent/stream-events"
 import { AGENT_TOOLS } from "./constants"
 import { provisionalTotal } from "./provisional-total"
-import { attemptCorpusWrite, WRITE_INTACT } from "./write-failure"
+import { attemptWrite, WRITE_INTACT } from "./write-failure"
 
 // ---------------------------------------------------------------------------
 // Shared filter schema: models/corpus/types.ts (one definition with REST)
@@ -297,7 +297,7 @@ export const corpusAddTool = defineTool<
     arks: z
       .array(arkSchema)
       .min(1)
-      .max(5_000)
+      .max(CORPUS_MUTATION_MAX_ARKS)
       .describe(
         "List of BnF ARK identifiers to add (e.g. [\"ark:/12148/bpt6k2839841\"]).",
       ),
@@ -321,7 +321,7 @@ export const corpusAddTool = defineTool<
 
     // A failed add is a SYSTEM failure the model must read as one, never as a
     // size limit (write-failure.ts).
-    const attempt = await attemptCorpusWrite(AGENT_TOOLS.corpusAdd, WRITE_INTACT.CORPUS, () =>
+    const attempt = await attemptWrite(AGENT_TOOLS.corpusAdd, WRITE_INTACT.CORPUS, () =>
       CorpusService.addArks(
         project,
         ctx.user,
@@ -401,7 +401,7 @@ export const corpusRemoveTool = defineTool<
     arks: z
       .array(arkSchema)
       .min(1)
-      .max(5_000)
+      .max(CORPUS_MUTATION_MAX_ARKS)
       .describe("List of BnF ARK identifiers to remove."),
     reason: z
       .string()
@@ -418,7 +418,7 @@ export const corpusRemoveTool = defineTool<
     if (!gate.ok) return gate.result
     const project = gate.project
 
-    const attempt = await attemptCorpusWrite(AGENT_TOOLS.corpusRemove, WRITE_INTACT.CORPUS, () =>
+    const attempt = await attemptWrite(AGENT_TOOLS.corpusRemove, WRITE_INTACT.CORPUS, () =>
       CorpusService.removeArks(project, ctx.user, {
         arks: input.arks,
         reason: input.reason,
@@ -504,7 +504,7 @@ export const corpusRemoveByFilterTool = defineTool<
       if (!gate.ok) return gate.result
       const project = gate.project
 
-      const attempt = await attemptCorpusWrite(AGENT_TOOLS.corpusRemoveByFilter, WRITE_INTACT.CORPUS, () =>
+      const attempt = await attemptWrite(AGENT_TOOLS.corpusRemoveByFilter, WRITE_INTACT.CORPUS, () =>
         CorpusService.removeByFilter(project, ctx.user, {
           filters: input.filters,
           reason: input.reason,
