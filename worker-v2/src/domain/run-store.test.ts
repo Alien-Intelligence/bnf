@@ -148,6 +148,32 @@ contract(
   pool ? {} : { skip: "WORKER_TEST_DATABASE_URL is not set — the Postgres store is not exercised" },
 );
 
+if (pool) {
+  test("postgres: a row given up before the column existed is reported abandoned after the schema applies; a user cancel stays pending", async () => {
+    const store = new PgRunStore(pool);
+    await new PgDocState(pool).migrate();
+    const legacy = input();
+    const userCanceled = input();
+    for (const i of [legacy, userCanceled]) await store.create(i);
+    // As written by the old code: give-up = canceled + counter, no flag.
+    await pool.query(
+      `UPDATE sandbox_ingest_v2.ingest_run SET canceled = true, terminal_post_failures = 121 WHERE run_id = $1`,
+      [legacy.runId],
+    );
+    await store.markCanceled(userCanceled.runId);
+    assert.equal((await store.get(legacy.runId))!.terminalAbandoned, false, "before the schema re-applies");
+
+    await new PgDocState(pool).migrate();
+
+    assert.equal(terminalDeliveryOf((await store.get(legacy.runId))!), TERMINAL_DELIVERY.ABANDONED);
+    assert.equal(terminalDeliveryOf((await store.get(userCanceled.runId))!), TERMINAL_DELIVERY.PENDING);
+    // Idempotent, and a redelivered row does not match again.
+    assert.equal(await store.redeliverAbandoned(legacy.runId), true);
+    await new PgDocState(pool).migrate();
+    assert.equal(terminalDeliveryOf((await store.get(legacy.runId))!), TERMINAL_DELIVERY.PENDING);
+  });
+}
+
 after(async () => {
   await pool?.end();
 });

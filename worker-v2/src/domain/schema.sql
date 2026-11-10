@@ -55,6 +55,15 @@ ALTER TABLE sandbox_ingest_v2.ingest_run
 ALTER TABLE sandbox_ingest_v2.ingest_run
   ADD COLUMN IF NOT EXISTS terminal_abandoned boolean NOT NULL DEFAULT false;
 
+-- Backfill for rows given up before the column existed. Only the callback
+-- give-up increments terminal_post_failures before setting canceled; a user
+-- cancel does not touch the counter. Once redelivered (canceled cleared) or
+-- newly given up (flag set) a row never matches again, so this is safe on
+-- every boot.
+UPDATE sandbox_ingest_v2.ingest_run
+   SET terminal_abandoned = true
+ WHERE canceled AND NOT terminal_emitted AND terminal_post_failures > 0 AND NOT terminal_abandoned;
+
 CREATE TABLE IF NOT EXISTS sandbox_ingest_v2.document_ingest_job_v2 (
   doc_job_id     text PRIMARY KEY,
   run_id         text,                       -- groups docs by ingest_run (null for seed-CLI docs)
