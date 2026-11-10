@@ -334,8 +334,8 @@ worker:
 # requires it).
 #
 # ⚠️ The broker runs as EXACTLY ONE replica (hard-pinned in the Deployment, not
-# configurable here): its rate buckets + token are in-memory per pod, and the
-# per-IP manifest cap requires a single egress IP. Do not try to scale it.
+# configurable here): its rate buckets + token are in-memory per pod, so a
+# second replica would multiply every quota. Do not try to scale it.
 # ===========================================================================
 broker:
   enabled: true
@@ -357,8 +357,9 @@ broker:
     apiBaseUrl: https://openapiproext.bnf.fr
 
     # THE BnF rates — the one place they live. The ingestion subscription
-    # (the broker's key): `quota` is BnF's per-minute allowance, `rpm`/`burst`
-    # what we send. The broker renders BNF_<BUCKET>_RPM/_BURST from every
+    # (the broker's key): `quota` is BnF's per-minute allowance (for global,
+    # manifest and external, which BnF does not cap, our own ceiling),
+    # `rpm`/`burst` what we send. The broker renders BNF_<BUCKET>_RPM/_BURST from every
     # bucket (all required). The worker reads six of them and derives its gates:
     # ALTO + image fetches share a bulk limit of global minus the manifest,
     # catalogue and graphe rpm (raising one of those lowers the worker's fetch

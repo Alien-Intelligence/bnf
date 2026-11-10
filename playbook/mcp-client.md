@@ -38,10 +38,12 @@ The ingest worker is a third egress (IIIF manifest/ALTO/image via
 | User-facing Gallica links / `<img>` | derived URLs (`lib/constants.ts`) → public `gallica.bnf.fr`, in the browser | ❌ (by design) |
 
 The broker holds the BnF **ingestion** KEY/SECRET and enforces that
-subscription's rate model: a global cap, one quota per BnF API (Presentation,
-Image, legacy Gallica-IIIF, catalogue, SRU, graphe, date-périodique, TDM —
-classified by path prefix; an unknown partner path is refused), and the per-IP
-manifest limit. The bucket table, the required `BNF_*_RPM`/`_BURST` env and the
+subscription's rate model: one quota per BnF API (Presentation, Image,
+legacy Gallica-IIIF, catalogue, SRU, graphe, date-périodique, TDM — classified
+by path prefix; an unknown partner path is refused), plus two ceilings of our
+own: a global one over all of them (the subscription states no overall cap)
+and a manifest one (manifests count against Presentation; the manifest is the
+one resource BnF computes per call). The bucket table, the required `BNF_*_RPM`/`_BURST` env and the
 margin rule are in `broker/README.md`. The app and worker hold **no** BnF
 credentials. See [ingestion-jobs.md](ingestion-jobs.md).
 

@@ -4,7 +4,7 @@
  *
  * The broker (broker/ service) is the single egress chokepoint for all BnF
  * traffic: it owns the OAuth token and enforces the ingestion subscription's
- * rate model (a global cap, one quota per BnF API, the per-IP manifest limit —
+ * rate model (a global ceiling, one quota per BnF API, a manifest ceiling —
  * broker/README.md). Every BnF fetch in V2 goes through it; the broker selects
  * auth + rate buckets from the URL and mirrors the upstream status + bytes
  * verbatim.

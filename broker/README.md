@@ -6,7 +6,7 @@ The single egress chokepoint for the BnF traffic of the bnf demo (app metadata r
 
 - **OAuth token** — single-flight client_credentials mint, ~1h bearer, re-minted at expiry − skew. The BnF `KEY`/`SECRET` live ONLY here.
 - **Rate governance** — one token bucket per quota of the ingestion subscription (`src/plan.ts`):
-  - `global` — the subscription's cap over every partner API together;
+  - `global` — our ceiling over every partner API together (the ingestion subscription states per-API quotas and no overall cap);
   - one bucket per partner API, classified by path prefix on the partner host (the version segment is excluded, so `…/1.0.1/…` classifies the same):
 
     | Bucket | Path prefix | BnF API |
@@ -20,7 +20,7 @@ The single egress chokepoint for the BnF traffic of the bnf demo (app metadata r
     | `datePeriodique` | `/date/periodique/gallica/` | DATE_PERIODIQUE |
     | `documentTdm` | `/document/tdm/gallica/` | DOCUMENT_TDM |
 
-  - `manifest` — the per-IP sub-limit on IIIF manifests (`…/presentation/vN/…/manifest.json`, on the new and the legacy API alike);
+  - `manifest` — our ceiling on IIIF manifests (`…/presentation/vN/…/manifest.json`, on the new and the legacy API alike). On the Presentation API, manifests count against the presentation quota; the per-IP 40/min was the legacy API's. The manifest is the one Presentation resource BnF computes per call, so we cap it;
   - `external` — politeness for the ungated `oai`/`catalogue`/`data` hosts; not a BnF quota.
 - **Acquire** — a request takes `[manifest?] + api + global`, most specific first, under ONE wait budget (`BNF_ACQUIRE_MAX_WAIT_MS`, measured from its arrival). If any bucket cannot grant within it, the request is shed with a 429 and the tokens it already took are refunded (nothing was sent for them).
 - **Unknown partner paths are refused** — a partner-host path outside the eight prefixes gets 403 `unclassified partner-API path: <path>`, logged with note `unclassified`. It is never charged to a guessed bucket, and never sent on `global` alone (it could breach a quota we do not model). A new BnF API is a new row in `PARTNER_API_PREFIXES` plus its rates.

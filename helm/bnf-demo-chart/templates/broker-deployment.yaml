@@ -1,13 +1,13 @@
 {{- if .Values.broker.enabled }}
 # BnF broker — the single egress chokepoint for ALL BnF traffic (app metadata
 # resolver + ingest worker). It owns the OAuth token and enforces the ingestion
-# subscription's rate model (global cap, one quota per BnF API, the per-IP
-# manifest limit, politeness — broker/README.md).
+# subscription's rate model (one quota per BnF API, our global and manifest
+# ceilings, politeness — broker/README.md).
 #
 # ⚠️ replicas is HARD-PINNED to 1 and intentionally NOT exposed in values.yaml.
 # The rate buckets and the OAuth token are in-memory PER POD. A second replica
-# would get its own buckets AND its own egress IP, silently multiplying the
-# per-credential cap and breaking the per-IP manifest cap → 429 storms. If this
+# would get its own buckets, silently multiplying every per-credential quota
+# → 429 storms. If this
 # ever needs HA, the buckets must move to shared state (Redis) first.
 #
 # Recreate (not RollingUpdate): a rolling deploy would briefly run two pods =

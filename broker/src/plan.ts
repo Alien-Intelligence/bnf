@@ -5,7 +5,7 @@
  * The model is the BnF INGESTION subscription (ai-memories/tech/repos/bnf/
  * feedback-2026-09-29, Track D): one GLOBAL per-minute cap over every partner
  * API, one per-minute quota PER API (Presentation, Image, legacy Gallica-IIIF,
- * catalogue, …), the per-IP MANIFEST sub-limit, and a politeness bucket for the
+ * catalogue, …), our MANIFEST ceiling, and a politeness bucket for the
  * ungated hosts. Pure: no env, no I/O — server.ts hands in the partner host and
  * the configured rates, so every rule here is unit-tested without booting.
  */
@@ -75,7 +75,7 @@ export function apiBucketFor(pathname: string): ApiBucket | null {
  *
  * - Partner host, known API: acquire `[api, global]`, freeze `api` on a 429.
  *   A manifest takes the manifest sub-bucket first and a 429 freezes only it
- *   (a per-IP limit, so it applies on the legacy and the new API alike).
+ *   (our ceiling, on the legacy and the new API alike).
  *   Acquire order is most specific → global, so a request waiting on a scarce
  *   API bucket holds no global token and global stays FIFO across APIs.
  * - Partner host, unknown path: REJECT. Charging a default bucket would be a
