@@ -311,11 +311,14 @@ export const CORPUS_REMOVE_PREVIEW_LIMIT = 50
 export const CORPUS_REASON_MAX_LEN = 1_000
 
 /**
- * REST corpus mutations (POST /corpus/add, /corpus/remove): ARKs per call and
- * the length of the human-readable reason. The REST bound is tighter than the
- * agent's CORPUS_REASON_MAX_LEN — a form field, not a model's justification.
+ * ARKs per corpus or buffer mutation, whether it comes from the REST routes
+ * (POST /corpus/add, /corpus/remove) or from an agent tool (corpus_*, buffer_*).
  */
 export const CORPUS_MUTATION_MAX_ARKS = 5_000
+/**
+ * Length of the human-readable reason on a REST corpus mutation. Tighter than
+ * the agent's CORPUS_REASON_MAX_LEN — a form field, not a model's justification.
+ */
 export const CORPUS_MUTATION_REASON_MAX_CHARS = 300
 
 /**
