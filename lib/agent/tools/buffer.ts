@@ -87,6 +87,7 @@ import {
 } from "@/lib/agent/stream-events"
 import { AGENT_TOOLS } from "./constants"
 import { provisionalTotal } from "./provisional-total"
+import { attemptCorpusWrite, WRITE_INTACT } from "./write-failure"
 
 const facetDimensionEnum = z.enum(["period", "type", "kind", "lang", "source"])
 
@@ -434,10 +435,16 @@ export const bufferCommitTool = defineTool<
     const project = gate.project
     const projectId = project.id
 
-    const result = await BufferService.commit(project, ctx.user, {
-      sessionId: ctx.appSessionId,
-      reason: input.reason,
-    })
+    // A failed commit is a SYSTEM failure the model must read as one, never as a
+    // size limit (write-failure.ts): the candidates stay staged.
+    const attempt = await attemptCorpusWrite(AGENT_TOOLS.bufferCommit, WRITE_INTACT.BUFFER, () =>
+      BufferService.commit(project, ctx.user, {
+        sessionId: ctx.appSessionId,
+        reason: input.reason,
+      }),
+    )
+    if (!attempt.ok) return attempt.result
+    const result = attempt.value
 
     // Background metadata resolution for the newly-added stubs + cb→Gallica
     // upgrade for any committed catalogue notices — same detachment and the

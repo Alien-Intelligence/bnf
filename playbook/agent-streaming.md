@@ -188,6 +188,11 @@ Rules:
   `toolFailure(error)` from `failure.ts` — `{ success: false, error, … }`, which
   `toolCallErrored` reads to turn the chip red. Handlers never throw out of the
   tool loop (CLAUDE_ERROR_PATTERNS §15).
+- A corpus write (`buffer_commit`, `corpus_add`, `corpus_remove*`) wraps ONLY its
+  service call in `attemptCorpusWrite` (`write-failure.ts`): a thrown error becomes
+  `{ success: false, code, retryable, error }` (`code` is `transaction_timeout` or
+  `system_error`) and is logged. Left to throw, the SDK hands the model the raw
+  Prisma text, which it read as a size limit and then discarded candidates.
 - Tool inputs are validated by their Zod `inputSchema`; checks that need a
   readable refusal (corpus_search's criteria) return `toolRefusal` instead of
   throwing.

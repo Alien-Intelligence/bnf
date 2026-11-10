@@ -1317,7 +1317,7 @@ export const MEMORY_NEAR_DUP_MAX_EDIT_DISTANCE = 4
  * where the seal is content-addressed from the rendered prompts, so a prompt
  * change cannot be recorded without a new revision.
  */
-export const PROMPT_REVISION = "2026-10-05.quoting-rules.6e9149ff8048"
+export const PROMPT_REVISION = "2026-11-10.write-failure-not-size-limit.ac7cacd5ca0e"
 
 // ---------------------------------------------------------------------------
 // CSV exports

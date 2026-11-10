@@ -42,6 +42,7 @@ import { CORPUS_ACCESS_REVOKED_ERROR } from "./ingestion-guard"
 import { CORPUS_EVENT_KIND, emitDomainEvent, STREAM_DOMAIN_EVENT } from "@/lib/agent/stream-events"
 import { AGENT_TOOLS } from "./constants"
 import { provisionalTotal } from "./provisional-total"
+import { attemptCorpusWrite, WRITE_INTACT } from "./write-failure"
 
 // ---------------------------------------------------------------------------
 // Shared filter schema: models/corpus/types.ts (one definition with REST)
@@ -318,20 +319,26 @@ export const corpusAddTool = defineTool<
     const project = gate.project
     const projectId = project.id
 
-    const result = await CorpusService.addArks(
-      project,
-      ctx.user,
-      {
-        arks: input.arks,
-        reason: input.reason,
-      },
-      // Record per-session attribution: tag every added ARK with this session
-      // so the corpus can later be filtered by which session contributed it.
-      ctx.appSessionId,
-      // Upgrade catalogue notices (cb…) to their digitized Gallica doc when one
-      // exists, so the corpus member is the consultable/citable/ingestable form.
-      { canonicalize: true },
+    // A failed add is a SYSTEM failure the model must read as one, never as a
+    // size limit (write-failure.ts).
+    const attempt = await attemptCorpusWrite(AGENT_TOOLS.corpusAdd, WRITE_INTACT.CORPUS, () =>
+      CorpusService.addArks(
+        project,
+        ctx.user,
+        {
+          arks: input.arks,
+          reason: input.reason,
+        },
+        // Record per-session attribution: tag every added ARK with this session
+        // so the corpus can later be filtered by which session contributed it.
+        ctx.appSessionId,
+        // Upgrade catalogue notices (cb…) to their digitized Gallica doc when one
+        // exists, so the corpus member is the consultable/citable/ingestable form.
+        { canonicalize: true },
+      ),
     )
+    if (!attempt.ok) return attempt.result
+    const result = attempt.value
 
     // Resolve the newly-added stubs' metadata in the background, after this
     // turn's response is flushed. Detached from the request — its MCP calls are
@@ -411,10 +418,14 @@ export const corpusRemoveTool = defineTool<
     if (!gate.ok) return gate.result
     const project = gate.project
 
-    const result = await CorpusService.removeArks(project, ctx.user, {
-      arks: input.arks,
-      reason: input.reason,
-    })
+    const attempt = await attemptCorpusWrite(AGENT_TOOLS.corpusRemove, WRITE_INTACT.CORPUS, () =>
+      CorpusService.removeArks(project, ctx.user, {
+        arks: input.arks,
+        reason: input.reason,
+      }),
+    )
+    if (!attempt.ok) return attempt.result
+    const result = attempt.value
 
     emitDomainEvent(ctx, {
       type: STREAM_DOMAIN_EVENT.CORPUS,
@@ -493,11 +504,15 @@ export const corpusRemoveByFilterTool = defineTool<
       if (!gate.ok) return gate.result
       const project = gate.project
 
-      const result = await CorpusService.removeByFilter(project, ctx.user, {
-        filters: input.filters,
-        reason: input.reason,
-        dryRun,
-      })
+      const attempt = await attemptCorpusWrite(AGENT_TOOLS.corpusRemoveByFilter, WRITE_INTACT.CORPUS, () =>
+        CorpusService.removeByFilter(project, ctx.user, {
+          filters: input.filters,
+          reason: input.reason,
+          dryRun,
+        }),
+      )
+      if (!attempt.ok) return attempt.result
+      const result = attempt.value
       if (result.status === REMOVE_BY_FILTER_STATUS.EMPTY_FILTER) {
         return toolRefusal(EMPTY_FILTER_REFUSAL, CORPUS_EMPTY_FILTER_ERROR)
       }

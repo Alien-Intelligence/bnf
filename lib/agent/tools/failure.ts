@@ -56,3 +56,24 @@ export async function refusingBadFilterValues<T>(
     throw err
   }
 }
+
+/**
+ * Stable machine-readable class of a system failure of a corpus write.
+ * `transaction_timeout` is a database transaction that ran out of time (Prisma
+ * P2028); `system_error` is every other failure of the write.
+ */
+export const SYSTEM_FAILURE_CODE = {
+  TRANSACTION_TIMEOUT: "transaction_timeout",
+  SYSTEM_ERROR: "system_error",
+} as const
+export type SystemFailureCode = (typeof SYSTEM_FAILURE_CODE)[keyof typeof SYSTEM_FAILURE_CODE]
+
+/**
+ * A tool call the SYSTEM failed (not the model's input, not a refusal):
+ * `retryable` says whether re-issuing the identical call can succeed.
+ */
+export type ToolSystemFailure = ToolFailure & { code: SystemFailureCode; retryable: boolean }
+
+export function toolSystemFailure(code: SystemFailureCode, retryable: boolean, error: string): ToolSystemFailure {
+  return { success: false, code, retryable, error }
+}

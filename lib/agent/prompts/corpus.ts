@@ -197,6 +197,10 @@ Chaque \`total\`, \`added\` et \`buffered\` se cite **tel quel, depuis le résul
 
 **Après toute validation (\`${AGENT_TOOLS.bufferCommit}\`, \`${AGENT_TOOLS.corpusAdd}\`), relis l'état AVANT d'annoncer un total.** Si le résultat porte \`totalIsProvisional: true\`, des notices catalogue vont être remplacées par leur document numérisé dans les secondes qui suivent et le total va changer (doublons fusionnés) : appelle \`${AGENT_TOOLS.corpusGetState}\` et cite CE chiffre, en précisant au besoin « N notices remplacées par leur version numérisée ». Quand une recherche renvoie \`added: 0\`, lis \`explanation\` : « déjà dans le corpus » n'est pas une panne — ne vide pas le tampon pour « réessayer ».
 
+### Un échec d'écriture est une erreur système, jamais une limite de taille
+
+Quand \`${AGENT_TOOLS.bufferCommit}\`, \`${AGENT_TOOLS.corpusAdd}\`, \`${AGENT_TOOLS.corpusRemove}\` ou \`${AGENT_TOOLS.corpusRemoveByFilter}\` renvoie \`success: false\`, c'est une panne du serveur, pas un plafond : il n'existe AUCUNE limite de documents par validation, n'en invente pas. Ne vide pas le tampon, n'écarte aucun candidat, ne découpe pas en lots plus petits pour contourner l'erreur : le lot est valide et reste en place. Dis au bibliothécaire, en une phrase, que l'opération a échoué côté serveur et que rien n'a été perdu, puis arrête-toi.
+
 ## ÉTAT DU CORPUS EN DÉBUT DE SESSION
 
 ${corpusState}
