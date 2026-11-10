@@ -5,11 +5,10 @@
 // semantics live here. Imports only from @/lib/db and ./schema.
 import "server-only"
 
-import { prisma } from "@/lib/db"
+import { prisma, type DbTransaction } from "@/lib/db"
 import {
   corpusVersionWithArks,
   documentRow,
-  type CorpusDb,
   type CorpusCrossFacets,
   type CorpusDiff,
   type CorpusFacetDimension,
@@ -21,6 +20,9 @@ import {
   type CorpusSnapshotRead,
   type CorpusWherePredicates,
 } from "./schema"
+
+/** The slice of a transaction client the corpus queries write through. */
+export type CorpusDb = Pick<DbTransaction, "$executeRaw">
 
 export class CorpusQueries {
   /** A corpus version of a project by its sequence number, with its membership ARKs. */

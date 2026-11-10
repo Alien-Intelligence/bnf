@@ -1,6 +1,6 @@
 import "server-only"
 import { PrismaPg } from "@prisma/adapter-pg"
-import { PrismaClient } from "@/lib/generated/prisma/client"
+import { PrismaClient, type Prisma } from "@/lib/generated/prisma/client"
 import { DB_CONNECTION_TIMEOUT_MS, DB_STATEMENT_TIMEOUT_MS } from "./constants"
 import { env } from "./env"
 
@@ -25,3 +25,6 @@ function makePrismaClient(): PrismaClient {
 const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient }
 export const prisma = globalForPrisma.prisma ?? makePrismaClient()
 if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma
+
+/** The client a transaction callback receives; model queries take slices of it. */
+export type DbTransaction = Prisma.TransactionClient
