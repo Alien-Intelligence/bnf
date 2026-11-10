@@ -121,8 +121,11 @@ type: application
 # and "cluster:dataset:entry" ids). RAG search and full-text reads failed since the MCP
 # upgrade. project.cluster_dataset_id becomes TEXT, nulled and re-resolved by slug.
 # App → 0.20.3; worker (0.20.4) and broker (0.20.2) unchanged.
-# 0.21.2 — chart-only: broker global bucket 1000 → 2000 (rpm 1900). The ingestion
-# subscription has no overall cap, and global capped ALTO well under its Presentation
-# rate (bulk 770 shared with images). Bulk is now 1720, so ALTO runs at Presentation's
-# 1425. No image change; broker and worker roll on the config checksum.
+# 0.21.2 — chart-only: the broker no longer holds ALTO under its Presentation rate.
+# The ingestion subscription has per-API caps and no overall cap, yet global was 1000
+# (ALTO + images shared 770/min), and the manifest bucket kept a legacy-API 40/min
+# although manifests count against the presentation quota (the worker started ~28
+# documents/min). global 1000 → 2100 (rpm 1995), manifest 40 → 100 (rpm 95): bulk is
+# 1758, above presentation + image, so presentation binds ALTO. No image change; broker
+# and worker roll on the config checksum.
 appVersion: "0.20.3"
