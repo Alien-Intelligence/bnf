@@ -290,7 +290,7 @@ worker:
     # the "alto" cache holds extracted text, not XML, so the word confidences
     # cannot be recovered without a re-fetch. Image lanes cost nothing. The stage
     # shares the worker's ALTO gate (presentation ∧ bulk ∧ global; bulk = global
-    # minus the manifest, catalogue and graphe rpm, 770/min) FIFO with live ingests,
+    # minus the manifest, catalogue and graphe rpm, 1720/min) FIFO with live ingests,
     # so live runs keep their share. Raise the concurrency off-hours to drain the
     # backlog faster; set enabled "false" to stop the BnF spend without a
     # rollback (existing artifacts stay served). Progress: `npm run status` in
@@ -373,14 +373,17 @@ broker:
     # max(1, floor(0.02 q)); the slack absorbs the app resolver, which shares
     # these buckets with the worker.
     #
-    # global is 1000 until the Track D ramp test measures the real cap (maybe
-    # 1500). manifest is the per-IP manifest limit BnF confirmed at 40/min on the
+    # global: the ingestion subscription states per-API caps only, no overall
+    # cap, so global is sized never to bind: its bulk share (1720) covers
+    # presentation + image (1710) and ALTO runs at the presentation rate.
+    # Lower it if BnF ever answers 429 on a call under its own API's rpm.
+    # manifest is the per-IP manifest limit BnF confirmed at 40/min on the
     # legacy API; whether it still applies on the Presentation API is asked of
     # the DSI and measured by the ramp test. external is politeness for the
     # ungated hosts (oai/catalogue/data.bnf.fr), not a BnF quota.
     # Raising a quota: edit its line, `helm upgrade` (broker/README.md).
     rates:
-      global:         { quota: "1000", rpm: "950",  burst: "20" }
+      global:         { quota: "2000", rpm: "1900", burst: "40" }
       presentation:   { quota: "1500", rpm: "1425", burst: "30" }
       image:          { quota: "300",  rpm: "285",  burst: "6" }
       iiifLegacy:     { quota: "1000", rpm: "950",  burst: "20" }
