@@ -32,3 +32,11 @@ export const WORKER_DOC_STATUS = {
   SKIPPED: "skipped",
   EXCLUDED: "excluded",
 } as const
+
+/** The HTTP statuses the cluster client compares against (the worker's contract). */
+export const WORKER_HTTP_STATUS = {
+  BAD_REQUEST: 400,
+  NOT_FOUND: 404,
+  CONFLICT: 409,
+  INTERNAL_SERVER_ERROR: 500,
+} as const

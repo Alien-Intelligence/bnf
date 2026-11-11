@@ -22,8 +22,10 @@
  * `terminal_post_failures` counter; past `maxCallbackFailures` the run is marked
  * canceled (suppressing further emit attempts via the existing canceled check in
  * `checkRun`/`emit`) and an error-level `terminal_callback_abandoned` is logged.
- * A human can resurrect an abandoned run by hand (resetTerminalEmitted + clearing
- * `canceled` directly in the DB) if the callback URL is ever fixed.
+ * An abandoned run is flagged `terminal_abandoned` (distinct from a user cancel)
+ * and reported as `terminalDelivery: "abandoned"` by GET /progress/:runId; the
+ * app watchdog (or an operator) re-opens it with POST /ingest/:runId/redeliver
+ * once the callback is healthy again.
  */
 import crypto from "node:crypto";
 
@@ -215,9 +217,11 @@ export class TerminalEmitter {
       });
       if (failures > this.maxCallbackFailures) {
         // The callback URL is permanently dead — stop letting the reconciler
-        // sweep re-drive it forever. markCanceled makes checkRun/emit's canceled
-        // check a no-op from here on (F8's guard, reused as the give-up path).
-        await this.runStore.markCanceled(run.runId);
+        // sweep re-drive it forever. The canceled flag makes checkRun/emit's
+        // check a no-op from here on (F8's guard, reused as the give-up path);
+        // the abandoned flag records that this was the give-up, not a user
+        // cancel, so POST /ingest/:runId/redeliver can re-open it.
+        await this.runStore.markTerminalAbandoned(run.runId);
         this.log.error("terminal_callback_abandoned", {
           runId: run.runId,
           appJobId: run.appJobId,

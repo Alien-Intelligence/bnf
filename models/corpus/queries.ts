@@ -5,7 +5,7 @@
 // semantics live here. Imports only from @/lib/db and ./schema.
 import "server-only"
 
-import { prisma } from "@/lib/db"
+import { prisma, type DbTransaction } from "@/lib/db"
 import {
   corpusVersionWithArks,
   documentRow,
@@ -21,6 +21,9 @@ import {
   type CorpusWherePredicates,
 } from "./schema"
 
+/** The slice of a transaction client the corpus queries write through. */
+export type CorpusDb = Pick<DbTransaction, "$executeRaw">
+
 export class CorpusQueries {
   /** A corpus version of a project by its sequence number, with its membership ARKs. */
   static async versionBySeq(projectId: string, seq: number): Promise<CorpusVersionWithArks> {
@@ -28,6 +31,25 @@ export class CorpusQueries {
       where: { projectId_seq: { projectId, seq } },
       ...corpusVersionWithArks,
     })
+  }
+
+  /**
+   * Copies a version's membership into another version in ONE statement run by
+   * the database, leaving out `excludeArks`. A large corpus is tens of
+   * thousands of rows: reading them into Node and writing them back inside the
+   * advancing transaction is what outran its timeout. `db` is the advancing
+   * transaction, so the copy lands atomically with the new version.
+   */
+  static async copyMembership(
+    db: CorpusDb,
+    copy: { fromVersionId: string; toVersionId: string; excludeArks: readonly string[] },
+  ): Promise<number> {
+    return db.$executeRaw`
+      INSERT INTO corpus_membership (version_id, ark, project_id)
+      SELECT ${copy.toVersionId}, ark, project_id
+      FROM corpus_membership
+      WHERE version_id = ${copy.fromVersionId}
+        AND ark <> ALL(${[...copy.excludeArks]}::text[])`
   }
 
   /** Statement: set a corpus version's status (for composition in a batch transaction). */

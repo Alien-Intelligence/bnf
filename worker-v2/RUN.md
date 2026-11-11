@@ -112,7 +112,7 @@ SELECT ark FROM "Document" WHERE "ocrAvailable" = false
 ## Security posture
 
 The worker's HTTP ingress (`POST /ingest`, `POST /ingest/:id/cancel`,
-`POST /ocr-quality/sync`) has **no authentication of its own** — it trusts the
+`POST /ingest/:id/redeliver`, `POST /ocr-quality/sync`) has **no authentication of its own** — it trusts the
 cluster network (any pod that can reach `:7777` can open or cancel a run, or ask
 for OCR-quality artifacts). `/ocr-quality/sync` can at most enqueue rate-gated,
 idempotent artifact builds, one row per ARK, with bounded retries (plan D17); its

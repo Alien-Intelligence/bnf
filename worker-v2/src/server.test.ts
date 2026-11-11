@@ -191,6 +191,78 @@ test("POST /ingest/:runId/cancel marks the run canceled; unknown → 404", async
   }
 });
 
+async function openRun(base: string): Promise<string> {
+  const submit = await fetch(`${base}/ingest`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(ingestBody(["ark:/12148/a"])),
+  });
+  return ((await submit.json()) as { clusterJobId: string }).clusterJobId;
+}
+
+const progressDelivery = async (base: string, runId: string): Promise<unknown> =>
+  ((await (await fetch(`${base}/progress/${runId}`)).json()) as { terminalDelivery: unknown }).terminalDelivery;
+
+test("GET /progress/:runId reports terminalDelivery: pending → emitted; abandoned; a user cancel stays pending", async () => {
+  const { base, deps, close } = await bootServer();
+  try {
+    const runId = await openRun(base);
+    assert.equal(await progressDelivery(base, runId), "pending");
+    await deps.runStore.markTerminalEmitted(runId);
+    assert.equal(await progressDelivery(base, runId), "emitted");
+
+    await deps.runStore.create({ ...ingestRunInput("run-abandoned") });
+    await deps.runStore.markTerminalAbandoned("run-abandoned");
+    assert.equal(await progressDelivery(base, "run-abandoned"), "abandoned");
+
+    await deps.runStore.create({ ...ingestRunInput("run-user-canceled") });
+    await deps.runStore.markCanceled("run-user-canceled");
+    assert.equal(await progressDelivery(base, "run-user-canceled"), "pending");
+  } finally {
+    await close();
+  }
+});
+
+const ingestRunInput = (runId: string) => ({
+  runId, appJobId: `job-${runId}`, projectId: "p1", callbackUrl: "http://127.0.0.1:1/cb",
+  callbackSecret: "s3cr3t", targetVersionId: "v2", totalDocs: 0,
+});
+
+test("POST /ingest/:runId/redeliver: abandoned → 200 and re-opened; anything else → 409 untouched; unknown → 404", async () => {
+  const { base, deps, lines, close } = await bootServer();
+  try {
+    const pendingId = await openRun(base);
+    const refused = await fetch(`${base}/ingest/${pendingId}/redeliver`, { method: "POST" });
+    assert.equal(refused.status, 409);
+    assert.equal(((await refused.json()) as { terminalDelivery: string }).terminalDelivery, "pending");
+    assert.ok(lines.find((l) => l.event === "ingest_redeliver_refused"));
+
+    await deps.runStore.create(ingestRunInput("run-abandoned"));
+    for (let i = 0; i < 3; i++) await deps.runStore.incrementTerminalPostFailures("run-abandoned");
+    await deps.runStore.markTerminalAbandoned("run-abandoned");
+    const ok = await fetch(`${base}/ingest/run-abandoned/redeliver`, { method: "POST" });
+    assert.equal(ok.status, 200);
+    assert.deepEqual(await ok.json(), { redelivering: true });
+    const run = (await deps.runStore.get("run-abandoned"))!;
+    assert.equal(run.terminalPostFailures, 0);
+    assert.equal(run.canceled, false);
+    assert.equal(await progressDelivery(base, "run-abandoned"), "pending");
+    const accepted = lines.find((l) => l.event === "ingest_redeliver_accepted");
+    assert.equal(accepted?.level, "warn");
+    assert.equal(accepted?.previousTerminalPostFailures, 3);
+
+    // A user-canceled run is not redeliverable.
+    await deps.runStore.create(ingestRunInput("run-canceled"));
+    await deps.runStore.markCanceled("run-canceled");
+    assert.equal((await fetch(`${base}/ingest/run-canceled/redeliver`, { method: "POST" })).status, 409);
+    assert.equal((await deps.runStore.get("run-canceled"))?.canceled, true);
+
+    assert.equal((await fetch(`${base}/ingest/nope/redeliver`, { method: "POST" })).status, 404);
+  } finally {
+    await close();
+  }
+});
+
 test("unknown route → 404", async () => {
   const { base, close } = await bootServer();
   try {

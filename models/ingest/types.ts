@@ -4,6 +4,7 @@
 // validation and server-side request parsing.
 import { z } from "zod"
 import {
+  CLUSTER_TERMINAL_DELIVERY,
   CLUSTER_TERMINAL_STAGE,
   INGEST_STAGE,
   type IngestJob,
@@ -57,6 +58,14 @@ export const clusterQueueProgressSchema = z.object({
   etaSeconds: z.number().nonnegative().nullable(),
   /** True iff the doc totals reconcile (a UI guard against under-reporting). */
   reconciles: z.boolean(),
+  /**
+   * The run's terminal-callback delivery state. A value outside the enum is a
+   * contract break and fails the parse. Optional ONLY for the rolling deploy:
+   * the app may roll before the worker, and a worker older than this field
+   * does not send it. Absence means "no redeliver decision", nothing more —
+   * the watchdog then behaves as it did before the field existed.
+   */
+  terminalDelivery: z.enum(CLUSTER_TERMINAL_DELIVERY).optional(),
 })
 export type ClusterQueueStage = z.infer<typeof clusterQueueStageSchema>
 export type ClusterQueueProgress = z.infer<typeof clusterQueueProgressSchema>

@@ -39,6 +39,7 @@
 // comment that makes the next reader trust a fixture further than they should.
 import "server-only"
 
+import { DB_LONG_TRANSACTION_OPTIONS } from "@/lib/constants"
 import { prisma } from "@/lib/db"
 import type { Prisma } from "@/lib/generated/prisma/client"
 import { CorpusQueries } from "@/models/corpus/queries"
@@ -102,5 +103,5 @@ export async function seedCorpusDocuments(
       note: "test fixture",
     })
     return version.seq
-  })
+  }, DB_LONG_TRANSACTION_OPTIONS)
 }

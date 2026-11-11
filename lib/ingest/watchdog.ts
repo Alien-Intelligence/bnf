@@ -31,7 +31,11 @@ import "server-only"
 // forever, never to have the final say on outcome. See the comment on
 // IngestService.applyProgress.
 import { CLUSTER_MODE, clusterMode } from "@/lib/cluster/mode"
-import { INGEST_STATUS, type IngestStatus } from "@/models/ingest/schema"
+import {
+  CLUSTER_TERMINAL_DELIVERY,
+  INGEST_STATUS,
+  type IngestStatus,
+} from "@/models/ingest/schema"
 import { IngestQueries } from "@/models/ingest/queries"
 import { IngestService } from "@/models/ingest/service"
 import { ClusterRunner } from "@/lib/cluster/runner"
@@ -45,6 +49,19 @@ import { MS_PER_MINUTE } from "@/lib/constants"
 export const WATCHDOG_QUEUED_STALE_MS = 15 * MS_PER_MINUTE
 /** How long the worker's read-model may 404 / be unreachable before a RUNNING job is given up on. */
 export const WATCHDOG_RUNNING_STALE_MS = 30 * MS_PER_MINUTE
+/**
+ * Minimum gap between two redeliver requests for the same job: one per
+ * stale window. The worker re-sends on its next sweep (about a minute) and
+ * flips the run out of `abandoned` at once, so a second request inside the
+ * window would only be asking again for a result already on its way.
+ */
+export const WATCHDOG_REDELIVER_MIN_GAP_MS = WATCHDOG_RUNNING_STALE_MS
+/**
+ * Redeliver requests per job before the job is failed. Each one buys the worker
+ * a full round of callback retries (~2 h at its default give-up), so 3 rides out
+ * a ~6 h app outage while still ending a callback that never recovers.
+ */
+export const WATCHDOG_MAX_REDELIVERS = 3
 /** Tick cadence for the interval loop. */
 export const WATCHDOG_TICK_MS = MS_PER_MINUTE
 
@@ -60,6 +77,12 @@ export type WatchdogAction =
   | { kind: "none" }
   | { kind: "write_progress"; progress: number; stats: Record<string, number> }
   | { kind: "fail"; reason: string }
+  /**
+   * The run finished but the worker gave up delivering its terminal callback:
+   * ask it to send the result again. Carries no progress write — the run is
+   * done, its counters are final and the redelivered terminal event commits.
+   */
+  | { kind: "redeliver" }
 
 export interface WatchdogDecision {
   action: WatchdogAction
@@ -85,6 +108,12 @@ export interface WatchdogDecision {
  * @param nullSince - when the worker started CONTINUOUSLY answering "run
  *   unknown" (404) for this job, as tracked by the caller across ticks; null
  *   if it has not (or progress was last seen).
+ * @param lastRedeliverAt - when the caller last asked the worker to redeliver
+ *   this job's terminal result, or null if it never has. Rate-limits the
+ *   `redeliver` action to one per WATCHDOG_REDELIVER_MIN_GAP_MS.
+ * @param redeliverCount - redeliver requests already made for this job (never
+ *   reset by progress writes); at WATCHDOG_MAX_REDELIVERS an abandoned run
+ *   fails the job instead of being asked again.
  *
  * Only a 404 — the worker is up and does not know the run — advances the
  * give-up clock. A worker that cannot be reached, or answers an error, is an
@@ -96,6 +125,8 @@ export function decideWatchdogAction(
   poll: ClusterProgressPoll | null,
   now: Date,
   nullSince: Date | null,
+  lastRedeliverAt: Date | null,
+  redeliverCount: number,
 ): WatchdogDecision {
   if (job.status === INGEST_STATUS.QUEUED) {
     // A QUEUED job that already has a clusterJobId is not this rule's
@@ -129,6 +160,24 @@ export function decideWatchdogAction(
 
   if (poll.kind === CLUSTER_POLL.PROGRESS) {
     const clusterProgress = poll.progress
+    // The worker finished the run and gave up delivering the result. Its
+    // progress never changes again, so mirroring it would hide the job forever
+    // (prod, 2026-11-03): ask for the result instead, at most once per window.
+    if (clusterProgress.terminalDelivery === CLUSTER_TERMINAL_DELIVERY.ABANDONED) {
+      if (redeliverCount >= WATCHDOG_MAX_REDELIVERS) {
+        return {
+          action: {
+            kind: "fail",
+            reason: `le worker a terminé mais son résultat n'a pas pu être livré après ${WATCHDOG_MAX_REDELIVERS} tentatives (watchdog) — relancer l'ingestion`,
+          },
+          nullSince: null,
+        }
+      }
+      const due =
+        lastRedeliverAt === null ||
+        now.getTime() - lastRedeliverAt.getTime() > WATCHDOG_REDELIVER_MIN_GAP_MS
+      return { action: due ? { kind: "redeliver" } : { kind: "none" }, nullSince: null }
+    }
     // F21: write-through a compact summary so the DB row stops lying while
     // v2 (which sends only the terminal callback) is running. `stage` is left
     // as-is (v2 has no per-stage breakdown to offer); `progress` is the docs
@@ -172,6 +221,22 @@ export function decideWatchdogAction(
  * it just takes up to another 30 minutes to fail if the worker is still gone.
  */
 const nullSinceByJob = new Map<string, Date>()
+
+/**
+ * Per-jobId "last redeliver request" time, in-memory like nullSinceByJob. A
+ * restart forgets it, so at most one extra request follows a restart — safe:
+ * the worker refuses (409) a run that is no longer abandoned, and one that
+ * still is gets the same re-open it would have got.
+ */
+const lastRedeliverByJob = new Map<string, Date>()
+
+/**
+ * Per-jobId count of redeliver requests, never reset by progress writes (the
+ * cycle abandoned → redeliver → pending → abandoned must end). Cleared when the
+ * job is failed or is no longer RUNNING. A restart resets it: bounded by
+ * restarts, acceptable.
+ */
+const redeliverCountByJob = new Map<string, number>()
 
 /**
  * Start the periodic reconciler. Returns a `stop()` for tests / graceful
@@ -244,6 +309,8 @@ export async function reconcileWatchdogJob(job: WatchdogJobInput, now: Date): Pr
     poll,
     now,
     nullSince,
+    lastRedeliverByJob.get(job.id) ?? null,
+    redeliverCountByJob.get(job.id) ?? 0,
   )
 
   if (action.kind === "fail") {
@@ -254,8 +321,11 @@ export async function reconcileWatchdogJob(job: WatchdogJobInput, now: Date): Pr
     // and the next tick finds the job again and retries.
     await IngestService.failStuckJob(job.id, job.status, action.reason, now)
     nullSinceByJob.delete(job.id)
+    lastRedeliverByJob.delete(job.id)
+    redeliverCountByJob.delete(job.id)
     return
   }
+  if (job.status !== INGEST_STATUS.RUNNING) redeliverCountByJob.delete(job.id)
 
   if (nextNullSince) nullSinceByJob.set(job.id, nextNullSince)
   else nullSinceByJob.delete(job.id)
@@ -263,7 +333,25 @@ export async function reconcileWatchdogJob(job: WatchdogJobInput, now: Date): Pr
   switch (action.kind) {
     case "none":
       return
+    case "redeliver": {
+      // Stamped BEFORE the call: a request that fails is not retried every
+      // tick, it waits out the window like a successful one.
+      lastRedeliverByJob.set(job.id, now)
+      redeliverCountByJob.set(job.id, (redeliverCountByJob.get(job.id) ?? 0) + 1)
+      if (!job.clusterJobId) {
+        throw new Error(`[ingest-watchdog] redeliver decided for job ${job.id} without a clusterJobId`)
+      }
+      const accepted = await IngestService.redeliverAbandoned(job.clusterJobId)
+      console.warn("[ingest-watchdog] redeliver requested for an abandoned terminal callback", {
+        jobId: job.id,
+        clusterJobId: job.clusterJobId,
+        accepted,
+      })
+      return
+    }
     case "write_progress":
+      // The run is no longer abandoned: its redeliver window is spent.
+      lastRedeliverByJob.delete(job.id)
       // A failed write is raised to the tick, which reports it after
       // reconciling the other jobs; the next tick writes it again.
       await IngestService.mirrorWatchdogProgress(job.id, action.progress, action.stats)

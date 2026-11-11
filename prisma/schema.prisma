@@ -490,6 +490,9 @@ model CorpusMembership {
   document Document      @relation(fields: [projectId, ark], references: [projectId, ark])
 
   @@id([versionId, ark])
+  // Reads by project, and the composite foreign key to document: without it
+  // every Document delete scans this whole table.
+  @@index([projectId, ark])
   @@map("corpus_membership")
 }
 

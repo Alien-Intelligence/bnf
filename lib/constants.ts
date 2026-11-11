@@ -20,6 +20,20 @@ export const DB_STATEMENT_TIMEOUT_MS = 30_000
 /** Ceiling of the wait for a pooled connection (pg `connectionTimeoutMillis`). */
 export const DB_CONNECTION_TIMEOUT_MS = 10_000
 
+// Prisma's default transaction bounds (2 s wait, 5 s run) are too tight for a
+// commit on a large corpus; the transactions that advance a version or commit
+// an ingest pass this pair instead.
+
+/** Ceiling of the wait for a transaction to start (Prisma `maxWait`). */
+export const DB_TRANSACTION_MAX_WAIT_MS = DB_CONNECTION_TIMEOUT_MS
+/** Ceiling of a transaction's run (Prisma `timeout`): room for a few bounded statements plus the advisory-lock wait. */
+export const DB_TRANSACTION_TIMEOUT_MS = 60_000
+/** The options of a transaction that advances a corpus version or commits an ingest. */
+export const DB_LONG_TRANSACTION_OPTIONS = {
+  maxWait: DB_TRANSACTION_MAX_WAIT_MS,
+  timeout: DB_TRANSACTION_TIMEOUT_MS,
+} as const
+
 import { OCR_CORRECTION_MARKING_MODE } from "@/models/notes/schema"
 import type { OcrCorrectionMarking } from "@/models/notes/schema"
 
@@ -297,11 +311,14 @@ export const CORPUS_REMOVE_PREVIEW_LIMIT = 50
 export const CORPUS_REASON_MAX_LEN = 1_000
 
 /**
- * REST corpus mutations (POST /corpus/add, /corpus/remove): ARKs per call and
- * the length of the human-readable reason. The REST bound is tighter than the
- * agent's CORPUS_REASON_MAX_LEN — a form field, not a model's justification.
+ * ARKs per corpus or buffer mutation, whether it comes from the REST routes
+ * (POST /corpus/add, /corpus/remove) or from an agent tool (corpus_*, buffer_*).
  */
 export const CORPUS_MUTATION_MAX_ARKS = 5_000
+/**
+ * Length of the human-readable reason on a REST corpus mutation. Tighter than
+ * the agent's CORPUS_REASON_MAX_LEN — a form field, not a model's justification.
+ */
 export const CORPUS_MUTATION_REASON_MAX_CHARS = 300
 
 /**
@@ -1317,7 +1334,7 @@ export const MEMORY_NEAR_DUP_MAX_EDIT_DISTANCE = 4
  * where the seal is content-addressed from the rendered prompts, so a prompt
  * change cannot be recorded without a new revision.
  */
-export const PROMPT_REVISION = "2026-10-05.quoting-rules.6e9149ff8048"
+export const PROMPT_REVISION = "2026-11-10.system-failure-keyed-rule.380cb1d03f7d"
 
 // ---------------------------------------------------------------------------
 // CSV exports

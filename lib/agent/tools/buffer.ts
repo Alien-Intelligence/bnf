@@ -24,6 +24,7 @@ import {
   BUFFER_SAMPLE_SIZE,
   BUFFER_SEARCH_DEFAULT_PAGE_SIZE_BY_SOURCE,
   BUFFER_SEARCH_MAX_PAGE_SIZE_BY_SOURCE,
+  CORPUS_MUTATION_MAX_ARKS,
   CORPUS_REASON_MAX_LEN,
   CORPUS_SEARCH_SAMPLE_SIZE,
 } from "@/lib/constants"
@@ -87,6 +88,7 @@ import {
 } from "@/lib/agent/stream-events"
 import { AGENT_TOOLS } from "./constants"
 import { provisionalTotal } from "./provisional-total"
+import { attemptWrite, WRITE_INTACT } from "./write-failure"
 
 const facetDimensionEnum = z.enum(["period", "type", "kind", "lang", "source"])
 
@@ -287,10 +289,16 @@ export const bufferRemoveByFilterTool = defineTool<
       if (!gate.ok) return gate.result
       const projectId = gate.project.id
 
-      const result = await BufferService.removeByFilter(projectId, {
-        filters: input.filters,
-        dryRun,
-      })
+      // Reads the matching ARKs, then discards them in ONE statement: a failure
+      // discards nothing (a FilterValueError still reaches the refusal above).
+      const attempt = await attemptWrite(AGENT_TOOLS.bufferRemoveByFilter, WRITE_INTACT.DISCARD, () =>
+        BufferService.removeByFilter(projectId, {
+          filters: input.filters,
+          dryRun,
+        }),
+      )
+      if (!attempt.ok) return attempt.result
+      const result = attempt.value
       if (result.status === REMOVE_BY_FILTER_STATUS.EMPTY_FILTER) {
         return toolRefusal(EMPTY_FILTER_REFUSAL, BUFFER_EMPTY_FILTER_ERROR)
       }
@@ -325,21 +333,25 @@ export const bufferAddTool = defineTool<
     arks: z
       .array(arkSchema)
       .min(1)
-      .max(5_000)
+      .max(CORPUS_MUTATION_MAX_ARKS)
       .describe('BnF ARK identifiers to stage, e.g. ["ark:/12148/bpt6k2839841"].'),
   }),
   handler: async (input, ctx) => {
     const gate = await authorizeProjectTool(ctx, BufferPolicy, "mutate")
     if (!gate.ok) return gate.result
     const projectId = gate.project.id
-    const result = await BufferService.registerCandidates({
-      projectId,
-      sessionId: ctx.appSessionId,
-      originTool: AGENT_TOOLS.bufferAdd,
-      // The librarian named these ARKs: a discarded one is staged again.
-      restageDiscarded: true,
-      candidates: input.arks.map((ark) => ({ ark })),
-    })
+    const attempt = await attemptWrite(AGENT_TOOLS.bufferAdd, WRITE_INTACT.STAGE, () =>
+      BufferService.registerCandidates({
+        projectId,
+        sessionId: ctx.appSessionId,
+        originTool: AGENT_TOOLS.bufferAdd,
+        // The librarian named these ARKs: a discarded one is staged again.
+        restageDiscarded: true,
+        candidates: input.arks.map((ark) => ({ ark })),
+      }),
+    )
+    if (!attempt.ok) return attempt.result
+    const result = attempt.value
     // A spawn_research child reports what IT staged (never a project-wide delta).
     if (ctx.stagingTally) ctx.stagingTally.added += result.added
     // Bare ARKs: their metadata is resolved out of band, never inline.
@@ -381,14 +393,18 @@ export const bufferDiscardTool = defineTool<
     arks: z
       .array(arkSchema)
       .min(1)
-      .max(5_000)
+      .max(CORPUS_MUTATION_MAX_ARKS)
       .describe("BnF ARK identifiers to discard from the buffer."),
   }),
   handler: async (input, ctx) => {
     const gate = await authorizeProjectTool(ctx, BufferPolicy, "mutate")
     if (!gate.ok) return gate.result
     const projectId = gate.project.id
-    const discarded = await BufferService.discard(projectId, input.arks)
+    const attempt = await attemptWrite(AGENT_TOOLS.bufferDiscard, WRITE_INTACT.DISCARD, () =>
+      BufferService.discard(projectId, input.arks),
+    )
+    if (!attempt.ok) return attempt.result
+    const discarded = attempt.value
     const total = await emitBuffer(ctx, projectId, BUFFER_EVENT_KIND.REMOVED, discarded)
     return { discarded, total }
   },
@@ -434,10 +450,16 @@ export const bufferCommitTool = defineTool<
     const project = gate.project
     const projectId = project.id
 
-    const result = await BufferService.commit(project, ctx.user, {
-      sessionId: ctx.appSessionId,
-      reason: input.reason,
-    })
+    // A failed commit is a SYSTEM failure the model must read as one, never as a
+    // size limit (write-failure.ts): the candidates stay staged.
+    const attempt = await attemptWrite(AGENT_TOOLS.bufferCommit, WRITE_INTACT.BUFFER, () =>
+      BufferService.commit(project, ctx.user, {
+        sessionId: ctx.appSessionId,
+        reason: input.reason,
+      }),
+    )
+    if (!attempt.ok) return attempt.result
+    const result = attempt.value
 
     // Background metadata resolution for the newly-added stubs + cb→Gallica
     // upgrade for any committed catalogue notices — same detachment and the
@@ -493,7 +515,11 @@ export const bufferClearTool = defineTool<z.ZodObject<Record<string, never>>, Tu
     const gate = await authorizeProjectTool(ctx, BufferPolicy, "mutate")
     if (!gate.ok) return gate.result
     const projectId = gate.project.id
-    const cleared = await BufferService.clear(projectId)
+    const attempt = await attemptWrite(AGENT_TOOLS.bufferClear, WRITE_INTACT.CLEAR, () =>
+      BufferService.clear(projectId),
+    )
+    if (!attempt.ok) return attempt.result
+    const cleared = attempt.value
     await emitBuffer(ctx, projectId, BUFFER_EVENT_KIND.CLEARED, cleared)
     return { cleared }
   },

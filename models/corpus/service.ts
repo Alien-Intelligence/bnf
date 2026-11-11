@@ -18,6 +18,7 @@ import { BnfDirectClient } from "@/lib/bnf/direct"
 import {
   BNF_CANONICALIZE_BUDGET_MS,
   CORPUS_REMOVE_PREVIEW_LIMIT,
+  DB_LONG_TRANSACTION_OPTIONS,
 } from "@/lib/constants"
 import { prisma } from "@/lib/db"
 import { sourceFromArk } from "@/lib/mcp/vocab"
@@ -101,7 +102,7 @@ export class CorpusService {
     if (requested.length > 0) {
       assertLangsHeld(requested, await CorpusQueries.langsInVersion(version.id), "du corpus")
     }
-    return { version, paidOcr, where: buildCorpusWhere(version.id, paidOcr, filters) }
+    return { version, paidOcr, where: buildCorpusWhere(projectId, version.id, paidOcr, filters) }
   }
 
   /**
@@ -121,7 +122,7 @@ export class CorpusService {
         cursor: opts.cursor,
         limit: opts.limit ?? CORPUS_SAMPLE_SIZE,
       }),
-      CorpusService.notUnknownIn(version.id, paidOcr, opts.filters),
+      CorpusService.notUnknownIn(projectId, version.id, paidOcr, opts.filters),
     ])
     return { ...read, numerisation: numerisationOf(classRows), ...notUnknown }
   }
@@ -138,7 +139,7 @@ export class CorpusService {
         cursor: opts.cursor,
         limit: opts.limit ?? CORPUS_SAMPLE_SIZE,
       }),
-      CorpusService.notUnknownIn(version.id, paidOcr, opts.filters),
+      CorpusService.notUnknownIn(projectId, version.id, paidOcr, opts.filters),
     ])
     return { ...page, ...notUnknown }
   }
@@ -186,17 +187,18 @@ export class CorpusService {
   ): Promise<Record<string, number>> {
     if (filters?.not === undefined) return {}
     const { version, paidOcr } = await CorpusService.plan(projectId, ref, filters)
-    return (await CorpusService.notUnknownIn(version.id, paidOcr, filters)).notUnknown ?? {}
+    return (await CorpusService.notUnknownIn(projectId, version.id, paidOcr, filters)).notUnknown ?? {}
   }
 
   /** `{ notUnknown }` for a read with a `not`, `{}` without one. */
   private static async notUnknownIn(
+    projectId: string,
     versionId: string,
     paidOcr: boolean,
     filters: CorpusFilterSet | undefined,
   ): Promise<{ notUnknown?: Record<string, number> }> {
     if (filters?.not === undefined) return {}
-    const unknown = notUnknownWheres(versionId, paidOcr, filters)
+    const unknown = notUnknownWheres(projectId, versionId, paidOcr, filters)
     const counts = await CorpusQueries.counts(unknown.map((u) => u.where))
     return { notUnknown: Object.fromEntries(unknown.map((u, i) => [u.dimension, counts[i]])) }
   }
@@ -323,7 +325,7 @@ export class CorpusService {
         versionStatus: newVersion.status as CorpusSnapshot["versionStatus"],
         total,
       }
-    })
+    }, DB_LONG_TRANSACTION_OPTIONS)
 
     // --- Record session attribution (optional) --------------------------------
     // Tag every supplied (deduped) ARK with the contributing session — including
@@ -434,7 +436,7 @@ export class CorpusService {
         where: { versionId: newVersion.id },
       })
       return { versionSeq: newVersion.seq, total }
-    })
+    }, DB_LONG_TRANSACTION_OPTIONS)
 
     // The notice is no longer a member; clear its stale status to keep the row tidy.
     await prisma.document.update({
@@ -493,7 +495,7 @@ export class CorpusService {
         data: { canonicalStatus: null },
       })
       return removeArks.length
-    })
+    }, DB_LONG_TRANSACTION_OPTIONS)
   }
 
   /**
@@ -547,7 +549,7 @@ export class CorpusService {
         versionStatus: newVersion.status as CorpusSnapshot["versionStatus"],
         total,
       }
-    })
+    }, DB_LONG_TRANSACTION_OPTIONS)
 
     // Build the comprehension snapshot from the committed head; override the
     // counters with the tx-captured values.

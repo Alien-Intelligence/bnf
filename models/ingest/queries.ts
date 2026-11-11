@@ -45,11 +45,15 @@ export class IngestQueries {
 
   /**
    * Runs the given statements as one atomic batch transaction and returns
-   * their results in order. The statements are built by the owning models'
-   * queries; this model only opens the transaction.
+   * their results in order, under the caller's transaction `options`. The
+   * statements are built by the owning models' queries; this model only opens
+   * the transaction.
    */
-  static batch<P extends Prisma.PrismaPromise<unknown>[]>(ops: [...P]) {
-    return prisma.$transaction(ops)
+  static batch<P extends Prisma.PrismaPromise<unknown>[]>(
+    ops: [...P],
+    options: { maxWait: number; timeout: number },
+  ) {
+    return prisma.$transaction(ops, options)
   }
 
   /** Statement: insert a job row (for composition in {@link batch}). */

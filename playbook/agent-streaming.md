@@ -188,6 +188,16 @@ Rules:
   `toolFailure(error)` from `failure.ts` — `{ success: false, error, … }`, which
   `toolCallErrored` reads to turn the chip red. Handlers never throw out of the
   tool loop (CLAUDE_ERROR_PATTERNS §15).
+- EVERY tool that mutates the corpus or the buffer (`buffer_add`, `buffer_commit`,
+  `buffer_discard`, `buffer_remove_by_filter`, `buffer_clear`, `corpus_add`,
+  `corpus_remove`, `corpus_remove_by_filter`) wraps ONLY its service call in
+  `attemptWrite` (`write-failure.ts`), never the steps after it. A thrown error is
+  logged server-side and returned as a `toolSystemFailure` (`failure.ts`):
+  `{ success: false, code, retryable, error }`, where `code` is a
+  `SYSTEM_FAILURE_CODE` (`transaction_timeout` or `system_error`). A
+  `FilterValueError` is rethrown and becomes the `invalid_params` refusal. Left to
+  throw, the SDK hands the model the raw Prisma text, which it read as a size limit
+  and then discarded candidates.
 - Tool inputs are validated by their Zod `inputSchema`; checks that need a
   readable refusal (corpus_search's criteria) return `toolRefusal` instead of
   throwing.

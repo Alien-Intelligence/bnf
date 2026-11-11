@@ -43,7 +43,7 @@ import { ClusterRunner } from "@/lib/cluster/runner"
 import { requestOcrSync } from "@/lib/documents/ocr-sync-signal"
 import { DocumentQueries } from "@/models/documents/queries"
 import { DocumentService } from "@/models/documents/service"
-import { PAID_OCR_DEFAULT_BUDGET_USD } from "@/lib/constants"
+import { DB_LONG_TRANSACTION_OPTIONS, PAID_OCR_DEFAULT_BUDGET_USD } from "@/lib/constants"
 import { prisma } from "@/lib/db"
 import { env } from "@/lib/env"
 import { toInputJson } from "@/lib/validation/json"
@@ -464,6 +464,16 @@ export class IngestService {
   }
 
   /**
+   * Watchdog redeliver (lib/ingest/watchdog.ts): ask the worker to re-send the
+   * terminal result of a run whose callback it gave up on. true: accepted;
+   * false: the worker says the run is no longer abandoned. Worker and
+   * transport errors are raised unchanged.
+   */
+  static async redeliverAbandoned(clusterJobId: string): Promise<boolean> {
+    return ClusterRunner.redeliver(clusterJobId)
+  }
+
+  /**
    * Watchdog give-up (lib/ingest/watchdog.ts, F18): mark a job the lifecycle
    * lost track of FAILED with the watchdog's reason. Guarded by
    * `status: expectedStatus`, so a job that went terminal since the scan (a
@@ -612,8 +622,8 @@ export class IngestService {
     // Applied AFTER the blanket indexError:null above so the annotation
     // survives — indexedAt stays `now` (the doc IS indexed), only indexError
     // carries the warning text.
-    for (const [ark, reason] of warningsByArk) {
-      ops.push(DocumentQueries.updateManyOp(job.projectId, ark, { indexError: reason }))
+    if (warningsByArk.size > 0) {
+      ops.push(DocumentQueries.setIndexErrorsOp(job.projectId, warningsByArk))
     }
     // OCR quality (feedback 2026-09-29 #7): the run's documents may have been
     // re-OCR'd, so their stored quality is due again — persisted in the same
@@ -628,7 +638,7 @@ export class IngestService {
     await IngestQueries.batch([
       ...ops,
       SessionQueries.invalidatePrompts(researchPromptsOf(job.projectId), prisma),
-    ])
+    ], DB_LONG_TRANSACTION_OPTIONS)
     requestOcrSync()
   }
 
@@ -698,19 +708,24 @@ export class IngestService {
       )
     }
     // Mark each failed doc with its reason; indexedAt stays null so it remains
-    // the outstanding delta. updateMany (not update) so a missing row can't throw.
-    // Warning entries are handled in the SECOND loop below, after
-    // succeededAdded's blanket indexError:null, so their annotation survives.
-    for (const [ark, v] of entriesByArk) {
-      if (v.warning) continue
-      ops.push(DocumentQueries.updateManyOp(job.projectId, ark, { indexError: v.reason }))
+    // the outstanding delta. One bulk statement per pass, never one per ARK; a
+    // missing row is skipped, not an error. Warning entries are applied in the
+    // SECOND pass below, after succeededAdded's blanket indexError:null, so
+    // their annotation survives.
+    const reasonsOf = (warning: boolean) =>
+      new Map(
+        [...entriesByArk].flatMap(([ark, v]) => (v.warning === warning ? [[ark, v.reason] as const] : [])),
+      )
+    const failureReasons = reasonsOf(false)
+    if (failureReasons.size > 0) {
+      ops.push(DocumentQueries.setIndexErrorsOp(job.projectId, failureReasons))
     }
     // F13: a warning doc IS in succeededAdded (indexedAt just set to `now`,
     // indexError cleared, above) — re-apply the warning text afterward, in the
     // same transaction, so the doc stays indexed but the reason survives.
-    for (const [ark, v] of entriesByArk) {
-      if (!v.warning) continue
-      ops.push(DocumentQueries.updateManyOp(job.projectId, ark, { indexError: v.reason }))
+    const warningReasons = reasonsOf(true)
+    if (warningReasons.size > 0) {
+      ops.push(DocumentQueries.setIndexErrorsOp(job.projectId, warningReasons))
     }
     if (job.removedArks.length > 0) {
       ops.push(
@@ -730,7 +745,7 @@ export class IngestService {
     await IngestQueries.batch([
       ...ops,
       SessionQueries.invalidatePrompts(researchPromptsOf(job.projectId), prisma),
-    ])
+    ], DB_LONG_TRANSACTION_OPTIONS)
     requestOcrSync()
   }
 
@@ -893,7 +908,7 @@ export class IngestService {
       CorpusQueries.versionStatusOp(targetVersionId, CORPUS_VERSION_STATUS.INGESTED),
       ProjectQueries.updateOp(project.id, { ingestedVersionId: targetVersionId }),
       SessionQueries.invalidatePrompts(researchPromptsOf(project.id), prisma),
-    ])
+    ], DB_LONG_TRANSACTION_OPTIONS)
     return job
   }
 

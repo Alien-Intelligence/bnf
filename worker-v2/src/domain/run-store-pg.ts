@@ -26,6 +26,7 @@ interface RunRow {
   total_docs: number;
   terminal_emitted: boolean;
   canceled: boolean;
+  terminal_abandoned: boolean;
   terminal_post_failures: number;
 }
 
@@ -40,6 +41,7 @@ function toRun(r: RunRow): IngestRun {
     totalDocs: r.total_docs,
     terminalEmitted: r.terminal_emitted,
     canceled: r.canceled,
+    terminalAbandoned: r.terminal_abandoned,
     terminalPostFailures: r.terminal_post_failures,
   };
 }
@@ -112,9 +114,31 @@ export class PgRunStore implements RunStore {
 
   async markCanceled(runId: string): Promise<void> {
     await this.pool.query(
-      `UPDATE ${RUNS} SET canceled = true, updated_at = now() WHERE run_id = $1`,
+      `UPDATE ${RUNS}
+         SET canceled = true, terminal_post_failures = 0, updated_at = now()
+       WHERE run_id = $1`,
       [runId],
     );
+  }
+
+  async markTerminalAbandoned(runId: string): Promise<void> {
+    await this.pool.query(
+      `UPDATE ${RUNS}
+         SET canceled = true, terminal_abandoned = true, updated_at = now()
+       WHERE run_id = $1`,
+      [runId],
+    );
+  }
+
+  async redeliverAbandoned(runId: string): Promise<boolean> {
+    const { rowCount } = await this.pool.query(
+      `UPDATE ${RUNS}
+         SET terminal_abandoned = false, canceled = false, terminal_emitted = false,
+             terminal_post_failures = 0, updated_at = now()
+       WHERE run_id = $1 AND terminal_abandoned`,
+      [runId],
+    );
+    return (rowCount ?? 0) > 0;
   }
 
   async incrementTerminalPostFailures(runId: string): Promise<number> {

@@ -1,11 +1,13 @@
 /**
  * Worker V2 HTTP ingress — the app↔worker control plane. A tiny Node `http`
- * server (no framework) exposing the five routes the app drives:
+ * server (no framework) exposing the six routes the app drives:
  *
  *   GET  /health             → liveness
  *   POST /ingest             → open a run + seed ARKs → { clusterJobId }
  *   GET  /progress/:runId    → buildProgress(runId) read-model (the Ingérer poll)
+ *                              + terminalDelivery (pending | emitted | abandoned)
  *   POST /ingest/:runId/cancel → suppress the terminal callback (best-effort)
+ *   POST /ingest/:runId/redeliver → re-open a run whose callback was abandoned
  *   POST /ocr-quality/sync   → per-ARK OCR-quality artifacts; queues the
  *                              backfill for the missing ones (live/ocr-quality-sync.ts)
  *
@@ -26,7 +28,7 @@ import type { BlobStore, QueueClient } from "./core/types.js";
 import type { Logger } from "./core/types.js";
 import type { DocStateStore } from "./domain/doc-state.js";
 import type { OcrBackfillWiring } from "./domain/ocr-backfill.js";
-import type { RunStore } from "./domain/run.js";
+import { terminalDeliveryOf, type RunStore } from "./domain/run.js";
 import type { CompletionMonitor } from "./live/completion-monitor.js";
 import { createRunAndSeed, parseIngestRequest } from "./live/ingress.js";
 import {
@@ -207,6 +209,12 @@ async function handle(
     return;
   }
 
+  const redeliverMatch = method === "POST" && /^\/ingest\/([^/]+)\/redeliver$/.exec(path);
+  if (redeliverMatch) {
+    await handleRedeliver(deps, decodeURIComponent(redeliverMatch[1]!), res);
+    return;
+  }
+
   sendJson(res, 404, { error: "not found" });
 }
 
@@ -338,7 +346,7 @@ async function handleProgress(
     fetchRatePerMin: deps.fetchRatePerMin,
     manifestRatePerMin: deps.manifestRatePerMin,
   });
-  sendJson(res, 200, report);
+  sendJson(res, 200, { ...report, terminalDelivery: terminalDeliveryOf(run) });
 }
 
 async function handleCancel(
@@ -358,6 +366,36 @@ async function handleCancel(
   await deps.runStore.markCanceled(runId);
   deps.log.info("ingest_canceled", { runId });
   sendJson(res, 200, { canceled: true });
+}
+
+/**
+ * Re-open a run whose terminal callback the emitter gave up on. Only an
+ * abandoned run qualifies: anything else (still pending, already emitted,
+ * user-canceled) is refused with 409 and left untouched. On success the
+ * reconciler's next sweep re-POSTs the result through the normal signed path.
+ */
+async function handleRedeliver(
+  deps: ServerDeps,
+  runId: string,
+  res: import("node:http").ServerResponse,
+): Promise<void> {
+  const run = await deps.runStore.get(runId);
+  if (!run) {
+    sendJson(res, 404, { error: "run not found" });
+    return;
+  }
+  const delivery = terminalDeliveryOf(run);
+  if (!(await deps.runStore.redeliverAbandoned(runId))) {
+    deps.log.warn("ingest_redeliver_refused", { runId, appJobId: run.appJobId, terminalDelivery: delivery });
+    sendJson(res, 409, { error: `run is not abandoned (terminalDelivery=${delivery})`, terminalDelivery: delivery });
+    return;
+  }
+  deps.log.warn("ingest_redeliver_accepted", {
+    runId,
+    appJobId: run.appJobId,
+    previousTerminalPostFailures: run.terminalPostFailures,
+  });
+  sendJson(res, 200, { redelivering: true });
 }
 
 /** Bind the server to a port. Resolves once listening. */

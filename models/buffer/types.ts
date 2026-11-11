@@ -7,6 +7,7 @@
 // lib/validation/ark.ts (no sideways import from models/corpus) and is
 // re-exported for this model's existing importers.
 import { z } from "zod"
+import { CORPUS_MUTATION_MAX_ARKS } from "@/lib/constants"
 import { arkKindListSchema, docTypeListSchema, langListSchema, sourceListSchema, textAnySchema } from "@/lib/validation/filter-lists"
 
 import { arkSchema } from "@/lib/validation/ark"
@@ -136,14 +137,14 @@ export type BufferCandidateInput = z.infer<typeof bufferCandidateSchema>
 
 /** Manual add of bare ARKs to the buffer (no search). */
 export const bufferAddSchema = z.object({
-  arks: z.array(arkSchema).min(1).max(5_000),
+  arks: z.array(arkSchema).min(1).max(CORPUS_MUTATION_MAX_ARKS),
 })
 
 export type BufferAddInput = z.infer<typeof bufferAddSchema>
 
 /** Drop candidates from the buffer by ARK (mark `discarded`). */
 export const bufferDiscardSchema = z.object({
-  arks: z.array(arkSchema).min(1).max(5_000),
+  arks: z.array(arkSchema).min(1).max(CORPUS_MUTATION_MAX_ARKS),
 })
 
 export type BufferDiscardInput = z.infer<typeof bufferDiscardSchema>

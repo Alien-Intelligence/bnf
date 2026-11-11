@@ -10,9 +10,10 @@
 //   - Invariants 1-6 from playbook/corpus-versioning.md must hold at all times.
 import "server-only"
 
-import { Prisma } from "@/lib/generated/prisma/client"
+import type { CorpusVersion, Prisma } from "@/lib/generated/prisma/client"
 import { SessionQueries } from "@/models/sessions/queries"
 import { SESSION_SCOPE } from "@/models/sessions/schema"
+import { CorpusQueries } from "./queries"
 import { CORPUS_VERSION_STATUS, type CorpusVersionWithArks } from "./schema"
 
 /**
@@ -54,28 +55,13 @@ export async function advanceVersion(
   projectId: string,
   parent: CorpusVersionWithArks,
   delta: AdvanceVersionDelta,
-): Promise<CorpusVersionWithArks> {
+): Promise<CorpusVersion> {
   // --- No-op short-circuit ---------------------------------------------------
   // Invariant: a no-op delta must NOT create a new version. Return parent
   // unchanged so the service can return the existing snapshot.
   if (delta.addArks.length === 0 && delta.removeArks.length === 0) {
     return parent
   }
-
-  // --- Compute the carried membership ----------------------------------------
-  // Start from the parent's full membership and subtract the removed set.
-  // We re-read from the DB via the tx to be consistent with the locked state,
-  // even though the parent argument already carries the arks. This ensures that
-  // if the parent was fetched outside the transaction, we still see the
-  // committed state.
-  const removedSet = new Set(delta.removeArks)
-  const parentMembership = await tx.corpusMembership.findMany({
-    where: { versionId: parent.id },
-    select: { ark: true },
-  })
-  const carried = parentMembership
-    .map((r) => r.ark)
-    .filter((a) => !removedSet.has(a))
 
   // --- Create the new version ------------------------------------------------
   // seq is parent.seq + 1 (monotonic per project — invariant 2).
@@ -92,16 +78,20 @@ export async function advanceVersion(
   })
 
   // --- Materialise membership ------------------------------------------------
-  // Full membership = carried from parent + newly added ARKs.
-  // projectId is denormalized on each row for filter-performance (see schema).
-  const members = [...carried, ...delta.addArks].map((ark) => ({
-    versionId: next.id,
-    ark,
-    projectId,
-  }))
-
-  if (members.length > 0) {
-    await tx.corpusMembership.createMany({ data: members })
+  // Full membership = carried from parent + newly added ARKs. The carried part
+  // is copied inside the database in ONE statement (never through Node: a
+  // large corpus is tens of thousands of rows), from the committed parent
+  // state the caller's advisory lock protects. projectId is denormalized on each
+  // row for filter-performance (see schema).
+  await CorpusQueries.copyMembership(tx, {
+    fromVersionId: parent.id,
+    toVersionId: next.id,
+    excludeArks: delta.removeArks,
+  })
+  if (delta.addArks.length > 0) {
+    await tx.corpusMembership.createMany({
+      data: delta.addArks.map((ark) => ({ versionId: next.id, ark, projectId })),
+    })
   }
 
   // --- Swing the head pointer ------------------------------------------------
@@ -122,9 +112,5 @@ export async function advanceVersion(
     tx,
   )
 
-  // Return the new version with its membership so callers can build snapshots.
-  return tx.corpusVersion.findUniqueOrThrow({
-    where: { id: next.id },
-    include: { membership: { select: { ark: true } } },
-  })
+  return next
 }
