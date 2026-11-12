@@ -1,7 +1,7 @@
 /**
  * Manifest stage — image lanes only (vision + mistral). The scarcest external
- * budget (the per-IP manifest limit, inside the Presentation quota and the
- * global cap), so it is rate-gated and skips the HTTP call when the manifest is
+ * budget (the broker's manifest ceiling, inside the Presentation quota and the
+ * global ceiling), so it is rate-gated and skips the HTTP call when the manifest is
  * already in S3.
  *
  *   ManifestReq → IIIF manifest (S3-cached) → canvas list → record plan

@@ -139,14 +139,14 @@ export interface WorkerConfig {
    * manifest budget.
    */
   rates: {
-    /** BNF_RATES.global.rpm — the subscription's cap over every partner API. */
+    /** BNF_RATES.global.rpm — the broker's ceiling over every partner API. */
     globalRpm: number;
     /** BNF_RATES.presentation.rpm — the Presentation API (manifests, ALTO). */
     presentationRpm: number;
     /** BNF_RATES.image.rpm — the Image API (folio images). */
     imageRpm: number;
     /**
-     * BNF_RATES.manifest.rpm — the broker's per-IP manifest sub-limit. The
+     * BNF_RATES.manifest.rpm — the broker's manifest ceiling. The
      * worker's gate runs at workerManifestRpm (its share), shared by MetadataStage
      * and ManifestStage through ONE gate (build.ts `rates.manifest`) — see F1/F2
      * in ai-memories/tech/repos/bnf/ingest-hardening for what happens when it

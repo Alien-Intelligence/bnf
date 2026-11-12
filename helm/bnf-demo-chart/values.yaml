@@ -290,7 +290,7 @@ worker:
     # the "alto" cache holds extracted text, not XML, so the word confidences
     # cannot be recovered without a re-fetch. Image lanes cost nothing. The stage
     # shares the worker's ALTO gate (presentation ∧ bulk ∧ global; bulk = global
-    # minus the manifest, catalogue and graphe rpm, 1720/min) FIFO with live ingests,
+    # minus the manifest, catalogue and graphe rpm, 1758/min) FIFO with live ingests,
     # so live runs keep their share. Raise the concurrency off-hours to drain the
     # backlog faster; set enabled "false" to stop the BnF spend without a
     # rollback (existing artifacts stay served). Progress: `npm run status` in
@@ -334,8 +334,8 @@ worker:
 # requires it).
 #
 # ⚠️ The broker runs as EXACTLY ONE replica (hard-pinned in the Deployment, not
-# configurable here): its rate buckets + token are in-memory per pod, and the
-# per-IP manifest cap requires a single egress IP. Do not try to scale it.
+# configurable here): its rate buckets + token are in-memory per pod, so a
+# second replica would multiply every quota. Do not try to scale it.
 # ===========================================================================
 broker:
   enabled: true
@@ -357,8 +357,9 @@ broker:
     apiBaseUrl: https://openapiproext.bnf.fr
 
     # THE BnF rates — the one place they live. The ingestion subscription
-    # (the broker's key): `quota` is BnF's per-minute allowance, `rpm`/`burst`
-    # what we send. The broker renders BNF_<BUCKET>_RPM/_BURST from every
+    # (the broker's key): `quota` is BnF's per-minute allowance (for global,
+    # manifest and external, which BnF does not cap, our own ceiling),
+    # `rpm`/`burst` what we send. The broker renders BNF_<BUCKET>_RPM/_BURST from every
     # bucket (all required). The worker reads six of them and derives its gates:
     # ALTO + image fetches share a bulk limit of global minus the manifest,
     # catalogue and graphe rpm (raising one of those lowers the worker's fetch
@@ -374,16 +375,17 @@ broker:
     # these buckets with the worker.
     #
     # global: the ingestion subscription states per-API caps only, no overall
-    # cap, so global is sized never to bind: its bulk share (1720) covers
+    # cap, so global is sized never to bind: its bulk share (1758) covers
     # presentation + image (1710) and ALTO runs at the presentation rate.
     # Lower it if BnF ever answers 429 on a call under its own API's rpm.
-    # manifest is the per-IP manifest limit BnF confirmed at 40/min on the
-    # legacy API; whether it still applies on the Presentation API is asked of
-    # the DSI and measured by the ramp test. external is politeness for the
-    # ungated hosts (oai/catalogue/data.bnf.fr), not a BnF quota.
+    # manifest is not a BnF quota: manifests count against presentation. It
+    # is our own ceiling on the one Presentation resource BnF computes per
+    # call, set so documents start fast enough for presentation to bind on
+    # ALTO. external is politeness for the ungated hosts
+    # (oai/catalogue/data.bnf.fr), not a BnF quota.
     # Raising a quota: edit its line, `helm upgrade` (broker/README.md).
     rates:
-      global:         { quota: "2000", rpm: "1900", burst: "40" }
+      global:         { quota: "2100", rpm: "1995", burst: "42" }
       presentation:   { quota: "1500", rpm: "1425", burst: "30" }
       image:          { quota: "300",  rpm: "285",  burst: "6" }
       iiifLegacy:     { quota: "1000", rpm: "950",  burst: "20" }
@@ -392,7 +394,7 @@ broker:
       grapheData:     { quota: "50",   rpm: "47",   burst: "1" }
       datePeriodique: { quota: "100",  rpm: "95",   burst: "2" }
       documentTdm:    { quota: "100",  rpm: "95",   burst: "2" }
-      manifest:       { quota: "40",   rpm: "38",   burst: "2" }
+      manifest:       { quota: "100",  rpm: "95",   burst: "2" }
       external:       { quota: "140",  rpm: "120",  burst: "20" }
 
     # Per-attempt upstream timeout to BnF (ms). 120s, not 30s: under ingest load

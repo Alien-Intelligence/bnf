@@ -3,7 +3,7 @@
  *
  * Generalises the demo `gallica-relay` into a real gateway: it owns the OAuth
  * token (single-flight), enforces the BnF ingestion subscription's rate model
- * (a global cap, one quota per partner API, the per-IP manifest sub-limit —
+ * (a global ceiling, one quota per partner API, a manifest ceiling —
  * plan.ts) plus a politeness bucket for ungated hosts, and centralises
  * 429/Retry-After backoff. The BnF KEY/SECRET live ONLY here — the app and
  * worker hold no BnF credentials, they just POST a fetch request and get the
