@@ -331,8 +331,8 @@ test("both fetch stages run end to end: newspaper-sized canvases are fetched cap
   assert.equal(h.bnf.calls.alto, 2, "the ALTO stage fetched the text doc");
   const sizes = (ark: string): string[] =>
     h.bnf.imageFetches.filter((f) => f.ark === `ark:/12148/${ark}`).map((f) => f.size);
-  assert.deepEqual(sizes("visiondoc"), ["!2048,2048", "!2048,2048"]);
-  assert.deepEqual(sizes("mistraldoc"), ["!4096,4096", "!4096,4096"]);
+  assert.deepEqual(sizes("visiondoc"), [",2048", ",2048"]);
+  assert.deepEqual(sizes("mistraldoc"), [",4096", ",4096"]);
   assert.deepEqual(sizes("smallmaster"), ["max"], "a 1000×1400 canvas is within both edges");
   const progress = await buildProgress(h.docState, h.queue, { fetchRatePerMin: 950, manifestRatePerMin: 38 });
   assert.equal(progress.stages.fetchAlto?.done, 2);
