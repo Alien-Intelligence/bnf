@@ -1,11 +1,10 @@
 /**
  * The per-canvas IIIF image size (bnf/image-size.ts).
  *
- * BnF implements IIIF Image v3 strictly (live probe 2026-10-01,
- * prod-evidence/iiif-4096-probe*.txt): `full/!4096,4096` on a 6955×9894 master
- * returns 2879×4096, but on a 2592×3508 master it is a 400 (an upscale), and
- * `^!4096,4096` is refused. So the size is chosen per canvas from the dims the
- * manifest already carries.
+ * BnF implements IIIF Image v3 strictly: a size that would upscale is a 400,
+ * `^` is refused, and each requested axis is checked against the master on its
+ * own (`!4096,4096` is a 400 on a 3812×5387 master). So the size is chosen per
+ * canvas from the dims the manifest already carries, naming the long edge only.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -46,13 +45,32 @@ test("the lane edges: 4096 px for Mistral (its limit), 2048 px for vision", () =
   assert.equal(VISION_MAX_EDGE_PX, 2048);
 });
 
-test("iiifSizeFor: a master above the edge on either axis is fitted into the box", () => {
-  assert.equal(iiifSizeFor(4096, { width: 6955, height: 9894 }), "!4096,4096");
-  assert.equal(iiifSizeFor(4096, { width: 4097, height: 10 }), "!4096,4096");
-  assert.equal(iiifSizeFor(2048, { width: 6955, height: 9894 }), "!2048,2048");
+test("iiifSizeFor: a master above the edge is scaled by its long edge alone (`,h` portrait, `w,` landscape)", () => {
+  assert.equal(iiifSizeFor(4096, { width: 6955, height: 9894 }), ",4096");
+  assert.equal(iiifSizeFor(2048, { width: 6955, height: 9894 }), ",2048");
+  assert.equal(iiifSizeFor(4096, { width: 7271, height: 4449 }), "4096,");
+  assert.equal(iiifSizeFor(4096, { width: 5000, height: 5000 }), "4096,", "a square master: either axis is the long edge");
 });
 
-test("iiifSizeFor: a master within the edge is fetched at max — a fit-in-box would upscale and BnF 400s it", () => {
+test("iiifSizeFor: never asks an axis for more pixels than the master has (BnF 400s `!N,N` when the short edge is below N)", () => {
+  // Live BnF 400s on job 8dfda31e (2026-11-13): "w must not be greater than the
+  // width of the extracted region". Each master's short edge is below the box.
+  const masters = [
+    { lane: 4096, width: 3812, height: 5387 }, // bd6t51666570h f1
+    { lane: 4096, width: 2736, height: 4195 }, // bpt6k14260951 f1
+    { lane: 2048, width: 1508, height: 2293 }, // btv1b10026362v f1
+    { lane: 4096, width: 4097, height: 10 },
+  ];
+  for (const m of masters) {
+    const size = iiifSizeFor(m.lane, m);
+    assert.ok(size !== null);
+    const [w, h] = size.split(",");
+    if (w) assert.ok(Number(w) <= m.width, `${size}: w above the ${m.width}px master width`);
+    if (h) assert.ok(Number(h) <= m.height, `${size}: h above the ${m.height}px master height`);
+  }
+});
+
+test("iiifSizeFor: a master within the edge is fetched at max — a scaled size would upscale and BnF 400s it", () => {
   assert.equal(iiifSizeFor(4096, { width: 2592, height: 3508 }), "max");
   assert.equal(iiifSizeFor(4096, { width: 4096, height: 3000 }), "max", "exactly the edge is not above it");
   assert.equal(iiifSizeFor(2048, { width: 2048, height: 1500 }), "max");
@@ -86,7 +104,7 @@ test("cachedImageCovers: a downscaled (pct:33) image does not serve the Mistral 
 test("cachedImageCovers: a max-fetched image serves the Mistral lane, also when it is above 4096", () => {
   assert.equal(cachedImageCovers("mistral", jpeg(6955, 9894), { width: 6955, height: 9894 }), true);
   assert.equal(cachedImageCovers("mistral", jpeg(2592, 3508), { width: 2592, height: 3508 }), true);
-  assert.equal(cachedImageCovers("mistral", jpeg(2879, 4096), { width: 6955, height: 9894 }), true, "a !4096,4096 fetch");
+  assert.equal(cachedImageCovers("mistral", jpeg(2879, 4096), { width: 6955, height: 9894 }), true, "a ,4096 fetch");
   assert.equal(cachedImageCovers("mistral", jpeg(2874, 4089), { width: 6955, height: 9894 }), true, "IIIF rounding tolerated");
 });
 

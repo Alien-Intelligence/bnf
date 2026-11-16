@@ -314,26 +314,49 @@ function imageFolio(
 const NEWSPAPER = { width: 6955, height: 9894 }; // bpt6k4625753w f1, probe 2026-10-01
 const SMALL_MASTER = { width: 2592, height: 3508 }; // bpt6k42368q f1
 
-test("a Mistral folio of a 6955×9894 canvas is fetched at !4096,4096 and cached at 2879×4096", async () => {
+test("a Mistral folio of a 6955×9894 canvas is fetched at ,4096 and cached at 2879×4096", async () => {
   const h = await setup(imageSpec({ canvas: NEWSPAPER }));
   await h.seed(imageFolio("mistral", 1, NEWSPAPER));
   await h.q.idle();
 
-  assert.deepEqual(h.bnf.imageFetches.map((f) => f.size), ["!4096,4096"]);
+  assert.deepEqual(h.bnf.imageFetches.map((f) => f.size), [",4096"]);
   const cached = await h.blob.getBytes(keys.image(ARK, 1));
   assert.ok(cached);
   assert.deepEqual(jpegDimensions(cached), { width: 2879, height: 4096 });
   assert.equal(h.emitted[0]?.ok, true);
 });
 
-test("a vision folio of the same canvas is fetched at !2048,2048", async () => {
+test("a vision folio of the same canvas is fetched at ,2048", async () => {
   const h = await setup(imageSpec({ canvas: NEWSPAPER }));
   await h.seed(imageFolio("vision", 1, NEWSPAPER));
   await h.q.idle();
-  assert.deepEqual(h.bnf.imageFetches.map((f) => f.size), ["!2048,2048"]);
+  assert.deepEqual(h.bnf.imageFetches.map((f) => f.size), [",2048"]);
 });
 
-test("a canvas within the edge is fetched at max — never a fit-in-box BnF would 400 as an upscale", async () => {
+test("a master whose short edge is below the lane edge is fetched and cached, not lost to a BnF 400", async () => {
+  // bd6t51666570h f1 (job 8dfda31e, 2026-11-13): `!4096,4096` was a 400 because
+  // its 3812 px width is below 4096; BnF serves `,4096` at 2898×4096.
+  const PORTRAIT = { width: 3812, height: 5387 };
+  const h = await setup(imageSpec({ canvas: PORTRAIT }));
+  await h.seed(imageFolio("mistral", 1, PORTRAIT));
+  await h.q.idle();
+  assert.deepEqual(h.bnf.imageFetches.map((f) => f.size), [",4096"]);
+  const cached = await h.blob.getBytes(keys.image(ARK, 1));
+  assert.ok(cached);
+  assert.deepEqual(jpegDimensions(cached), { width: 2898, height: 4096 });
+  assert.equal(h.emitted[0]?.ok, true);
+});
+
+test("a landscape master is scaled by its width", async () => {
+  const LANDSCAPE = { width: 7271, height: 4449 }; // btv1b8441346h f1
+  const h = await setup(imageSpec({ canvas: LANDSCAPE }));
+  await h.seed(imageFolio("vision", 1, LANDSCAPE));
+  await h.q.idle();
+  assert.deepEqual(h.bnf.imageFetches.map((f) => f.size), ["2048,"]);
+  assert.equal(h.emitted[0]?.ok, true);
+});
+
+test("a canvas within the edge is fetched at max — a scaled size would upscale and BnF 400s it", async () => {
   const h = await setup(imageSpec({ canvas: SMALL_MASTER }));
   await h.seed(imageFolio("mistral", 1, SMALL_MASTER));
   await h.q.idle();
@@ -394,7 +417,7 @@ test("an image item on the ALTO queue (pre-split message) is forwarded to v2.fet
   assert.equal(Q.fetchImage, "v2.fetch.image");
   assert.ok(h.lines.some((l) => l.event === "fetch_item_forwarded" && l.ordre === 6));
   assert.equal(h.bnf.calls.image, 1, "the image stage fetched it");
-  assert.deepEqual(h.bnf.imageFetches.map((f) => f.size), ["!4096,4096"], "with its canvas dims intact");
+  assert.deepEqual(h.bnf.imageFetches.map((f) => f.size), [",4096"], "with its canvas dims intact");
   assert.equal(h.emitted.length, 1, "exactly one FolioResult — the image stage's, none from the forward");
   assert.equal(h.emitted[0]?.ok, true);
 });

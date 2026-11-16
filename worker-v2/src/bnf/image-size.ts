@@ -1,14 +1,15 @@
 /**
  * The IIIF image size an image folio is fetched at, chosen PER CANVAS.
  *
- * BnF implements IIIF Image v3 strictly (live probe 2026-10-01,
- * ai-memories/tech/repos/bnf/feedback-2026-09-29 research): a fit-in-box size
- * `!w,h` that would UPSCALE is rejected with a 400, and `^` (upscale allowed)
- * is refused. So `!4096,4096` cannot be sent blindly: it is right for a
- * 6955×9894 newspaper master (→ 2879×4096, 2.8 MB instead of 68.8 Mpx) and a
- * 400 for a 2592×3508 one. The manifest's canvas `width`/`height` — already
- * parsed and cached, no `info.json` call — decide: `max` when the master fits
- * within the lane's edge, else the fit-in-box.
+ * BnF implements IIIF Image v3 strictly: any size that would UPSCALE is a 400,
+ * and `^` (upscale allowed) is refused. It checks each axis of a fit-in-box
+ * `!w,h` on its own, so `!4096,4096` is a 400 for a 3812×5387 master ("w must
+ * not be greater than the width of the extracted region") even though the fit
+ * itself would downscale. So the size names the long edge alone: `,h` for a
+ * portrait master, `w,` for a landscape one, and BnF keeps the aspect ratio
+ * (6955×9894 at `,4096` → 2879×4096). The manifest's canvas `width`/`height`
+ * (already parsed and cached, no `info.json` call) decide: `max` when the
+ * master fits within the lane's edge, else the long edge scaled to it.
  *
  * Pure: no I/O. stages/fetch.ts applies it.
  */
@@ -40,24 +41,33 @@ export function maxEdgeForLane(lane: ImageLane): number {
   return lane === "mistral" ? MISTRAL_MAX_EDGE_PX : VISION_MAX_EDGE_PX;
 }
 
-/** The canvas's long edge, or null when a dim is missing or not a positive number. */
-function canvasLongEdge(dims: CanvasDims | undefined): number | null {
+/** The canvas's dims when both are positive finite numbers, else null. */
+function usableDims(dims: CanvasDims | undefined): { width: number; height: number } | null {
   if (!dims) return null;
   const { width, height } = dims;
   if (width === null || height === null) return null;
   if (!(Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0)) return null;
-  return Math.max(width, height);
+  return { width, height };
+}
+
+/** The canvas's long edge, or null when a dim is missing or not a positive number. */
+function canvasLongEdge(dims: CanvasDims | undefined): number | null {
+  const usable = usableDims(dims);
+  return usable === null ? null : Math.max(usable.width, usable.height);
 }
 
 /**
  * The IIIF `size` segment for a canvas: `max` when its long edge is within
- * `maxEdge`, else `!maxEdge,maxEdge`. Null when the dims are unknown — the
- * caller decides (and logs) what to do then.
+ * `maxEdge`, else that long edge scaled to `maxEdge` (`w,` landscape or square,
+ * `,h` portrait). Null when the dims are unknown: the caller decides (and logs)
+ * what to do then.
  */
 export function iiifSizeFor(maxEdge: number, dims: CanvasDims | undefined): string | null {
-  const longEdge = canvasLongEdge(dims);
-  if (longEdge === null) return null;
-  return longEdge <= maxEdge ? "max" : `!${maxEdge},${maxEdge}`;
+  const usable = usableDims(dims);
+  if (usable === null) return null;
+  const { width, height } = usable;
+  if (Math.max(width, height) <= maxEdge) return "max";
+  return width >= height ? `${maxEdge},` : `,${maxEdge}`;
 }
 
 /** Start-of-frame markers SOF0–SOF15, minus the three in that range that are not frames. */

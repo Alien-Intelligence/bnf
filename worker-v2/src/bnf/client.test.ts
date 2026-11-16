@@ -356,12 +356,12 @@ test("fetchImageFolio posts the Image API URL with the size it was given", async
   const broker = await startRecordingBroker(Buffer.from([0xff, 0xd8, 0xff, 0xd9]), "image/jpeg");
   configureBrokerUrl(broker.url);
   try {
-    await new LiveBnfClient(IIIF).fetchImageFolio(ARK, 2, "!4096,4096");
+    await new LiveBnfClient(IIIF).fetchImageFolio(ARK, 2, ",4096");
   } finally {
     await broker.close();
   }
   assert.deepEqual(broker.posted, [
-    "https://openapiproext.bnf.fr/image/iiif/gallica/1.0.0/image/v3/ark:/12148/bpt6k4625753w/f2/full/!4096,4096/0/default.jpg",
+    "https://openapiproext.bnf.fr/image/iiif/gallica/1.0.0/image/v3/ark:/12148/bpt6k4625753w/f2/full/,4096/0/default.jpg",
   ]);
 });
 

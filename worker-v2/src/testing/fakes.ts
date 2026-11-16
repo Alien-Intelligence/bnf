@@ -137,24 +137,35 @@ export function fakeJpeg(width: number, height: number, payload: Buffer = Buffer
 }
 
 /**
- * The output dims of a IIIF Image v3 `size` on a master, as BnF answers it:
- * `max` is the master; `!w,h` fits the master into the box, and is a 400 when
- * that would UPSCALE (BnF accepts no `^`). Any other size is refused here so a
- * test catches the worker sending one.
+ * The output dims of a IIIF Image v3 `size` on a master, as BnF answers it
+ * (live probes 2026-11-16): `max` is the master; `w,` and `,h` scale to that
+ * one axis keeping the aspect ratio; `!w,h` fits the master into the box. BnF
+ * accepts no `^` and checks EACH requested axis against the master on its own:
+ * any axis above it is a 400 ("w must not be greater than the width of the
+ * extracted region"), so `!4096,4096` fails on a 3812×5387 master although the
+ * fit would downscale. Any other size is refused here so a test catches the
+ * worker sending one.
  */
 function iiifOutputDims(master: { width: number; height: number }, size: string): { width: number; height: number } {
   if (size === "max") return master;
-  const box = /^!(\d+),(\d+)$/.exec(size);
-  if (!box) throw new Error(`FakeBnfClient: the worker sent an unexpected IIIF size "${size}"`);
-  const w = Number(box[1]);
-  const h = Number(box[2]);
-  const scale = Math.min(w / master.width, h / master.height);
-  if (scale > 1) {
+  const m = /^(!?)(\d*),(\d*)$/.exec(size);
+  const fit = m?.[1] === "!";
+  const w = m?.[2] ? Number(m[2]) : null;
+  const h = m?.[3] ? Number(m[3]) : null;
+  if (!m || (w === null && h === null) || (fit && (w === null || h === null))) {
+    throw new Error(`FakeBnfClient: the worker sent an unexpected IIIF size "${size}"`);
+  }
+  const axisAbove = (w !== null && w > master.width) || (h !== null && h > master.height);
+  if (axisAbove) {
     throw new PermanentBnfError("bad_ark", {
       status: 400,
-      hint: `size ${size} would upscale a ${master.width}x${master.height} master (BnF strict IIIF v3)`,
+      hint: `size ${size} asks an axis above the ${master.width}x${master.height} master (BnF strict IIIF v3)`,
     });
   }
+  const scale = Math.min(
+    w === null ? Number.POSITIVE_INFINITY : w / master.width,
+    h === null ? Number.POSITIVE_INFINITY : h / master.height,
+  );
   return { width: Math.round(master.width * scale), height: Math.round(master.height * scale) };
 }
 
