@@ -155,7 +155,7 @@ worker:
   image:
     repository: rg.fr-par.scw.cloud/ns-data-streaming/bnf-demo-worker
     pullPolicy: Always
-    tag: "0.20.5"
+    tag: "0.20.6"
 
   service:
     type: ClusterIP
