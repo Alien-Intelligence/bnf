@@ -146,4 +146,6 @@ type: application
 # 0.21.6 — app-only 0.20.7: the same read-only state after the playbook review — the
 # derive dialog lives in the page client (mounted only while open), query shapes and
 # RECHERCHER_MODE in models/projects/schema.ts, and the mode is SessionPolicy.create's.
+# Also: note citation pills no longer remount on every streamed token, so they open
+# the source sheet while an agent turn runs.
 appVersion: "0.20.7"
