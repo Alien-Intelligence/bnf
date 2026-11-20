@@ -22,10 +22,10 @@ import {
 import { useToast } from "@/components/ui/toast"
 import { useCreateDerivedProject } from "@/hooks/api/projects"
 import { ROUTES } from "@/lib/constants"
-import type { ProjectListItem } from "@/models/projects/schema"
+import type { DeriveSource } from "@/models/projects/schema"
 
 interface DialogProjectDeriveProps {
-  source: ProjectListItem
+  source: DeriveSource
   open: boolean
   onOpenChange: (open: boolean) => void
 }

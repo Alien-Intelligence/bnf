@@ -2,10 +2,15 @@
 // Server component. Authenticates, resolves project, ensures a default
 // research session exists, pre-loads note list, and hands everything to
 // RechercherClient as initial* props. No interactivity — see client.tsx.
+//
+// A read-only member cannot research here (a turn is a write), so for them it
+// loads only what the read-only state needs, and never creates a session in a
+// project they do not own.
 
 import { notFound } from "next/navigation"
 import { requireSessionUser } from "@/lib/auth-helpers"
-import { canReadProject } from "@/lib/authz/project-access"
+import { canDeriveResearchFrom, canReadProject } from "@/lib/authz/project-access"
+import { SessionPolicy } from "@/models/sessions/policy"
 import {
   CORPUS_SOURCE_STATE,
   CorpusSourceMissingError,
@@ -21,6 +26,7 @@ import { OnboardingQueries } from "@/models/onboarding/queries"
 import { ONBOARDING_INTRO } from "@/models/onboarding/schema"
 import { SESSION_SCOPE } from "@/models/sessions/schema"
 import { RAG_CLUSTER_ID, ROUTES } from "@/lib/constants"
+import { RECHERCHER_MODE } from "@/models/projects/schema"
 import { env } from "@/lib/env"
 import { RechercherClient } from "./client"
 
@@ -38,6 +44,27 @@ export default async function RechercherPage({
   const project = await ProjectQueries.get(projectId)
   if (!project) notFound()
   if (!canReadProject(user, project)) notFound()
+
+  // Researching creates a session; whoever may not create one here (a read-only
+  // share, a public project) gets the read-only state, and none is created.
+  const mayResearch = new SessionPolicy(user).create({
+    project,
+    scope: SESSION_SCOPE.RESEARCH,
+  })
+  if (!mayResearch) {
+    const [owner, existingWorkspace] = await Promise.all([
+      ProjectQueries.ownerName(projectId),
+      ProjectQueries.latestDerivedOwnedBy(user.id, projectId),
+    ])
+    return (
+      <RechercherClient
+        initialMode={RECHERCHER_MODE.READ_ONLY}
+        initialSource={{ id: projectId, name: project.name, ownerName: owner.owner.name }}
+        initialCanDerive={canDeriveResearchFrom(user, project)}
+        initialExistingWorkspace={existingWorkspace}
+      />
+    )
+  }
 
   // A derived project reads the source's corpus; its notes, memory and
   // sessions stay local. See lib/authz/corpus-source.ts.
@@ -80,6 +107,7 @@ export default async function RechercherPage({
 
   return (
     <RechercherClient
+      initialMode={RECHERCHER_MODE.WORKSPACE}
       projectId={projectId}
       locale={locale}
       projectName={project.name}

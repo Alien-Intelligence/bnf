@@ -18,6 +18,7 @@ import {
   type ProjectWithShares,
   type VisibilityScope,
 } from "@/models/projects/schema"
+import { CORPUS_SOURCE_STATE, corpusSourceState } from "./corpus-source"
 
 /** The access a ProjectShare grants. Stored as a plain String column. */
 export const PROJECT_ACCESS = {
@@ -119,6 +120,30 @@ export function canWriteProject(
   const level = projectAccessLevel(user, project)
   return (
     level === PROJECT_ACCESS_LEVEL.OWNER || level === PROJECT_ACCESS_LEVEL.WRITE
+  )
+}
+
+/**
+ * Whether to OFFER this user a research workspace of their own over this
+ * project's corpus (the projects tile, the read-only Rechercher step): it is
+ * shared with one of their groups — a public project is readable, not
+ * derivable (NoCorpusGrantError) — it owns its corpus (a derived project is
+ * never a source), and that corpus is ingested, without which the workspace
+ * could do nothing.
+ *
+ * Not the endpoint's authority: ProjectService.createDerived accepts a strict
+ * superset (an owner or admin may also derive, with no grant to pin), so the
+ * offer never promises something the server would refuse. Owners and admins
+ * research in the project itself, which is why they are not offered it.
+ */
+export function canDeriveResearchFrom(
+  user: PolicyUser,
+  project: ProjectWithShares,
+): boolean {
+  return (
+    projectRelation(user, project) === PROJECT_RELATION.SHARED &&
+    corpusSourceState(project) === CORPUS_SOURCE_STATE.OWN &&
+    project.ingestedVersionId !== null
   )
 }
 

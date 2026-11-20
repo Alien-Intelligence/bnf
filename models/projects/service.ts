@@ -5,6 +5,7 @@ import type { DatasetId } from "@/lib/cluster/composite-ids"
 import { SessionQueries } from "@/models/sessions/queries"
 import {
   PROJECT_ACCESS_LEVEL,
+  canDeriveResearchFrom,
   isProjectAccess,
   projectAccessLevel,
   projectRelation,
@@ -12,7 +13,7 @@ import {
   personalVisibilityScope,
   type ProjectAccess,
 } from "@/lib/authz/project-access"
-import { CORPUS_SOURCE_STATE, canReachCorpus, corpusSourceState } from "@/lib/authz/corpus-source"
+import { canReachCorpus } from "@/lib/authz/corpus-source"
 import { workspaceStepsFor } from "@/lib/authz/workspace-steps"
 import { ProjectPolicy } from "./policy"
 import { CORPUS_VERSION_STATUS } from "@/models/corpus/schema"
@@ -259,10 +260,7 @@ async function decorateProjectRows(
       relation,
       mayShare: new ProjectPolicy(user).share(p),
       steps: workspaceStepsFor(user, p),
-      canDerive:
-        relation === PROJECT_RELATION.SHARED &&
-        corpusSourceState(p) === CORPUS_SOURCE_STATE.OWN &&
-        ingestedId !== null,
+      canDerive: canDeriveResearchFrom(user, p),
       ownerName: owner.name,
       corpusSourceName: corpusSource?.name ?? null,
     }

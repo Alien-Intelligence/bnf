@@ -907,6 +907,14 @@
       "title": "Accès au corpus révoqué",
       "body": "Le partage qui vous donnait accès au corpus de « {source} » a été retiré. Vos notes restent consultables dans le carnet, mais le corpus n'est plus interrogeable. Contactez le propriétaire du corpus pour rétablir l'accès.",
       "openCarnet": "Ouvrir le carnet"
+    },
+    "readOnly": {
+      "title": "Corpus partagé en lecture seule",
+      "body": "« {source} » a été constitué par {owner} et partagé avec vous en lecture seule : vous ne pouvez pas lancer de recherche dans ce projet. Créez votre propre espace de recherche sur ce corpus ; vos sessions, votre mémoire et vos notes vous appartiendront, et le corpus restera celui de {owner}.",
+      "bodyNoDerive": "« {source} » appartient à {owner} et vous est accessible en lecture seule : vous ne pouvez pas lancer de recherche dans ce projet. Vous pouvez consulter son carnet.",
+      "derive": "Créer mon espace de recherche",
+      "openWorkspace": "Ouvrir « {name} »",
+      "openCarnet": "Consulter le carnet"
     }
   },
   "citations": {

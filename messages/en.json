@@ -907,6 +907,14 @@
       "title": "Corpus access revoked",
       "body": "The share that gave you access to the corpus of “{source}” has been removed. Your notes remain available in the carnet, but the corpus can no longer be queried. Contact the corpus owner to restore access.",
       "openCarnet": "Open the carnet"
+    },
+    "readOnly": {
+      "title": "Corpus shared read-only",
+      "body": "“{source}” was built by {owner} and shared with you read-only: you cannot run research in this project. Create your own research workspace over this corpus; your sessions, memory and notes will be yours, and the corpus stays {owner}'s.",
+      "bodyNoDerive": "“{source}” belongs to {owner} and is readable by you only: you cannot run research in this project. You can read its carnet.",
+      "derive": "Create my research workspace",
+      "openWorkspace": "Open “{name}”",
+      "openCarnet": "Read the carnet"
     }
   },
   "citations": {
