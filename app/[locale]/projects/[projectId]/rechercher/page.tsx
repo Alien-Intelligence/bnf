@@ -2,10 +2,18 @@
 // Server component. Authenticates, resolves project, ensures a default
 // research session exists, pre-loads note list, and hands everything to
 // RechercherClient as initial* props. No interactivity — see client.tsx.
+//
+// A read-only member cannot research here (a turn is a write), so for them it
+// loads only what the read-only state needs, and never creates a session in a
+// project they do not own.
 
 import { notFound } from "next/navigation"
 import { requireSessionUser } from "@/lib/auth-helpers"
-import { canReadProject } from "@/lib/authz/project-access"
+import {
+  canDeriveResearchFrom,
+  canReadProject,
+  canWriteProject,
+} from "@/lib/authz/project-access"
 import {
   CORPUS_SOURCE_STATE,
   CorpusSourceMissingError,
@@ -20,7 +28,7 @@ import { SessionQueries } from "@/models/sessions/queries"
 import { OnboardingQueries } from "@/models/onboarding/queries"
 import { ONBOARDING_INTRO } from "@/models/onboarding/schema"
 import { SESSION_SCOPE } from "@/models/sessions/schema"
-import { RAG_CLUSTER_ID, ROUTES } from "@/lib/constants"
+import { RAG_CLUSTER_ID, RECHERCHER_MODE, ROUTES } from "@/lib/constants"
 import { env } from "@/lib/env"
 import { RechercherClient } from "./client"
 
@@ -38,6 +46,21 @@ export default async function RechercherPage({
   const project = await ProjectQueries.get(projectId)
   if (!project) notFound()
   if (!canReadProject(user, project)) notFound()
+
+  if (!canWriteProject(user, project)) {
+    const [ownerName, existingWorkspace] = await Promise.all([
+      ProjectQueries.ownerName(projectId),
+      ProjectQueries.latestDerivedOwnedBy(user.id, projectId),
+    ])
+    return (
+      <RechercherClient
+        mode={RECHERCHER_MODE.READ_ONLY}
+        initialSource={{ id: projectId, name: project.name, ownerName }}
+        initialCanDerive={canDeriveResearchFrom(user, project)}
+        initialExistingWorkspace={existingWorkspace}
+      />
+    )
+  }
 
   // A derived project reads the source's corpus; its notes, memory and
   // sessions stay local. See lib/authz/corpus-source.ts.
@@ -80,6 +103,7 @@ export default async function RechercherPage({
 
   return (
     <RechercherClient
+      mode={RECHERCHER_MODE.WORKSPACE}
       projectId={projectId}
       locale={locale}
       projectName={project.name}

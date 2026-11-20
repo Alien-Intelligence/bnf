@@ -117,6 +117,19 @@ export type WorkspaceStep = (typeof WORKSPACE_STEPS)[number]
  */
 export const RESEARCH_ONLY_STEPS = [WORKSPACE_STEP.RECHERCHER] as const satisfies readonly WorkspaceStep[]
 
+/**
+ * Which Rechercher the page renders — decided on the server from
+ * canWriteProject. Here, not in rechercher/client.tsx: a server component that
+ * imports a value from a "use client" module receives a client reference, not
+ * the value.
+ */
+export const RECHERCHER_MODE = {
+  /** The user may write: the full research espace. */
+  WORKSPACE: "workspace",
+  /** A read-only member: no research here, the way to a workspace of their own. */
+  READ_ONLY: "read-only",
+} as const
+
 // ---------------------------------------------------------------------------
 // Brand assets — the co-brand logos shown in the workspace header and on the
 // auth pages. Intrinsic sizes are the files' own, for next/image.

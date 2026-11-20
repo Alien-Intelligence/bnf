@@ -19,6 +19,7 @@ import {
   personalVisibilityScope,
   projectRelation,
   adminVisibilityScope,
+  canDeriveResearchFrom,
 } from "./project-access"
 import { ProjectPolicy } from "@/models/projects/policy"
 import { USER_ROLE, type PolicyUser } from "@/models/users/schema"
@@ -348,4 +349,45 @@ test("projectRelation agrees with projectAccessLevel for every non-admin caller"
       assert.equal(related, readable, `${u.id} on ${JSON.stringify(p.shares)} public=${p.isPublic}`)
     }
   }
+})
+
+// ---------------------------------------------------------------------------
+// canDeriveResearchFrom — who may build a workspace over a corpus
+// ---------------------------------------------------------------------------
+
+test("canDeriveResearchFrom: only a group member, on an ingested project that owns its corpus", () => {
+  const reader = user({ id: OTHER_ID, groupIds: [GROUP_A] })
+  const shared = { shares: [share(GROUP_A, PROJECT_ACCESS.READ)], ingestedVersionId: "v1" }
+
+  assert.equal(canDeriveResearchFrom(reader, project(shared)), true)
+  assert.equal(
+    canDeriveResearchFrom(reader, project({ ...shared, shares: [share(GROUP_A, PROJECT_ACCESS.WRITE)] })),
+    true,
+    "a write share is a share too",
+  )
+  assert.equal(
+    canDeriveResearchFrom(reader, project({ ...shared, ingestedVersionId: null })),
+    false,
+    "nothing to read before the first ingest",
+  )
+  assert.equal(
+    canDeriveResearchFrom(reader, project({ ...shared, corpusSourceId: "src", corpusSourceShareId: "s" })),
+    false,
+    "a derived project is never a source",
+  )
+  assert.equal(
+    canDeriveResearchFrom(user({ id: "stranger" }), project({ isPublic: true, ingestedVersionId: "v1" })),
+    false,
+    "a public project is readable, not derivable",
+  )
+  assert.equal(
+    canDeriveResearchFrom(user({ id: OWNER_ID }), project({ ingestedVersionId: "v1" })),
+    false,
+    "the owner researches in the project itself",
+  )
+  assert.equal(
+    canDeriveResearchFrom(user({ id: "admin", role: USER_ROLE.ADMIN }), project({ ingestedVersionId: "v1" })),
+    false,
+    "an admin's reach is not a share",
+  )
 })

@@ -18,6 +18,7 @@ import {
   type ProjectWithShares,
   type VisibilityScope,
 } from "@/models/projects/schema"
+import { CORPUS_SOURCE_STATE, corpusSourceState } from "./corpus-source"
 
 /** The access a ProjectShare grants. Stored as a plain String column. */
 export const PROJECT_ACCESS = {
@@ -119,6 +120,24 @@ export function canWriteProject(
   const level = projectAccessLevel(user, project)
   return (
     level === PROJECT_ACCESS_LEVEL.OWNER || level === PROJECT_ACCESS_LEVEL.WRITE
+  )
+}
+
+/**
+ * Whether the user may build a research workspace of their own over this
+ * project's corpus (POST /api/projects/derived): it is shared with one of their
+ * groups — a public project is readable, not derivable (NoCorpusGrantError) —
+ * it owns its corpus (a derived project is never a source), and that corpus has
+ * been ingested, without which the new workspace could do nothing at all.
+ */
+export function canDeriveResearchFrom(
+  user: PolicyUser,
+  project: ProjectWithShares,
+): boolean {
+  return (
+    projectRelation(user, project) === PROJECT_RELATION.SHARED &&
+    corpusSourceState(project) === CORPUS_SOURCE_STATE.OWN &&
+    project.ingestedVersionId !== null
   )
 }
 

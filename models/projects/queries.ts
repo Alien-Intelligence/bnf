@@ -118,6 +118,31 @@ export class ProjectQueries {
     return new Map(counts.map((c) => [c.versionId, c._count.ark]))
   }
 
+  /** The owner's display name. Throws when the project does not exist. */
+  static async ownerName(id: string): Promise<string> {
+    const row = await prisma.project.findUniqueOrThrow({
+      where: { id },
+      select: { owner: { select: { name: true } } },
+    })
+    return row.owner.name
+  }
+
+  /**
+   * The user's most recent research workspace over this source's corpus, or
+   * null when they have not built one. Only the id and name: the caller links
+   * to it, it authorises nothing.
+   */
+  static async latestDerivedOwnedBy(
+    ownerId: string,
+    sourceProjectId: string,
+  ): Promise<Pick<Project, "id" | "name"> | null> {
+    return prisma.project.findFirst({
+      where: { ownerId, corpusSourceId: sourceProjectId },
+      orderBy: { createdAt: "desc" },
+      select: { id: true, name: true },
+    })
+  }
+
   /**
    * How many derived projects read this project's corpus. Non-zero blocks
    * deletion — see ProjectService.delete and the Restrict FK on
