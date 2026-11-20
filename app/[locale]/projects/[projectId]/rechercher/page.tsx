@@ -9,11 +9,8 @@
 
 import { notFound } from "next/navigation"
 import { requireSessionUser } from "@/lib/auth-helpers"
-import {
-  canDeriveResearchFrom,
-  canReadProject,
-  canWriteProject,
-} from "@/lib/authz/project-access"
+import { canDeriveResearchFrom, canReadProject } from "@/lib/authz/project-access"
+import { SessionPolicy } from "@/models/sessions/policy"
 import {
   CORPUS_SOURCE_STATE,
   CorpusSourceMissingError,
@@ -28,7 +25,8 @@ import { SessionQueries } from "@/models/sessions/queries"
 import { OnboardingQueries } from "@/models/onboarding/queries"
 import { ONBOARDING_INTRO } from "@/models/onboarding/schema"
 import { SESSION_SCOPE } from "@/models/sessions/schema"
-import { RAG_CLUSTER_ID, RECHERCHER_MODE, ROUTES } from "@/lib/constants"
+import { RAG_CLUSTER_ID, ROUTES } from "@/lib/constants"
+import { RECHERCHER_MODE } from "@/models/projects/schema"
 import { env } from "@/lib/env"
 import { RechercherClient } from "./client"
 
@@ -47,15 +45,21 @@ export default async function RechercherPage({
   if (!project) notFound()
   if (!canReadProject(user, project)) notFound()
 
-  if (!canWriteProject(user, project)) {
-    const [ownerName, existingWorkspace] = await Promise.all([
+  // Researching creates a session; whoever may not create one here (a read-only
+  // share, a public project) gets the read-only state, and none is created.
+  const mayResearch = new SessionPolicy(user).create({
+    project,
+    scope: SESSION_SCOPE.RESEARCH,
+  })
+  if (!mayResearch) {
+    const [owner, existingWorkspace] = await Promise.all([
       ProjectQueries.ownerName(projectId),
       ProjectQueries.latestDerivedOwnedBy(user.id, projectId),
     ])
     return (
       <RechercherClient
-        mode={RECHERCHER_MODE.READ_ONLY}
-        initialSource={{ id: projectId, name: project.name, ownerName }}
+        initialMode={RECHERCHER_MODE.READ_ONLY}
+        initialSource={{ id: projectId, name: project.name, ownerName: owner.owner.name }}
         initialCanDerive={canDeriveResearchFrom(user, project)}
         initialExistingWorkspace={existingWorkspace}
       />
@@ -103,7 +107,7 @@ export default async function RechercherPage({
 
   return (
     <RechercherClient
-      mode={RECHERCHER_MODE.WORKSPACE}
+      initialMode={RECHERCHER_MODE.WORKSPACE}
       projectId={projectId}
       locale={locale}
       projectName={project.name}

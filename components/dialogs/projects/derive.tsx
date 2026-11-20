@@ -22,11 +22,7 @@ import {
 import { useToast } from "@/components/ui/toast"
 import { useCreateDerivedProject } from "@/hooks/api/projects"
 import { ROUTES } from "@/lib/constants"
-import type { ProjectListItem } from "@/models/projects/schema"
-
-/** What the dialog shows about the source: a projects-list tile hands over its
- *  whole row, the read-only research page only these three fields. */
-export type DeriveSource = Pick<ProjectListItem, "id" | "name" | "ownerName">
+import type { DeriveSource } from "@/models/projects/schema"
 
 interface DialogProjectDeriveProps {
   source: DeriveSource

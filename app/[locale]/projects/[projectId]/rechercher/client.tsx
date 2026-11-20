@@ -8,7 +8,8 @@
 // and the Atelier/Carnet disposition.
 //
 // A read-only member gets CardProjectCorpusReadOnly instead: researching is a
-// write, and the page decides which of the two it is (RECHERCHER_MODE).
+// write, and the page decides which of the two it is (RECHERCHER_MODE, from
+// SessionPolicy.create).
 
 import { STREAM_DOMAIN_EVENT } from "@/lib/agent/stream-events"
 import { useCallback, useEffect, useRef, useState } from "react"
@@ -22,7 +23,7 @@ import { sessionKeys } from "@/hooks/api/sessions"
 import { CardProjectCorpusRevoked } from "@/components/cards/projects/corpus-revoked"
 import { CardProjectCorpusNotIngested } from "@/components/cards/projects/corpus-not-ingested"
 import { CardProjectCorpusReadOnly } from "@/components/cards/projects/corpus-read-only"
-import type { DeriveSource } from "@/components/dialogs/projects/derive"
+import { DialogProjectDerive } from "@/components/dialogs/projects/derive"
 import { LayoutSessionsSidebar } from "@/components/layouts/corpus/sessions-sidebar"
 import { CardNotesPicker } from "@/components/cards/notes/picker"
 import { LayoutResearchEspace } from "@/components/layouts/research/espace"
@@ -33,11 +34,14 @@ import { ONBOARDING_INTRO } from "@/models/onboarding/schema"
 import {
   SESSIONS_RAIL_WIDTH,
   AGENT_DEFAULT_MODEL,
-  RECHERCHER_MODE,
   type AgentProvider,
 } from "@/lib/constants"
 import type { NoteListItem } from "@/models/notes/schema"
-import type { Project } from "@/models/projects/schema"
+import {
+  RECHERCHER_MODE,
+  type DeriveSource,
+  type ProjectRef,
+} from "@/models/projects/schema"
 import { SESSION_SCOPE, type AppSession } from "@/models/sessions/schema"
 import type { ParsedCitation } from "@/lib/citations/syntax"
 import {
@@ -48,14 +52,14 @@ import {
 type Disposition = "atelier" | "carnet"
 
 interface RechercherReadOnlyProps {
-  mode: typeof RECHERCHER_MODE.READ_ONLY
+  initialMode: typeof RECHERCHER_MODE.READ_ONLY
   initialSource: DeriveSource
   initialCanDerive: boolean
-  initialExistingWorkspace: Pick<Project, "id" | "name"> | null
+  initialExistingWorkspace: ProjectRef | null
 }
 
 interface RechercherWorkspaceProps {
-  mode: typeof RECHERCHER_MODE.WORKSPACE
+  initialMode: typeof RECHERCHER_MODE.WORKSPACE
   projectId: string
   locale: string
   projectName: string
@@ -82,18 +86,38 @@ interface RechercherWorkspaceProps {
 export function RechercherClient(
   props: RechercherReadOnlyProps | RechercherWorkspaceProps,
 ) {
-  if (props.mode === RECHERCHER_MODE.READ_ONLY) {
-    return (
-      <div className="flex min-h-0 flex-1 items-center justify-center p-6">
-        <CardProjectCorpusReadOnly
-          source={props.initialSource}
-          canDerive={props.initialCanDerive}
-          existingWorkspace={props.initialExistingWorkspace}
-        />
-      </div>
-    )
+  if (props.initialMode === RECHERCHER_MODE.READ_ONLY) {
+    return <RechercherReadOnly {...props} />
   }
   return <RechercherWorkspace {...props} />
+}
+
+/** The read-only state and the derive dialog it opens — mounted only while
+ *  open, so a failed attempt's error never survives a reopen. */
+function RechercherReadOnly({
+  initialSource,
+  initialCanDerive,
+  initialExistingWorkspace,
+}: RechercherReadOnlyProps) {
+  const [deriving, setDeriving] = useState(false)
+
+  return (
+    <div className="flex min-h-0 flex-1 items-center justify-center p-6">
+      <CardProjectCorpusReadOnly
+        source={initialSource}
+        canDerive={initialCanDerive}
+        existingWorkspace={initialExistingWorkspace}
+        onDerive={() => setDeriving(true)}
+      />
+      {deriving && (
+        <DialogProjectDerive
+          source={initialSource}
+          open
+          onOpenChange={setDeriving}
+        />
+      )}
+    </div>
+  )
 }
 
 function RechercherWorkspace({

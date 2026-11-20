@@ -3,10 +3,14 @@ import "server-only"
 import { prisma } from "@/lib/db"
 import {
   projectAuditRow,
+  projectOwnerName,
+  projectRef,
   projectWithMessageUsage,
   projectWithShares,
   type Project,
   type ProjectAuditRow,
+  type ProjectOwnerName,
+  type ProjectRef,
   type ProjectWithMessageUsage,
   type ProjectUpdateInput,
   type ProjectWithShares,
@@ -118,28 +122,24 @@ export class ProjectQueries {
     return new Map(counts.map((c) => [c.versionId, c._count.ark]))
   }
 
-  /** The owner's display name. Throws when the project does not exist. */
-  static async ownerName(id: string): Promise<string> {
-    const row = await prisma.project.findUniqueOrThrow({
-      where: { id },
-      select: { owner: { select: { name: true } } },
-    })
-    return row.owner.name
+  /** The owner's display name, as `owner.name`. Throws when the project does
+   *  not exist. */
+  static async ownerName(id: string): Promise<ProjectOwnerName> {
+    return prisma.project.findUniqueOrThrow({ where: { id }, ...projectOwnerName })
   }
 
   /**
    * The user's most recent research workspace over this source's corpus, or
-   * null when they have not built one. Only the id and name: the caller links
-   * to it, it authorises nothing.
+   * null when they have not built one. A link target only: it authorises nothing.
    */
   static async latestDerivedOwnedBy(
     ownerId: string,
     sourceProjectId: string,
-  ): Promise<Pick<Project, "id" | "name"> | null> {
+  ): Promise<ProjectRef | null> {
     return prisma.project.findFirst({
       where: { ownerId, corpusSourceId: sourceProjectId },
       orderBy: { createdAt: "desc" },
-      select: { id: true, name: true },
+      ...projectRef,
     })
   }
 

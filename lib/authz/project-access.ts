@@ -124,11 +124,17 @@ export function canWriteProject(
 }
 
 /**
- * Whether the user may build a research workspace of their own over this
- * project's corpus (POST /api/projects/derived): it is shared with one of their
- * groups — a public project is readable, not derivable (NoCorpusGrantError) —
- * it owns its corpus (a derived project is never a source), and that corpus has
- * been ingested, without which the new workspace could do nothing at all.
+ * Whether to OFFER this user a research workspace of their own over this
+ * project's corpus (the projects tile, the read-only Rechercher step): it is
+ * shared with one of their groups — a public project is readable, not
+ * derivable (NoCorpusGrantError) — it owns its corpus (a derived project is
+ * never a source), and that corpus is ingested, without which the workspace
+ * could do nothing.
+ *
+ * Not the endpoint's authority: ProjectService.createDerived accepts a strict
+ * superset (an owner or admin may also derive, with no grant to pin), so the
+ * offer never promises something the server would refuse. Owners and admins
+ * research in the project itself, which is why they are not offered it.
  */
 export function canDeriveResearchFrom(
   user: PolicyUser,

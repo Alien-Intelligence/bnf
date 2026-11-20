@@ -81,6 +81,39 @@ export type ProjectListItem = Project & {
 }
 
 
+/** What the derive dialog shows about its source: a projects-list tile hands
+ *  over its whole row, the read-only Rechercher step only these fields. */
+export type DeriveSource = Pick<ProjectListItem, "id" | "name" | "ownerName">
+
+/** A project named for a link: its id and name, nothing that authorises. */
+export const projectRef = {
+  select: { id: true, name: true },
+} satisfies Prisma.ProjectDefaultArgs
+
+export type ProjectRef = Prisma.ProjectGetPayload<typeof projectRef>
+
+/** The owner's display name, for copy that names whose corpus it is. */
+export const projectOwnerName = {
+  select: { owner: { select: { name: true } } },
+} satisfies Prisma.ProjectDefaultArgs
+
+export type ProjectOwnerName = Prisma.ProjectGetPayload<typeof projectOwnerName>
+
+/**
+ * Which Rechercher a user gets on a project — decided on the server by
+ * SessionPolicy.create: researching creates a session, so a member who may not
+ * create one (a read-only share, a public project) gets the read-only state.
+ * Here rather than in rechercher/client.tsx: a server component importing a
+ * value from a "use client" module receives a client reference, not the value.
+ */
+export const RECHERCHER_MODE = {
+  /** The user may research here: the full espace. */
+  WORKSPACE: "workspace",
+  /** They may not: the way to a research workspace of their own. */
+  READ_ONLY: "read-only",
+} as const
+export type RechercherMode = (typeof RECHERCHER_MODE)[keyof typeof RECHERCHER_MODE]
+
 /**
  * A grant as the share dialog renders it: the level plus the group's name.
  * A query shape, so it lives here beside the others rather than next to the
