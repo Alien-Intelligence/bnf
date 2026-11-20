@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo } from "react"
+import { useCallback, useLayoutEffect, useMemo, useRef } from "react"
 import ReactMarkdown, { type Components } from "react-markdown"
 import remarkGfm from "remark-gfm"
 import rehypeSanitize from "rehype-sanitize"
@@ -166,6 +166,27 @@ export function NoteBody({
       .replace(NOTELINK_REGEX, () => `[${note}](${NOTE_HREF_PREFIX}${note++})`)
   }, [body])
 
+  // The renderers below are COMPONENT TYPES to react-markdown: a new `a` or
+  // `img` function remounts every pill and figure in the note. So they must
+  // never depend on the caller's handler identity — a parent re-rendering on
+  // every streamed token (the research espace during an agent turn) would
+  // remount each pill ~30×/s, swallowing clicks and closing the source sheet
+  // the moment it opened. The handlers are read through a ref instead, and
+  // the renderers change only with the note itself.
+  const handlers = useRef({ onCitationClick, onNoteLinkClick })
+  useLayoutEffect(() => {
+    handlers.current = { onCitationClick, onNoteLinkClick }
+  })
+  const emitCitation = useCallback(
+    (c: ParsedCitation) => handlers.current.onCitationClick(c),
+    [],
+  )
+  const emitNoteLink = useCallback(
+    (noteId: string) => handlers.current.onNoteLinkClick?.(noteId),
+    [],
+  )
+  const linksNotes = onNoteLinkClick !== undefined
+
   const components: Components = useMemo(
     () => ({
       ...MD_COMPONENTS,
@@ -177,7 +198,7 @@ export function NoteBody({
               <BadgeArkCitation
                 citation={citation}
                 ocr={folioOcrState(ocrIndex, citation.ark, citation.folio)}
-                onClick={onCitationClick}
+                onClick={emitCitation}
               />
             )
           }
@@ -192,11 +213,7 @@ export function NoteBody({
               <NoteLinkPill
                 label={link.label}
                 exists={exists}
-                onClick={
-                  exists && onNoteLinkClick
-                    ? () => onNoteLinkClick(link.noteId)
-                    : undefined
-                }
+                onClick={exists && linksNotes ? () => emitNoteLink(link.noteId) : undefined}
               />
             )
           }
@@ -222,7 +239,7 @@ export function NoteBody({
               // same source panel as a citation pill.
               <button
                 type="button"
-                onClick={() => onCitationClick(image)}
+                onClick={() => emitCitation(image)}
                 className="my-4 block w-full overflow-hidden rounded-lg border bg-muted/20 text-left transition-colors hover:border-brand-teal/40"
               >
                 {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -242,7 +259,7 @@ export function NoteBody({
         return null
       },
     }),
-    [citations, images, noteLinks, knownNoteIds, ocrIndex, onCitationClick, onNoteLinkClick],
+    [citations, images, noteLinks, knownNoteIds, ocrIndex, emitCitation, emitNoteLink, linksNotes],
   )
 
   return (

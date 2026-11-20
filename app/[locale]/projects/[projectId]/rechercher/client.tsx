@@ -198,7 +198,9 @@ function RechercherWorkspace({
 
   // ── Citation source panel ───────────────────────────────────────────────────
   const [selectedCitation, setSelectedCitation] = useState<ParsedCitation | null>(null)
-  const onCitationClick = (c: ParsedCitation) => setSelectedCitation(c)
+  // Stable: it reaches every note's renderers (see NoteBody), and this
+  // component re-renders on every streamed token.
+  const onCitationClick = useCallback((c: ParsedCitation) => setSelectedCitation(c), [])
 
   const qc = useQueryClient()
 
